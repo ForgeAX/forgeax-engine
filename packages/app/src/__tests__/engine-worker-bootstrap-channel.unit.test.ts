@@ -77,6 +77,70 @@ describe('Engine Worker thick bootstrap channel', () => {
     }
   });
 
+  it('opens the page video bridge: transfers a dedicated videoPort and serves its requests', async () => {
+    const created: Array<{ src: string; paused: boolean }> = [];
+    vi.stubGlobal('document', {
+      createElement: () => {
+        const video = {
+          src: '',
+          paused: true,
+          readyState: 0,
+          currentTime: 0,
+          load() {},
+          play() {
+            video.paused = false;
+            return Promise.resolve();
+          },
+          pause() {
+            video.paused = true;
+          },
+          removeAttribute() {
+            video.src = '';
+          },
+          addEventListener() {},
+          removeEventListener() {},
+          requestVideoFrameCallback: () => 1,
+          cancelVideoFrameCallback() {},
+        };
+        created.push(video);
+        return video;
+      },
+    });
+    const worker = new FakeWorker();
+    try {
+      const started = await startEngineWorker({
+        canvas: { transferControlToOffscreen: () => ({}) } as unknown as HTMLCanvasElement,
+        bootstrapUrl: 'https://example.test/bootstrap.js',
+        timeoutMs: 100,
+        workers: workerSelection({ engine: true, render: false, kernels: false }),
+        workerFactory: () => worker as unknown as Worker,
+      });
+      expect(started.ok).toBe(true);
+      if (!started.ok) return;
+      const init = worker.posts[0];
+      const videoPort = (init?.message as { videoPort?: MessagePort }).videoPort;
+      expect(videoPort).toBeInstanceOf(MessagePort);
+      expect(init?.transfer.some((item) => item === videoPort)).toBe(true);
+      const replies: unknown[] = [];
+      videoPort?.addEventListener('message', (event) => replies.push(event.data));
+      videoPort?.start();
+      videoPort?.postMessage({
+        kind: 'video-open',
+        id: 1,
+        url: 'https://example.test/ad.mp4',
+        playing: true,
+        loop: true,
+      });
+      await vi.waitFor(() => expect(created).toHaveLength(1));
+      expect(created[0]).toMatchObject({ src: 'https://example.test/ad.mp4', paused: false });
+      await started.value.dispose();
+      expect(created[0]?.src).toBe('');
+      videoPort?.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('transfers bootstrap data and the realm MessagePort with the canvas', async () => {
     const pipelineLibrary = {
       version: 1 as const,

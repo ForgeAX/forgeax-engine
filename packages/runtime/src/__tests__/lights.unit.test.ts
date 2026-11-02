@@ -45,8 +45,24 @@ import type {
 } from '../../../render/src/render-system-extract';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
+import { registerLightSystems } from '../../../render/src/world/light-systems';
 import { renderLightsOf } from '../../../render/src/world/render-lights';
-import { createRenderWorld } from '../../../render/src/world/render-world';
+import {
+  beginRenderFrame,
+  createRenderWorld,
+  endRenderFrame,
+} from '../../../render/src/world/render-world';
+import { RenderLightInput } from '../../../render/src/world/scene-systems';
+
+function prepareLights(world: World) {
+  const renderWorld = createRenderWorld();
+  const roster = extractFrame(world, prepareExtractContext(world)).lights;
+  renderWorld.insertResource(RenderLightInput, { roster });
+  registerLightSystems(renderWorld);
+  beginRenderFrame(renderWorld, 1);
+  endRenderFrame(renderWorld);
+  return renderLightsOf(renderWorld).roster;
+}
 
 type LightSpawnResult = ReturnType<World['spawn']>;
 
@@ -353,7 +369,7 @@ function spawnValidatedLight(
         expect(defaults.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(defaults.mapSize).toBe(2048);
         expect(defaults.depthBias).toBeCloseTo(0.00001, 7);
-        expect(defaults.normalBias).toBeCloseTo(0.05, 5);
+        expect(defaults.normalBias).toBeCloseTo(0, 5);
         expect(defaults.shadowDistance).toBeCloseTo(200, 5);
         expect(defaults.shadowFilter).toBe(6);
         expect(defaults.staggerCascades).toBe(false);
@@ -400,7 +416,7 @@ function spawnValidatedLight(
         expect(lightData.splitLambda).toBeCloseTo(0.5, 5);
         expect(lightData.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(lightData.depthBias).toBeCloseTo(0.00001, 7);
-        expect(lightData.normalBias).toBeCloseTo(0.05, 5);
+        expect(lightData.normalBias).toBeCloseTo(0, 5);
         expect(lightData.shadowDistance).toBeCloseTo(200, 5);
       });
 
@@ -420,7 +436,7 @@ function spawnValidatedLight(
         expect(light.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(light.mapSize).toBeCloseTo(2048, 5);
         expect(light.depthBias).toBeCloseTo(0.00001, 7);
-        expect(light.normalBias).toBeCloseTo(0.05, 5);
+        expect(light.normalBias).toBeCloseTo(0, 5);
         expect(light.shadowDistance).toBeCloseTo(200, 5);
       });
 
@@ -881,9 +897,7 @@ function spawnValidatedLight(
         propagateTransforms(world);
         // The Render World assigns each casting spot a stable tile.
         const frame = {
-          lights: renderLightsOf(createRenderWorld()).sync(
-            extractFrame(world, prepareExtractContext(world)).lights,
-          ),
+          lights: prepareLights(world),
         };
 
         expect(frame.lights.spot).toHaveLength(1);
@@ -959,9 +973,7 @@ function spawnValidatedLight(
         propagateTransforms(world);
         // The Render World assigns each casting spot a stable tile.
         const frame = {
-          lights: renderLightsOf(createRenderWorld()).sync(
-            extractFrame(world, prepareExtractContext(world)).lights,
-          ),
+          lights: prepareLights(world),
         };
 
         expect(frame.lights.spot).toHaveLength(5);
@@ -997,9 +1009,7 @@ function spawnValidatedLight(
         propagateTransforms(world);
         // The Render World assigns each casting spot a stable tile.
         const frame = {
-          lights: renderLightsOf(createRenderWorld()).sync(
-            extractFrame(world, prepareExtractContext(world)).lights,
-          ),
+          lights: prepareLights(world),
         };
 
         expect(frame.lights.spot).toHaveLength(2);
@@ -1641,12 +1651,13 @@ function spawnValidatedLight(
       it('kind values are disjoint (0 vs 1)', () => {
         expect(DirectLightSlotKind.POINT).not.toBe(DirectLightSlotKind.SPOT);
       });
-      it('only two members exist (0 and 1)', () => {
+      it('only the point, spot, rect-area and directional members exist', () => {
         const keys = Object.keys(DirectLightSlotKind);
-        expect(keys.length).toBe(3);
+        expect(keys.length).toBe(4);
         expect(keys).toContain('POINT');
         expect(keys).toContain('SPOT');
         expect(keys).toContain('RECT_AREA');
+        expect(keys).toContain('DIRECTIONAL');
       });
     });
   });
@@ -1897,7 +1908,7 @@ function spawnValidatedLight(
         expect(view.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
-        expect(view.normalBias).toBeCloseTo(0.05, 5);
+        expect(view.normalBias).toBeCloseTo(0, 5);
         expect(view.shadowDistance).toBeCloseTo(200, 5);
         expect(view.shadowFilter).toBe(6);
       });
@@ -1913,7 +1924,7 @@ function spawnValidatedLight(
         expect(view.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
-        expect(view.normalBias).toBeCloseTo(0.05, 5);
+        expect(view.normalBias).toBeCloseTo(0, 5);
         expect(view.shadowDistance).toBeCloseTo(200, 5);
         expect(view.shadowFilter).toBe(6);
       });

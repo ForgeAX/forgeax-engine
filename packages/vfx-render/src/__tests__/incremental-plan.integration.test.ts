@@ -13,6 +13,10 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import {
+  prepareFeatureFrame,
+  submitFeatureFrame,
+} from '../../../render/src/__tests__/feature-frame-driver';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
 import type { RenderFeatureWork } from '../../../render/src/features/types';
@@ -130,7 +134,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     current = options.camera ?? current;
     world.update(1 / 60).unwrap();
     resolved.length = 0;
-    const batch = host.runFrame([
+    const batch = prepareFeatureFrame(host, [
       {
         identity: 'main',
         render: true,
@@ -152,9 +156,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){(*p).age+=ctx.de
     ]);
     expect(batch.frame.errors).toEqual([]);
     for (const view of batch.views.values()) expect(view.errors).toEqual([]);
-    batch.frame.onSubmitted();
-    for (const view of batch.views.values()) view.onSubmitted();
-    batch.onSubmitted();
+    submitFeatureFrame(host);
     for (const lease of batch.preparedResourceBatches) lease.release().unwrap();
     return work;
   };

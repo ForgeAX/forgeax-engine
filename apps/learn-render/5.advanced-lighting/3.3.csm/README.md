@@ -27,3 +27,16 @@ Engine-owned `bindCsmMvdVisualExpectations()` 固定八项 ID：`off`、`pcf3`�
 缺少 Browser WebGPU、capture hook、paired readback、PNG 或 GPU timing 时，smoke 必须输出明确的 `not-run`/environment concern。不得把 CPU wall time、RhiNull command bookkeeping、日志或缺失截图当作 GPU timing、像素通过或用户可见质量结论。
 
 这份说明遵循 AI-user charter：输出保持稳定 ID、source/backend/generation 可机器读取，并把 unsupported、not-run 与 pass 分开，方便 AI 用户沿同一 receipt 继续诊断。
+
+## Caster header contract
+
+The Browser tape gate verifies each automatic CSM caster header as
+`[cascadeIndex, isSpot, clampNear, pad] = [i, 0, 1, 0]`. The third lane carries
+the near-plane pancaking policy; it is no longer padding. Cascade selection,
+light mode and the remaining padding lane stay strict. Pixel parity and
+receiver-quality thresholds remain independent of this binary contract check.
+
+Receiver source checks trace the physical array layer through the plane-aware
+comparison helper and all four raw depth texels. PCSS retains that layer and
+uses a bounded, one-sided receiver-plane reference toward the light. These
+checks complement the live/replay pixel gate; they do not replace it.

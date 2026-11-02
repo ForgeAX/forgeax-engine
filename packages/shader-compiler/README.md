@@ -49,7 +49,8 @@ Cooked Standard receipts also use the selected schema and reflected entry inputs
 the fixed-layout Engine Standard factory is not their ABI. An explicit
 `alphaClipping: false`, `alphaHash: false`, `displacement: false` combination on
 the known default Standard shadow Surface selects the existing opaque Surface.
-Its position-only shadow entry retains LOD and view/local clipping, while color
+Its opaque shadow entry reads position and vertex normal for bounded CSM bias,
+retains LOD and view/local clipping, while color
 retains its authored maps. Custom Surface and shadow overrides are preserved.
 The selected schema derives alpha-clipping availability for Standard and temporal
 programs; absent cutoffs become zero without a runtime early-return branch.
@@ -119,7 +120,7 @@ their imports and uses must follow the same conditional. The generated
 and `visibleItems`; uniform-fallback contexts publish only the direct program.
 A native `forgeax::default-shadow-caster` Pass paired with a custom scene
 program publishes the same address pair from the root parameter schema. Its
-default opaque coverage requires only position (plus skin attributes when
+default opaque coverage requires position and vertex normal (plus skin attributes when
 selected), while retaining native transforms, clipping and LOD coverage.
 
 Material publications use `material-cook/4`: one validated root contract and a
@@ -292,6 +293,12 @@ cookers share one lazy pool per loaded compiler module. A complete material is
 the parallel unit: source collection, Surface lowering, hashing, variant compilation
 and ray cooking run together off the host thread. Each material Worker uses the
 serial program compiler; Pack concurrency does not create nested shader pools.
+Jobs keep program affinity: a material whose contract (everything but uniform
+values, within one source directory and root set) a lane already cooked waits for
+that lane, so that Worker's bounded program reuse composes each unique program
+once per build instead of once per lane. Unheld contracts go to any idle lane;
+the routing key is the SHA-256 of that canonical (sorted-key) content, so a build
+schedules the same way every time, and routing never changes a draft.
 
 The existing material queue places uniform-only siblings on one warm lane while
 independent contracts use other idle lanes. Placement derives from roots, profile

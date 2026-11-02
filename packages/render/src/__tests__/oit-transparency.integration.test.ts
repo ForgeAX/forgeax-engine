@@ -20,7 +20,7 @@ import {
   DEFAULT_UNLIT_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
 import { type MaterialAsset, type MaterialRenderState, ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../components';
 import {
   ANTIALIAS_MSAA,
@@ -32,6 +32,9 @@ import {
 import { constructRendererHost } from '../construct-renderer';
 import { Materials } from '../materials';
 import { OIT_ACCUMULATE_PASS, OIT_COMPOSITE_PASS } from '../pipeline/standard-transparency';
+import { RENDER_TRANSPARENT_PLAN_SYSTEM } from '../world/pass-plan-systems';
+import * as renderWorldModule from '../world/render-world';
+import { RenderQueue } from '../world/render-world';
 import { testAssets } from './helpers/runtime-assets';
 import { standardPbrFixtureVariants } from './shader-manifest-fixture';
 
@@ -149,11 +152,18 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
     height: HEIGHT,
     getContext: () => null,
   } as unknown as HTMLCanvasElement;
+  const renderWorlds: World[] = [];
+  const createRenderWorld = renderWorldModule.createRenderWorld;
+  const spy = vi.spyOn(renderWorldModule, 'createRenderWorld').mockImplementation(() => {
+    const created = createRenderWorld();
+    renderWorlds.push(created);
+    return created;
+  });
   const created = await constructRendererHost(
     canvas,
     { rhi: { ...nullRhi, requestAdapter: async () => ok(adapter) } },
     { shaderManifestUrl: MANIFEST },
-  );
+  ).finally(() => spy.mockRestore());
   if (!created.ok) throw new Error(JSON.stringify(created.error));
   const { renderer } = created.value;
   const world = new World();
@@ -227,6 +237,15 @@ async function oitRenderer(capsMask: Partial<RhiCaps> = {}) {
     adapter,
     canvas,
     renderer,
+    /** The Render World whose views carry pass plans. */
+    renderWorld: () =>
+      renderWorlds.find((candidate) =>
+        candidate
+          .scheduleData()
+          .some((schedule) =>
+            schedule.systems.some((system) => system.name === RENDER_TRANSPARENT_PLAN_SYSTEM),
+          ),
+      ),
     request,
     errors,
     spawnDraws,
@@ -331,6 +350,24 @@ describe('weighted blended OIT on the real Renderer (rhi-null)', () => {
       ]);
       expect(accumulate?.depthStencil?.depthWriteEnabled).toBe(false);
       expect(host.errors).toEqual([]);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('compiles the OIT lane only from the render-transparent-plan RenderQueue system', async () => {
+    const host = await oitRenderer();
+    try {
+      host.spawnDraws(['eligible', 'eligible']);
+      await host.draw();
+      const renderWorld = host.renderWorld();
+      if (renderWorld === undefined) throw new Error('Missing planned Render World');
+      const inspection = await host.draw();
+      expect(inspection.transparency?.resolved).toBe('weighted-blended');
+      expect(renderWorld.removeSystem(RenderQueue, RENDER_TRANSPARENT_PLAN_SYSTEM).ok).toBe(true);
+      // Without its family system the view has no plan, so compile never runs
+      // on a re-derived composition: the frame fails naming the system.
+      await expect(host.draw()).rejects.toThrow(RENDER_TRANSPARENT_PLAN_SYSTEM);
     } finally {
       host.dispose();
     }

@@ -3,6 +3,13 @@ import { changes, type Node, put, remove } from './frame-tree';
 const PAGE_BITS = 1024;
 const PAGE_WORDS = PAGE_BITS / 32;
 
+const EMPTY_KEY_RESULT = Object.freeze({ value: undefined, done: true as const });
+const EMPTY_KEYS: IterableIterator<number> = Object.freeze({
+  next: () => EMPTY_KEY_RESULT,
+  return: () => EMPTY_KEY_RESULT,
+  [Symbol.iterator]: () => EMPTY_KEYS,
+});
+
 function popcount(word: number): number {
   word -= (word >>> 1) & 0x55555555;
   word = (word & 0x33333333) + ((word >>> 2) & 0x33333333);
@@ -75,6 +82,35 @@ export class FrameSet implements ReadonlySet<number> {
   }
   get size(): number {
     return this.#root?.count ?? 0;
+  }
+  /** The key at its ascending rank, without materializing a dense key array. */
+  at(index: number): number | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.size;
+    if (index < 0 || index >= this.size) return undefined;
+    let node = this.#root;
+    while (node !== undefined) {
+      const left = node.left?.count ?? 0;
+      if (index < left) node = node.left;
+      else if (index >= left + node.weight) {
+        index -= left + node.weight;
+        node = node.right;
+      } else {
+        index -= left;
+        for (let word = 0; word < PAGE_WORDS; word++) {
+          let bits = node.value[word] as number;
+          const count = popcount(bits);
+          if (index >= count) {
+            index -= count;
+            continue;
+          }
+          while (index-- > 0) bits &= bits - 1;
+          return node.key * PAGE_BITS + word * 32 + 31 - Math.clz32(bits & -bits);
+        }
+        return undefined;
+      }
+    }
+    return undefined;
   }
   has(key: number): boolean {
     if (!Number.isSafeInteger(key) || key < 0) return false;
@@ -156,27 +192,13 @@ export class FrameSet implements ReadonlySet<number> {
       }
     });
   }
+  /** Fixed ascending keys with one borrowed result per cursor; read it before advancing. */
+  borrowKeys(): IterableIterator<number> {
+    return this.#root === undefined ? EMPTY_KEYS : new FrameSetKeyCursor(this.#root);
+  }
   *values(): SetIterator<number> {
-    const pending: Node<Uint32Array>[] = [];
-    let node = this.#root;
-    while (node !== undefined || pending.length > 0) {
-      while (node !== undefined) {
-        pending.push(node);
-        node = node.left;
-      }
-      const current = pending.pop();
-      if (current === undefined) return;
-      const base = current.key * PAGE_BITS;
-      for (let word = 0; word < PAGE_WORDS; word++) {
-        let bits = current.value[word] as number;
-        while (bits !== 0) {
-          const low = bits & -bits;
-          yield base + word * 32 + (31 - Math.clz32(low));
-          bits ^= low;
-        }
-      }
-      node = current.right;
-    }
+    // Preserve ordinary Set iterator result lifetime at this public boundary.
+    for (const key of this.borrowKeys()) yield key;
   }
   keys(): SetIterator<number> {
     return this.values();
@@ -191,6 +213,94 @@ export class FrameSet implements ReadonlySet<number> {
     callback: (value: number, key: number, set: ReadonlySet<number>) => void,
     thisArg?: unknown,
   ): void {
-    for (const key of this) callback.call(thisArg, key, key, this);
+    for (const key of this.borrowKeys()) callback.call(thisArg, key, key, this);
+  }
+}
+
+/** One bitmap walk; row consumers need no generator result for each key. */
+class FrameSetKeyCursor implements IterableIterator<number> {
+  #root: Node<Uint32Array> | undefined;
+  readonly #pending: Node<Uint32Array>[] = [];
+  #page: Uint32Array | undefined;
+  #word = PAGE_WORDS;
+  #bits = 0;
+  #base = 0;
+  readonly #result: { value: number | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(root: Node<Uint32Array> | undefined) {
+    this.#root = root;
+  }
+  next(): IteratorResult<number> {
+    if (this.#result.done) return this.#result as IteratorResult<number>;
+    while (this.#bits === 0) {
+      if (this.#word === PAGE_WORDS) {
+        const page = this.nextPage();
+        if (page === undefined) return this.return();
+        this.#page = page.value;
+        this.#base = page.key * PAGE_BITS;
+        this.#word = 0;
+      }
+      const page = this.#page;
+      if (page === undefined) throw new Error('A live key cursor must hold its bitmap page');
+      this.#bits = page[this.#word++] as number;
+    }
+    const low = this.#bits & -this.#bits;
+    this.#bits ^= low;
+    this.#result.value = this.#base + (this.#word - 1) * 32 + 31 - Math.clz32(low);
+    return this.#result as IteratorResult<number>;
+  }
+  private nextPage(): Node<Uint32Array> | undefined {
+    let node = this.#root;
+    while (node !== undefined) {
+      this.#pending.push(node);
+      node = node.left;
+    }
+    const page = this.#pending.pop();
+    this.#root = page?.right;
+    return page;
+  }
+  return(): IteratorResult<number> {
+    this.#root = undefined;
+    this.#pending.length = 0;
+    this.#page = undefined;
+    this.#bits = 0;
+    this.#result.value = undefined;
+    this.#result.done = true;
+    return this.#result as IteratorResult<number>;
+  }
+  [Symbol.iterator](): IterableIterator<number> {
+    return this;
+  }
+}
+
+/** Fixed intersection derived from two membership roots; only their changed keys are reconsidered. */
+export class FrameIntersection {
+  private before:
+    | { readonly left: FrameSet; readonly right: FrameSet; readonly value: FrameSet }
+    | undefined;
+
+  sync(left: FrameSet, right: FrameSet): FrameSet {
+    const before = this.before;
+    if (before?.left === left && before.right === right) return before.value;
+    let value: FrameSet;
+    if (before === undefined) {
+      const smaller = left.size <= right.size ? left : right;
+      const other = smaller === left ? right : left;
+      value = FrameSet.from(
+        (function* () {
+          for (const key of smaller.borrowKeys()) if (other.has(key)) yield key;
+        })(),
+      );
+    } else {
+      const edits = new Map<number, boolean>();
+      const changed = (key: number) => edits.set(key, left.has(key) && right.has(key));
+      left.changesSince(before.left, changed);
+      right.changesSince(before.right, changed);
+      value = before.value.edit(edits);
+    }
+    this.before = { left, right, value };
+    return value;
   }
 }

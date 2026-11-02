@@ -1,12 +1,82 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 
 const git = (cwd, ...args) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+
+test('Candidate absorbs standalone workspace sources before every recursive checkout', () => {
+  const workflow = readFileSync(resolve('.github/workflows/sdk-release-candidate.yml'), 'utf8');
+  const commands = [
+    ...workflow.matchAll(
+      / {8}run: \|\n((?: {10}.*\n|\n)+) {6}- uses: actions\/checkout@v5\n {8}with:\n {10}ref: \$\{\{ needs.resolve-source.outputs.source_sha \}\}\n(?: {10}.*\n)*? {10}submodules: recursive/g,
+    ),
+  ].map((match) =>
+    match[1]
+      .split('\n')
+      .map((line) => line.slice(10))
+      .join('\n'),
+  );
+  assert.equal(commands.length, 4);
+  for (const command of commands) {
+    const temporary = mkdtempSync(join(tmpdir(), 'forgeax-sdk-standalone-'));
+    try {
+      const root = join(temporary, 'engine');
+      const env = {
+        ...process.env,
+        GITHUB_WORKSPACE: root,
+        RUNNER_TEMP: temporary,
+        GIT_CONFIG_GLOBAL: join(temporary, 'global.gitconfig'),
+      };
+      git(temporary, 'init', '--initial-branch=main', root);
+      git(root, 'config', 'user.name', 'SDK fixture');
+      git(root, 'config', 'user.email', 'fixture@example.invalid');
+      const pins = new Map();
+      for (const path of ['tools/view', 'packages/modeling']) {
+        const source = join(root, path);
+        mkdirSync(source, { recursive: true });
+        git(root, 'init', '--initial-branch=main', source);
+        git(source, 'config', 'user.name', 'SDK fixture');
+        git(source, 'config', 'user.email', 'fixture@example.invalid');
+        writeFileSync(join(source, 'source.txt'), path);
+        git(source, 'add', 'source.txt');
+        git(source, 'commit', '-m', 'source');
+        pins.set(path, git(source, 'rev-parse', 'HEAD'));
+        git(root, 'config', '-f', '.gitmodules', `submodule.${path}.path`, path);
+        git(root, 'config', '-f', '.gitmodules', `submodule.${path}.url`, source);
+        git(root, 'update-index', '--add', '--cacheinfo', `160000,${pins.get(path)},${path}`);
+        const stale = join(root, '.git/modules', path);
+        mkdirSync(stale, { recursive: true });
+        writeFileSync(join(stale, 'stale.txt'), 'previous absorbed checkout');
+      }
+      git(root, 'add', '.gitmodules');
+      git(root, 'commit', '-m', 'workspace sources');
+      execFileSync('bash', ['-e', '-c', command], { cwd: root, env, stdio: 'pipe' });
+      for (const [path, pin] of pins) {
+        assert.ok(
+          statSync(join(root, path, '.git')).isFile(),
+          `${path}: standalone Git directory remains`,
+        );
+        assert.equal(git(join(root, path), 'rev-parse', 'HEAD'), pin);
+        assert.ok(!existsSync(join(root, '.git/modules', path, 'stale.txt')));
+      }
+      assert.equal(git(root, 'status', '--porcelain'), '');
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  }
+});
 const producers = [
   ['sdk-pr-preflight.yml', 'build-sdk'],
   ['sdk-release-candidate.yml', 'build-sdk'],

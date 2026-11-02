@@ -29,3 +29,60 @@ test('additions and removals keep earlier frames and report exactly the flipped 
   expect([...emptied]).toEqual([]);
   expect(() => new FrameSet().with(-1)).toThrow(RangeError);
 });
+
+test('ranked keys preserve ascending values through dense and sparse word boundaries', () => {
+  const keys = [...KEYS, ...Array.from({ length: 96 }, (_, index) => index + 2048)].sort(
+    (a, b) => a - b,
+  );
+  const before = FrameSet.from(keys);
+  expect(keys.map((_, index) => before.at(index))).toEqual(keys);
+  expect(before.at(-1)).toBe(keys.at(-1));
+  expect(before.at(-keys.length)).toBe(keys[0]);
+  expect(before.at(keys.length)).toBeUndefined();
+  expect(before.at(Infinity)).toBeUndefined();
+  const after = before.without(31).with(4095);
+  expect([...after].map((_, index) => after.at(index))).toEqual([...after]);
+  expect(before.at(2)).toBe(31);
+});
+
+test('borrowed key walks keep fixed membership, independent cursors and ordinary result lifetime', () => {
+  const set = FrameSet.from(KEYS);
+  const values = [...set];
+  const publicWalk = set.values();
+  const publicFirst = publicWalk.next();
+  publicWalk.next();
+  expect(publicFirst.value).toBe(values[0]);
+  const first = set.borrowKeys();
+  const second = set.borrowKeys();
+  expect(first.next().value).toBe(values[0]);
+  expect(second.next().value).toBe(values[0]);
+  expect(first.next().value).toBe(values[1]);
+  expect(second.next().value).toBe(values[1]);
+  first.return?.();
+  expect(first.next().done).toBe(true);
+  expect(second.next().value).toBe(values[2]);
+  second.return?.();
+  expect([...set.borrowKeys()]).toEqual(values);
+  const held = set.borrowKeys();
+  const changed = set.without(values[0] as number).with(16384);
+  expect([...held]).toEqual(values);
+  expect([...changed.borrowKeys()]).toEqual([...changed]);
+  const empty = new FrameSet().borrowKeys();
+  expect(empty.next().done).toBe(true);
+  expect(empty.next().done).toBe(true);
+});
+
+test('empty borrowed walks share immutable termination while public results remain independent', () => {
+  const first = new FrameSet().borrowKeys();
+  const second = FrameSet.from([]).borrowKeys();
+  expect(first).toBe(second);
+  const terminal = first.next();
+  expect(terminal).toEqual({ value: undefined, done: true });
+  expect(Object.isFrozen(terminal)).toBe(true);
+  expect(second.return?.()).toBe(terminal);
+  expect(first.next()).toBe(terminal);
+  const ordinary = new FrameSet().values();
+  const old = ordinary.next();
+  expect(ordinary.next()).not.toBe(old);
+  expect(old).toEqual({ value: undefined, done: true });
+});

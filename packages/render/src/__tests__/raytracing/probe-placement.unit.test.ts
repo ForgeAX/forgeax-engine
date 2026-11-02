@@ -1,9 +1,10 @@
 import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { createShaderModule, RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
-import { err } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
 import { createRasterProbePlacement } from '../../raytracing/probe-placement';
 import { VIEW_UNIFORM_BYTES } from '../../record/view-ubo';
+import { createRenderWorld } from '../../world/render-world';
 
 async function structuralDevice() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -277,7 +278,7 @@ it('owns persistent roles, stages fresh resets and retains submitted allocations
   assert(enabled);
   expect(enabled.accepted).not.toBe(replacement.candidate);
   const { recordFrameTransaction, submitFrameRecordings } = await import(
-    '../../assembly/frame-recording'
+    '../frame-recording-driver'
   );
   let completeSubmitted!: () => void;
   const submittedDone = new Promise<void>((resolve) => {
@@ -289,7 +290,7 @@ it('owns persistent roles, stages fresh resets and retains submitted allocations
   });
   const submittedFrame = enabled;
   const encoder = device.createCommandEncoder({}).unwrap();
-  function* recording(): import('../../assembly/frame-recording').FrameRecording {
+  function* recording(): import('../frame-recording-driver').FrameRecording {
     const result = yield* recordFrameTransaction(
       {
         build: () => ({ ok: true, value: undefined }),
@@ -303,8 +304,6 @@ it('owns persistent roles, stages fresh resets and retains submitted allocations
         abort: () => submittedFrame.abort(),
       },
       {
-        encoder,
-        device,
         reportError: () => undefined,
         onSubmittedWork: (done) => {
           submittedFrame.track(done);
@@ -314,7 +313,9 @@ it('owns persistent roles, stages fresh resets and retains submitted allocations
     );
     return result.ok;
   }
-  expect(submitFrameRecordings([recording()])).toBe(true);
+  // RenderRecord opens the submission encoder the probe pass encodes into.
+  vi.spyOn(device, 'createCommandEncoder').mockReturnValue(ok(encoder) as never);
+  expect(submitFrameRecordings({ world: createRenderWorld(), device }, [recording()])).toBe(true);
   expect(destroyed.mock.calls.some(([buffer]) => buffer === enabled.candidate)).toBe(false);
   completeSubmitted();
   await submittedDone;

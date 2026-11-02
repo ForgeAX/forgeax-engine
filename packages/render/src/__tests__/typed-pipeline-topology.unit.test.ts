@@ -30,6 +30,7 @@ import type {
 import { resolveOutputDither } from '../render-pipeline';
 import { admitSsrSpatial } from '../ssr/admission';
 import { standardTemporalPostOrder } from '../temporal/standard-scene-data';
+import { type OpaquePassPlan, planOpaque } from '../world/pass-plan-systems';
 
 let device: RhiDevice;
 
@@ -50,7 +51,7 @@ function topology(
   overrides: TopologyOverrides = {},
 ): RenderPipelineTopology {
   const { camera: cameraOverride, ...rest } = overrides;
-  return {
+  const planned: Omit<RenderPipelineTopology, 'opaque'> & { opaque?: OpaquePassPlan } = {
     pipelineId,
     config: undefined,
     surface: {
@@ -83,6 +84,17 @@ function topology(
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
     ...rest,
+  };
+  // Fixtures plan the opaque lane exactly as the view's RenderQueue does.
+  return {
+    ...planned,
+    opaque:
+      rest.opaque ??
+      planOpaque({
+        renderPath: (planned.standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
+        gpuOcclusion: planned.config?.gpuOcclusion,
+        clearOnly: planned.clearOnly === true,
+      }),
   };
 }
 
@@ -655,6 +667,61 @@ describe('typed built-in pipeline topology', () => {
         { resource: 'hdrp-scene-color', usage: 'color-attachment' },
       ]),
     );
+  });
+
+  it('runs depth-normal AO ahead of opaque fog and translucency on the forward lane', () => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+      }),
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const info = compiled.value.inspect();
+    const names = info.passes.map((pass) => pass.name);
+    const ordered = [
+      'forward',
+      'forward-ao-normal',
+      'ssao-calc',
+      'ssao-blur',
+      'forward-ao-composite',
+      'output-transform',
+    ];
+    for (let index = 1; index < ordered.length; index += 1) {
+      expect(names.indexOf(ordered[index] ?? '')).toBeGreaterThan(
+        names.indexOf(ordered[index - 1] ?? ''),
+      );
+    }
+    expect(names).not.toContain('g-buffer');
+    expect(names).not.toContain('lighting');
+    const calc = info.passes.find((pass) => pass.name === 'ssao-calc');
+    expect(calc?.accesses).toContainEqual({ resource: 'forward-ao-normal', usage: 'sampled-read' });
+    const composite = info.passes.find((pass) => pass.name === 'forward-ao-composite');
+    expect(composite?.accesses).toContainEqual({ resource: 'ssao-blurred', usage: 'sampled-read' });
+  });
+
+  it('keeps the forward lane AO-free without SSAO and rejects multisampled forward AO', () => {
+    const plain = compile(standardPipeline, topology('forgeax::standard'));
+    expect(plain.ok).toBe(true);
+    if (!plain.ok) return;
+    const names = plain.value.inspect().passes.map((pass) => pass.name);
+    for (const name of ['forward-ao-normal', 'ssao-calc', 'ssao-blur', 'forward-ao-composite'])
+      expect(names).not.toContain(name);
+
+    const msaa = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        camera: { antialias: 'msaa' },
+      }),
+    );
+    expect(msaa.ok).toBe(false);
+    if (msaa.ok) return;
+    expect(msaa.error).toMatchObject({
+      code: 'resource-resolution-failed',
+      expected: 'Forward ambient occlusion receives single-sample scene depth',
+    });
   });
 
   it('omits SSAO and compute membership on the bounded fallback lane', () => {

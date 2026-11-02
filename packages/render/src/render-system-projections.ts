@@ -4,11 +4,20 @@ import { mat4, vec3 } from '@forgeax/engine-math';
 import type { LodOcclusionInspectionRow, LodOcclusionWorldInspection } from './inspection-types';
 import type { RenderResourceScope } from './publication/resource-scope';
 import { lodLevelHistogram } from './record/cpu-lod';
-import { worldEntityKey } from './record/frame-snapshot';
 import { computeViewProjectionMatrix } from './record/helpers';
 import type { CameraSnapshot, DrawOwnerOptions } from './render-contract';
 import type { RenderableSnapshot } from './render-system-extract';
 import type { FrameList } from './scene/frame-list';
+
+/** Canonical source order shared by borrowed composition and persistent view routing. */
+export function canonicalWorldCompositionOrder(worlds: readonly World[]): readonly number[] {
+  return Object.freeze(
+    worlds
+      .map((world, index) => ({ world, index }))
+      .sort((left, right) => left.world.identity.localeCompare(right.world.identity))
+      .map((entry) => entry.index),
+  );
+}
 
 export function canonicalizeWorldComposition(
   worlds: readonly World[],
@@ -19,25 +28,31 @@ export function canonicalizeWorldComposition(
   readonly owners: Pick<DrawOwnerOptions, 'cameraOwner' | 'resourceOwner' | 'cameraEntityKey'>;
   readonly leases: readonly RenderReadLease[] | undefined;
 } {
-  const order = worlds
-    .map((world, index) => ({ world, index }))
-    .sort((left, right) => left.world.identity.localeCompare(right.world.identity));
-  const indexByOriginal = new Map(order.map((entry, index) => [entry.index, index]));
+  const order = canonicalWorldCompositionOrder(worlds);
   return {
-    worlds: Object.freeze(order.map((entry) => entry.world)),
+    worlds: Object.freeze(order.map((index) => worlds[index] as World)),
     owners: {
-      cameraOwner: indexByOriginal.get(owners.cameraOwner) ?? owners.cameraOwner,
-      resourceOwner: indexByOriginal.get(owners.resourceOwner) ?? owners.resourceOwner,
+      cameraOwner:
+        order.indexOf(owners.cameraOwner) < 0
+          ? owners.cameraOwner
+          : order.indexOf(owners.cameraOwner),
+      resourceOwner:
+        order.indexOf(owners.resourceOwner) < 0
+          ? owners.resourceOwner
+          : order.indexOf(owners.resourceOwner),
       ...(owners.cameraEntityKey === undefined ? {} : { cameraEntityKey: owners.cameraEntityKey }),
     },
     leases:
       leases === undefined
         ? undefined
-        : Object.freeze(
-            order.map((entry) => leases[entry.index]).filter((lease) => lease !== undefined),
-          ),
+        : Object.freeze(order.map((index) => leases[index]).filter((lease) => lease !== undefined)),
   };
 }
+
+export type LodSampleSlotLookup = (
+  worldId: number,
+  entityKey: number,
+) => { readonly slot: number; readonly generation: number } | undefined;
 
 export function createLodWorldInspections(
   worlds: readonly RenderResourceScope[],
@@ -45,8 +60,7 @@ export function createLodWorldInspections(
   submittedRenderables: FrameList<RenderableSnapshot>,
   camera: CameraSnapshot,
   frameId: number,
-  worldKeys: readonly number[],
-  slots: ReadonlyMap<number, { readonly slot: number; readonly generation: number }>,
+  slotOf: LodSampleSlotLookup,
   levelOf: (renderable: RenderableSnapshot) => number = () => 0,
 ): readonly LodOcclusionWorldInspection[] {
   // The CPU projection knows which renderables belong to each World, but it
@@ -104,10 +118,7 @@ export function createLodWorldInspections(
     const visible = usesLod ? accumulator.lodVisible : accumulator.allVisible;
     const samples = usesLod ? accumulator.lodSamples : accumulator.allSamples;
     const first = samples[0];
-    const slot =
-      first === undefined
-        ? undefined
-        : slots.get(worldEntityKey(worldKeys[first.worldId] ?? first.worldId, first.entityKey));
+    const slot = first === undefined ? undefined : slotOf(first.worldId, first.entityKey);
     const row: LodOcclusionInspectionRow = {
       root: {
         guid: first === undefined ? 'none' : `asset-handle:${first.assetHandle}`,
@@ -126,10 +137,7 @@ export function createLodWorldInspections(
         ? lodLevelHistogram(accumulator.lodLevels)
         : [{ level: 0, count: candidateCount }],
       samples: samples.map((candidate, index) => ({
-        primitiveSlot:
-          slots.get(
-            worldEntityKey(worldKeys[candidate.worldId] ?? candidate.worldId, candidate.entityKey),
-          )?.slot ?? index,
+        primitiveSlot: slotOf(candidate.worldId, candidate.entityKey)?.slot ?? index,
         level: levelOf(candidate),
         visible: submitted.has(candidate),
       })),

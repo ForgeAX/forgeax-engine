@@ -219,7 +219,7 @@ export function addAtmosphereLuts(
                 (frame as _InternalRenderPipelineContext).capturedAtmosphere === undefined &&
                 (visibilityDirty(frame) || submittedViewKey !== viewKey(frame)),
             }),
-      encode: ({ frame, pass, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         if (state === undefined) {
           const source = frame.atmosphereShaders?.luts;
           const factory = frame.runtime.shaderModuleFactory;

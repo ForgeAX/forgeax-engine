@@ -20,7 +20,7 @@ import type {
 } from '../../record/gpu-pass-timing/index.js';
 import type { PipelineState, RenderSystemInternals } from '../../record/render-context';
 import type { RecoveryPostProcessResources, RecoveryRootBundle } from '../../recovery/types';
-import type { RenderSystem } from '../../render-system';
+import type { RendererState } from '../../render-system';
 import {
   prepareMaterialShaders,
   type ShaderDeviceAdapterInternal,
@@ -155,7 +155,7 @@ interface RendererRecoveryDependencies {
     device?: RhiDevice,
     residencyStore?: GpuResidencyCache,
   ) => Promise<PipelineState>;
-  readonly renderSystem: RenderSystem;
+  readonly renderSystem: RendererState;
   readonly createRecoveryFailureLocation: (
     phase: RecoveryPhase,
     cause: unknown,

@@ -451,7 +451,7 @@ export function rebindPublicationMaterialSchemas(
   const rebind = publicationMaterialSchemaRebinder(registry);
   for (const resource of input.materialUpdates) {
     const rebound = rebind(resource.snapshot);
-    if (rebound !== resource.snapshot) resource.adopt(rebound);
+    if (rebound !== resource.snapshot) resource.adoptProgramSnapshot(rebound);
   }
   return input;
 }

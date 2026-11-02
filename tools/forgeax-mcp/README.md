@@ -33,6 +33,10 @@ scheme, host and relative-reference identity during normalization.
 Express also accepts qs 6.16.1, which fixes comma-array serialization throwing
 on elements with a non-callable own `toString`
 ([GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw)).
+The legacy SDK accepts the patched `@hono/node-server` 2.x line. Both package
+manager policies pin 2.1.3, which removes a second static-path decoding step that
+could bypass middleware mounted on a static prefix
+([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)).
 Regenerate both workspace lockfiles when changing these policies. Keep normal
 compressed request handling enabled.
 

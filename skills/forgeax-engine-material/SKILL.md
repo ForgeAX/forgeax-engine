@@ -39,6 +39,15 @@ and can erase an overhead occluder. Start from the component defaults, then
 verify both the occluded surface and a directly lit control for self-shadow acne.
 See [directional shadow units](../../packages/render/README.md#directional-shadow-quality-author--inspect--recover).
 
+Generated Standard/Unlit casters preserve authored culling (`back` by default),
+so their maps retain the light-facing entry depth. Exit-face-only maps can
+misclassify receiver/filter samples inside a touching solid as lit. Keep
+double-sided materials and explicit custom ShadowCaster state as authored;
+point-face projection winding has a separate correction. Run the shared
+`cube-plane-shadow-contact` Browser/Dawn regression for a contact-gap change: it
+checks the central contact band and exposed ground/top controls in both render
+paths, rather than accepting a single dark pixel or zero bias.
+
 ## Color-lighting parity handoff
 
 For a direct-light material issue, use the [color-lighting parity entry](../../apps/parity/color-lighting/README.md), then follow its status recovery map. The `SceneCase` and `CaseReport` schemas are the report contract; repair the named material or producer owner and rerun the same case. Do not turn a missing producer capture into a material pass.
@@ -168,6 +177,9 @@ an API description is not a measured quality, performance or complete-CI receipt
 |:--|:--|
 | Texture without usable UVs (rocks, terrain, kitbash) | `Materials.standard({ ..., triplanar: { space: 'world' \| 'object', scale, sharpness } })` |
 | Baked object-space normal map | `Materials.standard({ normalTexture, normalMapSpace: 'object' })` |
+| Height relief on a flat polygon (trim bakes, grout, panel lines) | `Materials.standard({ normalTexture, displacementTexture, displacementScale, displacementBias, displacementMode: 'parallax' })`; geometry, shadows and bounds stay at the base mesh. Parallax constraints: needs `normalTexture` (`bumpTexture` ignored); no independent `metallicTexture` (use `metallicRoughnessTexture`); with transmission below the dedicated budget it falls back to normal mapping, reported in the material sampled-texture budget |
+| Mirror/polished floor reflecting the scene | Pack-cooked `Materials.standard({ ..., planarReflection: true })` plus Camera `PlanarReflection` on the same plane (render README §Planar reflection capture) |
+| Wet ground / rain puddles (ripple-distorted reflection) | Custom Standard Surface with `planarReflection: true`: ripple `normalWS` from `frameTime`, per-pixel `roughness` for wetness; set `PlanarReflection.distortion` on the camera |
 | Diffuse only, no highlight | `Materials.lambert({ baseColor, ... })` |
 | Lit look without lights (sculpt, preview) | `Materials.matcap({ texture, sampler })` |
 | Debug the shading normal | `Materials.normal()` |
@@ -175,7 +187,10 @@ an API description is not a measured quality, performance or complete-CI receipt
 `space: 'object'` keeps the texture on a moving mesh; `'world'` keeps it in the
 world. Triplanar refuses alpha masking and the slots it cannot project, and
 object-space normals refuse `bumpTexture`, with `material-authoring-contract-invalid`
-(`detail.parameter` names the option). Neither reaches the ray reference
+(`detail.parameter` names the option). Object-space normals also need a blue
+channel: an RG-only normal texture (`rg8unorm`, `bc5-rg-unorm`, `eac-rg11unorm`,
+Basis RG) fails readiness with `asset-invalid-value`
+(`detail.reason: 'normal-texture-lacks-blue'`); keep RG normals in tangent space. Neither reaches the ray reference
 (`ray-material-unsupported`). Matcap and Normal are unlit: no lights, no
 shadow receipt. Evidence and falsifiers live in `apps/hello/material-projection`
 (render README §Projection and the non-PBR material family).
@@ -237,6 +252,21 @@ capture. Probe sampling uses the
 renderer-owned selected probe, roughness mip, local box projection, and
 Skylight irradiance fallback. Read pixels only after the matching
 `FrameReceipt.completed` promise resolves.
+
+A Three `VideoTexture` on a mesh maps to a `VideoAsset` bound as the material
+texture (`baseColorTexture`, emissive or a `texture_external` root param) on a
+renderable that also carries `VideoPlayer` (`playing`, `loop`). Import the clip
+with `forgeax asset add assets/clip.mp4` (`.mp4`/`.m4v`/`.webm`/`.ogv`; the
+container is streamed, never inlined) or create `{ kind: 'video', url }` at
+runtime. In a DOM realm call `installDomVideoSourceProvider(world)` from
+`@forgeax/engine/graphics-extras`; it creates the muted inline `<video>` and
+follows `VideoPlayer`. In the default Engine Worker App already installed
+`installWorkerVideoSourceProvider`: the page owns the `<video>` (the Three
+`VideoTexture` element) and transfers each new frame as a `VideoFrame`, one in
+flight per consumer. Do not call the DOM installer there (it returns
+`video-dom-unavailable`); read `provider.status(entity, clip)` for
+`video-autoplay-blocked` / `video-load-failed` and call `provider.resume()` from
+a gesture.
 
 A caller `GPUTexture` or a video uses `renderer.importTexture({ kind:
 'gpu-texture' | 'video', ... })`. Bind `{ source: importedHandle.source }`

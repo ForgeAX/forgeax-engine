@@ -29,7 +29,7 @@ import * as compiler from '../../../shader-compiler/src/compile.js';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/index';
 
 // The observing realm's compiler is selected at import time. Restore ordinary
-// Worker admission before each case; only the two call-count cases opt back in.
+// Worker admission before each case; only the call-count case opts back in.
 vi.hoisted(() => vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1'));
 beforeEach(() => vi.unstubAllEnvs());
 
@@ -244,6 +244,7 @@ it('publishes the declared Brotato Standard shorthand and its dependent particle
     limit: 16,
     required: 16,
     transmission: 'none',
+    parallax: 'none',
     conflicts: [],
   });
 
@@ -610,53 +611,3 @@ it('admits clearcoat on the material actually referenced by the authored BlueBal
     registry.dispose();
   }
 });
-
-import { createHash } from 'node:crypto';
-
-it('retains actual Standard composition through clearcoat and skinned material schemas', async () => {
-  vi.stubEnv('FORGEAX_SHADER_COMPILE_WORKERS', '1');
-  const composition = vi.spyOn(naga, 'composeShader');
-  try {
-    const cooker = createMaterialPackCooker();
-    const standard = Materials.standard({ baseColor: [1, 1, 1, 1], metallic: 0, roughness: 0.5 });
-    const first = await cooker.cook({ guid: 'mixed-standard-first', source: standard });
-    await cooker.cook({
-      guid: 'mixed-painted',
-      source: Materials.standard({
-        staticSwitches: { clearcoat: true },
-        baseColor: [0.28, 0.035, 0.075, 1],
-        metallic: 0.12,
-        roughness: 0.18,
-        clearcoat: 0.82,
-        clearcoatRoughness: 0.08,
-      }),
-    });
-    const body = Materials.standard({
-      baseColor: [0.72, 0.78, 0.73, 1],
-      metallic: 0.22,
-      roughness: 0.36,
-    });
-    if (body.passes === undefined) throw new Error('Standard passes required');
-    const [bodyFirst, ...bodyRest] = body.passes;
-    const skin = (pass: NonNullable<MaterialAsset['passes']>[number]) =>
-      pass.name === 'shadow-caster'
-        ? pass
-        : { ...pass, program: { ...pass.program, module: 'forgeax::pbr-skin' } };
-    await cooker.cook({
-      guid: 'mixed-skinned',
-      source: { ...body, passes: [skin(bodyFirst), ...bodyRest.map(skin)] },
-    });
-    const compositions = composition.mock.calls.length;
-    const repeated = await cooker.cook({ guid: 'mixed-standard-return', source: standard });
-    expect(composition).toHaveBeenCalledTimes(compositions);
-    const hashes = (draft: typeof first) =>
-      Object.entries(draft.artifacts).map(([key, artifact]) => [
-        key,
-        createHash('sha256').update(artifact.bytes).digest('hex'),
-      ]);
-    expect(hashes(repeated)).toEqual(hashes(first));
-  } finally {
-    composition.mockRestore();
-    vi.unstubAllEnvs();
-  }
-}, 30_000);

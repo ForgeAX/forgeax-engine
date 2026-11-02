@@ -15,6 +15,7 @@ import {
   ownRenderFeatureProgramData,
 } from '../features/prepared-gpu-work';
 import { RenderFeatureComputeGraphProjection } from '../features/render-graph-compute';
+import { submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 const program = ownRenderFeatureProgramData({
@@ -161,7 +162,7 @@ it('uses each actual binding and current count through one retained compute grap
         .unwrap()
         .execute({ encoder, featureExecutions: [execution] })
         .unwrap();
-      frame.onSubmitted();
+      submitFeatureFrame(host);
     }
     expect(recorded.map((row) => row.count)).toEqual([1, 2, 3, 2]);
     expect(recorded[0]?.binding).not.toBe(recorded[1]?.binding);

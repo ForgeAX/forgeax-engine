@@ -686,3 +686,14 @@ Externally timed or paused players still evaluate targets and timeline/root-moti
 contracts. Playback only writes `AnimationPlayer.times` when normalization or
 advancement changes an element (including signed zero); an unchanged time array
 does not allocate managed World storage or publish a component change.
+
+### Synchronous numeric workspace
+
+Graph effective weights, node clocks and derived slots, direct playback clocks,
+and morph accumulation use `world.frameArena`. All read lanes are initialized;
+`world.set` copies final clocks/weights into managed component storage before
+the scope closes. Morph normalization reuses its completed accumulator.
+Scheduled evaluation joins the running World scope. Direct evaluation opens a
+synchronous scope and preserves ordinary animation validation errors without
+poisoning an otherwise healthy World. Arena budgets still apply; retained
+timeline/event records and semantic target maps keep their existing owners.

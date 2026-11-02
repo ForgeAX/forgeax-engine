@@ -70,7 +70,10 @@ describe('static Standard feature compilation', { timeout: 30_000 }, () => {
       for (const selection of program.selections) {
         addresses.add(selection.address ?? '');
         capabilities.add(selection.context.capability);
-        expect(selection.abi?.vertexInputs.map((input) => input.semantic)).toEqual(['position']);
+        expect(selection.abi?.vertexInputs.map((input) => input.semantic)).toEqual([
+          'position',
+          'normal',
+        ]);
         expect(selection.abi?.alphaMask).toEqual({ cutoff: '', source: '' });
         expect(selection.abi?.materialRow.fields).not.toContain('alphaCutoff');
       }

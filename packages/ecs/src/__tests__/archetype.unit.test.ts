@@ -410,7 +410,7 @@ function appendEntity(table: Table, entity: number): number {
         pool.release(large.id).unwrap();
         expect(pool.byteCapacity(large.id)).toBe(0);
         expect(pool.view(large.id)).toHaveLength(0);
-        expect(pool.alloc(bytes).unwrap().id).not.toBe(large.id);
+        expect(pool.alloc(bytes).unwrap().id).toBe(large.id);
         expect(SIZE_CLASSES.at(-1)).toBe(262_144);
       });
 

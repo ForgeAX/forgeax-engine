@@ -3,6 +3,7 @@ import type { RendererGenerationFence } from '../assembly/renderer-frame-transac
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import type { StandardScreenProbeGi } from '../pipeline/standard-profile';
 import type { RenderSystemInternals } from '../record/render-context';
+import { recordContext } from '../world/view-record-context';
 import { findPublishedKernel } from './published-kernel';
 import type {
   IrradianceFieldInspection,
@@ -179,7 +180,7 @@ export class RendererScreenProbe {
     this.#input = input;
     const { profile, field } = input;
     const key = JSON.stringify([
-      input.runtime.deviceScope.generation,
+      recordContext(input.runtime).deviceScope.generation,
       profile.probes,
       profile.maxDistance,
       profile.environment,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   restrictShadowCasterClasses,
   SHADOW_CASTER_PROMOTE_WINDOW,
@@ -7,15 +7,20 @@ import {
   ShadowCasterClassifier,
   ShadowSlotSelection,
 } from '../gpu-driven/shadow-caster-classes';
+import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import { FrameSet } from '../scene/frame-set';
+import { RowChangeLog } from '../scene/row-change-log';
 
 function fakeScene() {
   const state = { revision: 0, changed: [] as readonly number[] | undefined };
+  const journal = new RowChangeLog();
+  let cursor: SceneContentCursor = { journal, position: 0 };
   return {
     state,
     scene: {
-      get contentRevision() {
-        return state.revision;
+      get contentCursor() {
+        if (cursor.position !== state.revision) cursor = { journal, position: state.revision };
+        return cursor;
       },
       changedSlotsSince: () => state.changed,
     },
@@ -444,4 +449,46 @@ it('derives the caster set as the static/dynamic union without a third tree', ()
   const restricted = new ShadowSlotSelection([statics, dynamics], of(1, 2, 3));
   expect([...restricted]).toEqual([1, 2]);
   expect(restricted.size).toBe(2);
+});
+
+it('enumerates the smaller fixed shadow domain and retains its exact count', () => {
+  const staticSlots = FrameSet.from(Array.from({ length: 4096 }, (_, index) => index * 2));
+  const dynamicSlots = FrameSet.from(Array.from({ length: 4096 }, (_, index) => index * 2 + 1));
+  const allowed = FrameSet.from([0, 17, 202, 7777, 9000]);
+  const selected = new ShadowSlotSelection([staticSlots, dynamicSlots], allowed);
+  const has = vi.spyOn(FrameSet.prototype, 'has');
+  try {
+    expect([...selected]).toEqual([0, 17, 202, 7777]);
+    expect(has.mock.calls.length).toBeLessThanOrEqual(allowed.size * 2);
+    has.mockClear();
+    expect(selected.size).toBe(4);
+    expect(has.mock.calls.length).toBeLessThanOrEqual(allowed.size * 2);
+    has.mockClear();
+    expect(selected.size).toBe(4);
+    expect(has).not.toHaveBeenCalled();
+    const nested = new ShadowSlotSelection([FrameSet.from([0, 17]), FrameSet.from([202, 9000])]);
+    const nestedSelection = new ShadowSlotSelection([staticSlots, dynamicSlots], nested);
+    has.mockClear();
+    expect([...nestedSelection]).toEqual([0, 17, 202]);
+    expect(has.mock.calls.length).toBeLessThanOrEqual(8);
+  } finally {
+    has.mockRestore();
+  }
+});
+
+it('preserves member multiplicity and held iterators through nested restrictions', () => {
+  const left = FrameSet.from([1, 3, 5]);
+  const right = FrameSet.from([3, 4, 7]);
+  const allowed = new ShadowSlotSelection([FrameSet.from([3]), FrameSet.from([3, 100])]);
+  const selected = new ShadowSlotSelection([left, right], allowed);
+  const walk = selected[Symbol.iterator]();
+  const first = walk.next();
+  expect(first).toEqual({ value: 3, done: false });
+  const changed = new ShadowSlotSelection([left.without(3), right.without(3)], allowed);
+  expect([...changed]).toEqual([]);
+  expect(walk.next()).toEqual({ value: 3, done: false });
+  expect(walk.next().done).toBe(true);
+  expect(first).toEqual({ value: 3, done: false });
+  expect([...selected]).toEqual([3, 3]);
+  expect(selected.size).toBe(2);
 });

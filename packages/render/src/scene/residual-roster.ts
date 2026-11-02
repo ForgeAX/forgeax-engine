@@ -1,17 +1,28 @@
 import { BatchSources, MemberCandidates } from '../gpu-driven/batch-members';
-import type { GpuDrivenBatch, SubmissionPlan } from '../gpu-driven/batch-topology';
-import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import type {
+  GpuDrivenBatch,
+  GpuDrivenBatchBinding,
+  SubmissionPlan,
+} from '../gpu-driven/batch-topology';
+import { GpuDrawSelection, gpuDrawCoverageKey } from '../gpu-driven/draw-selection';
 import { FrameSet } from './frame-set';
 
 /** Cumulative roster work; tests and benches read deltas. */
 export interface ResidualRosterWork {
   /** Batches whose residual contribution was re-judged. */
   batches: number;
+  /** Source batches checked, including unchanged coverage answers. */
+  batchVisits: number;
   /** Member slots added to or removed from the residual set. */
   members: number;
   /** Syncs without persistent evidence that re-judged every batch. */
   cold: number;
 }
+
+type CoverageBatches = Map<number, GpuDrivenBatch>;
+type CoverageDraws = Map<number, CoverageBatches>;
+type CoverageMeshes = Map<number, CoverageDraws>;
+type CoverageWorlds = Map<number, CoverageMeshes>;
 
 /**
  * The residual rows of one view: unbatched geometry and members of batches the
@@ -27,9 +38,12 @@ export class ResidualRoster {
   /** Batches counted into the residual set, by batch id. */
   readonly #counted = new Map<number, GpuDrivenBatch>();
   /** Residual contributions per slot: one per counted batch member, one for unbatched. */
+  /** Existing source-batch dependencies, indexed by the selection coverage route. */
+  readonly #coverage = new Map<ReturnType<typeof gpuDrawCoverageKey>, CoverageWorlds>();
+  readonly #affected = new Set<GpuDrivenBatch>();
   readonly #references = new Map<number, number>();
   #slots = new FrameSet();
-  readonly work: ResidualRosterWork = { batches: 0, members: 0, cold: 0 };
+  readonly work: ResidualRosterWork = { batches: 0, batchVisits: 0, members: 0, cold: 0 };
 
   get slots(): FrameSet {
     return this.#slots;
@@ -43,37 +57,103 @@ export class ResidualRoster {
     const sources = plan.sourceGroups ?? plan.batches;
     const previousSources = this.#sources;
     const previousSelection = this.#selection;
-    const selectionChanged =
-      previousSelection !== selection &&
-      (previousSelection === undefined ||
-        selection.changedBindingsSince(previousSelection).size > 0);
     const linked =
       previousSources !== undefined &&
       BatchSources.isFixed(previousSources) &&
       BatchSources.isFixed(sources);
-    if (!linked || selectionChanged) {
-      // Coverage of one binding can follow another binding's executions, so a
-      // changed selection re-judges every batch; members move only on flips.
+    const fixedCoverage =
+      GpuDrawSelection.isFixedCoverage(selection) &&
+      previousSelection !== undefined &&
+      GpuDrawSelection.isFixedCoverage(previousSelection);
+    if (!linked || !fixedCoverage) {
       if (!linked) this.work.cold += 1;
+      this.#coverage.clear();
       const live = new Set<number>();
       for (const batch of sources) {
         live.add(batch.batchId);
+        this.#index(batch, true);
         this.#judge(this.#counted.get(batch.batchId), batch, selection);
       }
-      for (const [batchId, batch] of [...this.#counted])
+      for (const [batchId, batch] of this.#counted)
         if (!live.has(batchId)) this.#judge(batch, undefined, selection);
-    } else if (previousSources !== sources)
-      (sources as BatchSources).changesSince(previousSources as BatchSources, (before, after) =>
-        this.#judge(
-          before === undefined ? undefined : this.#counted.get(before.batchId),
-          after,
-          selection,
-        ),
-      );
+    } else {
+      const affected = this.#affected;
+      try {
+        if (previousSources !== sources)
+          (sources as BatchSources).changesSince(
+            previousSources as BatchSources,
+            (before, after) => {
+              if (before !== undefined) this.#index(before, false);
+              if (after !== undefined) this.#index(after, true);
+              this.#judge(
+                before === undefined ? undefined : this.#counted.get(before.batchId),
+                after,
+                selection,
+              );
+            },
+          );
+        if (previousSelection !== undefined && previousSelection !== selection) {
+          // Coverage can follow a peer binding's execution. Visit that complete
+          // route's fanout, never only the exact changed binding or every batch.
+          for (const binding of selection.changedBindingsSince(previousSelection))
+            for (const batch of this.#route(binding)?.values() ?? []) affected.add(batch);
+          for (const batch of affected)
+            this.#judge(this.#counted.get(batch.batchId), batch, selection);
+        }
+      } finally {
+        affected.clear();
+      }
+    }
     this.#syncUnbatched(unbatched);
     this.#sources = sources;
     this.#selection = selection;
     return this.#slots;
+  }
+
+  #route(binding: GpuDrivenBatchBinding): CoverageBatches | undefined {
+    return this.#coverage
+      .get(gpuDrawCoverageKey(binding))
+      ?.get(binding.worldId)
+      ?.get(binding.assetHandle)
+      ?.get(binding.drawItemIndex);
+  }
+
+  #index(batch: GpuDrivenBatch, add: boolean): void {
+    const binding = batch.binding;
+    if (binding === undefined) return;
+    const key = gpuDrawCoverageKey(binding);
+    let worlds = this.#coverage.get(key);
+    if (!add) {
+      const meshes = worlds?.get(binding.worldId);
+      const draws = meshes?.get(binding.assetHandle);
+      const batches = draws?.get(binding.drawItemIndex);
+      batches?.delete(batch.batchId);
+      if (batches?.size === 0) draws?.delete(binding.drawItemIndex);
+      if (draws?.size === 0) meshes?.delete(binding.assetHandle);
+      if (meshes?.size === 0) worlds?.delete(binding.worldId);
+      if (worlds?.size === 0) this.#coverage.delete(key);
+      return;
+    }
+    if (worlds === undefined) {
+      worlds = new Map();
+      this.#coverage.set(key, worlds);
+    }
+    let meshes = worlds.get(binding.worldId);
+    if (meshes === undefined) {
+      meshes = new Map();
+      worlds.set(binding.worldId, meshes);
+    }
+    let draws = meshes.get(binding.assetHandle);
+    if (draws === undefined) {
+      draws = new Map();
+      meshes.set(binding.assetHandle, draws);
+    }
+    let batches = draws.get(binding.drawItemIndex);
+    if (batches === undefined) {
+      batches = new Map();
+      draws.set(binding.drawItemIndex, batches);
+    }
+    batches.set(batch.batchId, batch);
   }
 
   /** Replace one batch's counted contribution with `after`'s, visiting only differing members. */
@@ -82,6 +162,7 @@ export class ResidualRoster {
     after: GpuDrivenBatch | undefined,
     selection: GpuDrawSelection,
   ): void {
+    this.work.batchVisits += 1;
     const counted =
       after !== undefined && after.binding !== undefined && !selection.coversBinding(after.binding)
         ? after

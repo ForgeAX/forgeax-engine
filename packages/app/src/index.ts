@@ -182,6 +182,7 @@ export type {
   EngineWorkspacePreview,
   EngineWorkspacePreviewDisplay,
   EngineWorkspacePreviewDisplayOptions,
+  EngineWorkspacePreviewOverlay,
   EngineWorkspaceProject,
   EngineWorkspaceProjectHandle,
   EngineWorkspaceProjectSession,

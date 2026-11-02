@@ -41,7 +41,7 @@ export function addSsrCompositionPass(
       { resource: input.scene.view, usage: 'color-attachment' },
     ],
     colorAttachments: [{ view: input.scene.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const source = frame.ssrShaders?.compose;
       if (source === undefined) return;
       const device = frame.runtime.device;

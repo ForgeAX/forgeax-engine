@@ -29,6 +29,8 @@ import type { ReflectionProbeGraphState } from './typed-frame-graph';
 
 export interface CubeCaptureGraphWork {
   readonly sceneInput?: true;
+  /** The Feature that requested this scene input; absent for every other face. */
+  readonly featureIdentity?: string;
   readonly candidateGeneration?: number;
   readonly target: RenderTarget;
   /** Cube face, array layer, or 3D depth slice written by this work item. */
@@ -69,7 +71,7 @@ function captureSelfSampling(
   let nextIndex = 0;
   for (const row of internal.validatedOrdered) {
     const index = nextIndex++;
-    for (const slot of internal.materialSlotIndices[index] ?? []) {
+    for (const slot of internal.materialSlotIndices.at(index) ?? []) {
       const material = internal.materialSlots[slot];
       if (material === undefined) throw new Error('Capture has no submitted material');
       if (!materialSamplesTarget(material, target)) continue;
@@ -316,7 +318,7 @@ export function addTargetCaptureGraphPasses(
         stencilLoadOp: 'clear',
         stencilStoreOp: 'store',
       },
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         for (const request of requests) {
           const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
           const selfSampling = captureSelfSampling(internal, current().target);
@@ -413,6 +415,7 @@ export function addTargetCaptureGraphPasses(
             viewBindGroupDynamicOffset: 0,
             splitLdrSprite: false,
           };
+          delete captureContext.planarReflectionView;
           delete captureContext.gpuDrivenSelection;
           if (gpuDriven === undefined) delete captureContext.gpuDrivenStandardPbrFrameResources;
           // Each prepared lane uses the capture camera's own sorted draw roster.

@@ -1,5 +1,6 @@
 import type { AssetRegistry, MaterialRenderProjection } from '@forgeax/engine-assets-runtime';
 import type { AssetChange, AssetReader } from '@forgeax/engine-assets-runtime/internal';
+import type { World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   type Asset,
@@ -22,7 +23,7 @@ import { FrameListBase } from '../scene/frame-list';
 import { captureMaterialOverrides } from '../scene/mesh-materials';
 import { ownPose } from '../scene/pose-slab';
 import type { RenderSceneApplyResult, RenderSceneOperation } from '../scene/render-scene-types';
-import { SceneRows } from '../scene/scene-rows';
+import { SceneRows, type WorldTransformSpan } from '../scene/scene-rows';
 import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
 import { isRenderTextureSourceToken, renderTextureSourceKey } from '../textures/source-token';
@@ -829,6 +830,7 @@ export class RenderPublicationReceiver {
     private readonly identity: RenderPublicationIdentity,
     targets?: RenderTargetAuthoring,
     prepareRows?: PublicationRowPreparation,
+    private readonly memory?: World,
   ) {
     this.prepareRows = prepareRows;
     this.targets = targets === undefined ? undefined : new RenderPublicationTargetReceiver(targets);
@@ -1119,6 +1121,9 @@ export class RenderPublicationReceiver {
     const references = this.prepareSkinReferences(removed, renderables);
     const retiredJoints = this.stageRetiredJoints(packet.retiredJoints, references);
     if (!retiredJoints.ok) return retiredJoints;
+    // Packet-backed ranges stay local to this synchronous transaction. Only
+    // committed Scene pages and detached content leave receiver admission.
+    const worldRows: number[] = [];
     /** Joint matrix rows, plus world-only updates for unchanged accepted renderables. */
     const stageTransformRows = (): Result<number[], RenderPublicationError> => {
       const jointRows: number[] = [];
@@ -1131,8 +1136,7 @@ export class RenderPublicationReceiver {
         else if (!renderable)
           return rejectPublication('shape', 'retired joint also has a positive row');
         if (renderable && !updated.has(entityKey)) {
-          const world = packet.transforms.slice(index * 16, index * 16 + 16);
-          operations.push({ kind: 'update', worldId: 0, entityKey, world });
+          worldRows.push(index);
         }
       }
       return ok(jointRows);
@@ -1188,7 +1192,7 @@ export class RenderPublicationReceiver {
       this.acceptedMetadata = packet.metadata;
       for (const [key, released] of this.releasedPreparedMeshes)
         if (released.until < this.revision) this.releasedPreparedMeshes.delete(key);
-      prepared = this.commitRows(prepared);
+      prepared = this.commitTransformRows(prepared, worldRows);
       this.publishPreparedMeshes(packet);
       return ok(prepared);
     } catch (cause) {
@@ -1820,12 +1824,35 @@ export class RenderPublicationReceiver {
     return this.rows.lookup(0, entity) !== undefined;
   }
 
+  private commitTransformRows(
+    prepared: PreparedRenderPublication,
+    rows: readonly number[],
+  ): PreparedRenderPublication {
+    const packet = prepared.packet;
+    return this.commitRows(
+      prepared,
+      rows.length === 0
+        ? []
+        : [
+            {
+              worldId: 0,
+              entities: packet.transformEntities,
+              worlds: packet.transforms,
+              rows,
+            },
+          ],
+    );
+  }
+
   /**
    * Admission validated every edit; renderer-level preparation then completes
    * the accepted rows once, then commits them to the shared rows. A failure
    * here fails the receiver, so a partial row write is never observable.
    */
-  private commitRows(prepared: PreparedRenderPublication): PreparedRenderPublication {
+  private commitRows(
+    prepared: PreparedRenderPublication,
+    transforms: readonly WorldTransformSpan[],
+  ): PreparedRenderPublication {
     const before = this.rows.revision;
     for (const change of prepared.assetChanges) {
       const mesh = change.removed
@@ -1837,7 +1864,10 @@ export class RenderPublicationReceiver {
     const completed = this.prepareRows?.(prepared) ?? prepared;
     // The receiver built every staged snapshot and owns it immutably: rows
     // adopt them as-is instead of copying matrices, bounds and draw tables.
-    const delta = this.rows.apply(completed.operations, [], true);
+    const delta =
+      completed.operations.length === 0 && this.memory !== undefined
+        ? this.rows.applyOwnedTransforms(transforms, this.memory)
+        : this.rows.apply(completed.operations, transforms, true);
     return { ...completed, scene: { rows: this.rows, before, delta } };
   }
 

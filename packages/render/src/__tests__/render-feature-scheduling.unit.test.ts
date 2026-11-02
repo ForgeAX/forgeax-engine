@@ -75,6 +75,37 @@ describe('render feature stage scheduling', () => {
     ]);
   });
 
+  it('retains fixed stage facts and replaces only reordered installation facts', () => {
+    const events: string[] = [];
+    const first = feature('synthetic.first', events);
+    const second = feature('synthetic.second', events);
+    const host = createRenderFeatureHost([first, second]).unwrap();
+    const frame = (frameNumber: number) =>
+      runSingleViewFeatureFrame(host, { worlds: [], owner: 0, frameNumber, caps });
+    try {
+      const before = frame(1);
+      const next = frame(2);
+      expect(next.stageEvents).not.toBe(before.stageEvents);
+      for (let index = 0; index < before.stageEvents.length; index++) {
+        expect(next.stageEvents[index]).toBe(before.stageEvents[index]);
+        expect(Object.isFrozen(next.stageEvents[index])).toBe(true);
+      }
+      host.uninstall(first).unwrap();
+      const reordered = frame(3);
+      expect(reordered.stageEvents).toEqual([
+        { featureIdentity: second.identity, order: 0, stage: 'extract' },
+        { featureIdentity: second.identity, order: 0, stage: 'plan' },
+      ]);
+      expect(reordered.stageEvents[0]).not.toBe(before.stageEvents[2]);
+      expect(before.stageEvents[2]?.order).toBe(1);
+      const stable = frame(4);
+      expect(stable.stageEvents[0]).toBe(reordered.stageEvents[0]);
+      expect(stable.stageEvents[1]).toBe(reordered.stageEvents[1]);
+    } finally {
+      host.dispose();
+    }
+  });
+
   it.each([
     'extract',
     'plan',

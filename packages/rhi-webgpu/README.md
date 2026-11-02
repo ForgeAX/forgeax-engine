@@ -56,6 +56,10 @@ Call them on the encoder receiver, as with native WebGPU; a retained method call
 needs its receiver bound by its caller. Each command encoder still owns independent
 raw state, finish/pass guards and acceleration-structure context. Sharing methods
 does not reuse or reset a finished encoder or alter descriptor forwarding.
+Bundle recording borrows one bounded temporary sequence for synchronous native
+consumption. Sequences of at most sixteen handles reuse its capacity; larger
+inputs remain ordinary allocations. Every retained slot is cleared on return,
+and reentrant calls acquire independent storage.
 
 ## Timestamp write contract
 

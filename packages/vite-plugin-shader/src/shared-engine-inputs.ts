@@ -134,7 +134,15 @@ export function loadPackagedEngineShaderInputs(
   // SSAO is an independent utility entry, not a material compilation axis.
   const profile = pointShadows ? 'point-ssao' : 'base-ssao';
   const containerPath = resolve(packageRoot, 'dist/engine-inputs', PACKAGED_PROFILES_FILE);
-  if (!existsSync(containerPath)) return null;
+  if (!existsSync(containerPath)) {
+    if (!reportedStaleProfiles.has(containerPath)) {
+      reportedStaleProfiles.add(containerPath);
+      console.warn(
+        `[forgeax-shader] no packaged engine shader profile ${profile}; prepare it from the Engine checkout with: node scripts/forgeax/prepare-shader-release-inputs.mjs --build --profile ${profile}`,
+      );
+    }
+    return null;
+  }
   let shaderSourceRoot: string | undefined;
   try {
     shaderSourceRoot = resolve(

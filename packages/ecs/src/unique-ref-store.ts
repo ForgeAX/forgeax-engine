@@ -57,6 +57,7 @@ import {
   ok,
   pack,
   type Result,
+  type ResultOk,
   toUnique,
   unwrapHandle,
 } from '@forgeax/engine-types';
@@ -66,7 +67,7 @@ import { UniqueRefDoubleReleaseError, UniqueRefReleasedError, UniqueRefStaleErro
 // The local constant is removed to avoid drift (AC-15).
 
 interface UniqueRefEntry {
-  payload: unknown;
+  resolution: ResultOk<unknown>;
   readonly onRelease: ((payload: unknown) => void) | undefined;
 }
 
@@ -146,7 +147,7 @@ export class UniqueRefStore {
     const gen = this._generations[slot] ?? 0;
     const raw = pack(slot, gen);
     this.entries.set(raw, {
-      payload,
+      resolution: Object.freeze(ok(payload)),
       onRelease: onRelease as ((payload: unknown) => void) | undefined,
     });
     return toUnique(raw);
@@ -180,15 +181,15 @@ export class UniqueRefStore {
       return err(new UniqueRefStaleError(slot, handleGen, storeGen));
     }
     const entry = this.entries.get(raw);
-    const payload = entry?.payload;
-    if (payload === undefined) {
+    const payload = entry?.resolution.value;
+    if (entry === undefined || payload === undefined) {
       // Slot 0 (sentinel) and any handle whose payload was already removed
       // both surface as released. The phantom Target is unavailable at
       // runtime - the error carries '<unknown>' to keep the structured
       // shape consistent.
       return err(new UniqueRefReleasedError(raw, '<unknown>'));
     }
-    return ok(payload as T);
+    return entry.resolution as ResultOk<T>;
   }
 
   /**
@@ -215,8 +216,8 @@ export class UniqueRefStore {
       return err(new UniqueRefStaleError(slot, handleGen, storeGen));
     }
     const entry = this.entries.get(raw);
-    const payload = entry?.payload;
-    if (payload === undefined) {
+    const payload = entry?.resolution.value;
+    if (entry === undefined || payload === undefined) {
       return err(new UniqueRefDoubleReleaseError(raw, '<unknown>'));
     }
     // Retire the complete entry and generation before user cleanup can
@@ -244,7 +245,7 @@ export class UniqueRefStore {
     if (entry === undefined) {
       throw new Error(`UniqueRefStore: cannot replace released payload ${raw}.`);
     }
-    entry.payload = payload;
+    entry.resolution = Object.freeze(ok(payload));
   }
 
   /**

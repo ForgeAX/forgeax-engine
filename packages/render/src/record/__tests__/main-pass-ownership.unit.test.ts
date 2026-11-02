@@ -1,7 +1,127 @@
 import { rhi } from '@forgeax/engine-rhi-null';
 import { expect, it, vi } from 'vitest';
+import type { RenderableDrawReceipt } from '../gpu-draw-receipts';
 import { emitGpuDrivenDrawReceipts } from '../gpu-draw-receipts';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
+
+it('allocates submit callbacks per geometry pass while preserving every direct draw', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  for (let entity = 1; entity <= 129; entity++) f.add({ entity, submeshes: 1 });
+  const actions = new Set<() => unknown>();
+  const profile: NonNullable<typeof f.c.profilePhase> = (phase, action) => {
+    if (phase === 'record/graph-execute/forward/draw-submit') actions.add(action);
+    return action();
+  };
+  Object.assign(f.c, { profilePhase: profile });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const draw = vi.spyOn(pass, 'drawIndexed');
+  try {
+    f.record(pass);
+    expect(actions.size).toBe(1);
+    expect(draw).toHaveBeenCalledTimes(129);
+    expect(f.receipts).toHaveLength(129);
+    f.record(pass);
+    expect(actions.size).toBe(2);
+    expect(draw).toHaveBeenCalledTimes(258);
+    expect(f.receipts).toHaveLength(258);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('shares immutable CPU facts without dropping draws or retaining changed material facts', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const first = f.add({ entity: 1, submeshes: 1 });
+  for (let entity = 2; entity <= 129; entity++) {
+    const entry = f.add({ entity, submeshes: 1 });
+    Object.assign(entry.source, {
+      material: first.source.material,
+      materials: [first.source.material],
+    });
+  }
+  const observed: RenderableDrawReceipt[] = [];
+  const submitted = f.c.onRenderableDraw;
+  Object.assign(f.c, {
+    onRenderableDraw: (...args: Parameters<NonNullable<typeof submitted>>) => {
+      submitted?.(...args);
+      if (args[2] !== undefined) observed.push(args[2]);
+    },
+  });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const draw = vi.spyOn(pass, 'drawIndexed');
+  try {
+    f.record(pass);
+    expect(draw).toHaveBeenCalledTimes(129);
+    expect(f.receipts.map((receipt) => receipt.entity)).toEqual(
+      Array.from({ length: 129 }, (_, index) => index + 1),
+    );
+    expect(new Set(observed).size).toBe(1);
+    const held = observed[0];
+    expect(Object.isFrozen(held)).toBe(true);
+    expect(held?.material).toBe(first.source.material.snapshot);
+    expect(held).not.toHaveProperty('passIndex');
+    f.record(pass, 'temporal');
+    expect(draw).toHaveBeenCalledTimes(258);
+    expect(new Set(observed.slice(129)).size).toBe(1);
+    expect(observed[129]).not.toBe(held);
+    expect(observed[129]?.unsupportedLineage).toBe(true);
+    expect(held?.unsupportedLineage).toBe(false);
+    const replacement = f.add({ entity: 130, submeshes: 1 });
+    f.record(pass);
+    expect(observed.at(-1)?.material).toBe(replacement.source.material.snapshot);
+    expect(observed.at(-1)).not.toBe(held);
+    expect(held?.material).toBe(first.source.material.snapshot);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it('publishes independent complete CPU receipts with exact optional fields', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const instanced = f.add({ entity: 1, submeshes: 1, instances: 2 });
+  const ordinary = f.add({ entity: 2, submeshes: 1 });
+  const observed: RenderableDrawReceipt[] = [];
+  Object.assign(f.c, {
+    onRenderableDraw: (_entry: unknown, _submesh: unknown, receipt: RenderableDrawReceipt) =>
+      observed.push(receipt),
+  });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    f.record(pass);
+    expect(observed).toHaveLength(2);
+    expect(observed[0]).not.toBe(observed[1]);
+    for (const [index, entry] of [instanced, ordinary].entries()) {
+      const receipt = observed[index];
+      expect(receipt).toEqual({
+        lane: 'cpu',
+        ready: true,
+        pipeline: f.pipeline,
+        material: entry.source.material.snapshot,
+        unsupportedLineage: index === 0,
+        programKey: entry.source.material.snapshot.materialShaderId,
+      });
+      expect(receipt).not.toHaveProperty('passIndex');
+    }
+    // A later pass cannot rewrite the previously published ordinary receipt.
+    f.record(pass, 'temporal');
+    expect(observed[1]?.unsupportedLineage).toBe(false);
+    expect(observed.slice(2).every((receipt) => receipt.unsupportedLineage === true)).toBe(true);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
 
 it.each([undefined, []])('preserves every CPU draw without GPU source draws %j', async (draws) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();

@@ -8,7 +8,7 @@ import { createShadowCasterCascadeBuffer } from '../assembly/webgpu-ready-resour
 import { DeviceScope } from '../device/device-scope';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
-import { writeShadowCasterMatrices } from '../record/shadow-caster-uniforms';
+import { writeShadowCasterUniforms } from '../record/shadow-caster-uniforms';
 import type { ViewLights } from '../world/render-lights';
 
 async function deviceFixture() {
@@ -123,7 +123,7 @@ it('uploads only current spot matrices while keeping every fixed header intact',
   } as unknown as ViewLights;
   try {
     f.write.mockClear();
-    writeShadowCasterMatrices(f.device.queue, buffer, lights);
+    writeShadowCasterUniforms(f.device.queue, buffer, lights);
     expect(f.write.mock.calls.map(([, offset]) => offset)).toEqual([1040, 1808]);
     const bytes = f.uploads.get(buffer);
     expectHeaders(bytes);
@@ -131,9 +131,42 @@ it('uploads only current spot matrices while keeping every fixed header intact',
     expect(Array.from(new Float32Array(bytes.buffer, 1040, 16))).toEqual(Array.from(first));
     expect(Array.from(new Float32Array(bytes.buffer, 1808, 16))).toEqual(Array.from(last));
     f.write.mockClear();
-    writeShadowCasterMatrices(f.device.queue, buffer, { spot: [] } as unknown as ViewLights);
+    writeShadowCasterUniforms(f.device.queue, buffer, { spot: [] } as unknown as ViewLights);
     expect(f.write).not.toHaveBeenCalled();
     expectHeaders(bytes);
+  } finally {
+    f.device.destroyBuffer(buffer);
+    f.write.mockRestore();
+  }
+});
+
+it('switches near pancaking with the current directional projection without changing spot slots', async () => {
+  const f = await deviceFixture();
+  const buffer = createShadowCasterCascadeBuffer(
+    f.device.createBuffer.bind(f.device),
+    f.device.queue,
+  );
+  try {
+    for (const shadowViewProjection of [undefined, new Float32Array(16), undefined]) {
+      writeShadowCasterUniforms(f.device.queue, buffer, {
+        directionalCsmConfig: { shadowViewProjection },
+        spot: [],
+      } as unknown as ViewLights);
+      const bytes = f.uploads.get(buffer);
+      if (bytes === undefined) throw Error('Missing caster header upload');
+      const words = new Uint32Array(bytes.buffer);
+      for (let cascade = 0; cascade < 4; cascade++)
+        expect(Array.from(words.subarray(cascade * 64, cascade * 64 + 4))).toEqual([
+          cascade,
+          0,
+          shadowViewProjection === undefined ? 1 : 0,
+          0,
+        ]);
+      for (let tile = 0; tile < 4; tile++)
+        expect(Array.from(words.subarray((tile + 4) * 64, (tile + 4) * 64 + 4))).toEqual([
+          0, 1, 0, 0,
+        ]);
+    }
   } finally {
     f.device.destroyBuffer(buffer);
     f.write.mockRestore();

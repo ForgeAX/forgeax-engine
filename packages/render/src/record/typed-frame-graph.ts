@@ -1,15 +1,10 @@
-import {
-  type FrameRecording,
-  recordFrameTransaction,
-  submitFrameRecordings,
-} from '../assembly/frame-recording';
-import type { RendererFrameTransactionSteps } from '../assembly/renderer-frame-transaction';
+import type { RecordedView } from '../assembly/frame-recording';
+import type { RendererFrameStageResult } from '../assembly/renderer-frame-transaction';
 import { isCaptureViewPipeline } from '../capture/capture-view';
 import { projectedDecalTopology } from '../decals/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import { recordAtmosphereCaptureBackground } from '../environment/capture';
 import { atmosphereTextures } from '../environment/luts';
-import { settleAtmospherePublish } from '../environment/storage';
 import { isOutlinePostProcess } from '../features/outline/shaders';
 import { pmremExtent } from '../ibl/pmrem';
 import {
@@ -33,7 +28,13 @@ import {
   terrainShadowTopology,
 } from '../terrain/shadow-family';
 import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
+import { EMPTY_VIEW_FEATURE_PLAN, type ViewFeaturePlan } from '../world/feature-plan-systems';
+import { recordViewFeatureGraph } from '../world/feature-systems';
+import { EMPTY_VIEW_PASS_PLAN, planOpaque, type ViewPassPlan } from '../world/pass-plan-systems';
 import type { ViewLights } from '../world/render-lights';
+import { renderSubmission, renderWorldFor } from '../world/render-world';
+import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
+import { recordContext } from '../world/view-record-context';
 import { serializeFrameGraphKey } from './frame-graph-key';
 import { resolveSpotShadowMapSize } from './frame-targets';
 import { flushMeshDrawUploads } from './mesh-ssbo';
@@ -115,15 +116,15 @@ import {
 } from '../pipeline/standard-lighting/topology';
 import { importAutoExposureGraphResources } from '../pipeline/standard-output/auto-exposure/gpu';
 import type { StandardLutGraphProjection } from '../pipeline/standard-output/lut-gpu';
-import {
-  commitStandardOutputSubmission,
-  discardStandardOutputStates,
-  retirePendingStandardOutputGpu,
-} from '../pipeline/standard-output/resources';
+import { discardStandardOutputStates } from '../pipeline/standard-output/resources';
 import { buildStandard, standardPipeline } from '../pipeline/standard-pipeline';
-import { resolveVolumetricFogProfile, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
+import {
+  DEFAULT_STANDARD_PROFILE,
+  resolveVolumetricFogProfile,
+  STANDARD_PIPELINE_ID,
+} from '../pipeline/standard-profile';
 import { type ProbeBackgroundResources, recordProbeBackground } from '../reflection/background';
-import type { CameraSnapshot, RendererError } from '../render-contract';
+import type { CameraSnapshot } from '../render-contract';
 import type {
   RenderPipelineBuildContext,
   RenderPipelineFrame,
@@ -133,25 +134,22 @@ import type { ExtractedVolumetricFog } from '../render-system-extract';
 import { SHADOW_ATLAS_DEFAULT_FACE_SIZE } from '../shadow-atlas';
 import type { SsrSpatialAdmission } from '../ssr/admission';
 import {
-  abortStagedTemporalGpuState,
   CLOUD_HISTORY_FORMATS,
-  commitStagedTemporalGpuState,
   getTemporalGpuState,
   hasPendingTemporalGpuSubmit,
-  retireActiveTemporalGpuState,
   TEMPORAL_HISTORY_FORMATS,
   temporalReadIndex,
   temporalWriteIndex,
 } from '../temporal/gpu';
 import { createTargetCoverageAttachment } from '../temporal/target-coverage-attachment';
-import type { TransmissionDemand } from '../transmission/projection';
 import { hasVolumetricFogCapability } from '../volume/capability';
 import { deriveVolumetricFogExtent, deriveVolumetricFogResolvedExtent } from '../volume/resources';
 import {
-  frameGraphChangedDependencies,
-  frameGraphChangedValues,
-  frameGraphTopologyIdentity,
-} from './frame-graph-identity';
+  abortGraphSubmission,
+  commitGraphSubmission,
+  type GraphSubmission,
+} from '../world/graph-submission-systems';
+import { type frameGraphChangedValues, frameGraphTopologyIdentity } from './frame-graph-identity';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import {
   type GraphTargetPassReplayPrefixReceipt,
@@ -161,8 +159,14 @@ import {
   type RenderFrameState,
 } from './frame-snapshot';
 import { createPassTimingInstrumentation } from './gpu-pass-timing/instrumentation';
-
 import type { GpuTimingCapture } from './gpu-timing';
+import type {
+  FeatureGraphMetricsDelta,
+  GraphEffectError,
+  GraphEffects,
+  GraphRejectCode,
+  ViewGraphCompileOutcome,
+} from './graph-adoption';
 import { encodeMainPass } from './main-pass';
 import { deriveMotionBlurExecutionReceipt } from './motion-blur-receipt';
 import type {
@@ -214,7 +218,7 @@ function importTemporalHistoryTarget(
     const state = getTemporalGpuState(
       internal.frameState,
       internal.runtime.device,
-      internal.runtime.deviceScope,
+      recordContext(internal.runtime).deviceScope,
       frame.targetW,
       frame.targetH,
     );
@@ -322,7 +326,7 @@ function importCloudHistoryTarget(
     const state = getTemporalGpuState(
       internal.frameState,
       internal.runtime.device,
-      internal.runtime.deviceScope,
+      recordContext(internal.runtime).deviceScope,
       frame.targetW,
       frame.targetH,
       true,
@@ -742,7 +746,7 @@ export function addReflectionProbeGraphPasses(
           stencilLoadOp: 'clear',
           stencilStoreOp: 'store',
         },
-        encode: ({ pass, frame, resources }) => {
+        encodeDirect: (pass, frame, resources) => {
           const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
           if (work.faceCamera === undefined || work.viewBindGroupDynamicOffset === undefined)
             return;
@@ -880,6 +884,14 @@ export interface RenderFeatureGraphRuntimeState {
     import('../fullscreen-post-process-pass').PostProcessShaderEntry
   >;
   postProcessIdentities: readonly string[];
+  /**
+   * The accepted state a candidate committed this frame replaced; restored by
+   * `settleFeatureGraphState` when the view's submission is not accepted.
+   */
+  rollback?: Pick<
+    RenderFeatureGraphRuntimeState,
+    'plans' | 'fullscreenEffects' | 'postProcessIdentities'
+  >;
 }
 
 /** The exact fields that define one validated feature-plan collection. */
@@ -955,10 +967,6 @@ export interface RenderFeatureGraphCandidate {
   readonly onRejected?: () => void;
   /** Publish candidate-owned runtime declarations only after graph promotion. */
   readonly onAccepted?: () => void;
-  /** Consume producer frame state only after the command buffer is submitted. */
-  readonly onSubmitted?: () => void;
-  /** Discard producer frame state after graph execution/submission aborts. */
-  readonly onAborted?: () => void;
   /** Discard candidate-only resources when a base graph is kept as fallback. */
   readonly onAbandoned?: () => void;
 }
@@ -1066,7 +1074,7 @@ function observeGraphGenerationAllocation(frameState: RenderFrameState): void {
   );
 }
 
-function trackGraphGeneration(
+export function trackGraphGeneration(
   frameState: RenderFrameState,
   graph: CompiledRenderGraph<RenderPipelineFrame>,
 ): void {
@@ -1197,7 +1205,7 @@ export function inspectRenderGraphGenerationAllocation(
   });
 }
 
-interface MutableRenderFeatureGraphInspection {
+export interface MutableRenderFeatureGraphInspection {
   planRevisionState: RenderFeaturePlanRevisionState;
   signatureValidationCalls: number;
   signatureValidationBytes: number;
@@ -1238,7 +1246,7 @@ const featureGraphInspections = new WeakMap<
   MutableRenderFeatureGraphInspection
 >();
 
-function mutableFeatureGraphInspection(
+export function mutableFeatureGraphInspection(
   internals: RenderSystemInternals,
 ): MutableRenderFeatureGraphInspection {
   const existing = featureGraphInspections.get(internals);
@@ -1337,7 +1345,7 @@ export function recordRenderFeatureCandidate(
   }
 }
 
-function recordRenderFeatureCandidateEvent(
+export function recordRenderFeatureCandidateEvent(
   internals: RenderSystemInternals,
   candidate: RenderFeatureGraphCandidate,
   event: 'accepted' | 'rejected' | 'abandoned',
@@ -1381,16 +1389,35 @@ export function resetRenderFeatureGraphState(internals: RenderSystemInternals): 
   state.plans = [];
   state.fullscreenEffects = new Map();
   state.postProcessIdentities = [];
+  delete state.rollback;
+}
+
+/**
+ * Keep the Feature state a candidate committed this frame when the view's
+ * submission was accepted, otherwise restore the state it replaced. Accepted
+ * post-process parameter buffers are not restored: each frame prepares a
+ * fresh candidate against the restored plans.
+ */
+export function settleFeatureGraphState(internals: RenderSystemInternals, accepted: boolean): void {
+  const state = getRenderFeatureGraphState(internals);
+  const previous = state.rollback;
+  if (previous === undefined) return;
+  delete state.rollback;
+  if (accepted) return;
+  state.plans = previous.plans;
+  state.fullscreenEffects = previous.fullscreenEffects;
+  state.postProcessIdentities = previous.postProcessIdentities;
 }
 
 export function reportRenderFeatureGraphError(
   internals: RenderSystemInternals,
   error: RenderError,
 ): void {
-  if (internals.featureHost !== undefined && 'detail' in error) {
+  const host = recordContext(internals).featureHost;
+  if (host !== undefined && 'detail' in error) {
     const detail = error.detail;
     if (detail !== undefined && 'featureIdentity' in detail && 'order' in detail) {
-      const owned = internals.featureHost.recordError(detail.featureIdentity, error);
+      const owned = host.recordError(detail.featureIdentity, error);
       internals.errorRegistry.fire(owned);
       return;
     }
@@ -1431,9 +1458,19 @@ export function resolvePostProcessChainAdmission(
   };
 }
 
+type SignatureValidationMetrics = Pick<
+  MutableRenderFeatureGraphInspection,
+  | 'signatureValidationCalls'
+  | 'signatureValidationBytes'
+  | 'signatureValidationChars'
+  | 'signatureValidationCpuMs'
+  | 'signatureValidationCacheHits'
+  | 'signatureValidationCacheMisses'
+>;
+
 function validateRenderFeaturePlans(
   plans: readonly RenderFeaturePlannedFrame[],
-  metrics?: MutableRenderFeatureGraphInspection,
+  metrics?: SignatureValidationMetrics,
 ): Result<readonly RenderFeaturePlanExecution[], RenderError> {
   const identities = new Set<string>();
   const projected: RenderFeaturePlanExecution[] = [];
@@ -1487,7 +1524,7 @@ function validateRenderFeaturePlans(
   return ok(Object.freeze(projected));
 }
 
-function commitFeatureCandidate(
+export function commitFeatureCandidate(
   internals: RenderSystemInternals,
   candidate: RenderFeatureGraphCandidate,
 ): void {
@@ -1496,6 +1533,11 @@ function commitFeatureCandidate(
   // graph/state pair remains visible to the caller.
   recordRenderFeatureCandidateEvent(internals, candidate, 'accepted');
   const state = getRenderFeatureGraphState(internals);
+  state.rollback ??= {
+    plans: state.plans,
+    fullscreenEffects: state.fullscreenEffects,
+    postProcessIdentities: state.postProcessIdentities,
+  };
   state.plans = candidate.plans;
   state.fullscreenEffects = candidate.fullscreenEffects;
   state.postProcessIdentities = candidate.postProcessIdentities ?? [];
@@ -1776,14 +1818,12 @@ function topologyOf(
   featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
   featurePlanRevision: number | string,
   cubeCaptureState: CubeCaptureGraphState | undefined,
-  transmissionDemand: TransmissionDemand | undefined,
+  passPlan: ViewPassPlan,
   volumetricFog: ExtractedVolumetricFog | undefined,
   standardLighting: StandardTopologyInputValue | undefined,
   ssr: SsrSpatialAdmission | undefined,
   renderExtent: RenderExtent | undefined,
-  surfaceMediumActive: boolean | undefined,
   analyticFog: boolean,
-  transparency: RenderPipelineTopology['transparency'],
   terrainReceivers: readonly TerrainShadowReceiver[] = [],
   subsurface?: RenderPipelineTopology['subsurface'],
   stockRecording = false,
@@ -1795,15 +1835,16 @@ function topologyOf(
   if (!surfaceProfile.ok) return surfaceProfile;
   const fullscreenEffects = featureFullscreenEffects(internals, featureGraphCandidate);
   const config = featurePostEffectConfig(internals, frameState, featureGraphCandidate);
+  const standardProfile = frameState.cameraStandardProfile ?? internals.standardProfile;
   return ok({
     pipelineId: STANDARD_PIPELINE_ID,
     ...(subsurface === undefined ? {} : { subsurface }),
     projectedDecals: projectedDecalTopology(clearOnly ? [] : (camera.projectedDecals ?? [])),
-    standardProfile: frameState.cameraStandardProfile ?? internals.standardProfile,
+    standardProfile,
     config,
     preTemporalEffects: preTemporalEffectsOf(config, fullscreenEffects),
     clearOnly,
-    reflectionFallback: { enabled: frameState.reflectionFallbackDemand === true },
+    reflectionFallback: { enabled: reflectionFallbackDemandOf(internals) },
     ssr,
     ...(renderExtent === undefined ? {} : { extent: renderExtent }),
     analyticFog: !clearOnly && analyticFog,
@@ -1840,15 +1881,21 @@ function topologyOf(
     ),
     gpuDrivenTopologySignature: gpuDrivenTopologySignatureOf(gpuDriven, stockRecording),
     standardLightingTopologySignature: standardLightingTopologySignature(standardLighting),
-    transmissionDemand: transmissionDemand ?? {
-      activeCount: 0,
-      needsRoughMips: false,
-    },
-    ...((surfaceMediumActive ?? gpuDriven?.surfaceSubmission !== undefined)
-      ? { singleLayerMedium: true }
-      : {}),
+    // The view's RenderQueue pass plan is the only transmission, medium and
+    // transparent-composition authority of the graph.
+    transmissionDemand: passPlan.transmission.demand,
+    ...(passPlan.transmission.singleLayerMedium ? { singleLayerMedium: true } : {}),
+    ...(passPlan.transparent.topology === undefined
+      ? {}
+      : { transparency: passPlan.transparent.topology }),
+    opaque:
+      passPlan.opaque ??
+      planOpaque({
+        renderPath: (standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
+        gpuOcclusion: config?.gpuOcclusion,
+        clearOnly,
+      }),
     ...(!clearOnly && analyticFog && unfoggedOpaque ? { unfoggedOpaque: true } : {}),
-    ...(transparency === undefined ? {} : { transparency }),
   });
 }
 
@@ -1883,30 +1930,44 @@ export function retire(
     });
 }
 
-/** Settle the one compiled graph transaction after encode/finish/submit. */
-export function settleCompiledFrameGraphCandidate(
-  frameState: RenderFrameState,
-  submitted: boolean,
-  /** The frame stopped only because pipeline preparation was still pending. */
-  awaitingPreparation = false,
-): void {
+/** What settling a view's adopted graph candidate did; `none` when it adopted no new graph. */
+export type GraphCandidateSettlement = 'none' | 'promoted' | 'stashed' | 'rolled-back';
+
+/**
+ * An accepted view keeps its adopted graph: the graph it replaced, and a
+ * stashed graph that may alias its resources, retire.
+ */
+export function promoteGraphCandidate(frameState: RenderFrameState): GraphCandidateSettlement {
   const candidate = frameState.compiledFrameGraphCandidate;
-  if (candidate === undefined) return;
+  if (candidate === undefined) return 'none';
+  frameState.compiledFrameGraphCandidate = undefined;
+  const previousGraph = candidate.previous.installed?.graph;
+  if (previousGraph !== undefined && previousGraph !== candidate.graph)
+    retire(frameState, previousGraph);
+  // A stashed graph may alias resources of the graph it was compiled
+  // against; once another graph is accepted it can never be promoted.
+  const stashed = frameState.unsubmittedCompiledFrameGraph;
+  frameState.unsubmittedCompiledFrameGraph = undefined;
+  if (stashed !== undefined && stashed.installed.graph !== candidate.graph)
+    retire(frameState, stashed.installed.graph);
+  return 'promoted';
+}
+
+/**
+ * A view that was not accepted reinstalls the graph its candidate replaced.
+ * A candidate that only waited for pipeline preparation is stashed for its
+ * topology key; any other fresh candidate retires.
+ */
+export function rollbackGraphCandidate(
+  frameState: RenderFrameState,
+  awaitingPreparation: boolean,
+): GraphCandidateSettlement {
+  const candidate = frameState.compiledFrameGraphCandidate;
+  if (candidate === undefined) return 'none';
   const previous = candidate.previous;
   frameState.compiledFrameGraphCandidate = undefined;
-  if (submitted) {
-    const previousGraph = previous.installed?.graph;
-    if (previousGraph !== undefined && previousGraph !== candidate.graph)
-      retire(frameState, previousGraph);
-    // A stashed graph may alias resources of the graph it was compiled
-    // against; once another graph is accepted it can never be promoted.
-    const stashed = frameState.unsubmittedCompiledFrameGraph;
-    frameState.unsubmittedCompiledFrameGraph = undefined;
-    if (stashed !== undefined && stashed.installed.graph !== candidate.graph)
-      retire(frameState, stashed.installed.graph);
-    return;
-  }
   const candidateInstalled = frameState.compiledFrameGraph;
+  let settlement: GraphCandidateSettlement = 'rolled-back';
   if (candidate.graph !== previous.installed?.graph) {
     // Keep one compiled-but-unsubmitted graph for its topology key. A frame
     // that only waited for pipeline preparation must not recompile the same
@@ -1924,6 +1985,7 @@ export function settleCompiledFrameGraphCandidate(
           }
         : undefined;
     if (frameState.unsubmittedCompiledFrameGraph === undefined) retire(frameState, candidate.graph);
+    else settlement = 'stashed';
   }
   frameState.compiledFrameGraph = previous.installed;
   frameState.graphGeneration = previous.graphGeneration;
@@ -1931,108 +1993,7 @@ export function settleCompiledFrameGraphCandidate(
   frameState.standardLightingGraphSignature = previous.lightingSignature;
   frameState.barrelDistortionGraphResolution =
     previous.installed === null ? 'accepted' : 'retained';
-}
-
-/**
- * A candidate flag only describes a possible topology replacement. When the
- * derived key is unchanged there is no replacement to stage: reuse the
- * accepted graph so dynamic volume history/imported views can advance and a
- * queue-submit failure can still publish the LKG diagnostic.
- */
-function reuseInstalledFrameGraph(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  key: string,
-  lightingSignature: string,
-  featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
-  postProcessPending: boolean,
-  cloudHistoryDemand: boolean,
-): CompiledRenderGraph<RenderPipelineFrame> | undefined {
-  const installed = frameState.compiledFrameGraph;
-  if (installed === null || installed.topologyKey !== key) return undefined;
-  const featureMetrics = mutableFeatureGraphInspection(internals);
-  frameState.barrelDistortionGraphResolution = 'accepted';
-  featureMetrics.reuseHits += 1;
-  featureMetrics.lastTopologyKey = key;
-  frameState.standardLightingGraphSignature = lightingSignature;
-  frameState.pendingCloudHistoryActive = cloudHistoryDemand;
-  settleFeatureCandidate(internals, featureGraphCandidate, postProcessPending);
-  return installed.graph;
-}
-
-/**
- * Claim the stashed compiled-but-unsubmitted graph when it matches this
- * frame's topology key and device generation; any other stash is retired.
- */
-function takeUnsubmittedFrameGraph(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  key: string,
-): InstalledFrameGraph | undefined {
-  const stashed = frameState.unsubmittedCompiledFrameGraph;
-  if (stashed === undefined) return undefined;
-  frameState.unsubmittedCompiledFrameGraph = undefined;
-  if (
-    stashed.installed.topologyKey === key &&
-    stashed.deviceGeneration === internals.deviceScope?.generation
-  )
-    return stashed.installed;
-  retire(frameState, stashed.installed.graph);
-  return undefined;
-}
-
-/**
- * Stage an already compiled graph for this frame as the transactional
- * candidate, exactly as a fresh compile with the same topology key would.
- */
-function promoteCompiledFrameGraph(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  graph: CompiledRenderGraph<RenderPipelineFrame>,
-  compiled: InstalledFrameGraph,
-  installed: InstalledFrameGraph | null,
-  lightingSignature: string,
-  gpuDriven: PreparedGpuDrivenFrame | undefined,
-  featureGraphCandidate: RenderFeatureGraphCandidate | undefined,
-  postProcessPending: boolean,
-  cloudHistoryDemand: boolean,
-  key: string,
-): CompiledRenderGraph<RenderPipelineFrame> {
-  const featureMetrics = mutableFeatureGraphInspection(internals);
-  featureMetrics.unsubmittedGraphReuses += 1;
-  featureMetrics.lastTopologyKey = key;
-  trackGraphGeneration(frameState, graph);
-  const superseded = frameState.compiledFrameGraphCandidate;
-  frameState.compiledFrameGraphCandidate = {
-    graph,
-    previous: superseded?.previous ?? {
-      installed,
-      graphGeneration: frameState.graphGeneration ?? 0,
-      compiledGeneration: frameState.compiledFrameGraphGeneration ?? 0,
-      lightingSignature: frameState.standardLightingGraphSignature ?? '',
-    },
-  };
-  if (superseded !== undefined && superseded.graph !== graph) retire(frameState, superseded.graph);
-  frameState.barrelDistortionGraphResolution = 'accepted';
-  frameState.standardLightingGraphSignature = lightingSignature;
-  frameState.compiledFrameGraphGeneration += 1;
-  frameState.graphGeneration += 1;
-  frameState.compiledFrameGraph = {
-    ...compiled,
-    targets: { ...compiled.targets, graphGeneration: frameState.graphGeneration },
-  };
-  if (gpuDriven?._commitGpuResourceReplacement !== undefined) {
-    gpuDriven._commitGpuResourceReplacement();
-  } else {
-    gpuDriven?._commitResourceReplacement();
-  }
-  if (featureGraphCandidate !== undefined && !postProcessPending) {
-    commitFeatureCandidate(internals, featureGraphCandidate);
-  } else if (featureGraphCandidate !== undefined) {
-    recordRenderFeatureCandidateEvent(internals, featureGraphCandidate, 'abandoned');
-  }
-  frameState.pendingCloudHistoryActive = cloudHistoryDemand;
-  return graph;
+  return settlement;
 }
 
 /**
@@ -2041,7 +2002,7 @@ function promoteCompiledFrameGraph(
  * installed graph, and forget graphs whose retirement is already in flight.
  */
 export function discardCompiledFrameGraphs(frameState: RenderFrameState): void {
-  settleCompiledFrameGraphCandidate(frameState, false);
+  rollbackGraphCandidate(frameState, false);
   const stashed = frameState.unsubmittedCompiledFrameGraph;
   frameState.unsubmittedCompiledFrameGraph = undefined;
   if (stashed !== undefined) retire(frameState, stashed.installed.graph);
@@ -2056,44 +2017,6 @@ function featurePlansOf(
   candidate: RenderFeatureGraphCandidate | undefined,
 ): readonly RenderFeaturePlannedFrame[] {
   return candidate?.plans ?? getRenderFeatureGraphState(internals).plans;
-}
-
-function rejectFeatureCandidate(
-  internals: RenderSystemInternals,
-  candidate: RenderFeatureGraphCandidate | undefined,
-): void {
-  if (candidate !== undefined) recordRenderFeatureCandidateEvent(internals, candidate, 'rejected');
-}
-
-/** Publish a candidate whose post chain is complete; abandon one still waiting on post pipelines. */
-function settleFeatureCandidate(
-  internals: RenderSystemInternals,
-  candidate: RenderFeatureGraphCandidate | undefined,
-  postProcessPending: boolean,
-): void {
-  if (candidate === undefined) return;
-  if (postProcessPending) recordRenderFeatureCandidateEvent(internals, candidate, 'abandoned');
-  else commitFeatureCandidate(internals, candidate);
-}
-
-/** Report a graph build failure and drop the Standard output GPU state staged for it. */
-function failGraphBuild(
-  internals: RenderSystemInternals,
-  frameState: RenderFrameState,
-  candidate: RenderFeatureGraphCandidate | undefined,
-  error: RendererError,
-): void {
-  internals.errorRegistry.fire(error);
-  retirePendingStandardOutputGpu(frameState);
-  rejectFeatureCandidate(internals, candidate);
-}
-
-/** A rejected volume-topology candidate has no fallback; any other keeps the accepted graph. */
-function rejectedTopologyFallback(
-  volumeTopologyCandidate: boolean,
-  retainLastKnownGood: () => CompiledRenderGraph<RenderPipelineFrame> | null,
-): CompiledRenderGraph<RenderPipelineFrame> | null {
-  return volumeTopologyCandidate ? null : retainLastKnownGood();
 }
 
 // A rejected authoring request remains visible on the source camera, while
@@ -2118,23 +2041,6 @@ function hasCloudHistoryDemand(plans: readonly RenderFeaturePlanExecution[]): bo
         (pass) => pass.name === 'cloud-layer-transport' || pass.name === 'cloud-layer-resolve',
       ),
   );
-}
-
-function recordFeaturePlanRevision(
-  featureMetrics: MutableRenderFeatureGraphInspection,
-  featurePlans: readonly RenderFeaturePlannedFrame[],
-  projectedPlans: readonly RenderFeaturePlanExecution[],
-): void {
-  const nextPlanRevision = updateRenderFeaturePlanRevision(
-    featureMetrics.planRevisionState,
-    featurePlans,
-    projectedPlans,
-  );
-  if (nextPlanRevision === featureMetrics.planRevisionState) return;
-  featureMetrics.lastPlanSignature = nextPlanRevision.entries
-    .map((entry) => `${entry.featureIdentity}:${entry.signature}`)
-    .join('|');
-  featureMetrics.planRevisionState = nextPlanRevision;
 }
 
 /** Transient views that own physical changes publish no prepared-resource lease of their own. */
@@ -2233,7 +2139,7 @@ function shadowCameraCullOf(
     cubeCaptures: cubeCaptureState?.work.length ?? 0,
     reflectionProbes: cubeCaptureState?.reflectionProbes?.work.length ?? 0,
     planarReflection: cubeCaptureState?.planar?.current() !== undefined,
-    featureSceneInputs: internals.featureSceneInputs?.work.length ?? 0,
+    featureSceneInputs: recordContext(internals).featureSceneInputs?.work.length ?? 0,
   });
 }
 
@@ -2257,7 +2163,9 @@ function frameGraphCacheKey(
     // was compiled can admit the matching tone/output capture boundaries on
     // that receipt without forcing every unobserved frame onto the split
     // output path.
-    observationCaptureDomains: [...(internals.observationCaptureDomains ?? [])].sort(),
+    observationCaptureDomains: [
+      ...(recordContext(internals).observationCaptureDomains ?? []),
+    ].sort(),
     // GPU-driven residency can become available after the first record pass
     // (custom mesh handles are resolved into the per-frame projection).  The
     // topology signature alone is intentionally stable across that lifecycle,
@@ -2278,7 +2186,7 @@ function frameGraphCacheKey(
             probePlacement.recordBytes,
             probeGlobalGraphShape(probePlacement),
           ],
-    featureSceneInputs: internals.featureSceneInputs?.topologyKey,
+    featureSceneInputs: recordContext(internals).featureSceneInputs?.topologyKey,
     // Cloud shadow targets are quality-derived graph resources. Include the
     // resolved texel grid in the cache key so a quality/resize change cannot
     // reuse a graph compiled for the previous allocation.
@@ -2456,50 +2364,6 @@ function diffuseGiContribution(
   return {};
 }
 
-function recordCompileCauses(
-  featureMetrics: MutableRenderFeatureGraphInspection,
-  frame: number,
-  installedTopologyKey: string | undefined,
-  key: string,
-): void {
-  const changedDependencies = frameGraphChangedDependencies(installedTopologyKey, key);
-  const primaryCause = changedDependencies[0] ?? 'cold';
-  featureMetrics.compilePrimaryCauses[primaryCause] =
-    (featureMetrics.compilePrimaryCauses[primaryCause] ?? 0) + 1;
-  for (const dependency of changedDependencies) {
-    featureMetrics.compileChangedDependencies[dependency] =
-      (featureMetrics.compileChangedDependencies[dependency] ?? 0) + 1;
-  }
-  // Bounded detached evidence of what changed; compiles are already rare and costly.
-  featureMetrics.recentCompileChanges.push({
-    frame,
-    changes: frameGraphChangedValues(installedTopologyKey, key, changedDependencies),
-  });
-  if (featureMetrics.recentCompileChanges.length > 32) featureMetrics.recentCompileChanges.shift();
-}
-
-/**
- * A second build in the same transaction supersedes only the unsubmitted
- * candidate; rollback must still reach the last accepted projection.
- */
-function stageCompiledFrameGraphCandidate(
-  frameState: RenderFrameState,
-  graph: CompiledRenderGraph<RenderPipelineFrame>,
-  installed: RenderFrameState['compiledFrameGraph'],
-): void {
-  const superseded = frameState.compiledFrameGraphCandidate;
-  frameState.compiledFrameGraphCandidate = {
-    graph,
-    previous: superseded?.previous ?? {
-      installed,
-      graphGeneration: frameState.graphGeneration ?? 0,
-      compiledGeneration: frameState.compiledFrameGraphGeneration ?? 0,
-      lightingSignature: frameState.standardLightingGraphSignature ?? '',
-    },
-  };
-  if (superseded !== undefined) retire(frameState, superseded.graph);
-}
-
 function installedFrameGraphOf(
   builder: RenderGraphBuilder<RenderPipelineFrame>,
   graph: CompiledRenderGraph<RenderPipelineFrame>,
@@ -2533,24 +2397,11 @@ function installedFrameGraphOf(
   };
 }
 
-// View buffer replacement is safe to retire once the compiled graph owns
-// the new imports. Shadow cache publication remains submit-transactional
-// and is committed only by executeCompiledFrameGraph's onSubmitted hook.
-function commitGpuDrivenResourceReplacement(gpuDriven: PreparedGpuDrivenFrame | undefined): void {
-  if (gpuDriven?._commitGpuResourceReplacement !== undefined) {
-    gpuDriven._commitGpuResourceReplacement();
-  } else {
-    // Synthetic/internal prepared projections predating the split own no
-    // shadow cache; retain their original graph-promotion callback.
-    gpuDriven?._commitResourceReplacement();
-  }
-}
-
-function recordGraphDeviceGeneration(
+export function recordGraphDeviceGeneration(
   internals: RenderSystemInternals,
   graph: CompiledRenderGraph<RenderPipelineFrame>,
 ): void {
-  const deviceGeneration = internals.deviceScope?.generation;
+  const deviceGeneration = recordContext(internals).deviceScope?.generation;
   if (deviceGeneration !== undefined) graphDeviceGenerations.set(graph, deviceGeneration);
 }
 
@@ -2565,7 +2416,7 @@ function pipelineBuildOf(
 }
 
 /** Renderer-owned shadow layers outlive any one compiled graph. */
-function ensureShadowDepthLayers(
+export function ensureShadowDepthLayers(
   frameState: RenderFrameState,
   device: RenderSystemInternals['device'],
 ): ShadowDepthLayers {
@@ -2573,38 +2424,171 @@ function ensureShadowDepthLayers(
   return frameState.shadowDepthLayers;
 }
 
-export function ensureCompiledFrameGraph(
+/**
+ * Everything one view graph compile reads besides the owner bags. A record
+ * replaces positional arguments so the staged compile input has one shape.
+ */
+export interface GraphCompileInput {
+  readonly internals: RenderSystemInternals;
+  readonly frameState: RenderFrameState;
+  readonly pipelineState: PipelineState;
+  readonly camera: CameraSnapshot;
+  readonly lights: ViewLights;
+  /** Canvas extent; compile clamps each side to at least one texel. */
+  readonly surface: { readonly width: number; readonly height: number };
+  readonly shadowMapSize?: number | undefined;
+  readonly gpuDriven?: PreparedGpuDrivenFrame | undefined;
+  readonly featurePlan?: ViewFeaturePlan | undefined;
+  readonly cubeCaptureState?: CubeCaptureGraphState | undefined;
+  readonly clearOnly?: boolean | undefined;
+  readonly passPlan?: ViewPassPlan | undefined;
+  readonly volumetricFog?: ExtractedVolumetricFog | undefined;
+  /** A rejected volume-topology candidate has no last-known-good fallback. */
+  readonly volumeTopologyCandidate?: boolean | undefined;
+  readonly standardLighting?: StandardTopologyInputValue | undefined;
+  readonly ssr?: SsrSpatialAdmission | undefined;
+  readonly renderExtent?: RenderExtent | undefined;
+  readonly analyticFog?: boolean | undefined;
+  readonly cloudShadowResolution?: number | undefined;
+  readonly terrainReceivers?: readonly TerrainShadowReceiver[] | undefined;
+  readonly subsurface?: RenderPipelineTopology['subsurface'] | undefined;
+  readonly rendererRecording?: boolean | undefined;
+  readonly unfoggedOpaque?: boolean | undefined;
+  /** Renderer-owned shadow layers; the caller ensures them before compile. */
+  readonly shadowDepthLayers: ShadowDepthLayers;
+}
+
+/**
+ * The graph this view already owns for `key`. A candidate flag only describes
+ * a possible topology replacement: an unchanged key reuses the accepted graph
+ * so dynamic volume history/imported views can advance and a queue-submit
+ * failure can still publish the LKG diagnostic. Otherwise a stashed
+ * compiled-but-unsubmitted graph is promoted when its key and device
+ * generation match; any other stash is retired by the rebuild.
+ */
+function existingFrameGraphFor(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
-  pipelineState: PipelineState,
-  camera: CameraSnapshot,
-  lights: ViewLights,
-  width: number,
-  height: number,
-  shadowMapSize: number | undefined,
-  gpuDriven?: PreparedGpuDrivenFrame,
-  featureGraphCandidate?: RenderFeatureGraphCandidate,
-  cubeCaptureState?: CubeCaptureGraphState,
-  clearOnly = false,
-  transmissionDemand?: TransmissionDemand,
-  volumetricFog?: ExtractedVolumetricFog,
-  volumeTopologyCandidate = false,
-  standardLighting?: StandardTopologyInputValue,
-  onRecoveryError?: (error: unknown) => void,
-  ssr?: SsrSpatialAdmission,
-  renderExtent?: RenderExtent,
-  surfaceMediumActive?: boolean,
-  analyticFog = false,
-  cloudShadowResolution?: number,
-  transparency?: RenderPipelineTopology['transparency'],
-  terrainReceivers: readonly TerrainShadowReceiver[] = [],
-  subsurface?: RenderPipelineTopology['subsurface'],
-  rendererRecording = false,
-  unfoggedOpaque = false,
-): CompiledRenderGraph<RenderPipelineFrame> | null {
-  frameState.barrelDistortionGraphResolution = 'retained';
-  const featureMetrics = mutableFeatureGraphInspection(internals);
-  featureMetrics.ensureCalls += 1;
+  key: string,
+): ExistingFrameGraph {
+  const installed = frameState.compiledFrameGraph;
+  if (installed !== null && installed.topologyKey === key)
+    return { kind: 'reused', graph: installed };
+  const stashed = frameState.unsubmittedCompiledFrameGraph;
+  if (stashed === undefined) return REBUILD_WITHOUT_STASH;
+  return stashed.installed.topologyKey === key &&
+    stashed.deviceGeneration === recordContext(internals).deviceScope?.generation
+    ? { kind: 'promoted', graph: stashed.installed }
+    : { kind: 'rebuild', retireStash: stashed.installed };
+}
+
+type ExistingFrameGraph =
+  | { readonly kind: 'reused' | 'promoted'; readonly graph: InstalledFrameGraph }
+  | { readonly kind: 'rebuild'; readonly retireStash: InstalledFrameGraph | undefined };
+
+const REBUILD_WITHOUT_STASH: ExistingFrameGraph = Object.freeze({
+  kind: 'rebuild',
+  retireStash: undefined,
+});
+
+/** Reuse the installed graph, or promote the matching stash, without a rebuild. */
+function existingFrameGraphOutcome(
+  existing: Extract<ExistingFrameGraph, { readonly graph: InstalledFrameGraph }>,
+  frame: number,
+  key: string,
+  metrics: FeatureGraphMetricsDelta,
+  effects: (overrides: Partial<GraphEffects>) => GraphEffects,
+  accepted: Pick<GraphEffects, 'postPending' | 'cloudHistoryActive' | 'gpuReplacement'>,
+): ViewGraphCompileOutcome {
+  metrics.lastTopologyKey = key;
+  if (existing.kind === 'reused') {
+    metrics.reuseHits += 1;
+    // The installed graph already owns its imports; no GPU-driven replacement to commit.
+    return {
+      frame,
+      kind: 'reused',
+      graph: existing.graph.graph,
+      effects: effects({ ...accepted, gpuReplacement: undefined }),
+    };
+  }
+  metrics.unsubmittedGraphReuses += 1;
+  return {
+    frame,
+    kind: 'promoted',
+    graph: existing.graph.graph,
+    stash: existing.graph,
+    effects: effects(accepted),
+  };
+}
+
+function emptyFeatureGraphMetricsDelta(): FeatureGraphMetricsDelta {
+  return {
+    signatureValidationCalls: 0,
+    signatureValidationBytes: 0,
+    signatureValidationChars: 0,
+    signatureValidationCpuMs: 0,
+    signatureValidationCacheHits: 0,
+    signatureValidationCacheMisses: 0,
+    reuseHits: 0,
+    rebuildAttempts: 0,
+    compileAttempts: 0,
+    compileSuccesses: 0,
+    compileFailures: 0,
+    validationFailures: 0,
+    buildFailures: 0,
+    unsubmittedGraphReuses: 0,
+    compileCpuMs: 0,
+    buildCpuMs: 0,
+    planRevision: undefined,
+    lastTopologyKey: undefined,
+    compileCause: undefined,
+  };
+}
+
+/**
+ * Compile one view graph without writing `frameState` or any owner: every
+ * side effect is returned as data on the outcome, and `adoptViewGraph`
+ * applies it. A throw becomes the `failed` kind.
+ */
+export function compileViewGraph(input: GraphCompileInput): ViewGraphCompileOutcome {
+  const frame = input.frameState.frameNumber;
+  try {
+    return compileViewGraphStages(input, frame);
+  } catch (cause) {
+    return { frame, kind: 'failed', cause };
+  }
+}
+
+function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGraphCompileOutcome {
+  const {
+    internals,
+    frameState,
+    pipelineState,
+    camera,
+    lights,
+    shadowMapSize,
+    gpuDriven,
+    featurePlan = EMPTY_VIEW_FEATURE_PLAN,
+    cubeCaptureState,
+    clearOnly = false,
+    passPlan = EMPTY_VIEW_PASS_PLAN,
+    volumetricFog,
+    volumeTopologyCandidate = false,
+    standardLighting,
+    ssr,
+    renderExtent,
+    analyticFog = false,
+    cloudShadowResolution,
+    terrainReceivers = [],
+    subsurface,
+    rendererRecording = false,
+    unfoggedOpaque = false,
+    shadowDepthLayers,
+  } = input;
+  // `render-feature-plan` planned the Feature candidate compile reads (fullscreen
+  // effects, post identities, plans, prepared-resource key) in RenderQueue.
+  const featureGraphCandidate = featurePlan.candidate;
+  const metrics = emptyFeatureGraphMetricsDelta();
   const requestedStandardLightingSignature = standardLightingTopologySignature(standardLighting);
   const graphCamera = graphCameraOf(camera, frameState);
   const lastKnownGood = (): CompiledRenderGraph<RenderPipelineFrame> | null => {
@@ -2622,24 +2606,50 @@ export function ensureCompiledFrameGraph(
       ? installed.graph
       : null;
   };
-  const retainLastKnownGood = (): CompiledRenderGraph<RenderPipelineFrame> | null => {
-    const graph = lastKnownGood();
-    if (graph !== null) frameState.barrelDistortionGraphResolution = 'retained';
-    return graph;
+  let retireStash: InstalledFrameGraph | undefined;
+  const effects = (overrides: Partial<GraphEffects> = {}): GraphEffects => ({
+    metrics,
+    lightingSignature: requestedStandardLightingSignature,
+    cloudHistoryActive: false,
+    featureCandidate: featureGraphCandidate,
+    postPending: false,
+    retireStash,
+    gpuReplacement: undefined,
+    error: undefined,
+    ...overrides,
+  });
+  // A rejected volume-topology candidate has no fallback; any other keeps the accepted graph.
+  const reject = (
+    code: GraphRejectCode,
+    error: GraphEffectError | undefined,
+    fallback: 'last-known-good' | 'topology',
+  ): ViewGraphCompileOutcome => {
+    const graph = fallback === 'topology' && volumeTopologyCandidate ? null : lastKnownGood();
+    const rejected = effects({ error });
+    return graph === null
+      ? { frame, kind: 'rejected', code, effects: rejected }
+      : { frame, kind: 'retained', graph, reason: code, effects: rejected };
   };
-  const surfaceWidth = Math.max(1, width);
-  const surfaceHeight = Math.max(1, height);
+  const surfaceWidth = Math.max(1, input.surface.width);
+  const surfaceHeight = Math.max(1, input.surface.height);
   const featurePlans = featurePlansOf(internals, featureGraphCandidate);
-  const projectedFeaturePlans = validateRenderFeaturePlans(featurePlans, featureMetrics);
+  const projectedFeaturePlans = validateRenderFeaturePlans(featurePlans, metrics);
   if (!projectedFeaturePlans.ok) {
-    featureMetrics.validationFailures += 1;
-    onRecoveryError?.(projectedFeaturePlans.error);
-    reportRenderFeatureGraphError(internals, projectedFeaturePlans.error);
-    rejectFeatureCandidate(internals, featureGraphCandidate);
-    return rejectedTopologyFallback(volumeTopologyCandidate, retainLastKnownGood);
+    metrics.validationFailures += 1;
+    return reject(
+      'feature-validation-failed',
+      { route: 'feature', error: projectedFeaturePlans.error },
+      'topology',
+    );
   }
   const cloudHistoryDemand = hasCloudHistoryDemand(projectedFeaturePlans.value);
-  recordFeaturePlanRevision(featureMetrics, featurePlans, projectedFeaturePlans.value);
+  const planRevisionState = mutableFeatureGraphInspection(internals).planRevisionState;
+  const nextPlanRevision = updateRenderFeaturePlanRevision(
+    planRevisionState,
+    featurePlans,
+    projectedFeaturePlans.value,
+  );
+  if (nextPlanRevision !== planRevisionState) metrics.planRevision = nextPlanRevision;
   const stockRecording = rendererRecording && frameState.activePipeline === standardPipeline;
   const transientViews = selectTransientViewPlans(
     internals,
@@ -2666,27 +2676,26 @@ export function ensureCompiledFrameGraph(
     shadowMapSize,
     gpuDriven,
     topologyCandidate,
-    transientViews.topologySignature ?? featureMetrics.planRevisionState.revision,
+    transientViews.topologySignature ?? nextPlanRevision.revision,
     cubeCaptureState,
-    transmissionDemand,
+    passPlan,
     volumetricFog,
     standardLighting,
     ssr,
     renderExtent,
-    surfaceMediumActive,
     analyticFog,
-    transparency,
     terrainReceivers,
     subsurface,
     stockRecording,
     unfoggedOpaque,
   );
   if (!topologyResult.ok) {
-    featureMetrics.buildFailures += 1;
-    onRecoveryError?.(topologyResult.error);
-    internals.errorRegistry.fire(topologyResult.error);
-    rejectFeatureCandidate(internals, featureGraphCandidate);
-    return rejectedTopologyFallback(volumeTopologyCandidate, retainLastKnownGood);
+    metrics.buildFailures += 1;
+    return reject(
+      'topology-failed',
+      { route: 'registry', error: topologyResult.error },
+      'topology',
+    );
   }
   const featurePostProcessEntries = featureFullscreenEffects(internals, featureGraphCandidate);
   // Motion Blur's compute plan intentionally has no raster fullscreen shader
@@ -2710,9 +2719,13 @@ export function ensureCompiledFrameGraph(
     // Do not publish a candidate whose fullscreen chain is only partially
     // ready. Keep the accepted graph (including its prior post-effect chain)
     // and retry the same feature candidate on the next frame.
-    rejectFeatureCandidate(internals, featureGraphCandidate);
-    frameState.barrelDistortionGraphResolution = 'retained';
-    return acceptedLkg;
+    return {
+      frame,
+      kind: 'retained',
+      graph: acceptedLkg,
+      reason: 'post-chain-pending',
+      effects: effects(),
+    };
   }
   const topology = postProcessAdmission.pending
     ? withoutPostEffects(topologyResult.value)
@@ -2734,37 +2747,23 @@ export function ensureCompiledFrameGraph(
     cubeCaptureState,
   );
   const installed = frameState.compiledFrameGraph;
-  const reused = reuseInstalledFrameGraph(
-    internals,
-    frameState,
-    key,
-    requestedStandardLightingSignature,
-    featureGraphCandidate,
-    postProcessAdmission.pending,
-    cloudHistoryDemand,
-  );
-  if (reused !== undefined) return reused;
-
-  const stashed = takeUnsubmittedFrameGraph(internals, frameState, key);
-  if (stashed !== undefined)
-    return promoteCompiledFrameGraph(
-      internals,
-      frameState,
-      stashed.graph,
-      stashed,
-      installed,
-      requestedStandardLightingSignature,
-      gpuDriven,
-      featureGraphCandidate,
-      postProcessAdmission.pending,
-      cloudHistoryDemand,
-      key,
-    );
-  featureMetrics.rebuildAttempts += 1;
-  featureMetrics.lastTopologyKey = key;
+  const accepted = {
+    postPending: postProcessAdmission.pending,
+    cloudHistoryActive: cloudHistoryDemand,
+  };
+  const existing = existingFrameGraphFor(internals, frameState, key);
+  if (existing.kind !== 'rebuild') {
+    return existingFrameGraphOutcome(existing, frame, key, metrics, effects, {
+      ...accepted,
+      gpuReplacement: gpuDriven,
+    });
+  }
+  retireStash = existing.retireStash;
+  metrics.rebuildAttempts += 1;
+  metrics.lastTopologyKey = key;
   const buildStarted = graphClockMs();
   const builder = new RenderGraphBuilder<RenderPipelineFrame>();
-  const sceneInputs = internals.featureSceneInputs?.import(builder);
+  const sceneInputs = recordContext(internals).featureSceneInputs?.import(builder);
   const graphInputs = importStandardGraphInputs(
     builder,
     frameState,
@@ -2774,8 +2773,11 @@ export function ensureCompiledFrameGraph(
     ssr,
   );
   if (!graphInputs.ok) {
-    failGraphBuild(internals, frameState, featureGraphCandidate, graphInputs.error);
-    return retainLastKnownGood();
+    return reject(
+      'graph-inputs-failed',
+      { route: 'registry', error: graphInputs.error },
+      'last-known-good',
+    );
   }
   const featureProjection = createRenderFeatureProjectionState();
   const transientSlots = new Map<string, { complete: boolean; names: Set<string> }>();
@@ -2793,7 +2795,7 @@ export function ensureCompiledFrameGraph(
       ...probePlacementContribution(builder, probePlacement),
       ...diffuseGiContribution(builder, internals, frameState),
       camera: { depthOfField: graphCamera.depthOfField },
-      observationCaptureDomains: internals.observationCaptureDomains,
+      observationCaptureDomains: recordContext(internals).observationCaptureDomains,
       ...graphInputs.value,
       ...(standardLighting === undefined ? {} : { standardLighting }),
       capabilities: { rgba16floatRenderable: internals.device.caps.rgba16floatRenderable },
@@ -2804,7 +2806,7 @@ export function ensureCompiledFrameGraph(
         const encoded = encodeMipmapLevel(internals.device, pass, sourceView.value, format);
         if (!encoded.ok) throw encoded.error;
       },
-      shadowDepthLayers: ensureShadowDepthLayers(frameState, internals.device),
+      shadowDepthLayers,
       projectGpuDriven: (target) => {
         if (projectedGpuDriven || gpuDriven === undefined) return ok(undefined);
         projectedGpuDriven = true;
@@ -2998,56 +3000,48 @@ export function ensureCompiledFrameGraph(
     topology,
   ]);
   if (!built.ok) {
-    featureMetrics.buildFailures += 1;
-    onRecoveryError?.(built.error);
-    failGraphBuild(internals, frameState, featureGraphCandidate, built.error);
-    return rejectedTopologyFallback(volumeTopologyCandidate, retainLastKnownGood);
+    metrics.buildFailures += 1;
+    return reject('graph-build-failed', { route: 'registry', error: built.error }, 'topology');
   }
-  featureMetrics.compileAttempts += 1;
-  featureMetrics.buildCpuMs += graphClockMs() - buildStarted;
-  recordCompileCauses(featureMetrics, frameState.frameNumber, installed?.topologyKey, key);
+  metrics.compileAttempts += 1;
+  metrics.buildCpuMs += graphClockMs() - buildStarted;
+  metrics.compileCause = { installedTopologyKey: installed?.topologyKey, key };
   const compileStarted = graphClockMs();
   const compiled = builder.compile({
     device: internals.device,
     surfaceSize: { width: surfaceWidth, height: surfaceHeight },
     reuseResourcesFrom: installed?.graph,
   });
-  featureMetrics.compileCpuMs += graphClockMs() - compileStarted;
+  metrics.compileCpuMs += graphClockMs() - compileStarted;
   if (!compiled.ok) {
-    featureMetrics.compileFailures += 1;
-    onRecoveryError?.(compiled.error);
-    failGraphBuild(internals, frameState, featureGraphCandidate, compiled.error);
-    return retainLastKnownGood();
+    metrics.compileFailures += 1;
+    return reject(
+      'graph-compile-failed',
+      { route: 'registry', error: compiled.error },
+      'last-known-good',
+    );
   }
-  // Register the generation before publishing it. The owner observes the
-  // overlap while the previous graph is still live, even if a queue fence
-  // retires that graph before the next public inspect() call.
+  // Decorate the new graph object; adoption publishes it.
   installScenePasses(builder, compiled.value);
-  trackGraphGeneration(frameState, compiled.value);
-  stageCompiledFrameGraphCandidate(frameState, compiled.value, installed);
-  frameState.barrelDistortionGraphResolution = 'accepted';
-  frameState.standardLightingGraphSignature = requestedStandardLightingSignature;
-  frameState.compiledFrameGraphGeneration += 1;
-  frameState.graphGeneration += 1;
-  featureMetrics.compileSuccesses += 1;
+  metrics.compileSuccesses += 1;
   // No new lease means the installed imports remain current, not a second
   // resource transition back to an empty key on the following frame.
-  frameState.compiledFrameGraph = installedFrameGraphOf(
-    builder,
-    compiled.value,
-    key,
-    frameState.graphGeneration,
-    topologyCandidate?.preparedResourceKey ?? installed?.preparedResourceKey,
-    stockRecording,
-    prepareGpuDrivenPipelines,
-    directionalShadowViewCount,
-  );
-  commitGpuDrivenResourceReplacement(gpuDriven);
-  recordGraphDeviceGeneration(internals, compiled.value);
-  settleFeatureCandidate(internals, featureGraphCandidate, postProcessAdmission.pending);
-  frameState.pendingCloudHistoryActive = cloudHistoryDemand;
-  // The selected candidate owner retires the previous graph only after submit.
-  return compiled.value;
+  return {
+    frame,
+    kind: 'compiled',
+    graph: compiled.value,
+    installed: installedFrameGraphOf(
+      builder,
+      compiled.value,
+      key,
+      frameState.graphGeneration + 1,
+      topologyCandidate?.preparedResourceKey ?? installed?.preparedResourceKey,
+      stockRecording,
+      prepareGpuDrivenPipelines,
+      directionalShadowViewCount,
+    ),
+    effects: effects({ ...accepted, gpuReplacement: gpuDriven }),
+  };
 }
 
 /** Shared target captures use the same lighting prelude and scene raster owner as display views. */
@@ -3070,23 +3064,21 @@ export function compileTargetCaptureFrameGraph(
     camera,
     false,
     lights,
-    internals.canvas.width,
-    internals.canvas.height,
+    recordContext(internals).canvas.width,
+    recordContext(internals).canvas.height,
     shadowMapSize,
     undefined,
     undefined,
     0,
     state,
-    undefined,
+    // Target captures (cube faces, planar mirrors) keep the sorted transparent
+    // composition without a backdrop; the pass plan belongs to the display view.
+    EMPTY_VIEW_PASS_PLAN,
     undefined,
     lighting,
     undefined,
     undefined,
-    undefined,
     false,
-    // Target captures (cube faces, planar mirrors) keep the sorted
-    // transparent composition; OIT belongs to the display view camera.
-    undefined,
     terrainReceivers,
   );
   if (!topology.ok) throw topology.error;
@@ -3110,8 +3102,8 @@ export function compileTargetCaptureFrameGraph(
   const compiled = graph.compile({
     device: internals.device,
     surfaceSize: {
-      width: internals.canvas.width,
-      height: internals.canvas.height,
+      width: recordContext(internals).canvas.width,
+      height: recordContext(internals).canvas.height,
     },
   });
   if (!compiled.ok) throw compiled.error;
@@ -3119,47 +3111,46 @@ export function compileTargetCaptureFrameGraph(
   return compiled.value;
 }
 
-export function executeCompiledFrameGraph(
-  ...args: Parameters<typeof recordCompiledFrameGraph>
-): boolean {
-  return submitFrameRecordings([recordCompiledFrameGraph(...args)]);
-}
+/**
+ * Direct harness: one submission whose RenderRecord opens the encoder the
+ * compiled graph records into.
+ */
 
-export function* recordCompiledFrameGraph(
+export interface CompiledFrameHooks {
+  readonly afterGraphExecute?: () => Result<void, RhiError>;
+  readonly generationFence?: import('../assembly/renderer-frame-transaction').RendererGenerationFence;
+  readonly gi?: import('./frame-diffuse-gi').FrameDiffuseGi;
+  readonly onSubmitted?: () => void;
+  readonly onSubmittedWork?: (completed: Promise<void>) => void;
+}
+export interface EncodedFrameGraph {
+  readonly internals: RenderSystemInternals;
+  readonly frameState: RenderFrameState;
+  readonly submission: GraphSubmission;
+  readonly work: RecordedView;
+}
+export type FrameGraphEncodeOutcome =
+  | { readonly kind: 'encoded'; readonly value: EncodedFrameGraph }
+  | { readonly kind: 'rejected'; readonly stage: 'execute' | 'finish' };
+
+/** Encode and resolve readbacks into the open frame encoder; never submits or suspends. */
+export function recordCompiledFrameGraph(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   frame: RenderPipelineFrame,
   encoder: RhiCommandEncoder,
   runPass?: import('@forgeax/engine-render-graph').RenderGraphPassRunner,
-  frameHooks?:
-    | {
-        readonly afterGraphExecute?: () => Result<void, RhiError>;
-        readonly generationFence?: import('../assembly/renderer-frame-transaction').RendererGenerationFence;
-        readonly onSubmitted?: () => void;
-        readonly onSubmittedWork?: (completed: Promise<void>) => void;
-        readonly onAborted?: () => void;
-      }
-    // Keep the pre-submit-hook shape accepted for internal callers that have
-    // not yet migrated to the typed frame hooks object.
-    | (() => void),
+  frameHooks?: CompiledFrameHooks,
   readbackLayers?: readonly import('../assembly/render-target-host').RenderTargetLayerWrite[],
   onSubmitted?: (completed: Promise<unknown>) => void,
   timingCapture?: GpuTimingCapture,
-): FrameRecording {
-  let submittedCompletion: Promise<void> | undefined;
-  const legacySubmitCommit = typeof frameHooks === 'function' ? frameHooks : undefined;
-  const resolvedFrameHooks = typeof frameHooks === 'function' ? undefined : frameHooks;
+): FrameGraphEncodeOutcome {
+  const resolvedFrameHooks = frameHooks;
   const graph = frameState.compiledFrameGraph?.graph ?? null;
-  const rejectTemporalFrame = (): void => {
-    if (!frameState.temporalFrameTransaction.inspect().staged) return;
-    frameState.temporalFrameTransaction.commit({ accepted: false });
-  };
   if (graph === null) {
     timingCapture?.discard();
     discardStandardOutputStates(frameState);
-    settleCompiledFrameGraphCandidate(frameState, false);
-    rejectTemporalFrame();
-    return false;
+    return { kind: 'rejected', stage: 'execute' };
   }
   const acceptedFeaturePlans = getRenderFeatureGraphState(internals).plans;
   const executionFrame = {
@@ -3173,6 +3164,7 @@ export function* recordCompiledFrameGraph(
     frameState,
     acceptedFeaturePlans,
   );
+  frameState.stagedMotionBlurExecution = { receipt: motionBlurExecution };
   const legacyTimingInstrumentation =
     timingCapture === undefined ? undefined : createTimingInstrumentation(timingCapture);
   internals.observationGraphGeneration = frameState.compiledFrameGraphGeneration;
@@ -3182,9 +3174,9 @@ export function* recordCompiledFrameGraph(
       ? legacyTimingInstrumentation
       : createPassTimingInstrumentation<RenderPipelineFrame>(
           passTimingCapture,
-          internals.gpuPassTimingViewId,
+          recordContext(internals).gpuPassTimingViewId,
         );
-  const deviceScope = internals.deviceScope;
+  const deviceScope = recordContext(internals).deviceScope;
   const graphDeviceGeneration = graphDeviceGenerations.get(graph);
   if (
     graphDeviceGeneration !== undefined &&
@@ -3204,526 +3196,540 @@ export function* recordCompiledFrameGraph(
         },
       }),
     );
-    settleCompiledFrameGraphCandidate(frameState, false);
-    return false;
+    return { kind: 'rejected', stage: 'execute' };
   }
   const capturedGeneration = deviceScope?.generation;
-  const steps: Omit<RendererFrameTransactionSteps<void>, 'submit'> = {
-    build: () => ({ ok: true, value: undefined }),
-    execute: () => {
-      const graphCapture = frameState.graphTargetCapture;
-      const replayPassNames = graphCapture?.replayPassNames;
-      const unsupportedCaptureKind =
-        graphCapture !== undefined &&
-        graphCapture.kind !== undefined &&
-        graphCapture.kind !== 'target-copy' &&
-        graphCapture.kind !== 'pass-replay';
-      if (unsupportedCaptureKind || replayPassNames !== undefined) {
-        if (graphCapture === undefined) {
-          return { ok: false, stage: 'execute' };
-        }
-        const passNames = graph.inspect().passes.map((pass) => pass.name);
-        const passNameCounts = new Map<string, number>();
-        for (const passName of passNames) {
-          passNameCounts.set(passName, (passNameCounts.get(passName) ?? 0) + 1);
-        }
-        const passNameSet = new Set(passNames);
-        const selectedReplayPassNames = replayPassNames ?? [];
-        const requestedPassNames = new Set(selectedReplayPassNames);
-        const passReplayCapture = graphCapture.kind === 'pass-replay' ? graphCapture : undefined;
-        const onPassEncoded = passReplayCapture?.onPassEncoded;
-        const onPrefixEncoded = passReplayCapture?.onPrefixEncoded;
-        const depthAttachmentPassName = passReplayCapture?.depthAttachmentPassName;
-        const observeAfterPassName = passReplayCapture?.observeAfterPassName;
-        let replayValidationFailed = false;
-        const duplicatePassName = selectedReplayPassNames.find(
-          (passName, index) => selectedReplayPassNames.indexOf(passName) !== index,
-        );
-        const invalidPassName = selectedReplayPassNames.find(
-          (passName) => !passNameSet.has(passName),
-        );
-        const nonUniquePassName = selectedReplayPassNames.find(
-          (passName) => passNameCounts.get(passName) !== 1,
-        );
-        const replayFailure = (reason: string): void => {
-          replayValidationFailed = true;
-          internals.errorRegistry.fire(
-            new RhiError({
-              code: 'webgpu-runtime-error',
-              expected:
-                'the requested graph target replay pass selection is valid and executes once',
-              hint: 'inspect replayPassNames against the compiled graph pass roster',
-              detail: {
-                error: {
-                  code: 'graph-target-capture-failed',
-                  message: JSON.stringify({
-                    target: graphCapture.kind === 'pass-replay' ? undefined : graphCapture.name,
-                    replayPassNames,
-                    availablePassNames: passNames,
-                    reason,
-                  }),
-                },
+  const submission: GraphSubmission = {
+    frame: renderSubmission(renderWorldFor(internals)).frame,
+    timing: timingCapture,
+    passTiming: passTimingCapture,
+    gi: 'gi' in (resolvedFrameHooks ?? {}) ? resolvedFrameHooks?.gi : undefined,
+    onAccepted: resolvedFrameHooks?.onSubmitted,
+    submitted: false,
+    rejectedStage: undefined,
+    settled: false,
+  };
+  frameState.graphSubmission = submission;
+
+  const execute = () => {
+    const graphCapture = frameState.graphTargetCapture;
+    const replayPassNames = graphCapture?.replayPassNames;
+    const unsupportedCaptureKind =
+      graphCapture !== undefined &&
+      graphCapture.kind !== undefined &&
+      graphCapture.kind !== 'target-copy' &&
+      graphCapture.kind !== 'pass-replay';
+    if (unsupportedCaptureKind || replayPassNames !== undefined) {
+      if (graphCapture === undefined) {
+        return { ok: false, stage: 'execute' };
+      }
+      const passNames = graph.inspect().passes.map((pass) => pass.name);
+      const passNameCounts = new Map<string, number>();
+      for (const passName of passNames) {
+        passNameCounts.set(passName, (passNameCounts.get(passName) ?? 0) + 1);
+      }
+      const passNameSet = new Set(passNames);
+      const selectedReplayPassNames = replayPassNames ?? [];
+      const requestedPassNames = new Set(selectedReplayPassNames);
+      const passReplayCapture = graphCapture.kind === 'pass-replay' ? graphCapture : undefined;
+      const onPassEncoded = passReplayCapture?.onPassEncoded;
+      const onPrefixEncoded = passReplayCapture?.onPrefixEncoded;
+      const depthAttachmentPassName = passReplayCapture?.depthAttachmentPassName;
+      const observeAfterPassName = passReplayCapture?.observeAfterPassName;
+      let replayValidationFailed = false;
+      const duplicatePassName = selectedReplayPassNames.find(
+        (passName, index) => selectedReplayPassNames.indexOf(passName) !== index,
+      );
+      const invalidPassName = selectedReplayPassNames.find(
+        (passName) => !passNameSet.has(passName),
+      );
+      const nonUniquePassName = selectedReplayPassNames.find(
+        (passName) => passNameCounts.get(passName) !== 1,
+      );
+      const replayFailure = (reason: string): void => {
+        replayValidationFailed = true;
+        internals.errorRegistry.fire(
+          new RhiError({
+            code: 'webgpu-runtime-error',
+            expected: 'the requested graph target replay pass selection is valid and executes once',
+            hint: 'inspect replayPassNames against the compiled graph pass roster',
+            detail: {
+              error: {
+                code: 'graph-target-capture-failed',
+                message: JSON.stringify({
+                  target: graphCapture.kind === 'pass-replay' ? undefined : graphCapture.name,
+                  replayPassNames,
+                  availablePassNames: passNames,
+                  reason,
+                }),
               },
-            }),
-          );
+            },
+          }),
+        );
+      };
+      if (unsupportedCaptureKind) {
+        replayFailure('capture-kind-unknown');
+        return { ok: false, stage: 'execute' };
+      }
+      if (replayPassNames === undefined) {
+        replayFailure('replay-pass-selection-missing');
+        return { ok: false, stage: 'execute' };
+      }
+      if (replayPassNames.length === 0) {
+        replayFailure('replay-pass-selection-empty');
+        return { ok: false, stage: 'execute' };
+      }
+      if (duplicatePassName !== undefined) {
+        replayFailure(`replay-pass-selection-duplicate:${duplicatePassName}`);
+        return { ok: false, stage: 'execute' };
+      }
+      if (invalidPassName !== undefined) {
+        replayFailure(`replay-pass-selection-unknown:${invalidPassName}`);
+        return { ok: false, stage: 'execute' };
+      }
+      if (nonUniquePassName !== undefined) {
+        replayFailure(`replay-pass-selection-non-unique:${nonUniquePassName}`);
+        return { ok: false, stage: 'execute' };
+      }
+
+      if (onPrefixEncoded !== undefined) {
+        if (onPassEncoded !== undefined) {
+          replayFailure('pass-replay-prefix-callback-conflict');
+          return { ok: false, stage: 'execute' };
+        }
+        if (depthAttachmentPassName === undefined) {
+          replayFailure('pass-replay-depth-attachment-name-missing');
+          return { ok: false, stage: 'execute' };
+        }
+        if (observeAfterPassName === undefined) {
+          replayFailure('pass-replay-observe-boundary-name-missing');
+          return { ok: false, stage: 'execute' };
+        }
+        const firstNonPrefixPass = selectedReplayPassNames.find(
+          (passName, index) => passName !== passNames[index],
+        );
+        if (firstNonPrefixPass !== undefined || selectedReplayPassNames.length > passNames.length) {
+          replayFailure('pass-replay-selection-not-prefix');
+          return { ok: false, stage: 'execute' };
+        }
+        if (selectedReplayPassNames.at(-1) !== observeAfterPassName) {
+          replayFailure('pass-replay-observe-boundary-not-last');
+          return { ok: false, stage: 'execute' };
+        }
+        const anchorIndex = selectedReplayPassNames.indexOf(depthAttachmentPassName);
+        if (anchorIndex < 0 || anchorIndex > selectedReplayPassNames.length - 1) {
+          replayFailure('pass-replay-depth-attachment-not-in-prefix');
+          return { ok: false, stage: 'execute' };
+        }
+      }
+
+      let replayTarget:
+        | {
+            readonly name: string;
+            readonly view: TextureView;
+            readonly texture: Texture;
+            readonly textureIdentity: number;
+            readonly graphGeneration: number;
+          }
+        | undefined;
+      if (onPassEncoded !== undefined || onPrefixEncoded !== undefined) {
+        const targetName = passReplayCapture?.targetName;
+        const graphAccess = frameState.compiledFrameGraph?.targets;
+        const targetView =
+          targetName === undefined ? undefined : graphAccess?.getColorTargetView(targetName);
+        const targetTexture =
+          targetName === undefined ? undefined : graphAccess?.getColorTargetTexture(targetName);
+        const targetDescriptor =
+          targetName === undefined ? undefined : graphAccess?.getColorTargetDescriptor(targetName);
+        if (targetName === undefined) {
+          replayFailure('pass-replay-target-name-missing');
+          return { ok: false, stage: 'execute' };
+        }
+        if (graphAccess === undefined || graphAccess === null) {
+          replayFailure(`pass-replay-target-missing:${targetName}`);
+          return { ok: false, stage: 'execute' };
+        }
+        if (targetView === undefined || targetTexture === undefined) {
+          replayFailure(`pass-replay-target-missing:${targetName}`);
+          return { ok: false, stage: 'execute' };
+        }
+        if (targetDescriptor !== undefined && targetDescriptor.texture !== targetTexture) {
+          replayFailure(`pass-replay-target-identity-mismatch:${targetName}`);
+          return { ok: false, stage: 'execute' };
+        }
+        replayTarget = {
+          name: targetName,
+          view: targetView,
+          texture: targetTexture,
+          textureIdentity: getTextureIdentity(targetTexture),
+          graphGeneration: graphAccess.graphGeneration,
         };
-        if (unsupportedCaptureKind) {
-          replayFailure('capture-kind-unknown');
-          return { ok: false, stage: 'execute' };
-        }
-        if (replayPassNames === undefined) {
-          replayFailure('replay-pass-selection-missing');
-          return { ok: false, stage: 'execute' };
-        }
-        if (replayPassNames.length === 0) {
-          replayFailure('replay-pass-selection-empty');
-          return { ok: false, stage: 'execute' };
-        }
-        if (duplicatePassName !== undefined) {
-          replayFailure(`replay-pass-selection-duplicate:${duplicatePassName}`);
-          return { ok: false, stage: 'execute' };
-        }
-        if (invalidPassName !== undefined) {
-          replayFailure(`replay-pass-selection-unknown:${invalidPassName}`);
-          return { ok: false, stage: 'execute' };
-        }
-        if (nonUniquePassName !== undefined) {
-          replayFailure(`replay-pass-selection-non-unique:${nonUniquePassName}`);
-          return { ok: false, stage: 'execute' };
-        }
+      }
 
+      const executed = graph.execute(executionFrame, runPass, graphInstrumentation);
+      if (!executed.ok) {
+        passTimingCapture?.abort({ code: executed.error.code });
+        internals.errorRegistry.fire(executed.error);
+        return { ok: false, stage: 'execute' };
+      }
+      const replayedPassNames = new Set<string>();
+      let prefixCallbackCount = 0;
+      let depthAnchorReceipt:
+        | {
+            readonly pass: { name: string; executionIndex: number };
+            readonly view: TextureView;
+          }
+        | undefined;
+      const replayRunPass: import('@forgeax/engine-render-graph').RenderGraphPassRunner = (
+        pass,
+        encode,
+      ) => {
+        if (!requestedPassNames.has(pass.name)) return;
+        if (replayedPassNames.has(pass.name)) {
+          replayFailure(`replay-pass-selection-multiple-hit:${pass.name}`);
+          return;
+        }
+        replayedPassNames.add(pass.name);
+        const depthView = (pass as ResolvedDepthPassExecution).resolvedDepthStencilAttachmentView;
         if (onPrefixEncoded !== undefined) {
-          if (onPassEncoded !== undefined) {
-            replayFailure('pass-replay-prefix-callback-conflict');
-            return { ok: false, stage: 'execute' };
-          }
-          if (depthAttachmentPassName === undefined) {
-            replayFailure('pass-replay-depth-attachment-name-missing');
-            return { ok: false, stage: 'execute' };
-          }
-          if (observeAfterPassName === undefined) {
-            replayFailure('pass-replay-observe-boundary-name-missing');
-            return { ok: false, stage: 'execute' };
-          }
-          const firstNonPrefixPass = selectedReplayPassNames.find(
-            (passName, index) => passName !== passNames[index],
-          );
-          if (
-            firstNonPrefixPass !== undefined ||
-            selectedReplayPassNames.length > passNames.length
-          ) {
-            replayFailure('pass-replay-selection-not-prefix');
-            return { ok: false, stage: 'execute' };
-          }
-          if (selectedReplayPassNames.at(-1) !== observeAfterPassName) {
-            replayFailure('pass-replay-observe-boundary-not-last');
-            return { ok: false, stage: 'execute' };
-          }
-          const anchorIndex = selectedReplayPassNames.indexOf(depthAttachmentPassName);
-          if (anchorIndex < 0 || anchorIndex > selectedReplayPassNames.length - 1) {
-            replayFailure('pass-replay-depth-attachment-not-in-prefix');
-            return { ok: false, stage: 'execute' };
-          }
-        }
-
-        let replayTarget:
-          | {
-              readonly name: string;
-              readonly view: TextureView;
-              readonly texture: Texture;
-              readonly textureIdentity: number;
-              readonly graphGeneration: number;
+          if (pass.name === depthAttachmentPassName) {
+            if (depthView === undefined) {
+              replayFailure(`pass-replay-depth-attachment-missing:${pass.name}`);
+              return;
             }
-          | undefined;
-        if (onPassEncoded !== undefined || onPrefixEncoded !== undefined) {
-          const targetName = passReplayCapture?.targetName;
-          const graphAccess = frameState.compiledFrameGraph?.targets;
-          const targetView =
-            targetName === undefined ? undefined : graphAccess?.getColorTargetView(targetName);
-          const targetTexture =
-            targetName === undefined ? undefined : graphAccess?.getColorTargetTexture(targetName);
-          const targetDescriptor =
-            targetName === undefined
-              ? undefined
-              : graphAccess?.getColorTargetDescriptor(targetName);
-          if (targetName === undefined) {
-            replayFailure('pass-replay-target-name-missing');
-            return { ok: false, stage: 'execute' };
-          }
-          if (graphAccess === undefined || graphAccess === null) {
-            replayFailure(`pass-replay-target-missing:${targetName}`);
-            return { ok: false, stage: 'execute' };
-          }
-          if (targetView === undefined || targetTexture === undefined) {
-            replayFailure(`pass-replay-target-missing:${targetName}`);
-            return { ok: false, stage: 'execute' };
-          }
-          if (targetDescriptor !== undefined && targetDescriptor.texture !== targetTexture) {
-            replayFailure(`pass-replay-target-identity-mismatch:${targetName}`);
-            return { ok: false, stage: 'execute' };
-          }
-          replayTarget = {
-            name: targetName,
-            view: targetView,
-            texture: targetTexture,
-            textureIdentity: getTextureIdentity(targetTexture),
-            graphGeneration: graphAccess.graphGeneration,
-          };
-        }
-
-        const executed = graph.execute(executionFrame, runPass, graphInstrumentation);
-        if (!executed.ok) {
-          passTimingCapture?.abort({ code: executed.error.code });
-          internals.errorRegistry.fire(executed.error);
-          return { ok: false, stage: 'execute' };
-        }
-        const replayedPassNames = new Set<string>();
-        let prefixCallbackCount = 0;
-        let depthAnchorReceipt:
-          | {
-              readonly pass: { name: string; executionIndex: number };
-              readonly view: TextureView;
+            const target = replayTarget;
+            if (target === undefined || depthView !== target.view) {
+              replayFailure(`pass-replay-attachment-target-mismatch:${pass.name}`);
+              return;
             }
-          | undefined;
-        const replayRunPass: import('@forgeax/engine-render-graph').RenderGraphPassRunner = (
-          pass,
-          encode,
-        ) => {
-          if (!requestedPassNames.has(pass.name)) return;
-          if (replayedPassNames.has(pass.name)) {
-            replayFailure(`replay-pass-selection-multiple-hit:${pass.name}`);
-            return;
-          }
-          replayedPassNames.add(pass.name);
-          const depthView = (pass as ResolvedDepthPassExecution).resolvedDepthStencilAttachmentView;
-          if (onPrefixEncoded !== undefined) {
-            if (pass.name === depthAttachmentPassName) {
-              if (depthView === undefined) {
-                replayFailure(`pass-replay-depth-attachment-missing:${pass.name}`);
-                return;
-              }
-              const target = replayTarget;
-              if (target === undefined || depthView !== target.view) {
-                replayFailure(`pass-replay-attachment-target-mismatch:${pass.name}`);
-                return;
-              }
-              if (depthAnchorReceipt !== undefined) {
-                replayFailure(`pass-replay-depth-attachment-multiple-hit:${pass.name}`);
-                return;
-              }
-              depthAnchorReceipt = {
-                pass: { name: pass.name, executionIndex: pass.executionIndex },
-                view: depthView,
-              };
+            if (depthAnchorReceipt !== undefined) {
+              replayFailure(`pass-replay-depth-attachment-multiple-hit:${pass.name}`);
+              return;
             }
-            let encoded = false;
-            const encodePrefix = () => {
-              if (encoded) {
-                replayFailure(`pass-replay-encode-multiple-hit:${pass.name}`);
-                return;
-              }
-              encode();
-              encoded = true;
-              if (replayValidationFailed || pass.name !== observeAfterPassName) return;
-              const target = replayTarget;
-              const anchor = depthAnchorReceipt;
-              if (target === undefined || anchor === undefined) {
-                replayFailure('pass-replay-depth-attachment-anchor-missing-at-boundary');
-                return;
-              }
-              const receipt: GraphTargetPassReplayPrefixReceipt = {
-                passName: pass.name,
-                executionIndex: pass.executionIndex,
-                resolvedDepthStencilAttachmentView: anchor.view,
-                graphGeneration: target.graphGeneration,
-                targetName: target.name,
-                targetView: target.view,
-                targetTexture: target.texture,
-                targetTextureIdentity: target.textureIdentity,
-                replayPassNames: [...selectedReplayPassNames],
-                depthAttachmentPassName: anchor.pass.name,
-                observeAfterPassName: pass.name,
-                depthAttachmentExecutionIndex: anchor.pass.executionIndex,
-              };
-              try {
-                onPrefixEncoded(receipt);
-                prefixCallbackCount += 1;
-              } catch (cause) {
-                replayFailure(
-                  `pass-replay-prefix-callback-threw:${pass.name}:${cause instanceof Error ? cause.message : String(cause)}`,
-                );
-              }
+            depthAnchorReceipt = {
+              pass: { name: pass.name, executionIndex: pass.executionIndex },
+              view: depthView,
             };
-            if (runPass === undefined) encodePrefix();
-            else runPass(pass, encodePrefix);
-            if (!encoded && !replayValidationFailed) {
-              replayFailure(`pass-replay-encode-not-called:${pass.name}`);
-            }
-            return;
-          }
-          if (onPassEncoded === undefined) {
-            if (runPass === undefined) encode();
-            else runPass(pass, encode);
-            return;
-          }
-          const target = replayTarget;
-          if (target === undefined || depthView === undefined) {
-            replayFailure(`pass-replay-depth-attachment-missing:${pass.name}`);
-            return;
-          }
-          if (depthView !== target.view) {
-            replayFailure(`pass-replay-attachment-target-mismatch:${pass.name}`);
-            return;
           }
           let encoded = false;
-          const encodeAndObserve = () => {
+          const encodePrefix = () => {
             if (encoded) {
               replayFailure(`pass-replay-encode-multiple-hit:${pass.name}`);
               return;
             }
             encode();
             encoded = true;
-            if (replayValidationFailed) return;
-            const receipt: GraphTargetPassReplayReceipt = {
+            if (replayValidationFailed || pass.name !== observeAfterPassName) return;
+            const target = replayTarget;
+            const anchor = depthAnchorReceipt;
+            if (target === undefined || anchor === undefined) {
+              replayFailure('pass-replay-depth-attachment-anchor-missing-at-boundary');
+              return;
+            }
+            const receipt: GraphTargetPassReplayPrefixReceipt = {
               passName: pass.name,
               executionIndex: pass.executionIndex,
-              resolvedDepthStencilAttachmentView: depthView,
+              resolvedDepthStencilAttachmentView: anchor.view,
               graphGeneration: target.graphGeneration,
               targetName: target.name,
               targetView: target.view,
               targetTexture: target.texture,
               targetTextureIdentity: target.textureIdentity,
+              replayPassNames: [...selectedReplayPassNames],
+              depthAttachmentPassName: anchor.pass.name,
+              observeAfterPassName: pass.name,
+              depthAttachmentExecutionIndex: anchor.pass.executionIndex,
             };
             try {
-              onPassEncoded(receipt);
+              onPrefixEncoded(receipt);
+              prefixCallbackCount += 1;
             } catch (cause) {
               replayFailure(
-                `pass-replay-callback-threw:${pass.name}:${cause instanceof Error ? cause.message : String(cause)}`,
+                `pass-replay-prefix-callback-threw:${pass.name}:${cause instanceof Error ? cause.message : String(cause)}`,
               );
             }
           };
-          if (runPass === undefined) encodeAndObserve();
-          else runPass(pass, encodeAndObserve);
+          if (runPass === undefined) encodePrefix();
+          else runPass(pass, encodePrefix);
           if (!encoded && !replayValidationFailed) {
             replayFailure(`pass-replay-encode-not-called:${pass.name}`);
           }
+          return;
+        }
+        if (onPassEncoded === undefined) {
+          if (runPass === undefined) encode();
+          else runPass(pass, encode);
+          return;
+        }
+        const target = replayTarget;
+        if (target === undefined || depthView === undefined) {
+          replayFailure(`pass-replay-depth-attachment-missing:${pass.name}`);
+          return;
+        }
+        if (depthView !== target.view) {
+          replayFailure(`pass-replay-attachment-target-mismatch:${pass.name}`);
+          return;
+        }
+        let encoded = false;
+        const encodeAndObserve = () => {
+          if (encoded) {
+            replayFailure(`pass-replay-encode-multiple-hit:${pass.name}`);
+            return;
+          }
+          encode();
+          encoded = true;
+          if (replayValidationFailed) return;
+          const receipt: GraphTargetPassReplayReceipt = {
+            passName: pass.name,
+            executionIndex: pass.executionIndex,
+            resolvedDepthStencilAttachmentView: depthView,
+            graphGeneration: target.graphGeneration,
+            targetName: target.name,
+            targetView: target.view,
+            targetTexture: target.texture,
+            targetTextureIdentity: target.textureIdentity,
+          };
+          try {
+            onPassEncoded(receipt);
+          } catch (cause) {
+            replayFailure(
+              `pass-replay-callback-threw:${pass.name}:${cause instanceof Error ? cause.message : String(cause)}`,
+            );
+          }
         };
-        const replayed = graph.execute(executionFrame, replayRunPass);
-        if (!replayed.ok) {
-          internals.errorRegistry.fire(replayed.error);
-          return { ok: false, stage: 'execute' };
+        if (runPass === undefined) encodeAndObserve();
+        else runPass(pass, encodeAndObserve);
+        if (!encoded && !replayValidationFailed) {
+          replayFailure(`pass-replay-encode-not-called:${pass.name}`);
         }
-        if (replayValidationFailed) return { ok: false, stage: 'execute' };
-        if (replayedPassNames.size !== requestedPassNames.size) {
-          replayFailure('replay-pass-selection-zero-hit');
-          return { ok: false, stage: 'execute' };
-        }
-        if (onPrefixEncoded !== undefined && prefixCallbackCount !== 1) {
-          replayFailure('pass-replay-prefix-callback-count-invalid');
-          return { ok: false, stage: 'execute' };
-        }
-      } else {
-        const executed = graph.execute(executionFrame, runPass, graphInstrumentation);
-        if (!executed.ok) {
-          passTimingCapture?.abort({ code: executed.error.code });
-          internals.errorRegistry.fire(executed.error);
-          return { ok: false, stage: 'execute' };
-        }
+      };
+      const replayed = graph.execute(executionFrame, replayRunPass);
+      if (!replayed.ok) {
+        internals.errorRegistry.fire(replayed.error);
+        return { ok: false, stage: 'execute' };
       }
-      const afterGraphExecute = resolvedFrameHooks?.afterGraphExecute;
-      internals.framePassNames?.push(...graph.inspect().passes.map((pass) => pass.name));
-      if (afterGraphExecute !== undefined) {
-        const recorded = afterGraphExecute();
-        if (!recorded.ok) {
-          internals.errorRegistry.fire(recorded.error);
-          return { ok: false, stage: 'execute' };
-        }
+      if (replayValidationFailed) return { ok: false, stage: 'execute' };
+      if (replayedPassNames.size !== requestedPassNames.size) {
+        replayFailure('replay-pass-selection-zero-hit');
+        return { ok: false, stage: 'execute' };
       }
-      return { ok: true, value: undefined };
-    },
-    finish: () => {
-      const drawStorage = (frame as _InternalRenderPipelineContext).pipelineState.meshStorageBuffer;
-      if (drawStorage !== undefined) flushMeshDrawUploads(internals.device.queue, drawStorage);
-      const graphCapture = frameState.graphTargetCapture;
-      frameState.graphTargetCapture = undefined;
-      if (graphCapture !== undefined && graphCapture.kind !== 'pass-replay') {
-        const graphAccess = frameState.compiledFrameGraph?.targets;
-        const graphTexture = graphAccess?.getColorTargetTexture(graphCapture.name);
-        const descriptor = graphAccess?.getColorTargetDescriptor(graphCapture.name);
-        const frameId = frameState.frameNumber;
-        const captureFailure = (message: string): void => {
-          internals.errorRegistry.fire(
-            new RhiError({
-              code: 'webgpu-runtime-error',
-              expected:
-                'the requested graph target is present in the current graph with a matching copy-readable descriptor',
-              hint: 'inspect the target name, graph generation/frame, texture identity, format, extent, and COPY_SRC usage',
-              detail: {
-                error: {
-                  code: 'graph-target-capture-failed',
-                  message,
-                },
-              },
-            }),
-          );
-        };
-        if (
-          graphAccess === undefined ||
-          graphAccess === null ||
-          graphTexture === undefined ||
-          descriptor === undefined
-        ) {
-          captureFailure(
-            JSON.stringify({
-              target: graphCapture.name,
-              graphGeneration: graphAccess?.graphGeneration,
-              frameId,
-              textureIdentity:
-                graphTexture === undefined ? undefined : getTextureIdentity(graphTexture),
-              reason: 'target-not-present-in-current-graph',
-            }),
-          );
-        } else if (
-          descriptor.size.width !== graphCapture.width ||
-          descriptor.size.height !== graphCapture.height
-        ) {
-          captureFailure(
-            JSON.stringify({
-              target: graphCapture.name,
-              graphGeneration: graphAccess.graphGeneration,
-              frameId,
-              textureIdentity: getTextureIdentity(graphTexture),
-              expectedFormat: graphCapture.expected.format,
-              actualFormat: descriptor.format,
-              expectedExtent: { width: graphCapture.width, height: graphCapture.height },
-              actualExtent: descriptor.size,
-              reason: 'extent-mismatch',
-            }),
-          );
-        } else if ((descriptor.usage & GPU_TEXTURE_USAGE_COPY_SRC) === 0) {
-          captureFailure(
-            JSON.stringify({
-              target: graphCapture.name,
-              graphGeneration: graphAccess.graphGeneration,
-              frameId,
-              textureIdentity: getTextureIdentity(graphTexture),
-              format: descriptor.format,
-              extent: descriptor.size,
-              usage: descriptor.usage,
-              reason: 'copy-src-usage-missing',
-            }),
-          );
-        } else if (
-          descriptor.format !== graphCapture.expected.format ||
-          descriptor.size.width !== graphCapture.expected.width ||
-          descriptor.size.height !== graphCapture.expected.height ||
-          (descriptor.usage & graphCapture.expected.usage) !== graphCapture.expected.usage
-        ) {
-          captureFailure(
-            JSON.stringify({
-              target: graphCapture.name,
-              graphGeneration: graphAccess.graphGeneration,
-              frameId,
-              textureIdentity: getTextureIdentity(graphTexture),
-              expected: graphCapture.expected,
-              actual: {
-                format: descriptor.format,
-                width: descriptor.size.width,
-                height: descriptor.size.height,
-                usage: descriptor.usage,
-              },
-              reason: 'descriptor-mismatch',
-            }),
-          );
-        } else if (
-          graphCapture.expected.identity !== undefined &&
-          (graphAccess.graphGeneration !== graphCapture.expected.identity.graphGeneration ||
-            graphCapture.expected.identity.frameId !== frameId ||
-            graphCapture.expected.identity.textureIdentity !== getTextureIdentity(graphTexture))
-        ) {
-          captureFailure(
-            JSON.stringify({
-              target: graphCapture.name,
-              graphGeneration: graphAccess.graphGeneration,
-              frameId,
-              textureIdentity: getTextureIdentity(graphTexture),
-              expectedIdentity: graphCapture.expected.identity,
-              reason: 'identity-mismatch',
-            }),
-          );
-        } else {
-          encoder.copyTextureToBuffer(
-            { texture: graphTexture },
-            {
-              buffer: graphCapture.buffer,
-              bytesPerRow: graphCapture.bytesPerRow,
-              rowsPerImage: graphCapture.height,
-            },
-            {
-              width: graphCapture.width,
-              height: graphCapture.height,
-              depthOrArrayLayers: 1,
-            },
-          );
-        }
+      if (onPrefixEncoded !== undefined && prefixCallbackCount !== 1) {
+        replayFailure('pass-replay-prefix-callback-count-invalid');
+        return { ok: false, stage: 'execute' };
       }
-      const fallbackReadback = frameState.reflectionFallbackReadback;
-      frameState.reflectionFallbackReadback = undefined;
-      if (fallbackReadback !== undefined) {
-        const graphAccess = frameState.compiledFrameGraph?.targets;
-        const graphTexture = graphAccess?.getColorTargetTexture(fallbackReadback.name);
-        const descriptor = graphAccess?.getColorTargetDescriptor(fallbackReadback.name);
-        const matches =
-          graphAccess !== undefined &&
-          graphAccess !== null &&
-          graphTexture !== undefined &&
-          descriptor !== undefined &&
-          descriptor.format === fallbackReadback.expected.format &&
-          descriptor.size.width === fallbackReadback.expected.width &&
-          descriptor.size.height === fallbackReadback.expected.height &&
-          descriptor.sample === 1 &&
-          (descriptor.usage & fallbackReadback.expected.usage) ===
-            fallbackReadback.expected.usage &&
-          graphAccess.graphGeneration === fallbackReadback.expected.graphGeneration &&
-          frameState.frameNumber === fallbackReadback.expected.frameId &&
-          getTextureIdentity(graphTexture) === fallbackReadback.expected.textureIdentity;
-        if (matches && graphTexture !== undefined) {
-          encoder.copyTextureToBuffer(
-            { texture: graphTexture },
-            {
-              buffer: fallbackReadback.buffer,
-              bytesPerRow: fallbackReadback.bytesPerRow,
-              rowsPerImage: fallbackReadback.height,
-            },
-            {
-              width: fallbackReadback.width,
-              height: fallbackReadback.height,
-              depthOrArrayLayers: 1,
-            },
-          );
-          fallbackReadback.encoded = true;
-        }
+    } else {
+      const executed = graph.execute(executionFrame, runPass, graphInstrumentation);
+      if (!executed.ok) {
+        passTimingCapture?.abort({ code: executed.error.code });
+        internals.errorRegistry.fire(executed.error);
+        return { ok: false, stage: 'execute' };
       }
-      internals.encodeRenderTargetReadbacks?.(encoder, readbackLayers);
-      const stagedGpuState = frameState.temporalGpuState;
-      if (stagedGpuState !== undefined && !hasPendingTemporalGpuSubmit(stagedGpuState)) {
+    }
+    const afterGraphExecute = resolvedFrameHooks?.afterGraphExecute;
+    internals.framePassNames?.push(...graph.inspect().passes.map((pass) => pass.name));
+    if (afterGraphExecute !== undefined) {
+      const recorded = afterGraphExecute();
+      if (!recorded.ok) {
+        internals.errorRegistry.fire(recorded.error);
+        return { ok: false, stage: 'execute' };
+      }
+    }
+    return { ok: true, value: undefined };
+  };
+  const finish = () => {
+    const drawStorage = (frame as _InternalRenderPipelineContext).pipelineState.meshStorageBuffer;
+    if (drawStorage !== undefined) flushMeshDrawUploads(internals.device.queue, drawStorage);
+    const graphCapture = frameState.graphTargetCapture;
+    frameState.graphTargetCapture = undefined;
+    if (graphCapture !== undefined && graphCapture.kind !== 'pass-replay') {
+      const graphAccess = frameState.compiledFrameGraph?.targets;
+      const graphTexture = graphAccess?.getColorTargetTexture(graphCapture.name);
+      const descriptor = graphAccess?.getColorTargetDescriptor(graphCapture.name);
+      const frameId = frameState.frameNumber;
+      const captureFailure = (message: string): void => {
         internals.errorRegistry.fire(
           new RhiError({
             code: 'webgpu-runtime-error',
-            expected: 'an admitted temporal producer stages a history write before submit',
-            hint: 'retry the frame after the TAA or CloudLayer history pass has encoded successfully',
+            expected:
+              'the requested graph target is present in the current graph with a matching copy-readable descriptor',
+            hint: 'inspect the target name, graph generation/frame, texture identity, format, extent, and COPY_SRC usage',
+            detail: {
+              error: {
+                code: 'graph-target-capture-failed',
+                message,
+              },
+            },
           }),
         );
-        return { ok: false, stage: 'finish' };
+      };
+      if (
+        graphAccess === undefined ||
+        graphAccess === null ||
+        graphTexture === undefined ||
+        descriptor === undefined
+      ) {
+        captureFailure(
+          JSON.stringify({
+            target: graphCapture.name,
+            graphGeneration: graphAccess?.graphGeneration,
+            frameId,
+            textureIdentity:
+              graphTexture === undefined ? undefined : getTextureIdentity(graphTexture),
+            reason: 'target-not-present-in-current-graph',
+          }),
+        );
+      } else if (
+        descriptor.size.width !== graphCapture.width ||
+        descriptor.size.height !== graphCapture.height
+      ) {
+        captureFailure(
+          JSON.stringify({
+            target: graphCapture.name,
+            graphGeneration: graphAccess.graphGeneration,
+            frameId,
+            textureIdentity: getTextureIdentity(graphTexture),
+            expectedFormat: graphCapture.expected.format,
+            actualFormat: descriptor.format,
+            expectedExtent: { width: graphCapture.width, height: graphCapture.height },
+            actualExtent: descriptor.size,
+            reason: 'extent-mismatch',
+          }),
+        );
+      } else if ((descriptor.usage & GPU_TEXTURE_USAGE_COPY_SRC) === 0) {
+        captureFailure(
+          JSON.stringify({
+            target: graphCapture.name,
+            graphGeneration: graphAccess.graphGeneration,
+            frameId,
+            textureIdentity: getTextureIdentity(graphTexture),
+            format: descriptor.format,
+            extent: descriptor.size,
+            usage: descriptor.usage,
+            reason: 'copy-src-usage-missing',
+          }),
+        );
+      } else if (
+        descriptor.format !== graphCapture.expected.format ||
+        descriptor.size.width !== graphCapture.expected.width ||
+        descriptor.size.height !== graphCapture.expected.height ||
+        (descriptor.usage & graphCapture.expected.usage) !== graphCapture.expected.usage
+      ) {
+        captureFailure(
+          JSON.stringify({
+            target: graphCapture.name,
+            graphGeneration: graphAccess.graphGeneration,
+            frameId,
+            textureIdentity: getTextureIdentity(graphTexture),
+            expected: graphCapture.expected,
+            actual: {
+              format: descriptor.format,
+              width: descriptor.size.width,
+              height: descriptor.size.height,
+              usage: descriptor.usage,
+            },
+            reason: 'descriptor-mismatch',
+          }),
+        );
+      } else if (
+        graphCapture.expected.identity !== undefined &&
+        (graphAccess.graphGeneration !== graphCapture.expected.identity.graphGeneration ||
+          graphCapture.expected.identity.frameId !== frameId ||
+          graphCapture.expected.identity.textureIdentity !== getTextureIdentity(graphTexture))
+      ) {
+        captureFailure(
+          JSON.stringify({
+            target: graphCapture.name,
+            graphGeneration: graphAccess.graphGeneration,
+            frameId,
+            textureIdentity: getTextureIdentity(graphTexture),
+            expectedIdentity: graphCapture.expected.identity,
+            reason: 'identity-mismatch',
+          }),
+        );
+      } else {
+        encoder.copyTextureToBuffer(
+          { texture: graphTexture },
+          {
+            buffer: graphCapture.buffer,
+            bytesPerRow: graphCapture.bytesPerRow,
+            rowsPerImage: graphCapture.height,
+          },
+          {
+            width: graphCapture.width,
+            height: graphCapture.height,
+            depthOrArrayLayers: 1,
+          },
+        );
       }
-      const resolved = timingCapture?.resolve(encoder);
-      if (resolved !== undefined && !resolved.ok) {
-        timingCapture?.discard();
-        return { ok: false, stage: 'finish' };
+    }
+    const fallbackReadback = frameState.reflectionFallbackReadback;
+    frameState.reflectionFallbackReadback = undefined;
+    if (fallbackReadback !== undefined) {
+      const graphAccess = frameState.compiledFrameGraph?.targets;
+      const graphTexture = graphAccess?.getColorTargetTexture(fallbackReadback.name);
+      const descriptor = graphAccess?.getColorTargetDescriptor(fallbackReadback.name);
+      const matches =
+        graphAccess !== undefined &&
+        graphAccess !== null &&
+        graphTexture !== undefined &&
+        descriptor !== undefined &&
+        descriptor.format === fallbackReadback.expected.format &&
+        descriptor.size.width === fallbackReadback.expected.width &&
+        descriptor.size.height === fallbackReadback.expected.height &&
+        descriptor.sample === 1 &&
+        (descriptor.usage & fallbackReadback.expected.usage) === fallbackReadback.expected.usage &&
+        graphAccess.graphGeneration === fallbackReadback.expected.graphGeneration &&
+        frameState.frameNumber === fallbackReadback.expected.frameId &&
+        getTextureIdentity(graphTexture) === fallbackReadback.expected.textureIdentity;
+      if (matches && graphTexture !== undefined) {
+        encoder.copyTextureToBuffer(
+          { texture: graphTexture },
+          {
+            buffer: fallbackReadback.buffer,
+            bytesPerRow: fallbackReadback.bytesPerRow,
+            rowsPerImage: fallbackReadback.height,
+          },
+          {
+            width: fallbackReadback.width,
+            height: fallbackReadback.height,
+            depthOrArrayLayers: 1,
+          },
+        );
+        fallbackReadback.encoded = true;
       }
-      return { ok: true, value: undefined };
-    },
-    ...(capturedGeneration === undefined && resolvedFrameHooks?.generationFence === undefined
+    }
+    recordContext(internals).encodeRenderTargetReadbacks?.(encoder, readbackLayers);
+    const stagedGpuState = frameState.temporalGpuState;
+    if (stagedGpuState !== undefined && !hasPendingTemporalGpuSubmit(stagedGpuState)) {
+      internals.errorRegistry.fire(
+        new RhiError({
+          code: 'webgpu-runtime-error',
+          expected: 'an admitted temporal producer stages a history write before submit',
+          hint: 'retry the frame after the TAA or CloudLayer history pass has encoded successfully',
+        }),
+      );
+      return { ok: false, stage: 'finish' };
+    }
+    const resolved = timingCapture?.resolve(encoder);
+    if (resolved !== undefined && !resolved.ok) {
+      timingCapture?.discard();
+      return { ok: false, stage: 'finish' };
+    }
+    recordViewFeatureGraph(renderWorldFor(internals), frameState.featureGraphReceipt, graph);
+    return { ok: true, value: undefined };
+  };
+  const executed = execute();
+  if (!executed.ok) {
+    submission.rejectedStage = 'execute';
+    return { kind: 'rejected', stage: 'execute' };
+  }
+  const finished = finish();
+  if (!finished.ok) {
+    submission.rejectedStage = 'finish';
+    return { kind: 'rejected', stage: 'finish' };
+  }
+  const fences =
+    capturedGeneration === undefined && resolvedFrameHooks?.generationFence === undefined
       ? {}
       : {
           generationFence: {
@@ -3734,119 +3740,63 @@ export function* recordCompiledFrameGraph(
             currentGeneration: () => {
               const content = resolvedFrameHooks?.generationFence;
               return (capturedGeneration === undefined ||
-                internals.deviceScope?.generation === capturedGeneration) &&
+                recordContext(internals).deviceScope?.generation === capturedGeneration) &&
                 (content === undefined ||
                   content.currentGeneration() === content.capturedGeneration)
                 ? 0
                 : -1;
             },
           },
-        }),
-    commit: () => {
-      timingCapture?.markSubmitted();
-      resolvedFrameHooks?.onSubmitted?.();
-      legacySubmitCommit?.();
-      if (motionBlurExecution === undefined) {
-        delete frameState.motionBlurExecution;
-      } else {
-        frameState.motionBlurExecution = motionBlurExecution;
-      }
-      if (frameState.temporalFrameTransaction.inspect().staged) {
-        const temporal = frameState.temporalFrameTransaction.commit({ accepted: true });
-        if (!temporal.ok) {
-          internals.errorRegistry.fire(
-            new RhiError({
-              code: 'webgpu-runtime-error',
-              expected: 'the staged temporal frame to commit after queue submission',
-              hint: 'discard the temporal candidate and retry the next frame',
-              detail: { error: temporal.error },
-            }),
-          );
-        }
-      }
-      if (frameState.bloomFrameReceipts !== undefined) {
-        internals
-          .getPipelineState()
-          ?.perPassResources.commitBloomFrameReceipts?.(frameState.bloomFrameReceipts);
-        frameState.bloomFrameReceipts = undefined;
-      }
-      commitStandardOutputSubmission(frameState, internals.device.queue);
-      const onTemporalRetireFailure = (cause: unknown): void => {
-        internals.errorRegistry.fire(
-          new RhiError({
-            code: 'webgpu-runtime-error',
-            expected: 'submitted temporal resources remain valid until queue completion',
-            hint: `temporal resource retirement failed: ${String(cause)}`,
-          }),
-        );
-      };
-      commitStagedTemporalGpuState(frameState, internals.device.queue, {
-        onReplaced: () => internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve'),
-        onRetireFailure: onTemporalRetireFailure,
-      });
-      const stagedCloudHistoryActive = frameState.pendingCloudHistoryActive;
-      if (stagedCloudHistoryActive !== undefined) {
-        frameState.cloudHistoryActive = stagedCloudHistoryActive;
-        delete frameState.pendingCloudHistoryActive;
-      }
-      if (frameState.temporalView.commit() === 'off' && frameState.cloudHistoryActive !== true) {
-        internals.clearPostProcessPipelineCache?.('forgeax.taa-resolve');
-        // Retire frame-sized resources, not the device-owned prewarmed
-        // shader. The next TAA frame must not start an async cold compile.
-        retireActiveTemporalGpuState(frameState, internals.device.queue, onTemporalRetireFailure);
-      }
-      if (frameState.environmentGeneration !== undefined) {
-        frameState.environmentLifecycle?.publish(frameState.environmentGeneration);
-        frameState.environmentGeneration = undefined;
-      }
-      settleAtmospherePublish(frameState, true);
-      if (submittedCompletion !== undefined) onSubmitted?.(submittedCompletion);
-      settleCompiledFrameGraphCandidate(frameState, true);
-    },
-    abort: (failure) => {
-      settleAtmospherePublish(frameState, false);
-      resolvedFrameHooks?.onAborted?.();
-      passTimingCapture?.abort({ code: failure.stage });
-      timingCapture?.discard();
-      frameState.bloomFrameReceipts = undefined;
-      discardStandardOutputStates(frameState);
-      retirePendingStandardOutputGpu(frameState);
-      if (frameState.environmentGeneration !== undefined) {
-        frameState.environmentLifecycle?.recordStageFailure(
-          failure.stage,
-          frameState.environmentGeneration,
-        );
-      }
-      abortStagedTemporalGpuState(frameState);
-      delete frameState.pendingCloudHistoryActive;
-      frameState.temporalView.discard();
-      if (frameState.environmentGeneration !== undefined) {
-        frameState.environmentLifecycle?.discard(frameState.environmentGeneration);
-        frameState.environmentGeneration = undefined;
-      }
-      settleCompiledFrameGraphCandidate(frameState, false);
-    },
-  };
-  const transaction = yield* recordFrameTransaction(steps, {
-    encoder,
-    device: internals.device,
+        };
+  const work: RecordedView = {
     beforeSubmit: internals.beforeSubmit,
+    ...(fences.generationFence === undefined
+      ? {}
+      : {
+          rejectionCause: () => resolvedFrameHooks?.generationFence?.rejectionCause?.(),
+          isCurrent: () =>
+            fences.generationFence.currentGeneration() ===
+            fences.generationFence.capturedGeneration,
+        }),
     ...(onSubmitted === undefined && resolvedFrameHooks?.onSubmittedWork === undefined
       ? {}
       : {
           onSubmittedWork: (done: Promise<void>) => {
-            submittedCompletion = done;
-            resolvedFrameHooks?.onSubmittedWork?.(done);
+            const failures: unknown[] = [];
+            try {
+              onSubmitted?.(done);
+            } catch (cause) {
+              failures.push(cause);
+            }
+            try {
+              resolvedFrameHooks?.onSubmittedWork?.(done);
+            } catch (cause) {
+              failures.push(cause);
+            }
+            if (failures.length === 1) throw failures[0];
+            if (failures.length > 1)
+              throw new AggregateError(failures, 'Graph submitted-work observers failed');
           },
         }),
     reportError: (error) => internals.errorRegistry.fire(error),
-  });
-  // The callbacks above settle the normal transaction path. Keep this guard
-  // for synthetic callers and any future early transaction result that does
-  // not enter a callback.
-  settleCompiledFrameGraphCandidate(frameState, transaction.ok);
-  if (!transaction.ok) rejectTemporalFrame();
-  return transaction.ok;
+  };
+  return { kind: 'encoded', value: { internals, frameState, submission, work } };
+}
+
+/** Settle the encoded graph from the one physical submission outcome. */
+export function settleEncodedFrameGraph(
+  encoded: EncodedFrameGraph,
+  result: RendererFrameStageResult<void>,
+): boolean {
+  const accepted = result.ok && encoded.work.isCurrent?.() !== false;
+  if (accepted) encoded.submission.submitted = true;
+  else encoded.submission.rejectedStage = result.ok ? 'submit' : result.stage;
+  if (encoded.internals.viewEntity === undefined) {
+    if (accepted) commitGraphSubmission(encoded.internals, encoded.submission);
+    else abortGraphSubmission(encoded.frameState, encoded.submission);
+    encoded.frameState.graphSubmission = undefined;
+  }
+  return accepted;
 }
 
 function createTimingInstrumentation(

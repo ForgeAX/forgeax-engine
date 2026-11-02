@@ -37,7 +37,7 @@ import {
   createPbrSkinMeshBindGroupEntries,
   isCanonicalStandardPbrMaterialShader,
 } from '../pbr-pipeline';
-import { packInstanceStorageBuffer } from '../record/mesh-ssbo';
+import { INSTANCE_STORAGE_STRIDE_FLOATS, packInstanceStorageBuffer } from '../record/mesh-ssbo';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import type { SkinTaskBinding } from '../record/skin-tasks';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
@@ -702,7 +702,10 @@ export class MaterialAbiRasterAdapter {
     identity[5] = 1;
     identity[10] = 1;
     identity[15] = 1;
-    const instancePayload = packInstanceStorageBuffer(identity);
+    const instancePayload = packInstanceStorageBuffer(
+      new Float32Array(INSTANCE_STORAGE_STRIDE_FLOATS),
+      identity,
+    );
     const createdBuffers: Buffer[] = [];
     const cleanupCreatedBuffers = (): void => {
       for (const buffer of createdBuffers) input.device.destroyBuffer(buffer);

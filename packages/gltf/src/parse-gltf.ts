@@ -422,6 +422,9 @@ interface RootGltfJson extends GltfExtensionsJson {
     readonly sampler?: number;
     readonly source?: number;
     readonly name?: string;
+    readonly extensions?: {
+      readonly KHR_texture_basisu?: { readonly source?: number };
+    };
   }>;
   readonly images?: readonly GltfImageJson[];
   readonly samplers?: ReadonlyArray<{
@@ -759,7 +762,8 @@ function decodeMorphAttribute(
         : 'attribute-length-mismatch',
     );
   }
-  if (targetAccessor.type !== 'VEC3' || targetAccessor.componentType !== 5126)
+  // KHR_mesh_quantization admits byte/short (normalized or not) morph deltas.
+  if (targetAccessor.type !== 'VEC3' || targetAccessor.componentType === 5125)
     return err('attribute-length-mismatch');
   if (decoded.value.length !== positions.length) return err('attribute-length-mismatch');
   return ok(decoded.value);
@@ -1004,8 +1008,12 @@ function parseMeshes(geometry: ProjectedGeometry): Result<GltfMeshIr[], GltfErro
 }
 
 function parseTextures(texturesJson: NonNullable<RootGltfJson['textures']>): GltfTextureIr[] {
+  // KHR_texture_basisu: the extension's KTX2 image replaces `source` (which,
+  // when present, is only a PNG / JPEG fallback for loaders without the
+  // extension); sampler and per-binding KHR_texture_transform are untouched.
+  // Matches Three.js GLTFLoader's GLTFTextureBasisUExtension.
   return texturesJson.map((texJson) => ({
-    source: texJson.source ?? -1,
+    source: texJson.extensions?.KHR_texture_basisu?.source ?? texJson.source ?? -1,
     ...(texJson.sampler === undefined ? {} : { sampler: texJson.sampler }),
     ...(texJson.name === undefined ? {} : { name: texJson.name }),
   }));

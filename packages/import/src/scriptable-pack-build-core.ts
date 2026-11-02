@@ -485,16 +485,38 @@ async function cookCustomOutput(
         actualGuid: cooked.value.guid,
       },
     });
-  const product = {
-    payload: cooked.value.payload,
-    refs: cooked.value.refs.map((guid) => ({ guid })),
-    artifacts: cooked.value.artifacts,
-  };
-  const invalid = productError(options.sourcePath, sourceKey, { kind: asset.kind }, product);
+  const cookedAsset = cooked.value.payload;
+  const produced = isAsset(cookedAsset)
+    ? await produceOrdinaryOutput(options, sourceKey, guid, cookedAsset)
+    : undefined;
+  if (produced !== undefined && !produced.ok) return produced;
+  const ordinary = produced?.ok === true ? produced.value : undefined;
+  const kind = ordinary?.imported.kind ?? asset.kind;
+  const refs = cooked.value.refs.map((guid) => ({ guid }));
+  const product =
+    ordinary === undefined
+      ? { payload: cookedAsset, refs, artifacts: cooked.value.artifacts }
+      : {
+          payload: ordinary.imported.payload,
+          refs: [
+            ...ordinary.imported.refs,
+            ...refs.filter(
+              (ref) =>
+                !ordinary.imported.refs.some(
+                  (own) => own.guid.toLowerCase() === ref.guid.toLowerCase(),
+                ),
+            ),
+          ],
+          artifacts: { ...cooked.value.artifacts, ...ordinary.imported.artifacts },
+        };
+  const invalid = productError(options.sourcePath, sourceKey, { kind }, product);
   if (invalid !== undefined) return err(invalid);
   return ok({
-    imported: { guid, kind: asset.kind, ...product },
-    nativeFingerprint: cooked.value.inputFingerprint,
+    imported: { guid, kind, ...product },
+    nativeFingerprint:
+      ordinary?.nativeFingerprint === undefined
+        ? cooked.value.inputFingerprint
+        : `${cooked.value.inputFingerprint}+${ordinary.nativeFingerprint}`,
   });
 }
 
@@ -824,8 +846,10 @@ export async function buildScriptablePack(
     return (
       asset !== undefined &&
       (declaresCookedExecution(asset) ||
-        (isAsset(asset) && asset.kind === 'material' && Array.isArray(asset.passes))) &&
-      options.cookers?.get(asset.kind)?.concurrency === 'parallel'
+        (isAsset(asset) &&
+          asset.kind === 'material' &&
+          Array.isArray(asset.passes) &&
+          options.cookers?.get(asset.kind)?.concurrency === 'parallel'))
     );
   };
   const produce = async (sourceKey: string) => {
@@ -873,8 +897,9 @@ export async function buildScriptablePack(
       },
     });
   };
-  // Only reentrant cooker outputs share admission. Drain each bounded batch
-  // before reporting its first authored error or starting any later outputs.
+  // The registry serializes each undeclared cooker key. Overlap complete outputs
+  // so a serial custom cook can feed parallel native material production.
+  // Drain each bounded batch before returning its first authored error.
   for (let index = 0; index < sourceKeys.length; ) {
     let end = index + 1;
     if (parallel(index)) {
@@ -985,9 +1010,15 @@ export interface ScriptablePackBuildWorklistOptions {
   }) => void;
 }
 
+/** Current content digest of a dependency GUID, or undefined while it is unavailable. */
+export type ScriptablePackDependencyResolver = (guid: string) => Promise<string | undefined>;
+
 /** Optional producer cache; the worklist still owns current-generation reference validation. */
 export interface ScriptablePackBuildProductCache {
-  read(subject: ScriptablePackBuildWorkItem): Promise<ScriptablePackBuildProduct | undefined>;
+  read(
+    subject: ScriptablePackBuildWorkItem,
+    resolve?: ScriptablePackDependencyResolver,
+  ): Promise<ScriptablePackBuildProduct | undefined>;
   write(subject: ScriptablePackBuildWorkItem, product: ScriptablePackBuildProduct): Promise<void>;
 }
 
@@ -1076,7 +1107,15 @@ export async function buildScriptablePackWorklist(
             ...(cache === undefined ? {} : { cache }),
           });
         report('cache');
-        let cached = await options.cache?.read(subject);
+        let cached = await options.cache?.read(subject, async (guid) => {
+          const parsed = AssetGuid.parse(guid);
+          if (!parsed.ok) return undefined;
+          const local = visible.get(AssetGuid.format(parsed.value).toLowerCase());
+          if (local !== undefined) return local.digest ?? (await digest(local.asset));
+          if (pending.size > 1) return undefined;
+          const read = await options.assetSource?.readByGuid(parsed.value);
+          return read?.ok ? read.value.digest : undefined;
+        });
         const cachedPluginsIgnored =
           cached !== undefined &&
           subject.definition.plugins !== true &&

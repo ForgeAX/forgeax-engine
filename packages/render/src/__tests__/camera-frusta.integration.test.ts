@@ -176,7 +176,8 @@ describe('CameraSnapshot frustum consumers', () => {
       expect(scene.inspect().gpu.status).toBe('resident');
       const selected = candidates.find((row) => row.entityKey === outside);
       expect(selected?.localAabb).toBeDefined();
-      scene.setGpuDrivenRasterLane({ selection });
+      scene.stageRasterLane({ selection, shadows: undefined });
+      scene.commitRasterLane();
       const gpuOwned = extract();
       // GPU-lane frames stay uncompacted; camera admission is a keyed predicate.
       expect(renderableKeys(gpuOwned)).toEqual([inside, outside, outsideResidual]);
@@ -186,7 +187,24 @@ describe('CameraSnapshot frustum consumers', () => {
       const visible = gpuOwned.renderables.filter((row) => gpuOwned.cameraVisible?.(row) !== false);
       expect(visible.map((row) => row.entityKey)).toEqual([inside]);
       expect({ ...gpuOwned.frustumStats }).toEqual({ culled: 2, total: 3 });
-      scene.setGpuDrivenRasterLane(undefined);
+      // An unaccepted attempt (pipelines still preparing) never commits its
+      // lane, but Skin demand predicts GPU-drawn rows from it.
+      scene.stageRasterLane({ selection, shadows: undefined });
+      scene.discardTemporalFrame();
+      expect(scene.skinDemandLane()?.selection).toBe(selection);
+      expect(scene.skinDemandLane()?.shadowSelection).toBeUndefined();
+      scene.stageRasterLane(undefined);
+      expect(scene.skinDemandLane()).toBeUndefined();
+      scene.discardTemporalFrame();
+      scene.commitRasterLane();
+      // A discarded lane leaves the adopted one in place.
+      expect(
+        extract()
+          .gpuOwned?.residual(selection)
+          .map((row) => row.entityKey),
+      ).toEqual([outsideResidual]);
+      scene.stageRasterLane(undefined);
+      scene.commitRasterLane();
       expect(renderableKeys(extract())).toEqual([inside]);
     } finally {
       lease.dispose();

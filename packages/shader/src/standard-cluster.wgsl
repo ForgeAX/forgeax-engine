@@ -9,7 +9,7 @@
 #define_import_path forgeax_standard::cluster
 #import forgeax_view::common::{lightingChannelsMatch}
 
-#import forgeax_pbr::lighting_punctual::{evalPoint, evalPointFlat, evalSpot, evalSpotFlat, evalSpotShadowed}
+#import forgeax_pbr::lighting_punctual::{evalDirectionalSlot, evalPoint, evalPointFlat, evalSpot, evalSpotFlat, evalSpotShadowed}
 #import forgeax_pbr::lighting_spot_modifiers::{spotModifierFactors}
 #import forgeax_pbr::lighting_ies_profile::{iesProfileFactor}
 #import forgeax_pbr::lighting_rect_area::{evalRectAreaLtcGgx}
@@ -27,6 +27,7 @@
 const KIND_POINT: u32 = 0u;
 const KIND_SPOT: u32 = 1u;
 const KIND_RECT_AREA: u32 = 2u;
+const KIND_DIRECTIONAL: u32 = 3u;
 const KIND_MASK: u32 = 0xffu;
 const PCF_SHIFT: u32 = 8u;
 const PROJECTOR_FLAG: i32 = 0x40000000;
@@ -291,6 +292,19 @@ fn evaluate_cluster_light(
       f0,
       transmission,
       light.metadata.w,
+    );
+  }
+  if (kind == KIND_DIRECTIONAL) {
+    if (flat_2d) {
+      return base_color * light.colorTimesIntensity.xyz;
+    }
+    return evalDirectionalSlot(
+      light.direction.xyz, light.colorTimesIntensity.xyz,
+      normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
     );
   }
   return vec3<f32>(0.0);

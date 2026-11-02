@@ -1,5 +1,4 @@
 import type { RecorderSession } from '@forgeax/engine-profiler';
-import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { ShaderError } from '@forgeax/engine-shader';
 import { resolveDepthOfFieldFrameParams } from './features/depth-of-field/depth-of-field-params';
@@ -7,24 +6,27 @@ import type { RenderFeatureFrameResult } from './features/host';
 import { resolveStandardRenderFeatureTargets } from './features/targets';
 import type { GpuDrawSelection } from './gpu-driven/draw-selection';
 import { PipelineSpecError } from './pipeline-spec';
-import { RenderPublicationError } from './publication/contract';
 import type { PreparedRenderPublication } from './publication/receiver';
 import type { RenderResourceScope } from './publication/resource-scope';
 import type { createDrawObservation } from './record/draw-observation';
 import type { RenderFrameState } from './record/frame-snapshot';
 import type { GpuTimingCapture } from './record/gpu-timing';
 import type { PipelineState, RenderSystemInternals } from './record/render-context';
-import type { RenderFeatureGraphCandidate } from './record/typed-frame-graph';
 import type {
   CameraSnapshot,
   DrawOwnerOptions,
   FramePresentationPendingReason,
-  RenderRecordPhase,
 } from './render-contract';
-import type { ExtractedFrame } from './render-system-extract';
-import type { createPresentationDraws } from './render-system-presentation';
+import type { ExtractedFrame, RenderableSnapshot } from './render-system-extract';
+import type {
+  createPresentationDraws,
+  FramePresentationCandidate,
+} from './render-system-presentation';
 import type { canonicalizeWorldComposition } from './render-system-projections';
+import type { FrameList } from './scene/frame-list';
 import type { ViewLights } from './world/render-lights';
+import type { ViewFrameResult, ViewRecordMode } from './world/view-frame-systems';
+import { recordContext } from './world/view-record-context';
 
 /** One `record` call: its canonical inputs and the submission outcome it reports. */
 export interface RecordAttempt {
@@ -33,14 +35,30 @@ export interface RecordAttempt {
   readonly scopes: readonly RenderResourceScope[];
   readonly opts: DrawOwnerOptions;
   readonly publication: PreparedRenderPublication | undefined;
+  /** The view's `render-view-frame` product this attempt records. */
+  readonly frame: ViewFrameResult;
   readonly timingCapture: GpuTimingCapture | undefined;
-  readonly mode: boolean | 'capture';
+  readonly mode: ViewRecordMode;
   readonly profileSession: RecorderSession | undefined;
-  /** Feature preparation creates the encoder lazily when the caller supplied none. */
-  encoder: RhiCommandEncoder | undefined;
   submitted: boolean;
   sceneSubmitted: boolean;
-  featureGraphAccepted: boolean;
+  /** Set once the attempt reached its queue submit; `render-record-commit` publishes it. */
+  outcome: RecordOutcome | undefined;
+}
+
+/**
+ * The facts a record attempt that reached its queue submit leaves for
+ * `render-record-commit`: the frame, lights and visibility it recorded, its
+ * presentation candidate and the draws it submitted.
+ */
+export interface RecordOutcome {
+  readonly frame: ExtractedFrame;
+  readonly lights: ViewLights;
+  readonly cameraCount: number;
+  readonly presentation: FramePresentationCandidate;
+  readonly presentationRenderables: FrameList<RenderableSnapshot>;
+  readonly worldKeys: readonly number[];
+  readonly draws: RecordDraws;
 }
 
 /** Feature-host products of one record attempt. */
@@ -48,8 +66,11 @@ export interface RecordFeatures {
   readonly scheduledCaptureWork: readonly import('./capture/scheduler').CubeCaptureWork[];
   readonly sceneInputWork: readonly import('./record/target-capture-graph').CubeCaptureGraphWork[];
   readonly auxiliaryCameras: readonly CameraSnapshot[];
+  /** Every non-probe capture face `render-capture-schedule` built. */
+  readonly faces: readonly import('./capture/faces').CaptureFace[];
   readonly featureFrame: RenderFeatureFrameResult | undefined;
-  readonly candidate: RenderFeatureGraphCandidate | undefined;
+  /** The view's composite/post plan `render-feature-plan` wrote in RenderQueue. */
+  readonly plan: import('./world/feature-plan-systems').ViewFeaturePlan;
 }
 
 /** Submitted-draw evidence consumed by presentation readiness and observation commit. */
@@ -58,15 +79,6 @@ export interface RecordDraws {
   readonly drawObservation: ReturnType<typeof createDrawObservation>;
   /** The selection that drew a GPU-owned frame's non-residual rows. */
   readonly gpuSelection: GpuDrawSelection;
-  readonly bloomAdmitted: boolean;
-}
-
-export function hasCaptureWork(features: RecordFeatures): boolean {
-  return (
-    features.scheduledCaptureWork.length > 0 ||
-    features.auxiliaryCameras.length > 0 ||
-    features.sceneInputWork.length > 0
-  );
 }
 
 export function featurePreparationPendingReason(
@@ -78,16 +90,6 @@ export function featurePreparationPendingReason(
       code: 'feature-preparation',
       ...(identity === undefined ? {} : { featureIdentity: identity.slice(0, 256) }),
     }
-  );
-}
-
-/** Graph-pass boundaries and once-per-record GPU-driven owners under `passes` detail. */
-export function isPassProfilePhase(phase: RenderRecordPhase): boolean {
-  if (phase.startsWith('record/gpu-driven-prepare') && !phase.endsWith('/groups/key')) return true;
-  if (phase === 'record/graph-execute') return true;
-  if (!phase.startsWith('record/graph-execute/')) return false;
-  return (
-    !phase.slice('record/graph-execute/'.length).includes('/') || phase.endsWith('/geometry-loop')
   );
 }
 
@@ -172,7 +174,7 @@ export function acceptSubmittedDepthOfField(
     frameState.depthOfFieldAccepted = {
       params: submittedDepthOfField,
       graph: submittedDepthOfFieldGraph,
-      deviceGeneration: internals.deviceScope.generation,
+      deviceGeneration: recordContext(internals).deviceScope.generation,
     };
     frameState.depthOfFieldLastSubmitFailed = false;
   } else if (submittedDepthOfField === undefined) {
@@ -189,10 +191,10 @@ export function commitSubmittedBloom(
   internals: RenderSystemInternals,
   bloomAdmitted: boolean,
 ): void {
-  internals.getPipelineState()?.perPassResources.commitBloomResources?.();
+  recordContext(internals).getPipelineState()?.perPassResources.commitBloomResources?.();
   const nextBloom = bloomAdmitted ? 'on' : 'off';
   if (frameState.lastSuccessfulBloom === 'on' && nextBloom !== 'on') {
-    internals
+    recordContext(internals)
       .getPipelineState()
       ?.perPassResources.retireBloomResources?.(internals.device.queue.onSubmittedWorkDone());
   }
@@ -207,7 +209,7 @@ export function discardUnsubmittedFrame(
   if (camera?.depthOfField !== undefined) {
     frameState.depthOfFieldLastSubmitFailed = true;
   }
-  internals.getPipelineState()?.perPassResources.discardBloomResources?.();
+  recordContext(internals).getPipelineState()?.perPassResources.discardBloomResources?.();
 }
 
 export function recordFailureError(cause: unknown): RhiError {
@@ -239,20 +241,14 @@ export function recordRetirementError(failures: readonly unknown[]): RhiError {
   });
 }
 
-/** A published feature row must name a feature this receiver implements. */
-export function assertPublishedFeaturesImplemented(
+/** The first published Feature row this receiver does not implement; undefined when all are. */
+export function unimplementedPublishedFeature(
   publication: PreparedRenderPublication | undefined,
   featureHost: RenderSystemInternals['featureHost'],
-): void {
-  if (
-    publication?.packet.features.some(
-      (row) => !featureHost?.features.some((feature) => feature.identity === row.identity),
-    )
-  )
-    throw new RenderPublicationError({
-      reason: 'shape',
-      subject: 'published feature has no receiver implementation',
-    });
+): string | undefined {
+  return publication?.packet.features.find(
+    (row) => !featureHost?.features.some((feature) => feature.identity === row.identity),
+  )?.identity;
 }
 
 /** The receiver-bound view proves fresh or retained GPU shadow depth. */
@@ -265,7 +261,7 @@ export function directionalShadowSubmitted(
     lights.cascades?.directionalShadowQuality === undefined ||
     (frameState.frameOutputs.directionalShadowView !== null &&
       (lights.cascades?.lightViewProj?.length ?? 0) > 0 &&
-      (internals.getPipelineState()?.perPassResources.shadowMapSize ?? 0) > 0)
+      (recordContext(internals).getPipelineState()?.perPassResources.shadowMapSize ?? 0) > 0)
   );
 }
 
@@ -284,7 +280,8 @@ export function directionalShadowCandidateError(
       submitted,
       hasShadowView: frameState.frameOutputs.directionalShadowView !== null,
       matrixCount: lights.cascades?.lightViewProj?.length ?? 0,
-      shadowMapSize: internals.getPipelineState()?.perPassResources.shadowMapSize ?? 0,
+      shadowMapSize:
+        recordContext(internals).getPipelineState()?.perPassResources.shadowMapSize ?? 0,
     },
   };
 }

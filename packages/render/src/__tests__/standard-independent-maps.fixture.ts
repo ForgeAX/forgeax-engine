@@ -219,7 +219,7 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
         roughnessTexture: 'metallicRoughnessTexture',
         alphaTexture: 'baseColorTexture',
       },
-      reuse: [2, 2, 1],
+      reuse: [1, 2, 1],
     },
     { name: 'alpha-discard', slots: independent, channel: 3, uv: false, cutoff: 0.1 },
     { name: 'alpha-pass', slots: independent, channel: 1, uv: false, cutoff: 0.1 },
@@ -290,10 +290,7 @@ export async function verifyIndependentMaps(observeDevice: (device: RhiDevice) =
       if (mask === undefined) throw new Error('missing Standard texture mask');
       if (row.reuse) {
         expect(
-          STANDARD_SAMPLE_REUSE.map(
-            ({ shift, sources }) =>
-              (mask >>> shift) & (2 ** Math.ceil(Math.log2(sources.length + 1)) - 1),
-          ),
+          STANDARD_SAMPLE_REUSE.map(({ shift, width }) => (mask >>> shift) & (2 ** width - 1)),
         ).toEqual(row.reuse);
       }
       const group = device

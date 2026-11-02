@@ -23,7 +23,13 @@
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { RhiNullAdapter } from '@forgeax/engine-rhi-null';
 import { describe, expect, it } from 'vitest';
+import { resolveFoldInstanceBuffer } from '../../../render/src/record/fold-instance-buffer';
+import {
+  type InstanceBufferCacheEntry,
+  worldEntityKey,
+} from '../../../render/src/record/frame-snapshot';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -106,10 +112,6 @@ describe('production-path geometry instanceBuffers world-aware key', () => {
 const SPRITE_FILE = fileURLToPath(
   new URL('../../../render/src/record/main-pass-sprite-draws.ts', import.meta.url),
 );
-const FOLD_FILE = fileURLToPath(
-  new URL('../../../render/src/record/fold-instance-buffer.ts', import.meta.url),
-);
-
 describe('production-path shared instance bind-group resolver', () => {
   it('sprite identity and sprite-instance paths use the shared resolver', () => {
     const src = readFileSync(SPRITE_FILE, 'utf8');
@@ -175,14 +177,42 @@ describe('production-path shadow shared instance bind-group resolver', () => {
 // ── Fold-bucket negative half NOT worldEntityKey (D-1a #1 invariant) ───────
 
 describe('production-path fold-bucket key NOT worldEntityKey', () => {
-  it('fold-bucket bucketCacheKey is NOT worldEntityKey', () => {
-    const src = readFileSync(FOLD_FILE, 'utf8');
-    const lines = src.split('\n');
-    const bucketLine = lines[findLine(FOLD_FILE, 'const key =') - 1];
-    expect(bucketLine).toBeDefined();
-    // Must NOT contain worldEntityKey — fold-bucket keys are material-handle-based
-    expect(bucketLine).not.toContain('worldEntityKey');
-    // Should contain some form of the fold key: -1 -
-    expect(bucketLine).toMatch(/-1\s*-/);
+  it('keeps real fold buffers in negative draw slots independent of World entity keys', async () => {
+    const device = (await new RhiNullAdapter().requestDevice()).unwrap();
+    const instanceBuffers = new Map<number, InstanceBufferCacheEntry>();
+    const context = {
+      runtime: {
+        device,
+        errorRegistry: {
+          fire: (error: unknown) => {
+            throw error;
+          },
+        },
+      },
+      frameState: { instanceBuffers },
+    } as never;
+    const bucket = {
+      entries: [],
+      bucketSize: 2,
+      transforms: new Float32Array(32),
+      materialHandle: 1,
+      layer: 0,
+      sortKey: 0,
+    };
+    try {
+      const first = resolveFoldInstanceBuffer(context, bucket, 0);
+      expect(first).not.toBeNull();
+      expect(resolveFoldInstanceBuffer(context, bucket, 0)).toBe(first);
+      expect(resolveFoldInstanceBuffer(context, bucket, 1)).not.toBe(first);
+      expect(resolveFoldInstanceBuffer(context, bucket, 1_000_000)).not.toBe(first);
+      expect([...instanceBuffers.keys()]).toEqual([-1, -2, -1_000_001]);
+      for (const world of [0, 1]) {
+        for (const entity of [0, 1, 1_000_000]) {
+          expect(instanceBuffers.has(worldEntityKey(world, entity))).toBe(false);
+        }
+      }
+    } finally {
+      for (const resident of instanceBuffers.values()) resident.buffer.destroy();
+    }
   });
 });

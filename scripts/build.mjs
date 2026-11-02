@@ -22,6 +22,15 @@ if (requestedModes.length > 1)
   throw new Error(`build modes are mutually exclusive: ${requestedModes.join(', ')}`);
 const mode = requestedModes[0] ?? 'full';
 const clean = process.argv.includes('--clean');
+// A missing required source submodule otherwise surfaces as module-resolution noise
+// deep inside the package stage.
+if (!existsSync(join(root, 'packages/modeling/package.json'))) {
+  console.error(
+    '[build] build-source-module-missing: modeling submodule missing: run bun fx setup ' +
+      '(or git submodule update --init packages/modeling)',
+  );
+  process.exit(1);
+}
 const summaryPath = join(root, 'node_modules/.cache/forgeax-build/summary.json');
 const packageFactsPath = join(root, 'node_modules/.cache/forgeax-build/package-facts.json');
 // Preview stages the selected environment and its generated receipt together.

@@ -1,14 +1,20 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { mat4 } from '@forgeax/engine-math';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
-import { expect, it } from 'vitest';
+import { assert, expect, it } from 'vitest';
 import { MaterialResource } from '../material-resource';
 import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { MaterialDispatch } from '../scene/material-dispatch';
-import { meshDrawSnapshot } from '../scene/mesh-draw';
+import { meshDrawSnapshot, rotateMeshDraws } from '../scene/mesh-draw';
 import { MeshFrame } from '../scene/mesh-frame';
-import { captureMaterialOverrides } from '../scene/mesh-materials';
+import {
+  captureMaterialOverrides,
+  createMeshMaterialReader,
+  type MeshMaterialBindingWrite,
+  prepareMeshMaterialBindings,
+  retainMeshMaterialBindings,
+} from '../scene/mesh-materials';
 import { SceneSlots } from '../scene/scene-slots';
 
 function fixture() {
@@ -188,6 +194,7 @@ function resolvedFixture() {
   query();
   return {
     source,
+    mesh: f.mesh,
     meshes,
     owner,
     first,
@@ -368,4 +375,139 @@ it('keeps a hidden Mesh default accepted after its last unrelated authored overr
   owner.query(slots.capture(), f.meshes);
   expect(owner.materials().get(f.first)).toBeUndefined();
   expect(retained.get(f.first)?.bindings).toBe(0);
+});
+
+it('keeps hot draw tables without re-registering unchanged instances each frame', () => {
+  rotateMeshDraws();
+  const f = fixture();
+  const sources = Array.from({ length: 128 }, (_, entityKey) => ({ ...f.source, entityKey }));
+  const held = sources.map((source) => meshDrawSnapshot(source, f.frame));
+  rotateMeshDraws();
+  const set = WeakMap.prototype.set;
+  const get = WeakMap.prototype.get;
+  let reads = 0;
+  let writes = 0;
+  WeakMap.prototype.get = function (key: object) {
+    reads++;
+    return get.call(this, key);
+  };
+  WeakMap.prototype.set = function (key: object, value: unknown) {
+    writes++;
+    return set.call(this, key, value);
+  };
+  let current: RenderableSnapshot[];
+  try {
+    current = sources.map((source) => meshDrawSnapshot(source, f.frame));
+  } finally {
+    WeakMap.prototype.set = set;
+    WeakMap.prototype.get = get;
+  }
+  expect(current.every((draw, index) => draw === held[index])).toBe(true);
+  expect(writes).toBeLessThanOrEqual(4);
+  expect(reads).toBeLessThanOrEqual(sources.length * 2 + 4);
+});
+
+it('drops a cold full-scene draw population while retaining consecutive hot draws', () => {
+  rotateMeshDraws();
+  const f = fixture();
+  const sources = Array.from({ length: 128 }, (_, entityKey) => ({ ...f.source, entityKey }));
+  const held = sources.map((source) => meshDrawSnapshot(source, f.frame));
+  for (let frame = 0; frame < 4; frame++) {
+    rotateMeshDraws();
+    expect(meshDrawSnapshot(sources[0] as RenderableSnapshot, f.frame)).toBe(held[0]);
+  }
+  const cold = meshDrawSnapshot(sources[127] as RenderableSnapshot, f.frame);
+  expect(cold).not.toBe(held[127]);
+  expect(held[127]?.entityKey).toBe(127);
+  rotateMeshDraws();
+  rotateMeshDraws();
+  expect(meshDrawSnapshot(sources[0] as RenderableSnapshot, f.frame)).not.toBe(held[0]);
+});
+
+it('amortizes sparse source replacement without retaining an ever-growing table', () => {
+  rotateMeshDraws();
+  const f = fixture();
+  const sources: RenderableSnapshot[] = Array.from({ length: 64 }, (_, entityKey) => ({
+    ...f.source,
+    entityKey,
+  }));
+  const held = sources.map((source) => meshDrawSnapshot(source, f.frame));
+  const set = WeakMap.prototype.set;
+  let writes = 0;
+  const frames = 400;
+  WeakMap.prototype.set = function (key: object, value: unknown) {
+    writes++;
+    return set.call(this, key, value);
+  };
+  try {
+    for (let frame = 0; frame < frames; frame++) {
+      rotateMeshDraws();
+      sources[0] = { ...f.source, entityKey: frame + 64 };
+      for (const source of sources) meshDrawSnapshot(source, f.frame);
+    }
+  } finally {
+    WeakMap.prototype.set = set;
+  }
+  expect(writes).toBeLessThanOrEqual(frames * 4 + sources.length);
+  expect(meshDrawSnapshot(sources[1] as RenderableSnapshot, f.frame)).toBe(held[1]);
+  expect(held[0]?.entityKey).toBe(0);
+  expect(meshDrawSnapshot(sources[0] as RenderableSnapshot, f.frame).entityKey).toBe(frames + 63);
+});
+
+it('updates an already-read Mesh binding address when a bounds-only version adopts its table', () => {
+  const f = resolvedFixture();
+  const mesh = f.meshes.get(0, 7);
+  assert(mesh);
+  const previous = meshDrawSnapshot(f.source, f.meshes);
+  const next = f.meshes.with(
+    0,
+    7,
+    {
+      ...f.mesh,
+      aabb: new Float32Array([-2, -2, -2, 2, 2, 2]),
+      materialSlots: mesh.materialSlots,
+    },
+    mesh.materials,
+  );
+  const nextMesh = next.get(0, 7);
+  assert(nextMesh);
+  const held = meshDrawSnapshot(f.source, next);
+  expect(held.material).toBe(f.first);
+  expect(held.materials).not.toBe(previous.materials);
+  retainMeshMaterialBindings(mesh, nextMesh);
+  const adopted = meshDrawSnapshot(f.source, next);
+  expect(adopted.materials).toBe(previous.materials);
+  expect(adopted).not.toBe(held);
+  expect(held.material).toBe(f.first);
+  expect(held.localAabb).toBe(nextMesh.bounds);
+});
+
+it('reads live fenced material contexts without caching their values or repeating raw source reads', () => {
+  const f = resolvedFixture();
+  const mesh = f.meshes.get(0, 7);
+  assert(mesh);
+  const read = createMeshMaterialReader(mesh);
+  const skin = new MaterialResource(defaultMaterialSnapshot(45));
+  const replacement = new MaterialResource(defaultMaterialSnapshot(46));
+  const pending: MeshMaterialBindingWrite[] = [];
+  prepareMeshMaterialBindings(f.source, mesh, 'skinned', () => skin, pending);
+  for (const write of pending) write.contexts.set(write.geometry, write.value);
+  pending.length = 0;
+  let reads = 0;
+  const source = {
+    ...f.source,
+    get materialOverrides() {
+      reads++;
+      return f.source.materialOverrides;
+    },
+  };
+  expect(read(source, 'mesh').material).toBe(f.first);
+  expect(read(source, 'skinned').material).toBe(skin);
+  expect(reads).toBe(2);
+  prepareMeshMaterialBindings(f.source, mesh, 'mesh', () => replacement, pending);
+  expect(read(source, 'mesh').material).toBe(f.first);
+  for (const write of pending) write.contexts.set(write.geometry, write.value);
+  expect(read(source, 'mesh').material).toBe(replacement);
+  expect(read(source, 'skinned').material).toBe(skin);
+  expect(reads).toBe(5);
 });

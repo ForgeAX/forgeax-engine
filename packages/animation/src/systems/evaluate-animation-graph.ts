@@ -39,6 +39,7 @@ import {
 } from '@forgeax/engine-ecs';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import type { AnimationClip, AnimationGraph, AssetHandle } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { resolveAnimationMask } from '../animation-mask';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationBlendError } from '../blend-errors';
@@ -87,6 +88,19 @@ function readAt(arr: ArrayLike<number>, i: number, dflt: number): number {
  * the transient row facade.
  */
 export function evaluateAnimationGraph(world: World, dt: number): void {
+  if (!world.frameArena.isActive) {
+    world
+      .withFrameArena(() => {
+        try {
+          evaluateAnimationGraph(world, dt);
+          return ok(undefined);
+        } catch (error) {
+          return err(error);
+        }
+      })
+      .unwrap();
+    return;
+  }
   clearPlaybackIntervals(world);
   const query = world.query({ with: [AnimationPlayer] }).unwrap();
 
@@ -162,7 +176,8 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   }
 
   // Post-order effective-weight evaluation from the root (incoming influence 1).
-  const effByNode = new Map<number, number>();
+  const effByNode = world.frameArena.alloc(Float64Array, nodes.length).unwrap();
+  effByNode.fill(0);
   const runtimeWeight = (n: number): number => readAt(ap.nodeWeights, n, 1);
   const evalNode = (nodeIndex: number, incoming: number): void => {
     const node = nodes[nodeIndex];
@@ -170,7 +185,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
     const eff = incoming * runtimeWeight(nodeIndex) * node.weight;
     switch (node.type) {
       case 'clip':
-        effByNode.set(nodeIndex, (effByNode.get(nodeIndex) ?? 0) + eff);
+        effByNode[nodeIndex] = (effByNode[nodeIndex] ?? 0) + eff;
         return;
       case 'blend': {
         let total = 0;
@@ -191,7 +206,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
 
   // Advance each clip node's seek-time (D-7: eval owns the time). Persist the full
   // per-node time column so it stays bounded frame-to-frame.
-  const newNodeTimes = new Float64Array(nodes.length);
+  const newNodeTimes = world.frameArena.alloc(Float64Array, nodes.length).unwrap();
   for (let i = 0; i < nodes.length; i++) newNodeTimes[i] = readAt(ap.nodeTimes, i, 0);
   const intervals: PlaybackInterval[] = [];
   for (let k = 0; k < clipNodeIndices.length; k++) {
@@ -216,9 +231,9 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   // Spread one derived slot per clip leaf into the variable columns; speeds[]=0
   // parks the time so advance does not re-advance it (D-7).
   const slotCount = clipNodeIndices.length;
-  const times = new Float64Array(slotCount);
-  const weights = new Float32Array(slotCount);
-  const speeds = new Float32Array(slotCount);
+  const times = world.frameArena.alloc(Float64Array, slotCount).unwrap();
+  const weights = world.frameArena.alloc(Float32Array, slotCount).unwrap();
+  const speeds = world.frameArena.alloc(Float32Array, slotCount).unwrap();
   const masks =
     ap.nodeMasks.length === 0
       ? []
@@ -226,7 +241,7 @@ function evaluateOneEntity(world: World, entityRaw: number, dt: number): void {
   for (let k = 0; k < slotCount; k++) {
     // biome-ignore lint/style/noNonNullAssertion: parallel to clipNodeIndices
     const nodeIndex = clipNodeIndices[k]!;
-    weights[k] = effByNode.get(nodeIndex) ?? 0;
+    weights[k] = effByNode[nodeIndex] ?? 0;
     times[k] = newNodeTimes[nodeIndex] ?? 0;
     speeds[k] = 0;
   }

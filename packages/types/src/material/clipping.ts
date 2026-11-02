@@ -9,6 +9,12 @@ export interface ClippingOptions {
   readonly intersection?: boolean;
   /** Like Three.js, local shadow clipping is opt-in. */
   readonly clipShadows?: boolean;
+  /**
+   * Camera clipping only: shade the back faces seen through a cut as the cut plane,
+   * so closed Standard meshes read as solid sections. Open sheets have no inside and
+   * cap wherever their back side shows.
+   */
+  readonly caps?: boolean;
 }
 
 export class ClippingContractError extends Error {

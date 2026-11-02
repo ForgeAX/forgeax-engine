@@ -11,4 +11,7 @@ export type {
   DebugDrawErrorCode,
   DebugDrawErrorDetail,
 } from './errors';
-export type { CreateShaderModule, DebugDrawOptions, DepthMode } from './types';
+export { DEBUG_OVERLAY_SHADER } from './shader';
+export type { DebugDrawSourceOptions, DebugOverlayBatch } from './source';
+export { createDebugDrawSource, DebugDrawSource } from './source';
+export type { CreateShaderModule, DebugDrawOptions, DebugDrawShapes, DepthMode } from './types';

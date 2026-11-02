@@ -13,6 +13,38 @@ export {
 // ─── tile-bits SSOT (feat-20260608-tilemap-object-layer-rendering) ─────────
 export { decodeTileBits, encodeTileBits } from './tile-bits';
 export { tilesetContribution } from './tileset-decoder';
+export {
+  type DomVideoSourceOptions,
+  type DomVideoSourceProvider,
+  installDomVideoSourceProvider,
+  type VideoDomUnavailableError,
+} from './video-dom-provider';
+export {
+  createVideoFrameHost,
+  defaultVideoFrameCapture,
+  type VideoFrameHost,
+  type VideoFrameHostOptions,
+} from './video-frame-host';
+export {
+  closeFrameSource,
+  isVideoFrameNotice,
+  isVideoFrameRequest,
+  type VideoFrameBridgeError,
+  type VideoFrameBridgeErrorCode,
+  type VideoFrameNotice,
+  type VideoFramePort,
+  type VideoFrameRequest,
+  videoFrameBridgeError,
+} from './video-frame-protocol';
+export {
+  createVideoFrameEndpoint,
+  installWorkerVideoSourceProvider,
+  VIDEO_FRAME_SYNC_SYSTEM,
+  type VideoFrameConsumerStatus,
+  type VideoFrameEndpoint,
+  type WorkerVideoSourceOptions,
+  type WorkerVideoSourceProvider,
+} from './video-frame-worker';
 export { isBrowserResolvableVideoUrl, videoContribution } from './video-loader';
 // ─── VideoPlayer component ────────────────────────────────────────────────
 export { VideoPlayer } from './video-player';

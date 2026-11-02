@@ -46,13 +46,30 @@ export function f32ToF16(value: number): number {
   return half & 0xffff;
 }
 
+/** Largest finite binary16 magnitude. */
+export const F16_MAX = 65504;
+
+/** Options for {@link f32ToF16Bytes}. */
+export interface F32ToF16BytesOptions {
+  /**
+   * Clamp finite inputs to [-F16_MAX, F16_MAX] instead of letting them
+   * overflow to infinity. Use it for radiance data (HDR images, IBL sources),
+   * where a single infinite texel turns every filtered sample that touches it
+   * into Inf or NaN. NaN and infinite inputs are still passed through.
+   */
+  readonly clampFinite?: boolean;
+}
+
 /** Convert packed, aligned float32 bytes to little-endian binary16 bytes. */
-export function f32ToF16Bytes(src: Uint8Array): Uint8Array {
+export function f32ToF16Bytes(src: Uint8Array, options: F32ToF16BytesOptions = {}): Uint8Array {
   const f32 = new Float32Array(src.buffer, src.byteOffset, src.byteLength / 4);
   const out = new Uint8Array(f32.length * 2);
   const view = new DataView(out.buffer);
+  const clamp = options.clampFinite === true;
   for (let i = 0; i < f32.length; i++) {
-    view.setUint16(i * 2, f32ToF16(f32[i] ?? 0), true);
+    let v = f32[i] ?? 0;
+    if (clamp && Number.isFinite(v)) v = Math.min(F16_MAX, Math.max(-F16_MAX, v));
+    view.setUint16(i * 2, f32ToF16(v), true);
   }
   return out;
 }

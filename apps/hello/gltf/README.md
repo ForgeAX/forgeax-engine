@@ -26,11 +26,11 @@ The scene load resolves its Mesh and Material dependencies. Returned handles bel
 
 ## Tier-B fork fixture (`assets/box.gltf`)
 
-`box.gltf` is a Tier-B subset fork of the official Khronos `BoxTextured.gltf` sample: single mesh with `POSITION` + `INDICES` only (no `NORMAL`, no `TEXCOORD_0`, no `KHR_*` extensions), one `UnlitMaterial` carrying a `baseColorFactor` scalar (no textures), and one perspective `Camera`. The buffer is embedded as a base64 `data:` URI so the fixture is self-contained — `parseGltf`'s `externalLoader` is never invoked. The 24-vertex layout (4 vertices per face × 6 faces) preserves the original BoxTextured topology so future texture / NORMAL upgrades (`feat-future-gltf-textures`, OOS-1) only need to add accessors to the same buffer.
+`box.gltf` is a Tier-B subset fork of the official Khronos `BoxTextured.gltf` sample: single mesh with `POSITION` + `INDICES` only (no `NORMAL`, no `TEXCOORD_0`), `KHR_materials_unlit` explicitly selects one `UnlitMaterial` carrying a `baseColorFactor` scalar (no textures), and one perspective `Camera`. The buffer is embedded as a base64 `data:` URI so the fixture is self-contained — `parseGltf`'s `externalLoader` is never invoked. The 24-vertex layout (4 vertices per face × 6 faces) preserves the original BoxTextured topology so future texture / NORMAL upgrades (`feat-future-gltf-textures`, OOS-1) only need to add accessors to the same buffer.
 
 ## Smoke gate (AC-14)
 
-`pnpm --filter @forgeax/hello-gltf smoke` runs the dawn-node headless path: 60 frames + pixel readback with `epsilon <= 0.05` distance from the clear color (0.05, 0.05, 0.08). Three criteria: (a) `backend = webgpu` (b) frames >= 60 (c) at least one meshed sample site exceeds the threshold (charter P3 + P4 verified by a single mesh rendering above clear color).
+`pnpm --filter @forgeax/hello-gltf smoke` awaits 60 ready, completed Dawn frames and emits the canonical smoke receipt. Pixel readback requires a nonblack Unlit mesh sample at least 0.05 from the actual corner background, agreeing background samples, and zero renderer errors. A black image cannot pass by differing from a guessed clear color. The source asset is shared with the browser; visibility does not depend on a smoke-only light or material override.
 
 The literal `pnpm --filter @forgeax/hello-gltf smoke` is the SSOT smoke command anchor; it appears byte-for-byte in `apps/hello/gltf/package.json#forgeax.smokeInvocation`, `.github/workflows/ci.yml`, and AGENTS.md `Smoke gate`.
 
@@ -41,9 +41,7 @@ Out-of-scope for this closed loop, with upgrade anchors (see `requirements.md` O
 - `NORMAL` / `TEXCOORD_0` / textures / samplers / images — `feat-future-gltf-textures`.
 - PBR 5 fields (metallic / roughness / occlusionTexture / emissiveFactor / alphaMode) — `feat-future-gltf-pbr-material-fields`.
 - Multi-primitive meshes — `feat-future-gltf-mesh-multi-section`.
-- This Tier-B fixture intentionally has no `KHR_*` declarations; the package
-  importer supports the current extension surface documented in
-  `packages/gltf/README.md`.
+- `KHR_materials_unlit` is the only declared material extension; the package importer supports the wider extension surface documented in `packages/gltf/README.md`.
 - Camera ortho — `feat-future-gltf-camera-ortho`.
 - Skin / morph / animation — `feat-future-gltf-skin` / `feat-future-gltf-morph` / `feat-future-gltf-animation`.
 - gltf build-time cook (gltf -> .pack.json + dead-code-elim) — `feat-future-gltf-buildtime-cook`.

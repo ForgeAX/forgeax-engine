@@ -1,0 +1,12 @@
+diff --git a/dist/chunks/cli-api.B0Pz1_R7.js b/dist/chunks/cli-api.B0Pz1_R7.js
+index f3ac9b14803fb8bdae42ecb712f5e62db72efbcc..301eeadacf7430efb6510c5a0d80ab055af66658 100644
+--- a/dist/chunks/cli-api.B0Pz1_R7.js
++++ b/dist/chunks/cli-api.B0Pz1_R7.js
+@@ -11147,6 +11147,7 @@ const CONFIG_REGEXP = /^vite(?:st)?(?:\.[\w-]+)?\.config\./;
+ async function resolveProjects(vitest, cliOptions, workspaceConfigPath, projectsDefinition, names) {
+ 	const { configFiles, projectConfigs, nonConfigDirectories } = await resolveTestProjectConfigs(vitest, workspaceConfigPath, projectsDefinition);
+ 	const cliOverrides = [
++		"cliExclude",
+ 		"logHeapUsage",
+ 		"detectAsyncLeaks",
+ 		"allowOnly",

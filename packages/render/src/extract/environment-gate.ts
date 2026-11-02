@@ -1,8 +1,10 @@
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import type { Component, EntityHandle, QueryDescriptor, World } from '@forgeax/engine-ecs';
 import {
+  createStateProjection,
   readEntityComponentEpoch,
   readMutationEpoch,
   readMutationEpochExcept,
+  type StateProjection,
 } from '@forgeax/engine-ecs/projection';
 import {
   GlobalTransform,
@@ -14,6 +16,38 @@ import { sameValue } from '../same-value';
 
 /** Pose reads of the environment extraction running now; undefined outside one. */
 let poseReads: EntityHandle[] | undefined;
+
+interface InputReads {
+  readonly world: World;
+  readonly components: Set<Component>;
+  readonly candidates: Set<Component>;
+  readonly globals: Set<Component>;
+}
+let inputReads: InputReads | undefined;
+
+/** Record the actual query vocabulary, including optional absence and joins. */
+export function queryEnvironment<
+  const R extends readonly Component[] = readonly [],
+  const W extends readonly Component[] = readonly [],
+  const O extends readonly Component[] = readonly [],
+>(world: World, descriptor: QueryDescriptor<R, W, O>) {
+  const reads = inputReads;
+  if (reads?.world === world) {
+    for (const role of ['read', 'write', 'optional', 'with', 'without'] as const)
+      for (const component of descriptor[role] ?? []) reads.components.add(component);
+    const candidates = descriptor.read ?? descriptor.with ?? [];
+    for (const component of candidates)
+      if (component !== Transform && component !== GlobalTransform) reads.candidates.add(component);
+  }
+  return world.query(descriptor);
+}
+
+/** Dependencies read outside query iteration, including cached queries and hierarchy. */
+export function noteEnvironmentInputs(world: World, components: readonly Component[]): void {
+  const reads = inputReads;
+  if (reads?.world !== world) return;
+  for (const component of components) reads.globals.add(component);
+}
 
 /**
  * The presentation pose of an environment entity (camera, light, probe, decal,
@@ -42,6 +76,9 @@ interface Extraction<T> {
   readonly poses: readonly EntityHandle[];
   /** Read World Time (volumetric fog, cloud layer) or routed an error: never reused. */
   readonly volatile: boolean;
+  readonly source: StateProjection | undefined;
+  readonly globals: StateProjection | undefined;
+  readonly inputs: InputReads | undefined;
 }
 
 /**
@@ -50,7 +87,8 @@ interface Extraction<T> {
  * again only when an explicit input changed, otherwise the previous result is
  * returned with its identities. The inputs are:
  *
- * - every component and the World structure, except pose components;
+ * - actual stock query inputs, with membership reconciled by ECS write evidence;
+ *   arbitrary extractors retain the conservative component/structure guard;
  * - the pose of each entity the extraction read (`readEnvironmentPose`), and
  *   whether that pose is interpolated (it then follows Time);
  * - World Time, when the result depends on it;
@@ -65,6 +103,9 @@ export class EnvironmentGate<T, M extends object = object> {
   /** Set by the owner before a frame: any asset content changed since the last frame. */
   assetsChanged = true;
 
+  /** Only the stock extraction opts into its fully observed query route. */
+  constructor(private readonly trackInputs = false) {}
+
   read(
     world: World,
     key: string,
@@ -75,6 +116,16 @@ export class EnvironmentGate<T, M extends object = object> {
     const epoch = readMutationEpoch(world);
     const structureEpoch = world.getStructureEpoch();
     const outer = poseReads;
+    const outerInputs = inputReads;
+    const inputs: InputReads | undefined = this.trackInputs
+      ? {
+          world,
+          components: new Set([Transform, GlobalTransform, TransformInterpolation]),
+          candidates: new Set(),
+          globals: new Set(),
+        }
+      : undefined;
+    inputReads = inputs;
     const poses: EntityHandle[] = [];
     poseReads = poses;
     let routed = false;
@@ -85,14 +136,32 @@ export class EnvironmentGate<T, M extends object = object> {
       });
     } finally {
       poseReads = outer;
+      inputReads = outerInputs;
     }
+    const source =
+      inputs === undefined
+        ? undefined
+        : previous?.inputs !== undefined && sameInputs(previous.inputs, inputs)
+          ? previous.source
+          : createStateProjection(world, [...inputs.components], [...inputs.candidates]);
+    const globals =
+      inputs === undefined || inputs.globals.size === 0
+        ? undefined
+        : previous?.inputs !== undefined && sameInputs(previous.inputs, inputs)
+          ? previous.globals
+          : createStateProjection(world, [...inputs.globals]);
+    source?.read().accept();
+    globals?.read().accept();
     this.extractions.set(world, {
       value: result.value,
       structureEpoch,
       epoch,
       key,
       poses,
-      volatile: routed || result.timeDependent,
+      volatile: routed || result.timeDependent || readMutationEpoch(world) !== epoch,
+      source,
+      globals,
+      inputs,
     });
     return result.value;
   }
@@ -104,19 +173,20 @@ export class EnvironmentGate<T, M extends object = object> {
    * predecessor's identity, so a camera edit leaves the lights entry as it was.
    */
   merge(worlds: readonly World[], key: string, build: (routedError: () => void) => M): M {
+    const merged = this.merged;
+    let matched = merged !== undefined && merged.key === key;
+    let count = 0;
+    for (const world of worlds) {
+      const extraction = this.extractions.get(world);
+      if (extraction === undefined) continue;
+      if (merged?.parts[count++] !== extraction.value) matched = false;
+    }
+    if (matched && count === merged?.parts.length) return merged.value;
     const parts: T[] = [];
     for (const world of worlds) {
       const extraction = this.extractions.get(world);
       if (extraction !== undefined) parts.push(extraction.value);
     }
-    const merged = this.merged;
-    if (
-      merged !== undefined &&
-      merged.key === key &&
-      merged.parts.length === parts.length &&
-      merged.parts.every((part, index) => part === parts[index])
-    )
-      return merged.value;
     let routed = false;
     const built = build(() => {
       routed = true;
@@ -131,10 +201,12 @@ export class EnvironmentGate<T, M extends object = object> {
       previous.volatile ||
       this.assetsChanged ||
       previous.key !== key ||
-      world.getStructureEpoch() !== previous.structureEpoch ||
-      readMutationEpochExcept(world, POSE) > previous.epoch
+      (previous.source === undefined &&
+        (world.getStructureEpoch() !== previous.structureEpoch ||
+          readMutationEpochExcept(world, POSE) > previous.epoch))
     )
       return false;
+    if (!projectionCurrent(previous.source) || !projectionCurrent(previous.globals)) return false;
     for (const entity of previous.poses) {
       if (world.hasComponent(entity, TransformInterpolation)) return false;
       for (const component of POSE)
@@ -155,4 +227,20 @@ function retainEqualEntries<M extends object>(previous: M, next: M): M {
     retained[key] = prior[key];
   }
   return (retained ?? next) as M;
+}
+
+function projectionCurrent(source: StateProjection | undefined): boolean {
+  if (source === undefined || source.isCurrent()) return true;
+  const batch = source.read();
+  if (batch.indices.length > 0) return false;
+  batch.accept();
+  return true;
+}
+
+function sameInputs(previous: InputReads, next: InputReads): boolean {
+  for (const role of ['components', 'candidates', 'globals'] as const) {
+    if (previous[role].size !== next[role].size) return false;
+    for (const component of previous[role]) if (!next[role].has(component)) return false;
+  }
+  return true;
 }

@@ -3,7 +3,7 @@
 #import forgeax_material::fragment_output::{applyFragmentOutput}
 #endif
 #import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
-#import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, sampleMaterialTextureLinear}
+#import forgeax_view::common::{View, Mesh, meshMotionValid, InstanceData, view, sampleMaterialTextureLinear, transformNormal}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #import forgeax_view::common::{sceneIndexDraw, applyLodCoverage}
 #else
@@ -182,7 +182,7 @@ fn unlitSkinCandidate(idx : u32) -> u32 {
 }
 #endif
 
-fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
+fn unlitVertex(in : VsIn, idx : u32, forShadow : bool) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   let visible = visibleItems[idx];
   material = sceneMaterials[visible.y];
@@ -211,14 +211,8 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
   out.uv = unlitUv(in, material.baseColorTextureCoordinatesMetadata.x, material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesRotation);
   out.alphaUv = unlitUv(in, material.alphaTextureCoordinatesMetadata.x, material.alphaTextureCoordinatesTransform, material.alphaTextureCoordinatesRotation);
   out.worldPos = world.xyz;
-  if (material.shading > 0.5) {
-    let m0 = localToWorld[0].xyz;
-    let m1 = localToWorld[1].xyz;
-    let m2 = localToWorld[2].xyz;
-    // Only normal/MatCap modes consume normals. Preserve the cofactor for
-    // their non-uniform scales and mirrored transforms.
-    let normalMatrix = mat3x3<f32>(cross(m1, m2), cross(m2, m0), cross(m0, m1));
-    out.worldNormal = normalMatrix * in.normal * sign(dot(m0, cross(m1, m2)));
+  if (forShadow || material.shading > 0.5) {
+    out.worldNormal = transformNormal(localToWorld, in.normal);
   }
 #ifdef VERTEX_COLOR_AVAILABLE
   out.color = in.color;
@@ -228,13 +222,13 @@ fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
 
 @vertex
 fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  return unlitVertex(in, idx);
+  return unlitVertex(in, idx, false);
 }
 
 @vertex
 fn vs_shadow(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  var out = unlitVertex(in, idx);
-  out.clip = projectShadowPosition(vec4<f32>(out.worldPos, 1.0));
+  var out = unlitVertex(in, idx, true);
+  out.clip = projectShadowPosition(vec4<f32>(out.worldPos, 1.0), out.worldNormal);
   return out;
 }
 
@@ -406,7 +400,7 @@ struct TemporalVsOut {
 
 @vertex
 fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
-  let current = unlitVertex(in, idx);
+  let current = unlitVertex(in, idx, false);
 #if SKINNING_DISABLED == false
   let descriptor = skinTaskDescriptor(unlitSkinCandidate(idx));
   let currentSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);

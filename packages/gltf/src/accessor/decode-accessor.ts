@@ -387,14 +387,35 @@ function copyElement(
   }
   return true;
 }
+/**
+ * KHR_mesh_quantization widens these float-only accessors to signed/unsigned
+ * byte and short components (normalized or not); 32-bit integers stay invalid.
+ */
+const QUANTIZED_COMPONENT_TYPES: readonly number[] = [
+  COMPONENT_TYPE.I8,
+  COMPONENT_TYPE.U8,
+  COMPONENT_TYPE.I16,
+  COMPONENT_TYPE.U16,
+  COMPONENT_TYPE.F32,
+];
+
+/**
+ * Decode a float-valued accessor. `quantized` admits the KHR_mesh_quantization
+ * component types; values are dequantized like Three.js (normalized integers
+ * map to [-1, 1] or [0, 1], plain integers keep their numeric value).
+ */
 export function decodeF32Accessor(
   accessorIndex: number,
   accessor: AccessorJson,
   allowedTypes: readonly string[],
   bufferViews: readonly BufferViewJson[],
   buffers: readonly Uint8Array[],
+  quantized = false,
 ): Result<Float32Array, GltfError> {
-  if (accessor.componentType !== COMPONENT_TYPE.F32 || !allowedTypes.includes(accessor.type))
+  const componentAdmitted = quantized
+    ? QUANTIZED_COMPONENT_TYPES.includes(accessor.componentType)
+    : accessor.componentType === COMPONENT_TYPE.F32;
+  if (!componentAdmitted || !allowedTypes.includes(accessor.type))
     return err(
       gltfErr('gltf-accessor-type-mismatch', { accessorIndex, reason: 'unknownComponentType' }),
     );

@@ -34,6 +34,8 @@ export interface FrameLoopOptions {
   readonly onCompleted?: (receipt: FrameReceipt) => void;
   /** Reconcile host-owned camera state after World update and before draw. */
   readonly beforeDraw?: () => void;
+  /** An update-only step drew nothing: frame-scoped immediate-mode data of that update is dropped. */
+  readonly onFrameSkipped?: () => void;
   readonly drawSource?: DrawSource;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Optional frame-rate limit; a callback it rejects only reserves its successor. */
@@ -676,6 +678,11 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   ): void {
     try {
       opts.beforeDraw?.();
+    } catch (cause: unknown) {
+      reportError(makeWorldUpdateError(cause));
+    }
+    try {
+      opts.onFrameSkipped?.();
     } catch (cause: unknown) {
       reportError(makeWorldUpdateError(cause));
     }

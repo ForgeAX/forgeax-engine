@@ -1,8 +1,7 @@
 /**
  * Retained transparent DISTANCE order under camera motion, driven through
- * `DirectDrawPhase.sync` on the CPU (no GPU). One bench op is one frame sync.
- * The body is identical on base and PR; both sides expose the same
- * `DirectDrawPhase` constructor, `sync` and `work` counters.
+ * DirectDrawPhase queue and emit on the CPU (no GPU). One bench op
+ * consumes one frame's inputs and emits its ordered draws.
  *
  * Cases: steady, camera moving along one axis (never crossing a row),
  * camera orbiting on a multi-axis path through the rows, and a static camera
@@ -148,6 +147,11 @@ const SIZES = [2_000, 10_000] as const;
 const AXIS_START = -100_000;
 const AXIS_WRAP = 50_000;
 
+function queueAndEmit(phase: DirectDrawPhase, input: DirectDrawInput): void {
+  phase.queue(input);
+  phase.emit();
+}
+
 type Frame = (k: number) => DirectDrawInput;
 
 interface Case {
@@ -205,7 +209,7 @@ const CASES: readonly Case[] = [
         );
       });
       const phase = new DirectDrawPhase();
-      phase.sync(f.input(camera));
+      queueAndEmit(phase, f.input(camera));
       return {
         phase,
         frame: (k) => {
@@ -224,12 +228,12 @@ for (const count of SIZES) {
     for (const { name, make } of CASES) {
       const { phase, frame } = make(count);
       let k = 0;
-      phase.sync(frame(k++));
-      phase.sync(frame(k++));
+      queueAndEmit(phase, frame(k++));
+      queueAndEmit(phase, frame(k++));
       bench(
         name,
         () => {
-          phase.sync(frame(k++));
+          queueAndEmit(phase, frame(k++));
         },
         OPTIONS,
       );
@@ -243,11 +247,11 @@ if (process.env.BENCH_WORK) {
     for (const { name, make } of CASES) {
       const { phase, frame } = make(count);
       let k = 0;
-      phase.sync(frame(k++));
-      phase.sync(frame(k++));
+      queueAndEmit(phase, frame(k++));
+      queueAndEmit(phase, frame(k++));
       const before: Record<string, number> = { ...phase.work };
       const frames = 30;
-      for (let i = 0; i < frames; i++) phase.sync(frame(k++));
+      for (let i = 0; i < frames; i++) queueAndEmit(phase, frame(k++));
       const perFrame: Record<string, number> = {};
       for (const [key, value] of Object.entries(phase.work)) {
         perFrame[key] = (value - (before[key] ?? 0)) / frames;

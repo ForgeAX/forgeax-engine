@@ -469,7 +469,7 @@ try {
       `renderer did not submit the main GPU-driven lane: ${JSON.stringify(mainGpuChannel)}`,
     );
   }
-  if (!inspection.output.graphPassNames.includes('gpu-driven.frustum-compact')) {
+  if (!inspection.output.graphPassNames.includes('gpu-driven.view-selection')) {
     throw new Error('renderer did not include the GPU-driven LOD graph passes');
   }
   const passNames = inspection.output.graphPassNames;

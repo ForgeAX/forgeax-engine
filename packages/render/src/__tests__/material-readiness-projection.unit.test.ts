@@ -118,6 +118,87 @@ it('observes a repeated material once per World and refreshes the next phase', (
   expect(getView).toHaveBeenCalledTimes(4);
 });
 
+it('does not re-project an owned material residency key for every consumer', () => {
+  const scope = worldRenderResources(assetWorld());
+  let reads = 0;
+  const material = new Proxy(
+    { ...defaultMaterialSnapshot(), immutableValues: true as const },
+    {
+      get(target, key, receiver) {
+        if (key === 'textureHandles') reads++;
+        return Reflect.get(target, key, receiver);
+      },
+    },
+  );
+  const internals = {} as RenderSystemInternals;
+  const observe = createMaterialResidencyObserver(internals, false);
+  const first = observe(scope, material);
+  expect(first.readiness).toBe('ready');
+  const initialReads = reads;
+  for (let consumer = 0; consumer < 2048; consumer++) expect(observe(scope, material)).toBe(first);
+  expect(reads).toBe(initialReads);
+  expect(observe(undefined, material).readiness).toBe('pending');
+  expect(observe(scope, material)).toBe(first);
+  const nextPhase = createMaterialResidencyObserver(internals, false);
+  const beforeNext = reads;
+  expect(nextPhase(scope, material).readiness).toBe('ready');
+  expect(reads).toBeGreaterThan(beforeNext);
+});
+
+it('keeps borrowed residency key reads and never invokes an ownership getter', () => {
+  const scope = worldRenderResources(assetWorld());
+  let reads = 0;
+  const ownership = vi.fn(() => true);
+  const material = { ...defaultMaterialSnapshot() };
+  Object.defineProperty(material, 'immutableValues', { get: ownership });
+  const borrowed = new Proxy(material, {
+    get(target, key, receiver) {
+      if (key === 'textureHandles') reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const observe = createMaterialResidencyObserver({} as RenderSystemInternals, false);
+  observe(scope, borrowed);
+  const initialReads = reads;
+  observe(scope, borrowed);
+  expect(reads).toBeGreaterThan(initialReads);
+  expect(ownership).not.toHaveBeenCalled();
+});
+
+it('retains the complete owned observation when ownership inspection reenters another scope', () => {
+  const first = worldRenderResources(assetWorld());
+  const second = worldRenderResources(assetWorld());
+  let ready = true;
+  const getView = vi.fn(() => (ready ? {} : undefined));
+  const observe = createMaterialResidencyObserver(
+    { dynamicTextureStore: { getView } } as unknown as RenderSystemInternals,
+    false,
+  );
+  const other = { ...defaultMaterialSnapshot(), immutableValues: true as const };
+  let nested = false;
+  const material = new Proxy(
+    { ...other, videoTextureFields: new Map([['clip', Number(1) as AssetHandle<'video'>]]) },
+    {
+      getOwnPropertyDescriptor(target, key) {
+        if (key === 'immutableValues' && !nested) {
+          nested = true;
+          expect(observe(second, other).readiness).toBe('ready');
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    },
+  );
+  const captured = observe(first, material);
+  expect(nested).toBe(true);
+  expect(captured.readiness).toBe('ready');
+  ready = false;
+  expect(observe(first, material)).toBe(captured);
+  expect(getView).toHaveBeenCalledTimes(1);
+  expect(observe(second, material).readiness).toBe('pending');
+  expect(getView).toHaveBeenCalledTimes(2);
+  expect(observe(first, material)).toBe(captured);
+});
+
 it('reuses the accepted texture allocation across value clones and rejects invalid edits before observation', async () => {
   const world = assetWorld();
   const assets = runtimeAssetRegistry(world.assets);

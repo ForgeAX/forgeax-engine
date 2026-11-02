@@ -148,7 +148,7 @@ export class CandidatePipelinePreparationOwner {
           context.standardLighting?.kind === 'clustered' &&
           (context.standardLighting.prepared.local.length > 0 ||
             context.frameState.installedPipelineConfig?.ssao?.enabled === true);
-        const reflectionFallback = context.frameState.reflectionFallbackDemand === true;
+        const reflectionFallback = context.reflectionFallbackDemand === true;
         let projection = request.projection;
         if (
           projection === undefined ||

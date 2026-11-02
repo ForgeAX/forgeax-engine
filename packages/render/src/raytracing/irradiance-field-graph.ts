@@ -140,7 +140,7 @@ export function addIrradianceFieldPasses(
         { resource: regionBuffers.settings, usage: 'uniform-read' },
         { resource: regionBuffers.voxels, usage: 'storage-write' },
       ],
-      encode: ({ pass }) => {
+      encodeDirect: (pass, _graphframe, _graphresources) => {
         current()
           .region.compose(pass, region.input, region.voxelCount, current().composeDispatch())
           .unwrap();
@@ -154,7 +154,7 @@ export function addIrradianceFieldPasses(
         { resource: regionBuffers.settings, usage: 'uniform-read' },
         { resource: visibility, usage: 'storage-write' },
       ],
-      encode: ({ pass }) => {
+      encodeDirect: (pass, _graphframe, _graphresources) => {
         const value = current();
         pass.setPipeline(value.visibility.pipeline);
         pass.setBindGroup(0, value.visibility.group);
@@ -219,7 +219,7 @@ export function addIrradianceFieldPasses(
     graph.addComputePass(`irradiance-field.${label}`, {
       accesses: kernelAccesses(prepared.kernels[stage].bindings, handles, 'storage-write'),
       ...(executeIf === undefined ? {} : { executeIf }),
-      encode: ({ pass, resources }) => {
+      encodeDirect: (pass, _graphframe, resources) => {
         const value = current();
         before?.(value);
         for (const recorded of [stage, ...after])
@@ -254,7 +254,7 @@ export function addIrradianceFieldPasses(
       { resource: surfaces, usage: 'storage-read' },
       { resource: cardDirect, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources }) =>
+    encodeDirect: (pass, _graphframe, resources) =>
       current()
         .view.lightCards.record(
           pass,
@@ -294,7 +294,7 @@ export function addIrradianceFieldPasses(
       { resource: cardLit, usage: 'storage-write' },
       ...fieldReads,
     ],
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       const value = current();
       value.view.radiateCards
         .record(
@@ -411,7 +411,7 @@ export function addWorldAccelerationPass<FrameCtx extends RenderGraphFrame>(
       { resource: faceNormals, usage: 'copy-dst' },
     ],
     executeIf: () => !live().settled(),
-    encode: ({ encoder }) => live().record(encoder).unwrap(),
+    encodeDirect: (encoder, _graphframe, _graphresources) => live().record(encoder).unwrap(),
   });
   if (!built.ok) return built;
   if (field !== undefined) {
@@ -420,7 +420,7 @@ export function addWorldAccelerationPass<FrameCtx extends RenderGraphFrame>(
         { resource: traversalInstances, usage: 'copy-src' },
         { resource: field, usage: 'copy-dst' },
       ],
-      encode: ({ encoder, resources }) =>
+      encodeDirect: (encoder, _graphframe, resources) =>
         encoder.copyBufferToBuffer(
           resources.buffer(traversalInstances).unwrap(),
           0,
@@ -545,7 +545,7 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
   ];
   const gatheredPass = graph.addComputePass(`${label}.gather`, {
     accesses: [...viewAccesses, { resource: gathered, usage: 'storage-write' }],
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       const value = current();
       const size = value.extent();
       value.view.gatherField
@@ -573,7 +573,7 @@ export function addFieldGatherPasses<E extends FieldGatherExtent>({
         { resource: gathered, usage: 'storage-read' },
         { resource: upsampled, usage: 'storage-write' },
       ],
-      encode: ({ pass, resources }) => {
+      encodeDirect: (pass, _graphframe, resources) => {
         const value = current();
         value.view.upsampleField
           .record(
@@ -646,7 +646,7 @@ function addFieldReflectionPasses({
       { resource: rays, usage: 'storage-write' },
       { resource: signal, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       const value = current();
       value.view.generateFieldReflections
         .record(
@@ -675,7 +675,7 @@ function addFieldReflectionPasses({
   // The trace accumulates into the signal the generate pass seeded.
   const traced = graph.addComputePass('irradiance-field.reflection-trace', {
     accesses: kernelAccesses(kernel.bindings, local, 'storage-read-write'),
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       current()
         .kernels.traceReflections.record(
           pass,
@@ -714,7 +714,7 @@ function addFieldReflectionPasses({
       { resource: history, usage: 'storage-write' },
       { resource: rays, usage: 'storage-read' },
     ],
-    encode: ({ pass, resources }) =>
+    encodeDirect: (pass, _graphframe, resources) =>
       current()
         .view.accumulateFieldReflections.record(
           pass,
@@ -742,7 +742,7 @@ function addFieldReflectionPasses({
       { resource: history, usage: 'storage-read' },
       { resource: denoised, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources }) =>
+    encodeDirect: (pass, _graphframe, resources) =>
       current()
         .view.filterFieldReflections.record(
           pass,
@@ -771,7 +771,7 @@ function addFieldReflectionPasses({
       { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
       { view: reflection.fallback.view, loadOp: 'load', storeOp: 'store' },
     ],
-    encode: ({ pass, resources }) =>
+    encodeDirect: (pass, _graphframe, resources) =>
       current()
         .reflectionComposite.record(
           pass,

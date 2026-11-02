@@ -12,11 +12,17 @@ import type { RenderableSnapshot } from '../../render-system-extract';
 import type { FrameList } from '../../scene/frame-list';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { RenderScene } from '../../scene/render-scene';
-import { DirectDrawPhase, type DirectDrawScene } from '../direct-draw-phase';
+import { type DirectDrawInput, DirectDrawPhase, type DirectDrawScene } from '../direct-draw-phase';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { resolveGeometryInstanceBuffer } from '../main-pass-geometry';
 import { materialGeometry } from '../material-geometry';
 import type { _InternalRenderPipelineContext } from '../render-context';
+
+/** Queue then emit: one recording-time sync of a retained phase. */
+function drawn(phase: DirectDrawPhase, input: DirectDrawInput) {
+  phase.queue(input);
+  return phase.emit();
+}
 
 const material = new MaterialResource({
   materialHandle: 1,
@@ -98,7 +104,7 @@ function directDrawRows(
     material: import('../../render-system-extract').MaterialSnapshot,
   ) => MeshGpuHandles,
 ): readonly ValidatedRenderable[] {
-  return new DirectDrawPhase().sync({
+  return drawn(new DirectDrawPhase(), {
     scene,
     selection: [],
     select,

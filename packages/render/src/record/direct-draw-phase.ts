@@ -31,6 +31,18 @@ import {
 } from '../systems/transparent-sort-config';
 import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
 import { variantSetFromDefines } from './helpers';
+import {
+  MaterialBindingIndex,
+  type MaterialRelationFrame,
+  MaterialRelations,
+} from './material-binding-index';
+import {
+  type MaterialPasses,
+  type MaterialPassLookup,
+  MemberMaterialPasses,
+  materialPassLookup,
+} from './material-pass-groups';
+import type { ScenePassPreparationMemo } from './scene-pass-work';
 
 function invalid(expected: string): never {
   throw new RhiError({
@@ -61,6 +73,8 @@ export interface DirectDrawSort {
  * versions re-select only the batches drawing them.
  */
 export interface DirectDrawInput {
+  /** The recording owner admitted persistent row-material preparation. */
+  readonly retainMaterialBindings?: boolean | undefined;
   readonly scene: DirectDrawScene;
   readonly selection: readonly unknown[];
   /** GPU ownership `select` reads; a replacement re-selects only its changed bindings. */
@@ -96,18 +110,21 @@ export interface DirectDrawInput {
   /** Resident geometry versions unbatched validation reads; a change re-reads those rows. */
   readonly geometry?: readonly unknown[] | undefined;
   /** Present for Scene Pass consumers: rows project dispatch entries into Pass bins. */
-  readonly entries?: { readonly selector: PassSelector | undefined } | undefined;
+  readonly entries?:
+    | { readonly selector: PassSelector | undefined; readonly temporal?: boolean }
+    | undefined;
   readonly sort?: DirectDrawSort | undefined;
-  /** First `renderableIndex` of this consumer's rows in a combined index space. */
-  readonly offset?: number | undefined;
 }
 
-/** The ordered work of one sync; arrays are replaced whenever their content changes. */
+/** The ordered work of one emit; arrays are replaced whenever their content changes. */
 export interface DirectDrawOutput {
   readonly rows: readonly ValidatedRenderable[];
   readonly dispatch: readonly DispatchEntry[];
   /** The row of each dispatch entry, index-aligned. */
   readonly entryRows: readonly ValidatedRenderable[];
+  readonly materialPasses?: MaterialPassLookup | undefined;
+  /** Persistent entity-to-material facts, independent of pose and recording state. */
+  readonly materialRows?: MaterialRelationFrame | undefined;
 }
 
 /** Cumulative phase work; tests and benches read deltas. */
@@ -169,6 +186,7 @@ interface Member {
   meshKey: number | undefined;
   lod: boolean;
   items: readonly DrawItem[];
+  materialPasses: MemberMaterialPasses | undefined;
   /** The projected row, material frame and Pass selector the current items were placed from. */
   placed: MutableRow | undefined;
   placedMaterials: MaterialFrame | undefined;
@@ -250,13 +268,13 @@ function equalDistanceTerms(left: Float32Array, right: Float32Array, eye: Float6
 /**
  * One view's retained direct (CPU-recorded) draws for one consumer: a binned
  * phase whose members are Scene rows addressed by their entity's GPU row,
- * plus the view-owned draws that have no Scene row. A sync consumes the batch
+ * plus the view-owned draws that have no Scene row. A {@link queue} consumes the batch
  * plan's diff, the unbatched set's diff, the Scene's draw evidence, changed
  * materials, flipped camera admission and the selection; only entered, left
  * and changed members are rebuilt and requeued (dequeue before enqueue).
  * Scene Pass consumers bin dispatch entries by (queue, Pass); a sorted
- * consumer feeds its {@link SortedPhase} the same member diffs. An unchanged
- * sync returns the previous output arrays.
+ * consumer feeds its {@link SortedPhase} the same member diffs. {@link emit}
+ * projects the queued state; an unchanged queue returns the previous arrays.
  */
 export class DirectDrawPhase {
   private readonly bins = new BinnedPhase<DrawItem>();
@@ -285,6 +303,8 @@ export class DirectDrawPhase {
   private draws: PersistentGpuDrivenState['draws'];
   private readonly selection: unknown[] = [];
   private materials: MaterialFrame | undefined;
+  private temporalMaterialPasses = false;
+  private materialPassGroupsEnabled = false;
   private visibility: ((source: RenderableSnapshot) => boolean) | undefined;
   private admission: CameraAdmission | undefined;
   private viewDraws: FrameList<RenderableSnapshot> | undefined;
@@ -306,6 +326,8 @@ export class DirectDrawPhase {
   private emittedOffset = 0;
   private epoch = 0;
   private output: DirectDrawOutput = { rows: [], dispatch: [], entryRows: [] };
+  private readonly materialRows = new MaterialRelations();
+  private retainBindings = false;
   readonly work: DirectDrawPhaseWork = {
     rebuilt: 0,
     batches: 0,
@@ -315,6 +337,18 @@ export class DirectDrawPhase {
     evaluated: 0,
     orderConstraints: 0,
   };
+
+  /** Only changed accepted values read by this phase can change its value projections. */
+  materialValuesChanged(before: MaterialFrame, after: MaterialFrame): boolean {
+    if (before === after) return false;
+    let changed = false;
+    after.changesSince(before, (left, right) => {
+      if (left?.snapshot === right?.snapshot) return;
+      const resource = (right ?? left)?.resource;
+      if (resource !== undefined && this.materialReaders.has(resource)) changed = true;
+    });
+    return changed;
+  }
 
   /** Whether a selected batch draws material-derived instead of resident geometry. */
   get derivesGeometry(): boolean {
@@ -329,7 +363,20 @@ export class DirectDrawPhase {
     return this.sort.work;
   }
 
-  sync(input: DirectDrawInput): DirectDrawOutput {
+  /**
+   * Queue step: consume this frame's member diffs into the bins and the
+   * sorted order. It writes no output; {@link emit} reads the queued state.
+   */
+  queue(input: DirectDrawInput): void {
+    const retain =
+      input.retainMaterialBindings === true &&
+      input.materials !== undefined &&
+      !input.materials.hasBorrowedValues;
+    if (retain !== this.retainBindings) {
+      this.retainBindings = retain;
+      this.emittedRevision = -1;
+    }
+    this.syncMaterialPassMode(input);
     const dirty = new Set<Member>(this.pending);
     const previousSort = this.sortInputs;
     this.sortInputs = input.sort;
@@ -347,7 +394,16 @@ export class DirectDrawPhase {
     this.touchMorphed(input, dirty);
     if (lodMoved) this.reprojectLod(input, dirty);
     this.syncSort(previousSort);
-    return this.emit(input.offset ?? 0);
+  }
+
+  /** Rows-only and borrowed consumers allocate no owned material-group state. */
+  private syncMaterialPassMode(input: DirectDrawInput): void {
+    const enabled = input.entries !== undefined && input.materials?.hasBorrowedValues === false;
+    const temporal = input.entries?.temporal === true;
+    if (enabled !== this.materialPassGroupsEnabled || temporal !== this.temporalMaterialPasses)
+      this.emittedRevision = -1;
+    this.materialPassGroupsEnabled = enabled;
+    this.temporalMaterialPasses = temporal;
   }
 
   // ── Batches ───────────────────────────────────────────────────────────
@@ -579,7 +635,21 @@ export class DirectDrawPhase {
           if (before?.snapshot === after?.snapshot && before?.passes === after?.passes) return;
           const resource = (after ?? before)?.resource;
           if (resource === undefined) return;
-          for (const member of this.materialReaders.get(resource) ?? []) dirty.add(member);
+          // Selection and derived geometry are judged once per binding below.
+          // A fixed parameter-only version does not change a batched row's
+          // Pass placement or source. Unbatched admission and per-source morph
+          // preparation still read the payload and keep their ordinary rebuild.
+          const samePasses =
+            !materials.hasBorrowedValues &&
+            !previousMaterials.hasBorrowedValues &&
+            before?.passes === after?.passes;
+          for (const member of this.materialReaders.get(resource) ?? [])
+            if (
+              !samePasses ||
+              member.contributions.size === 0 ||
+              member.row?.source.morph !== undefined
+            )
+              dirty.add(member);
           for (const batchId of this.byMaterial.get(resource) ?? [])
             this.judge(batchId, this.known.get(batchId), input, dirty);
         });
@@ -696,6 +766,7 @@ export class DirectDrawPhase {
         meshKey: undefined,
         lod: false,
         items: [],
+        materialPasses: undefined,
         placed: undefined,
         placedMaterials: undefined,
         placedSelector: undefined,
@@ -991,10 +1062,24 @@ export class DirectDrawPhase {
     const materials = input.materials;
     if (entries === undefined || materials === undefined) return this.keepsRowBin(member);
     return (
-      member.placedMaterials === materials &&
+      this.samePlacementMaterials(member, materials) &&
       member.placedSelector === entries.selector &&
       samePlacedFacts(before, after)
     );
+  }
+
+  /** Pass identity is the material owner's projection; unrelated values do not place draws. */
+  private samePlacementMaterials(member: Member, materials: MaterialFrame): boolean {
+    const before = member.placedMaterials;
+    if (before === materials) return true;
+    if (before === undefined || before.hasBorrowedValues || materials.hasBorrowedValues)
+      return false;
+    for (const resource of member.materials) {
+      const previous = before.get(resource);
+      if (previous === undefined || previous.passes !== materials.get(resource)?.passes)
+        return false;
+    }
+    return true;
   }
 
   /** A rows-only consumer's single item stays in the bin `place` would choose. */
@@ -1009,6 +1094,9 @@ export class DirectDrawPhase {
   /** The member's current placements; queueing them dequeues its previous ones first. */
   private place(member: Member, input: DirectDrawInput): readonly BinPlacement<DrawItem>[] {
     this.leaveSort(member);
+    // Placement replaces this member's entries, including an empty result.
+    // Release its previous groups even when no later draw asks for them.
+    member.materialPasses = undefined;
     const row = member.row === undefined ? undefined : member.drawn;
     member.placed = row;
     member.placedMaterials = input.materials;
@@ -1280,7 +1368,12 @@ export class DirectDrawPhase {
 
   // ── Output ────────────────────────────────────────────────────────────
 
-  private emit(offset: number): DirectDrawOutput {
+  /**
+   * Emit step: the queued bins and order as ordered rows and dispatch, with
+   * `offset` the first `renderableIndex` of this consumer's rows in a combined
+   * index space. An unchanged queue and offset return the previous arrays.
+   */
+  emit(offset = 0): DirectDrawOutput {
     const revision = this.bins.revision;
     const sort = this.sort.revision;
     if (
@@ -1291,9 +1384,6 @@ export class DirectDrawPhase {
       this.sort.ordered
     )
       return this.output;
-    this.emittedRevision = revision;
-    this.emittedSort = sort;
-    this.emittedOffset = offset;
     this.work.emitted += 1;
     const epoch = ++this.epoch;
     const items: DrawItem[] = [];
@@ -1310,13 +1400,35 @@ export class DirectDrawPhase {
         rows.push(owner.drawn as MutableRow);
       }
     this.order(items);
-    const dispatch: DispatchEntry[] = [];
+    this.output = this.emitOrdered(items, rows, epoch, offset);
+    this.emittedRevision = revision;
+    this.emittedSort = sort;
+    this.emittedOffset = offset;
+    return this.output;
+  }
+
+  /** Publish ordered items and their rows, retaining only an equal fixed dispatch key. */
+  private emitOrdered(
+    items: readonly DrawItem[],
+    rows: MutableRow[],
+    epoch: number,
+    offset: number,
+  ): DirectDrawOutput {
+    const previousDispatch = this.output.dispatch;
+    let nextDispatch: DispatchEntry[] | undefined;
+    // Borrowed tables keep ordinary replacement; fixed entries can retain the
+    // already consumed dispatch array when its actual order and indices agree.
+    if (this.materials === undefined || this.materials.hasBorrowedValues) nextDispatch = [];
+    let dispatchCount = 0;
     const entryRows: ValidatedRenderable[] = [];
     for (const item of items) {
       const owner = item.owner;
       const entry = item.entry as MutableEntry;
       const row = owner.drawn as MutableRow;
-      dispatch.push(entry);
+      if (nextDispatch === undefined && previousDispatch[dispatchCount] !== entry)
+        nextDispatch = previousDispatch.slice(0, dispatchCount);
+      nextDispatch?.push(entry);
+      dispatchCount += 1;
       entryRows.push(row);
       // The last entry of a row owns its overlay (render state, stencil, variant).
       row.renderState = entry.renderState;
@@ -1333,14 +1445,68 @@ export class DirectDrawPhase {
         member.emitted = epoch;
         rows.push(member.drawn);
       }
-    for (let index = 0; index < rows.length; index++)
-      (rows[index] as MutableRow).renderableIndex = offset + index;
-    for (let index = 0; index < dispatch.length; index++)
-      (dispatch[index] as MutableEntry).renderableIndex = (
-        entryRows[index] as ValidatedRenderable
-      ).renderableIndex;
-    this.output = { rows, dispatch, entryRows };
-    return this.output;
+    const materialRows = this.addressRows(rows, offset);
+    if (nextDispatch === undefined && dispatchCount !== previousDispatch.length)
+      nextDispatch = previousDispatch.slice(0, dispatchCount);
+    let dispatch = nextDispatch ?? previousDispatch;
+    for (let index = 0; index < dispatch.length; index++) {
+      const entry = dispatch[index] as MutableEntry;
+      const renderableIndex = (entryRows[index] as ValidatedRenderable).renderableIndex;
+      if (entry.renderableIndex !== renderableIndex) {
+        // Same entry objects with shifted compact indices need a new cache key.
+        if (dispatch === previousDispatch) dispatch = previousDispatch.slice();
+        entry.renderableIndex = renderableIndex;
+      }
+    }
+    const materialPasses = this.projectMaterialPasses(items, dispatch, epoch, offset);
+    return { rows, dispatch, entryRows, materialPasses, materialRows };
+  }
+
+  /** Compact addresses and persistent binding relations follow the same emitted row order. */
+  private addressRows(
+    rows: readonly MutableRow[],
+    offset: number,
+  ): MaterialRelationFrame | undefined {
+    const ownedMaterials = this.retainBindings;
+    if (ownedMaterials) this.materialRows.begin(this.materials as MaterialFrame);
+    else this.materialRows.clear();
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index] as MutableRow;
+      row.renderableIndex = offset + index;
+      if (ownedMaterials) this.materialRows.write(index, row);
+    }
+    return ownedMaterials ? this.materialRows.finish(rows.length) : undefined;
+  }
+
+  private appendMaterialPass(owner: Member, entry: DispatchEntry, epoch: number): void {
+    owner.materialPasses ??= new MemberMaterialPasses();
+    owner.materialPasses.append(entry, epoch);
+  }
+
+  /** Equal emitted dispatch already proves every row/material Pass grouping. */
+  private projectMaterialPasses(
+    items: readonly DrawItem[],
+    dispatch: readonly DispatchEntry[],
+    epoch: number,
+    offset: number,
+  ): MaterialPassLookup | undefined {
+    if (!this.materialPassGroupsEnabled || items.length === 0) return undefined;
+    const previous = this.output.materialPasses;
+    if (dispatch === this.output.dispatch && previous?.temporal === this.temporalMaterialPasses)
+      return previous;
+    for (const item of items)
+      this.appendMaterialPass(item.owner, item.entry as DispatchEntry, epoch);
+    const groups: (MaterialPasses | undefined)[] = [];
+    let size = 0;
+    for (const item of items) {
+      const index = (item.owner.drawn as MutableRow).renderableIndex - offset;
+      if (groups[index] !== undefined) continue;
+      const group = item.owner.materialPasses?.finish(epoch, this.temporalMaterialPasses);
+      if (group === undefined) invalid('the emitted member material groups');
+      groups[index] = group;
+      size += 1;
+    }
+    return materialPassLookup(groups, offset, size, this.temporalMaterialPasses);
   }
 
   /** Sorted entries take the positions of sorted entries in bin order, in phase order. */
@@ -1462,19 +1628,23 @@ function batchChanges(
   else (after as BatchSources).changesSince(before as BatchSources, visit);
 }
 
-/** Retained direct phases of one view, by consumer. */
-const phasesByView = new WeakMap<object, WeakMap<object, DirectDrawPhase>>();
+/**
+ * One view's retained direct phases, by consumer (a Scene Pass request or a
+ * shadow consumer). The view's recording state owns it and retires it with
+ * the view; no phase outlives its view.
+ */
+export class ViewDrawPhases {
+  readonly materialBindings = new MaterialBindingIndex();
+  /** Combined output of this view's currently selected graph consumers. */
+  scenePassWork: ScenePassPreparationMemo | undefined;
+  private readonly phases = new WeakMap<object, DirectDrawPhase>();
 
-export function directDrawPhase(view: object, consumer: object): DirectDrawPhase {
-  let phases = phasesByView.get(view);
-  if (phases === undefined) {
-    phases = new WeakMap();
-    phasesByView.set(view, phases);
+  of(consumer: object): DirectDrawPhase {
+    let phase = this.phases.get(consumer);
+    if (phase === undefined) {
+      phase = new DirectDrawPhase();
+      this.phases.set(consumer, phase);
+    }
+    return phase;
   }
-  let phase = phases.get(consumer);
-  if (phase === undefined) {
-    phase = new DirectDrawPhase();
-    phases.set(consumer, phase);
-  }
-  return phase;
 }

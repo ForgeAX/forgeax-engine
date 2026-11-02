@@ -1,21 +1,18 @@
 import type { LifecycleResourceSpec } from '../device/device-scope';
 import type { EnvironmentGeneration } from '../environment/generation';
-import type { EnvironmentLifecycle } from '../environment/lifecycle';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RecoveryRootBundle, RecoveryRootRuntime } from './types';
 
 /**
  * Assemble replacement-device roots without letting candidate construction
- * publish through the active RenderSystem owner.  The caller supplies the
- * small state handoff explicitly so this recovery seam remains independent
- * from frame orchestration.
+ * publish through the view's active state. The view's frame state owns its
+ * environment lifecycle; publication swaps in the candidate lifecycle.
  */
 export function prepareRenderSystemRecoveryRoots(
   runtime: RecoveryRootRuntime,
-  environmentLifecycle: EnvironmentLifecycle,
   frameState: RenderFrameState,
-  publishEnvironmentLifecycle: (lifecycle: EnvironmentLifecycle) => void,
 ): RecoveryRootBundle {
+  const environmentLifecycle = frameState.environmentLifecycle;
   const candidateEnvironmentLifecycle = environmentLifecycle.createRecoveryCandidate(runtime.scope);
   const roots: LifecycleResourceSpec<unknown>[] = [];
   let candidateEnvironmentGeneration: EnvironmentGeneration | undefined;
@@ -52,7 +49,6 @@ export function prepareRenderSystemRecoveryRoots(
         candidateEnvironmentLifecycle.publish(candidateEnvironmentGeneration);
       }
       published = true;
-      publishEnvironmentLifecycle(candidateEnvironmentLifecycle);
       Object.assign(frameState, { environmentLifecycle: candidateEnvironmentLifecycle });
     },
     discard: () => {

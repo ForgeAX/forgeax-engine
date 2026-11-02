@@ -61,6 +61,7 @@ import {
 } from '@forgeax/engine-ecs/projection';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTransformChannel } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import {
   emitAnimationDiagnostic,
   isAnimationDevMode,
@@ -114,6 +115,19 @@ export function _resetAnimationWarnsForTests(world: World): void {
  * be a compile error against the reader shape).
  */
 export function advanceAnimationPlayer(world: World, dt: number): void {
+  if (!world.frameArena.isActive) {
+    world
+      .withFrameArena(() => {
+        try {
+          advanceAnimationPlayer(world, dt);
+          return ok(undefined);
+        } catch (error) {
+          return err(error);
+        }
+      })
+      .unwrap();
+    return;
+  }
   clearAnimationEvents(world);
   refreshTargetMaps(world);
   const query = world.query({ with: [AnimationPlayer] }).unwrap();
@@ -194,7 +208,8 @@ function advanceOnePlayer(world: World, entityRaw: number, dt: number, scratch: 
   }
 
   const previousTimes = ap.times;
-  const newTimes = new Float64Array(previousTimes);
+  const newTimes = world.frameArena.alloc(Float64Array, previousTimes.length).unwrap();
+  newTimes.set(previousTimes);
   const activeSlots = collectActiveSlotsAndAdvanceTimes(
     world,
     ap,
@@ -535,7 +550,9 @@ function tickEntityTargets(
       if (channel.property === 'weights') {
         let weights = morphAccumulators.get(targetRaw);
         if (weights === undefined) {
-          weights = { values: new Float32Array(sampled.length), sumW: 0 };
+          const values = world.frameArena.alloc(Float32Array, sampled.length).unwrap();
+          values.fill(0);
+          weights = { values, sumW: 0 };
           morphAccumulators.set(targetRaw, weights);
         }
         if (weights.values.length !== sampled.length) continue;
@@ -583,9 +600,10 @@ function tickEntityTargets(
     const target = targetRaw as EntityHandle;
     const weights = world.get(target, MorphWeights);
     if (weights.ok && weights.value.weights.length === acc.values.length) {
-      const next = new Float32Array(acc.values.length);
-      for (let i = 0; i < next.length; i++) next[i] = (acc.values[i] ?? 0) / acc.sumW;
-      world.set(target, MorphWeights, { weights: next });
+      // No later reader needs the unnormalized accumulator. World.set copies
+      // these query-local bytes into the managed component before scope close.
+      for (let i = 0; i < acc.values.length; i++) acc.values[i] = (acc.values[i] ?? 0) / acc.sumW;
+      world.set(target, MorphWeights, { weights: acc.values });
     }
   }
 }

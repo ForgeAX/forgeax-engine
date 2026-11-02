@@ -5,13 +5,16 @@ import {
   PackageId,
   validatePluginAssetSource,
 } from '@forgeax/engine-pack/source';
-import { err, ok } from '@forgeax/engine-types';
+import { err, type MaterialRootAsset, ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type { ScriptablePackAssetSnapshotSource } from '../scriptable-pack.js';
 import { AssetOutputProducerRegistry } from '../scriptable-pack.js';
 import { buildScriptablePack, buildScriptablePackWorklist } from '../scriptable-pack-build.js';
 import { produceScriptablePackProducts } from '../scriptable-pack-host.js';
-import { materialAssetOutputProducer } from '../scriptable-pack-output-producers.js';
+import {
+  materialAssetOutputProducer,
+  textureAssetOutputProducer,
+} from '../scriptable-pack-output-producers.js';
 
 function id(value: string) {
   const result = PackageId.parse(value);
@@ -215,6 +218,153 @@ describe('ScriptablePack import bridge with optional parameters', () => {
         true,
       );
       expect(events.at(-1)).toMatchObject({ completed: 1, total: 1, cache: hit ? 'hit' : 'miss' });
+    }
+  });
+
+  it('publishes an ordinary Asset a custom cooker returns through that kind standard producer', async () => {
+    const packageId = definePackageId('01900000-0000-7000-8000-00000000004a');
+    const textureGuid = AssetGuid.format(AssetGuid.derive(packageId, 'texture/baked'));
+    const sceneGuid = AssetGuid.format(AssetGuid.derive(packageId, 'scene/main'));
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId,
+      build: () =>
+        ok({
+          'scene/main': scene(),
+          'texture/baked': { kind: 'test-bake', execution: 'cooked', source: { level: 7 } },
+        }),
+    });
+    const outputs = producers();
+    outputs.register(textureAssetOutputProducer);
+    const cooker = {
+      key: 'test-bake',
+      cook(raw: unknown) {
+        const input = raw as { guid: string; source: { level: number } };
+        return {
+          guid: input.guid,
+          payload: {
+            kind: 'texture',
+            format: 'r8unorm',
+            colorSpace: 'linear',
+            shape: { viewDimension: '2d', extent: { width: 2, height: 2 } },
+            mips: { kind: 'none' },
+            data: new Uint8Array(4).fill(input.source.level),
+          },
+          refs: [sceneGuid],
+          artifacts: {},
+          inputFingerprint: `bake:${input.source.level}`,
+        };
+      },
+    };
+    const built = await buildScriptablePack({
+      definition,
+      sourcePath: 'assets/bake.pack.ts',
+      outputs,
+      cookers: [cooker],
+      availableGuids: new Set<string>(),
+    });
+    if (!built.ok) throw built.error;
+    const output = built.value.product.assets.find((asset) => asset.guid === textureGuid);
+    expect(output).toMatchObject({
+      kind: 'texture',
+      payload: { kind: 'texture', format: 'r8unorm' },
+      refs: [{ guid: sceneGuid }],
+      artifacts: {
+        body: { mediaType: 'application/x-forgeax-r8', bytes: new Uint8Array(4).fill(7) },
+      },
+    });
+    const staged = built.value.stagedOutputs.find((entry) => entry.sourceKey === 'texture/baked');
+    expect(staged?.asset).toMatchObject({ kind: 'test-bake', execution: 'cooked' });
+    const invalid = await buildScriptablePack({
+      definition,
+      sourcePath: 'assets/bake.pack.ts',
+      outputs: producers(),
+      cookers: [cooker],
+      availableGuids: new Set<string>(),
+    });
+    expect(invalid).toMatchObject({
+      ok: false,
+      error: { code: 'pack-parameter-invalid', detail: { sourceKey: 'texture/baked' } },
+    });
+  });
+
+  it('cooks a material a custom cooker returns through the same native material cook as a declared one', async () => {
+    const packageId = definePackageId('01900000-0000-7000-8000-00000000004b');
+    const paint: MaterialRootAsset = {
+      kind: 'material',
+      passes: [
+        {
+          name: 'Forward',
+          program: { module: 'forgeax::default-standard-pbr' },
+          renderState: { tags: { LightMode: 'Forward' }, queue: 2000 },
+        },
+      ],
+      staticSwitches: { clearcoat: true },
+      values: { baseColor: [0.6, 0.05, 0.04, 1] },
+    };
+    const sceneGuid = AssetGuid.format(AssetGuid.derive(packageId, 'scene/main'));
+    const definition = definePack({
+      schemaVersion: '2.0.0',
+      packageId,
+      build: () =>
+        ok({
+          'scene/main': scene(),
+          'material/declared': paint,
+          'material/baked': { kind: 'test-paint', execution: 'cooked', source: { tone: 1 } },
+        }),
+    });
+    const outputs = producers();
+    outputs.register(materialAssetOutputProducer);
+    const materialCooks: string[] = [];
+    const built = await buildScriptablePack({
+      definition,
+      sourcePath: 'assets/paint.pack.ts',
+      outputs,
+      cookers: [
+        {
+          key: 'test-paint',
+          cook: (raw: unknown) => ({
+            guid: (raw as { guid: string }).guid,
+            payload: paint,
+            refs: [sceneGuid],
+            artifacts: {},
+            inputFingerprint: 'paint',
+          }),
+        },
+        {
+          // Stands in for the native material cooker: static specializations compile here.
+          key: 'material',
+          cook: (raw: unknown) => {
+            const input = raw as { guid: string; sourceKey: string; source: typeof paint };
+            materialCooks.push(input.sourceKey);
+            return {
+              guid: input.guid,
+              payload: {
+                ...input.source,
+                cooked: { staticSelection: ['static-switch:clearcoat=true'] },
+              },
+              refs: [],
+              artifacts: {},
+              inputFingerprint: `material:${input.sourceKey}`,
+            };
+          },
+        },
+      ],
+      availableGuids: new Set<string>(),
+    });
+    if (!built.ok) throw built.error;
+    expect(materialCooks.sort()).toEqual(['material/baked', 'material/declared']);
+    // The custom cooker's own refs survive the material re-projection.
+    const baked = built.value.product.assets.find(
+      (asset) => asset.guid === AssetGuid.format(AssetGuid.derive(packageId, 'material/baked')),
+    );
+    expect(baked?.refs).toContainEqual({ guid: sceneGuid });
+    for (const sourceKey of ['material/declared', 'material/baked']) {
+      const guid = AssetGuid.format(AssetGuid.derive(packageId, sourceKey));
+      expect(built.value.product.assets.find((asset) => asset.guid === guid)).toMatchObject({
+        kind: 'material',
+        payload: { cooked: { staticSelection: ['static-switch:clearcoat=true'] } },
+      });
     }
   });
 

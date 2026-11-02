@@ -57,7 +57,7 @@ import { createRendererLifecycle, isRendererStateOperational } from './renderer-
 /** Narrow the concrete host to the lease/receipt-only public contract. */
 export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
   const listeners = new Set<RendererEventListener>();
-  const lifecycle = createRendererLifecycle(renderer.inspect().state);
+  const lifecycle = createRendererLifecycle(renderer.inspect({ fields: ['state'] }).state);
   let scheduledFrame:
     | {
         readonly controller: AbortController;
@@ -422,8 +422,14 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
       );
     },
     currentDeviceGeneration: () =>
-      renderer.currentDeviceGeneration?.() ?? renderer.inspect().frame.deviceGeneration,
-    inspect: (options) => ({ ...renderer.inspect(options), state: lifecycle.state() }),
+      renderer.currentDeviceGeneration?.() ??
+      renderer.inspect({ fields: ['frame'] }).frame.deviceGeneration,
+    inspect: (options) => {
+      const snapshot = renderer.inspect(options) as RenderInspection;
+      return options?.fields === undefined || options.fields.some((field) => field === 'state')
+        ? { ...snapshot, state: lifecycle.state() }
+        : snapshot;
+    },
     observeGeometry: (receipt) =>
       renderer.observeGeometry?.(receipt) ??
       Promise.resolve(
@@ -481,7 +487,10 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
           if (!result.ok) {
             const error = new RendererOperationError('recovery-failed', {
               operation: 'recover',
-              ...projectRecoveryFailureDetail(result.error, renderer.inspect().recovery),
+              ...projectRecoveryFailureDetail(
+                result.error,
+                renderer.inspect({ fields: ['recovery'] }).recovery,
+              ),
               cause: structuredRendererCause(result.error, 'recover'),
             });
             emit(Object.freeze({ kind: 'error', error }));
@@ -490,7 +499,7 @@ export function exposeRenderer(renderer: RendererHostImplementation): Renderer {
           return ok(undefined);
         })
         .finally(() => {
-          transition(renderer.inspect().state);
+          transition(renderer.inspect({ fields: ['state'] }).state);
           recoverInFlight = undefined;
         });
       return recoverInFlight;
@@ -835,8 +844,7 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
     const resolved = resolveSsaoParameters(profile.ssao);
     if (!resolved.ok) return resolved.error.hint;
   }
-  if (profile.ssao !== false && profile.renderPath !== 'deferred')
-    return 'SSAO needs current depth and normals: set renderPath to deferred';
+  // Forward reconstructs normals from depth (pipeline/forward-ambient-occlusion.ts).
   return undefined;
 }
 

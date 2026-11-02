@@ -12,6 +12,11 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import {
+  abortFeatureFrame,
+  prepareFeatureFrame,
+  submitFeatureFrame,
+} from '../../../render/src/__tests__/feature-frame-driver';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
 import type { RenderFeatureWork } from '../../../render/src/features/types';
@@ -180,7 +185,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
   let sequence = 0;
   const frame = (generation = 0) => {
     const frameNumber = ++sequence;
-    const batch = host.runFrame(
+    const batch = prepareFeatureFrame(
+      host,
       ['main', 'side'].map((identity) => ({
         identity,
         render: true,
@@ -200,10 +206,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
       work,
       close(submit = true) {
         if (submit) {
-          batch.frame.onSubmitted();
-          for (const view of batch.views.values()) view.onSubmitted();
-          batch.onSubmitted();
-        } else batch.onAborted();
+          submitFeatureFrame(host);
+        } else abortFeatureFrame(host);
         for (const lease of batch.preparedResourceBatches) lease.release().unwrap();
       },
     };

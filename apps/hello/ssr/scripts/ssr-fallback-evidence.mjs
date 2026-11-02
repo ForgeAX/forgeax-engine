@@ -101,7 +101,7 @@ export function deriveReflectionProbeRecoveryEvidence(inspection, beforeDeviceGe
     afterSsr.status === 'admitted' &&
     afterSsr.history.state === 'stable' &&
     afterSsr.history.bytes > 0 &&
-    replacementTemporal.successfulSubmit === true &&
+    replacementTemporal?.successfulSubmit === true &&
     replacementTemporal.generation === afterDeviceGeneration;
   return {
     afterDeviceGeneration,

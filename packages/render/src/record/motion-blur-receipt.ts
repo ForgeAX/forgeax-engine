@@ -1,6 +1,7 @@
 import { getRenderFeaturePlanExecutionProjection } from '../features/host';
 import type { RenderFeaturePlannedFrame } from '../features/plan';
 import type { MotionBlurExecutionPass, MotionBlurExecutionReceipt } from '../inspection-types';
+import { recordContext } from '../world/view-record-context';
 import type { RenderFrameState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
@@ -17,7 +18,7 @@ export function deriveMotionBlurExecutionReceipt(
   const planned = plans.find((candidate) => candidate.featureIdentity === 'forgeax.motion-blur');
   if (planned === undefined) return undefined;
   const graph = frameState.compiledFrameGraph?.graph ?? null;
-  const deviceGeneration = internals.deviceScope?.generation;
+  const deviceGeneration = recordContext(internals).deviceScope?.generation;
   if (graph === null || deviceGeneration === undefined) return undefined;
   const info = graph.inspect();
   const graphPasses = new Map(info.passes.map((pass) => [pass.name, pass]));

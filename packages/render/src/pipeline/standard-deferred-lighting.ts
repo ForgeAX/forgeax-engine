@@ -33,6 +33,7 @@ import type {
   RenderSystemInternals,
 } from '../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
 /** Two vec4 lanes shared by the graph allocation and uniform binding layout. */
@@ -165,7 +166,7 @@ export function addStandardDeferredLighting(
       { resource: capsules.value, usage: 'copy-dst' },
       { resource: capsuleTiles.value, usage: 'copy-dst' },
     ],
-    encode: ({ frame, resources, encoder }) => {
+    encodeDirect: (encoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const settings = internal.frameState.installedPipelineConfig?.ssao;
       const queue = frame.runtime.device.queue;
@@ -287,7 +288,7 @@ export function addStandardDeferredLighting(
       storeOp: 'store' as const,
       clearValue: { r: 0, g: 0, b: 0, a: 0 },
     })),
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       const usesLut = (internal.validatedOrdered ?? []).some((entry) =>
@@ -309,7 +310,7 @@ export function addStandardDeferredLighting(
           expected: 'cooked Standard deferred lighting program',
           hint: 'rebuild the Engine shader manifest and reinitialize the Renderer',
         });
-      const scope = internal.runtime.deviceScope;
+      const scope = recordContext(internal.runtime).deviceScope;
       if (!scope.isAlive())
         throw new RhiError({
           code: 'rhi-not-available',
@@ -477,7 +478,7 @@ export function addStandardDeferredLighting(
       }
       const current = state;
       const directDfgLut = usesLut
-        ? getOrCreateDirectDfgLut(device, internal.runtime.deviceScope).unwrap()
+        ? getOrCreateDirectDfgLut(device, recordContext(internal.runtime).deviceScope).unwrap()
         : undefined;
       const view = (target: RenderPipelineTarget | undefined) =>
         target === undefined ? undefined : resources.textureView(target.view).unwrap();

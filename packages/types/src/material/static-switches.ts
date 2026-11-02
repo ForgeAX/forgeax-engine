@@ -149,6 +149,7 @@ export function selectMaterialStaticContract(
     bumpScale: ['bumpTexture'],
     displacementScale: ['displacementTexture'],
     displacementBias: ['displacementTexture'],
+    displacementMode: ['displacementTexture'],
     normalMapSpace: ['normalTexture'],
     triplanarSpace: [
       'baseColorTexture',

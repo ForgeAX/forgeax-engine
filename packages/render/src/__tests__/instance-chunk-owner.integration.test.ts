@@ -1,4 +1,6 @@
+import { MemoryError } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
+import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { disposeInstanceBufferChunks, type InstanceBufferChunks } from '../instance-buffer-cache';
 import { cleanPerFrameCaches } from '../record/fold-buckets';
@@ -9,6 +11,7 @@ import {
 } from '../record/main-pass-geometry';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import type { RenderableSnapshot } from '../render-system-extract';
+import { renderWorldFor } from '../world/render-world';
 
 async function fixture() {
   const adapter = (await rhi.requestAdapter()).unwrap();
@@ -173,4 +176,54 @@ it('uses the same collection ownership for chunked uniform fallback', async () =
   ).toEqual([128, 32]);
   expect([...(owners.get(key)?.keys() ?? [])]).toEqual([0, 128]);
   disposeInstanceBufferChunks(owners);
+});
+
+it('copies exact arena windows before upload return and reuses backing across changing revisions', async () => {
+  const { context, device, makeRow, resolve } = await fixture();
+  const world = renderWorldFor(context.runtime);
+  const row = makeRow(0);
+  const uploaded: Float32Array[] = [];
+  const realWrite = device.queue.writeBuffer.bind(device.queue);
+  vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data, start, size) => {
+    const bytes = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data);
+    // Queue uploads consume the view synchronously. A retained spy must copy
+    // its exact byte window, as the real WebGPU queue does.
+    uploaded.push(new Float32Array(bytes.slice().buffer));
+    return realWrite(buffer, offset, data, start, size);
+  });
+  resolve(row);
+  const warmed = world.memoryStats().arena.backingAllocations;
+  for (let revision = 2; revision < 8; revision++) {
+    row.source.instances.transforms[12] = revision;
+    Object.assign(row.source.instances, { revision });
+    world
+      .withFrameArena(() => {
+        world.frameArena.alloc(Float32Array, 13).unwrap().fill(Number.NaN);
+        resolve(row);
+        return ok(undefined);
+      })
+      .unwrap();
+  }
+  expect(uploaded[0]?.[12]).toBe(0);
+  expect(uploaded[0]?.[28]).toBe(0);
+  expect(uploaded.at(-4)?.[12]).toBe(7);
+  expect(world.memoryStats().arena.backingAllocations).toBe(warmed);
+  expect(world.frameArena.isActive).toBe(false);
+});
+
+it('retries an instance upload after scratch admission fails without publishing its revision', async () => {
+  const { context, device, makeRow, resolve } = await fixture();
+  const world = renderWorldFor(context.runtime);
+  const row = makeRow(0);
+  const error = new MemoryError({ kind: 'budget', requestedBytes: 1024, limitBytes: 0 });
+  const admission = vi.spyOn(world.frameArena, 'alloc').mockReturnValueOnce(err(error));
+  const write = vi.spyOn(device.queue, 'writeBuffer');
+  expect(() => resolve(row)).toThrow(error);
+  expect(write).not.toHaveBeenCalled();
+  expect(world.frameArena.isActive).toBe(false);
+  admission.mockRestore();
+  expect(resolve(row)).toHaveLength(4);
+  expect(write).toHaveBeenCalledTimes(4);
 });

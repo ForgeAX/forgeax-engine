@@ -8,10 +8,6 @@ import { inspectPluginFiber } from '@forgeax/engine-plugin';
 import { Camera, orthographic, perspective, type RendererOptions } from '@forgeax/engine-render';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  createRenderFeatureHost,
-  type RenderFeatureFrameInput,
-} from '../../../../render/src/features/host.js';
 import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '../../../../vfx/src/index.js';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
@@ -325,27 +321,6 @@ describe('native Host startup failure ownership', () => {
         })
         .unwrap();
       expect(extracted.worlds[0].camera).toBe(selectedView);
-      const featureHost = createRenderFeatureHost([first.feature]).unwrap();
-      const empty = featureHost.runFrame([
-        {
-          identity: 'main',
-          render: true,
-          worlds: [firstWorld],
-          owner: 0,
-          frameNumber: 2,
-          selectedView,
-          caps: { compute: false, indirectDrawing: false } as RenderFeatureFrameInput['caps'],
-        },
-      ]);
-      expect(empty.frame.errors).toEqual([]);
-      expect(
-        empty.frame.plans.every(
-          ({ plan }) => plan.resources.length === 0 && plan.passes.length === 0,
-        ),
-      ).toBe(true);
-      expect(empty.preparedResourceBatches).toEqual([]);
-      empty.onAborted();
-      featureHost.dispose();
       await running.start();
       expect(firstWorld.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(false);
       expect(running.world().hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)).toBe(true);

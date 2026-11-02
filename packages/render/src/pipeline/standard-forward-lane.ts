@@ -51,6 +51,7 @@ import {
 } from '../typed-render-graph-primitives';
 import { addTypedShadowPasses, type TypedShadowTargets } from '../typed-shadow-passes';
 import { addOpaqueFogPasses, addTranslucencyVolumetricFogPasses } from './analytic-fog-pass';
+import { addForwardAmbientOcclusion } from './forward-ambient-occlusion';
 import { addGpuLateOcclusion, sceneViewImport } from './gpu-occlusion';
 import { renderInternalCopySize, renderInternalSize } from './render-extent';
 import {
@@ -238,7 +239,7 @@ function declareReflectionFallback(
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
       },
     ],
-    encode: () => {},
+    encodeDirect: () => {},
   });
   if (!initialized.ok) return initialized;
   return fallback;
@@ -295,7 +296,7 @@ function projectForwardGpuDriven(
   return context.projectGpuDriven({
     format: color.format,
     sampleCount: color.sampleCount,
-    lateOcclusion: topology.config?.gpuOcclusion !== false,
+    lateOcclusion: topology.opaque.lateOcclusion,
     ...(reflectionFallback === undefined
       ? {}
       : { additionalColorFormats: [reflectionFallback.format] }),
@@ -461,12 +462,6 @@ function addForwardSingleLayerMedium(
     ...(scene.msaa ? { colorResolve: scene.resolved } : {}),
     depth: scene.depth,
     ...receiver,
-    extraAccesses: [
-      ...receiver.extraAccesses,
-      ...(medium.targetCaptures === undefined
-        ? []
-        : [{ resource: medium.targetCaptures, usage: 'sampled-read' as const }]),
-    ],
     surfacePair,
     ...(medium.gpuDriven === undefined ? {} : { gpuDriven: medium.gpuDriven }),
   });
@@ -497,6 +492,14 @@ function addForwardTranslucentStages(
   unfoggedOpaque: TypedScenePassOptions | undefined,
 ): Result<void, RenderPipelineBuildError> {
   const graph = context.graph;
+  // Opaque-only AO multiply ahead of opaque fog and every translucent writer.
+  const ambientOcclusion = addForwardAmbientOcclusion(
+    graph,
+    topology,
+    { color: scene.resolved, depth: scene.depth },
+    renderInternalCopySize(topology),
+  );
+  if (!ambientOcclusion.ok) return ambientOcclusion;
   const fogged = addOpaqueFogPasses(graph, { topology, color: scene.resolved, depth: scene.depth });
   if (!fogged.ok) return fogged;
   if (unfoggedOpaque !== undefined) {
@@ -770,6 +773,7 @@ export function buildStandardForwardLane(
   const receiver = standardForwardReceiverInputs({
     shadows: shadows.value,
     cloudShadow: cloud.value.shadow,
+    planarReflection: targetCaptures?.value,
     clusterReads:
       clusterBuffers.value === null ? [] : standardClusterReadAccesses(clusterBuffers.value),
   });

@@ -73,6 +73,8 @@ import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from './shader-prewarm-policy'
 export type SeedShaderModule = ShaderDeviceAdapterInternal['seedModule'];
 
 export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
+  /** Borrow only an already completed exact-source module from this live generation. */
+  completedModule(key: string, source: ShaderSource): ShaderModule | undefined;
   /**
    * feat-20260609 R3-fixup: seed the adapter's moduleCache with an
    * already-compiled ShaderModule under `label`. Used by the eager
@@ -86,6 +88,8 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
    * replacement generation rebuilds only what its predecessor actually used.
    */
   hasModule(label: string): boolean;
+  /** Only this live generation-owned asynchronous request may be retried. */
+  isPending(error: RhiError): boolean;
   invalidateModule(label: string): void;
   /** Retire the explicit generation warmup roster and pending callbacks. */
   dispose(): void;
@@ -138,6 +142,9 @@ export function makeShaderDeviceAdapter(
       ) => Result<ShaderModule, RhiError>)
     | undefined,
   mode: ShaderModuleAdapterMode = 'validated',
+  completedValidatedModule?:
+    | ((key: string, source: ShaderSource) => ShaderModule | undefined)
+    | undefined,
 ): ShaderDeviceAdapterInternal {
   const moduleCache = new Map<string, WeakRef<ShaderModule>>();
   let disposed = false;
@@ -157,7 +164,12 @@ export function makeShaderDeviceAdapter(
     release.register(module, { key, ref });
   };
   const errorCache = new Map<string, RhiError>();
-  const pending = new Map<string, { readonly epoch: number; error?: RhiError }>();
+  type PendingModule = { readonly epoch: number; error?: RhiError };
+  const pending = new Map<string, PendingModule>();
+  const pendingSignals = new WeakMap<
+    RhiError,
+    { readonly key: string; readonly request: PendingModule }
+  >();
   const epochs = new Map<string, number>();
   const requested = new Set<string>();
 
@@ -182,6 +194,17 @@ export function makeShaderDeviceAdapter(
       }
       sources.set(key, source);
       requested.add(key);
+      // A validated preparation and its later immediate draw must use the same
+      // module object, not start a second PSO for otherwise identical inputs.
+      // Do not retain an alias here: invalidation of the validated owner must
+      // take effect before the next lookup, including an earlier local module.
+      const validated = mode === 'immediate' ? completedValidatedModule?.(key, source) : undefined;
+      if (validated !== undefined) {
+        moduleCache.delete(key);
+        errorCache.delete(key);
+        pending.delete(key);
+        return ok(validated);
+      }
       const cachedModule = moduleCache.get(key)?.deref();
       if (cachedModule !== undefined) return ok(cachedModule);
       const cachedError = errorCache.get(key);
@@ -234,8 +257,20 @@ export function makeShaderDeviceAdapter(
       // its native promise is pending. Keep its structured signal with that
       // request instead of capturing an Error stack for every retry. Settlement
       // and invalidation retire the complete record, including this signal.
-      request.error ??= makeRhiNotAvailableError(key);
+      if (request.error === undefined) {
+        request.error = makeRhiNotAvailableError(key);
+        pendingSignals.set(request.error, { key, request });
+      }
       return err(request.error);
+    },
+    completedModule(key, source): ShaderModule | undefined {
+      if (disposed) return undefined;
+      const previous = sources.get(key);
+      if (previous === undefined || (previous !== source && previous.identity !== source.identity))
+        return undefined;
+      const module = moduleCache.get(key)?.deref();
+      if (module !== undefined) requested.add(key);
+      return module;
     },
     seedModule(label: string, module: ShaderModule, sourceInput: string | ShaderSource): void {
       if (disposed) return;
@@ -248,6 +283,10 @@ export function makeShaderDeviceAdapter(
     },
     hasModule(label: string): boolean {
       return requested.has(label) && moduleCache.get(label)?.deref() !== undefined;
+    },
+    isPending(error: RhiError): boolean {
+      const signal = pendingSignals.get(error);
+      return !disposed && signal !== undefined && pending.get(signal.key) === signal.request;
     },
     invalidateModule(label: string): void {
       epochs.set(label, (epochs.get(label) ?? 0) + 1);

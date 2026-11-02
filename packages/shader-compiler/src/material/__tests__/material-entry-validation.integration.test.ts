@@ -546,6 +546,9 @@ describe('selected material graphics entries', () => {
             expect(selection.abi?.materialRow.fields).toEqual(['tint']);
             expect(selection.abi?.vertexInputs).toEqual([
               { semantic: 'position', location: 0, format: 'float32x3' },
+              ...(pass === 'ShadowCaster'
+                ? [{ semantic: 'normal', location: 1, format: 'float32x3' }]
+                : []),
             ]);
           }
         }

@@ -3,6 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { expect, it } from 'vitest';
 import { composeShader } from '../../../naga/src/index';
+import { projectShaderConditionals } from '../../../shader-compiler/src/conditionals';
+
+const casterBiasFunction = readFileSync(
+  new URL('../../../shader/src/common.wgsl', import.meta.url),
+  'utf8',
+).match(/fn directionalShadowCasterBias[\s\S]*?\n}/)?.[0];
+if (casterBiasFunction === undefined) throw new Error('Missing shared caster bias function');
 
 const source = readFileSync(
   new URL('../../../shader/src/lighting-directional.wgsl', import.meta.url),
@@ -22,7 +29,10 @@ function shaderFunction(name: string): string {
   throw new Error(`unterminated production function ${name}`);
 }
 
-it('preserves PCF coverage with receiver-plane depth and real comparison filtering', async () => {
+it.each([
+  false,
+  true,
+])('preserves analytic PCF coverage with raw depth reads %s', async (rawDepth) => {
   const adapter = await navigator.gpu.requestAdapter();
   expect(adapter).not.toBeNull();
   if (adapter === null) throw new Error('Native GPU adapter is required');
@@ -71,6 +81,9 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
     const module = device.createShaderModule({
       code: await composeShader(
         `
+      ${casterBiasFunction}
+      struct CasterPolicy { clampNear: u32 };
+      const shadowCasterCascade = CasterPolicy(0u);
       struct View {
         depthBias: f32, normalBias: f32,
         splitPlanes: array<vec4<f32>,4>, directionalShadowFilter: vec4<f32>,
@@ -86,6 +99,10 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
       ${shaderFunction('_directionalReceiverDepthBias')}
       ${shaderFunction('_directionalReceiverPlaneGradient')}
       ${readFileSync(new URL('../../../shader/src/shadow-pcf.wgsl', import.meta.url), 'utf8').replace(/^#define_import_path.*$/gm, '')}
+      ${projectShaderConditionals(shaderFunction('_directionalPointCompare'), { DIRECTIONAL_PCSS_AVAILABLE: rawDepth }, 'all')}
+      ${projectShaderConditionals(shaderFunction('_directionalPlaneCompare'), { DIRECTIONAL_PCSS_AVAILABLE: rawDepth }, 'all')}
+      ${shaderFunction('_directionalVogel')}
+      ${shaderFunction('_directionalSoft')}
       ${receiver}
       @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let normals = array<vec3<f32>,4>(vec3(-0.4,0.0,1.0),vec3(0.4,0.0,1.0),vec3(0.0,0.0,1.0),vec3(-0.4,0.0,1.0));
@@ -101,7 +118,7 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
             'utf8',
           ),
         },
-        { STORAGE_BUFFER_AVAILABLE: true },
+        { STORAGE_BUFFER_AVAILABLE: true, DIRECTIONAL_PCSS_AVAILABLE: rawDepth },
       ),
     });
     const pipeline = await device.createComputePipelineAsync({
@@ -151,7 +168,11 @@ it('preserves PCF coverage with receiver-plane depth and real comparison filteri
     const rows = Array.from(new Float32Array(readback.getMappedRange()));
     readback.unmap();
     expect(errors).toEqual([]);
-    const coverage = [5 / 6, 5 / 6, 2 / 3, 1];
+    // The blocker occupies one third of the weighted 3x3 footprint. With
+    // one-sided plane correction, depth 0.41 stays behind every reference
+    // (fully lit); 0.59 and 0.51 remain in front (one third occluded).
+    // The last footprint lies wholly outside the blocker column.
+    const coverage = [1, 2 / 3, 2 / 3, 1];
     const gradients = [0.1, -0.1, 0, 0.1];
     const artifact = process.env.TERRAIN_PCF_GRADIENT_ARTIFACT;
     if (artifact !== undefined) {

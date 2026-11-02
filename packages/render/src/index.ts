@@ -864,6 +864,7 @@ export type {
   RendererState,
   RenderFrameInput,
   RenderInspection,
+  RenderInspectionOptions,
   RenderPreparationSchedule,
   RenderProfile,
   RenderResult,

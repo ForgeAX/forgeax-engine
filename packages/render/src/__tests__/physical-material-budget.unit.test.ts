@@ -11,7 +11,7 @@ import {
   buildBindGroupLayoutDescriptor,
   buildPbrViewBglEntries,
   omittedStandardMaterialBindings,
-  standardNormalInputField,
+  standardInputField,
 } from '../pbr-pipeline';
 import type { PipelineSpec } from '../pipeline-spec';
 
@@ -198,15 +198,13 @@ it('fits authored independent maps with clearcoat in the physical device budget'
 it('selects the shared normal input from authored presence, with normal taking precedence', () => {
   const mask = (names: string[]) =>
     standardTextureMask(names.map((name) => ({ name, type: 'texture2d' as const })));
-  expect(standardNormalInputField('normalTexture', mask(['bumpTexture']))).toBe('bumpTexture');
-  expect(standardNormalInputField('normalTexture', mask(['normalTexture', 'bumpTexture']))).toBe(
+  expect(standardInputField('normalTexture', mask(['bumpTexture']))).toBe('bumpTexture');
+  expect(standardInputField('normalTexture', mask(['normalTexture', 'bumpTexture']))).toBe(
     'normalTexture',
   );
-  expect(standardNormalInputField('normalTexture', 0)).toBe('normalTexture');
-  expect(standardNormalInputField('normalTexture', undefined)).toBe('normalTexture');
-  expect(standardNormalInputField('baseColorTexture', mask(['bumpTexture']))).toBe(
-    'baseColorTexture',
-  );
+  expect(standardInputField('normalTexture', 0)).toBe('normalTexture');
+  expect(standardInputField('normalTexture', undefined)).toBe('normalTexture');
+  expect(standardInputField('baseColorTexture', mask(['bumpTexture']))).toBe('baseColorTexture');
 });
 
 it('keeps IBL intact when shared storage extends the material user region', () => {

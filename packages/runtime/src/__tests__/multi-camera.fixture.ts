@@ -283,7 +283,9 @@ export async function verifyMultiCamera(
           event.colorAttachmentViewHandleIds.length > 0,
       );
       expect(targetPasses).toHaveLength(face < 6 ? 2 : 1);
-      expect(tape.events.filter((event) => event.kind === 'submit')).toHaveLength(1);
+      const submissions = tape.events.filter((event) => event.kind === 'submit');
+      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
+      expect(submissions).toHaveLength(1);
       expect(
         required(renderer.inspect().views).map((view) => ({
           entity: view.entityKey,
@@ -336,7 +338,6 @@ export async function verifyMultiCamera(
           (await replay.dispose()).unwrap();
         }
       }
-      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
     }
     expect(required(captureBrightness[0]) - required(captureBrightness[1])).toBeGreaterThan(60);
     world.despawn(litModel).unwrap();

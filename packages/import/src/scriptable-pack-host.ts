@@ -56,6 +56,7 @@ import {
   type ScriptablePackBuildWorkItem,
   type ScriptablePackBuildWorklistOptions,
 } from './scriptable-pack-build.js';
+import { scriptablePackFingerprintAsync } from './scriptable-pack-fingerprint.js';
 import { createPreExternalizedSceneAssetOutputProducer } from './scriptable-pack-output-producers.js';
 import { createScriptablePackProductCache } from './scriptable-pack-product-cache.js';
 import { createScriptablePackStagedAssetSnapshotSource } from './scriptable-pack-staged-snapshot.js';
@@ -315,7 +316,12 @@ export function createDeclaredPackAssetSnapshotSource(
           // Retain the existing external snapshot identity and normalized payload.
           // The staged owner supplies concurrency, retry, and private result clones.
           return ok(
-            outputs.map((output) => ({ ...output, digest: output.digest ?? 'sha256:staged' })),
+            await Promise.all(
+              outputs.map(async (output) => ({
+                ...output,
+                digest: output.digest ?? (await scriptablePackFingerprintAsync(output.asset)),
+              })),
+            ),
           );
         } catch (error) {
           if (
@@ -981,7 +987,7 @@ function snapshotSourceForStagedOutputs(
       return ok({
         asset: structuredClone(output.asset),
         generation: 1,
-        digest: output.digest ?? 'sha256:staged',
+        digest: output.digest ?? (await scriptablePackFingerprintAsync(output.asset)),
       });
     },
   };

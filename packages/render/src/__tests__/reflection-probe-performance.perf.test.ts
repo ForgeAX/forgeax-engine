@@ -51,8 +51,8 @@ describe('ReflectionProbe steady-state performance contract', () => {
       { worldId: 0, entityKey: 8, center: [0, 0, 0] },
       { worldId: 0, entityKey: 9, center: [3, 0, 0] },
     ]);
-    const first = projection.update(facts, scene.rows(), scene.centerOf);
-    const second = projection.update(facts, scene.rows(), scene.centerOf);
+    const first = projection.update({ facts, revision: 1 }, scene.rows(), scene.centerOf);
+    const second = projection.update({ facts, revision: 1 }, scene.rows(), scene.centerOf);
 
     expect(first.revision).toBe(1);
     expect(second.revision).toBe(1);

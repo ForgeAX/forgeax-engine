@@ -81,6 +81,9 @@ for (const [name, mutate] of [
   ['unadmitted SSR', (inspection) => { inspection.ssr.status = 'off'; }],
   ['unstable history', (inspection) => { inspection.ssr.history.state = 'reset'; }],
   ['empty history', (inspection) => { inspection.ssr.history.bytes = 0; }],
+  ['missing temporal receipt', (inspection) => {
+    inspection.ssrDependencies.temporal = undefined;
+  }],
   ['unsuccessful temporal submission', (inspection) => {
     inspection.ssrDependencies.temporal.successfulSubmit = false;
   }],

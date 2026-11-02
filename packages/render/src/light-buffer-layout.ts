@@ -1,12 +1,14 @@
 // @forgeax/engine-render - host-side DirectLightSlot ABI and buffer helpers.
 //
-// Point, Spot, and Rect snapshots share one six-row, 96-byte Cluster slot.
+// Point, Spot, Rect, and additional unshadowed Directional snapshots share one
+// six-row, 96-byte Cluster slot.
 // The same packer is used by the Cluster producer and every Cluster consumer.
 // No-storage devices carry a bounded unshadowed point subset in the View UBO.
 
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
 import type {
+  DirectionalLightSnapshot,
   PointLightSnapshot,
   RectAreaDirectLightSnapshot,
   SpotLightSnapshot,
@@ -72,8 +74,9 @@ export const DirectLightSlotKind = {
   POINT: 0,
   SPOT: 1,
   RECT_AREA: 2,
+  DIRECTIONAL: 3,
 } as const;
-export type DirectLightSlotKind = 'point' | 'spot' | 'rect-area';
+export type DirectLightSlotKind = 'point' | 'spot' | 'rect-area' | 'directional';
 
 /** Metadata identity used for absent shadow, IES, and Cookie resources. */
 export const DIRECT_LIGHT_SLOT_METADATA_SENTINEL = 0xffffffff;
@@ -125,7 +128,8 @@ export const DIRECT_LIGHT_SLOT_LAYOUT = {
 export type DirectLightSnapshot =
   | PointLightSnapshot
   | SpotLightSnapshot
-  | RectAreaDirectLightSnapshot;
+  | RectAreaDirectLightSnapshot
+  | DirectionalLightSnapshot;
 
 function directLightMetadata(value: number | undefined): number {
   return value === undefined ? DIRECT_LIGHT_SLOT_METADATA_SENTINEL : value >>> 0;
@@ -142,6 +146,7 @@ export function packDirectLightSlot(
   snapshot: DirectLightSnapshot,
   projectorSelected?: boolean,
 ): Float32Array {
+  if (snapshot.kind === 'directional') return packDirectionalLightSlot(snapshot);
   const out = new Float32Array(DIRECT_LIGHT_SLOT_FLOAT_COUNT);
   out[0] = snapshot.position[0] ?? 0;
   out[1] = snapshot.position[1] ?? 0;
@@ -181,7 +186,16 @@ export function packDirectLightSlot(
     out[14] = snapshot.axisX[2] ?? 0;
   }
 
-  const metadata = new Uint32Array(out.buffer);
+  writeLocalLightMetadata(new Uint32Array(out.buffer), snapshot, projectorSelected);
+  return out;
+}
+
+/** Row 4 identities for Point, Spot, and Rect slots. */
+function writeLocalLightMetadata(
+  metadata: Uint32Array,
+  snapshot: PointLightSnapshot | SpotLightSnapshot | RectAreaDirectLightSnapshot,
+  projectorSelected: boolean | undefined,
+): void {
   metadata[16] =
     snapshot.kind === 'point'
       ? DirectLightSlotKind.POINT |
@@ -217,6 +231,27 @@ export function packDirectLightSlot(
         ? undefined
         : snapshot.cookieSlice,
   );
+  metadata[20] = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+}
+
+/**
+ * Pack one unshadowed DirectionalLight. Row 1 is the pre-multiplied color and
+ * row 2 the authored direction (pointing from the light). The position, range
+ * and resource identities are neutral: the binner admits it to every cluster.
+ */
+function packDirectionalLightSlot(snapshot: DirectionalLightSnapshot): Float32Array {
+  const out = new Float32Array(DIRECT_LIGHT_SLOT_FLOAT_COUNT);
+  out[4] = snapshot.color[0] ?? 0;
+  out[5] = snapshot.color[1] ?? 0;
+  out[6] = snapshot.color[2] ?? 0;
+  out[8] = snapshot.direction[0] ?? 0;
+  out[9] = snapshot.direction[1] ?? -1;
+  out[10] = snapshot.direction[2] ?? 0;
+  const metadata = new Uint32Array(out.buffer);
+  metadata[16] = DirectLightSlotKind.DIRECTIONAL;
+  metadata[17] = DIRECT_LIGHT_SLOT_METADATA_SENTINEL;
+  metadata[18] = DIRECT_LIGHT_SLOT_METADATA_SENTINEL;
+  metadata[19] = DIRECT_LIGHT_SLOT_METADATA_SENTINEL;
   metadata[20] = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
   return out;
 }

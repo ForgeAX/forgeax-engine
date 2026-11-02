@@ -62,7 +62,7 @@ export {
  *   mapSize        >= 1         — shadow map resolution (default 2048)
  *   depthBias                    — normalized receiver depth floor (default 0.00001),
  *                                  plus automatic texel/filter/slope coverage
- *   normalBias                   — world-space receiver normal offset (default 0.05)
+ *   normalBias                   — optional world-space receiver normal offset (default 0)
  *   shadowDistance > 0           — how far shadows reach in front of the camera,
  *                                  in world units (default 200, capped by camera far). This is the sole
  *                                  coverage knob: the CSM cascades are PSSM-split
@@ -152,7 +152,9 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   shadowRevision: { type: 'f64', default: 0 },
   mapSize: { type: 'f32', default: 2048 },
   depthBias: { type: 'f32', default: 0.00001 },
-  normalBias: { type: 'f32', default: 0.05 },
+  // Caster depth and per-texel plane correction supply automatic separation.
+  // Authored normal offsets share the caster budget instead of stacking it.
+  normalBias: { type: 'f32', default: 0 },
   // Sole shadow coverage knob (feat replaces nearPlane/farPlane). The PSSM
   // near end derives from the active camera near; shadowDistance is the far
   // cap. The effective distance is min(camera far, shadowDistance), matching

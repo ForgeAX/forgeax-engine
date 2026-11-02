@@ -1,5 +1,5 @@
 
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawShapes } from '@forgeax/engine-debug-draw';
 import type { World } from '@forgeax/engine-ecs';
 import { box2, circle2, ray2, vec3 } from '@forgeax/engine-math';
 import { Camera, MeshFilter, MeshRenderer, orthographic } from '@forgeax/engine-render';
@@ -118,17 +118,17 @@ export function computeBounding2dState(time: number, mode: Bounding2dTest): Boun
   return { mode, ray, targetBox, targetCircle, movingBox, movingCircle, boxHits, circleHits };
 }
 
-function drawBox(debugDraw: DebugDraw, box: box2.Box2Like, color: readonly [number, number, number, number]): void {
+function drawBox(debugDraw: DebugDrawShapes, box: box2.Box2Like, color: readonly [number, number, number, number]): void {
   const min = vec3.create(box[0] as number, box[1] as number, 2);
   const max = vec3.create(box[2] as number, box[3] as number, 2);
   debugDraw.aabb(min, max, color);
 }
 
-function drawCircle(debugDraw: DebugDraw, circle: circle2.Circle2Like, color: readonly [number, number, number, number]): void {
+function drawCircle(debugDraw: DebugDrawShapes, circle: circle2.Circle2Like, color: readonly [number, number, number, number]): void {
   debugDraw.sphere(vec3.create(circle[0] as number, circle[1] as number, 2), circle[2] as number, color, 24);
 }
 
-function drawRay(debugDraw: DebugDraw, ray: ray2.Ray2Like): void {
+function drawRay(debugDraw: DebugDrawShapes, ray: ray2.Ray2Like): void {
   const origin = vec3.create(ray[0] as number, ray[1] as number, 2);
   const end = vec3.create(
     (ray[0] as number) + (ray[2] as number) * (ray[4] as number),
@@ -139,7 +139,7 @@ function drawRay(debugDraw: DebugDraw, ray: ray2.Ray2Like): void {
   debugDraw.sphere(origin, 5, FUCHSIA, 12);
 }
 
-export function drawBounding2d(debugDraw: DebugDraw, state: Bounding2dState): void {
+export function drawBounding2d(debugDraw: DebugDrawShapes, state: Bounding2dState): void {
   for (let i = 0; i < VOLUMES.length; i++) {
     const volume = VOLUMES[i] as Volume;
     const color = state.boxHits[i] || state.circleHits[i] ? AQUA : ORANGE;

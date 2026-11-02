@@ -72,6 +72,7 @@ function topology(
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 

@@ -28,6 +28,18 @@
       ],
       "@forgeax/view-workspace-core/frontend-contract": [
         "../view/packages/view-workspace-core/src/frontend-contract.ts"
+      ],
+      "@forgeax/view-workspace-core/client": [
+        "../view/packages/view-workspace-core/src/client.ts"
+      ],
+      "@forgeax/view-workspace-core/contract": [
+        "../view/packages/view-workspace-core/src/contract.ts"
+      ],
+      "@forgeax/view-workspace-core/pack-authoring": [
+        "../view/packages/view-workspace-core/src/pack-authoring.ts"
+      ],
+      "@forgeax/view-workspace-core/workspace-state": [
+        "../view/packages/view-workspace-core/src/workspace-state.ts"
       ]
     }
   },

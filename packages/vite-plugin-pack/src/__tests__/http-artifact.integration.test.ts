@@ -233,6 +233,35 @@ describe('published HTTP artifact representations', () => {
     });
   });
 
+  it('serves the open-ended and suffix Ranges a browser <video> element sends', async () => {
+    // HTMLMediaElement opens with `Range: bytes=0-` and seeks with
+    // `bytes=N-`; a 416 here leaves a streamed video artifact unplayable.
+    const compression = new HttpArtifactCompression(),
+      body = artifact();
+    await compression.prepare([body]);
+    const length = body.bytes.length;
+    await serve(compression, body, async (server) => {
+      for (const [range, start, end] of [
+        ['bytes=0-', 0, length - 1],
+        ['bytes=9-', 9, length - 1],
+        ['bytes=-5', length - 5, length - 1],
+        [`bytes=-${length + 10}`, 0, length - 1],
+      ] as const) {
+        const result = await get(server, { 'Accept-Encoding': 'gzip', Range: range });
+        expect(result.status, range).toBe(206);
+        expect(result.headers['content-encoding'], range).toBeUndefined();
+        expect(result.headers['content-range'], range).toBe(`bytes ${start}-${end}/${length}`);
+        expect(Number(result.headers['content-length']), range).toBe(end - start + 1);
+        expect(result.bytes, range).toEqual(Buffer.from(body.bytes.subarray(start, end + 1)));
+      }
+      for (const range of [`bytes=${length}-`, 'bytes=-0', 'bytes=-']) {
+        const invalid = await get(server, { 'Accept-Encoding': 'gzip', Range: range });
+        expect(invalid.status, range).toBe(416);
+        expect(invalid.headers['content-range'], range).toBe(`bytes */${length}`);
+      }
+    });
+  });
+
   it('returns HTTP 406 for forbidden identity instead of silently falling back, including HEAD and Range', async () => {
     const compression = new HttpArtifactCompression(),
       body = artifact();

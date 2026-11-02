@@ -60,6 +60,7 @@ function exhaustiveSwitchOnRenderCode(code: RenderErrorCode): string {
     case 'frame-receipt-stale':
       return code;
     case 'renderer-contract-failed':
+    case 'debug-overlay-failed':
       return code;
     case 'observation-unavailable':
       return code;
@@ -148,6 +149,8 @@ function exhaustiveSwitchOnRenderCode(code: RenderErrorCode): string {
       return code;
     case 'skin-material-mismatch':
       return code;
+    case 'skin-demand-missing':
+      return code;
     case 'material-skin-attr-missing':
       return code;
     case 'render-feature-registration-conflict':
@@ -163,6 +166,10 @@ function exhaustiveSwitchOnRenderCode(code: RenderErrorCode): string {
     case 'render-feature-prepared-state-mismatch':
       return code;
     case 'render-feature-draw-recording-failed':
+      return code;
+    case 'render-feature-input-unavailable':
+      return code;
+    case 'render-feature-batch-incomplete':
       return code;
     case 'transmission-capability-missing':
       return code;
@@ -305,6 +312,10 @@ function narrowRenderError(err: RenderError): void {
       break;
     case 'renderer-contract-failed':
       void err.detail.operation;
+      void err.detail.cause;
+      break;
+    case 'debug-overlay-failed':
+      void err.detail.reason;
       void err.detail.cause;
       break;
     case 'observation-unavailable':
@@ -452,6 +463,11 @@ function narrowRenderError(err: RenderError): void {
       void err.detail.entity;
       void err.detail.actualShader;
       break;
+    case 'skin-demand-missing':
+      void err.detail.worldId;
+      void err.detail.entityKey;
+      void err.detail.pass;
+      break;
     case 'material-skin-attr-missing':
       void err.detail.entity;
       void err.detail.missing;
@@ -486,6 +502,13 @@ function narrowRenderError(err: RenderError): void {
       void err.detail.featureIdentity;
       void err.detail.backendReason;
       void err.detail.operation;
+      break;
+    case 'render-feature-input-unavailable':
+      void err.detail.view;
+      void err.detail.reason;
+      break;
+    case 'render-feature-batch-incomplete':
+      void err.detail.missing;
       break;
     case 'taa-unavailable':
       void err.detail.reason;

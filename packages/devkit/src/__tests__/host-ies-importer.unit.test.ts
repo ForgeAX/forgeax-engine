@@ -66,6 +66,7 @@ describe('standalone host IES importer seed', () => {
       'svg',
       'font',
       'ies',
+      'video',
       'ui',
     ]);
   });

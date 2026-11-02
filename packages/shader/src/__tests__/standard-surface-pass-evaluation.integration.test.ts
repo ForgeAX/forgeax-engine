@@ -26,10 +26,10 @@ describe('Standard Surface pass evaluation', () => {
         const skinGBuffer = entry === 'fs_gbuffer' && shader.includes('fn skinGBuffer(');
         if (skinGBuffer) {
           expect(entryBody(shader, 'fs_gbuffer(')).toContain(
-            'return skinGBuffer(in, frontFacing);',
+            'return skinGBuffer(standardParallaxInput(in), frontFacing);',
           );
           expect(entryBody(shader, 'fs_gbuffer_uncovered(')).toContain(
-            'skinGBuffer(in, frontFacing)',
+            'skinGBuffer(standardParallaxInput(in), frontFacing)',
           );
         }
         const owner =

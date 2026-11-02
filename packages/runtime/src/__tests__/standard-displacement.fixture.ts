@@ -39,8 +39,9 @@ import { inspectReplayWorks } from './replay-inspections.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
-function required<T>(value: T | undefined): T {
-  if (value === undefined) throw new Error('Required displacement fixture value is missing');
+function required<T>(value: T | null | undefined): T {
+  if (value === undefined || value === null)
+    throw new Error('Required displacement fixture value is missing');
   return value;
 }
 
@@ -103,6 +104,75 @@ function textureViews(tape: V7Tape) {
 const originLayer = (origin: GPUOrigin3D | undefined) =>
   (Array.isArray(origin) ? origin[2] : origin?.z) ?? 0;
 
+/** Resolve the physical fresh/retained shadow attachment used by replay. */
+function retainedShadowView(
+  tape: V7Tape,
+  model: ReturnType<typeof buildFrameModel>,
+  writerView: ReturnType<typeof textureViews>[number],
+  expectedCached: boolean,
+  allowCached: boolean,
+): { finalShadowId: string; cachedShadow: boolean; stableShadowWorkCount: number } {
+  const shadowTextureId = writerView.sourceHandleId;
+  const shadowLayer = writerView.desc.baseArrayLayer ?? 0;
+  const stableShadowWorks = model.works.filter((work) =>
+    work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_shadow'),
+  );
+  let finalShadowId = writerView.resultHandleId;
+  // Original static/dynamic cases keep their admission contract. The
+  // additional depth oracle can reuse an already resident static layer.
+  const cachedShadow = expectedCached || (allowCached && stableShadowWorks.length === 0);
+  if (cachedShadow) {
+    expect(stableShadowWorks).toHaveLength(0);
+    // GPU casters write a retained static layer. Stable frames copy
+    // that same seeded layer to the final shadow atlas before lighting.
+    const copy = required(
+      tape.events.find(
+        (event) =>
+          event.kind === 'copyTextureToTexture' &&
+          event.source.textureHandleId === shadowTextureId &&
+          originLayer(event.source.origin) === shadowLayer,
+      ),
+    );
+    if (copy.kind !== 'copyTextureToTexture') throw new Error('missing shadow copy');
+    const finalView = required(
+      textureViews(tape).find(
+        (view) =>
+          view.sourceHandleId === copy.destination.textureHandleId &&
+          (view.desc.baseArrayLayer ?? 0) === originLayer(copy.destination.origin) &&
+          view.desc.arrayLayerCount === 1,
+      ),
+    );
+    finalShadowId = finalView.resultHandleId;
+    const stableShadowPass = required(
+      tape.events.find(
+        (event) =>
+          event.kind === 'beginRenderPass' && event.depthStencilViewHandleId === finalShadowId,
+      ),
+    );
+    if (stableShadowPass.kind !== 'beginRenderPass')
+      throw new Error('missing retained shadow pass');
+    expect(stableShadowPass.desc.depthStencilAttachment?.depthLoadOp).toBe('load');
+  } else {
+    // Compiled graphs may create a new view of the retained texture.
+    // Compare the physical subresource, not the old view handle.
+    const stableViews = textureViews(tape);
+    const stableShadow = required(
+      stableShadowWorks.find((work) =>
+        stableViews.some(
+          (view) =>
+            view.resultHandleId === work.attachments?.depthStencilViewHandleId &&
+            view.sourceHandleId === shadowTextureId &&
+            (view.desc.baseArrayLayer ?? 0) === shadowLayer &&
+            (view.desc.baseMipLevel ?? 0) === (writerView.desc.baseMipLevel ?? 0) &&
+            view.desc.arrayLayerCount === writerView.desc.arrayLayerCount,
+        ),
+      ),
+    );
+    finalShadowId = required(stableShadow.attachments?.depthStencilViewHandleId);
+  }
+  return { finalShadowId, cachedShadow, stableShadowWorkCount: stableShadowWorks.length };
+}
+
 const heights = new Uint8Array(16 * 16 * 4);
 for (let y = 0; y < 16; y++)
   for (let x = 0; x < 16; x++) {
@@ -118,7 +188,12 @@ const heightAt = (u: number, v: number) =>
 
 // Independent Three r184 formula applied to real vertices. Expand triangles so
 // the reference normals describe the displaced geometry without shader helpers.
-function oracleMesh(mesh: MeshAsset, scale: number, bias: number): MeshAsset {
+function oracleMesh(
+  mesh: MeshAsset,
+  scale: number,
+  bias: number,
+  normalMode: 'face' | 'source',
+): MeshAsset {
   const source = mesh.attributes;
   const pos = source.position as Float32Array;
   const uv = source.uv as Float32Array;
@@ -157,6 +232,16 @@ function oracleMesh(mesh: MeshAsset, scale: number, bias: number): MeshAsset {
         n.map((v) => v / len),
         (i + j) * 3,
       );
+  }
+  // VS slope bias consumes the source vertex normal before material displacement,
+  // as UE's WPO path does. Keep that input equal in the independent depth oracle;
+  // retain the face-normal oracle separately for the lighting comparison.
+  if (normalMode === 'source') {
+    const sourceNormal = source.normal as Float32Array;
+    for (let i = 0; i < indices.length; i++) {
+      const index = Number(indices[i]);
+      normal.set(sourceNormal.subarray(index * 3, index * 3 + 3), i * 3);
+    }
   }
   const attributes = { position, normal, uv: texcoord, tangent };
   return {
@@ -272,7 +357,8 @@ export async function verifyStandardDisplacement(
     { name: 'dense', scale: 0.8, bias: 0, mapped: true },
     { name: 'dense-gpu', scale: 0.8, bias: 0, mapped: true, gpu: true },
     { name: 'skin', scale: 0.8, bias: 0, mapped: true, skin: true },
-    { name: 'oracle', scale: 0.8, bias: 0, mapped: false, oracle: true },
+    { name: 'oracle', scale: 0.8, bias: 0, mapped: false, oracle: 'face' as const },
+    { name: 'shadow-oracle', scale: 0.8, bias: 0, mapped: false, oracle: 'source' as const },
     { name: 'coarse-flat', scale: 0, bias: 0, mapped: false, coarse: true },
     { name: 'coarse', scale: 0.8, bias: 0, mapped: true, coarse: true },
     { name: 'negative', scale: -0.4, bias: 0.2, mapped: true },
@@ -284,7 +370,7 @@ export async function verifyStandardDisplacement(
       renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
       for (const entry of cases) {
         let geometry = entry.oracle
-          ? oracleMesh(dense, entry.scale, entry.bias)
+          ? oracleMesh(dense, entry.scale, entry.bias, entry.oracle)
           : entry.coarse
             ? coarse
             : dense;
@@ -392,7 +478,9 @@ export async function verifyStandardDisplacement(
           completedFrames++;
           return r;
         };
-        const captureCase = ['flat', 'dense', 'dense-gpu', 'oracle'].includes(entry.name);
+        const captureCase = ['flat', 'dense', 'dense-gpu', 'oracle', 'shadow-oracle'].includes(
+          entry.name,
+        );
         let writerCapture: Awaited<ReturnType<typeof recorder.captureFrame>> | undefined;
         // The new case invalidates shadow content on its first frame. Capture
         // that writer separately from the final frame, which may reuse depth.
@@ -570,64 +658,13 @@ export async function verifyStandardDisplacement(
                 (resource) => resource.resourceId === shadowTextureId,
               ),
             ).toBe(false);
-            const stableShadowWorks = stableModel.works.filter((work) =>
-              work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_shadow'),
+            const { finalShadowId, cachedShadow, stableShadowWorkCount } = retainedShadowView(
+              stableTape,
+              stableModel,
+              shadowView,
+              entry.gpu === true && renderPath === 'forward',
+              entry.oracle === 'source',
             );
-            let finalShadowId = shadowId;
-            // The first GPU population starts static. On the later deferred
-            // visit, preceding material/skin changes keep this caster dynamic
-            // for longer than the fixture's four frames, so both paths are tested.
-            const cachedShadow = entry.gpu && renderPath === 'forward';
-            if (cachedShadow) {
-              expect(stableShadowWorks).toHaveLength(0);
-              // GPU casters write a retained static layer. Stable frames copy
-              // that same seeded layer to the final shadow atlas before lighting.
-              const copy = required(
-                stableTape.events.find(
-                  (event) =>
-                    event.kind === 'copyTextureToTexture' &&
-                    event.source.textureHandleId === shadowTextureId &&
-                    originLayer(event.source.origin) === shadowLayer,
-                ),
-              );
-              if (copy.kind !== 'copyTextureToTexture') throw new Error('missing shadow copy');
-              const finalView = required(
-                textureViews(stableTape).find(
-                  (view) =>
-                    view.sourceHandleId === copy.destination.textureHandleId &&
-                    (view.desc.baseArrayLayer ?? 0) === originLayer(copy.destination.origin) &&
-                    view.desc.arrayLayerCount === 1,
-                ),
-              );
-              finalShadowId = finalView.resultHandleId;
-              const stableShadowPass = required(
-                stableTape.events.find(
-                  (event) =>
-                    event.kind === 'beginRenderPass' &&
-                    event.depthStencilViewHandleId === finalShadowId,
-                ),
-              );
-              if (stableShadowPass.kind !== 'beginRenderPass')
-                throw new Error('missing retained shadow pass');
-              expect(stableShadowPass.desc.depthStencilAttachment?.depthLoadOp).toBe('load');
-            } else {
-              // Compiled graphs may create a new view of the retained texture.
-              // Compare the physical subresource, not the old view handle.
-              const stableViews = textureViews(stableTape);
-              const stableShadow = required(
-                stableShadowWorks.find((work) =>
-                  stableViews.some(
-                    (view) =>
-                      view.resultHandleId === work.attachments?.depthStencilViewHandleId &&
-                      view.sourceHandleId === shadowTextureId &&
-                      (view.desc.baseArrayLayer ?? 0) === shadowLayer &&
-                      (view.desc.baseMipLevel ?? 0) === (shadowView.desc.baseMipLevel ?? 0) &&
-                      view.desc.arrayLayerCount === shadowView.desc.arrayLayerCount,
-                  ),
-                ),
-              );
-              finalShadowId = required(stableShadow.attachments?.depthStencilViewHandleId);
-            }
             const replayWork = observeReplaySubmissions(device);
             const stableReplay = (
               await openReplay(stableTape, {
@@ -668,7 +705,7 @@ export async function verifyStandardDisplacement(
                 stableDigest: tapeDigest(encoded.bytes),
                 stableWorkIndex: stableWork.workIndex,
                 stableReplayDelta,
-                stableShadowWorkCount: stableShadowWorks.length,
+                stableShadowWorkCount,
                 cachedShadow: cachedShadow === true,
                 shadowTextureId,
                 shadowLayer,
@@ -756,7 +793,14 @@ export async function verifyStandardDisplacement(
       expect(difference(value('dense'), value('dense-gpu'))).toBeLessThanOrEqual(0.005);
       expect(difference(value('dense'), value('skin'))).toBeLessThanOrEqual(0.05);
       expect(difference(value('flat/shadow'), value('dense/shadow'))).toBeGreaterThan(1e-5);
-      expect(difference(value('dense/shadow'), value('oracle/shadow'))).toBeLessThanOrEqual(0.005);
+      // Equal positions and source normals must produce equal biased caster depth.
+      expect(difference(value('dense/shadow'), value('shadow-oracle/shadow'))).toBeLessThanOrEqual(
+        0.005,
+      );
+      // Face normals intentionally select a different slope budget.
+      expect(difference(value('oracle/shadow'), value('shadow-oracle/shadow'))).toBeGreaterThan(
+        1e-5,
+      );
       const isObject = (pixels: number[], offset: number) =>
         (pixels[offset] ?? 0) > (pixels[offset + 1] ?? 0) * 1.25 &&
         (pixels[offset + 1] ?? 0) > (pixels[offset + 2] ?? 0) * 1.25;
@@ -771,7 +815,8 @@ export async function verifyStandardDisplacement(
         addedSilhouettePixels,
         oracleDelta: difference(value('dense'), value('oracle')),
         gpuDelta: difference(value('dense'), value('dense-gpu')),
-        shadowOracleDelta: difference(value('dense/shadow'), value('oracle/shadow')),
+        shadowOracleDelta: difference(value('dense/shadow'), value('shadow-oracle/shadow')),
+        faceNormalShadowDelta: difference(value('oracle/shadow'), value('shadow-oracle/shadow')),
       });
       await save('report.json', new TextEncoder().encode(JSON.stringify(report, null, 2)));
 

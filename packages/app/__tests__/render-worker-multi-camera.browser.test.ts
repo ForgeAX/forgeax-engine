@@ -1,4 +1,4 @@
-import { type ExecutionApp } from '@forgeax/engine-app';
+import type { ExecutionApp } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CameraViewInspection } from '@forgeax/engine-render';
 import {
@@ -173,11 +173,10 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
            const r = await rhiCapture.captureFrame();
            if (!r.ok) return { error: r.error };
            const bytes = r.value.bytes;
-           const tape = decodeTape(bytes).unwrap();
-           const encoder = tape.events.find(event => event.kind === 'createCommandEncoder');
-           if (!encoder?.desc.label.startsWith('multi-camera-frame:'))
-             throw new Error('Missing captured frame identity');
-           const frameId = Number(encoder.desc.label.split(':').at(-1));
+           const submitted = r.value.submittedFrame;
+           if (submitted?.status !== 'remote-complete')
+             throw new Error('Capture has no completed Render Worker receipt');
+           const frameId = submitted.receipt.frameId;
            await new Promise((resolve, reject) => {
              const timer = setTimeout(() => reject(new Error('Capture pin timed out')), 60_000);
              pin.onmessage = event => {
@@ -188,9 +187,10 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
              };
              pin.postMessage({ id: 1, kind: 'pin-capture', frameId });
            });
-           return { bytes: Array.from(encodeTape(tape, { compression: 'gzip' }).unwrap()) };
+           const tape = decodeTape(bytes).unwrap();
+           return { bytes: Array.from(encodeTape(tape, { compression: 'gzip' }).unwrap()), frameId };
          } finally { pin.close(); }`,
-      )) as { bytes?: number[]; error?: unknown };
+      )) as { bytes?: number[]; frameId?: number; error?: unknown };
       if (captured.error !== undefined)
         throw new Error(JSON.stringify({ error: captured.error, report: execution.report() }));
       const bytes = new Uint8Array(captured.bytes!);
@@ -199,9 +199,11 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
       const encoder = tape.events.find((event) => event.kind === 'createCommandEncoder') as
         | { desc: { label: string } }
         | undefined;
-      if (!encoder?.desc.label.startsWith('multi-camera-frame:'))
-        throw new Error('Missing captured frame identity');
-      const capturedFrame = Number(encoder.desc.label.split(':').at(-1));
+      expect(encoder?.desc.label).toBe('render-frame');
+      // The issued capture receipt identifies the live image; diagnostic labels
+      // stay stable across frames and never substitute for completion evidence.
+      const capturedFrame = captured.frameId;
+      if (capturedFrame === undefined) throw new Error('Missing captured frame receipt');
       const live = await request<Picture>(channel, {
         id: ++id,
         kind: 'capture-picture',

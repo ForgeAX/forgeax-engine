@@ -7,7 +7,7 @@ import type {
   BasisEncoderModule,
   BasisModuleFactory,
 } from '../../../codec/src/wasm/basis-types.js';
-import { imageImporter } from '../image-importer.js';
+import { decodeImageForImport, imageImporter } from '../image-importer.js';
 
 const TRANSCODER_GLUE = new URL('../../../codec/pkg/basis_transcoder.mjs', import.meta.url);
 const ENCODER_GLUE = new URL('../../../codec/pkg/encode/basis_encoder.mjs', import.meta.url);
@@ -120,6 +120,56 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis source importer', () => {
       name: 'basis',
       container: 'basis',
       profile: 'uastc-ldr',
+    });
+  });
+
+  it('passes embedded KTX2 (glTF KHR_texture_basisu) through the decode seam compressed', async () => {
+    const bytes = await makeKtx2();
+    const result = await decodeImageForImport(bytes, 'image/ktx2', {
+      colorSpace: 'linear',
+      mipmap: true,
+      compressionMode: 'etc1s',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.texture).toMatchObject({
+      shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+    });
+    // No re-encode or transcode: the authored container is the artifact.
+    expect(result.value.bytes).toBe(bytes);
+    expect(result.value.texture.data).toBe(bytes);
+    expect(result.value.mediaType).toBe('image/ktx2');
+    expect(result.value.assetCodec).toEqual({
+      name: 'basis',
+      container: 'ktx2',
+      profile: 'uastc-ldr',
+      version: '1',
+    });
+  });
+
+  it('rejects embedded KTX2 whose DFD transfer function contradicts the slot color space', async () => {
+    const result = await decodeImageForImport(await makeKtx2(), 'image/ktx2', {
+      colorSpace: 'srgb',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('image-decode-failed');
+    expect(result.error.detail).toMatchObject({
+      reason: expect.stringContaining('ktx2-color-space-conflict'),
+    });
+  });
+
+  it('rejects embedded bytes that are not a KTX2 container', async () => {
+    const result = await decodeImageForImport(new Uint8Array(16), 'image/ktx2', {
+      colorSpace: 'linear',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.detail).toMatchObject({
+      reason: expect.stringContaining('ktx2-parse'),
     });
   });
 });

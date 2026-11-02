@@ -309,3 +309,16 @@ Ray, triangle and vertex queries evaluate the current managed Font through the s
 layout kernel used by Render, including camera-facing billboard transforms. Glyph
 hits have no `assetHandle`: their geometry belongs to the label draw, not a Mesh asset.
 Font edits affect the next query without derived ECS components.
+
+### Deformation workspace
+
+Exact triangle and vertex queries borrow Morph vertex staging, Skin palettes
+from `world.frameArena`. A standalone query opens
+a synchronous scope; a query inside a World run joins that scope. Only detached
+hit records leave it, so subsequent queries never change a retained hit. Source
+mesh bytes remain immutable. Internal geometry helpers accept an explicit arena;
+without one their results retain their independent allocation semantics.
+Small branded math factories, homogeneous-point scratch and bounds results
+retain their existing storage.
+Arena admission failures propagate as `MemoryError`; the scope closes and a
+subsequent query can retry after the workload or admission condition changes.

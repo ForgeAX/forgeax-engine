@@ -20,6 +20,7 @@
     "scripts",
     "patches",
     "src",
+    "!src/**/__tests__/**",
     "LICENSE",
     "DAWN-LICENSE",
     "README.md",

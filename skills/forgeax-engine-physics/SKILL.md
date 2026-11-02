@@ -206,6 +206,15 @@ invalidate the cooked attachment. Repair and recook the producer, then rebind
 the ordinary mesh ref. Contract and lifetime: `packages/physics/README.md`,
 Source mesh collision; `packages/import/README.md`, Mesh collision cooking.
 
+A trimesh is a hollow surface: a character only stands on triangles that are
+actually under it. Bounds or wall-only meshes (Three ports often keep these
+for wall raycasts and take the floor from separate ground probes) need a
+separate floor collider. A parented collider (`ChildOf`) uses the Scene world
+matrix, so `world.addChild(root, collider, ChildOf, {})` puts it under
+`root`'s pose. To check a spawn point, cast `PhysicsWorld.raycast` downward
+from below the capsule and read `CharacterController.grounded` after
+`moveAndSlide`.
+
 For several read-only completed-step neighbor consumers, use optional
 `PhysicsWorld.getCurrentContactNeighborsBatch` when available. Masks and normal
 filters remain per request; results and owner reuse never survive a mutation.

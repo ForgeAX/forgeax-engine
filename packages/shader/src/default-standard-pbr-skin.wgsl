@@ -1,7 +1,7 @@
 #pragma material_slot surface
 #import forgeax_material::alpha_hash::{materialOutputAlpha, materialOutputColor}
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-#import forgeax_material::displacement::{displaceVertex, displacedNormal}
+#import forgeax_material::displacement::{displaceVertex, displacedNormal, parallaxSourceUvOffset}
 #endif
 #import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
@@ -202,11 +202,11 @@
 @group(1) @binding(41) var iridescenceThicknessTexture : texture_2d<f32>;
 #endif
 #ifdef SPECULAR_TEXTURE_AVAILABLE
-@group(1) @binding(42) var specularTextureSampler : sampler;
+@group(1) @binding(42) var specularSampler : sampler;
 @group(1) @binding(43) var specularTexture : texture_2d<f32>;
 #endif
 #ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE
-@group(1) @binding(44) var specularColorTextureSampler : sampler;
+@group(1) @binding(44) var specularColorSampler : sampler;
 @group(1) @binding(45) var specularColorTexture : texture_2d<f32>;
 #endif
 #ifdef DIFFUSE_TRANSMISSION_TEXTURE_AVAILABLE
@@ -302,10 +302,10 @@ fn materialTextureFilteringWitness() {
   let iridescenceThicknessWitness = textureSample(iridescenceThicknessTexture, iridescenceThicknessSampler, vec2<f32>(0.0));
 #endif
 #ifdef SPECULAR_TEXTURE_AVAILABLE
-  let specularWeightWitness = textureSample(specularTexture, specularTextureSampler, vec2<f32>(0.0));
+  let specularWeightWitness = textureSample(specularTexture, specularSampler, vec2<f32>(0.0));
 #endif
 #ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE
-  let specularColorWitness = textureSample(specularColorTexture, specularColorTextureSampler, vec2<f32>(0.0));
+  let specularColorWitness = textureSample(specularColorTexture, specularColorSampler, vec2<f32>(0.0));
 #endif
 #ifdef DIFFUSE_TRANSMISSION_TEXTURE_AVAILABLE
   let diffuseTransmissionWitness = textureSample(diffuseTransmissionTexture, diffuseTransmissionSampler, vec2<f32>(0.0));
@@ -447,7 +447,7 @@ struct VsOut {
 
 fn standardVertexPosition(in : VsIn) -> vec3<f32> {
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  if (standardUsesDisplacementTexture()) {
+  if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement()) {
     return displaceVertex(in.pos, in.normal, displacementTexture, displacementTexture_sampler,
       material.displacementScale, material.displacementBias,
       material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata, material.displacementTextureCoordinatesRotation,
@@ -702,6 +702,46 @@ fn standardObjectToWorld(in : VsOut) -> mat3x3<f32> {
 }
 
 
+// Parallax displacement shifts the height slot's source UV set before every
+// Surface and layer sample. Derivatives precede discard and row selection.
+// The march reads the derived fragment height binding, which the compiler
+// projects onto its hosted pair; shared transmission withdraws it.
+fn standardParallaxInput(in : VsOut) -> VsOut {
+  var shifted = in;
+#ifdef PARALLAX_HEIGHT_FRAGMENT_AVAILABLE
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  let positionDx = dpdx(in.worldPos);
+  let positionDy = dpdy(in.worldPos);
+  let uvDx = array<vec4<f32>, 4>(dpdx(in.uv0And1), dpdx(in.uv2And3), dpdx(in.uv4And5), dpdx(in.uv6And7));
+  let uvDy = array<vec4<f32>, 4>(dpdy(in.uv0And1), dpdy(in.uv2And3), dpdy(in.uv4And5), dpdy(in.uv6And7));
+#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
+  material = selectedMaterial(in.materialAddress.x);
+#endif
+  if (standardUsesDisplacementTexture() && standardUsesParallaxDisplacement()) {
+    var pairs = array<vec4<f32>, 4>(in.uv0And1, in.uv2And3, in.uv4And5, in.uv6And7);
+    let uvSet = u32(clamp(material.displacementTextureCoordinatesMetadata.x, 0.0, 7.0));
+    let pairIndex = uvSet / 2u;
+    let upper = (uvSet & 1u) != 0u;
+    let delta = parallaxSourceUvOffset(parallaxHeightTexture, parallaxHeightTexture_sampler,
+      material.displacementScale, material.displacementBias,
+      material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata,
+      material.displacementTextureCoordinatesRotation,
+      select(pairs[pairIndex].xy, pairs[pairIndex].zw, upper), select(uvDx[pairIndex].xy, uvDx[pairIndex].zw, upper),
+      select(uvDy[pairIndex].xy, uvDy[pairIndex].zw, upper), positionDx, positionDy, in.worldNormal,
+      in.worldTangent, viewDirectionToCamera(in.worldPos), standardObjectToWorld(in));
+    pairs[pairIndex] = pairs[pairIndex] + select(vec4<f32>(delta, 0.0, 0.0), vec4<f32>(0.0, 0.0, delta), upper);
+    shifted.uv0And1 = pairs[0];
+    shifted.uv2And3 = pairs[1];
+    shifted.uv4And5 = pairs[2];
+    shifted.uv6And7 = pairs[3];
+  }
+#endif
+#endif
+#endif
+  return shifted;
+}
+
 fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec3<f32>) -> SurfaceData {
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
   let triangleNormal = displacedNormal(in.worldPos, in.worldNormal);
@@ -741,7 +781,8 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
 #endif
   var vertexNormal = in.worldNormal;
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  if (standardUsesDisplacementTexture() && (material.displacementScale != 0.0 || material.displacementBias != 0.0)) {
+  if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement() &&
+    (material.displacementScale != 0.0 || material.displacementBias != 0.0)) {
     vertexNormal = triangleNormal;
   }
 #endif
@@ -835,7 +876,7 @@ fn standardSurfaceSpecular(in : VsOut, surface : SurfaceData, dielectricF0 : f32
   );
   specularColor = specularColor * sampleMaterialTexture(
     specularColorTexture,
-    specularColorTextureSampler,
+    specularColorSampler,
     specularUv,
     material.specularColorTextureCoordinatesMetadata.zw,
   ).rgb;
@@ -851,7 +892,7 @@ fn standardSurfaceSpecular(in : VsOut, surface : SurfaceData, dielectricF0 : f32
   );
   specularWeight = specularWeight * sampleMaterialTexture(
     specularTexture,
-    specularTextureSampler,
+    specularSampler,
     specularWeightUv,
     material.specularTextureCoordinatesMetadata.zw,
   ).a;
@@ -1440,13 +1481,13 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
 
 @fragment
 fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
-  return standardForwardFogged(in, standardSkinForwardLit(in, frontFacing));
+  return standardForwardFogged(in, standardSkinForwardLit(standardParallaxInput(in), frontFacing));
 }
 
 // See the rigid Standard fs_opaque: identical to fs_main on the unfogged slot.
 @fragment
 fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
-  let lit = standardSkinForwardLit(in, frontFacing);
+  let lit = standardSkinForwardLit(standardParallaxInput(in), frontFacing);
 #ifdef TRANSMISSION_AVAILABLE
   return standardForwardFogged(in, lit);
 #else
@@ -1460,7 +1501,7 @@ fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardP
 // pass after these base surface facts are written to the shared G-buffer.
 @fragment
 fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool) -> GBufferOutput {
-  return skinGBuffer(in, frontFacing);
+  return skinGBuffer(standardParallaxInput(in), frontFacing);
 }
 
 // Deformed draws publish no visible-surface rows (their posed triangles have no
@@ -1479,7 +1520,7 @@ struct SkinUncoveredGBufferOutput {
 
 @fragment
 fn fs_gbuffer_uncovered(in : VsOut, @builtin(front_facing) frontFacing : bool) -> SkinUncoveredGBufferOutput {
-  let g = skinGBuffer(in, frontFacing);
+  let g = skinGBuffer(standardParallaxInput(in), frontFacing);
   return SkinUncoveredGBufferOutput(g.scene_color, g.normal_roughness, g.f0_occlusion,
     g.albedo_metallic, g.lighting_context, g.receiver_geometry, vec4<u32>(0u), g.scene_temporal);
 }

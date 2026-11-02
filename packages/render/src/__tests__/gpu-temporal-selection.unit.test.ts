@@ -3,7 +3,7 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { PreparedGpuDrivenDraw } from '../gpu-driven/prepared-draw';
 import { RenderScene } from '../scene/render-scene';
-import { receiptRow } from './gpu-draw-selection-fixture';
+import { receiptRow, receiptSelection } from './gpu-draw-selection-fixture';
 
 it.each([
   ['forgeax::default-standard-pbr', 'rigid', undefined, false],
@@ -44,4 +44,32 @@ it.each([
   // Live material adoption cannot rewrite an accepted submission's execution.
   source.material.adopt({ ...source.material.snapshot, materialShaderId: 'game::replacement' });
   expect(selection.owns(source, draw, 0, 'temporal')).toBe(owns);
+});
+
+it('keeps cached zero ownership and all 31 draw bits independent', () => {
+  const row = receiptRow();
+  const first = row.source.gpuDrivenDraws?.[0];
+  assert(first);
+  const source = {
+    ...row.source,
+    gpuDrivenDraws: Array.from({ length: 31 }, (_, drawItemIndex) => ({ ...first, drawItemIndex })),
+  };
+  const none = receiptSelection([{ source }], () => false);
+  const last = receiptSelection([{ source }], (batch) => batch.binding?.drawItemIndex === 30);
+  const all = receiptSelection([{ source }], () => true);
+  for (let repeat = 0; repeat < 2; repeat++) {
+    expect(none.ownsAll(source)).toBe(false);
+    expect(none.has(source, 30)).toBe(false);
+    expect(last.has(source, 0)).toBe(false);
+    expect(last.has(source, 30)).toBe(true);
+    expect(last.ownsAll(source)).toBe(false);
+    expect(all.ownsAll(source)).toBe(true);
+  }
+  const wider = {
+    ...source,
+    gpuDrivenDraws: [...source.gpuDrivenDraws, { ...first, drawItemIndex: 31 }],
+  };
+  const wideAll = receiptSelection([{ source: wider }], () => true);
+  expect(wideAll.ownsAll(wider)).toBe(true);
+  expect(wideAll.has(wider, 31)).toBe(true);
 });

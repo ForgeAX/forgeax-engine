@@ -9,9 +9,10 @@ import {
   pushAtmosphereBindingResources,
 } from '../environment/bindings';
 import type { RenderResourceScope } from '../publication/resource-scope';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, rasterRowsOf } from '../scene/frame-list';
+import { hasRasterDemand } from '../scene/raster-demand';
 import type { ViewLights } from '../world/render-lights';
-// @forgeax/engine-runtime - RenderSystem record stage: per-frame lighting.
+// @forgeax/engine-runtime - RendererState record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
 
@@ -48,6 +49,7 @@ import {
   type StandardClusterTransport,
   selectStandardClusterTransport,
 } from '../pipeline/standard-lighting/transport';
+import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_CLUSTER_GRID, DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 import { resampleLightTextureSlice } from '../prepare/extended-lighting/light-texture-resample';
 import {
@@ -78,12 +80,7 @@ import { buildSsaoUniformPayload } from '../ssao-uniform';
 // extendedLighting keeps Spot modifier factors on the existing light record
 // path; no additional render pass or submit owner is introduced.
 import type { BindGroupCounts, RenderFrameState } from './frame-snapshot';
-import {
-  computeProjectionMatrix,
-  computeViewMatrix,
-  isLitMaterialSnapshot,
-  warnMultiLightDirectional,
-} from './helpers';
+import { computeProjectionMatrix, computeViewMatrix, isLitMaterialSnapshot } from './helpers';
 import { LightTable } from './light-table';
 import {
   bindGroupChainLeaf2,
@@ -163,6 +160,18 @@ function mapClusterUploadFailure(
 
 /** Retained View bind-group chain key; filled and consumed synchronously. */
 const viewChainKeys: object[] = [];
+/** Binner position of an infinite-range directional Cluster member (unused by the shader). */
+const ORIGIN = vec3.create(0, 0, 0);
+
+/** Only the closed stock pipeline/grid qualifies; borrowed declarations stay live. */
+function stockClusterMembership(
+  frameState: RenderFrameState,
+  grid: PreparedStandardLighting['layout']['grid'],
+) {
+  return frameState.activePipeline === standardPipeline && grid === DEFAULT_CLUSTER_GRID
+    ? frameState.standardClusterMembership
+    : undefined;
+}
 
 /**
  * feat-20260704 M3/w18: per-frame bind-group cache resolution, extracted
@@ -572,6 +581,18 @@ export function buildPerFrameBindGroups(
 }
 
 /**
+ * The Standard topology a frame takes: storage-capable devices always keep the
+ * Cluster ABI, others only when local lights exist. The one authority shared by
+ * frame lighting and the Points/Lines lane.
+ */
+export function standardTopologyKind(
+  storageBuffer: boolean,
+  localLightCount: number,
+): StandardTopologyInputValue['kind'] {
+  return !storageBuffer && localLightCount === 0 ? 'no-local-lights' : 'clustered';
+}
+
+/**
  * feat-20260704 M3/w18: per-frame lighting preparation, extracted verbatim from
  * `recordFrame`. (1) pin the point + spot shadow snapshot lists onto frameState
  * for the shadow caster
@@ -601,9 +622,6 @@ export function prepareFrameLighting(
   },
   RenderError
 > {
-  if (lights.directionalCount > 1) {
-    warnMultiLightDirectional(frameState, lights.directionalCount);
-  }
   // feat-20260621-merge-directionallightshadow-into-directionallight M3 / m3-t2:
   // the AC-04/AC-22 "shadow disabled by missing component" once-warn is gone.
   // After merging DirectionalLightShadow into DirectionalLight there is no
@@ -673,8 +691,13 @@ export function prepareFrameLighting(
     contactShadowLength: 0,
   };
 
+  // DirectionalLights after the first are unshadowed Cluster members. They are
+  // appended after every local light so projector and volume slot indices of
+  // point/spot/rect lights stay unchanged.
+  const additionalDirectional = lights.additionalDirectional ?? [];
   const totalLightCount =
     (directionalLight !== undefined ? 1 : 0) +
+    additionalDirectional.length +
     pointLights.length +
     spotLights.length +
     rectLights.length;
@@ -712,20 +735,31 @@ export function prepareFrameLighting(
           : Number.POSITIVE_INFINITY) + Math.hypot(source.halfWidth, source.halfHeight),
       source,
     })),
+    ...additionalDirectional.map((source) => ({
+      kind: 'directional' as const,
+      shadowed: false,
+      position: ORIGIN,
+      range: Number.POSITIVE_INFINITY,
+      source,
+    })),
   ];
-  const prepared = prepareStandardLighting({
-    directional: directionalLight,
-    local,
-    view: computeViewMatrix(camera, mat4.create()),
-    projection: computeProjectionMatrix(camera, mat4.create()),
-    near: camera.near,
-    far: camera.far,
-    grid: clusterGrid,
-    lightCount: internals.standardProfile?.lightCount ?? DEFAULT_STANDARD_PROFILE.lightCount,
-    renderPath:
-      (frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath ??
-      DEFAULT_STANDARD_PROFILE.renderPath,
-  });
+  const prepared = prepareStandardLighting(
+    {
+      directional: directionalLight,
+      local,
+      view: computeViewMatrix(camera, mat4.create()),
+      projection: computeProjectionMatrix(camera, mat4.create()),
+      near: camera.near,
+      far: camera.far,
+      grid: clusterGrid,
+      lightCount: internals.standardProfile?.lightCount ?? DEFAULT_STANDARD_PROFILE.lightCount,
+      renderPath:
+        (frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath ??
+        DEFAULT_STANDARD_PROFILE.renderPath,
+    },
+    frameState.hdrpClusterBinScratch,
+    stockClusterMembership(frameState, clusterGrid),
+  );
   if (!prepared.ok) return prepared;
   // Storage-capable Standard frames keep the same Cluster ABI even when the
   // local-light corpus is empty.  Directional-only scenes still need the
@@ -733,7 +767,10 @@ export function prepareFrameLighting(
   // local-light layout; the existing transport emits a zero-light payload and
   // the graph remains structurally identical. No-storage local lights use the
   // complete CPU texture projection selected below.
-  if (!internals.device.caps.storageBuffer && prepared.value.local.length === 0) {
+  if (
+    standardTopologyKind(internals.device.caps.storageBuffer, prepared.value.local.length) ===
+    'no-local-lights'
+  ) {
     return ok({
       light,
       pointLights,
@@ -1009,7 +1046,7 @@ export function writeShadowParamsBuffer(
  * verbatim from `recordFrame`.
  *
  * feat-20260520-skylight-ibl-cubemap M4 / t27 (AC-10): fires once per
- * RenderSystem lifetime when the 0-light three-condition conjunction holds — no
+ * RendererState lifetime when the 0-light three-condition conjunction holds — no
  * Skylight, 0 direct light (totalLightCount === 0), AND at least one builtin
  * standard/PBR material (which renders black with no light). Custom shaders
  * own their lighting contract and cannot be classified by this generic
@@ -1018,26 +1055,27 @@ export function writeShadowParamsBuffer(
  * @internal
  */
 export function warnZeroLightStandard(
-  frameState: RenderFrameState,
+  frameState: Pick<RenderFrameState, 'warnedZeroLightStandard'>,
   renderables: FrameList<RenderableSnapshot>,
   skylight: SkylightSnapshot | undefined,
   totalLightCount: number,
 ): void {
-  // The row scan runs only when the warning is still possible.
-  if (
-    skylight === undefined &&
-    totalLightCount === 0 &&
-    !frameState.warnedZeroLightStandard &&
-    renderables.some((r) => isLitMaterialSnapshot(r.material.snapshot))
-  ) {
+  if (skylight !== undefined || totalLightCount !== 0 || frameState.warnedZeroLightStandard) return;
+  const env = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
+  if (env?.env?.NODE_ENV === 'production') return;
+  if (hasLitRasterDemand(renderables)) {
     frameState.warnedZeroLightStandard = true;
-    const env = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
-    if (env?.env?.NODE_ENV !== 'production') {
-      console.warn(
-        '[forgeax] standard material renders black with 0 lights of every type (no Skylight, and directional + point + spot all empty); spawn at least one light (Skylight, DirectionalLight, PointLight, or SpotLight) or switch material to an unlit shader (Materials.unlit(...)). See AGENTS.md section Breaking changes 2026-05-19.',
-      );
-    }
+    console.warn(
+      '[forgeax] standard material renders black with 0 lights of every type (no Skylight, and directional + point + spot all empty); spawn at least one light (Skylight, DirectionalLight, PointLight, or SpotLight) or switch material to an unlit shader (Materials.unlit(...)). See AGENTS.md section Breaking changes 2026-05-19.',
+    );
   }
+}
+
+/** Read the admitted source domain; no observation of inactive retained rows. */
+function hasLitRasterDemand(renderables: FrameList<RenderableSnapshot>): boolean {
+  for (const row of rasterRowsOf(renderables))
+    if (hasRasterDemand(row) && isLitMaterialSnapshot(row.material.snapshot)) return true;
+  return false;
 }
 
 const LIGHT_TABLES = new WeakMap<object, LightTable>();

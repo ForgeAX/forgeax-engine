@@ -31,6 +31,7 @@ import type {
   GraphResourceResolver,
   GraphTexture,
   GraphTextureView,
+  RasterColorAttachment,
   RasterDepthStencilAttachment,
   RenderGraphFrame,
   RenderGraphPassExecution,
@@ -54,6 +55,49 @@ function okOf<T extends object>(value: T): Result<T, never> {
     okResults.set(value, result);
   }
   return result;
+}
+
+/** Resolve one pass's color attachments into its retained native descriptor. */
+function resolveRasterColors<FrameCtx>(
+  attachments: readonly RasterColorAttachment<FrameCtx>[],
+  frame: FrameCtx,
+  resolver: GraphResourceResolver,
+  retained: RenderPassDescriptor['colorAttachments'] | undefined,
+): Result<Writable<RenderPassColorAttachment>[], RenderGraphError> {
+  const colorAttachments = (retained ?? []) as Writable<RenderPassColorAttachment>[];
+  let colorIndex = 0;
+  for (const attachment of attachments) {
+    const view = resolver.textureView(attachment.view);
+    if (!view.ok) {
+      return view;
+    }
+    const resolveTarget =
+      attachment.resolveTarget === undefined
+        ? undefined
+        : resolver.textureView(attachment.resolveTarget);
+    if (resolveTarget !== undefined && !resolveTarget.ok) {
+      return resolveTarget;
+    }
+    const clearValue =
+      typeof attachment.clearValue === 'function'
+        ? attachment.clearValue(frame)
+        : attachment.clearValue;
+    // Optional members are assigned, not spread: spreads allocate a
+    // temporary object per member on every executed pass.
+    const color: Writable<RenderPassColorAttachment> = colorAttachments[colorIndex] ?? {
+      view: view.value,
+      loadOp: attachment.loadOp,
+      storeOp: attachment.storeOp,
+    };
+    color.view = view.value;
+    if (resolveTarget !== undefined) color.resolveTarget = resolveTarget.value;
+    if (clearValue === undefined) delete color.clearValue;
+    else color.clearValue = clearValue;
+    if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
+    colorAttachments[colorIndex++] = color;
+  }
+  colorAttachments.length = colorIndex;
+  return okOf(colorAttachments);
 }
 
 /** Resolve the current depth view and attachment aspects without copying native storage. */
@@ -558,40 +602,14 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         // their independent descriptors for observer ownership.
         const context = this.resolvers.get(pass);
         const retained = scope === undefined ? context?.raster : undefined;
-        const colorAttachments = (retained?.colorAttachments ??
-          []) as Writable<RenderPassColorAttachment>[];
-        let colorIndex = 0;
-        for (const attachment of descriptor.colorAttachments) {
-          const view = resolver.textureView(attachment.view);
-          if (!view.ok) {
-            return view;
-          }
-          const resolveTarget =
-            attachment.resolveTarget === undefined
-              ? undefined
-              : resolver.textureView(attachment.resolveTarget);
-          if (resolveTarget !== undefined && !resolveTarget.ok) {
-            return resolveTarget;
-          }
-          const clearValue =
-            typeof attachment.clearValue === 'function'
-              ? attachment.clearValue(frame)
-              : attachment.clearValue;
-          // Optional members are assigned, not spread: spreads allocate a
-          // temporary object per member on every executed pass.
-          const color: Writable<RenderPassColorAttachment> = colorAttachments[colorIndex] ?? {
-            view: view.value,
-            loadOp: attachment.loadOp,
-            storeOp: attachment.storeOp,
-          };
-          color.view = view.value;
-          if (resolveTarget !== undefined) color.resolveTarget = resolveTarget.value;
-          if (clearValue === undefined) delete color.clearValue;
-          else color.clearValue = clearValue;
-          if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
-          colorAttachments[colorIndex++] = color;
-        }
-        colorAttachments.length = colorIndex;
+        const colors = resolveRasterColors(
+          descriptor.colorAttachments,
+          frame,
+          resolver,
+          retained?.colorAttachments,
+        );
+        if (!colors.ok) return colors;
+        const colorAttachments = colors.value;
         const depth = resolveRasterDepth(
           descriptor.depthStencilAttachment,
           resolver,
@@ -616,7 +634,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           scope?.renderPassDescriptor?.(baseDescriptor) ?? baseDescriptor;
         const encoder = frame.encoder.beginRenderPass(instrumentedDescriptor);
         try {
-          descriptor.encode({ pass: encoder, frame, resources: resolver });
+          if (descriptor.encodeDirect !== undefined)
+            descriptor.encodeDirect(encoder, frame, resolver);
+          else descriptor.encode({ pass: encoder, frame, resources: resolver });
         } finally {
           encoder.end();
         }
@@ -635,7 +655,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           throw cause;
         }
         try {
-          pass.pass.descriptor.encode({ pass: encoder, frame, resources: resolver });
+          if (pass.pass.descriptor.encodeDirect !== undefined)
+            pass.pass.descriptor.encodeDirect(encoder, frame, resolver);
+          else pass.pass.descriptor.encode({ pass: encoder, frame, resources: resolver });
         } finally {
           encoder.end();
         }
@@ -645,11 +667,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       case 'copy':
         scope?.beforeCopy?.(frame.encoder);
         try {
-          pass.pass.descriptor.encode({
-            encoder: frame.encoder,
-            frame,
-            resources: resolver,
-          });
+          if (pass.pass.descriptor.encodeDirect !== undefined)
+            pass.pass.descriptor.encodeDirect(frame.encoder, frame, resolver);
+          else pass.pass.descriptor.encode({ encoder: frame.encoder, frame, resources: resolver });
         } finally {
           scope?.afterCopy?.(frame.encoder);
         }

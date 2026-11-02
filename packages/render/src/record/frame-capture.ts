@@ -3,8 +3,10 @@
 // UBOs and execute them into the shared frame encoder.
 
 import type { CompiledRenderGraph } from '@forgeax/engine-render-graph';
+import { err, ok, type Result } from '@forgeax/engine-rhi';
 import type { CloudShadowProjection } from '../cloud/shadow';
 import { stageAtmospherePublish } from '../environment/storage';
+import { RendererOperationError } from '../errors/render';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { DirectionalLightSnapshot } from '../render-system-extract';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
@@ -41,11 +43,18 @@ type CaptureCloudShadow =
   | (CloudShadowProjection & { readonly baseHeight: number; readonly thickness: number })
   | undefined;
 
+/** The cascade fit `render-capture-fit` prepared for a face; a face it did not fit cannot record. */
+function fitOf(cubeCapture: CubeCaptureFrameInput, work: object): ViewLights {
+  const fit = cubeCapture.fits.get(work);
+  if (fit === undefined)
+    throw new Error('A capture face records only the fit render-capture-fit prepared');
+  return fit;
+}
+
 function compileCubeCaptureFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
-  lights: ViewLights,
   cubeCapture: CubeCaptureFrameInput,
   work: CubeCaptureGraphWork,
   graphShadowMapSize: number | undefined,
@@ -57,7 +66,7 @@ function compileCubeCaptureFrame(
     internals,
     frameState,
     pipelineState,
-    lights,
+    fitOf(cubeCapture, work),
   );
   const graph = compileTargetCaptureFrameGraph(
     lighting.runtime,
@@ -78,7 +87,6 @@ function compileProbeCaptureFrame(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
-  lights: ViewLights,
   cubeCapture: CubeCaptureFrameInput,
   probe: NonNullable<CubeCaptureFrameInput['reflectionProbes']>['graph']['work'][number],
   graphShadowMapSize: number | undefined,
@@ -97,7 +105,7 @@ function compileProbeCaptureFrame(
     internals,
     frameState,
     pipelineState,
-    lights,
+    fitOf(cubeCapture, probe),
   );
   const graph = compileTargetCaptureFrameGraph(
     lighting.runtime,
@@ -115,11 +123,10 @@ function compileProbeCaptureFrame(
 }
 
 /** Cube-target faces first, then raw reflection-probe faces, in capture order. */
-export function compileCaptureFrames(
+function compileCaptureFrames(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   pipelineState: PipelineState,
-  lights: ViewLights,
   cubeCapture: CubeCaptureFrameInput | undefined,
   cubeCaptureWork: readonly CubeCaptureGraphWork[],
   graphShadowMapSize: number | undefined,
@@ -134,7 +141,6 @@ export function compileCaptureFrames(
         internals,
         frameState,
         pipelineState,
-        lights,
         cubeCapture,
         work,
         graphShadowMapSize,
@@ -146,13 +152,74 @@ export function compileCaptureFrames(
       internals,
       frameState,
       pipelineState,
-      lights,
       cubeCapture,
       probe,
       graphShadowMapSize,
       terrainReceivers,
     );
     if (frame !== undefined) probeCaptureFrames.push(frame);
+  }
+}
+
+/** The capture compiler's explicit input; production resolves it from current view components. */
+export interface CaptureGraphCompileInput {
+  readonly internals: RenderSystemInternals;
+  readonly frameState: RenderFrameState;
+  readonly pipelineState: PipelineState;
+  readonly capture: CubeCaptureFrameInput | undefined;
+  readonly work: readonly CubeCaptureGraphWork[];
+  readonly shadowMapSize: number | undefined;
+  readonly terrainReceivers: readonly TerrainShadowReceiver[];
+}
+
+/** Graphs compiled for one view attempt, owned until its actual submission completes. */
+export interface CaptureGraphBatch {
+  readonly cube: readonly CubeCaptureFrame[];
+  readonly probes: readonly ProbeCaptureFrame[];
+}
+
+export type CaptureGraphOutcome = Result<
+  CaptureGraphBatch,
+  RendererOperationError<'graph-build-failed'>
+>;
+
+export function captureGraphFailure(cause: unknown): RendererOperationError<'graph-build-failed'> {
+  return new RendererOperationError('graph-build-failed', {
+    operation: 'draw',
+    cause: {
+      code: 'capture-graph-unavailable',
+      expected: 'render-capture-graph-compile compiles the current capture faces and fitted lights',
+      hint: 'keep the capture preparation and RenderRecord systems registered and retry',
+      detail: cause,
+    },
+  });
+}
+
+/** Release every successfully compiled graph, including a partially failed batch. */
+export function retireCaptureGraphBatch(batch: CaptureGraphBatch): void {
+  for (const capture of [...batch.cube, ...batch.probes]) void capture.graph.retire();
+}
+
+/** Compile through the same owner for a Render World view and a direct recorder. */
+export function compileCaptureGraphBatch(input: CaptureGraphCompileInput): CaptureGraphOutcome {
+  const cube: CubeCaptureFrame[] = [];
+  const probes: ProbeCaptureFrame[] = [];
+  try {
+    compileCaptureFrames(
+      input.internals,
+      input.frameState,
+      input.pipelineState,
+      input.capture,
+      input.work,
+      input.shadowMapSize,
+      input.terrainReceivers,
+      cube,
+      probes,
+    );
+    return ok({ cube, probes });
+  } catch (cause) {
+    retireCaptureGraphBatch({ cube, probes });
+    return err(captureGraphFailure(cause));
   }
 }
 

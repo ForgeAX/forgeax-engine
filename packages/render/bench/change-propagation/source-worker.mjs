@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { PerformanceObserver, performance } from 'node:perf_hooks';
-import { getHeapStatistics } from 'node:v8';
+import { getHeapStatistics, serialize } from 'node:v8';
 import { Session } from 'node:inspector/promises';
 import { writeFile } from 'node:fs/promises';
 import { createRenderPublisher, renderPublicationBytes, renderPublicationTransfers } from '@forgeax/engine-render';
@@ -9,6 +9,13 @@ import { createWorkload, hash, identity, unwrap } from './workload.mjs';
 import { heapCensus } from './heap-census.mjs';
 
 const cpuMs = start => { const cpu = process.threadCpuUsage(start); return (cpu.user + cpu.system) / 1000; };
+// Structured-clone bytes of the side object, its keys and the per-entry metadata split.
+const sideCounts = side => {
+  const entries = Object.entries(side ?? {}).flatMap(([key, value]) => key === 'metadata'
+    ? Object.entries(value).map(([k, v]) => ['metadata.' + k, serialize(v ?? null).byteLength])
+    : [[key, serialize(value).byteLength]]);
+  return { sideBytes: side === undefined ? 0 : serialize(side).byteLength, sideKeys: Object.keys(side ?? {}), sideKeyBytes: Object.fromEntries(entries) };
+};
 let current;
 let publisher;
 let inspector;
@@ -60,6 +67,9 @@ try {
           removals: packet.removed.length, assets: packet.assets.length, materials: packet.materials.length,
           transferBuffers: transfers.length, transferBytes: transfers.reduce((sum, buffer) => sum + buffer.byteLength, 0),
           logicalColumnBytes: renderPublicationBytes(candidate.message).columns,
+          assetBytes: renderPublicationBytes(candidate.message).assets,
+          recordBytes: candidate.message.record.byteLength,
+          ...sideCounts(candidate.message.side),
           features: packet.features.length, programs: packet.programs.length,
           baseline: packet.baseline, operationHash: hash(operation), revision: packet.revision };
         current = { cpu, start, gcBefore, mutationMs, worldMs: updatedAt - start - mutationMs, prepareMs: preparedAt - updatedAt, counts,

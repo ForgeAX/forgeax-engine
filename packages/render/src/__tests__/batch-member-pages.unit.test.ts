@@ -139,9 +139,9 @@ describe('paged batch membership', () => {
     expect(subset.memberCount).toBe(3_333);
     const flipped = new Set([3, 4, 300, 2_999, 4_998]);
     const after = (slot: number) => (flipped.has(slot) ? !keep(slot) : keep(slot));
-    const patched = members.patchSelection(subset, flipped, after);
+    const patched = members.patchSelection(subset, flipped, after, members);
     expect([...patched]).toEqual([...members.selectMembers(after)]);
-    expect(members.patchSelection(subset, [], keep)).toBe(subset);
+    expect(members.patchSelection(subset, [], keep, members)).toBe(subset);
   });
 
   it('bounds one membership edit by one page and its tree path at any population', () => {
@@ -216,4 +216,145 @@ describe('paged GPU member encoding', () => {
     const one = await uploadAfterEdits(262_144, 1);
     expect(large.bytes).toBeGreaterThan(one.bytes * 3);
   }, 120_000);
+});
+
+it('returns the complete source before constructing discarded selected histories', () => {
+  const subset = filled(128);
+  let source = subset;
+  for (let slot = 0; slot < 64; slot++) source = source.with(member(slot, 1, 2));
+  const changed = Array.from({ length: 64 }, (_, slot) => slot);
+  const freeze = Object.freeze;
+  let sealed = 0;
+  Object.freeze = ((value: unknown) => {
+    sealed++;
+    return freeze(value);
+  }) as typeof Object.freeze;
+  let result: MemberCandidates;
+  try {
+    result = source.patchSelection(subset, changed, () => true, subset);
+  } finally {
+    Object.freeze = freeze;
+  }
+  expect(result).toBe(source);
+  expect(subset.memberCount).toBe(128);
+  expect(subset.get(0)?.generation).toBe(1);
+  expect(source.get(0)?.generation).toBe(2);
+  expect(sealed).toBe(0);
+});
+
+it('keeps duplicate predicate order, zero-weight members and partial histories', () => {
+  const source = filled(130).with(member(4, 0, 2));
+  const subset = source.selectMembers((slot) => slot % 2 === 0);
+  const calls: number[] = [];
+  const answers = [true, false, false, false, true];
+  const result = source.patchSelection(
+    subset,
+    [1, 3, 1, 4, 3, 999],
+    (slot) => {
+      calls.push(slot);
+      return answers[calls.length - 1] as boolean;
+    },
+    source,
+  );
+  expect(calls).toEqual([1, 3, 1, 4, 3]);
+  expect(result.memberCount).toBe(65);
+  expect(result.get(1)).toBeUndefined();
+  expect(result.get(3)).toEqual(source.get(3));
+  expect(result.get(4)).toBeUndefined();
+  expect(subset.get(3)).toBeUndefined();
+  expect(subset.get(4)?.instanceCount).toBe(0);
+  expect(source.get(4)?.generation).toBe(2);
+});
+
+it('finishes every admission before choosing the full source', () => {
+  const source = filled(130);
+  const subset = source.selectMembers((slot) => slot >= 64);
+  const slots = Array.from({ length: 64 }, (_, slot) => slot);
+  const result = source.patchSelection(subset, slots, (slot) => slot !== 63, source);
+  expect(result).not.toBe(source);
+  expect(result.memberCount).toBe(129);
+  expect(result.get(63)).toBeUndefined();
+  const updated = source.with(member(65, 3, 2));
+  const complete = updated.patchSelection(subset, [...slots, 65], () => true, source);
+  expect(complete).toBe(updated);
+  expect(complete.get(65)).toEqual(member(65, 3, 2));
+  expect(subset.get(65)?.generation).toBe(1);
+  const error = new Error('admission rejected');
+  expect(() =>
+    updated.patchSelection(
+      subset,
+      slots,
+      (slot) => {
+        if (slot === 63) throw error;
+        return true;
+      },
+      source,
+    ),
+  ).toThrow(error);
+  expect(subset.memberCount).toBe(66);
+});
+
+it('preflights source growth/removal and live duplicate admissions from a complete predecessor', () => {
+  const previous = filled(128);
+  const source = previous.without(0).with(member(200, 3, 2));
+  const slots = [0, 200];
+  const calls: number[] = [];
+  const partial = source.patchSelection(
+    previous,
+    slots,
+    (slot) => {
+      calls.push(slot);
+      if (calls.length === 1) slots.push(200);
+      return calls.length === 1;
+    },
+    previous,
+  );
+  expect(calls).toEqual([200, 200]);
+  expect(partial.memberCount).toBe(127);
+  expect(partial.get(0)).toBeUndefined();
+  expect(partial.get(200)).toBeUndefined();
+  expect(previous.get(0)?.generation).toBe(1);
+  expect(source.get(200)?.generation).toBe(2);
+  const complete = source.patchSelection(previous, [0, 200, 200, 0], () => true, previous);
+  expect(complete).toBe(source);
+  const grown = previous.with(member(200));
+  expect(grown.patchSelection(previous, [200], () => true, previous)).toBe(grown);
+  const shrunk = previous.without(0);
+  expect(shrunk.patchSelection(previous, [0], () => true, previous)).toBe(shrunk);
+});
+
+it('starts a complete predecessor from the current source and only edits rejected members', () => {
+  const previous = filled(128);
+  let source = previous;
+  for (let slot = 0; slot < 64; slot++) source = source.with(member(slot, 1, 2));
+  const slots = Array.from({ length: 64 }, (_, slot) => slot);
+  const calls: number[] = [];
+  const freeze = Object.freeze;
+  let sealed = 0;
+  Object.freeze = ((value: unknown) => {
+    sealed++;
+    return freeze(value);
+  }) as typeof Object.freeze;
+  let result: MemberCandidates;
+  try {
+    result = source.patchSelection(
+      previous,
+      slots,
+      (slot) => {
+        calls.push(slot);
+        return slot !== 63;
+      },
+      previous,
+    );
+  } finally {
+    Object.freeze = freeze;
+  }
+  expect(calls).toEqual(slots);
+  expect(result.memberCount).toBe(127);
+  expect(result.get(0)?.generation).toBe(2);
+  expect(result.get(63)).toBeUndefined();
+  expect(previous.get(0)?.generation).toBe(1);
+  expect(previous.get(63)).toBeDefined();
+  expect(source.get(63)?.generation).toBe(2);
+  expect(sealed).toBeLessThanOrEqual(32);
 });

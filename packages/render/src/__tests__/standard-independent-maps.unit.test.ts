@@ -19,7 +19,7 @@ function requireMask(value: number | undefined): number {
 function reuseSelector(mask: number, target: string): number {
   const entry = STANDARD_SAMPLE_REUSE.find((candidate) => candidate.target === target);
   if (entry === undefined) throw new Error(`unknown sample reuse target ${target}`);
-  return (mask >>> entry.shift) & (2 ** Math.ceil(Math.log2(entry.sources.length + 1)) - 1);
+  return (mask >>> entry.shift) & (2 ** entry.width - 1);
 }
 
 describe('Standard independent scalar maps', () => {
@@ -137,7 +137,7 @@ describe('Standard independent scalar maps', () => {
         textureCoordinates: new Map(),
       }),
     );
-    expect(reuseSelector(mask, 'metallicTexture')).toBe(2); // metallic reuses packed
+    expect(reuseSelector(mask, 'metallicTexture')).toBe(1); // metallic reuses packed
     expect(reuseSelector(mask, 'roughnessTexture')).toBe(2); // roughness reuses packed
     expect(reuseSelector(mask, 'alphaTexture')).toBe(1); // alpha reuses base color
   });

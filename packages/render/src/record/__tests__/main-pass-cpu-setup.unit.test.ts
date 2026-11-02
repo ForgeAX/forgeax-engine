@@ -4,9 +4,81 @@ import { expect, it, vi } from 'vitest';
 import { MaterialResource } from '../../material-resource';
 import type { DispatchEntry } from '../../render-system-extract';
 import { MaterialFrame } from '../../scene/material-dispatch';
+import { FirstEntryMap } from '../first-entry-map';
 import { makeZeroCameraFallbackSnapshot } from '../frame-snapshot';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
+
+it.each([
+  true,
+  false,
+])('consumes the prepared row-order proof and preserves reordered recording (ordered=%s)', async (ordered) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 1, submeshes: 1 });
+  f.add({ entity: 2, submeshes: 1 });
+  const dispatch: DispatchEntry[] = f.entries.map((row) => ({
+    entityIndex: row.source.entityKey,
+    renderableIndex: row.renderableIndex,
+    materialHandle: 7,
+    passIndex: 0,
+    queue: 2000,
+    layer: 0,
+    tags: { LightMode: 'Forward' },
+    renderState: undefined,
+    defines: undefined,
+    vertexEntry: undefined,
+    fragmentEntry: undefined,
+    materialShaderId: 'forgeax::default-unlit',
+  }));
+  const byRow = dispatch.map((entry) =>
+    new FirstEntryMap<number, DispatchEntry | DispatchEntry[]>().set(7, entry),
+  );
+  const keys = vi.fn(function* () {
+    yield 0;
+    yield 1;
+  });
+  const rows = ordered ? f.entries : [...f.entries].reverse();
+  Object.assign(f.c, {
+    validatedOrdered: rows,
+    dispatch,
+    geometryMaterialPasses: {
+      dispatch,
+      validatedOrdered: rows,
+      temporal: false,
+      ordered,
+      groups: { temporal: false, size: 2, get: (index: number) => byRow[index], keys },
+    },
+  });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  const record = (selected: readonly DispatchEntry[]) =>
+    recordGeometryDraws(
+      f.c,
+      pass,
+      null,
+      f.c.materialSlotIndices,
+      1,
+      f.meshGroup,
+      f.meshGroup,
+      () => f.materialGroup,
+      'forward',
+      selected,
+    );
+  try {
+    record(dispatch);
+    expect(f.receipts.map((receipt) => receipt.entity)).toEqual([1, 2]);
+    if (ordered) expect(keys.mock.calls.length).toBe(0);
+    else expect(keys.mock.calls.length).toBeGreaterThan(0);
+    f.receipts.length = 0;
+    record([...dispatch].reverse());
+    expect(f.receipts.map((receipt) => receipt.entity)).toEqual([2, 1]);
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
 
 it.each([
   true,
@@ -216,7 +288,8 @@ it('restores shared mesh, pipeline and instance state after a Points/Lines draw 
     targetW: 32,
     targetH: 32,
     pointsLines: {
-      prepare: (entry: unknown) =>
+      slot: () => 0,
+      submission: (entry: unknown) =>
         entry === points
           ? {
               vertexBuffer: points.mesh.vertexBuffer.handle,
@@ -283,7 +356,8 @@ it('keeps Points/Lines parameter addresses distinct across local Pass rosters', 
     targetW: 32,
     targetH: 32,
     pointsLines: {
-      prepare: (row: (typeof rows)[number]) => ({
+      slot: (row: (typeof rows)[number]) => rows.indexOf(row),
+      submission: (row: (typeof rows)[number]) => ({
         vertexBuffer: row.mesh.vertexBuffer.handle,
         indexBuffer: row.mesh.indexBuffer?.handle,
         layoutProjection: row.mesh.layoutProjection,
@@ -474,6 +548,49 @@ it('shares a resolved draw pipeline across draws and retries a pending one per d
     f.record(pass);
     expect(pending).toHaveBeenCalledTimes(3);
     expect(draw).toHaveBeenCalledTimes(0);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});
+
+it.each(
+  [[0, 1, 2], [2, 0, 1], [1], [9, 2, 0, 1]].map((order) => ({ order })),
+)('records selected order $order with original row and material addresses', async ({ order }) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  for (let i = 0; i < 3; i++) f.add({ entity: i + 1, submeshes: 1 });
+  const selected = order.map(
+    (renderableIndex) =>
+      ({
+        renderableIndex,
+        entityIndex: renderableIndex,
+        materialHandle: 7,
+        passIndex: 0,
+        queue: 2000,
+        layer: 0,
+        tags: {},
+      }) as DispatchEntry,
+  );
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    recordGeometryDraws(
+      f.c,
+      pass,
+      null,
+      f.c.materialSlotIndices,
+      1,
+      f.meshGroup,
+      f.meshGroup,
+      () => f.materialGroup,
+      'forward',
+      selected,
+    );
+    expect(f.receipts.map((receipt) => receipt.entity)).toEqual(
+      order.filter((index) => index < 3).map((index) => index + 1),
+    );
+    expect(f.errors).toEqual([]);
   } finally {
     pass.end();
     f.dispose();

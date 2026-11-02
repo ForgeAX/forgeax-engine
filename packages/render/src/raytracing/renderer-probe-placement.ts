@@ -9,6 +9,7 @@ import type { RenderSystemInternals } from '../record/render-context';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import { projectedRows, type ReadAsset, RowProjection } from '../scene/row-projection';
+import { recordContext } from '../world/view-record-context';
 import { CARD_LOOKUP_STRIDE } from './card-lookup';
 import { GLOBAL_CARD_CANDIDATE_STRIDE } from './global-card-lookup';
 import { packGlobalSdfQuerySettings } from './global-sdf-query';
@@ -335,7 +336,7 @@ export class RendererProbePlacement {
     const device = runtime.device;
     const globalProfile = runtime.standardProfile?.probePlacement?.global;
     const key = JSON.stringify([
-      runtime.deviceScope.generation,
+      recordContext(runtime).deviceScope.generation,
       input.camera,
       seeds,
       globalProfile,
@@ -378,8 +379,8 @@ export class RendererProbePlacement {
     const generation = this.#generation;
     const attempt = ++this.#attempt;
     const profile = runtime.standardProfile;
-    const canvasWidth = runtime.canvas.width,
-      canvasHeight = runtime.canvas.height;
+    const canvasWidth = recordContext(runtime).canvas.width,
+      canvasHeight = recordContext(runtime).canvas.height;
     const fence: RendererGenerationFence = {
       capturedGeneration: generation,
       currentGeneration: () =>
@@ -387,14 +388,14 @@ export class RendererProbePlacement {
         this.#generation === generation &&
         this.#attempt === attempt &&
         runtime.standardProfile === profile &&
-        runtime.canvas.width === canvasWidth &&
-        runtime.canvas.height === canvasHeight &&
+        recordContext(runtime).canvas.width === canvasWidth &&
+        recordContext(runtime).canvas.height === canvasHeight &&
         (region === undefined ||
           (input.globalSource !== undefined &&
             sourceCurrent?.() === true &&
             probeGlobalRegionCurrent(region, input.globalSource, this.#fields.revision))) &&
         JSON.stringify([
-          runtime.deviceScope.generation,
+          recordContext(runtime).deviceScope.generation,
           input.camera,
           runtime.standardProfile?.probePlacement?.seeds,
           runtime.standardProfile?.probePlacement?.global,

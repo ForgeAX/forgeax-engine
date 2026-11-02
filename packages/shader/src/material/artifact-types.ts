@@ -53,6 +53,7 @@ const standardPipelineProjection = new ParamSchemaProjectionOwner().admit({
   schema: STANDARD_MATERIAL_PARAM_SCHEMA.filter(
     (entry) =>
       entry.name !== 'directMultiscatteringLut' &&
+      entry.name !== 'planarReflection' &&
       !(
         entry.type.startsWith('texture') &&
         STANDARD_PHYSICAL_TEXTURE_FIELDS.includes(

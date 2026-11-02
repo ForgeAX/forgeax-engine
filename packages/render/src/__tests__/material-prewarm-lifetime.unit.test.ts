@@ -265,6 +265,16 @@ describe('pending material module request lifetime', () => {
       expected: 'shader module pre-bake to complete asynchronously',
     });
     expect(first.error.hint).toContain(desc.label);
+    expect(adapter.isPending(first.error)).toBe(true);
+    expect(
+      adapter.isPending(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: first.error.expected,
+          hint: first.error.hint,
+        }),
+      ),
+    ).toBe(false);
     for (let retry = 0; retry < 256; retry++) {
       const result = adapter.createShaderModule(desc);
       expect(result.ok).toBe(false);
@@ -276,6 +286,7 @@ describe('pending material module request lifetime', () => {
     complete[0]?.(ok(module));
     await Promise.resolve();
     expect(adapter.createShaderModule(desc)).toEqual(ok(module));
+    expect(adapter.isPending(first.error)).toBe(false);
     expect(adapter.hasModule(desc.label)).toBe(true);
   });
 
@@ -290,6 +301,8 @@ describe('pending material module request lifetime', () => {
     expect(second.ok).toBe(false);
     if (first.ok || second.ok) throw Error('Expected pending requests');
     expect(second.error).not.toBe(first.error);
+    expect(adapter.isPending(first.error)).toBe(false);
+    expect(adapter.isPending(second.error)).toBe(true);
     complete[0]?.(ok({ old: true } as unknown as ShaderModule));
     await Promise.resolve();
     expect(adapter.createShaderModule(replacement)).toEqual(err(second.error));
@@ -302,6 +315,8 @@ describe('pending material module request lifetime', () => {
     complete[1]?.(err(terminal));
     await Promise.resolve();
     expect(adapter.createShaderModule(replacement)).toEqual(err(terminal));
+    expect(adapter.isPending(second.error)).toBe(false);
+    expect(adapter.isPending(terminal)).toBe(false);
     adapter.invalidateModule(desc.label);
     const third = adapter.createShaderModule(desc);
     expect(third.ok).toBe(false);

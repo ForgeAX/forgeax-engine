@@ -23,6 +23,7 @@
     "dist",
     "schema",
     "src",
+    "!src/**/__tests__/**",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +40,7 @@
     "@forgeax/engine-debug-draw": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
     "@forgeax/engine-import": "workspace:*",
     "@forgeax/engine-input": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
@@ -69,8 +71,7 @@
     "@forgeax/engine-skinning": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "@types/ws": "^8.5.10",
-    "ws": "^8.22.0",
-    "@forgeax/engine-graphics-extras": "workspace:*"
+    "ws": "^8.22.0"
   },
   "forgeax": {
     "metrics": {

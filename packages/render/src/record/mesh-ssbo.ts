@@ -15,6 +15,7 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_Z,
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
+import { recordContext } from '../world/view-record-context';
 import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
 import type { _InternalRenderPipelineContext } from './render-context';
 
@@ -72,13 +73,15 @@ function hasStableGenerationColumn(generations: Uint32Array | undefined, count: 
  * compact 16-float payload and do not use this projection.
  */
 export function packInstanceStorageBuffer(
+  out: Float32Array,
   transforms: Float32Array,
   previousTransforms: Float32Array = transforms,
   generations?: Uint32Array,
   previousGenerations?: Uint32Array,
 ): Float32Array {
   const count = Math.floor(transforms.length / 16);
-  const out = new Float32Array(count * INSTANCE_STORAGE_STRIDE_FLOATS);
+  if (out.length !== count * INSTANCE_STORAGE_STRIDE_FLOATS)
+    throw new RangeError('Instance storage output must match the packed instance count');
   const previousCount = Math.floor(previousTransforms.length / 16);
   const generationInput = generations !== undefined || previousGenerations !== undefined;
   const identityProof =
@@ -408,14 +411,14 @@ export function ensureMeshSsboCapacity(
   neededMeshSlots: number,
   neededMaterialSlots: number,
 ): MeshSsboGrowResult {
-  const grow = internals.growMeshSsbo;
+  const grow = recordContext(internals).growMeshSsbo;
   if (grow === undefined || (neededMeshSlots <= 0 && neededMaterialSlots <= 0)) return { ok: true };
-  const beforeMesh = internals.meshSsboState?.meshSlotCount ?? 0;
-  const beforeMaterial = internals.meshSsboState?.materialSlotCount ?? 0;
+  const beforeMesh = recordContext(internals).meshSsboState?.meshSlotCount ?? 0;
+  const beforeMaterial = recordContext(internals).meshSsboState?.materialSlotCount ?? 0;
   if (beforeMesh >= neededMeshSlots && beforeMaterial >= neededMaterialSlots) return { ok: true };
   const result = grow(neededMeshSlots, neededMaterialSlots);
   if (!result.ok) return result;
-  const after = internals.meshSsboState;
+  const after = recordContext(internals).meshSsboState;
   if (
     after !== undefined &&
     (after.meshSlotCount !== beforeMesh || after.materialSlotCount !== beforeMaterial) &&
@@ -749,9 +752,8 @@ export function uploadMeshSsboBatch(
  * Per-bucket descriptor produced by {@link foldDispatchBuckets}.
  *
  * One bucket = one fold-eligible run of consecutive DispatchEntry whose
- * `(layer, sortKey, materialHandle)` triple is equal. Singleton buckets
- * (bucketSize=1) appear when the mode bypasses fold (D-5 mode 2/3) or
- * when consecutive entries differ in one of the three keys.
+ * `(layer, sortKey, materialHandle)` triple is equal. Only runs with at
+ * least two entries produce buckets; other draws remain direct.
  *
  * Fields:
  *   - `entries` — original DispatchEntry slice for this bucket (preserves
@@ -784,7 +786,7 @@ export interface FoldBucket {
  * `transform.world` (a Float32Array of 16 column-major floats) and
  * `material.transparent` (the LDR-split-sub-pass fold gate, see PR #502
  * fix + feat-20260625 R2 fix-up: geometry-pass entities — non-transparent
- * materials — MUST stay singleton because the sprite-pass dispatch path
+ * materials — MUST stay direct because the sprite-pass dispatch path
  * that consumes `headBuckets` does not run for them; folding them would
  * overwrite their mesh-SSBO slot with identity and collapse 3D geometry
  * to origin).
@@ -795,12 +797,12 @@ export interface FoldBucket {
  * undefined`, the post-feat-20260626-collapse SSOT; see
  * `MaterialSnapshot.transparent`), structurally compatible with this
  * minimal shape. The gate read inside the helper uses `=== true` /
- * `!== true` so both `false` and `undefined` enter the singleton branch.
+ * `!== true` so both `false` and `undefined` stay direct.
  *
  * feat-20260625-refactor-sprite-as-transparent-mesh R2 fix-up: the
  * transparent flag identifies the LDR split sub-pass, while the shader id
  * identifies the sprite owner that is safe to fold. Standard PBR Alpha Blend
- * remains singleton so its geometry pass keeps one projection row per draw.
+ * remains direct so its geometry pass keeps one projection row per draw.
  */
 export interface FoldRenderableLike {
   readonly transform: { readonly world: Float32Array };
@@ -831,89 +833,18 @@ function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderab
 }
 
 /**
- * Linear-scan fold operator (plan-strategy D-1).
- *
- * Walks `orderedEntries` (must be transparent-sort-ordered when mode=0;
- * the helper trusts the input ordering and only checks adjacent equality
- * — non-consecutive entries with equal keys are NOT merged, preserving
- * stable-sort semantics).
- *
- * @param orderedEntries — DispatchEntry[] in transparent-sort order. Empty
- *   array yields zero buckets (defensive empty-bucket suppression).
- * @param mode — current `TransparentSortConfig.mode`. Modes 0 (LAYER_Z)
- *   and 1 (LAYER_Y) enable fold using the appropriate sort-axis coordinate
- *   (posZ / posY respectively). Modes 2 and 3 produce singleton buckets
- *   per entry (D-5 bypass).
- * @param renderables — parallel snapshot array indexed by
- *   `DispatchEntry.renderableIndex`. The helper reads `transform.world`
- *   to (a) extract the sort-axis coordinate for the bucket key (posZ
- *   world[14] for mode 0, posY world[13] for mode 1), and (b) copy 16
- *   floats per entry into the assembled transforms buffer. Out-of-range /
- *   missing renderables defensively contribute a zero mat4 slot.
- * @returns Array of FoldBucket descriptors in input order.
+ * Materialize only consecutive transparent Sprite runs that reduce draw count.
+ * Non-Sprite work and isolated entries keep their original per-entity commands;
+ * no bucket, entry slice or transform payload is needed for those draws.
+ * Layer-Z and layer-Y compare their exact world coordinate. Other sort modes
+ * cannot qualify folding and read no dispatch or source rows.
  */
 export function foldDispatchBuckets(
   orderedEntries: DispatchList,
   mode: TransparentSortConfig['mode'],
   renderables: readonly FoldRenderableLike[],
 ): readonly FoldBucket[] {
-  if (orderedEntries.length === 0) return [];
-
-  // Bypass branch (D-5): modes 2 (LAYER_YZ) and 3 (DISTANCE) cannot fold
-  // — their sort keys are composite foot-Y formulas or per-entity camera
-  // distances, not reducible to a single world-mat4 coordinate read.
-  // Each entry produces its own singleton bucket; the dispatch consumer
-  // treats bucketSize=1 identically to per-entity drawIndexed (charter P3
-  // silent fallback — no error fired).
-  //
-  // Mode 1 (LAYER_Y) falls through to the fold branch below and uses posY
-  // (world[13]) as the sort-axis bucket key.
-  if (mode !== TRANSPARENT_SORT_MODE_LAYER_Z && mode !== TRANSPARENT_SORT_MODE_LAYER_Y) {
-    const out: FoldBucket[] = [];
-    for (let i = 0; i < orderedEntries.length; i++) {
-      const e = orderedEntries.at(i);
-      if (e === undefined) continue;
-      out.push(makeSingletonBucket(e, renderables, mode));
-    }
-    return out;
-  }
-
-  // Fold branch (mode 0 = LAYER_Z, mode 1 = LAYER_Y): linear scan, collect
-  // runs with equal (layer, sortKey, materialHandle). sortKey is posZ for
-  // mode 0, posY for mode 1 — see readSortKey().
-  //
-  // Transparent-pass-only gate (PR #502 fix + feat-20260625 R2 fix-up):
-  // the only dispatch site that consumes `headBuckets` to emit one
-  // instanced drawIndexed per bucket is the transparent-pass loop in
-  // `render-system-record.ts` (~line 5500; routed via `splitLdrSprite`
-  // filter on `material.transparent === true`). The geometry-pass loop
-  // (~line 4660) iterates `validatedOrdered` and emits per-entity
-  // drawIndexed unchanged; it does NOT branch on `headBuckets`. So when
-  // a non-transparent entry (geometry-pass: unlit / standard-PBR / skin)
-  // is folded into a multi-entry bucket, the mesh-SSBO upload loop
-  // (~line 2710) still overwrites its mesh slot with identity (because
-  // `headBuckets.has(i)` is true), but the geometry-pass then reads
-  // identity and renders the 3D geometry at the origin — collapsing the
-  // frame to black (hello-room CI regression).
-  //
-  // Concept-count fix: encode "fold is transparent-sprite-sub-pass-only" at the
-  // head selection point — the gate is the single bucket-key invariant
-  // that makes both dispatch sites correct without coupling identity-
-  // overwrite logic to a separate check (avoiding the D-9 shared-exit
-  // violation that selecting fix-location B would produce).
-  //
-  // Non-transparent entries (`transparent !== true`) always produce
-  // singleton buckets (bucketSize=1), which `buildFoldDispatchPlan`
-  // filters out (`if (bucket.bucketSize <= 1) continue`), so they never
-  // enter `headBuckets` / `skipIndices` — the mesh-SSBO upload,
-  // transparent-pass, and geometry-pass loops all see them as byte-
-  // identical to the pre-fold per-entity path.
-  //
-  // feat-20260625 R2 fix-up: pre-feat the gate was `shadingModel ===
-  // 'sprite'`; M3 / w15 narrowed the shadingModel union to
-  // `'unlit' | undefined`. The current gate retains the transparent SSOT
-  // and adds the explicit sprite shader identity so Standard PBR Alpha Blend
-  // cannot enter this fold path.
+  if (mode !== TRANSPARENT_SORT_MODE_LAYER_Z && mode !== TRANSPARENT_SORT_MODE_LAYER_Y) return [];
   const buckets: FoldBucket[] = [];
   let runStart = 0;
   while (runStart < orderedEntries.length) {
@@ -922,14 +853,7 @@ export function foldDispatchBuckets(
       runStart += 1;
       continue;
     }
-    // Transparent-pass-only gate (feat-20260625 R2 fix-up): non-transparent
-    // heads emit a singleton bucket and advance the cursor by 1 — no run
-    // extension. `RenderableSnapshot.material.transparent` is the SSOT
-    // carrier (extract stage derives it from the first pass's
-    // `renderState.blend !== undefined`, post-feat-20260626-collapse;
-    // see `MaterialSnapshot.transparent`).
     if (!isFoldEligible(head, renderables)) {
-      buckets.push(makeSingletonBucket(head, renderables, mode));
       runStart += 1;
       continue;
     }
@@ -969,6 +893,10 @@ export function foldDispatchBuckets(
       runEnd += 1;
     }
 
+    if (runEnd === runStart + 1) {
+      runStart = runEnd;
+      continue;
+    }
     const run = orderedEntries.slice(runStart, runEnd);
     const transforms = assembleTransforms(run, renderables);
     buckets.push({
@@ -982,25 +910,6 @@ export function foldDispatchBuckets(
     runStart = runEnd;
   }
   return buckets;
-}
-
-function makeSingletonBucket(
-  entry: DispatchEntry,
-  renderables: readonly FoldRenderableLike[],
-  mode: TransparentSortConfig['mode'],
-): FoldBucket {
-  const transforms = new Float32Array(16);
-  const w = renderables[entry.renderableIndex]?.transform.world;
-  if (w !== undefined) transforms.set(w);
-  const sortKey = readSortKey(mode, entry.renderableIndex, renderables);
-  return {
-    entries: [entry],
-    bucketSize: 1,
-    transforms,
-    materialHandle: entry.materialHandle,
-    layer: entry.layer,
-    sortKey,
-  };
 }
 
 function assembleTransforms(

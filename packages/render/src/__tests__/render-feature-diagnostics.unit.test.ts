@@ -34,7 +34,7 @@ function gatedFeature(): RenderFeature<{ readonly frame: number }> {
 
 describe('render feature diagnostics and capability gate', () => {
   it('notifies only lifecycle projection changes and stops after unsubscribe', () => {
-    const host = createRenderFeatureHost([gatedFeature()], caps(true)).unwrap();
+    const host = createRenderFeatureHost([gatedFeature()]).unwrap();
     let notifications = 0;
     const unsubscribe = host.subscribeDiagnostics(() => {
       notifications += 1;
@@ -54,7 +54,7 @@ describe('render feature diagnostics and capability gate', () => {
   });
 
   it('isolates a throwing diagnostics observer from renderer lifecycle changes', () => {
-    const host = createRenderFeatureHost([gatedFeature()], caps(true)).unwrap();
+    const host = createRenderFeatureHost([gatedFeature()]).unwrap();
     let healthyNotifications = 0;
     host.subscribeDiagnostics(() => {
       throw new Error('observer failed');
@@ -70,7 +70,7 @@ describe('render feature diagnostics and capability gate', () => {
   });
 
   it('installs a late feature once and keeps identity conflicts explicit', () => {
-    const host = createRenderFeatureHost([], caps(true)).unwrap();
+    const host = createRenderFeatureHost([]).unwrap();
     const feature = gatedFeature();
     expect(host.install(feature)).toEqual(ok(undefined));
     expect(host.install(feature)).toEqual(ok(undefined));
@@ -90,7 +90,7 @@ describe('render feature diagnostics and capability gate', () => {
   });
 
   it('disables without a capability and re-enables only after recover re-evaluation', () => {
-    const host = createRenderFeatureHost([gatedFeature()], caps(false)).unwrap();
+    const host = createRenderFeatureHost([gatedFeature()]).unwrap();
     const first = runSingleViewFeatureFrame(host, {
       worlds: [],
       owner: 0,
@@ -140,7 +140,7 @@ describe('render feature diagnostics and capability gate', () => {
         return ok({ work: [{ scope: { view: 'main' }, resources: [], passes: [] }] });
       },
     };
-    const host = createRenderFeatureHost([feature], caps(true)).unwrap();
+    const host = createRenderFeatureHost([feature]).unwrap();
 
     runSingleViewFeatureFrame(host, {
       worlds: [],

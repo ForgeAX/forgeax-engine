@@ -193,7 +193,7 @@ function addProbePasses(
         ),
         ...fieldReads,
       ],
-      encode: ({ pass, resources }) => {
+      encodeDirect: (pass, _graphframe, resources) => {
         const value = current();
         before?.(value);
         value.kernels[stage]
@@ -266,7 +266,7 @@ function addProbePasses(
     accesses: prepared.world.bindings.map(([, kind, name]) =>
       kernelGraphAccess(kind, worldHandle(name), 'storage-read-write'),
     ),
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       const value = current();
       value.world
         .record(

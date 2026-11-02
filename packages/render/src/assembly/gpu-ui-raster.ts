@@ -90,11 +90,16 @@ type Image = {
 };
 type Pipeline = { pipeline: RenderPipeline; layouts: BindGroupLayout[] };
 
+/** Releases `release` once the GPU work of `owner` that may still read the resource completed. */
+export type UiRetire = (owner: RhiDevice, release: () => void) => void;
+
 /** No device acquisition, queue submission, readback, DOM or WASM ownership. */
 export async function createGpuUiRaster(options: {
   readonly device: RhiDevice;
   readonly shaders: UiGpuShaders;
   readonly createShaderModule: (device: RhiDevice, source: string) => Promise<ShaderModule>;
+  /** Releases `release` once the GPU work that may still read the resource completed. */
+  readonly retire: UiRetire;
 }) {
   let device = options.device;
   let pipelines = new Map<UiGpuPass['kind'], Pipeline>();
@@ -104,7 +109,6 @@ export async function createGpuUiRaster(options: {
   let instances: Buffer | undefined;
   let instanceCapacity = 0;
   let graph: CompiledRenderGraph<{ encoder: RhiCommandEncoder }> | undefined;
-  let lastSubmission: Promise<void> = Promise.resolve();
   let lastFrame: UiGpuFrame | undefined;
   let pending = false;
   let disposed = false;
@@ -182,14 +186,14 @@ export async function createGpuUiRaster(options: {
     const release = () => {
       value(owner.destroyTexture(image.texture));
     };
-    void lastSubmission.then(release, release);
+    options.retire(owner, release);
   }
   function retireBuffer(buffer: Buffer): void {
     const owner = device;
     const release = () => {
       value(owner.destroyBuffer(buffer));
     };
-    void lastSubmission.then(release, release);
+    options.retire(owner, release);
   }
   function discardGraph(): void {
     void graph?.retire();
@@ -560,7 +564,7 @@ export async function createGpuUiRaster(options: {
             { resource: view, usage: 'color-attachment' },
           ],
           colorAttachments: [{ view, loadOp: 'load', storeOp: 'store' }],
-          encode: ({ pass: encoder }) => {
+          encodeDirect: (encoder, _graphframe, _graphresources) => {
             encoder.setPipeline(pipeline.pipeline);
             groups.forEach((group, slot) => {
               encoder.setBindGroup(slot, group);
@@ -589,9 +593,6 @@ export async function createGpuUiRaster(options: {
         value(graph.execute({ encoder }));
         pending = false;
       }
-    },
-    submitted(completed: Promise<void>): void {
-      lastSubmission = completed;
     },
     async recover(next: RhiDevice): Promise<void> {
       releaseResources();

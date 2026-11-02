@@ -1,3 +1,4 @@
+import type { MemoryErrorCode, MemoryErrorDetail } from './memory-types';
 // @forgeax/engine-ecs — typed error class collection.
 //
 // Typed error classes covering all boundary conditions. Each follows progressive
@@ -926,6 +927,7 @@ export class ManagedArrayElementTypeNotAllowedError extends Error {
 
 /** Closed union of every `.code` literal carried by EcsError instances. */
 export type EcsErrorCode =
+  | MemoryErrorCode
   // Legacy SCREAMING_SNAKE codes (7, carried unchanged; the two
   // registration codes COMPONENT_ALREADY_REGISTERED / COMPONENT_NOT_REGISTERED
   // were dropped by feat-20260602 along with the per-World register concept).
@@ -1065,6 +1067,7 @@ export type EcsErrorCode =
  * only the w5 family + `cyclic-injection` carry structured payloads today.
  */
 export type EcsErrorDetail =
+  | MemoryErrorDetail
   | {
       readonly code: 'shared-kernel-ineligible';
       readonly kernelName: string;

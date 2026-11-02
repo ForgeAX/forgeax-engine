@@ -15,6 +15,7 @@ import {
 import { createFullscreenRenderFeature } from '@forgeax/engine-render/authoring';
 import {
   fullscreenRenderFeatureDeclaration,
+  ownReceivedPublicationMaterials,
   renderGraphCompileCount,
 } from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
@@ -41,10 +42,10 @@ import { type PreparedExecutionBootstrap, prepareBootstrapEntry } from './bootst
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { installCarriedGpuStub } from './gpu-stub';
 import type { SerializedRenderError } from './protocol';
-import { ownReceivedPublicationMaterials } from './received-publication-materials';
 import { drainRenderCompletion, joinRenderCompletion } from './render-completion';
 import { RenderDrawTiming } from './render-draw-timing';
 import { RenderMeshResidency } from './render-mesh-residency';
+import { RenderWorkerControlBoundary } from './render-worker-control-boundary';
 import type {
   CompletedMeshConsumption,
   RenderWorkerInput,
@@ -247,7 +248,7 @@ function inspectRendererDiagnostics():
   | undefined {
   if (renderer === undefined) return undefined;
   try {
-    const inspection = renderer.inspect();
+    const inspection = renderer.inspect({ fields: ['state', 'frame', 'capabilities', 'limits'] });
     return {
       state: inspection.state,
       frameId: inspection.frame.frameId,
@@ -502,14 +503,17 @@ async function receiveDispose(): Promise<void> {
 async function receiveMeshControl(
   message: Extract<RenderWorkerInput, { kind: 'mesh-prepare' | 'mesh-release' }>,
 ): Promise<void> {
+  // Capture at receipt, before initialization or any later draw can advance the cut.
+  const through = drawControls.cut;
   try {
     await initializing;
-    // A suspended recording owns its extracted mesh/binding references.
-    // Keep resource controls behind that same serial draw drain.
-    if (renderTaskYield === 'features') await drawing;
-    if (failed || shuttingDown) return;
-    if (meshResidency === undefined) throw new Error('Render mesh receiver is not ready');
-    await meshResidency.receive(message);
+    const start = async () => {
+      if (failed || shuttingDown) return;
+      if (meshResidency === undefined) throw new Error('Render mesh receiver is not ready');
+      await meshResidency.receive(message);
+    };
+    if (renderTaskYield === 'features') await drawControls.after(through, start);
+    else await start();
   } catch (cause) {
     fail(message, cause);
   }
@@ -1199,6 +1203,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
     }
   }
 }
+const drawControls = new RenderWorkerControlBoundary();
 let drawing: Promise<void> | undefined;
 const queued: DrawMessage[] = [];
 scope.onmessage = (event) => {
@@ -1227,6 +1232,7 @@ scope.onmessage = (event) => {
     return;
   }
   framesInFlight++;
+  drawControls.admitDraw();
   drawTiming.arrive(message);
   if (drawing !== undefined) {
     queued.push(message);
@@ -1234,9 +1240,13 @@ scope.onmessage = (event) => {
   }
   const drain = async (first: DrawMessage): Promise<void> => {
     await receive(first);
+    drawControls.recordedDraw();
     while (queued.length > 0) {
       const next = queued.shift();
-      if (next !== undefined) await receive(next);
+      if (next !== undefined) {
+        await receive(next);
+        drawControls.recordedDraw();
+      }
     }
     drawing = undefined;
   };

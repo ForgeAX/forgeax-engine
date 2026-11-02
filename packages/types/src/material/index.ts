@@ -10,12 +10,14 @@ export {
 export {
   createMaterialError,
   type GltfMaterialUvSetMissingDetail,
+  MATERIAL_PARALLAX_HINTS,
   type MaterialDerivedInterfaceMismatchDetail,
   type MaterialError,
   type MaterialErrorCode,
   type MaterialErrorDetail,
   type MaterialErrorFor,
   type MaterialGenerationVector,
+  type MaterialParallaxContractInvalidDetail,
   type MaterialParameterTypeUnsupportedDetail,
   type MaterialPayloadBoundsDetail,
   type MaterialPhysicalContractInvalidDetail,
@@ -50,8 +52,10 @@ export {
   standardPhysicalTextureFields,
 } from './standard-layer-plan.js';
 export {
+  STANDARD_DISPLACEMENT_MODES,
   STANDARD_MATERIAL_PARAM_SCHEMA,
   STANDARD_SURFACE_PARAM_SCHEMA,
+  type StandardDisplacementMode,
   standardMaterialParameters,
   standardSurfaceParameters,
 } from './standard-schema.js';

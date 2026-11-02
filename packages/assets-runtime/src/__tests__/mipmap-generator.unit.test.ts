@@ -222,7 +222,7 @@ describe('blitMipmapsSync (prewarmed path)', () => {
     expect(log.destroyed).toEqual([scratch?.texture]);
   });
 
-  it('shares one scratch texture across all array layers', async () => {
+  it('stages array layers into a physical 2D source and shares both transient chains', async () => {
     const renderPasses: unknown[] = [];
     const log: BlitLog = { copies: [], destroyed: [] };
     const device = makeBlitDevice(renderPasses, log);
@@ -235,17 +235,27 @@ describe('blitMipmapsSync (prewarmed path)', () => {
       arrayLayerCount: 4,
     }).unwrap();
     expect(renderPasses).toHaveLength(12);
-    expect(log.destroyed).toHaveLength(1);
-    expect(
-      new Set(log.copies.map((copy) => (copy.source as { texture: unknown }).texture)),
-    ).toEqual(new Set(log.destroyed));
+    expect(log.destroyed).toHaveLength(2);
+    const [scratch, source] = log.destroyed;
+    expect(log.copies).toHaveLength(24);
     for (let layer = 0; layer < 4; layer++)
-      for (let mipLevel = 1; mipLevel < 4; mipLevel++)
-        expect(log.copies[layer * 3 + mipLevel - 1]?.destination).toEqual({
+      for (let mipLevel = 1; mipLevel < 4; mipLevel++) {
+        const offset = (layer * 3 + mipLevel - 1) * 2;
+        expect(log.copies[offset]).toEqual({
+          source: { texture, mipLevel: mipLevel - 1, origin: { x: 0, y: 0, z: layer } },
+          destination: { texture: source, mipLevel: mipLevel - 1 },
+          size: [Math.max(1, 8 >> (mipLevel - 1)), Math.max(1, 2 >> (mipLevel - 1)), 1],
+        });
+        expect(log.copies[offset + 1]?.source).toEqual({
+          texture: scratch,
+          mipLevel: mipLevel - 1,
+        });
+        expect(log.copies[offset + 1]?.destination).toEqual({
           texture,
           mipLevel,
           origin: { x: 0, y: 0, z: layer },
         });
+      }
   });
 
   it.each([

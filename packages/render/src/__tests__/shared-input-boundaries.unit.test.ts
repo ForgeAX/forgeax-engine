@@ -75,7 +75,9 @@ it('refreshes and leases current shared inputs only when a retained shadow actua
     expect(members).not.toHaveBeenCalled();
     const forced = f.pool.project(new RenderGraphBuilder(), f.identity, true).unwrap();
     expect(forced.cache).toBe('hit');
-    expect(forced.passNames).toHaveLength(3);
+    expect(forced.passNames).toEqual([
+      'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+    ]);
     expect(members).toHaveBeenCalled();
     expect(next.buffer().unwrap().buffer).not.toBe(previousBuffer);
     next.seal().unwrap();

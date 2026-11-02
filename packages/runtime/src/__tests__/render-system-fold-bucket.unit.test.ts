@@ -6,7 +6,7 @@
 //       materialHandle) -> 1 fold bucket with bucketSize=N.
 //   (2) empty input -> 0 buckets.
 //   (3) chunkSize=1 (each entry has its own (layer, posZ, material)) ->
-//       N buckets each with bucketSize=1 (degenerate single-instance path).
+//       No buckets; all entries keep their direct draws.
 //   (4) Float32Array layout: assembled transforms is a Float32Array with
 //       stride=16 (16 f32 per instance, column-major mat4), length=N*16.
 //
@@ -154,7 +154,7 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
     }
   });
 
-  it('chunkSize=1 degenerate path: each entry distinct -> N singleton buckets', () => {
+  it('chunkSize=1 degenerate path: each entry distinct -> no fold buckets', () => {
     // Distinct posZ per entry -> each becomes its own bucket (no fold).
     const N = 3;
     const entries: DispatchEntry[] = [];
@@ -165,14 +165,7 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
     }
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
-    expect(buckets).toHaveLength(N);
-    for (let i = 0; i < N; i++) {
-      const b = buckets[i];
-      expect(b).toBeDefined();
-      if (b === undefined) continue;
-      expect(b.bucketSize).toBe(1);
-      expect(b.transforms.length).toBe(16);
-    }
+    expect(buckets).toEqual([]);
   });
 });
 
@@ -187,8 +180,7 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
 //
 // The fix gates fold to transparent entries at the bucket-key level
 // (`foldDispatchBuckets` itself), so non-transparent entries always
-// produce singleton buckets that `buildFoldDispatchPlan` filters out from
-// `headBuckets` / `skipIndices`. The mesh-SSBO upload loop then keeps
+// remain absent from `headBuckets` / `skipIndices`. The upload loop keeps
 // writing the entity's real world matrix for those slots, and both
 // dispatch loops behave byte-identically to the pre-fold path.
 //
@@ -196,7 +188,7 @@ describe('foldDispatchBuckets — mode 0 basic paths (w1)', () => {
 // 'sprite'` to `transparent === true` (the M3 ablation collapsed the
 // sprite discriminator into the generic transparent flag).
 describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-20260625 R2 fix-up)', () => {
-  it('transparent Standard PBR entries remain singleton while sprite shaders fold', () => {
+  it('transparent Standard PBR entries remain direct while sprite shaders fold', () => {
     const standardEntries = [0, 1].map((renderableIndex) =>
       mockEntry({
         renderableIndex,
@@ -220,7 +212,7 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
       TRANSPARENT_SORT_MODE_LAYER_Z,
       standardRenderables,
     );
-    expect(standardBuckets.map((bucket) => bucket.bucketSize)).toEqual([1, 1]);
+    expect(standardBuckets).toEqual([]);
 
     for (const materialShaderId of ['forgeax::sprite', 'forgeax::sprite-lit']) {
       const spriteEntries = [0, 1].map((renderableIndex) =>
@@ -245,7 +237,7 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
   it('non-transparent (unlit-shading) entries never form multi-entry buckets', () => {
     // 4 entries sharing (layer, posZ, materialHandle) — pre-fix would have
     // folded into a single bucketSize=4 bucket. With the transparent-only
-    // gate they MUST each be their own singleton.
+    // gate they MUST each be direct.
     const N = 4;
     const entries: DispatchEntry[] = [];
     const renderables: ReturnType<typeof mockRenderable>[] = [];
@@ -256,16 +248,13 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    expect(buckets).toHaveLength(N);
-    for (const b of buckets) {
-      expect(b.bucketSize).toBe(1);
-    }
+    expect(buckets).toEqual([]);
   });
 
   it('standard-PBR (non-transparent) entries never form multi-entry buckets', () => {
     // Standard / PBR materials carry shadingModel=undefined + materialShaderId
     // (feat-20260523-shader-template-instance-split M4-T05). They must also
-    // stay singleton — same hello-room CI red root cause (sphereChild +
+    // stay direct — same hello-room CI red root cause (sphereChild +
     // planeChild use Standard, geometry-pass collapsed them to (0,0,0)).
     const N = 3;
     const entries: DispatchEntry[] = [];
@@ -277,16 +266,13 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    expect(buckets).toHaveLength(N);
-    for (const b of buckets) {
-      expect(b.bucketSize).toBe(1);
-    }
+    expect(buckets).toEqual([]);
   });
 
-  it('mixed transparent + non-transparent entries: transparent run folds, non-transparent stays singleton', () => {
+  it('mixed transparent + non-transparent entries: transparent run folds, non-transparent stays direct', () => {
     // Three transparent entries (fold-eligible) followed by three non-
     // transparent. Result: 1 bucket of size 3 (the transparent run) + 3
-    // singletons (one per non-transparent entry).
+    // no further fold work.
     const entries: DispatchEntry[] = [
       mockEntry({ renderableIndex: 0, materialHandle: 11, layer: 0 }),
       mockEntry({ renderableIndex: 1, materialHandle: 11, layer: 0 }),
@@ -306,11 +292,7 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    expect(buckets).toHaveLength(4);
-    expect(buckets[0]?.bucketSize).toBe(3); // transparent run
-    expect(buckets[1]?.bucketSize).toBe(1); // non-transparent singletons
-    expect(buckets[2]?.bucketSize).toBe(1);
-    expect(buckets[3]?.bucketSize).toBe(1);
+    expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([3]);
   });
 
   it('transparent run interrupted by non-transparent breaks fold even with matching key', () => {
@@ -318,7 +300,7 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
     // (layer, posZ, material) equality would have folded all four; the gate
     // now splits at the non-transparent entry (forcing it singleton) and
     // the trailing transparent starts a fresh head (which becomes a
-    // singleton bucket since the run ends immediately — no further matching
+    // direct draw since the run ends immediately — no further matching
     // entry follows in this fixture).
     const entries: DispatchEntry[] = [
       mockEntry({ renderableIndex: 0, materialHandle: 2, layer: 0 }),
@@ -335,9 +317,8 @@ describe('foldDispatchBuckets — transparent-only gate (PR #502 fix + feat-2026
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    expect(buckets).toHaveLength(3);
-    expect(buckets[0]?.bucketSize).toBe(2); // transparent run [0,1]
-    expect(buckets[1]?.bucketSize).toBe(1); // non-transparent singleton [2]
-    expect(buckets[2]?.bucketSize).toBe(1); // transparent singleton [3]
+    expect(buckets.map((bucket) => bucket.entries.map((entry) => entry.renderableIndex))).toEqual([
+      [0, 1],
+    ]);
   });
 });

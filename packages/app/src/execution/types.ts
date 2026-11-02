@@ -5,6 +5,7 @@ import type {
   GpuPassTimingOptions,
   RenderFrameInput,
   RenderInspection,
+  RenderInspectionOptions,
 } from '@forgeax/engine-render';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { Result, RuntimeAssetBinding } from '@forgeax/engine-types';
@@ -156,6 +157,8 @@ export interface ExecutionReport {
     /** Capabilities from the actual Render Worker device, not Host feature detection. */
     readonly capabilities?: ExecutionRenderCapabilities;
     readonly limits?: ExecutionRenderLimits;
+    /** The most recent recoverable Renderer loss: the epoch it started and its serialized cause. */
+    readonly lastLoss?: { readonly epoch: number; readonly cause: string };
   };
   readonly fault: ExecutionFault | null;
 }
@@ -249,19 +252,8 @@ export type ExecutionGeometryObservationResult =
 
 export interface ExecutionRendererInspectionOptions<
   K extends keyof RenderInspection = keyof RenderInspection,
-> {
-  readonly pipelineLibrary?: boolean;
-  readonly pipelineLibraryCollection?: boolean;
-  readonly pipelineLibraryLimits?: NonNullable<
-    NonNullable<
-      Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
-    >['pipelineLibraryLimits']
-  >;
-  /** Materialize the bounded runtime request history only for an explicit diagnostic read. */
-  readonly runtimeRequests?: boolean;
+> extends RenderInspectionOptions<K> {
   readonly signal?: AbortSignal;
-  /** Select owner fields before structured cloning; omission preserves the full snapshot. */
-  readonly fields?: readonly K[];
 }
 
 /** Public `execution` root injected into App.remoteEval/executeScript in the Engine realm. */

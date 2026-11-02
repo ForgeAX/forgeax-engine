@@ -1,0 +1,12 @@
+{
+  "id": "modeling-show-hood-linkage",
+  "name": "C-116 hood four-bar",
+  "schemaVersion": "3.0.0",
+  "assetRoots": [
+    "assets"
+  ],
+  "roots": {
+    "engine": "4b6ddeef-f7fe-53cd-aba5-c3faec6b5984",
+    "frontend": "753722d7-1b9c-563d-880e-b3c05d016c57"
+  }
+}

@@ -213,6 +213,16 @@ test('the CI matrix and Dawn gate command match the authoritative lane count', (
   assert.ok(start >= 0 && end > start, 'the CI Dawn matrix job must remain explicit');
   const job = workflow.slice(start, end);
   const laneCount = DAWN_GATE_SHARDS.length;
+  assert.match(
+    job,
+    /\n {4}timeout-minutes: 50\n/,
+    'setup and cleanup have an explicit bounded allowance',
+  );
+  assert.match(
+    job,
+    /- name: Vitest dawn project[^\n]*\n {8}timeout-minutes: 40\n/,
+    'the complete native test step retains a forty-minute execution bound',
+  );
   assert.ok(job.includes(`name: vitest-dawn-\${{ matrix.shard }}-of-${laneCount}`));
   assert.ok(job.includes(`--shard "\${{ matrix.shard }}/${laneCount}"`));
   const matrix = /\n\s+shard:\s*\[([^\]]+)\]/.exec(job);
@@ -228,6 +238,21 @@ test('specular AA keeps a complete owner outside ordinary discovery', () => {
   assert.deepEqual(group.files, ['packages/runtime/src/__tests__/specular-aa.dawn.test.ts']);
   assert.ok(DAWN_GATE_SHARDS.flat().includes(group.id));
   assert.ok(!listDawnFiles().includes(group.files[0]));
+});
+
+test('complete Modeling journeys have fresh native owners without test filters', () => {
+  for (const [id, file] of [
+    ['modeling-s6', 'packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts'],
+    ['modeling-show', 'apps/modeling-show/__tests__/show.dawn.test.ts'],
+  ]) {
+    const [group] = selectDawnGroups(id);
+    assert.deepEqual(group.files, [file]);
+    assert.ok(!listDawnFiles().includes(file));
+    const args = dawnVitestArgs(group);
+    assert.ok(args.includes('--isolate'));
+    assert.ok(!args.some((arg) => /testNamePattern|testTimeout|hookTimeout|--shard/.test(arg)));
+    assert.equal(DAWN_GATE_SHARDS.flat().filter((owner) => owner === group.id).length, 1);
+  }
 });
 
 test('four ordinary partitions conserve actual Vitest discovery', async () => {
@@ -322,4 +347,73 @@ test('only Dawn sharding changes; other projects retain native Vitest sequencing
   const dawnSpecs = nativeSpecifications;
   assert.deepEqual(await new DawnSequencer({ config: { root } }).shard(dawnSpecs), dawnSpecs);
   await assert.rejects(new DawnSequencer(context).shard(dawnSpecs), /requires 4/);
+});
+
+test('completed ordinary children retain their expensive measured file shares', () => {
+  const timings = JSON.parse(
+    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
+  );
+  // Run 41314021267: ordinary-2 completed successfully in 1463.899 seconds.
+  // Include its process overhead across all 86 files, including seven skipped files.
+  const observed = [
+    ['packages/runtime/src/__tests__/standard-displacement.dawn.test.ts', 189.231],
+    ['packages/devkit/src/tools/__tests__/model-views.dawn.test.ts', 111.087],
+    ['packages/devkit/src/tools/__tests__/model-render.dawn.test.ts', 88.96],
+    ['packages/modeling/examples/mech-gt/__tests__/s6c.case.dawn.test.ts', 282.232],
+    ['packages/three/src/__tests__/render.dawn.test.ts', 98.374],
+  ];
+  for (const [file, seconds] of observed) {
+    assert.ok(
+      timings.files[file] >= seconds,
+      `completed file must retain its wall-time share: ${file} (${timings.files[file]} < ${seconds})`,
+    );
+  }
+});
+
+test('ordinary backfill honors native-owner placement reserves without losing files', () => {
+  const timings = JSON.parse(
+    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
+  );
+  const fallback = Math.max(...Object.values(timings.files));
+  const fileCost = (file) => timings.files[file] ?? fallback;
+  const nativeLoads = [];
+  const nativeOwners = [];
+  const loads = DAWN_GATE_SHARDS.map((ids, index) => {
+    const reserved = ids
+      .filter((id) => !id.startsWith('ordinary-'))
+      .reduce((sum, id) => {
+        const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+        const measured =
+          timings.owners[id] ?? group.files.reduce((n, file) => n + fileCost(file), 0);
+        const cost = Math.max(measured, group.placementReserveSeconds ?? 0);
+        nativeOwners.push(cost);
+        return sum + cost;
+      }, 0);
+    nativeLoads.push(reserved);
+    return (
+      reserved +
+      configuredPartitions[index].reduce(
+        (sum, specification) =>
+          sum + fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
+        0,
+      )
+    );
+  });
+  const largest = Math.max(
+    ...nativeSpecifications.map((specification) =>
+      fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
+    ),
+  );
+  assert.ok(
+    Math.max(...nativeLoads) - Math.min(...nativeLoads) <= Math.max(...nativeOwners) + 1e-6,
+    `fixed native owners must balance before ordinary backfill: ${nativeLoads.join(', ')}`,
+  );
+  assert.ok(
+    Math.max(...loads) - Math.min(...loads) <= largest + 1e-6,
+    `native reserves must participate before ordinary backfill: ${loads.join(', ')}`,
+  );
+  assert.equal(
+    new Set(configuredPartitions.flat().map((spec) => spec.moduleId)).size,
+    nativeSpecifications.length,
+  );
 });

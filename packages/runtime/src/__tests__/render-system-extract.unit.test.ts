@@ -39,7 +39,6 @@ import { testAssets } from './helpers/runtime-assets';
 //   - plan-strategy §3.2 sequence (extract: snap + validate + skip)
 //   - research §Q-R-2.5 (extract-stage SpriteInstances sniff + validate)
 
-import { readFile } from 'node:fs/promises';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { World } from '@forgeax/engine-ecs';
 import {
@@ -48,6 +47,7 @@ import {
   Instances,
   MeshFilter,
   MeshRenderer,
+  SpotLight,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry, type ShaderRegistryDevice } from '@forgeax/engine-shader';
@@ -364,14 +364,31 @@ describe('render-system-extract material color boundary', () => {
 });
 
 describe('render-system-extract spot direction owner', () => {
-  it('normalizes one spot snapshot in extract and keeps one spot query', async () => {
-    const source = await readFile(
-      new URL('../../../render/src/extract/world-environment.ts', import.meta.url),
-      'utf8',
-    );
+  it('normalizes spot snapshots in extract through one spot query', () => {
+    const { world, assets } = makeScene();
+    for (const direction of [
+      [3, -4, 0],
+      [0, 0, -2],
+    ]) {
+      world
+        .spawn(
+          { component: Transform, data: identityTransform() },
+          { component: SpotLight, data: { direction, castShadow: false } },
+        )
+        .unwrap();
+    }
+    const queries = vi.spyOn(world, 'query');
+    const frame = extractFrame(world, prepareExtractContext(world, { assets }));
 
-    expect(source.match(/\.query\(\{\s*read: \[SpotLight\]/g)?.length).toBe(1);
-    expect(source).toContain('vec3.create(x / length, y / length, z / length)');
-    expect(source).toContain('direction: dirN');
+    expect(
+      queries.mock.calls.filter(([descriptor]) => descriptor.read?.includes(SpotLight)),
+    ).toHaveLength(1);
+    expect(frame.lights.spot).toHaveLength(2);
+    expect(Array.from(frame.lights.spot[0]?.direction ?? [])).toEqual([
+      expect.closeTo(0.6, 6),
+      expect.closeTo(-0.8, 6),
+      0,
+    ]);
+    expect(Array.from(frame.lights.spot[1]?.direction ?? [])).toEqual([0, 0, -1]);
   });
 });

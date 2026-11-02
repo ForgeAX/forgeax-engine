@@ -30,7 +30,7 @@ import { LensFlare, resolveLensFlare } from '../components/lens-flare';
 import { Outline, resolveOutline } from '../components/outline';
 import { PlanarReflection, PlanarReflectionInvalidError } from '../components/planar-reflection';
 import { resolveStereoCamera, StereoCamera } from '../components/stereo-camera';
-import { readEnvironmentPose } from '../extract/environment-gate';
+import { queryEnvironment, readEnvironmentPose } from '../extract/environment-gate';
 import {
   depthOfFieldRequestFailure,
   resolveDepthOfFieldParams,
@@ -40,29 +40,49 @@ import type { CameraSnapshot } from '../render-contract';
 import { collectCubeCameraSnapshots, resolveCameraTarget } from '../render-system-extract';
 import type { RenderTarget } from '../targets/contracts';
 
+/**
+ * PlanarReflection admission: a render-target camera needs an explicit view,
+ * the mirror needs a target and a positive update interval, and the Surface
+ * distortion scale is finite and non-negative.
+ */
+function validatePlanarReflection(
+  planar: {
+    readonly target: number;
+    readonly updateIntervalFrames: number;
+    readonly distortion: number;
+  },
+  camTarget: number,
+  cameraView: unknown,
+): void {
+  if (camTarget !== 0 && cameraView === undefined) throw new PlanarReflectionInvalidError('camera');
+  if (planar.target === 0) throw new PlanarReflectionInvalidError('target');
+  if (planar.updateIntervalFrames < 1)
+    throw new PlanarReflectionInvalidError('updateIntervalFrames');
+  if (!(Number.isFinite(planar.distortion) && planar.distortion >= 0))
+    throw new PlanarReflectionInvalidError('distortion');
+}
+
 export function collectCameraSnapshots(world: World): CameraSnapshot[] {
   const cameras: CameraSnapshot[] = [];
-  const cameraQuery = world
-    .query({
-      read: [Camera],
-      optional: [
-        CameraView,
-        MotionBlur,
-        DynamicResolution,
-        ScreenSpaceReflection,
-        AmbientOcclusion,
-        DepthOfField,
-        BarrelDistortion,
-        LensEffects,
-        LensFlare,
-        ClippingPlanes,
-        Outline,
-        PlanarReflection,
-        StereoCamera,
-      ],
-      with: [Transform, GlobalTransform],
-    })
-    .unwrap();
+  const cameraQuery = queryEnvironment(world, {
+    read: [Camera],
+    optional: [
+      CameraView,
+      MotionBlur,
+      DynamicResolution,
+      ScreenSpaceReflection,
+      AmbientOcclusion,
+      DepthOfField,
+      BarrelDistortion,
+      LensEffects,
+      LensFlare,
+      ClippingPlanes,
+      Outline,
+      PlanarReflection,
+      StereoCamera,
+    ],
+    with: [Transform, GlobalTransform],
+  }).unwrap();
   for (const batch of cameraQuery.batches().unwrap()) {
     const entities = batch.entities;
     const cameraProjectionColumn = batch.read(Camera, 'projection');
@@ -100,8 +120,10 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
     const clippingPlanesCountColumn = batch.read(ClippingPlanes, 'count');
     const clippingPlanesIntersectionColumn = batch.read(ClippingPlanes, 'intersection');
     const clippingPlanesClipShadowsColumn = batch.read(ClippingPlanes, 'clipShadows');
+    const clippingPlanesCapsColumn = batch.read(ClippingPlanes, 'caps');
     const planarReflectionDistanceColumn = batch.read(PlanarReflection, 'distance');
     const planarReflectionClipBiasColumn = batch.read(PlanarReflection, 'clipBias');
+    const planarReflectionDistortionColumn = batch.read(PlanarReflection, 'distortion');
     const planarReflectionUpdateIntervalFramesColumn = batch.read(
       PlanarReflection,
       'updateIntervalFrames',
@@ -180,6 +202,7 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
             count: clippingPlanesCountColumn?.[physicalRow] as number,
             intersection: clippingPlanesIntersectionColumn?.[physicalRow] === 1,
             clipShadows: clippingPlanesClipShadowsColumn?.[physicalRow] === 1,
+            caps: clippingPlanesCapsColumn?.[physicalRow] === 1,
           }
         : undefined,
       PlanarReflection: world.hasComponent(entity, PlanarReflection)
@@ -190,6 +213,8 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
             normal: readRenderArrayView(world, entity, PlanarReflection, 'normal') as Float32Array,
             distance: planarReflectionDistanceColumn?.[physicalRow] as number,
             clipBias: planarReflectionClipBiasColumn?.[physicalRow] as number,
+            distortion:
+              (planarReflectionDistortionColumn?.[physicalRow] as number | undefined) ?? 0,
             updateIntervalFrames: planarReflectionUpdateIntervalFramesColumn?.[
               physicalRow
             ] as number,
@@ -331,12 +356,7 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
       const cameraView = effectInputs.CameraView;
       const clipping = extractClippingPlanes(effectInputs.ClippingPlanes);
       const planar = effectInputs.PlanarReflection;
-      if (planar !== undefined && camTarget !== 0 && cameraView === undefined)
-        throw new PlanarReflectionInvalidError('camera');
-      if (planar !== undefined && (planar.target === 0 || planar.updateIntervalFrames < 1))
-        throw new PlanarReflectionInvalidError(
-          planar.target === 0 ? 'target' : 'updateIntervalFrames',
-        );
+      if (planar !== undefined) validatePlanarReflection(planar, camTarget, cameraView);
       const motionBlur = effectInputs.MotionBlur;
       const barrelDistortion = effectInputs.BarrelDistortion;
       const lensEffects = resolveLensEffects(effectInputs.LensEffects);

@@ -1,12 +1,14 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { World } from '@forgeax/engine-ecs';
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { MaterialShaderEntry, RegisteredMaterialShaderEntry } from '@forgeax/engine-shader';
 import { type AssetHandle, err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
+import { Instances } from '../components/instances';
 import { DynamicGeometryError } from '../dynamic-geometry';
 import { renderMaterialContext } from '../extract/material-context';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { extractFrames } from '../render-system-extract-tail';
+import { candidateSkinBindingValid, readCandidateSkinBinding } from './candidate-skin-binding';
 import type { MeshPipelinePreparation } from './contract';
 import { publicationMaterialProgramKeys } from './programs';
 
@@ -23,6 +25,30 @@ function publicationShader(entry: RegisteredMaterialShaderEntry): MaterialShader
   };
 }
 
+/** A Skin capture prepares only the exact Skin programs selected for its passes. */
+function skinPassProgramError(
+  assets: AssetRegistry,
+  binding: RenderableSnapshot['skinBinding'],
+  passes: MeshPipelinePreparation['template']['dispatch'],
+): unknown | undefined {
+  if (binding === undefined) return undefined;
+  for (const pass of passes) {
+    if (pass.materialShaderId === undefined) return 'Skin pass has no exact program';
+    const shader = assets.shaderRegistry.findMaterialArtifact(pass.materialShaderId);
+    if (
+      !shader.ok ||
+      (shader.value.program.group2 !== 'skin' && shader.value.program.group2 !== 'skin-cluster')
+    )
+      return {
+        reason: 'Skin pass requires its selected Skin program contract',
+        shader: pass.materialShaderId,
+        group2: shader.ok ? shader.value.program.group2 : shader.error,
+        tags: pass.tags,
+      };
+  }
+  return undefined;
+}
+
 /** Extract one real candidate through the ordinary material owner, without rebinding ECS. */
 export function captureMeshPipelinePreparation(input: {
   readonly world: World;
@@ -37,12 +63,17 @@ export function captureMeshPipelinePreparation(input: {
     err(
       new DynamicGeometryError(
         'dynamic-geometry-invalid',
-        'the candidate has a complete rigid mesh material/program projection',
+        'the candidate has a complete rigid or Skin mesh material/program projection',
         'prepare the real entity and its candidate MeshAsset after its materials are available',
         { actual },
       ),
     );
   try {
+    const skin = readCandidateSkinBinding(input.world, input.entity, input.mesh);
+    if (skin === false)
+      return invalid('candidate Skin layout, Skeleton or live joint membership is unavailable');
+    if (skin !== undefined && input.world.hasComponent(input.entity as EntityHandle, Instances))
+      return invalid('Skin and expanded instance geometry require distinct owners');
     const frame = extractFrames([input.world], 0, input.assets, undefined, {
       ...renderMaterialContext(input.capabilities, input.limits),
       cull: 'none',
@@ -58,15 +89,22 @@ export function captureMeshPipelinePreparation(input: {
     )
       return invalid('candidate render snapshot is unavailable');
     if (
-      row.skinBinding !== undefined ||
       row.morph !== undefined ||
       row.terrain !== undefined ||
       row.pointsLines !== undefined ||
       row.spriteInstances !== undefined
     )
       return invalid(
-        'posed, terrain and expanded geometry require their specialized preparation owner',
+        'morph, terrain and expanded geometry require their specialized preparation owner',
       );
+    if (!candidateSkinBindingValid(input.world, input.entity, input.mesh, row.skinBinding))
+      return invalid('candidate Skin binding changed during capture');
+    const programError = skinPassProgramError(
+      input.assets,
+      row.skinBinding,
+      row.pipelinePreparation,
+    );
+    if (programError !== undefined) return invalid(programError);
     const programs = new Map<string, MeshPipelinePreparation['programs'][number]>();
     for (const material of row.materials) {
       for (const key of publicationMaterialProgramKeys(material.snapshot)) {

@@ -431,7 +431,14 @@ describe('standard material cook integration', { timeout: 30_000 }, () => {
     expect(wgsl).toMatch(/@binding\(48\)\s+var clearcoatSampler/);
     expect(wgsl).toMatch(/@binding\(52\)\s+var clearcoatNormalSampler/);
     expect(wgsl).toMatch(/@binding\(53\)\s+var clearcoatNormalTexture/);
+    // Regression (r1 Threejs-Punk quadra.glb): the KHR specular samplers must
+    // move with their textures, or a cooked program declares binding 42/44
+    // that the physical bind-group layout never creates.
+    expect(wgsl).toMatch(/@binding\(64\)\s+var specularSampler/);
+    expect(wgsl).toMatch(/@binding\(65\)\s+var specularTexture/);
+    expect(wgsl).toMatch(/@binding\(66\)\s+var specularColorSampler/);
     expect(wgsl).toMatch(/@binding\(67\)\s+var specularColorTexture/);
+    expect(wgsl).not.toMatch(/@binding\(4[2-5]\)\s+var specular/);
     expect(wgsl).toMatch(/@binding\(68\)\s+var diffuseTransmissionSampler/);
     expect(wgsl).toMatch(/@binding\(69\)\s+var diffuseTransmissionTexture/);
     expect(wgsl).toMatch(/@binding\(70\)\s+var diffuseTransmissionColorSampler/);

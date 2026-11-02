@@ -1,3 +1,5 @@
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { frustum, mat4 } from '@forgeax/engine-math';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { assert, expect, it, vi } from 'vitest';
@@ -11,13 +13,16 @@ import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { MaterialSnapshot } from '../../render-system-extract';
 import { FrameSet } from '../../scene/frame-set';
 import { MaterialDispatch, MaterialFrame } from '../../scene/material-dispatch';
+import { ProbeBlendSceneProjection } from '../../scene/probe-blend';
 import { RenderScene } from '../../scene/render-scene';
+import { FORWARD_PASS_SELECTOR } from '../../systems/pass-selector';
 import { createTemporalView } from '../../temporal/view';
-import { buildDispatchPlan, computeFoldBuckets } from '../fold-buckets';
-import { resolveFoldInstanceBuffer } from '../fold-instance-buffer';
+import { ViewDrawPhases } from '../direct-draw-phase';
+import { buildDispatchPlan, cleanPerFrameCaches, computeFoldBuckets } from '../fold-buckets';
+import { resolveFoldInstanceBuffer, retainedFoldInstanceKeys } from '../fold-instance-buffer';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../frame-snapshot';
 import { computeProjectionMatrix } from '../helpers';
-import { selectMainPassMaterials } from '../main-pass';
+import { selectMainPassDispatch, selectMainPassMaterials } from '../main-pass';
 import { prepareScenePasses, type ScenePassRequest, scenePassContext } from '../scene-pass-work';
 
 function material(
@@ -184,6 +189,7 @@ it('retains TAA Direct edge geometry admitted by the jittered camera', () => {
   const prepared = prepareScenePasses(
     [request('Forward', { gpu: false, camera: () => taaCamera })],
     {
+      phases: new ViewDrawPhases(),
       scene: {
         plan: f.topology.query(f.topology.sourcePlan(), undefined),
         slotAt: f.scene.slotAt,
@@ -233,6 +239,7 @@ it('prepares separate actual Pass work without expanding unrelated GPU members',
     ),
   };
   const prepared = prepareScenePasses([forward, temporal, deferred, medium, late], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan,
       slotAt,
@@ -273,7 +280,7 @@ it('prepares separate actual Pass work without expanding unrelated GPU members',
   for (const selected of work.values())
     for (const [index, row] of selected.validatedOrdered.entries())
       expect(
-        planned.materialSlots[selected.materialSlotIndices[index]?.[0] ?? -1]?.materialHandle,
+        planned.materialSlots[selected.materialSlotIndices.at(index)?.[0] ?? -1]?.materialHandle,
       ).toBe(row.source.material.snapshot.materialHandle);
 });
 
@@ -285,6 +292,7 @@ it('captures all selected sources independently of display GPU and material adop
   f.shared.adopt({ ...f.shared.snapshot, passes: [] });
   f.dispatch.adopt(f.shared);
   const prepared = prepareScenePasses([display, capture], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan: f.plan,
       slotAt: f.scene.slotAt,
@@ -368,6 +376,7 @@ it('sorts each requested camera before folding its CPU draws', () => {
   assert(mesh);
   const meshes = new Map(plan.batches.map((batch) => [batch.binding ?? assert.fail(), mesh]));
   const work = prepareScenePasses([display, capture], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan,
       slotAt: f.scene.slotAt,
@@ -410,6 +419,7 @@ it('retains exact unbatched submeshes when one material is excluded by another P
   const work = prepareScenePasses(
     [request('Forward', { gpu: false, excludeSelector: { LightMode: ['Deferred'] } })],
     {
+      phases: new ViewDrawPhases(),
       scene: {
         plan: { ...f.plan, batches: [] },
         slotAt: f.scene.slotAt,
@@ -439,11 +449,17 @@ it('retains exact unbatched submeshes when one material is excluded by another P
 
 it('records the captured material mode and clears already resolved GPU exclusions', () => {
   const f = fixture(1);
-  const frame = f.dispatch.materials();
-  const pass = request('Forward', { gpuFilter: 'forward-only-opaque' });
+  let frame = f.dispatch.materials();
+  for (const resource of [f.shared, f.noLod, f.deferredOnly, f.medium])
+    frame = frame.with(resource, undefined, { ...resource.snapshot, immutableValues: true });
+  const pass = request('Forward', {
+    selector: FORWARD_PASS_SELECTOR,
+    gpuFilter: 'forward-only-opaque',
+  });
   f.shared.adopt({ ...f.shared.snapshot, transparent: true });
   f.dispatch.adopt(f.shared);
   const prepared = prepareScenePasses([pass], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan: f.plan,
       slotAt: f.scene.slotAt,
@@ -489,9 +505,118 @@ it('records the captured material mode and clears already resolved GPU exclusion
   context.hdrpSsaoBlurredView = {} as never;
   expect(sibling.hdrpSsaoBlurredView).toBeUndefined();
   expect(context.validatedOrdered.map((row) => row.source.entityKey)).toEqual([0]);
-  expect(selectMainPassMaterials(context, pass.selector, 'opaque')?.size).toBe(1);
+  // The actual Scene Pass already admitted these entries. Keep its fixed key so
+  // the geometry owner's retained Pass grouping survives a fresh record context.
+  expect(selectMainPassDispatch(context, FORWARD_PASS_SELECTOR)).toBe(context.dispatch);
+  expect(selectMainPassDispatch(sibling, FORWARD_PASS_SELECTOR)).toBe(context.dispatch);
+  expect(context.geometryMaterialPasses?.dispatch).toBe(context.dispatch);
+  expect(context.geometryMaterialPasses?.validatedOrdered).toBe(context.validatedOrdered);
+  expect(context.geometryMaterialPasses?.ordered).toBe(true);
+  expect(context.geometryMaterialPasses?.groups.get(0)?.get(1)).toBe(context.dispatch.at(0));
+  const foreign = {
+    ...context,
+    dispatch: [...context.dispatch, { ...context.dispatch.at(0), tags: { LightMode: 'Deferred' } }],
+  } as typeof context;
+  expect(selectMainPassDispatch(foreign, FORWARD_PASS_SELECTOR)).toEqual(context.dispatch);
+  const slots = context.materialSlotIndices;
+  const firstSlots = Object.getOwnPropertyDescriptor(slots, '0');
+  assert(firstSlots);
+  let slotReads = 0;
+  Object.defineProperty(slots, '0', {
+    configurable: true,
+    get() {
+      slotReads++;
+      return firstSlots.value;
+    },
+  });
+  try {
+    expect(selectMainPassMaterials(context, pass.selector, 'opaque')?.size).toBe(1);
+    expect(slotReads).toBe(0);
+    expect(selectMainPassMaterials(context, pass.selector, 'transparent')?.size).toBe(0);
+    expect(slotReads).toBeGreaterThan(0);
+  } finally {
+    Object.defineProperty(slots, '0', firstSlots);
+  }
   expect(context.gpuDrivenSelection).toBeUndefined();
   expect(() => scenePassContext(context, request('Forward'))).toThrow('prepared draw work');
+});
+
+it.each([
+  false,
+  true,
+])('keeps borrowed and clipped Scene Pass selection live (owned=%s)', (owned) => {
+  const f = fixture(2);
+  let frame = f.dispatch.materials();
+  for (const resource of [f.shared, f.noLod, f.deferredOnly, f.medium]) {
+    const { immutableValues: _owned, ...borrowed } = resource.snapshot;
+    frame = frame.with(
+      resource,
+      undefined,
+      owned ? { ...borrowed, immutableValues: true } : borrowed,
+    );
+  }
+  const pass = request('Forward', { selector: FORWARD_PASS_SELECTOR, gpu: false });
+  const prepared = prepareScenePasses([pass], {
+    phases: new ViewDrawPhases(),
+    scene: {
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials: frame,
+    gpu: f.gpu,
+    meshes: f.meshes,
+    worlds: f.worlds,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh) => mesh,
+    fold: () => [],
+    lod: (rows) => rows,
+    world: f.world,
+    camera: undefined,
+  });
+  const plan = buildDispatchPlan(
+    { meshSsboState: { meshSlotCount: 8, materialSlotCount: 8 } } as never,
+    prepared.rows,
+    prepared.dispatch,
+    [],
+    [],
+    undefined,
+    false,
+    { bindings: [], worlds: f.worlds, frame },
+    f.scene,
+  );
+  const context = scenePassContext(
+    { materialSlots: plan.materialSlots, scenePassWork: prepared.finish(plan) } as never,
+    pass,
+  );
+  expect(context.validatedOrdered).toHaveLength(3);
+  const selected = selectMainPassDispatch(context, FORWARD_PASS_SELECTOR);
+  expect(selected === context.dispatch).toBe(owned);
+  expect(context.geometryMaterialPasses !== undefined).toBe(owned);
+  const reversed = { ...plan, validatedOrdered: [...plan.validatedOrdered].reverse() };
+  const reordered = scenePassContext(
+    { materialSlots: plan.materialSlots, scenePassWork: prepared.finish(reversed) } as never,
+    pass,
+  );
+  expect(reordered.validatedOrdered.map((row) => row.renderableIndex)).toEqual(
+    [...context.validatedOrdered].reverse().map((row) => row.renderableIndex),
+  );
+  expect(reordered.geometryMaterialPasses?.ordered).toBe(owned ? false : undefined);
+  const override = {
+    ...context,
+    materialSlots: context.materialSlots.map((material) => ({ ...material, transparent: true })),
+  };
+  expect(selectMainPassMaterials(override, pass.selector, 'opaque')?.size).toBe(0);
+  const clipped = { ...plan, validatedOrdered: plan.validatedOrdered.slice(0, 2) };
+  const clippedContext = scenePassContext(
+    { materialSlots: plan.materialSlots, scenePassWork: prepared.finish(clipped) } as never,
+    pass,
+  );
+  expect(clippedContext.validatedOrdered).toHaveLength(2);
+  expect(clippedContext.geometryMaterialPasses).toBeUndefined();
+  expect(selectMainPassMaterials(clippedContext, pass.selector, 'opaque')?.size).toBe(2);
 });
 
 it('uses current camera admission before CPU validation while captures keep their own roster', () => {
@@ -500,6 +625,7 @@ it('uses current camera admission before CPU validation while captures keep thei
   const capture = request('Forward', { gpu: false, capture: true });
   const visible = vi.fn((source) => source.entityKey === 1);
   const prepared = prepareScenePasses([display, capture], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan: f.plan,
       slotAt: f.scene.slotAt,
@@ -523,7 +649,7 @@ it('uses current camera admission before CPU validation while captures keep thei
   expect(visible).toHaveBeenCalledTimes(3);
 });
 
-it('allocates separate fold instance buffers for the same source in different graph nodes', async () => {
+it('retains separate live fold buffers across cleanup and retires absent graph work', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const f = fixture(2);
   f.shared.adopt({
@@ -540,6 +666,7 @@ it('allocates separate fold instance buffers for the same source in different gr
   const first = request('Forward', { gpu: false, recordMode: 'transparent' });
   const second = request('Overlay', { gpu: false, passKind: 'forward', recordMode: 'transparent' });
   const prepared = prepareScenePasses([first, second], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan: f.plan,
       slotAt: f.scene.slotAt,
@@ -574,6 +701,21 @@ it('allocates separate fold instance buffers for the same source in different gr
     f.scene,
   );
   const buffers = new Map();
+  const createBuffer = vi.spyOn(device, 'createBuffer');
+  const writeBuffer = vi.spyOn(device.queue, 'writeBuffer');
+  const frameState = {
+    instanceBuffers: buffers,
+    materialBgPerEntity: new Map(),
+    instancesBgPerEntity: new Map(),
+  };
+  const runtime = {
+    device,
+    errorRegistry: {
+      fire: (error: unknown) => {
+        throw error;
+      },
+    },
+  };
   const context = {
     runtime: {
       device,
@@ -583,7 +725,7 @@ it('allocates separate fold instance buffers for the same source in different gr
         },
       },
     },
-    frameState: { instanceBuffers: buffers },
+    frameState,
   } as never;
   const work = prepared.finish(plan);
   const resolve = (request: ScenePassRequest) => {
@@ -598,8 +740,44 @@ it('allocates separate fold instance buffers for the same source in different gr
     return resolveFoldInstanceBuffer(context, head[1], row.renderableIndex);
   };
   try {
-    expect(resolve(first)).not.toBe(resolve(second));
+    const firstBuffer = resolve(first);
+    const secondBuffer = resolve(second);
+    expect(firstBuffer).not.toBe(secondBuffer);
     expect(buffers.size).toBe(2);
+    assert(plan.foldDispatchPlan);
+    const liveKeys = [...retainedFoldInstanceKeys(plan.foldDispatchPlan, plan.validatedOrdered)];
+    const residents = [...buffers.values()];
+    const firstDraw = work.get(first);
+    assert(firstDraw?.foldDispatchPlan);
+    const firstFold = [...firstDraw.foldDispatchPlan.headBuckets.values()][0];
+    assert(firstFold);
+    firstFold.transforms[12] = 73;
+    cleanPerFrameCaches(
+      runtime as never,
+      frameState as never,
+      plan.validatedOrdered,
+      undefined,
+      liveKeys,
+    );
+    expect(resolve(first)).toBe(firstBuffer);
+    expect((writeBuffer.mock.lastCall?.[2] as Float32Array)[12]).toBe(73);
+    expect(resolve(second)).toBe(secondBuffer);
+    expect(createBuffer).toHaveBeenCalledTimes(2);
+    cleanPerFrameCaches(
+      runtime as never,
+      frameState as never,
+      plan.validatedOrdered,
+      undefined,
+      liveKeys.slice(0, 1),
+    );
+    expect(buffers.size).toBe(1);
+    expect(residents.filter((entry) => entry.buffer.isDestroyed)).toHaveLength(1);
+    cleanPerFrameCaches(runtime as never, frameState as never, []);
+    expect(buffers.size).toBe(0);
+    expect(residents.every((entry) => entry.buffer.isDestroyed)).toBe(true);
+    // A subsequent graph/device-state lifetime starts with fresh physical slots.
+    expect(resolve(first)).not.toBe(firstBuffer);
+    expect(createBuffer).toHaveBeenCalledTimes(3);
   } finally {
     for (const resident of buffers.values()) resident.buffer.destroy();
   }
@@ -626,6 +804,7 @@ it.each([
   });
   const world = { transparentSort: { mode: 0, yzAlpha: 1 } } as RenderResourceScope;
   const prepared = prepareScenePasses([request('Forward', { gpu: false, recordMode })], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan: { batches: [] } as never,
       slotAt: () => undefined,
@@ -664,6 +843,7 @@ it('addresses each pass row once under the combined index with its last dispatch
   const first = request('Forward', { gpu: false });
   const second = request('Forward', { gpu: false, passKind: 'temporal' });
   const prepared = prepareScenePasses([first, second], {
+    phases: new ViewDrawPhases(),
     scene: {
       plan: f.plan,
       slotAt: f.scene.slotAt,
@@ -696,4 +876,265 @@ it('addresses each pass row once under the combined index with its last dispatch
   expect(prepared.dispatch.map((entry) => entry.renderableIndex).sort((a, b) => a - b)).toEqual(
     Array.from({ length: perPass * 2 }, (_, index) => index),
   );
+});
+
+it('retains combined Scene Pass work until a selected phase output or request roster changes', () => {
+  const f = fixture(2);
+  const phases = new ViewDrawPhases();
+  const forward = request('Forward', { gpu: false });
+  const draws = {
+    slots: f.scene.slotsSnapshot(),
+    meshes: f.scene.meshFrame(),
+    unavailable: new FrameSet(),
+    probe: new ProbeBlendSceneProjection().recordBufferProjection(),
+    temporal: undefined,
+  };
+  const inputs: Parameters<typeof prepareScenePasses>[1] = {
+    phases,
+    scene: {
+      draws,
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials: f.dispatch.materials(),
+    gpu: f.gpu,
+    meshes: f.meshes,
+    worlds: f.worlds,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh) => mesh,
+    fold: () => [],
+    lod: (rows) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const first = prepareScenePasses([forward], inputs);
+  expect(first.rows.length).toBeGreaterThan(0);
+  const quiet = prepareScenePasses([forward], inputs);
+  expect(quiet.rows).toBe(first.rows);
+  expect(quiet.dispatch).toBe(first.dispatch);
+  expect(quiet.buckets).toBe(first.buckets);
+  const deferred = request('Deferred', { gpu: false });
+  const changed = prepareScenePasses([deferred, forward], inputs);
+  expect(changed.rows).not.toBe(first.rows);
+  expect(changed.dispatch).not.toBe(first.dispatch);
+  expect(changed.rows.every((row, index) => row.renderableIndex === index)).toBe(true);
+  expect(prepareScenePasses([deferred, forward], inputs).rows).toBe(changed.rows);
+  const source = f.scene.slotAt(0)?.snapshot;
+  assert(source);
+  const pose = new Float32Array(source.transform.world);
+  pose[12] = 23;
+  f.topology.apply(f.scene.apply([{ kind: 'update', worldId: 0, entityKey: 0, world: pose }]));
+  const moved = prepareScenePasses([deferred, forward], {
+    ...inputs,
+    scene: {
+      ...inputs.scene,
+      plan: f.topology.query(f.topology.sourcePlan(), undefined),
+      draws: { ...draws, slots: f.scene.slotsSnapshot() },
+    },
+  });
+  // A pose edit may retain the phase roster; its live row must carry the new source.
+  expect(moved.rows.length).toBe(changed.rows.length);
+  expect(moved.rows.find((row) => row.source.entityKey === 0)?.source.transform.world[12]).toBe(23);
+});
+
+it('skips folding source projection for an owned scene without Sprite demand', () => {
+  const f = fixture(128);
+  let materials = f.dispatch.materials();
+  for (const resource of [f.shared, f.noLod, f.deferredOnly, f.medium])
+    materials = materials.with(resource, undefined, {
+      ...resource.snapshot,
+      immutableValues: true,
+    });
+  const fold = vi.fn(() => {
+    throw new Error('non-Sprite frame requested fold rows');
+  });
+  const inputs = {
+    phases: new ViewDrawPhases(),
+    scene: {
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials,
+    gpu: f.gpu,
+    meshes: f.meshes,
+    worlds: f.worlds,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh: MeshGpuHandles) => mesh,
+    fold,
+    lod: (rows: readonly ValidatedRenderable[]) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const req = request('Forward', { gpu: false });
+  const first = prepareScenePasses([req], inputs);
+  expect(first.rows.length).toBeGreaterThan(128);
+  expect(fold).not.toHaveBeenCalled();
+  const unrelated = new MaterialResource({ ...f.shared.snapshot, immutableValues: true });
+  const next = prepareScenePasses([req], { ...inputs, materials: materials.with(unrelated, 0) });
+  expect(next).toBe(first);
+  expect(fold).not.toHaveBeenCalled();
+});
+
+it('refreshes Sprite fold admission on parameter-only adoption with retained Passes', () => {
+  const f = fixture(2);
+  f.shared.adopt({
+    ...f.shared.snapshot,
+    materialShaderId: 'forgeax::sprite',
+    transparent: true,
+    immutableValues: true,
+    paramSnapshot: { region: [0, 0, 1, 1] },
+    passes: [
+      {
+        name: 'Forward',
+        program: { module: 'forgeax::sprite' },
+        renderState: { tags: { LightMode: 'Forward' }, queue: 3000 },
+      },
+    ],
+  });
+  f.dispatch.adopt(f.shared);
+  let materials = f.dispatch.materials();
+  for (const resource of [f.noLod, f.deferredOnly, f.medium])
+    materials = materials.with(resource, undefined, {
+      ...resource.snapshot,
+      immutableValues: true,
+    });
+  const fold = vi.fn((dispatch, rows) => computeFoldBuckets(f.world, {} as never, dispatch, rows));
+  const inputs = {
+    phases: new ViewDrawPhases(),
+    scene: {
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials,
+    gpu: f.gpu,
+    meshes: f.meshes,
+    worlds: f.worlds,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh: MeshGpuHandles) => mesh,
+    fold,
+    lod: (rows: readonly ValidatedRenderable[]) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const req = request('Forward', { gpu: false, recordMode: undefined, passKind: 'forward' });
+  const first = prepareScenePasses([req], inputs);
+  expect(first.buckets.map((bucket) => bucket.bucketSize)).toEqual([2]);
+  const changed = materials.with(f.shared, undefined, {
+    ...f.shared.snapshot,
+    paramSnapshot: { region: [0, 0, 0.5, 0.5] },
+  });
+  expect(changed.get(f.shared)?.passes).toBe(materials.get(f.shared)?.passes);
+  const second = prepareScenePasses([req], { ...inputs, materials: changed });
+  expect(second.dispatch).not.toEqual([]);
+  expect(fold).toHaveBeenCalledTimes(2);
+  const unrelated = changed.with(f.medium, undefined, {
+    ...f.medium.snapshot,
+    immutableValues: true,
+    roughness: 0.2,
+  });
+  expect(prepareScenePasses([req], { ...inputs, materials: unrelated })).toBe(second);
+  expect(fold).toHaveBeenCalledTimes(2);
+  const noSprite = changed.with(f.shared, undefined, { ...f.shared.snapshot, transparent: false });
+  const third = prepareScenePasses([req], { ...inputs, materials: noSprite });
+  expect(third.buckets).toEqual([]);
+});
+
+it('refreshes transmission slicing when only an owned scalar value changes', () => {
+  const f = fixture(2);
+  let materials = f.dispatch.materials();
+  for (const resource of [f.shared, f.noLod, f.deferredOnly, f.medium])
+    materials = materials.with(resource, undefined, {
+      ...resource.snapshot,
+      immutableValues: true,
+      ...(resource === f.shared ? { transparent: true } : {}),
+    });
+  const inputs = {
+    phases: new ViewDrawPhases(),
+    scene: {
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials,
+    gpu: f.gpu,
+    meshes: f.meshes,
+    worlds: f.worlds,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh: MeshGpuHandles) => mesh,
+    fold: () => [],
+    lod: (rows: readonly ValidatedRenderable[]) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const req = request('Forward', {
+    gpu: false,
+    recordMode: 'translucent-before-transmission',
+    passKind: 'forward',
+  });
+  const first = prepareScenePasses([req], inputs);
+  const accepted = materials.get(f.shared);
+  assert(accepted);
+  const transmitting = materials.with(f.shared, undefined, {
+    ...accepted.snapshot,
+    paramSnapshot: { transmission: 1 },
+  });
+  const second = prepareScenePasses([req], { ...inputs, materials: transmitting });
+  expect(transmitting.get(f.shared)?.passes).toBe(accepted.passes);
+  expect(second).not.toBe(first);
+  expect(second.dispatch.length).toBeLessThan(first.dispatch.length);
+});
+
+it('does not keep superseded preparations through the current finish method', async () => {
+  setFlagsFromString('--expose-gc');
+  const gc = runInNewContext('gc') as () => void;
+  const f = fixture(2);
+  const phases = new ViewDrawPhases();
+  const forward = request('Forward', { gpu: false });
+  const draws = {
+    slots: f.scene.slotsSnapshot(),
+    meshes: f.scene.meshFrame(),
+    unavailable: new FrameSet(),
+    probe: new ProbeBlendSceneProjection().recordBufferProjection(),
+    temporal: undefined,
+  };
+  const inputs: Parameters<typeof prepareScenePasses>[1] = {
+    phases,
+    scene: {
+      draws,
+      plan: f.plan,
+      slotAt: f.scene.slotAt,
+      drawSnapshotAt: f.scene.drawSnapshotAt,
+      unbatchedSlots: new FrameSet(),
+    },
+    materials: f.dispatch.materials(),
+    gpu: f.gpu,
+    meshes: f.meshes,
+    worlds: f.worlds,
+    prepareUnbatched: () => [],
+    viewDraws: [],
+    prepareGeometry: (mesh) => mesh,
+    fold: () => [],
+    lod: (rows) => rows,
+    world: f.world,
+    camera: undefined,
+  };
+  const retired = (() => new WeakRef(prepareScenePasses([forward], inputs)))();
+  const deferred = request('Deferred', { gpu: false });
+  const current = prepareScenePasses([deferred, forward], inputs);
+  expect(current.rows.length).toBeGreaterThan(0);
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  gc();
+  expect(retired.deref()).toBeUndefined();
+  expect(prepareScenePasses([deferred, forward], inputs)).toBe(current);
 });

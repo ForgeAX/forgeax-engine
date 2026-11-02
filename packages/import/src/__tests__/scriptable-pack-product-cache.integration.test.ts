@@ -6,9 +6,16 @@ import { join } from 'node:path';
 import { deserialize, serialize } from 'node:v8';
 import { brotliDecompressSync } from 'node:zlib';
 import { DdcEntryStore, ddcOutputDigest } from '@forgeax/engine-ddc';
-import { AssetGuid, definePack, definePackageId } from '@forgeax/engine-pack/source';
+import {
+  AssetGuid,
+  definePack,
+  definePackageId,
+  PackageId,
+  type PackBuildContextWithoutParameters,
+  type PackBuildResult,
+} from '@forgeax/engine-pack/source';
 import { ok } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ScriptablePackBuildProduct } from '../scriptable-pack-build-core.js';
 import { produceScriptablePackProducts } from '../scriptable-pack-host.js';
 import { createScriptablePackProductCache } from '../scriptable-pack-product-cache.js';
@@ -159,7 +166,7 @@ it('encodes equal immutable program metadata once without mutating the publicati
     const bytes = entry?.artifacts['product.v8.br']?.bytes;
     if (bytes === undefined) throw new Error('Missing cached publication');
     expect(brotliDecompressSync(bytes).byteLength).toBeLessThan(before.byteLength / 4);
-    deepStrictEqual(await cache.read(subject), product);
+    deepStrictEqual(await cache.read(subject, noDependencies), product);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -174,15 +181,18 @@ it('reports an absent optional entry as a cold miss', async () => {
     await writeFile(sourcePath, 'source');
     const cache = await createScriptablePackProductCache({ root, outputVersions: {}, cookers: [] });
     expect(
-      await cache.read({
-        sourcePath,
-        sourceClosure: [{ path: sourcePath, digest: revision('source') }],
-        definition: definePack({
-          schemaVersion: '2.0.0',
-          packageId: definePackageId('01900000-0000-7000-8000-0000000000e3'),
-          build: () => ok({}),
-        }),
-      }),
+      await cache.read(
+        {
+          sourcePath,
+          sourceClosure: [{ path: sourcePath, digest: revision('source') }],
+          definition: definePack({
+            schemaVersion: '2.0.0',
+            packageId: definePackageId('01900000-0000-7000-8000-0000000000e3'),
+            build: () => ok({}),
+          }),
+        },
+        noDependencies,
+      ),
     ).toBeUndefined();
     const message = log.mock.calls.find(([tag]) => tag === '[forgeax.pack-ddc.timing]');
     expect(JSON.parse(String(message?.[1]))).toMatchObject({
@@ -225,7 +235,7 @@ it('stores compressed Pack bytes and restores the product through the DDC', asyn
     const entry = await store.read(key);
     expect(entry?.artifacts['product.v8.br']?.bytes.byteLength).toBeLessThan(16 * 1024);
     // Node compares typed-array storage directly, including under V8 coverage.
-    deepStrictEqual(await cache.read(subject), product);
+    deepStrictEqual(await cache.read(subject, noDependencies), product);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -276,7 +286,7 @@ it('shares equal artifact bytes across a Pack product without changing their con
     const artifacts = stored.product.artifacts as typeof product.product.artifacts;
     expect(artifacts.first?.bytes).toBe(first.program.bytes);
     expect(artifacts.second?.bytes).toBe(first.program.bytes);
-    const restored = (await cache.read(subject)) as typeof product | undefined;
+    const restored = (await cache.read(subject, noDependencies)) as typeof product | undefined;
     if (restored === undefined) throw new Error('Pack product was not restored');
     deepStrictEqual(restored, product);
     const restoredFirst = restored.product.assets[0]?.payload as typeof first | undefined;
@@ -319,7 +329,7 @@ it('keeps unserializable Pack products out of the advisory DDC', async () => {
         inputFingerprint: 'sha256:source',
       }) as unknown as ScriptablePackBuildProduct;
     await expect(cache.write(subject, product(new WeakMap()))).resolves.toBeUndefined();
-    expect(await cache.read(subject)).toBeUndefined();
+    expect(await cache.read(subject, noDependencies)).toBeUndefined();
     expect(await new DdcEntryStore(join(root, 'scriptable-pack-products')).listKeys()).toEqual([]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -507,7 +517,7 @@ it('invalidates the material Pack while retaining an unrelated scene Pack when s
   }
 });
 
-it('cold builds Packs with dynamic content reads and recovers from damaged DDC entries', async () => {
+it('reuses Packs with dynamic content reads and recovers from damaged DDC entries', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-recovery-'));
   const sourcePath = join(root, 'scene.pack.ts');
   const text = 'scene source';
@@ -552,7 +562,7 @@ it('cold builds Packs with dynamic content reads and recovers from damaged DDC e
       });
     expect((await run(true)).ok).toBe(true);
     expect((await run(true)).ok).toBe(true);
-    expect(builds).toBe(2);
+    expect(builds).toBe(1);
     expect((await run(false)).ok).toBe(true);
     const store = new DdcEntryStore(join(root, 'ddc', 'scriptable-pack-products'));
     const [key] = await store.listKeys();
@@ -570,7 +580,7 @@ it('cold builds Packs with dynamic content reads and recovers from damaged DDC e
       'damaged',
     );
     expect((await run(false)).ok).toBe(true);
-    expect(builds).toBe(4);
+    expect(builds).toBe(2);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -646,6 +656,180 @@ it('observes newly added, removed and unversioned cookers for a native-free outp
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+const noDependencies = async () => undefined;
+
+describe('content dependency validation', () => {
+  const depPackage = definePackageId('01900000-0000-7000-8000-0000000000e1');
+  const userPackage = definePackageId('01900000-0000-7000-8000-0000000000e2');
+  const depGuid = AssetGuid.derive(depPackage, 'scene/dep');
+
+  async function harness(
+    names = { dep: 'dep.pack.ts', user: 'user.pack.ts' },
+    assetSource?: Parameters<typeof produceScriptablePackProducts>[0]['assetSource'],
+  ) {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-deps-'));
+    const depSource = join(root, names.dep);
+    const userSource = join(root, names.user);
+    await Promise.all([writeFile(depSource, 'dep'), writeFile(userSource, 'user')]);
+    const counts = { dep: 0, user: 0, depReads: 0 };
+    const run = (options: { entities: number; depText: string; failDep?: boolean }) => {
+      const pack = (
+        sourcePath: string,
+        packageId: typeof depPackage,
+        text: string,
+        build: (context: PackBuildContextWithoutParameters) => PackBuildResult,
+      ) => ({
+        sourcePath,
+        displaySourcePath: sourcePath,
+        definition: definePack({ schemaVersion: '2.0.0', packageId, build }),
+        sourceClosure: [{ path: sourcePath, digest: revision(text) }],
+        publicationGeneration: 1,
+        policy: {
+          base: '/',
+          packagePath: `${PackageId.format(packageId)}.pack.json`,
+          artifactPath: (guid: string, key: string) => `${guid}/${key}`,
+        },
+      });
+      return produceScriptablePackProducts({
+        sources: [
+          pack(depSource, depPackage, options.depText, () => {
+            counts.dep++;
+            if (options.failDep) return ok({});
+            const entities: Record<string, never> = {};
+            for (let i = 0; i < options.entities; i++)
+              (entities as Record<string, unknown>)[`e${i}`] = { components: {} };
+            return ok({ 'scene/dep': { kind: 'scene' as const, entities } });
+          }),
+          pack(userSource, userPackage, 'user', async ({ readByGuid }) => {
+            counts.user++;
+            await readByGuid(depGuid);
+            return ok({ 'scene/main': { kind: 'scene' as const, entities: {} } });
+          }),
+        ],
+        buildCacheRoot: join(root, 'ddc'),
+        ...(assetSource === undefined ? {} : { assetSource }),
+      });
+    };
+    return { root, depSource, counts, run };
+  }
+
+  it('misses the dependent only when the dependency bytes change', async () => {
+    const h = await harness();
+    try {
+      const first = await h.run({ entities: 1, depText: 'dep' });
+      if (!first.ok) throw new Error(JSON.stringify(first.error));
+      expect(h.counts).toMatchObject({ dep: 1, user: 1 });
+      expect((await h.run({ entities: 1, depText: 'dep' })).ok).toBe(true);
+      expect(h.counts).toMatchObject({ dep: 1, user: 1 });
+      expect((await h.run({ entities: 2, depText: 'dep2' })).ok).toBe(true);
+      expect(h.counts).toMatchObject({ dep: 2, user: 2 });
+    } finally {
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the dependent when the dependency source changes but its bytes do not', async () => {
+    const h = await harness();
+    try {
+      expect((await h.run({ entities: 1, depText: 'dep' })).ok).toBe(true);
+      await writeFile(h.depSource, 'dep-comment-edit');
+      expect((await h.run({ entities: 1, depText: 'dep-comment-edit' })).ok).toBe(true);
+      expect(h.counts).toMatchObject({ dep: 2, user: 1 });
+    } finally {
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reuse a dependent whose dependency is no longer produced', async () => {
+    const h = await harness();
+    try {
+      expect((await h.run({ entities: 1, depText: 'dep' })).ok).toBe(true);
+      const gone = await h.run({ entities: 1, depText: 'dep-gone', failDep: true });
+      expect(gone.ok).toBe(true);
+      expect(h.counts).toMatchObject({ dep: 2, user: 2 });
+    } finally {
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
+  it('never validates a dependent against a stale published copy of a restaged dependency', async () => {
+    const stale = {
+      async readByGuid() {
+        return {
+          ok: true as const,
+          value: {
+            asset: { kind: 'scene' as const, entities: {} },
+            generation: 1,
+            digest: 'sha256:old-published',
+          },
+        };
+      },
+    };
+    const h = await harness({ dep: 'z-dep.pack.ts', user: 'a-user.pack.ts' }, stale as never);
+    try {
+      expect((await h.run({ entities: 1, depText: 'dep' })).ok).toBe(true);
+      expect((await h.run({ entities: 2, depText: 'dep2' })).ok).toBe(true);
+      expect(h.counts).toMatchObject({ dep: 2, user: 2 });
+    } finally {
+      await rm(h.root, { recursive: true, force: true });
+    }
+  });
+
+  it('misses the dependent when a declared external output changes content', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-ext-'));
+    const userSource = join(root, 'user.pack.ts');
+    await writeFile(userSource, 'user');
+    let builds = 0;
+    const externalGuid = AssetGuid.derive(depPackage, 'scene/external');
+    const produce = (entities: number) => {
+      const asset: Record<string, never> = {};
+      for (let i = 0; i < entities; i++)
+        (asset as Record<string, unknown>)[`e${i}`] = { components: {} };
+      return produceScriptablePackProducts({
+        sources: [
+          {
+            sourcePath: userSource,
+            displaySourcePath: userSource,
+            definition: definePack({
+              schemaVersion: '2.0.0',
+              packageId: userPackage,
+              build: async ({ readByGuid }) => {
+                builds++;
+                await readByGuid(externalGuid);
+                return ok({ 'scene/main': { kind: 'scene' as const, entities: {} } });
+              },
+            }),
+            sourceClosure: [{ path: userSource, digest: revision('user') }],
+            publicationGeneration: 1,
+            policy: {
+              base: '/',
+              packagePath: `${PackageId.format(userPackage)}.pack.json`,
+              artifactPath: (guid: string, key: string) => `${guid}/${key}`,
+            },
+          },
+        ],
+        declaredExternalOutputs: [
+          {
+            guid: externalGuid,
+            sourceKey: 'scene/external',
+            asset: { kind: 'scene' as const, entities: asset },
+          },
+        ],
+        buildCacheRoot: join(root, 'ddc'),
+      });
+    };
+    try {
+      expect((await produce(1)).ok).toBe(true);
+      expect((await produce(1)).ok).toBe(true);
+      const afterSame = builds;
+      expect((await produce(2)).ok).toBe(true);
+      expect(builds).toBe(afterSame + 1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 it('shares a product between checkouts at different locations through an identity root', async () => {

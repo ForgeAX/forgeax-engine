@@ -8,7 +8,8 @@ import type {
 import type { StandardLightCount } from '../standard-profile';
 
 export interface StandardLocalLightInput {
-  readonly kind: 'point' | 'spot' | 'rect-area';
+  /** `directional` is an unshadowed DirectionalLight after the View sun; its range is infinite. */
+  readonly kind: 'point' | 'spot' | 'rect-area' | 'directional';
   readonly position: Vec3;
   readonly range: number;
   /** Whether the shadow producer admitted this local light to its atlas. */
@@ -18,7 +19,11 @@ export interface StandardLocalLightInput {
    * it on the POD frame prevents Forward/Deferred from rebuilding a second
    * light list while leaving hand-authored unit fixtures source-free.
    */
-  readonly source?: PointLightSnapshot | SpotLightSnapshot | RectAreaDirectLightSnapshot;
+  readonly source?:
+    | PointLightSnapshot
+    | SpotLightSnapshot
+    | RectAreaDirectLightSnapshot
+    | DirectionalLightSnapshot;
 }
 
 export interface StandardLightFrame {

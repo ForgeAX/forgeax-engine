@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { emitSmokeReceipt, smokeFrameBudget } from '../../../shared/scripts/smoke-receipt.mjs';
 import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.mjs';
 // hello-gltf headless smoke (feat-20260515-gltf-loader-via-asset-system / M5 / w23).
 //
@@ -28,7 +30,7 @@ import { useBuiltAssetSource } from '../../../shared/scripts/source-publication.
 //   - `[smoke] frames observed=<N>`
 //   - `[smoke] pixelSamples=<json>`
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -38,7 +40,7 @@ import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 
 
 const SMOKE_DURATION_MS = Number.parseInt(process.env.SMOKE_DURATION_MS ?? '5000', 10);
-const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
+const SMOKE_MIN_FRAMES = smokeFrameBudget();
 const SMOKE_PIXEL_THRESHOLD = Number.parseFloat(process.env.SMOKE_PIXEL_THRESHOLD ?? '0.05');
 
 // feat-20260615-ci-smoke-time-budget: 800x600 → 200x150 (lavapipe fragment-bound)
@@ -47,7 +49,6 @@ const WIDTH = 200;
 const HEIGHT = 150;
 
 const here = dirname(fileURLToPath(import.meta.url));
-const BASELINE_PATH = resolve(here, 'baseline.png');
 const BOX_GLTF_PATH = resolve(here, '..', 'assets', 'box.gltf');
 const BOX_META_PATH = resolve(here, '..', 'assets', 'box.gltf.meta.json');
 
@@ -245,8 +246,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw(frameRequest);
-  if (!r.ok) console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
+  await drawReadyFrame(renderer, frameRequest);
   framesObserved++;
 }
 const device = sharedDevice;
@@ -313,19 +313,25 @@ console.log(`[smoke] pixelSamples=${JSON.stringify(pixelSamples)}`);
 const distance = (a, b) =>
   Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
 
-const CLEAR_COLOR = [0.05, 0.05, 0.08];
+// Derive the background from actual completed-frame pixels. A guessed
+// nonblack clear color used to let an entirely black frame pass this gate.
+const clearColor = pixelSamples.cornerTL;
 const meshSiteNames = ['ndcCenter', 'meshUpperLeft', 'meshLowerRight'];
 let meshedRenderCount = 0;
 const perSiteDistance = {};
 for (const name of meshSiteNames) {
   const site = pixelSamples[name];
-  const dist = distance(site, CLEAR_COLOR);
+  const dist = distance(site, clearColor);
   perSiteDistance[name] = dist.toFixed(4);
   if (dist > SMOKE_PIXEL_THRESHOLD) meshedRenderCount++;
 }
 console.log(`[smoke] perSiteDistance=${JSON.stringify(perSiteDistance)}`);
 
 const failures = [];
+if (!meshSiteNames.some((name) => pixelSamples[name].some((channel) => channel > 0.02)))
+  failures.push('the authored Unlit mesh must produce nonblack pixels');
+if (distance(pixelSamples.cornerTL, pixelSamples.cornerBR) > 0.02)
+  failures.push('background sample sites disagree');
 if (framesObserved < SMOKE_MIN_FRAMES)
   failures.push(`(a) frames=${framesObserved} < ${SMOKE_MIN_FRAMES}`);
 if (meshedRenderCount < 1) {
@@ -336,15 +342,6 @@ if (meshedRenderCount < 1) {
 if (errors.length > 0) {
   const codes = errors.map((e) => e.code).join(', ');
   failures.push(`(c) Renderer.onError fired ${errors.length} times: [${codes}]`);
-}
-
-if (existsSync(BASELINE_PATH)) {
-  console.log(`[smoke] baseline.png found at ${BASELINE_PATH} - strict pixel-parity gate enabled`);
-  // Strict per-pixel gate deferred to feat-future-pixel-parity-hello-gltf.
-} else {
-  console.log(
-    `[smoke] baseline.png absent at ${BASELINE_PATH} - permissive meshed-site gate only (AC-14 v1 lock)`,
-  );
 }
 
 if (failures.length > 0) {
@@ -365,6 +362,8 @@ console.log(
   `[smoke] PASS - 3 criteria GREEN: pipeline=Standard, frames=${framesObserved}, meshed sites above threshold=${meshedRenderCount}/${meshSiteNames.length}, RhiError count=0`,
 );
 
+emitSmokeReceipt('hello-gltf/smoke', framesObserved);
+await renderer.dispose();
 device.destroy?.();
 delete globalThis.navigator.gpu;
 process.exit(0);

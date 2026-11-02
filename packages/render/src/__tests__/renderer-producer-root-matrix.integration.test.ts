@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createRendererProducerRootMatrix } from '../render-system';
+import { createRendererProducerRootMatrix } from './render-system-driver';
 
 describe('renderer producer root matrix', () => {
   it('enumerates the current baseline resource families with one owner each', () => {

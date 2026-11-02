@@ -1,0 +1,68 @@
+{
+  "schema": "forgeax.ai-benchmark.briefs/1",
+  "version": "m5-briefs/1",
+  "frozen": "2026-10-22",
+  "note": "Hard-surface props sized as parts of the C-100 transformer (meters, Y up). Checks are measured by measure.mjs on the delivered mesh/prop; a brief changes only with a new version and a rerun of both conditions.",
+  "briefs": [
+    {
+      "id": "bolted-bracket",
+      "title": "Bolted suspension bracket",
+      "packageId": "01900000-0000-7000-8000-00000000b501",
+      "text": "An L-shaped steel mounting bracket for the C-100 suspension: a base flange lying in the XZ plane and an upright flange rising along +Y from one edge of the base, joined by one or two triangular stiffening gussets. Each flange has two through bolt holes (four in total). A hex-head bolt sits in each of the four holes as its own separate closed part (head on the outer face, shank through the hole). Soften the outer edges (chamfers or rounds).",
+      "checks": [
+        { "kind": "size", "axis": "x", "value": 0.12, "tolerance": 0.006 },
+        { "kind": "size", "axis": "y", "value": 0.09, "tolerance": 0.006 },
+        { "kind": "size", "axis": "z", "value": 0.07, "tolerance": 0.006 },
+        { "kind": "components", "min": 5, "max": 5 },
+        { "kind": "genus", "min": 4 },
+        { "kind": "triangles", "max": 50000 }
+      ]
+    },
+    {
+      "id": "vented-housing",
+      "title": "Vented electronics housing",
+      "packageId": "01900000-0000-7000-8000-00000000b502",
+      "text": "A hollow rectangular electronics housing for the C-100 power unit: walls about 4 mm thick around one internal cavity, rounded or chamfered outer vertical edges, a row of at least six parallel vent slots cut through the top wall into the cavity, and four small mounting feet or tabs at the bottom corners, all one connected solid.",
+      "checks": [
+        { "kind": "size", "axis": "x", "value": 0.2, "tolerance": 0.008 },
+        { "kind": "size", "axis": "y", "value": 0.12, "tolerance": 0.008 },
+        { "kind": "size", "axis": "z", "value": 0.14, "tolerance": 0.008 },
+        { "kind": "components", "min": 1, "max": 1 },
+        { "kind": "genus", "min": 5 },
+        { "kind": "volumeRatio", "max": 0.35 },
+        { "kind": "triangles", "max": 50000 }
+      ],
+      "checkNotes": "A hollow shell whose cavity opens through n slots has genus n - 1, so six slots give genus 5. volumeRatio is the solid volume over the bounding-box volume."
+    },
+    {
+      "id": "five-spoke-wheel",
+      "title": "Five-spoke wheel hub",
+      "packageId": "01900000-0000-7000-8000-00000000b503",
+      "text": "A one-piece five-spoke wheel for the C-100 car: the axle runs along X. An outer rim (a cylindrical band with raised lips at both edges), a central hub with a center bore and five lug holes on a bolt circle, and five spokes connecting hub to rim, evenly spaced every 72 degrees. Spokes should taper or be shaped, not plain boxes, and the hub face is recessed relative to the rim lips.",
+      "checks": [
+        { "kind": "size", "axis": "x", "value": 0.22, "tolerance": 0.01 },
+        { "kind": "size", "axis": "y", "value": 0.5, "tolerance": 0.015 },
+        { "kind": "size", "axis": "z", "value": 0.5, "tolerance": 0.015 },
+        { "kind": "components", "min": 1, "max": 1 },
+        { "kind": "genus", "min": 11 },
+        { "kind": "triangles", "max": 50000 }
+      ],
+      "checkNotes": "Genus 11 = five windows between spokes + the center bore + five lug holes."
+    },
+    {
+      "id": "panel-hinge",
+      "title": "Armor panel hinge",
+      "packageId": "01900000-0000-7000-8000-00000000b504",
+      "text": "A butt hinge for a C-100 armor panel, shown open flat: two leaves about 3 mm thick lying in the XZ plane on either side of a knuckle barrel whose axis runs along Z. The leaves interleave five knuckles (one leaf owns three, the other two) and a cylindrical pin runs through all knuckles. Each leaf has three countersunk screw holes. The two leaves and the pin are three separate closed parts.",
+      "checks": [
+        { "kind": "size", "axis": "x", "value": 0.1, "tolerance": 0.005 },
+        { "kind": "size", "axis": "y", "value": 0.012, "tolerance": 0.003 },
+        { "kind": "size", "axis": "z", "value": 0.12, "tolerance": 0.006 },
+        { "kind": "components", "min": 3, "max": 3 },
+        { "kind": "genus", "min": 6 },
+        { "kind": "triangles", "max": 50000 }
+      ],
+      "checkNotes": "Six screw holes give genus 6 at least; knuckle bores add more."
+    }
+  ]
+}

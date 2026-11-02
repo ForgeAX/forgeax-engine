@@ -49,7 +49,7 @@ export function addSubsurfaceDiffusion(
     if (!params.ok) return params;
     const upload = graph.addCopyPass(`subsurface-prepare${suffix}`, {
       accesses: [{ resource: params.value, usage: 'copy-dst' }],
-      encode: ({ frame, resources }) => {
+      encodeDirect: (_graphencoder, frame, resources) => {
         const camera = frame.camera;
         frame.runtime.device.queue
           .writeBuffer(
@@ -76,7 +76,7 @@ export function addSubsurfaceDiffusion(
         { resource: delta.value, usage: 'storage-write' },
         { resource: params.value, usage: 'uniform-read' },
       ],
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         const internal = frame as _InternalRenderPipelineContext;
         const device = frame.runtime.device;
         if (state === undefined) {
@@ -171,7 +171,7 @@ export function addSubsurfaceDiffusion(
         { resource: input.scene.view, usage: 'color-attachment' },
       ],
       colorAttachments: [{ view: input.scene.view, loadOp: 'load', storeOp: 'store' }],
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         const internal = frame as _InternalRenderPipelineContext;
         const device = frame.runtime.device;
         if (composition === undefined) {

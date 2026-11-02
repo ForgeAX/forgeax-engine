@@ -10,6 +10,7 @@ import { readComponentMutationEpoch } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import { Transform } from '@forgeax/engine-scene';
+import { Skin } from '@forgeax/engine-skinning';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { err, type MeshAsset, ok, type Result } from '@forgeax/engine-types';
 import type { AsyncDynamicGeometryHost } from '../async-dynamic-geometry';
@@ -30,6 +31,12 @@ import {
   MeshResidencyError,
   sameCandidateCredential,
 } from '../dynamic-geometry';
+import {
+  type CandidateSkinGuard,
+  captureCandidateSkinGuard,
+  captureInitialCandidateSkinGuard,
+  hasCandidateSkin,
+} from '../publication/candidate-skin-binding';
 import type { MeshPipelinePreparation } from '../publication/contract';
 import { packedRowsEligible, trimToPackedRows } from '../publication/packed-rows-mesh';
 import { type RenderResourceScope, worldRenderResources } from '../publication/resource-scope';
@@ -99,6 +106,7 @@ type MeshReferenceCounts = Map<
 >;
 
 interface HostCandidateRecord {
+  skin?: CandidateSkinGuard;
   pipelinePreparation?: MeshPipelinePreparation;
   materialIsCurrent?: () => boolean;
   pipelines?: PreparedCandidatePipelines;
@@ -447,6 +455,21 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       return undefined;
     return record;
   };
+  const candidateFrameConsumed = (world: World, candidate: DynamicGeometryCandidate): boolean => {
+    const record = candidateRecord(candidate);
+    if (
+      record === undefined ||
+      record.cleanup !== undefined ||
+      record.candidate.state === 'prepared' ||
+      !record.assetRevision.matchesCurrent() ||
+      record.skin?.isCurrent() === false ||
+      !hasRenderableBinding(world, candidate.entity) ||
+      meshHandleOf(world, candidate.entity) !== candidate.meshHandle ||
+      !hasMaterialIdentity(world, candidate.entity, record.mesh, candidate.materialIdentity)
+    )
+      return false;
+    return isConsumedByRenderFrame(candidate);
+  };
   const hasSuccessorBinding = (
     record: HostCandidateRecord,
     successor: DynamicGeometryCandidate | undefined,
@@ -520,11 +543,25 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     );
   };
   const capturePipelines = (record: HostCandidateRecord): Result<void, DynamicGeometryError> => {
-    if (
-      record.pipelinePreparation !== undefined ||
-      options.capturePipelinePreparation === undefined
-    )
-      return ok(undefined);
+    if (record.pipelinePreparation !== undefined) return ok(undefined);
+    if (record.skin?.isCurrent() === false)
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'candidate Skin source is unchanged since preparation',
+          'prepare again after changing the render binding',
+        ),
+      );
+    if (options.capturePipelinePreparation === undefined)
+      return hasCandidateSkin(record.world, record.entity)
+        ? err(
+            new DynamicGeometryError(
+              'dynamic-geometry-invalid',
+              'Skin candidates use the full Renderer projection owner',
+              'prepare through the rendering host with complete Skin material and binding facts',
+            ),
+          )
+        : ok(undefined);
     const binding = record.world.get(record.entity as EntityHandle, MeshRenderer);
     if (!binding.ok)
       return err(
@@ -537,6 +574,31 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     const handles = [...binding.value.materials];
     const captured = options.capturePipelinePreparation(record);
     if (!captured.ok) return captured;
+    if (record.skin?.isCurrent() === false)
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'candidate Skin source is unchanged during capture',
+          'prepare again after changing the render binding',
+        ),
+      );
+    const skin = captureCandidateSkinGuard(
+      record.world,
+      record.entity,
+      captured.value.template.snapshot.skinBinding,
+    );
+    if (skin === undefined || !skin.isCurrent()) {
+      skin?.release();
+      return err(
+        new DynamicGeometryError(
+          'dynamic-geometry-invalid',
+          'candidate Skin membership and Skeleton revision are live',
+          'prepare again from the current Skin source',
+        ),
+      );
+    }
+    record.skin?.release();
+    record.skin = skin;
     const materialHandles = [
       ...new Set(
         captured.value.materials
@@ -637,7 +699,10 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
       // cannot prove terminal release. Preserve this owner for paired rebuild.
       if (deferred && faultedWorlds.has(record.world)) return;
       const released = releaseMeshLeases(record);
-      if (released === undefined) record.assetRevision.dispose();
+      if (released === undefined) {
+        record.assetRevision.dispose();
+        record.skin?.release();
+      }
       if (released !== undefined) throw released;
       if (terminal === 'cancel' && !deferred) cancel();
       if (record.candidate.state === 'retired') {
@@ -808,9 +873,13 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     record: HostCandidateRecord,
   ): boolean =>
     !record.assetRevision.matchesCurrent() ||
+    record.skin?.isCurrent() === false ||
     !input.gpuReady ||
     record.residency === undefined ||
     record.residency.isCurrent?.() === false ||
+    (record.pipelinePreparation?.template.snapshot.skinBinding !== undefined &&
+      record.residencyStore !== undefined &&
+      record.pipelines === undefined) ||
     record.materialIsCurrent?.() === false ||
     record.pipelines?.isCurrent() === false;
   /** Fault unless both held MeshAsset references resolve and are reflected in the asset store. */
@@ -1531,7 +1600,9 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
           throw fault(world, { cause, cancelled, released });
         throw cause;
       }
+      const skin = captureInitialCandidateSkinGuard(world, input.entity);
       const record: HostCandidateRecord = {
+        ...skin,
         candidate: prepared.value,
         mesh,
         assetRevision,
@@ -1647,6 +1718,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
         record.cleanup === undefined &&
         record.residency !== undefined &&
         record.assetRevision.matchesCurrent() &&
+        record.skin?.isCurrent() !== false &&
         record.residency.isCurrent?.() !== false &&
         (record.candidate.state !== 'prepared' ||
           (record.materialIsCurrent?.() !== false && record.pipelines?.isCurrent() !== false)) &&
@@ -1820,23 +1892,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
             (candidate) => {
               const candidateWorld = candidate.world as World;
               if (candidateWorld !== world || !attachedWorlds.has(candidateWorld)) return false;
-              const hostRecord = candidateRecord(candidate);
-              if (
-                hostRecord === undefined ||
-                hostRecord.cleanup !== undefined ||
-                hostRecord.candidate.state === 'prepared' ||
-                !hostRecord.assetRevision.matchesCurrent() ||
-                !hasRenderableBinding(candidateWorld, candidate.entity) ||
-                meshHandleOf(candidateWorld, candidate.entity) !== candidate.meshHandle ||
-                !hasMaterialIdentity(
-                  candidateWorld,
-                  candidate.entity,
-                  hostRecord.mesh,
-                  candidate.materialIdentity,
-                )
-              )
-                return false;
-              if (!isConsumedByRenderFrame(candidate)) return false;
+              if (!candidateFrameConsumed(candidateWorld, candidate)) return false;
               const actualFixedStep = publicationFixedStep;
               if (candidate.fixedStep === undefined || actualFixedStep === undefined) return false;
               // RenderFrameInput.fixedStep is an assertion from the host, not a
@@ -1990,7 +2046,8 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
             )
           : signal?.aborted ||
               record.cleanup !== undefined ||
-              !record.assetRevision.matchesCurrent()
+              !record.assetRevision.matchesCurrent() ||
+              record.skin?.isCurrent() === false
             ? cancelled()
             : !resident.value.isCurrent() || record.materialIsCurrent?.() === false
               ? new DynamicGeometryError(
@@ -2018,6 +2075,16 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
     const world = record.world;
     const meshHandle = record.meshHandle;
     try {
+      // A Skin's buffer-only preparation is not an admission credential. Its
+      // static source must be captured now and its actual PSOs awaited before
+      // acceptance; remote preparation already completes those PSOs at its port.
+      if (hasCandidateSkin(world, record.entity)) {
+        const captured = capturePipelines(record);
+        if (!captured.ok) {
+          scheduleCandidateCleanup(record, false, 'cancel');
+          return captured;
+        }
+      }
       const residencyStore = getGpuStore();
       record.residencyStore = residencyStore;
       const resident = residencyStore.prepareMeshResidency(
@@ -2150,6 +2217,7 @@ function createDynamicGeometryHostOwner(options: DynamicGeometryHostOptions) {
             attachedWorlds.has(record.world) &&
             record.residency !== undefined &&
             record.residency.isCurrent?.() !== false &&
+            record.skin?.isCurrent() !== false &&
             record.materialIsCurrent?.() !== false;
           record.pipelines?.release();
           record.pipelines = { isCurrent: () => false, release() {} };
@@ -2433,6 +2501,8 @@ export function createDynamicGeometrySourceHost(
       owner: object;
       assets: number;
       materials: number;
+      skins: number;
+      structure: number;
       token: object;
     }
   >();
@@ -2453,17 +2523,30 @@ export function createDynamicGeometrySourceHost(
       const revision = owner.currentnessRevision(),
         assets = runtimeAssets(world.assets).currentRevision,
         materials = readComponentMutationEpoch(world, MeshRenderer),
+        skins = readComponentMutationEpoch(world, Skin),
+        structure = world.getStructureEpoch(),
         previous = currentness.get(world);
       if (
         previous?.generation === generation &&
         previous.residency === residency &&
         previous.owner === revision &&
         previous.assets === assets &&
-        previous.materials === materials
+        previous.materials === materials &&
+        previous.skins === skins &&
+        previous.structure === structure
       )
         return previous.token;
       const token = Object.freeze({});
-      currentness.set(world, { generation, residency, owner: revision, assets, materials, token });
+      currentness.set(world, {
+        generation,
+        residency,
+        owner: revision,
+        assets,
+        materials,
+        skins,
+        structure,
+        token,
+      });
       return token;
     },
     prepareDynamicGeometry(input, preparation) {

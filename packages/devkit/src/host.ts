@@ -1125,7 +1125,7 @@ canvas.addEventListener('forgeax:frame-submitted', (event) => {
       currentApp?.renderer === undefined ||
       typeof currentApp.renderer.inspect !== 'function'
         ? undefined
-        : textureRendererObservation(currentApp.renderer.inspect(), preparedResourceOwner?.binding, frame);
+        : textureRendererObservation(preparedResourceOwner?.binding === undefined ? undefined : currentApp.renderer.inspect({ fields: ['frame', 'meshMaterialBindings'] }), preparedResourceOwner?.binding, frame);
   }
 });
 // Publish the exact canvas + game UI container to frontend plugins.
@@ -1295,6 +1295,7 @@ async function previewOwnerFacts(assets, resource, payload, textureBudget) {
             sampledTextureRequired: textureBudget.required,
             sampledTextureTransmission: textureBudget.transmission,
             sampledTextureConflicts: textureBudget.conflicts.join(','),
+            sampledTextureParallax: textureBudget.parallax,
           }),
       subjectDigest: await previewDigest(payload),
       bindingsDigest: await previewDigest(payload.passes),
@@ -3109,7 +3110,7 @@ export async function createViteConfig(
         resolve: { alias: consumerAliases, dedupe: engineDedupe(consumerAliases) },
         plugins: engineWorkspacePlugins,
       },
-      { inventory: sourceInventory },
+      { inventory: sourceInventory, buildCacheRoot: devKitDdcRoots(facts.root).buildCacheRoot },
     );
     timing('project-cookers');
     disposePreparation = () => cookerSession.dispose();

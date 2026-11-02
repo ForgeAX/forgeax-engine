@@ -328,8 +328,8 @@ const gltfErrorPolicy = {
     hint: 'EXT_mesh_gpu_instancing requires TRANSLATION/ROTATION/SCALE accessors to share count; see https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/EXT_mesh_gpu_instancing/README.md#extending-nodes-with-instance-attributes',
   },
   'gltf-image-mime-unsupported': {
-    expected: 'image/mimeType is image/jpeg or image/png',
-    hint: 'convert to JPG/PNG via external tool; only image/jpeg and image/png are supported',
+    expected: 'image/mimeType is image/jpeg, image/png, or image/ktx2',
+    hint: 'convert to JPG/PNG or KTX2 (KHR_texture_basisu) via external tool; only image/jpeg, image/png, and image/ktx2 are supported',
   },
   'gltf-skin-joint-count-exceeded': {
     expected: 'skin.joints.length <= MAX_JOINTS (256)',

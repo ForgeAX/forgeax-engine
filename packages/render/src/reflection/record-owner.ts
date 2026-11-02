@@ -46,6 +46,7 @@ import type { ReflectionProbeGraphWork } from '../record/typed-frame-graph';
 import { REFLECTION_PROBE_VIEW_SLOT_BASE, VIEW_UNIFORM_SLOT_STRIDE } from '../record/view-ubo';
 import type { CameraSnapshot } from '../render-contract';
 import type { SkyboxSnapshot, SkylightSnapshot } from '../render-system-extract';
+import { recordContext } from '../world/view-record-context';
 import { createProbeBackgroundResources, type ProbeBackgroundResources } from './background';
 import {
   advanceProbeFilter,
@@ -247,14 +248,14 @@ export class ReflectionProbeRecordOwner {
     state: ReflectionFallbackReceipt['state'],
   ): ReflectionFallbackReceipt {
     return Object.freeze({
-      rendererId: this.internals.deviceScope.owner,
+      rendererId: recordContext(this.internals).deviceScope.owner,
       producerId: REFLECTION_PROBE_PRODUCER_ID,
       ...(this.internals.ssrIdentity === undefined ? {} : { identity: this.internals.ssrIdentity }),
       source: 'neutral',
       sourceKey: 'neutral',
       sourceGeneration: 0,
       projectionGeneration: 0,
-      deviceGeneration: this.internals.deviceScope.generation,
+      deviceGeneration: recordContext(this.internals).deviceScope.generation,
       state,
       candidateVisible: false,
       coverage: 0,
@@ -318,7 +319,7 @@ export class ReflectionProbeRecordOwner {
         stage: 'prepare',
         code: 'reflection-fallback-format-unavailable',
         expected: 'rgba16float render attachment capability on the current device generation',
-        detail: { deviceGeneration: this.internals.deviceScope.generation },
+        detail: { deviceGeneration: recordContext(this.internals).deviceScope.generation },
       });
     } else if (!previous) {
       this.clearFallbackFailure();
@@ -352,7 +353,7 @@ export class ReflectionProbeRecordOwner {
     this.pipelineWarmupAttempts = attempt;
     const device = this.internals.device;
     const warmup = createIblPipelines(
-      this.internals.deviceScope,
+      recordContext(this.internals).deviceScope,
       this.internals.device,
       (device, descriptor) => {
         const labeled = {
@@ -518,7 +519,7 @@ export class ReflectionProbeRecordOwner {
       resource: ProbeGpuResource;
       pending: NonNullable<ProbeGpuResource['pending']>;
     }> = [];
-    const deviceGeneration = this.internals.deviceScope.generation;
+    const deviceGeneration = recordContext(this.internals).deviceScope.generation;
     for (let offset = 0; offset < candidates.length; offset++) {
       const candidateIndex = (this.workCursor + offset) % candidates.length;
       const resource = candidates[candidateIndex];
@@ -662,7 +663,7 @@ export class ReflectionProbeRecordOwner {
       resource: ProbeGpuResource;
       pending: NonNullable<ProbeGpuResource['pending']>;
     }[] = [],
-    deviceGeneration = this.internals.deviceScope.generation,
+    deviceGeneration = recordContext(this.internals).deviceScope.generation,
     submittedFrame = this.currentFrame,
   ): Promise<void> {
     let completionFailure: ReflectionFallbackFailureInput | undefined;
@@ -685,7 +686,7 @@ export class ReflectionProbeRecordOwner {
         fallbackOutput,
         completionFailure,
       );
-    if (deviceGeneration !== this.internals.deviceScope.generation) return;
+    if (deviceGeneration !== recordContext(this.internals).deviceScope.generation) return;
     for (const { resource, pending } of captureTickets) {
       if (
         resource.pending !== pending ||
@@ -788,7 +789,7 @@ export class ReflectionProbeRecordOwner {
     const pending: PendingFallback = {
       ticket: ++this.nextFallbackTicket,
       frameId,
-      deviceGeneration: this.internals.deviceScope.generation,
+      deviceGeneration: recordContext(this.internals).deviceScope.generation,
       projection: NEUTRAL_FRAME_PROJECTION,
       signature: NEUTRAL_FRAME_SIGNATURE,
     };
@@ -861,7 +862,7 @@ export class ReflectionProbeRecordOwner {
     const pending: PendingFallback = {
       ticket: ++this.nextFallbackTicket,
       frameId,
-      deviceGeneration: this.internals.deviceScope.generation,
+      deviceGeneration: recordContext(this.internals).deviceScope.generation,
       projection: projection.value,
       signature,
     };
@@ -920,7 +921,7 @@ export class ReflectionProbeRecordOwner {
       if (
         pending.projection.source === 'neutral' &&
         this.latestFallbackTickets.get(renderableKey) === pending &&
-        pending.deviceGeneration === this.internals.deviceScope.generation
+        pending.deviceGeneration === recordContext(this.internals).deviceScope.generation
       ) {
         this.commitFallbackProjection(renderableKey, pending, 'neutral');
         committed += 1;
@@ -945,7 +946,7 @@ export class ReflectionProbeRecordOwner {
     const { linearHdr: _referencePixel, ...projection } = pending.projection;
     const receipt = Object.freeze({
       ...projection,
-      rendererId: this.internals.deviceScope.owner,
+      rendererId: recordContext(this.internals).deviceScope.owner,
       producerId: REFLECTION_PROBE_PRODUCER_ID,
       ...(this.internals.ssrIdentity === undefined ? {} : { identity: this.internals.ssrIdentity }),
       frameId: pending.frameId,
@@ -1122,7 +1123,7 @@ export class ReflectionProbeRecordOwner {
         latest === undefined ||
         latest.signature !== pending.signature ||
         pending.frameId !== fallbackOutput.frameId ||
-        pending.deviceGeneration !== this.internals.deviceScope.generation ||
+        pending.deviceGeneration !== recordContext(this.internals).deviceScope.generation ||
         (retiredAt !== undefined && pending.frameId < retiredAt) ||
         (committedFrame !== undefined && pending.frameId <= committedFrame)
       ) {
@@ -1152,10 +1153,10 @@ export class ReflectionProbeRecordOwner {
       (previousReadback === undefined || fallbackOutput.frameId >= previousReadback.frameId)
     ) {
       this.fallbackReadback = Object.freeze({
-        rendererId: this.internals.deviceScope.owner,
+        rendererId: recordContext(this.internals).deviceScope.owner,
         producerId: REFLECTION_PROBE_PRODUCER_ID,
         frameId: fallbackOutput.frameId,
-        deviceGeneration: this.internals.deviceScope.generation,
+        deviceGeneration: recordContext(this.internals).deviceScope.generation,
         graphGeneration: readback.graphGeneration,
         textureIdentity: readback.textureIdentity,
         format: fallbackOutput.format,
@@ -1444,7 +1445,7 @@ export class ReflectionProbeRecordOwner {
       addressModeV: 'clamp-to-edge',
       addressModeW: 'clamp-to-edge',
     });
-    const cache = getOrCreateIblCache(this.internals.deviceScope);
+    const cache = getOrCreateIblCache(recordContext(this.internals).deviceScope);
     if (
       !sampler.ok ||
       cache.prefilterGroup1Bgl === undefined ||

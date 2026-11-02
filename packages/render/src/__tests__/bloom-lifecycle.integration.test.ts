@@ -54,6 +54,7 @@ function build(bloom: 'off' | 'on', tonemap: 'none' | 'aces-filmic' = 'aces-film
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const prepared = prepareStandardLighting({

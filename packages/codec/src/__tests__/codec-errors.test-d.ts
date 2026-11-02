@@ -1,4 +1,9 @@
-import type { CodecError, CodecErrorCode, CodecResult } from '@forgeax/engine-codec';
+import type {
+  CodecError,
+  CodecErrorCode,
+  CodecResult,
+  Ktx2NativeRejection,
+} from '@forgeax/engine-codec';
 import { codecError } from '@forgeax/engine-codec';
 import { describe, expectTypeOf, it } from 'vitest';
 
@@ -13,6 +18,7 @@ describe('CodecError code/detail correlation', () => {
       targetFormat: 'bc7-rgba-unorm',
     });
     codecError('ktx2-encode-failed', { mode: 'uastc-ldr', reason: 'reason' });
+    codecError('ktx2-native-unsupported', { vkFormat: 22, reason: 'srgb-transfer' });
   });
 
   it('narrows detail from the checked code', () => {
@@ -38,6 +44,10 @@ describe('CodecError code/detail correlation', () => {
           expectTypeOf(error.error.detail.mode).toBeString();
           expectTypeOf(error.error.detail.reason).toBeString();
           break;
+        case 'ktx2-native-unsupported':
+          expectTypeOf(error.error.detail.vkFormat).toBeNumber();
+          expectTypeOf(error.error.detail.reason).toEqualTypeOf<Ktx2NativeRejection>();
+          break;
       }
     }
 
@@ -49,7 +59,7 @@ describe('CodecError code/detail correlation', () => {
     codecError('ktx2-unsupported-scheme', { reason: 'wrong-detail' });
   });
 
-  it('preserves the six-code public union and structural Result compatibility', () => {
+  it('preserves the seven-code public union and structural Result compatibility', () => {
     expectTypeOf<CodecErrorCode>().toEqualTypeOf<
       | 'decompression-failed'
       | 'codec-init-failed'
@@ -57,6 +67,7 @@ describe('CodecError code/detail correlation', () => {
       | 'ktx2-unsupported-scheme'
       | 'transcode-failed'
       | 'ktx2-encode-failed'
+      | 'ktx2-native-unsupported'
     >();
 
     const failure: CodecResult<Uint8Array> = codecError('ktx2-parse-failed', {

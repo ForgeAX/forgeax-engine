@@ -29,7 +29,6 @@ import {
 
 const CUBE_SCALE = 0.32;
 const FIXED_DELTA_SECONDS = 1 / 60;
-const MAX_FRAMES = 600;
 
 export interface ThreePerfEvidence {
   readonly implementation: 'three';
@@ -72,6 +71,10 @@ const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (canvas === null) throw new Error('[three-10k-cubes-lights] missing <canvas id="app">');
 
 const params = new URLSearchParams(window.location.search);
+const MAX_FRAMES = Number(params.get('frameLimit') ?? 600);
+if (!Number.isSafeInteger(MAX_FRAMES) || MAX_FRAMES < 1 || MAX_FRAMES > 100_000) {
+  throw new Error('[three-10k-cubes-lights] frameLimit must be an integer in [1, 100000]');
+}
 const parsed = parseWorkloadOptions(params);
 if (!parsed.ok) {
   console.error(`[three-10k-cubes-lights] ${parsed.error.code}: ${parsed.error.hint}`);

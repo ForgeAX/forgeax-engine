@@ -1,20 +1,28 @@
-import { standardTextureMask } from '@forgeax/engine-shader';
+import {
+  STANDARD_PARALLAX_DISPLACEMENT_BIT,
+  standardMaskHasBit,
+  standardTextureMask,
+} from '@forgeax/engine-shader';
+import { STANDARD_DISPLACEMENT_MODES } from '@forgeax/engine-types';
 import type { MaterialSnapshot } from './render-system-extract';
 
 const displacementBit = standardTextureMask([{ name: 'displacementTexture', type: 'texture2d' }]);
 
 const radii = new WeakMap<MaterialSnapshot, number>();
 
-/** One accepted material's normalized height interval, matching the vertex shader. */
+/** One accepted material's vertex-displaced height interval, matching the vertex shader. */
 export function materialDisplacementRadius(material: MaterialSnapshot): number {
   const cached = material.immutableValues === true ? radii.get(material) : undefined;
   if (cached !== undefined) return cached;
+  const mask = material.standardTextureMask;
+  // Parallax keeps geometry at the base mesh, so its bounds stay unexpanded.
   const present =
-    material.standardTextureMask === undefined
+    mask === undefined
       ? material.materialParamSchema?.some(
           (p) => p.name === 'displacementTexture' && p.type === 'texture2d',
-        )
-      : (material.standardTextureMask & displacementBit) !== 0;
+        ) && material.paramSnapshot?.displacementMode !== STANDARD_DISPLACEMENT_MODES.parallax
+      : (mask & displacementBit) !== 0 &&
+        !standardMaskHasBit(mask, STANDARD_PARALLAX_DISPLACEMENT_BIT);
   const scale = material.paramSnapshot?.displacementScale ?? 1;
   const bias = material.paramSnapshot?.displacementBias ?? 0;
   const radius = !present

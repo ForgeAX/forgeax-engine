@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
+import { DawnSequencer } from '../../../config/vitest-dawn-sequencer.ts';
 import { runGroups } from '../../lib/run-bounded-groups.mjs';
 
 test('exclusive groups wait for active work and block neighboring launches', async () => {
@@ -112,8 +116,8 @@ test('real generated-game coverage drains compiler children before starting the 
   });
   assert.equal(
     browserRuns,
-    4,
-    'both native Renderer files, the Vite process owner and project play remain isolated',
+    6,
+    'native, Vite build and live startup owners drain neighboring coverage work',
   );
   assert.equal(active.size, 0);
 });
@@ -136,6 +140,8 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     'packages/vite-plugin-shader/src/__tests__/vite-plugin-shader.unit.test.ts',
     'packages/vite-plugin-shader/src/__tests__/public-surface.unit.test.ts',
     'packages/devkit/src/__tests__/live-dev-process.integration.test.ts',
+    'packages/devkit/src/__tests__/live-dev-client.test.ts',
+    'packages/devkit/src/__tests__/worker-module-identity.integration.test.ts',
     'packages/devkit/src/__tests__/project-play.e2e.test.ts',
     'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
     'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
@@ -167,7 +173,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 10);
+  assert.equal(exclusiveRuns, 14);
 });
 
 test('cold large-scene contracts execute once without competing coverage children', () => {
@@ -217,7 +223,11 @@ test('large-source pipeline identity has one exclusive owner with unchanged cove
   assert.ok(ownerArgs.includes(file));
   assert.ok(ownerArgs.includes('--coverage'));
   assert.ok(ownerArgs.includes('--coverage.reporter=json'));
-  assert.ok(ordinary.every((group) => argsFor(group).includes(`--exclude=${file}`)));
+  assert.ok(
+    ordinary.every((group) =>
+      argsFor(group).includes(`--exclude=${path.resolve(file).replaceAll('\\', '/')}`),
+    ),
+  );
   assert.ok(!ownerArgs.some((arg) => /testTimeout|hookTimeout|testNamePattern/.test(arg)));
   const active = new Set();
   const results = await runGroups({
@@ -291,6 +301,230 @@ test('runs one typecheck-only preflight over the selected project roster', () =>
   );
 });
 
+test('coverage workflow downloads every produced matrix shard', () => {
+  const workflow = parse(
+    readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+  );
+  const producer = workflow.jobs['coverage-pnpm-shard'];
+  const shards = producer.strategy.matrix.shard;
+  assert.deepEqual(
+    shards,
+    Array.from({ length: shards.length }, (_, index) => index),
+  );
+  const produce = producer.steps.find((step) => step.run?.includes('--shard-count='));
+  const consume = workflow.jobs['coverage-pnpm'].steps.find((step) =>
+    step.run?.includes('--artifact-pattern "coverage-shard-*"'),
+  );
+  assert.equal(Number(produce.run.match(/--shard-count=(\d+)/)?.[1]), shards.length);
+  assert.equal(Number(consume.run.match(/--expected-count (\d+)/)?.[1]), shards.length);
+});
+
+test('modeling tier budgets remain mandatory and uninstrumented outside coverage children', () => {
+  const file = 'packages/modeling/src/__tests__/perf-tiers.unit.test.ts';
+  const group = coverageGroups(['@forgeax/engine-modeling'], 4)[0];
+  const args = buildGroupArgs({
+    cliPath: 'vitest.mjs',
+    group,
+    maxWorkers: 1,
+    coverage: true,
+    coverageDir: 'coverage',
+    reportPath: 'report.json',
+  });
+  assert.ok(args.includes(`--exclude=${path.resolve(file).replaceAll('\\', '/')}`));
+  const ordinary = buildGroupArgs({ cliPath: 'vitest.mjs', group, maxWorkers: 1, coverage: false });
+  assert.ok(!ordinary.includes(`--exclude=${path.resolve(file).replaceAll('\\', '/')}`));
+  const workflow = parse(
+    readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+  );
+  const gate = workflow.jobs['coverage-perf'].steps.find((step) => step.run?.includes(file));
+  assert.ok(gate, 'the required performance job must run the complete tier-budget file');
+  assert.ok(gate.run.includes('--project=@forgeax/engine-modeling'));
+  assert.ok(gate.run.includes('--coverage.enabled=false'));
+  assert.notEqual(gate['continue-on-error'], true);
+  assert.ok(!/testTimeout|testNamePattern|--exclude/.test(gate.run));
+});
+
+test('actual Vitest discovery and native partitions conserve the complete coverage roster', async () => {
+  const file = path
+    .resolve('packages/modeling/src/__tests__/perf-tiers.unit.test.ts')
+    .replaceAll('\\', '/');
+  const groups = coverageGroups(['@forgeax/engine-modeling'], 4);
+  const require = createRequire(import.meta.url);
+  const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
+  const discover = (args) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [cli, 'list', '--project=@forgeax/engine-modeling', ...args, '--filesOnly', '--json'],
+        { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] },
+      ),
+    ).map(({ file }) => file.replaceAll('\\', '/'));
+  const ordinary = discover([]);
+  const native = groups.filter((group) => group.shard);
+  const explicit = groups.filter((group) => group.files.length > 0);
+  const args = buildGroupArgs({
+    cliPath: 'vitest.mjs',
+    group: native[0],
+    maxWorkers: 1,
+    coverage: true,
+    coverageDir: 'coverage',
+    reportPath: 'report.json',
+  });
+  const covered = discover(args.filter((argument) => argument.startsWith('--exclude=')));
+  assert.ok(ordinary.includes(file), 'ordinary tests retain the complete performance file');
+  // `vitest list --filesOnly` lists the unsharded inventory. Exercise the
+  // configured sequencer with actual discovery, including isolated-file excludes.
+  const specifications = covered.map((moduleId) => ({
+    moduleId,
+    project: { name: '@forgeax/engine-modeling' },
+  }));
+  const partition = (specs, index, count) =>
+    new DawnSequencer({
+      config: { root: process.cwd(), coverage: { enabled: true }, shard: { index, count } },
+    }).shard(specs);
+  const partitions = await Promise.all(
+    native.map((group) => {
+      const [index, count] = group.shard.split('/').map(Number);
+      return partition(specifications, index, count);
+    }),
+  );
+  const reversed = await Promise.all(
+    native.map((_group, index) =>
+      partition([...specifications].reverse(), index + 1, native.length),
+    ),
+  );
+  assert.deepEqual(reversed, partitions, 'placement is independent of discovery order');
+  const isolated = explicit.flatMap((group) => discover(group.files));
+  assert.deepEqual(
+    [...partitions.flat().map(({ moduleId }) => moduleId), ...isolated].toSorted(),
+    ordinary.filter((entry) => entry !== file).toSorted(),
+    'real native partitions and exclusive owners discover every instrumented file exactly once',
+  );
+});
+
+test('heavy project partitions cannot recombine on the same coverage lane', () => {
+  for (const project of ['@forgeax/engine-devkit', '@forgeax/engine-render']) {
+    const groups = coverageGroups([project], 8);
+    const native = groups.filter((group) => group.shard);
+    assert.equal(native.length, 2, 'the complete ordinary project has two native owners');
+    const assignment = assignCoverageShards(groups, 4);
+    assert.equal(
+      new Set(native.map((group) => assignment[groups.indexOf(group)])).size,
+      2,
+      'both halves must occupy different jobs instead of reconstructing the long child',
+    );
+    assert.ok(groups.filter((group) => group.files.length > 0).every((group) => !group.shard));
+  }
+});
+
+test('actual DevKit and Render discovery conserves both native halves and exclusive owners', async () => {
+  const require = createRequire(import.meta.url);
+  const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
+  for (const project of ['@forgeax/engine-devkit', '@forgeax/engine-render']) {
+    const groups = coverageGroups([project], 8);
+    const native = groups.filter((group) => group.shard);
+    const explicit = groups.filter((group) => group.files.length > 0);
+    const commonArgs = buildGroupArgs({
+      cliPath: cli,
+      group: { ...native[0], excludes: [] },
+      maxWorkers: 1,
+      coverage: true,
+      coverageDir: 'coverage',
+      reportPath: 'report.json',
+    }).filter((argument) => argument.startsWith('--exclude='));
+    const discover = (args) =>
+      JSON.parse(
+        execFileSync(
+          process.execPath,
+          [cli, 'list', `--project=${project}`, ...args, '--filesOnly', '--json'],
+          { encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] },
+        ),
+      ).map(({ file }) => file.replaceAll('\\', '/'));
+    const expected = discover(commonArgs);
+    const covered = discover([
+      ...commonArgs,
+      ...native[0].excludes.map((file) => `--exclude=${path.resolve(file)}`),
+    ]);
+    const specifications = covered.map((moduleId) => ({ moduleId, project: { name: project } }));
+    const partitions = await Promise.all(
+      native.map((group) => {
+        const [index, count] = group.shard.split('/').map(Number);
+        return new DawnSequencer({
+          config: { root: process.cwd(), coverage: { enabled: true }, shard: { index, count } },
+        }).shard(specifications);
+      }),
+    );
+    assert.ok(partitions.every((partition) => partition.length > 0));
+    assert.deepEqual(
+      [
+        ...partitions.flat().map(({ moduleId }) => moduleId),
+        ...explicit.flatMap((group) => discover(group.files)),
+      ].toSorted(),
+      expected.toSorted(),
+      `${project}: every complete instrumented file still runs exactly once`,
+    );
+  }
+});
+
+test('modeling partitions retain the complete native shard roster and bounded workers', () => {
+  const project = '@forgeax/engine-modeling';
+  for (const isolateFiles of [true, false]) {
+    const groups = coverageGroups(['@forgeax/engine-math', project], 4, { isolateFiles });
+    const modeling = groups.filter((group) => group.projects.includes(project));
+    assert.equal(modeling.length, isolateFiles ? 17 : 16);
+    const native = modeling.filter((group) => group.shard);
+    const isolated = modeling.filter((group) => group.files.length > 0);
+    assert.equal(isolated.length, isolateFiles ? 1 : 0);
+    for (const group of isolated) {
+      assert.equal(group.shard, undefined, 'an explicit file is never partitioned again');
+      assert.equal(isExclusiveCoverageGroup(group), true);
+    }
+    assert.deepEqual(
+      native.map((group) => group.shard),
+      Array.from({ length: 16 }, (_, index) => `${index + 1}/16`),
+    );
+    for (const group of native) {
+      assert.deepEqual(group.projects, [project]);
+      assert.deepEqual(group.files, []);
+      const args = buildGroupArgs({
+        cliPath: 'vitest.mjs',
+        group,
+        maxWorkers: 1,
+        coverage: isolateFiles,
+        coverageDir: 'coverage',
+        reportPath: 'report.json',
+      });
+      assert.ok(args.includes(`--shard=${group.shard}`));
+      assert.ok(args.includes('--maxWorkers=1'));
+      assert.ok(!args.some((arg) => /testTimeout|hookTimeout|testNamePattern/.test(arg)));
+    }
+    const assignment = assignCoverageShards(groups, 4);
+    const manifests = Array.from({ length: 4 }, (_, shardIndex) => ({
+      shardIndex,
+      shardCount: 4,
+      expectedGroups: groups.map((group) => group.label),
+      groups: groups
+        .filter((_group, index) => assignment[index] === shardIndex)
+        .map((group) => group.label),
+    }));
+    validateShardManifests(
+      manifests,
+      groups.map((group) => group.label),
+    );
+    assert.throws(
+      () =>
+        validateShardManifests(
+          manifests.map((manifest) => ({
+            ...manifest,
+            groups: manifest.groups.filter((label) => label !== modeling[0].label),
+          })),
+          groups.map((group) => group.label),
+        ),
+      /ran 0 times/,
+    );
+  }
+});
+
 test('isolates heavy projects while preserving bounded project order', () => {
   const groups = projectGroups(
     [
@@ -340,6 +574,27 @@ test('prioritizes long coverage groups and preserves canonical order for ties', 
   assert.deepEqual(coverageGroupOrder(groups), [1, 2, 3, 0]);
 });
 
+test('whole-child refinement removes a stranded parallel tail before exclusive work', () => {
+  const groups = [50, 10, 50, 50, 10, 70, 30].map((weight, index) => ({
+    label: `group-${index}`,
+    weight,
+    files: index === 1 || index === 5 ? [`fixture-${index}.test.ts`] : [],
+  }));
+  const assignment = assignCoverageShards(groups, 2, { typecheck: false });
+  const lanes = Array.from({ length: 2 }, () => ({ slots: [0, 0], exclusive: 0 }));
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    const lane = lanes[assignment[index]];
+    if (group.files.length > 0) lane.exclusive += group.weight;
+    else lane.slots[lane.slots[0] <= lane.slots[1] ? 0 : 1] += group.weight;
+  }
+  // The old greedy placement leaves 30 units before an 80-unit exclusive tail.
+  // A complete-child move fits the same work into the other lane's spare slot.
+  assert.equal(Math.max(...lanes.map((lane) => Math.max(...lane.slots) + lane.exclusive)), 100);
+  assert.equal(assignment.length, groups.length);
+  assert.deepEqual(assignCoverageShards(groups, 2, { typecheck: false }), assignment);
+});
+
 test('delegated native preparation runs without an outer GPU lease and stays native-last', () => {
   for (const isolateFiles of [false, true]) {
     const groups = coverageGroups(['@forgeax/engine-devkit'], 8, { isolateFiles });
@@ -381,9 +636,19 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts',
   ];
   const liveProcessFile = 'packages/devkit/src/__tests__/live-dev-process.integration.test.ts';
+  const liveClientFile = 'packages/devkit/src/__tests__/live-dev-client.test.ts';
+  const workerIdentityFile =
+    'packages/devkit/src/__tests__/worker-module-identity.integration.test.ts';
   const playFile = 'packages/devkit/src/__tests__/project-play.e2e.test.ts';
   const sceneFile = 'packages/scene/src/__tests__/flat-propagation.contract.test.ts';
-  const allFiles = [sceneFile, ...nativeFiles, liveProcessFile, playFile];
+  const allFiles = [
+    sceneFile,
+    ...nativeFiles,
+    liveProcessFile,
+    liveClientFile,
+    workerIdentityFile,
+    playFile,
+  ];
   const groups = coverageGroups(['@forgeax/engine-scene', '@forgeax/engine-devkit'], 8);
   assert.deepEqual(
     groups.map(({ projects, files, excludes, gpuLease }) => ({
@@ -395,6 +660,7 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     [
       { projects: ['@forgeax/engine-scene'], files: [], excludes: allFiles, gpuLease: false },
       { projects: ['@forgeax/engine-scene'], files: [sceneFile], excludes: [], gpuLease: false },
+      { projects: ['@forgeax/engine-devkit'], files: [], excludes: allFiles, gpuLease: false },
       { projects: ['@forgeax/engine-devkit'], files: [], excludes: allFiles, gpuLease: false },
       {
         projects: ['@forgeax/engine-devkit'],
@@ -411,6 +677,18 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       {
         projects: ['@forgeax/engine-devkit'],
         files: [liveProcessFile],
+        excludes: [],
+        gpuLease: false,
+      },
+      {
+        projects: ['@forgeax/engine-devkit'],
+        files: [liveClientFile],
+        excludes: [],
+        gpuLease: false,
+      },
+      {
+        projects: ['@forgeax/engine-devkit'],
+        files: [workerIdentityFile],
         excludes: [],
         gpuLease: false,
       },
@@ -447,7 +725,8 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     maxWorkers: 1,
     coverage: false,
   });
-  for (const file of nativeFiles) assert.ok(ordinaryArgs.includes(`--exclude=${file}`));
+  for (const file of nativeFiles)
+    assert.ok(ordinaryArgs.includes(`--exclude=${path.resolve(file).replaceAll('\\', '/')}`));
   for (const [index, file] of nativeFiles.entries()) {
     const nativeArgs = buildGroupArgs({
       cliPath: '/workspace/scripts/run-vitest-projects.mjs',
@@ -722,6 +1001,10 @@ test('cold Standard compilation and worker parity each have one exclusive instru
     ],
     [
       '@forgeax/engine-vite-plugin-pack',
+      'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
+    ],
+    [
+      '@forgeax/engine-vite-plugin-pack',
       'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
     ],
   ];
@@ -747,17 +1030,50 @@ test('cold Standard compilation and worker parity each have one exclusive instru
   }
 });
 
-test('isolates every timed-out real shader and material owner exactly once without dropping coverage', () => {
-  const files = [
-    'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
-    'packages/shader/src/__tests__/material-program.test.ts',
-    'packages/render/src/__tests__/gpu-driven-production.integration.test.ts',
-    'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
-  ];
-  const groups = coverageGroups(['@forgeax/engine-shader', '@forgeax/engine-render'], 8);
-  for (const file of files) {
-    const owning = groups.filter((group) => group.files?.includes(file));
-    assert.equal(owning.length, 1, file);
-    assert.equal(isExclusiveCoverageGroup(owning[0]), true, file);
+test('large source and production recovery files have one exclusive instrumented owner', () => {
+  const expected = new Map([
+    [
+      'packages/render/src/__tests__/gpu-driven-batch-topology-pbr.unit.test.ts',
+      '@forgeax/engine-render',
+    ],
+    [
+      'packages/render/src/__tests__/direct-shadow-preparation.integration.test.ts',
+      '@forgeax/engine-render',
+    ],
+    [
+      'packages/render/src/__tests__/gpu-driven-production.integration.test.ts',
+      '@forgeax/engine-render',
+    ],
+    [
+      'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
+      '@forgeax/engine-render',
+    ],
+    [
+      'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
+      '@forgeax/engine-shader',
+    ],
+    ['packages/shader/src/__tests__/material-program.test.ts', '@forgeax/engine-shader'],
+    [
+      'packages/rhi-webgpu/src/__tests__/pipeline-library.unit.test.ts',
+      '@forgeax/engine-rhi-webgpu',
+    ],
+  ]);
+  const groups = coverageGroups(
+    ['@forgeax/engine-render', '@forgeax/engine-shader', '@forgeax/engine-rhi-webgpu', 'unit'],
+    8,
+  );
+  for (const [file, project] of expected) {
+    const owners = groups.filter((group) => group.files.includes(file));
+    assert.equal(owners.length, 1, file);
+    assert.ok(isExclusiveCoverageGroup(owners[0]), file);
+    assert.deepEqual(owners[0].projects, [project]);
+    assert.ok(
+      groups
+        .filter((group) => group !== owners[0])
+        .every((group) =>
+          group.files.length > 0 ? !group.files.includes(file) : group.excludes.includes(file),
+        ),
+      file,
+    );
   }
 });

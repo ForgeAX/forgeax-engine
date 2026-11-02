@@ -294,7 +294,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
       { resource: mip0, usage: 'storage-write' },
       ...(view === undefined ? [] : [{ resource: view, usage: 'uniform-read' as const }]),
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const source = shaderSource(frame, 'seed');
       // A structural graph may intentionally omit the shared View buffer. A
       // real seed must bind it because depth linearization uses the active
@@ -337,7 +337,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
               ? 'storage-write'
               : 'sampled-storage-write',
       })),
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         const source = shaderSource(frame, 'reduce');
         if (source === undefined) return;
         const reduceState = program(

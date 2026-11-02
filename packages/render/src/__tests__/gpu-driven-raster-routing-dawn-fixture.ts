@@ -10,13 +10,14 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usa
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
-import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
+import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
 import type { PersistentRenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
 import { admitPbrDawnFixture } from './gpu-driven-raster-class-dawn-fixture';
+import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 
 /** Read real cooked Standard color through both live material-pass filters. */
 export async function verifyRetainedRasterRouting(input: {
@@ -144,17 +145,21 @@ export async function verifyRetainedRasterRouting(input: {
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
   const compile = () => {
-    const graph = ensureCompiledFrameGraph(
-      { device, errorRegistry } as unknown as RenderSystemInternals,
-      state,
-      { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
-      makeZeroCameraFallbackSnapshot(),
-      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
-      1,
-      1,
-      undefined,
-      current,
-    );
+    const graph = compileAndAdoptViewGraph({
+      internals: { device, errorRegistry } as unknown as RenderSystemInternals,
+      frameState: state,
+      pipelineState: { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
+      camera: makeZeroCameraFallbackSnapshot(),
+      lights: {
+        cascades: undefined,
+        pointShadow: [],
+        spot: [],
+        shadowViews: [],
+      } as unknown as ViewLights,
+      surface: { width: 1, height: 1 },
+      shadowDepthLayers: ensureShadowDepthLayers(state, device),
+      gpuDriven: current,
+    });
     if (graph === null) throw Error(`Standard routing graph failed: ${String(errors[0])}`);
     return graph;
   };

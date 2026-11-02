@@ -130,6 +130,43 @@ fn evalPunctualBody(
     + transmitted * colorTimesIntensity * attenuation;
 }
 
+// Unshadowed directional light carried as a Cluster slot (every
+// DirectionalLight after the first; the first owns the View sun lane and CSM).
+// Same BRDF and transmission lobe as evalPunctualBody, with a constant
+// incident direction and no distance attenuation, matching Three.js
+// DirectionalLight without a shadow map.
+fn evalDirectionalSlot(
+  lightDir            : vec3<f32>,
+  colorTimesIntensity : vec3<f32>,
+  normal              : vec3<f32>,
+  viewDir             : vec3<f32>,
+  baseColor           : vec3<f32>,
+  metallic            : f32,
+  alphaSq             : f32,
+  F0                  : vec3<f32>,
+  transmission        : vec3<f32>,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> vec3<f32> {
+  let l = normalize(-lightDir);
+  let h = normalize(viewDir + l);
+  let signedNDotL = dot(normal, l);
+  let nDotL = max(signedNDotL, 0.0);
+  let nDotV = max(dot(normal, viewDir), 1e-5);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(viewDir, h), 0.0);
+  let brdf = standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  );
+  let transmitted = transmission * (max(-signedNDotL, 0.0) / 3.14159265);
+  return brdf * colorTimesIntensity * nDotL + transmitted * colorTimesIntensity;
+}
+
 // Omnidirectional point light: no cone factor.
 fn evalPoint(
   lightPos            : vec3<f32>,
@@ -415,7 +452,7 @@ fn evalSpotShadowed(
   if (shadowControls.z == 1.0) {
     shadowFactor = sample_shadow_2d_nearest(spotShadowMap, shadowSampler, uv, shadowAtlasTile, depthRef + depthBias, viewportScale);
   } else if (shadowControls.z == 8.0) {
-    shadowFactor = sample_shadow_variance(uv, shadowAtlasTile + 4, depthRef + depthBias, viewportScale);
+    shadowFactor = sample_shadow_variance(uv, shadowAtlasTile + 4, depthRef + depthBias, viewportScale, true);
   } else if (shadowControls.z == 7.0) {
     shadowFactor = sample_shadow_2d_soft(spotShadowMap, shadowSampler, uv, shadowAtlasTile, texel, depthRef + depthBias, viewportScale);
   } else {

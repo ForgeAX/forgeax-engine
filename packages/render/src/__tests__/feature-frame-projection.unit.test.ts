@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createFullscreenRenderFeature } from '../features/fullscreen';
 import { createRenderFeatureHost, type RenderFeatureFrameInput } from '../features/host';
 import type { RenderFeature, RenderFeatureHiddenEntityReport } from '../features/types';
+import { abortFeatureFrame, prepareFeatureFrame } from './feature-frame-driver';
 
 function view(
   identity: string,
@@ -34,10 +35,13 @@ describe('Feature frame projections preserve renderer inputs', () => {
     const world = new World();
     const host = createRenderFeatureHost([]).unwrap();
     const inputReports = [report(world, 9)];
-    const first = host.runFrame([view('frame', [world], inputReports), view('view:"', [world])]);
-    first.onAborted();
+    const first = prepareFeatureFrame(host, [
+      view('frame', [world], inputReports),
+      view('view:"', [world]),
+    ]);
+    abortFeatureFrame(host);
     inputReports.push(report(world, 10));
-    const second = host.runFrame([view('other', [world])]);
+    const second = prepareFeatureFrame(host, [view('other', [world])]);
     try {
       expect([...first.views.keys()]).toEqual(['frame', 'view:"']);
       expect([...second.views.keys()]).toEqual(['other']);
@@ -47,7 +51,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
       expect(first.views.get('view:"')?.hiddenEntityReports).toBe(first.frame.hiddenEntityReports);
       expect(second.frame.hiddenEntityReports).toEqual([]);
     } finally {
-      second.onAborted();
+      abortFeatureFrame(host);
       host.dispose();
     }
   });
@@ -55,7 +59,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
   it('rejects duplicate view identities before publishing a batch', () => {
     const host = createRenderFeatureHost([]).unwrap();
     try {
-      expect(() => host.runFrame([view('frame', []), view('frame', [])])).toThrow(
+      expect(() => prepareFeatureFrame(host, [view('frame', []), view('frame', [])])).toThrow(
         'duplicate render view identity',
       );
     } finally {
@@ -68,7 +72,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
     const left = report(world, 9);
     const right = report(world, 10);
     const host = createRenderFeatureHost([]).unwrap();
-    const batch = host.runFrame([
+    const batch = prepareFeatureFrame(host, [
       view('left', [world], [left, left]),
       view('right', [world], [right, right]),
     ]);
@@ -77,7 +81,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
       expect(keys(batch.views.get('left')?.hiddenEntityReports)).toEqual(keys([left]));
       expect(keys(batch.views.get('right')?.hiddenEntityReports)).toEqual(keys([right]));
     } finally {
-      batch.onAborted();
+      abortFeatureFrame(host);
       host.dispose();
     }
   });
@@ -103,7 +107,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
         ok({ work: work === 'empty' ? [] : [{ scope: 'frame', resources: [], passes: [] }] }),
     };
     const host = createRenderFeatureHost([feature]).unwrap();
-    const batch = host.runFrame([
+    const batch = prepareFeatureFrame(host, [
       view('left', [world, otherWorld], [left, shared]),
       view('right', [world, otherWorld], [right, shared]),
     ]);
@@ -116,7 +120,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
         keys([right, shared, sameEntityInOtherWorld]),
       );
     } finally {
-      batch.onAborted();
+      abortFeatureFrame(host);
       host.dispose();
     }
   });
@@ -137,7 +141,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
       second,
     ];
     const host = createRenderFeatureHost(features).unwrap();
-    const batch = host.runFrame([view('left', [world]), view('right', [world])]);
+    const batch = prepareFeatureFrame(host, [view('left', [world]), view('right', [world])]);
     try {
       expect(batch.frame.errors).toEqual([]);
       for (const projected of batch.views.values()) {
@@ -153,7 +157,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
         expect(aliases.every((id) => !projected.postProcessIdentities.includes(id))).toBe(true);
       }
     } finally {
-      batch.onAborted();
+      abortFeatureFrame(host);
       host.dispose();
     }
   });
@@ -170,7 +174,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
     try {
       for (const active of [false, true, false, true]) {
         enabled = active;
-        const batch = host.runFrame([view('left', [world]), view('right', [world])]);
+        const batch = prepareFeatureFrame(host, [view('left', [world]), view('right', [world])]);
         try {
           expect(batch.frame.errors).toEqual([]);
           for (const projected of batch.views.values()) {
@@ -178,7 +182,7 @@ describe('Feature frame projections preserve renderer inputs', () => {
             expect(projected.fullscreenEffects.has(feature.identity)).toBe(active);
           }
         } finally {
-          batch.onAborted();
+          abortFeatureFrame(host);
         }
       }
     } finally {

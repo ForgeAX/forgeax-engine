@@ -463,8 +463,8 @@ const assertOnState = (state, label) => {
 
 const assertNoUnexpectedErrors = () => {
   // Every renderer error is a gate failure. Preserve the first hello-level
-  // structured carrier together with the full error corpus so an
-  // ensureCompiledFrameGraph failure cannot be hidden by its facade wrapper.
+  // structured carrier together with the full error corpus so a
+  // graph compile failure cannot be hidden by its facade wrapper.
   const firstRendererError = consoleErrors.find(
     (message) => message.includes('[hello-taa] renderer error') || message.includes('RendererOperationError:'),
   );

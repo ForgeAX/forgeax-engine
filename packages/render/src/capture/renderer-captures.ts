@@ -1,4 +1,5 @@
-import type { CubeCameraSnapshot } from '../render-contract';
+import type { RenderError } from '../errors/render';
+import type { CubeCameraSnapshot, RenderResult } from '../render-contract';
 import type { RenderTarget } from '../targets/contracts';
 import { type CubeCaptureWork, createCubeCaptureScheduler } from './scheduler';
 
@@ -54,13 +55,14 @@ export function createRendererCaptureOwner(
       recorded = work.length > 0;
       return work;
     },
-    complete(submitted: boolean, completion?: Promise<unknown>): void {
-      if (!recorded) return;
+    /** Settle the recorded face work with the frame's submission outcome. */
+    complete(submitted: boolean, completion?: Promise<unknown>): RenderResult<void, RenderError> {
+      if (!recorded) return { ok: true, value: undefined };
       recorded = false;
       const result = scheduler.completeSubmission(submitted, completion);
       // A failed outer transaction aborts the candidate; it is already reported
-      // by the transaction owner, so only unexpected successful-submit failures throw.
-      if (submitted && !result.ok) throw result.error;
+      // by the transaction owner, so only unexpected successful-submit failures surface.
+      return submitted ? result : { ok: true, value: undefined };
     },
   };
 }

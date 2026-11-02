@@ -63,9 +63,15 @@ import {
   MaterialSkinAttrMissingError,
   SkinMaterialMismatchError,
 } from './errors/render';
+import { queryEnvironment } from './extract/environment-gate';
 import { buildGpuDrivenDraws } from './extract/gpu-driven';
 import type { VisibilitySnapshot } from './extract/visibility';
 import { extractWorldEnvironment } from './extract/world-environment';
+import {
+  captureHiddenEntities,
+  captureHiddenEntityReports,
+  isOwnedHiddenEntityReports,
+} from './features/hidden-entity-reports';
 import { MotionBlurValidationError } from './features/motion-blur/motion-blur-params';
 import type {
   RenderFeatureHiddenEntityReport,
@@ -88,6 +94,7 @@ import { IES_SLICE_CAPACITY } from './prepare/extended-lighting/resources';
 import { renderAsset, worldRenderResources } from './publication/resource-scope';
 import { type CameraSnapshot, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import type {
+  DirectionalLightSnapshot,
   DispatchEntry,
   EnvironmentFrameGate,
   ExtractedFrame,
@@ -141,6 +148,7 @@ import {
   expandDisplacementBounds,
   standardDisplacementRadius,
 } from './standard-displacement-bounds';
+import { getActiveCamera } from './systems/active-camera';
 import { extractTerrainSources } from './terrain/source.js';
 import { extractTilemapSources } from './tilemap-source';
 
@@ -160,7 +168,7 @@ export function extractFrames(
   options: {
     readonly materialContext?: MaterialCookRasterContext;
     readonly cull?: 'normal' | 'none';
-    readonly viewExtent?: import('./render-contract').PhysicalViewExtent;
+    readonly view?: import('./render-contract').ResolvedViewCamera;
     readonly renderables?:
       | 'full'
       | 'none'
@@ -439,9 +447,7 @@ function worldViewRequest(
     ...(isCameraOwner && owners.cameraEntityKey !== undefined
       ? { cameraEntityKey: owners.cameraEntityKey }
       : {}),
-    ...(isCameraOwner && request.viewExtent !== undefined
-      ? { viewExtent: request.viewExtent }
-      : {}),
+    ...(isCameraOwner && request.view !== undefined ? { view: request.view } : {}),
     ...(partialEntities === undefined ? {} : { renderableEntities: partialEntities }),
     retainHidden: request.retainHidden ?? typeof renderableRequest === 'object',
     worldId: wi,
@@ -476,6 +482,15 @@ function mergeRenderables(
   frames: readonly ExtractedFrame[],
   worldIds: readonly number[],
 ) {
+  const only = frames.length === 1 ? frames[0] : undefined;
+  if (only !== undefined)
+    return {
+      renderables: only.renderables,
+      dispatch: only.dispatch,
+      visibilitySnapshots: only.visibilitySnapshots,
+      featureVisibilitySnapshots: only.featureVisibilitySnapshots,
+      hiddenEntityReports: only.hiddenEntityReports,
+    };
   const renderables: RenderableSnapshot[] = [];
   const dispatch: DispatchEntry[] = [];
   const visibilitySnapshots: VisibilitySnapshot[] = [];
@@ -493,14 +508,10 @@ function mergeRenderables(
       if (world !== undefined)
         featureVisibilitySnapshots.push({ world, snapshot: visibilitySnapshot });
     }
-    hiddenEntityReports.push(...f.hiddenEntityReports);
-    for (const r of f.renderables) {
-      renderables.push({
-        ...r,
-        worldId: wId,
-        ...(r.pointsLines === undefined ? {} : { pointsLines: { ...r.pointsLines, worldId: wId } }),
-      });
-    }
+    for (const report of f.hiddenEntityReports) hiddenEntityReports.push(report);
+    // The extraction producer already stamps its actual World index, including
+    // Points/Lines. Composition adds dispatch offsets, not another row envelope.
+    for (const r of f.renderables) renderables.push(r);
     for (const d of f.dispatch) {
       dispatch.push({ ...d, renderableIndex: (d.renderableIndex ?? 0) + base });
     }
@@ -511,14 +522,19 @@ function mergeRenderables(
     dispatch,
     visibilitySnapshots,
     featureVisibilitySnapshots,
-    hiddenEntityReports,
+    hiddenEntityReports: frames.every((frame) =>
+      isOwnedHiddenEntityReports(frame.hiddenEntityReports),
+    )
+      ? captureHiddenEntityReports(hiddenEntityReports)
+      : hiddenEntityReports,
   };
 }
 
 /**
  * AC-04: point/spot/rect/pointShadow concat; the directional light and its
  * shadow configuration come from the first world (in worlds[] order) that has
- * one; directionalCount sums. Each view fits the cascades against its own camera.
+ * one; every other directional light joins additionalDirectional unshadowed;
+ * directionalCount sums. Each view fits the cascades against its own camera.
  */
 function mergeLights(
   worlds: readonly World[],
@@ -530,6 +546,7 @@ function mergeLights(
   const spot: SpotLightSnapshot[] = [];
   const rect: RectAreaDirectLightSnapshot[] = [];
   const pointShadow: PointShadowSnapshot[] = [];
+  const additionalDirectional: DirectionalLightSnapshot[] = [];
   let nextIesSlice = 0;
   let carry: LightRoster | undefined;
   let directionalCount = 0;
@@ -564,11 +581,14 @@ function mergeLights(
     for (const r of f.lights.rect) rect.push({ ...withIesSlice(r), worldId: wId });
     for (const ps of f.lights.pointShadow) pointShadow.push({ ...ps, worldId: wId });
     if (carry === undefined && f.lights.directional !== undefined) carry = f.lights;
+    else if (f.lights.directional !== undefined) additionalDirectional.push(f.lights.directional);
+    for (const d of f.lights.additionalDirectional ?? []) additionalDirectional.push(d);
     directionalCount += f.lights.directionalCount;
   }
   return {
     directional: carry?.directional,
     directionalCount,
+    additionalDirectional,
     point,
     spot,
     rect,
@@ -766,7 +786,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
       ? extractEnvironmentPart(world, context, worldInternal)
       : gate.read(
           world,
-          `${context.worldId}:${context.cameraEntityKey}:${context.viewExtent?.width}x${context.viewExtent?.height}:${context.resourceOwnerFog === null}`,
+          `${context.worldId}:${context.cameraEntityKey}:${getActiveCamera(world)?.entity}:${context.view?.extent.width}x${context.view?.extent.height}:${context.view?.extent.eye}:${context.resourceOwnerFog === null}`,
           (routedError) => {
             const part = extractEnvironmentPart(world, context, {
               ...worldInternal,
@@ -775,6 +795,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
                 worldInternal._routeError(error, ctx);
               },
             });
+            if (part.fogFailure !== undefined) routedError();
             return {
               value: part,
               // Volumetric fog and cloud layers carry World Time.
@@ -821,7 +842,7 @@ export function extractFrame(world: World, context: PreparedExtractContext): Ext
     postProcessParams,
     visibilitySnapshots: [context.visibility],
     featureVisibilitySnapshots: [{ world, snapshot: context.visibility }],
-    hiddenEntityReports: [...scope.explicitlyHidden].map((entity) => ({ world, entity })),
+    hiddenEntityReports: captureHiddenEntities(world, scope.explicitlyHidden),
   };
 }
 
@@ -974,8 +995,7 @@ function collectPostProcessParams(
   tonemapCamera: CameraSnapshot | undefined,
 ): Map<string, Uint8Array> {
   const postProcessParams: Map<string, Uint8Array> = new Map();
-  for (const querySpan of world
-    .query({ with: [PostProcessParams] })
+  for (const querySpan of queryEnvironment(world, { with: [PostProcessParams] })
     .unwrap()
     .spans()
     .unwrap()) {
@@ -2016,7 +2036,7 @@ function composeRenderable(
   transform: TransformSnapshot,
   skinBinding: SkinBindingInput | undefined,
 ): RenderableSnapshot {
-  const renderable: RenderableSnapshot = {
+  return {
     ...(read.hasSpriteRegionOverride
       ? {
           spriteRegion: spriteUvRegion(
@@ -2044,9 +2064,8 @@ function composeRenderable(
     materialBindingDiagnostics: materials.bindings.diagnostics,
     worldId: scope.context.worldId,
     entityKey: read.entity,
-    ...renderableAttachments(scope, read, materials, geometry, skinBinding),
+    ...renderableAttachments(scope, read, materials, submeshMaterials, geometry, skinBinding),
   };
-  return withGpuDrivenDraws(scope, renderable, materials, submeshMaterials, geometry, skinBinding);
 }
 
 function captureEntityMaterialOverrides(
@@ -2080,6 +2099,7 @@ function renderableAttachments(
   scope: WorldExtraction,
   read: MeshRendererRowRead,
   materials: EntityMaterials,
+  submeshMaterials: readonly MaterialSnapshot[],
   geometry: RenderableGeometry,
   skinBinding: SkinBindingInput | undefined,
 ): Pick<
@@ -2091,6 +2111,7 @@ function renderableAttachments(
   | 'instances'
   | 'spriteInstances'
   | 'pointsLines'
+  | 'gpuDrivenDraws'
 > {
   const pointsLines = pointsLinesSnapshotOf(scope, read, materials, geometry);
   return {
@@ -2103,6 +2124,14 @@ function renderableAttachments(
       ? { spriteInstances: geometry.spriteInstances }
       : {}),
     ...(pointsLines !== undefined ? { pointsLines } : {}),
+    ...gpuDrivenRenderableFields(
+      scope,
+      pointsLines !== undefined,
+      materials,
+      submeshMaterials,
+      geometry,
+      skinBinding,
+    ),
   };
 }
 
@@ -2130,16 +2159,16 @@ function pointsLinesSnapshotOf(
   };
 }
 
-function withGpuDrivenDraws(
+function gpuDrivenRenderableFields(
   scope: WorldExtraction,
-  renderable: RenderableSnapshot,
+  pointsLines: boolean,
   materials: EntityMaterials,
   submeshMaterials: readonly MaterialSnapshot[],
   geometry: RenderableGeometry,
   skinBinding: SkinBindingInput | undefined,
-): RenderableSnapshot {
+): Pick<RenderableSnapshot, 'gpuDrivenDraws'> | undefined {
   // The Points/Lines owner draws these rows; the GPU Scene holds no geometry for them.
-  if (renderable.pointsLines !== undefined) return renderable;
+  if (pointsLines) return undefined;
   const { lods } = geometry;
   const getMaterialShaderArtifact = scope.context.getMaterialShaderArtifact;
   const gpuDrivenDraws = buildGpuDrivenDraws({
@@ -2164,7 +2193,7 @@ function withGpuDrivenDraws(
       systemName: `RenderSystem.extract (gpu-driven-preparation:${draw.preparationError.code})`,
     });
   }
-  return gpuDrivenDraws.length > 0 ? { ...renderable, gpuDrivenDraws } : renderable;
+  return gpuDrivenDraws.length > 0 ? { gpuDrivenDraws } : undefined;
 }
 
 function removeShadowCasterDispatch(pending: DispatchEntry[]): void {

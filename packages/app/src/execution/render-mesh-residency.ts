@@ -88,7 +88,7 @@ export class RenderMeshResidency {
         ok: true,
         deviceGeneration:
           this.renderer.currentDeviceGeneration?.() ??
-          this.renderer.inspect().frame.deviceGeneration,
+          this.renderer.inspect({ fields: ['frame'] }).frame.deviceGeneration,
       });
       return;
     }

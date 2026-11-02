@@ -65,6 +65,11 @@ Every report also keeps the first two startup frames in `startupFrames` (source/
 
 ## Frontline workload
 
+Frontline installs a filesystem-backed `CatalogSource` and enumerates it through
+the runtime asset registry. The runtime owns decoding normal zstd delivery
+documents and validating publication tables; the fixture retains the stored
+catalog and fetched-byte hashes without parsing the physical JSON file itself.
+
 `--workload frontline` adds a Game-shaped render-input case beside the generic mixed case. It loads a **normal cooked voxel-game publication** and runs the real Game's `authoredSurfaceMesh`, `loadGunshotAssets` and `createGunshotFx` producers against the tested Engine module identities. It never borrows the Game checkout's unrelated local Engine pin. Renderer caps **and limits** cross to the publisher, as in App's Worker assembly; omitting limits can publish a different material context from the receiver's selected context.
 
 | Owner / event | Actual coverage | Fixed while unrelated N grows |

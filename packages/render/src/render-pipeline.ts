@@ -373,6 +373,8 @@ export interface RenderPipelineTopology {
   readonly transparency?:
     | { readonly weightedBlended: true; readonly residual: boolean }
     | undefined;
+  /** The view's planned opaque lane; the only Forward/Deferred and late-occlusion authority. */
+  readonly opaque: import('./world/pass-plan-systems').OpaquePassPlan;
 }
 
 /** Resolve the built-in final-output dither policy from the pipeline asset. */

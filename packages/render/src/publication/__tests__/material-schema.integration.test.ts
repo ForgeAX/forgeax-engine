@@ -14,7 +14,6 @@ import {
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { ownReceivedPublicationMaterials } from '../../../../app/src/execution/received-publication-materials';
 import { createRenderTargetHost } from '../../assembly/render-target-host';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { Materials } from '../../materials';
@@ -32,6 +31,7 @@ import { MATERIAL_PER_ENTITY_STRIDE } from '../../record/render-context';
 import type { RenderPublication } from '../contract';
 import { installPublicationPrograms, publicationMaterialSchemaRebinder } from '../programs';
 import { createRenderPublisher } from '../publisher';
+import { ownReceivedPublicationMaterials } from '../received-materials';
 import { RenderPublicationReceiver } from '../receiver';
 import { encodeRenderPublication, renderPublicationTransfers } from '../record';
 
@@ -103,6 +103,7 @@ it('rebinds a Worker clone to the selected program owner before retaining accept
   const owned = f.assets.shaderRegistry.findMaterialArtifact('game::forward').unwrap().paramSchema;
   const material = accepted.frame.renderables.at(0)?.material.snapshot;
   if (material?.materialParamSchema === undefined) throw new Error('Missing accepted schema');
+  expect(accepted.frame.renderables.at(0)?.material.ownsValues(material)).toBe(false);
   expect(material.materialParamSchema).toBe(owned);
   expect(getAdmittedParamSchemaInterface(material.materialParamSchema)).toBe(derive(owned));
   expect(accepted.frame.renderables.at(0)?.materials[0]?.snapshot).toBe(material);
@@ -165,6 +166,9 @@ it('finishes exclusive native material values without changing public receiver o
   const material = accepted.frame.renderables.at(0)?.material.snapshot;
   if (material === undefined) throw new Error('Missing received material');
   expect(material.immutableValues).toBe(true);
+  expect(accepted.frame.renderables.at(0)?.material.ownsValues(material)).toBe(true);
+  // Program metadata keeps its ordinary shape; the detached value subtree stays owned.
+  expect(Object.isFrozen(material)).toBe(false);
   expect(material.materialParamSchema).toBe(
     f.assets.shaderRegistry.findMaterialArtifact('game::forward').unwrap().paramSchema,
   );
@@ -210,6 +214,7 @@ it('finishes exclusive native material values without changing public receiver o
       .unwrap();
     const updated = changed.frame.renderables.at(0)?.material.snapshot;
     if (updated === undefined) throw new Error('Missing updated material');
+    expect(changed.frame.renderables.at(0)?.material.ownsValues(updated)).toBe(true);
     expect(updated).not.toBe(material);
     expect(updated.paramSnapshot?.factor).toBe(0.5);
     expect(material.paramSnapshot?.factor).toBe(0.25);

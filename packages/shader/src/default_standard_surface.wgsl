@@ -187,9 +187,7 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
   var alpha = 1.0;
 #ifdef METALLIC_TEXTURE_AVAILABLE
   if (standardUsesMetallicTexture()) {
-    if (standardReusesMetallicTextureFromBaseColorTexture()) {
-      metallicSample = baseSample;
-    } else if (standardReusesMetallicTextureFromMetallicRoughnessTexture()) {
+    if (standardReusesMetallicTextureFromMetallicRoughnessTexture()) {
       metallicSample = metallicRoughnessSample;
     } else {
       metallicSample = surfaceSample(metallicTexture, metallicTexture_sampler, input, triplanar, projection, materialValue.metallicTextureCoordinatesTransform, materialValue.metallicTextureCoordinatesMetadata, materialValue.metallicTextureCoordinatesRotation);
@@ -218,8 +216,6 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
       alphaSample = metallicRoughnessSample;
     } else if (standardReusesAlphaTextureFromMetallicTexture()) {
       alphaSample = metallicSample;
-    } else if (standardReusesAlphaTextureFromRoughnessTexture()) {
-      alphaSample = roughnessSample;
     } else {
       alphaSample = surfaceSample(alphaTexture, alphaTexture_sampler, input, triplanar, projection, materialValue.alphaTextureCoordinatesTransform, materialValue.alphaTextureCoordinatesMetadata, materialValue.alphaTextureCoordinatesRotation);
     }

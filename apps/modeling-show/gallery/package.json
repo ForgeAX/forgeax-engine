@@ -1,0 +1,12 @@
+{
+  "name": "@forgeax/app-modeling-show-gallery",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Gallery of single-Pack modeling cases: the interactive page of kernel and tool cases.",
+  "forgeax": {
+    "frameTimeoutMs": 60000,
+    "startupTimeoutMs": 600000
+  }
+}

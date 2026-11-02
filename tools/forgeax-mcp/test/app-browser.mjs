@@ -74,6 +74,7 @@ async function cli(command, args = {}) {
   } catch (error) {
     records.push({ cli: command, ms: Date.now() - startedAt, failed: true,
       code: error.code, signal: error.signal, killed: error.killed,
+      stdout: String(error.stdout ?? '').replace(/([?&](?:token|frontendTicket|forgeaxWorkspaceToken)=)[^&\s"'<>]+/g, '$1[redacted]').slice(-8000),
       stderr: String(error.stderr ?? '').replace(/([?&](?:token|frontendTicket|forgeaxWorkspaceToken)=)[^&\s"'<>]+/g, '$1[redacted]').slice(-8000) });
     throw error;
   }

@@ -1,12 +1,24 @@
+import type { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
-import { type FrameRecording, submitFrameRecordings } from '../assembly/frame-recording';
-import { createRenderFeatureHost, type RenderFeatureFrameResult } from '../features/host';
+import type { RenderError } from '../errors/render';
+import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
 import type { RenderSystemInternals } from '../record/render-context';
+import { awaitsRenderRecord } from '../world/graph-systems';
+import { endRenderFrame } from '../world/render-world';
+import { prepareFeatureFrame, stageFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
+import { type FrameRecording, submitFrameRecordings } from './frame-recording-driver';
+
+/** The settlement failures a host reported, by their internal detail code. */
+function settlementCodes(reported: readonly (RenderError | RhiError)[]): unknown[] {
+  return reported.map(
+    (error) => (error as { detail?: { error?: { code?: string } } }).detail?.error?.code,
+  );
+}
 
 it.each([
   'submit',
@@ -44,11 +56,15 @@ it.each([
     onFrameAborted: () => callback(identity, 'abort'),
     onSourceFrameSubmitted: () => callback(identity, 'source'),
   }));
-  const host = createRenderFeatureHost(features).unwrap();
+  const reported: (RenderError | RhiError)[] = [];
+  const host = createRenderFeatureHost(features, undefined, (error) =>
+    reported.push(error),
+  ).unwrap();
   const internals = {
     device,
     canvas: { width: 1, height: 1 },
     errorRegistry: { fire() {} },
+    renderWorld: host.world,
   } as unknown as RenderSystemInternals;
   const fences: (() => void)[] = [];
   vi.spyOn(device.queue, 'onSubmittedWorkDone').mockImplementation(
@@ -57,15 +73,9 @@ it.each([
   const created = vi.spyOn(device, 'createBuffer');
   const destroyed = vi.spyOn(device, 'destroyBuffer');
   let frameNumber = 0;
-  function* frame(abort = false): FrameRecording {
-    const encoder = device.createCommandEncoder().unwrap();
-    let prepared: RenderFeatureFrameResult | undefined;
-    yield {
-      kind: 'features',
-      host,
-      encoder,
-      internals,
-      input: {
+  function frame(abort = false): FrameRecording {
+    const outcome = stageFeatureFrame(host, [
+      {
         identity: 'view',
         render: true,
         worlds: [],
@@ -84,35 +94,51 @@ it.each([
             }
           : {}),
       },
-      accept: (result) => {
-        expect(result.errors).toEqual([]);
-        prepared = result;
-      },
-    };
-    const result = yield {
-      encoder,
-      device,
-      reportError() {},
-      ...(abort ? { isCurrent: () => false } : {}),
-    };
-    if (result.ok) prepared?.onSubmitted();
-    else prepared?.onAborted();
-    return result.ok;
+    ]);
+    if (outcome.kind !== 'sealed') throw new Error(`Feature frame ${outcome.kind}`);
+    const prepared = outcome.batch.views.get('view');
+    expect(prepared?.errors).toEqual([]);
+    // Open the frame before the coordinator classifies its RenderRecord boundary.
+    return (function* (): FrameRecording {
+      yield { kind: 'shared-work', internals, sceneInputs: false };
+      // The view's graph compiles in RenderRecord, before any view encodes.
+      if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
+      const result = yield {
+        reportError() {},
+        ...(abort ? { isCurrent: () => false } : {}),
+      };
+      return result.ok;
+    })();
   }
+  // RenderCommit/RenderCleanup settle the Feature frame once its submission published.
+  const record = (recording: FrameRecording) => {
+    try {
+      return submitFrameRecordings({ world: host.world, device, rendererInternals: internals }, [
+        recording,
+      ]);
+    } finally {
+      endRenderFrame(host.world);
+    }
+  };
   try {
-    expect(submitFrameRecordings([frame()])).toBe(true);
+    expect(record(frame())).toBe(true);
     const originals = created.mock.results.map((result) => result.value.unwrap());
     fences.shift()?.();
     await Promise.resolve();
     events.length = 0;
     resourceName = 'replacement';
     throwing = true;
-    expect(() => submitFrameRecordings([frame(failure === 'abort')])).toThrow(
-      'Feature frame finalization failed',
-    );
+    // The settlement systems never throw: the producer failure is reported.
+    if (failure === 'abort')
+      expect(() => record(frame(true))).toThrowError(
+        expect.objectContaining({ code: 'frame-submit-rejected' }),
+      );
+    else expect(record(frame())).toBe(true);
+    expect(settlementCodes(reported)).toEqual(['render-feature-settlement-failed']);
     throwing = false;
     // A producer exception must never leave a sibling's GPU transaction open.
-    expect(submitFrameRecordings([frame()])).toBe(true);
+    expect(record(frame())).toBe(true);
+    expect(reported).toHaveLength(1);
     const terminal = failure === 'abort' ? 'abort' : 'submit';
     expect(events.filter((event) => event === `b:${terminal}`)).toHaveLength(
       failure === 'abort' ? 1 : 2,
@@ -155,8 +181,11 @@ it('never repeats accepted source acknowledgements after terminal callback failu
     },
     onFrameAborted: () => events.push('aborted'),
   };
-  const host = createRenderFeatureHost([feature]).unwrap();
-  const batch = host.runFrame([
+  const reported: (RenderError | RhiError)[] = [];
+  const host = createRenderFeatureHost([feature], undefined, (error) =>
+    reported.push(error),
+  ).unwrap();
+  prepareFeatureFrame(host, [
     {
       identity: 'view',
       render: true,
@@ -166,11 +195,12 @@ it('never repeats accepted source acknowledgements after terminal callback failu
       caps: device.caps,
     },
   ]);
-  batch.frame.onSubmitted();
-  expect(() => batch.onSubmitted()).toThrow('Feature frame finalization failed');
-  batch.onSubmitted();
-  batch.onAborted();
+  submitFeatureFrame(host);
+  expect(settlementCodes(reported)).toEqual(['render-feature-settlement-failed']);
+  // A settled batch is never acknowledged or aborted again.
+  submitFeatureFrame(host);
   expect(events).toEqual(['submitted', 'ack']);
+  expect(reported).toHaveLength(1);
   host.dispose();
 });
 
@@ -221,7 +251,7 @@ it.each([
   }));
   const host = createRenderFeatureHost(features).unwrap();
   const frame = () =>
-    host.runFrame([
+    prepareFeatureFrame(host, [
       {
         identity: 'view',
         render: true,
@@ -251,15 +281,13 @@ it.each([
     const first = frame();
     expect(first.frame.errors.length).toBeGreaterThan(0);
     expect(first.frame.plans.map((plan) => plan.featureIdentity)).toEqual(['a']);
-    first.frame.onSubmitted();
-    first.onSubmitted();
+    submitFeatureFrame(host);
     expect(aborted).toEqual(failure === 'extract' ? [] : ['b']);
     broken = false;
     const next = frame();
     expect(next.frame.errors).toEqual([]);
     expect(next.frame.plans.map((plan) => plan.featureIdentity)).toEqual(['a', 'b']);
-    next.frame.onSubmitted();
-    next.onSubmitted();
+    submitFeatureFrame(host);
   } finally {
     gpuWork.dispose().unwrap();
     host.dispose();

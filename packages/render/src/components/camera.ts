@@ -528,8 +528,12 @@ export function validateCameraBloom(
  *   left       = -1, right  = 1, bottom = -1, top = 1  (orthographic; layer-2)
  *   tonemap    = 0          - TONEMAP_NONE (layer-2; opt-in path stays
  *                              0-overhead by default)
- *   exposure   = 1.0        - layer-2 default for the Reinhard-extended path
- *                              @applicableWhen tonemap === 'reinhard-extended'
+ *   exposure   = 1.0        - linear pre-tonemap multiplier (Three
+ *                              `toneMappingExposure`); applied before every
+ *                              tonemap operator, including ACES Filmic, AgX,
+ *                              Neutral, Cineon, Reinhard and Linear
+ *                              @applicableWhen tonemap !== 'none' (like Three's
+ *                              NoToneMapping, 'none' ignores exposure)
  *   whitePoint = 4.0        - layer-2 default for the Reinhard-extended path
  *                              @applicableWhen tonemap === 'reinhard-extended'
  *                              @minimum 0 (shader floor `max(Y, 1e-5)` keeps

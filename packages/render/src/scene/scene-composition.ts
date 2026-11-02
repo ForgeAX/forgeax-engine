@@ -22,11 +22,19 @@ import type { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { type MeshAsset, ok, type Result, type SkeletonAsset } from '@forgeax/engine-types';
 import { Instances, Lines, Points, SpriteInstances } from '../components';
+import {
+  captureHiddenEntityReports,
+  isOwnedHiddenEntityReports,
+} from '../features/hidden-entity-reports';
 import { GlyphSources } from '../glyph-source';
-import { BatchTopology, type BatchTopologyInspection } from '../gpu-driven/batch-topology';
+import {
+  BatchTopology,
+  type BatchTopologyInspection,
+  type SubmissionPlan,
+} from '../gpu-driven/batch-topology';
 import { GpuInputArena } from '../gpu-input-arena';
 import { GpuScene } from '../gpu-scene';
-import type { GpuSceneSlotBounds } from '../gpu-scene-change-log';
+import type { GpuSceneSlotBounds } from '../gpu-scene-content-boxes';
 import type { PersistentRenderSceneInspection } from '../inspection-types';
 import type { InstanceProjectionStore } from '../instances';
 import { MaterialResource, materialResource } from '../material-resource';
@@ -47,7 +55,14 @@ import type { TerrainLayers } from '../terrain/layers';
 import { TerrainSourceCache } from '../terrain/source';
 import { TilemapSources } from '../tilemap-source';
 import type { TransmissionDemand } from '../transmission/projection';
+import {
+  type BoundRenderable,
+  publishedRows,
+  retiredSlots,
+  type SceneMaterialChange,
+} from '../world/material-systems';
 import { SceneAssetClosure } from './asset-closure';
+import { CompositionAdoptionWork } from './composition-adoption';
 import { CompositionSkinAdoption } from './composition-skin';
 import type { FrameList } from './frame-list';
 import { FrameSet } from './frame-set';
@@ -154,6 +169,42 @@ export interface SceneAdvance {
   readonly materialUpdates: readonly MaterialResource[];
 }
 
+/** What a staged step accepts once its material and GPU steps succeeded. */
+type SceneAcceptance =
+  | {
+      readonly kind: 'sources';
+      readonly changes: CompositionChanges;
+      readonly leases: readonly RenderReadLease[];
+    }
+  | {
+      readonly kind: 'recompose';
+      readonly sourceStates: CompositionEntry['sourceStates'];
+      readonly attached: boolean;
+    }
+  | { readonly kind: 'publication'; readonly revision: number };
+
+/**
+ * One composition step's applied rows, appended to the Render World's
+ * `RenderSceneRows` journal for its RenderPrepare systems, each consuming it
+ * once through its own cursor: material adoption reads `change`, the GPU-owner sync
+ * reads `delta`/`materialUpdates`, and the source observation is accepted only
+ * after both succeeded, so a failed step re-observes the same changes.
+ */
+export interface SceneStage {
+  readonly entry: CompositionEntry;
+  readonly change: SceneMaterialChange;
+  readonly delta: RenderSceneApplyResult | undefined;
+  readonly materialUpdates: readonly MaterialResource[] | undefined;
+  readonly acceptance: SceneAcceptance;
+}
+
+/** A local source step: its advance, the resource frame it built, and its staged rows. */
+export interface SceneObservation {
+  readonly advance: SceneAdvance;
+  readonly resourceFrame: ExtractedFrame;
+  readonly stage: SceneStage;
+}
+
 type PersistentGpuSceneInspection = PersistentRenderSceneInspection['gpu'];
 
 /** The complete retained composition a frame reads, with its source currency checks. */
@@ -177,6 +228,12 @@ function sceneSnapshotBounds(projection: RenderScene): GpuSceneSlotBounds {
   return (slot) => projection.cullingWorldBoundsAt(slot);
 }
 
+/** The rows' journal a content-only GPU sync still appends to. */
+function sceneJournal(projection: RenderScene): Pick<RenderSceneApplyResult, 'journal'> {
+  const journal = projection.slotsSnapshot().journal;
+  return journal === undefined ? {} : { journal };
+}
+
 function sourceMembershipChanged(world: World, slot: RenderSceneSlot): boolean {
   const entity = slot.entityKey as EntityHandle;
   const snapshot = slot.snapshot;
@@ -192,16 +249,15 @@ function sourceMembershipChanged(world: World, slot: RenderSceneSlot): boolean {
   );
 }
 
-function bindMaterialDispatch(
+/** Every renderable of a frame that has a retained slot, as a bound row. */
+function* boundRenderables(
   frame: ExtractedFrame,
   projection: RenderScene,
-  dispatch = new MaterialDispatch(),
-): MaterialDispatch {
+): Iterable<BoundRenderable> {
   for (const snapshot of frame.renderables) {
     const slot = projection.slot(snapshot.worldId, snapshot.entityKey);
-    if (slot !== undefined) dispatch.bind(slot.slot, snapshot);
+    if (slot !== undefined) yield { slot: slot.slot, snapshot };
   }
-  return dispatch;
 }
 
 function topologyDeltaForAvailable(
@@ -360,7 +416,10 @@ function refreshHiddenEntityReports(
   partial: ExtractedFrame | undefined,
 ): void {
   const worldIndices = new Map(worlds.map((world, index) => [world, index]));
-  entry.hiddenEntityReports = [
+  const owned =
+    isOwnedHiddenEntityReports(entry.hiddenEntityReports) &&
+    (partial === undefined || isOwnedHiddenEntityReports(partial.hiddenEntityReports));
+  const reports = [
     ...entry.hiddenEntityReports.filter((report) => {
       const worldId = worldIndices.get(report.world);
       return (
@@ -371,6 +430,7 @@ function refreshHiddenEntityReports(
     }),
     ...(partial?.hiddenEntityReports ?? []),
   ];
+  entry.hiddenEntityReports = owned ? captureHiddenEntityReports(reports) : reports;
 }
 
 /** Clear published or departed requests; keep unpublished ones pending and out of dispatch. */
@@ -379,7 +439,8 @@ function settleRequestedIdentities(
   worlds: readonly World[],
   changedEntitiesByWorld: readonly Set<number>[],
   publishedEntitiesByWorld: readonly Set<number>[],
-): void {
+): RenderSceneSlot[] {
+  const unpublished: RenderSceneSlot[] = [];
   for (let worldId = 0; worldId < changedEntitiesByWorld.length; worldId += 1) {
     const requested = changedEntitiesByWorld[worldId];
     const published = publishedEntitiesByWorld[worldId];
@@ -401,9 +462,10 @@ function settleRequestedIdentities(
       // old CPU slot for recovery, but stop submitting stale dispatch and
       // retry the same identity even if its World version stays still.
       pending?.add(entityKey);
-      entry.materialDispatch.remove(slot.slot);
+      unpublished.push(slot);
     }
   }
+  return unpublished;
 }
 
 /** Mark unpublished retained slots unavailable; return those that just became so. */
@@ -489,6 +551,8 @@ export class SceneComposition {
     },
   });
 
+  /** Skin and Instances adoption this composition's steps leave for their systems. */
+  private readonly adoptionWork = new CompositionAdoptionWork<CompositionEntry>();
   private readonly visibilityWorldKeys = new Map<string, number>();
   private nextVisibilityWorldKey = 0;
   private materialSnapshotCaches: MaterialSnapshotCachesByWorld = new WeakMap();
@@ -515,13 +579,11 @@ export class SceneComposition {
   private latest: SceneAdvance | undefined;
   private advances = 0;
   private passes: { readonly entry: CompositionEntry; readonly list: DispatchList } | undefined;
+  private plan: { readonly entry: CompositionEntry; readonly plan: SubmissionPlan } | undefined;
   /** Publication revision and World read epoch the latest advance consumed. */
   private consumedRevision: number | undefined;
-  private extractedFrame: number | undefined;
   /** Resource-frame roots each World closure fences in the current renderer frame. */
   private readonly resourceFrameRoots = new Map<World, readonly number[]>();
-  private committedFrame: number | undefined;
-  private historyFrame: number | undefined;
   private fullRebuilds = 0;
   private worldEntitiesScanned = 0;
   private sceneTableUploadBytes = 0;
@@ -596,6 +658,48 @@ export class SceneComposition {
       worldEntitiesScanned: this.worldEntitiesScanned,
       sceneTableUploadBytes: this.sceneTableUploadBytes,
     };
+  }
+
+  /** Stage one applied step; its Pass query and batch plan are this step's products. */
+  private stage(entry: CompositionEntry, stage: Omit<SceneStage, 'entry'>): SceneStage {
+    this.passes = undefined;
+    this.plan = undefined;
+    return { entry, ...stage };
+  }
+
+  /**
+   * `render-scene-publish`: sync the GPU Scene owner from the adopted
+   * materials, then accept the staged source observation.
+   */
+  publishStage(stage: SceneStage): void {
+    const { entry, acceptance } = stage;
+    this.syncGpuOwner(
+      entry.token,
+      entry.projection,
+      entry.materialDispatch.materials(),
+      stage.delta,
+      stage.materialUpdates,
+    );
+    switch (acceptance.kind) {
+      case 'sources': {
+        const { changes, leases } = acceptance;
+        acceptObservedSources(entry, changes);
+        entry.readLeases = [...leases];
+        for (let worldId = 0; worldId < changes.nextReadVersions.length; worldId += 1) {
+          const version = changes.nextReadVersions[worldId];
+          if (version !== undefined) entry.readVersions[worldId] = version;
+        }
+        return;
+      }
+      case 'recompose':
+        if (acceptance.attached) this.fullRebuilds += 1;
+        this.lastResyncReason = 'attach';
+        for (const source of acceptance.sourceStates) source.batch.accept();
+        return;
+      case 'publication':
+        this.consumedRevision = acceptance.revision;
+        return;
+    }
   }
 
   private record(
@@ -847,7 +951,10 @@ export class SceneComposition {
    * Apply one prepared publication to the shared composition. Every view of
    * a frame passes the same publication revision; only the first applies it.
    */
-  consume(input: PreparedRenderPublication): SceneAdvance {
+  consume(input: PreparedRenderPublication): {
+    readonly advance: SceneAdvance;
+    readonly stage: SceneStage | undefined;
+  } {
     const { resources, packet } = input;
     const current = this.composition;
     if (
@@ -857,7 +964,8 @@ export class SceneComposition {
       current.worlds.length === 1 &&
       current.worlds[0] === resources
     )
-      return this.latest;
+      return { advance: this.latest, stage: undefined };
+    this.adoptionWork.clear();
     this.validatePublication(input);
     const fresh = current === undefined || packet.baseline;
     const entry = fresh ? this.initializePublication(input) : current;
@@ -874,16 +982,19 @@ export class SceneComposition {
     for (const change of input.assetChanges) this.adoptPublishedAsset(entry, resources, change);
     const delta = this.applyPublicationRows(entry, input, fresh);
     this.advancePublicationRevision(entry, packet);
-    this.queryMaterialPasses(entry);
-    this.syncGpuOwner(
-      entry.token,
-      entry.projection,
-      entry.materialDispatch.materials(),
+    // Every published row (complete snapshot) replaces its slot's dispatch binding.
+    const stage = this.stage(entry, {
+      change: {
+        retired: retiredSlots(delta),
+        bound: publishedRows(delta),
+        topology: delta,
+        materialUpdates: input.materialUpdates,
+      },
       delta,
-      input.materialUpdates,
-    );
-    this.consumedRevision = packet.revision;
-    return this.record(entry, before, delta, input.materialUpdates);
+      materialUpdates: input.materialUpdates,
+      acceptance: { kind: 'publication', revision: packet.revision },
+    });
+    return { advance: this.record(entry, before, delta, input.materialUpdates), stage };
   }
 
   private validatePublication(input: PreparedRenderPublication): void {
@@ -1039,34 +1150,30 @@ export class SceneComposition {
       });
     else {
       delta = input.scene.delta;
-      entry.projection.observe(delta, input.operations.length);
+      entry.projection.observe(
+        delta,
+        input.operations.length + delta.updatedSlots.length - delta.contentUpdatedSlots.length,
+      );
     }
-    this.skinAdoption.apply(entry, delta);
-    this.skinAdoption.published(
-      entry,
-      packet.baseline,
-      input.skinJoints?.retired ?? [],
-      input.skinJoints?.rows ?? [],
-      packet.transformEntities,
-      packet.transforms,
+    this.adoptionWork.skin.push(
+      { kind: 'rows', entry, delta },
+      {
+        kind: 'published',
+        entry,
+        baseline: packet.baseline,
+        retired: input.skinJoints?.retired ?? [],
+        rows: input.skinJoints?.rows ?? [],
+        entities: packet.transformEntities,
+        transforms: packet.transforms,
+      },
     );
-    for (const removed of delta.removedSlots) {
-      entry.materialDispatch.remove(removed.slot);
-    }
-    for (const recreated of delta.recreatedSlots) entry.materialDispatch.remove(recreated.slot);
-    // Every published row (complete snapshot) replaces its slot's dispatch binding.
-    for (const slots of [delta.createdSlots, delta.recreatedSlots, delta.contentUpdatedSlots])
-      for (const slot of slots) entry.materialDispatch.bind(slot.slot, slot.snapshot);
     if (
       delta.created + delta.recreated + delta.contentUpdatedSlots.length > 0 ||
       packet.removed.length
     ) {
       this.activeEntityEpoch += 1;
     }
-    entry.topology.apply(delta);
-    for (const material of input.materialUpdates) entry.materialDispatch.adopt(material);
-    entry.materialDispatch.prepare(entry.projection.meshFrame());
-    if (input.operations.length || delta.created > 0) this.deltaFrames++;
+    if (input.operations.length || delta.created > 0 || delta.updated > 0) this.deltaFrames++;
     else this.noChangeFrames++;
     this.transformUpdates += delta.updated;
     return delta;
@@ -1086,9 +1193,9 @@ export class SceneComposition {
     entry.publicationRevision = packet.revision;
   }
   /**
-   * Observe the source Worlds into the shared composition. Within one
-   * renderer frame (`frameKey`) only the first view observes; later views
-   * build only their own resource frame.
+   * Observe the source Worlds into the shared composition. The Render World
+   * `render-scene` system calls it once per renderer frame; every view then
+   * follows the returned advance with its own resource frame.
    */
   extract(
     worlds: readonly World[],
@@ -1096,25 +1203,8 @@ export class SceneComposition {
     assets: AssetRegistry,
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
     leases?: readonly RenderReadLease[],
-    frameKey?: number,
-  ): { readonly advance: SceneAdvance; readonly resourceFrame: ExtractedFrame } {
-    const current = this.composition;
-    if (
-      frameKey !== undefined &&
-      frameKey === this.extractedFrame &&
-      current !== undefined &&
-      this.latest?.entry === current &&
-      leases !== undefined &&
-      sameCompositionInputs(current, worlds, leases)
-    ) {
-      const resourceFrame = buildCandidateFrame('none');
-      this.fenceResourceFrame(current.assetClosures, worlds[owner.resourceOwner], resourceFrame);
-      return { advance: this.latest, resourceFrame };
-    }
-    this.extractedFrame = undefined;
-    const observed = this.observeSources(worlds, owner, assets, buildCandidateFrame, leases);
-    this.extractedFrame = frameKey;
-    return observed;
+  ): SceneObservation {
+    return this.observeSources(worlds, owner, assets, buildCandidateFrame, leases);
   }
 
   private observeSources(
@@ -1123,13 +1213,13 @@ export class SceneComposition {
     assets: AssetRegistry,
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
     leases: readonly RenderReadLease[] | undefined,
-  ): { readonly advance: SceneAdvance; readonly resourceFrame: ExtractedFrame } {
+  ): SceneObservation {
+    this.adoptionWork.clear();
     this.retireFailedInputArena();
     this.worldEntitiesScanned = 0;
     this.sceneTableUploadBytes = 0;
     this.terrainAssets = assets;
     const { materialUpdates, changed: assetsChanged } = this.adoptAssetChanges(worlds, assets);
-    for (const material of materialUpdates) this.composition?.materialDispatch.adopt(material);
     const entry = this.composition;
     if (
       entry === undefined ||
@@ -1158,31 +1248,24 @@ export class SceneComposition {
 
     const resourceFrame = buildCandidateFrame('none');
     for (const batch of changes.sourceBatches) batch.validate();
-    const changedDelta = this.applyCompositionChanges(entry, worlds, changes, buildCandidateFrame);
-    if (changedDelta === undefined) {
-      this.noChangeFrames += 1;
-      entry.materialDispatch.prepare(entry.projection.meshFrame());
-    } else {
-      replaceSlotAssetClosures(entry, worlds, changedDelta);
-    }
+    const applied = this.applyCompositionChanges(entry, worlds, changes, buildCandidateFrame);
+    const changedDelta = applied?.delta;
+    if (changedDelta === undefined) this.noChangeFrames += 1;
+    else replaceSlotAssetClosures(entry, worlds, changedDelta);
     this.resourceFrameRoots.clear();
     this.fenceResourceFrame(entry.assetClosures, worlds[owner.resourceOwner], resourceFrame);
-    this.skinAdoption.initializeJoints(entry);
-    // The Pass query resolves material rows the GPU Scene sync uploads.
-    this.queryMaterialPasses(entry);
-    this.syncGpuOwner(
-      entry.token,
-      entry.projection,
-      entry.materialDispatch.materials(),
-      changedDelta,
+    this.adoptionWork.skin.push({ kind: 'initialize', entry });
+    const stage = this.stage(entry, {
+      change: {
+        retired: applied?.retired ?? [],
+        bound: applied?.bound ?? [],
+        topology: applied?.topology,
+        materialUpdates,
+      },
+      delta: changedDelta,
       materialUpdates,
-    );
-    acceptObservedSources(entry, changes);
-    entry.readLeases = [...leases];
-    for (let worldId = 0; worldId < changes.nextReadVersions.length; worldId += 1) {
-      const version = changes.nextReadVersions[worldId];
-      if (version !== undefined) entry.readVersions[worldId] = version;
-    }
+      acceptance: { kind: 'sources', changes, leases },
+    });
     const advance =
       changedDelta === undefined &&
       materialUpdates.length === 0 &&
@@ -1190,7 +1273,7 @@ export class SceneComposition {
       this.latest?.entry === entry
         ? this.latest
         : this.record(entry, before, changedDelta, materialUpdates);
-    return { advance, resourceFrame };
+    return { advance, resourceFrame, stage };
   }
 
   /** Read each World's change evidence into one frame's requested identities and spans. */
@@ -1254,7 +1337,7 @@ export class SceneComposition {
         throw new Error('GlobalTransform projection must expose a numeric column.');
       changes.transformSpans.push({ worldId, entities: span.entities, worlds: matrices });
       if (entry.skin !== undefined)
-        for (const entity of span.entities) this.skinAdoption.joint(entry, worldId, entity);
+        this.adoptionWork.skin.push({ kind: 'joints', entry, worldId, entities: span.entities });
     }
   }
 
@@ -1324,7 +1407,8 @@ export class SceneComposition {
   ): void {
     if (previous === undefined) return;
     if (previous !== current || !world.hasComponent(previous as EntityHandle, GlobalTransform))
-      this.skinAdoption.joint(entry, worldId, previous);
+      if (entry.skin !== undefined)
+        this.adoptionWork.skin.push({ kind: 'joints', entry, worldId, entities: [previous] });
     const slot = entry.projection.slot(worldId, previous);
     if (
       batch.membershipChanged &&
@@ -1342,7 +1426,9 @@ export class SceneComposition {
     worlds: readonly World[],
     changes: CompositionChanges,
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
-  ): RenderSceneApplyResult | undefined {
+  ):
+    | (Omit<SceneMaterialChange, 'materialUpdates'> & { readonly delta: RenderSceneApplyResult })
+    | undefined {
     const { changedEntitiesByWorld, removedSlots, transformSpans } = changes;
     const hasChangedEntities = changedEntitiesByWorld.some((entities) => entities.size > 0);
     if (!hasChangedEntities && removedSlots.length === 0 && transformSpans.length === 0)
@@ -1367,54 +1453,63 @@ export class SceneComposition {
     }
     for (const batch of changes.sourceBatches) batch.validate();
     const changedDelta = entry.projection.apply(operations, transformSpans);
-    this.skinAdoption.apply(entry, changedDelta);
-    this.settleInstanceCollections(worlds, changedDelta, partial);
-    for (const removed of changedDelta.removedSlots) entry.materialDispatch.remove(removed.slot);
-    for (const recreated of changedDelta.recreatedSlots)
-      entry.materialDispatch.remove(recreated.slot);
+    this.adoptionWork.skin.push({ kind: 'rows', entry, delta: changedDelta });
+    this.queueInstanceSettlement(worlds, changedDelta, partial);
     if (partial !== undefined || removedSlots.length > 0)
       refreshHiddenEntityReports(entry, worlds, changedEntitiesByWorld, partial);
-    if (partial !== undefined) {
-      // Every published renderable replaces its slot list, including an
-      // empty list after failed producer validation.
-      bindMaterialDispatch(partial, entry.projection, entry.materialDispatch);
-    }
-    settleRequestedIdentities(entry, worlds, changedEntitiesByWorld, publishedEntitiesByWorld);
+    const unpublished = settleRequestedIdentities(
+      entry,
+      worlds,
+      changedEntitiesByWorld,
+      publishedEntitiesByWorld,
+    );
     const newlyUnavailable = updateUnavailableSlots(
       entry,
       changedEntitiesByWorld,
       publishedEntitiesByWorld,
       changedDelta,
     );
-    entry.topology.apply(
-      topologyDeltaForAvailable(changedDelta, entry.unavailableSlots, newlyUnavailable),
-    );
-    entry.materialDispatch.prepare(entry.projection.meshFrame());
     this.deltaFrames +=
       changedDelta.created + changedDelta.updated + changedDelta.removed + changedDelta.recreated >
       0
         ? 1
         : 0;
     this.transformUpdates += changedDelta.updated;
-    return changedDelta;
+    // An unpublished requested identity keeps its CPU slot but stops
+    // submitting stale dispatch. Every published renderable replaces its slot
+    // list, including an empty list after failed producer validation.
+    return {
+      delta: changedDelta,
+      retired: [...retiredSlots(changedDelta), ...unpublished],
+      bound: partial === undefined ? [] : boundRenderables(partial, entry.projection),
+      topology: topologyDeltaForAvailable(changedDelta, entry.unavailableSlots, newlyUnavailable),
+    };
   }
 
   /** Removed slots and published rows release or accept their Instances collections. */
-  private settleInstanceCollections(
+  private queueInstanceSettlement(
     worlds: readonly World[],
     delta: RenderSceneApplyResult,
     partial: ExtractedFrame | undefined,
   ): void {
-    const collections = this.options.instanceCollections;
+    if (this.options.instanceCollections === undefined) return;
+    const work = this.adoptionWork.instances;
     for (const slot of delta.removedSlots) {
       const world = worlds[slot.worldId];
-      if (world !== undefined) collections?.release(world, slot.entityKey);
+      if (world !== undefined) work.push({ kind: 'release', world, entityKey: slot.entityKey });
     }
     for (const snapshot of partial?.renderables ?? []) {
       const world = worlds[snapshot.worldId];
       if (world === undefined) continue;
-      if (snapshot.instances === undefined) collections?.release(world, snapshot.entityKey);
-      else collections?.accept(world, snapshot.entityKey, snapshot.instances);
+      if (snapshot.instances === undefined)
+        work.push({ kind: 'release', world, entityKey: snapshot.entityKey });
+      else
+        work.push({
+          kind: 'accept',
+          world,
+          entityKey: snapshot.entityKey,
+          instances: snapshot.instances,
+        });
     }
   }
   private reconcileComposition(
@@ -1423,7 +1518,7 @@ export class SceneComposition {
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
     leases?: readonly RenderReadLease[],
     preserveVisibilityOnReorder = false,
-  ): { readonly advance: SceneAdvance; readonly resourceFrame: ExtractedFrame } {
+  ): SceneObservation {
     const previousEntry = this.composition;
     const resourceScopes = worlds.map(worldRenderResources);
     const sourceStates = worlds.map((world) => createRenderSourceState(world));
@@ -1471,7 +1566,6 @@ export class SceneComposition {
     }
     const delta = this.reconcileRows(projection, renderables, worlds);
     const topology = previousEntry?.topology ?? new BatchTopology();
-    topology.apply(delta);
     const assetClosures = this.reconcileAssetClosures(worlds, owner.resourceOwner, candidateFrame);
     const token = previousEntry?.token ?? {};
     const entry: CompositionEntry = {
@@ -1494,7 +1588,7 @@ export class SceneComposition {
           ? []
           : worlds.map(createGlobalTransformChangeQuery),
       sourceStates,
-      materialDispatch: bindMaterialDispatch(stableCandidateFrame, projection, materialDispatch),
+      materialDispatch,
       skin: undefined,
       pendingRenderableEntitiesByWorld: worlds.map(() => new Set<number>()),
       unavailableSlots: new FrameSet(),
@@ -1503,17 +1597,23 @@ export class SceneComposition {
     };
     this.composition = entry;
     if (stableCandidateFrame.renderables.some((snapshot) => snapshot.skinBinding !== undefined))
-      this.skinAdoption.apply(entry, sceneSnapshotDelta(projection.slotsSnapshot()));
-    this.skinAdoption.initializeJoints(entry);
-    materialDispatch.prepare(projection.meshFrame());
-    this.queryMaterialPasses(entry);
-    this.syncGpuOwner(token, projection, materialDispatch.materials(), delta);
-    if (previousEntry === undefined) this.fullRebuilds += 1;
-    this.lastResyncReason = 'attach';
-    for (const source of sourceStates) source.batch.accept();
+      this.adoptionWork.skin.push({ kind: 'baseline', entry });
+    this.adoptionWork.skin.push({ kind: 'initialize', entry });
+    const stage = this.stage(entry, {
+      change: {
+        retired: [],
+        bound: boundRenderables(stableCandidateFrame, projection),
+        topology: delta,
+        materialUpdates: EMPTY_MATERIAL_UPDATES,
+      },
+      delta,
+      materialUpdates: undefined,
+      acceptance: { kind: 'recompose', sourceStates, attached: previousEntry === undefined },
+    });
     return {
       advance: this.record(entry, before, delta, EMPTY_MATERIAL_UPDATES, before >= 0),
       resourceFrame: candidateFrame,
+      stage,
     };
   }
 
@@ -1570,18 +1670,24 @@ export class SceneComposition {
       });
     }
     const delta = projection.apply(operations);
-    for (const snapshot of renderables) {
-      const world = worlds[snapshot.worldId];
-      if (world !== undefined && snapshot.instances !== undefined)
-        this.options.instanceCollections?.accept(world, snapshot.entityKey, snapshot.instances);
-    }
     if (this.options.instanceCollections !== undefined) {
+      const work = this.adoptionWork.instances;
+      for (const snapshot of renderables) {
+        const world = worlds[snapshot.worldId];
+        if (world !== undefined && snapshot.instances !== undefined)
+          work.push({
+            kind: 'accept',
+            world,
+            entityKey: snapshot.entityKey,
+            instances: snapshot.instances,
+          });
+      }
       const collections = new Set<import('../instances').InstanceCollectionId>();
       for (const slot of projection.slotsSnapshot()) {
         const id = slot.snapshot.instances?.collectionId;
         if (id !== undefined) collections.add(id);
       }
-      this.options.instanceCollections.retain(collections);
+      work.push({ kind: 'retain', ids: collections });
     }
     return delta;
   }
@@ -1624,6 +1730,16 @@ export class SceneComposition {
     closure.replace(-1, roots);
   }
 
+  /**
+   * A view following this frame's observation fences its own resource frame
+   * on its resource World closure, so an asset only that view reads still
+   * stales the retained scene.
+   */
+  fenceViewResourceFrame(world: World | undefined, frame: ExtractedFrame): void {
+    const entry = this.composition;
+    if (entry !== undefined) this.fenceResourceFrame(entry.assetClosures, world, frame);
+  }
+
   /** Drop the composition; every view re-derives its state from the next advance. */
   invalidate(): void {
     const skin = this.composition?.skin;
@@ -1634,7 +1750,6 @@ export class SceneComposition {
     this.latest = undefined;
     this.passes = undefined;
     this.consumedRevision = undefined;
-    this.extractedFrame = undefined;
     this.terrainSources.clear();
     this.glyphSources.clear();
     this.tilemapSources.clear();
@@ -1688,8 +1803,71 @@ export class SceneComposition {
     this.gpuOwner = undefined;
     this.gpuDevice = undefined;
     this.gpuStatus = this.options.getDevice === undefined ? 'inactive' : 'rebuild-pending';
-    this.committedFrame = undefined;
     this.retireGpuScene(scene, device);
+  }
+
+  /**
+   * Apply this frame's observed Skin input changes (the `skin-inputs` system).
+   * A failure retires the whole composition and rethrows its cause.
+   */
+  adoptSkinInputs(): void {
+    const work = this.adoptionWork.skin;
+    this.adoptionWork.skin = [];
+    for (const op of work) {
+      const entry = op.entry;
+      if (entry !== this.composition) continue;
+      switch (op.kind) {
+        case 'rows':
+          this.skinAdoption.apply(entry, op.delta);
+          break;
+        case 'baseline':
+          this.skinAdoption.apply(entry, sceneSnapshotDelta(entry.projection.slotsSnapshot()));
+          break;
+        case 'joints':
+          for (let index = 0; index < op.entities.length; index++)
+            this.skinAdoption.joint(entry, op.worldId, op.entities[index] as number);
+          break;
+        case 'initialize':
+          this.skinAdoption.initializeJoints(entry);
+          break;
+        case 'published':
+          this.skinAdoption.published(
+            entry,
+            op.baseline,
+            op.retired,
+            op.rows,
+            op.entities,
+            op.transforms,
+          );
+          break;
+      }
+    }
+  }
+
+  /** Settle this frame's accepted Instances collections (the `instance-collections` system). */
+  adoptInstanceCollections(): void {
+    const work = this.adoptionWork.instances;
+    this.adoptionWork.instances = [];
+    const collections = this.options.instanceCollections;
+    if (collections === undefined) return;
+    for (const op of work) {
+      switch (op.kind) {
+        case 'release':
+          collections.release(op.world, op.entityKey);
+          break;
+        case 'accept':
+          collections.accept(op.world, op.entityKey, op.instances);
+          break;
+        case 'retain':
+          collections.retain(op.ids);
+          break;
+      }
+    }
+  }
+
+  /** Drop adoption a failed or skipped scene step queued. */
+  discardAdoption(): void {
+    this.adoptionWork.clear();
   }
 
   /** Record that a Skin adoption failure retires the composition. */
@@ -1912,24 +2090,16 @@ export class SceneComposition {
   }
 
   /**
-   * Publish one renderer submission: the GPU Scene frame stamp and the
-   * canonical submitted history advance once, however many views submitted.
+   * Publish one accepted Renderer submission: the GPU Scene frame stamp and,
+   * when a view staged temporal history, the canonical submitted history. The
+   * Render World `render-scene-commit` system runs it once per submission.
    */
-  commitFrame(frameKey: number | undefined, temporal: boolean): Result<void, RhiError> {
-    if (frameKey === undefined || frameKey !== this.committedFrame) {
-      this.committedFrame = frameKey;
-      const committed = this.gpuScene?.commitFrame();
-      if (committed !== undefined && !committed.ok) return committed;
-    }
+  commitFrame(temporal: boolean): Result<void, RhiError> {
+    const committed = this.gpuScene?.commitFrame();
+    if (committed !== undefined && !committed.ok) return committed;
     const projection = this.composition?.projection;
-    if (
-      temporal &&
-      projection !== undefined &&
-      (frameKey === undefined || frameKey !== this.historyFrame)
-    ) {
-      this.historyFrame = frameKey;
+    if (temporal && projection !== undefined)
       projection.commitSubmission(projection.captureSubmission([], projection.slotsSnapshot()));
-    }
     return ok(undefined);
   }
 
@@ -1968,9 +2138,23 @@ export class SceneComposition {
     return passes.list;
   }
 
-  private queryMaterialPasses(entry: CompositionEntry): void {
+  /** `render-material-passes`: the step's one Pass query; the GPU Scene sync uploads its rows. */
+  queryMaterialPasses(entry: CompositionEntry): void {
     this.passes = undefined;
     this.passes = { entry, list: this.queryMaterialPassList(entry) };
+  }
+
+  /** `render-batch-plan` publishes the step's batch plan. */
+  acceptBatchPlan(entry: CompositionEntry, plan: SubmissionPlan): void {
+    this.plan = { entry, plan };
+  }
+
+  /** The batch plan of the latest step; every view of a frame reads this one plan. */
+  batchPlan(entry: CompositionEntry): SubmissionPlan {
+    const plan = this.plan;
+    if (plan === undefined || plan.entry !== entry)
+      throw new Error('The batch plan is read from the composition step that planned it');
+    return plan.plan;
   }
 
   private queryMaterialPassList(entry: CompositionEntry): DispatchList {
@@ -2107,6 +2291,7 @@ export class SceneComposition {
           recreatedSlots: [],
           previous: new Map(),
           resynced: 0,
+          ...sceneJournal(projection),
         }),
         ...(materialUpdates === undefined ? {} : { materialUpdates }),
         meshes: projection.meshFrame(),

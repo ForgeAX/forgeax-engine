@@ -99,6 +99,8 @@ published payload; uncooked output is not evidence of ray-program readiness.
 
 ### ScriptablePack build generation
 
+A `texture` ScriptablePack output with `encoding: 'ktx2'` must be a linear 2D `bc5-rg-unorm` source: the producer admits it through codec `ktx2Bc5SourceMismatch` (the same helper runtime `prepareRuntimeTexture` uses) and stores the container as an `image/ktx2` body with no Basis codec descriptor. Native `rg8unorm` texels use the ordinary raw path; other encoded textures are rejected.
+
 A `terrain` ScriptablePack output supplies a validated `TerrainSource`. The terrain producer derives subsection meshes, height/control mips and Standard material arrays as one GUID-linked closure; the existing Pack cook, Catalog and runtime loader own publication. See [the terrain contract](../terrain/README.md) for bounds and layer semantics.
 
 `buildScriptablePack()` accepts a ScriptablePack definition, resolves the
@@ -123,7 +125,9 @@ legacy Pack v2 already-published Engine materials retain their transport contrac
 The same map also accepts explicit `PackCookSource` rows for custom kinds.
 Their `execution: 'cooked'` and `source` fields dispatch through the existing
 build-time NativeCooker registry; the closed ordinary Asset producer union is
-unchanged. Cooked refs, artifacts and fingerprints participate in the same
+unchanged. A cooker whose payload is an ordinary Asset (a texture baked outside
+the build timeout, a mesh) is published as that kind through its standard
+producer, with the cooker's refs and artifacts merged. Cooked refs, artifacts and fingerprints participate in the same
 worklist, reference validation and finalizer. Staged content reads retain the
 custom author source instead of pretending its metadata is a runtime asset.
 
@@ -182,8 +186,14 @@ lane from both free memory and remaining Node heap.
 `FORGEAX_BUILD_CONCURRENCY=1..4` can lower this memory/CPU admission limit.
 Custom native cookers keep host admission serial unless they explicitly declare
 `concurrency: 'parallel'` for reentrant, input-isolated cooking. The builtin
-material and particle cookers declare that capability. Existing worker lifetime
-and source/reference validation remain in effect.
+material and particle cookers declare that capability. `NativeCookerRegistry`
+owns that admission: concurrent `runDraft` calls of a serial cooker key run one
+at a time in call order, whichever registry or instance receives them. Within one
+Pack, up to four complete custom outputs share admission in sourceKey order, so a serial custom cooker (a modeling job) keeps its order
+while the material cooks it returns fill the material worker pool; rows publish
+in sourceKey order and the first failure in that order is returned after started
+outputs settle. Existing worker lifetime and source/reference validation remain
+in effect.
 
 Source path projection preserves nested imports: `assets/original/assets/ui.pack.ts`
 and `assets/cloned/assets/ui.pack.ts` remain distinct in both development and build
@@ -436,8 +446,15 @@ integrity are checked on read. A hit reuses the complete staged product, then
 passes through the same current-generation
 GUID/reference-closure validation as a cold build. Material CookedRecords keep
 their publication fence in the stored product; the current generation is rebound
-on reuse without recompiling the immutable material program. Products with observed
-external content reads or a native cooker without `cacheIdentity` bypass this
+on reuse without recompiling the immutable material program. A product that read
+content by GUID stores each dependency's content digest. On a key match the cache
+asks the worklist for every dependency's current digest (a staged output, or the
+published snapshot only when no other subject is still pending) and hits only when
+all digests are equal. The resolver cooks nothing: an unavailable dependency is a
+miss, the cook then waits on `asset-not-found`, and a later pass retries. A
+changed, missing or failed dependency is a miss, so a byte-equal dependency rebuilt from an edited source keeps its
+dependents. Products with a reference-only external row (no content bytes to
+validate; a known limit) or a native cooker without `cacheIdentity` bypass this
 cache; a miss or damaged entry rebuilds normally. These entries are disposable
 derived data, not Pack or Catalog authority.
 
@@ -793,13 +810,65 @@ The caller supplies stable GUIDs through the existing source-key identity route.
 Publish the root and all generated siblings atomically through the ordinary
 Pack production path. The Mesh producer emits the root's lower-level refs and
 mesh-binary v5 artifacts; Catalog and `assets.load(guid, 'mesh')` consume them.
-For ScriptablePack, declare the same output keys and return the root and siblings
-from `build`. Generation never allocates GUIDs, writes source, or changes the input.
+Generation never allocates GUIDs, writes source, or changes the input.
+
+All material sections are simplified in one pass: vertices shared between sections are
+split into bit-identical copies, so adjacent sections collapse consistently and no
+back-to-back duplicate triangles appear. Each level is then checked against LOD 0 and
+must add no non-manifold edge and no open boundary edge. On failure the vertices around
+the defect are locked (rings 1 to 4) and the level is retried; if no retry passes, the
+previous valid level is reused. Level positions stay bit-identical to the source.
+
+A level that still exceeds its triangle target is retried once with the simplifier's
+`Permissive` flag, which also collapses across attribute seams. Flat-shaded or UV-split
+parts (every corner its own vertex) have no seam-free collapse, so the first pass returns
+their source unchanged. The retry locks vertices shared by two sections, uses the same
+topology check and ring locks, and is adopted only when it has fewer triangles than the
+previous valid level. `targetReached` stays false when the error budget still blocks the
+target; faceted normals make that budget tighter than on smooth parts.
+
+### Pack mesh LOD requests
+
+A ScriptablePack build requests levels for its own mesh outputs with
+`generatePackMeshLods(packageId, outputs, requests)` from the same subpath (design
+seam X4). Level `i` becomes the ordinary output `<key>/lod<i + 1>`; its GUID is
+`AssetGuid.derive(packageId, sourceKey)` like every other output, so it survives
+rebuilds and instances. The returned `outputs` replace the root and add the levels;
+`reports` carry the per-level triangle count, error and `targetReached`.
+
+```ts
+import { generatePackMeshLods } from '@forgeax/engine/import/mesh-lod-generator';
+
+build: async ({ packageId, values }) => {
+  const rim = buildWheelRim(values).finish({ key: 'wheel-rim' }); // { 'mesh/wheel-rim': MeshAsset }
+  if (!rim.ok) return rim;
+  const lods = await generatePackMeshLods(packageId, rim.value, {
+    'mesh/wheel-rim': {
+      maxError: 0.005,
+      levels: [
+        { triangleRatio: 0.6, screenCoverage: 0.5 },
+        { triangleRatio: 0.4, screenCoverage: 0.25, maxError: 0.02 },
+      ],
+    },
+  });
+  return lods.ok ? ok(lods.value.outputs) : lods;
+},
+```
+
+A missing or non-mesh root, a level key the build already returns, and invalid
+options fail with `mesh-lod-generation-invalid` whose `detail.reason` starts with
+the root source key. Live-generation Packs may import this subpath. Evidence: the
+C-101 rim (case C-015) in `packages/import/__tests__/mesh-lod-pack.dawn.test.ts`
+cooks through the Pack loader and Mesh producer and renders each decoded level.
+Hard-surface sources with many sharp edges and UV seams reduce less, because
+seam-preserving collapses keep vertices where several attribute wedges meet: the
+rim (7208 triangles) reaches 66 %, 55 % and 50 % at budgets 0.005, 0.02 and 0.05,
+with `targetReached: false` for ratios 0.6, 0.4 and 0.25.
 
 | Contract | Behavior |
 |:--|:--|
 | Levels | One to seven, strictly decreasing triangle ratios and screen coverage |
-| Error | `maxError` in `[0, 1]`, relative to source extent, including weighted attributes; each level simplifies the original independently |
+| Error | `maxError` in `[0, 1]`, relative to source extent, including weighted attributes; an optional per-level `maxError` overrides it (coarser levels usually allow more); each level simplifies the original independently |
 | Sections | Triangle lists with a complete ordered partition; original material slots and section identities survive |
 | Appearance | Attribute-aware normals/tangents (weight 0.5), all UV sets and color (weight 1), topology-preserving seams |
 | Open edges | Locked by default; `lockBorder: false` permits boundary simplification |
@@ -985,7 +1054,7 @@ fields derive from ImportedAsset; runtime Assets still never carry ref indices.
 Production builds emit one file per artifact. Player packaging groups them into
 Asset Bundles; see [the DevKit player delivery contract](../devkit/README.md#player-asset-bundles).
 
-Native cookers opt into reentrant output preparation with `concurrency: 'parallel'`.
-ScriptablePack admits at most four contiguous opted-in outputs at a time,
-preserves authored publication order and drains admitted cooks before returning
-the first authored failure. Producers without that declaration remain serial.
+ScriptablePack output admission and native cooker serialization follow the
+[build-time admission contract](#scriptablepack-build-generation): complete custom
+outputs overlap within a four-output bound, while each native cooker retains
+its registry-owned serial or opted-in parallel policy.

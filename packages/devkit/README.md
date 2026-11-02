@@ -1,5 +1,10 @@
 # @forgeax/engine-devkit
 
+Frame submission observes texture residency only when a prepared resource has a
+texture binding to verify. That read requests the same frame and complete material
+binding inventory together; ordinary game submissions do not construct unrelated
+renderer diagnostics. Material build guards request device capabilities directly.
+
 Interactive Material resource presentations expose App's native material-preview
 Fiber through the existing workspace provider and browser command transport.
 `engine.preview.material.get/set/rotate/reset` preserve authenticated caller and
@@ -769,7 +774,7 @@ No-substitution template imports retain their decoded literal semantics.
 Program relocation and Engine dependency isolation inspect the same edges,
 while authoring-source validation remains a separate TypeScript operation.
 
-A build root is a native Plugin installed in an isolated Node process. It registers `ctx.nativeCookers` and `ctx.importers` through effects. Original producer functions remain in that process; typed IPC carries requests and bytes. Import `@forgeax/engine/devkit/plugin-build` for the build Context type augmentation. Duplicate keys, blocked bootstrap content reads, startup failures and cleanup residuals reject preparation.
+A build root is a native Plugin installed in an isolated Node process. It registers `ctx.nativeCookers` and `ctx.importers` through effects. Original producer functions remain in that process; typed IPC carries requests and bytes. Import `@forgeax/engine/devkit/plugin-build` for the build Context type augmentation. Duplicate keys, blocked bootstrap content reads, startup failures and cleanup residuals reject preparation. Each IPC operation has a deadline that terminates the build process when exceeded (default 60 s); a cooker that declares `timeoutMs` gets that bound for its own cooks instead, so a long native build (a modeling rig job) can run longer without raising every other operation's deadline. A cooker that declares `concurrency: 'parallel'` keeps that declaration across the process boundary: its cooks overlap in the build process (other operations stay in arrival order), and the Pack build may then admit several Packs at once.
 
 Build roots may also provide `ctx.devkitAppOptions`, a `DevKitAppOptions` data
 object projected into generated dev/build hosts before `createApp`. It accepts
@@ -1784,6 +1789,95 @@ while its event is stopped before reaching gameplay. Successful entry removes
 Loading and fatal overlays scroll when their content exceeds the viewport. The
 fatal page keeps its Copy diagnostics button above the complete, expanded error
 text; the diagnostic block no longer has a separate collapsed or scrolling area.
+
+## Modeling render and replay
+
+The Node CLI includes the optional, pinned Linux Dawn prebuilt provider in its
+production dependency closure. A fresh installed SDK can render modeling Packs
+without relying on a development workspace's dependencies. macOS and Windows
+retain the carrier's explicit native-build preparation. Browser WebGPU does not
+use this provider.
+
+Outputs carry `timing`: the capture Worker phases (`load`, `build`, `summarize`,
+`validate`, `target`, `total`) plus `renderMs` for the Renderer and publication that followed.
+
+`model.render` (`forgeax model render --source <pack> --json`) composes the modeling
+capture with the real Engine Renderer in Node. The capture Worker re-runs the Pack build
+and exports the selected session state (final, `--checkpoint`, or `--step` = the state
+right after one operation) as a session-local MeshAsset that never enters the Catalog;
+`--selector` faces take the `highlight` slot. The renderer draws it through the App
+preview display (`--mode wireframe`, `--overlays` from the modeling overlay kinds) from
+the named cameras `front/back/left/right/top/bottom/iso` or free cameras in the same
+`--views` list: `{ name?, yaw, pitch }` (degrees; yaw about +Y from `front`, 90 is
+`right`; pitch lifts the eye above the horizon, 90 is `top`) or `{ name?, direction }`
+(subject center to eye), for example a reference sheet's slightly pitched camera. A free
+camera keeps screen right horizontal (straight down or up keeps the top frame turned by
+the yaw), shares the orthographic scale, works in perspective too, names its fact and file
+`view-<name>.png` (default `yaw<y>-pitch<p>` or `dir-<x>_<y>_<z>`) and is labelled like
+`iso` (true 3D sizes); malformed or duplicate cameras are `tool-invalid-args`. The axis
+cameras use the modeling kernel's `ORTHO_VIEWS` drawing frames, so contours and reference
+boards line up.
+
+| Projection | Framing |
+|:--|:--|
+| `orthographic` (default) | One `pixelsPerMeter` for every view: the largest scale that fits the bounds (or `--frame`) into all requested views with a margin for dimensions; `--scale` pins it across runs |
+| `perspective` | The App preview framing distance shared by every view |
+
+Orthographic views get a drawing-sheet layer on the CPU after readback (`--annotate
+false` removes it), drawn from the exact pixel mapping (`src/tools/model-sheet.ts`): grid
+lines under the subject (only on pixels still at the background color), extent
+dimensions, the session's design drawing curves and dimension spans, extruded
+contours, `--measure` world spans, a scale bar and the view title. Axis views label
+in-plane extents; a span that is not parallel to the sheet prints its projected and 3D
+lengths. The oblique `iso` view prints only true 3D sizes: the bounding-box X/Y/Z edges
+from its lowest corner and each span's 3D length (`annotation.size`, no `extents`).
+Labels avoid each other, the title and the scale bar: each tries spots along and across
+its line, then rings around it, and keeps a dashed leader when it moves
+(`annotation.labels` counts displaced labels and lists any that still overlap).
+Coverage is measured before the layer. Engineering views come from the capture:
+`--section` cuts the copy at a plane, keeps the side opposite the normal and draws the
+even-odd cap and hatch as preview overlays; `--xray` moves a selection to the `xray` slot,
+drawn as an alpha-blended Standard material without depth writes; `--explode` moves parts
+(tag, label, material or island) apart. Results go to `.forgeax/tool-runs/<run>/` as one
+PNG per view plus `sheet.png` (ordinary `png` ArtifactRefs, so operation history keeps
+copies) with per-view `coverage`, cameras, annotation facts, mesh facts, drawing,
+section/explode/xray facts and overlay legends.
+
+`--materials auto|palette` (default `palette`, existing sheets unchanged) chooses the
+surface materials. `auto` binds the Pack's own `material/<slotName>` output (taken from the
+capture's `materials`, the same build as the mesh) to the slot of the same name, rewrites
+its texture GUIDs to textures created from the same Pack's `texture/*` outputs, and keeps
+the palette color for slots without a Pack material; extra Pack outputs are ignored. The
+`highlight` and `xray` slots stay render-owned. The result lists
+`materialBinding: [{ slot, source }]` with `source` one of `pack`, `palette` or `reserved`.
+A bound material holding any other GUID (cross-Pack texture, parent, custom shader module)
+fails with `model-render-material-load-failed` (detail `{ slot, guid }`).
+
+The result carries `renderer: { backend, adapter, software }`: `backend` is the RHI
+`backendKind` the Renderer selected (`webgpu`, `wgpu-native`, ...), `adapter` the
+`{ vendor, architecture, device, description }` strings of the adapter that Renderer
+requested (empty strings when the provider exposes none), and `software` is
+`isSoftwareAdapter(adapter)`, the one predicate that is true for Lavapipe and SwiftShader
+(case-insensitive `llvmpipe`, `lavapipe`, `swiftshader`). The field only labels the
+render; a pixel-only finding from a software render is not a kernel failure (F-23), and
+no policy reads it.
+
+`model.replay` (`forgeax model replay --source <pack> [--steps '[..]'] [--view iso]`, `--view` also takes a free camera)
+re-runs the build with a snapshot after every operation and renders the chosen states
+(default: every successful operation that leaves faces, sampled to 64) with one camera
+that frames all of them, as `step-NNN.png` frames and a captioned `strip.png`; each frame
+reports its operation, label, author source line, size and coverage.
+
+The GPU is the shared Node provider (`src/node-gpu.ts`, also used by RHI replay): Dawn
+by default, `FORGEAX_WEBGPU_NODE=wgpu-native` for the native addon. Failures are
+`model-render-backend-unavailable` (no provider or Renderer start),
+`model-render-gpu-error` (any Renderer error event or uncaptured device/validation
+error during the views; detail lists them), `model-render-empty` (a state differs
+from the clear color in no view) and `model-render-material-load-failed` (`--materials auto`
+meets an unresolvable GUID). `src/tools/__tests__/model-render.dawn.test.ts`
+falsifies the highlight, overlay, wireframe and Pack-material paths against plain renders;
+`model-views.dawn.test.ts` falsifies the orthographic scale, the sheet layer, section
+caps, X-ray, explode and replay.
 
 ## RHI-debug operations
 

@@ -111,7 +111,8 @@ describe('target capture lighting ownership', () => {
     const completion = new Promise<void>((resolve) => {
       finishCapture = resolve;
     });
-    oldPlanar.submit(true, completion);
+    oldPlanar.stage(true, completion);
+    oldPlanar.settle(true);
     let finishFence!: (value: undefined) => void;
     const fence = new Promise<undefined>((resolve) => {
       finishFence = resolve;

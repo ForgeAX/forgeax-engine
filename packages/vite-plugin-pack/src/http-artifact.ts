@@ -78,6 +78,44 @@ export function varyEncoding(response: HttpResponse): void {
   response.setHeader('Vary', values.join(', '));
 }
 
+/**
+ * One RFC 9110 byte range: `first-last`, open-ended `first-` (the form
+ * HTMLMediaElement sends), or suffix `-length`. Multipart ranges are refused.
+ */
+function parseByteRange(
+  header: string | readonly string[],
+  size: number,
+): { readonly start: number; readonly end: number } | undefined {
+  if (typeof header !== 'string') return undefined;
+  const bounded = /^bytes=(\d+)-(\d+)$/.exec(header);
+  if (bounded) return { start: Number(bounded[1]), end: Number(bounded[2]) };
+  const open = /^bytes=(\d+)-$/.exec(header);
+  if (open) return { start: Number(open[1]), end: size - 1 };
+  const suffix = /^bytes=-(\d+)$/.exec(header);
+  if (!suffix) return undefined;
+  const length = Number(suffix[1]);
+  if (length === 0) return undefined;
+  return { start: Math.max(0, size - length), end: size - 1 };
+}
+
+/**
+ * The satisfiable single-range window of `header` over `size` bytes:
+ * `bytes=a-b`, open-ended `bytes=N-` (what a `<video>` element sends), and
+ * suffix `bytes=-N`. Multipart, malformed, empty and out-of-bounds ranges are
+ * `undefined` (answered with 416).
+ */
+function byteRange(
+  header: string | readonly string[],
+  size: number,
+): { readonly start: number; readonly end: number } | undefined {
+  const window = parseByteRange(header, size);
+  if (window === undefined) return undefined;
+  const { start, end } = window;
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= end && end < size
+    ? window
+    : undefined;
+}
+
 /** Server-local representations weakly owned by the existing published raw body. */
 export class HttpArtifactCompression {
   private readonly prepared = new WeakMap<Uint8Array, Uint8Array | undefined>();
@@ -164,23 +202,15 @@ export class HttpArtifactCompression {
       return;
     }
     if (range !== undefined) {
-      const match = typeof range === 'string' ? /^bytes=(\d+)-(\d+)$/.exec(range) : null;
-      const start = Number(match?.[1]),
-        end = Number(match?.[2]);
-      if (
-        !match ||
-        !Number.isSafeInteger(start) ||
-        !Number.isSafeInteger(end) ||
-        start < 0 ||
-        end < start ||
-        end >= artifact.bytes.byteLength
-      ) {
+      const window = byteRange(range, artifact.bytes.byteLength);
+      if (window === undefined) {
         response.statusCode = 416;
         response.setHeader('Content-Range', `bytes */${artifact.bytes.byteLength}`);
         response.setHeader('Content-Length', '0');
         response.end('');
         return;
       }
+      const { start, end } = window;
       response.statusCode = 206;
       response.setHeader('Content-Range', `bytes ${start}-${end}/${artifact.bytes.byteLength}`);
       response.setHeader('Content-Length', String(end - start + 1));

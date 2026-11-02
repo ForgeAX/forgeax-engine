@@ -1,9 +1,11 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
+import type { ClusterBinScratch } from '../../cluster-binner';
 import { type RenderError, StandardLightBudgetExceededError } from '../../errors/render';
 import { MAX_LIGHTS } from '../standard-profile';
 import { createStandardClusterLayout, type StandardClusterLayout } from './layout';
 import type { StandardLightFrame } from './light-frame';
 import { deriveStandardMembership, type StandardClusterMembership } from './membership';
+import type { StandardClusterMembershipOwner } from './membership-owner';
 
 export type { StandardLightFrame } from './light-frame';
 
@@ -18,12 +20,17 @@ export interface PreparedStandardLighting extends StandardClusterMembership {
 
 export function prepareStandardLighting(
   frame: StandardLightFrame,
+  scratch?: ClusterBinScratch,
+  owner?: StandardClusterMembershipOwner,
 ): Result<PreparedStandardLighting, RenderError> {
   if (frame.local.length > frame.lightCount || frame.local.length > MAX_LIGHTS) {
     return err(new StandardLightBudgetExceededError(frame.local.length, frame.lightCount));
   }
   const layout = createStandardClusterLayout(frame.grid);
-  const membership = deriveStandardMembership(frame, layout);
+  const membership =
+    owner === undefined
+      ? deriveStandardMembership(frame, layout, scratch)
+      : owner.derive(frame, layout, scratch);
   if (!membership.ok) return membership;
   return ok({
     ...membership.value,

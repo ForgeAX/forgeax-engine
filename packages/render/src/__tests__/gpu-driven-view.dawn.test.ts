@@ -11,8 +11,11 @@ import {
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
-  it('keeps true Skin source slot independent of visible instance and candidate identity', async () => {
-    const result = await runGpuDrivenSkinVisibleAddressEvidence();
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('keeps true Skin source slot independent with %s passes', async (mode) => {
+    const result = await runGpuDrivenSkinVisibleAddressEvidence(mode);
     expect(result, `actual skin visible addresses ${JSON.stringify(result)}`).toEqual({
       visibleInstance: 0,
       candidateIndex: 2,
@@ -41,8 +44,11 @@ describe('GPU-driven View Dawn', () => {
       ].sort((left, right) => left.slot - right.slot),
     );
   });
-  it('produces compact visible IDs and portable indirect args on the real GPU API', async () => {
-    await expect(runGpuDrivenViewGpuEvidence()).resolves.toEqual({
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('produces real GPU visible IDs and indirect args with %s passes', async (mode) => {
+    await expect(runGpuDrivenViewGpuEvidence(mode)).resolves.toEqual({
       visibleInstance: 0,
       indexCount: 12,
       instanceCount: 1,

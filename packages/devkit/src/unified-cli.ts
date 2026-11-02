@@ -47,6 +47,24 @@ interface ParsedCli {
   readonly args: Record<string, unknown>;
 }
 
+type ParsedCliResult =
+  | { readonly ok: true; readonly value: ParsedCli }
+  | { readonly ok: false; readonly error: unknown };
+
+/** Only exact built-in recovery commands may omit extension discovery. */
+function backendControlDiscovery(
+  parsed: ParsedCliResult,
+): Parameters<typeof createDevkitCliStartup>[1] {
+  return parsed.ok &&
+    !parsed.value.helpRequested &&
+    parsed.value.args.help !== true &&
+    parsed.value.path.length === 2 &&
+    parsed.value.path[0] === 'backend' &&
+    ['start', 'status', 'stop'].includes(parsed.value.path[1] ?? '')
+    ? async () => []
+    : undefined;
+}
+
 function flagKey(value: string): string {
   return value.slice(2).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
 }
@@ -310,15 +328,18 @@ export async function runUnifiedCli(
     // Host for that target. A malformed request still starts the default Host
     // before returning its parse failure; discovery and dispatch remain behind
     // the Host lifecycle.
-    let parsedResult:
-      | { readonly ok: true; readonly value: ParsedCli }
-      | { readonly ok: false; readonly error: unknown };
+    let parsedResult: ParsedCliResult;
     try {
       parsedResult = { ok: true, value: parseArgs(argv) };
     } catch (error) {
       parsedResult = { ok: false, error };
     }
-    cli = createDevkitCliStartup(parsedResult.ok ? parsedResult.value.root : process.cwd());
+    // Recovery controls must not import the project/Host Pack they need to stop.
+    // Keep help and every other command on ordinary extension discovery.
+    cli = createDevkitCliStartup(
+      parsedResult.ok ? parsedResult.value.root : process.cwd(),
+      backendControlDiscovery(parsedResult),
+    );
     startup = await createHostStartup({ startupPlugins: [createToolApiPlugin(), cli.plugin] });
     if (!parsedResult.ok) throw parsedResult.error;
     const parsed = parsedResult.value;

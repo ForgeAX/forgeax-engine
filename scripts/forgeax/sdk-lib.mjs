@@ -206,6 +206,7 @@ export const SDK_SOURCE_GIT_DEPENDENCIES = Object.freeze([
   'third_party/wgpu',
   'third_party/blitz',
   'tools/view',
+  'packages/modeling',
 ]);
 export const SDK_SOURCE_EXCLUDED_PATHS = Object.freeze([
   '.gitmodules',

@@ -151,11 +151,11 @@ describe('material raster state', () => {
   });
 
   it.each([
-    [undefined, 'front'],
-    ['back', 'front'],
-    ['front', 'back'],
+    [undefined, 'back'],
+    ['back', 'back'],
+    ['front', 'front'],
     ['none', 'none'],
-  ] as const)('generated shadows reverse single-sided color culling (%s -> %s)', (cullMode, shadowCull) => {
+  ] as const)('generated shadows preserve authored sidedness (%s -> %s)', (cullMode, shadowCull) => {
     const renderState = {
       ...(cullMode === undefined ? {} : { cullMode }),
       frontFace: 'cw' as const,

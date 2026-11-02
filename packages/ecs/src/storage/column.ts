@@ -74,7 +74,17 @@ function isSharedBuffer(buffer: ArrayBufferLike): buffer is SharedArrayBuffer {
 }
 
 /** A single column: one field's ArrayBuffer + TypedArray view. */
+const COLUMN_WINDOW = Symbol('ecs.column-window');
+interface ColumnWindow {
+  readonly source: FieldView;
+  readonly start: number;
+  readonly end: number;
+  readonly managed: string | undefined;
+  readonly value: FieldView | ManagedColumnReader<string>;
+}
+
 export interface Column {
+  [COLUMN_WINDOW]?: ColumnWindow | undefined;
   buffer: ArrayBuffer | SharedArrayBuffer;
   view: FieldView;
   capacity: number;
@@ -93,6 +103,42 @@ export interface Column {
   arity: number;
   /** Variable-array sidecar key, derived once with this table's field layout. */
   countField?: string;
+}
+
+/**
+ * One latest physical window at the column owner. The carrier of a Query span
+ * stays fresh/mutable; only equal borrowed typed views or frozen readers share.
+ */
+export function columnWindow(
+  column: Column,
+  start: number,
+  end: number,
+  managed: string | undefined,
+  cache: boolean,
+): FieldView | ManagedColumnReader<string> {
+  const source = column.view;
+  if (start === 0 && end === source.length && managed === undefined) return source;
+  const previous = cache ? column[COLUMN_WINDOW] : undefined;
+  if (
+    previous?.source === source &&
+    previous.start === start &&
+    previous.end === end &&
+    previous.managed === managed
+  )
+    return previous.value;
+  const view = start === 0 && end === source.length ? source : source.subarray(start, end);
+  const value =
+    managed === undefined
+      ? view
+      : Object.freeze({
+          length: view.length,
+          get(index: number): number {
+            return view[index] ?? 0;
+          },
+          __managed: managed,
+        });
+  if (cache) column[COLUMN_WINDOW] = { source, start, end, managed, value };
+  return value;
 }
 
 /**
@@ -164,7 +210,7 @@ export function growColumn(col: Column, newCapacity: number): Column {
   }
 
   const view = new Ctor(buffer);
-  return { ...col, buffer, view, capacity: newCapacity };
+  return { ...col, buffer, view, capacity: newCapacity, [COLUMN_WINDOW]: undefined };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

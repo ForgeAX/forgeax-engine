@@ -63,6 +63,31 @@ afterEach(() => {
 });
 
 describe('IBL precompute completion boundaries', () => {
+  it('retires delayed shader preparation before any layout touches the disposed device', async () => {
+    const device = unwrap(await new RhiNullAdapter().requestDevice());
+    const scope = DeviceScope.create(1, 'ibl-delayed-disposal');
+    let release: (() => void) | undefined;
+    const delayed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const layouts = vi.spyOn(device, 'createBindGroupLayout');
+    const pending = createIblPipelines(scope, device, async (owner, descriptor) => {
+      const module = await createShaderModule(owner, descriptor);
+      await delayed;
+      return module;
+    });
+    scope.dispose();
+    layouts.mockImplementation(() => {
+      throw new Error('Pipeline library device is disposed');
+    });
+    release?.();
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: { code: 'rhi-not-available' },
+    });
+    expect(layouts).not.toHaveBeenCalled();
+  });
+
   it('falls back to a timer when worker requestAnimationFrame rejects', async () => {
     const { device, scope, cache, options } = await fixture();
     vi.stubGlobal('requestAnimationFrame', () => {
@@ -141,13 +166,17 @@ describe('IBL precompute completion boundaries', () => {
   ])('does not publish after the final %s', async (failure) => {
     const { device, scope, cache, options } = await fixture();
     vi.spyOn(device.queue, 'onSubmittedWorkDone').mockImplementation(async () => {
-      if (!device.framePassNames.includes('ibl-prefilter')) return;
+      if (!device.framePassNames.includes('ibl-brdf-lut')) return;
       if (failure === 'fence failure') throw new Error('device lost');
       scope.abandon();
     });
     const result = await runIblPrecompute(options);
     expect(result).toMatchObject({ ok: false, error: { code: 'ibl-precompute-not-dispatched' } });
     expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(60);
+    expect(device.framePassNames.filter((name) => name === 'ibl-irradiance')).toHaveLength(6);
+    expect(device.framePassNames.lastIndexOf('ibl-prefilter')).toBeLessThan(
+      device.framePassNames.indexOf('ibl-irradiance'),
+    );
     expect(device.framePassNames).toContain('ibl-brdf-lut');
     expect(device.totalDrawCount).toBe(73);
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
@@ -184,7 +213,10 @@ describe('IBL precompute completion boundaries', () => {
     expect(result).toMatchObject({ ok: false, error: { code: 'ibl-precompute-not-dispatched' } });
     expect(submitted).toBe(8);
     expect(fence).not.toHaveBeenCalled();
-    expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(1);
+    // Submission order: one equirect-to-cube batch, then the PMREM prefilter
+    // faces, then the irradiance faces that read the finished atlas.
+    expect(device.framePassNames.filter((name) => name === 'ibl-prefilter')).toHaveLength(7);
+    expect(device.framePassNames).not.toContain('ibl-irradiance');
     expect(device.framePassNames).not.toContain('ibl-brdf-lut');
     expect([cache.irradianceBakeCount, cache.prefilterBakeCount, cache.brdfLutBakeCount]).toEqual([
       0, 0, 0,

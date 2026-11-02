@@ -17,11 +17,22 @@ import type {
   ScriptablePackBuildProduct,
   ScriptablePackBuildProductCache,
   ScriptablePackBuildWorkItem,
+  ScriptablePackDependencyResolver,
 } from './scriptable-pack-build-core.js';
 
 // Format 9 keeps typed-array backing buffers independent of the serialized Pack.
 // DefaultSerializer restores small views into the whole Pack buffer; per-output
 // structuredClone then copies that entire buffer at every content-read boundary.
+async function contentDependenciesCurrent(
+  product: ScriptablePackBuildProduct,
+  resolve: ScriptablePackDependencyResolver | undefined,
+): Promise<boolean> {
+  for (const row of product.externalEvidence) {
+    if ((await resolve?.(row.guid)) !== row.digest) return false;
+  }
+  return true;
+}
+
 const CACHE_SCHEMA = 'scriptable-pack-product/9';
 const PRODUCT_ARTIFACT = 'product.v8.br';
 const LEGACY_CACHE_SCHEMAS = [] as const;
@@ -319,8 +330,12 @@ export async function createScriptablePackProductCache(options: {
   const cookerIdentity = [...cookerIdentities].sort(([left], [right]) => left.localeCompare(right));
   const productKinds = (product: ScriptablePackBuildProduct): readonly string[] =>
     [...new Set(product.product.assets.map((asset) => asset.kind))].sort();
+  // Content reads are admitted with their observed digest; reference-only rows
+  // carry no bytes to validate and keep the product uncacheable.
   const cacheable = (product: ScriptablePackBuildProduct): boolean =>
-    product.externalEvidence.length === 0 &&
+    product.externalEvidence.every(
+      (row) => row.usage !== 'reference' && typeof row.digest === 'string',
+    ) &&
     product.product.assets.every(
       (asset) =>
         !cookerIdentities.has(asset.kind) || cookerIdentities.get(asset.kind) !== undefined,
@@ -401,6 +416,7 @@ export async function createScriptablePackProductCache(options: {
     schema: CachePayload['schemaVersion'],
     artifact: string,
     decode: (bytes: Uint8Array) => Promise<Uint8Array>,
+    resolve: ScriptablePackDependencyResolver | undefined,
     dependencies?: CookerDependencies,
   ): Promise<{ product?: ScriptablePackBuildProduct; reason: string; key: string }> => {
     const { key, guid } = identity(subject, schema, dependencies);
@@ -429,6 +445,8 @@ export async function createScriptablePackProductCache(options: {
             (JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
               nativeFreeProduct(product) === dependencies.nativeFree))
         ) {
+          if (!(await contentDependenciesCurrent(product, resolve)))
+            return { reason: 'dependency-changed', key };
           // Only this producer's format was validated before it was stored.
           const rebound = bindGeneration(
             product,
@@ -552,7 +570,7 @@ export async function createScriptablePackProductCache(options: {
     }
   };
   return {
-    async read(subject) {
+    async read(subject, resolve) {
       const startedAt = performance.now();
       if (!(await sourceClosureCurrent(subject))) {
         timing('miss', subject.sourcePath, startedAt, { reason: 'source-changed' });
@@ -562,11 +580,18 @@ export async function createScriptablePackProductCache(options: {
       const current: Awaited<ReturnType<typeof readEntry>> =
         dependencies === undefined
           ? { reason: 'entry-not-found', key: identity(subject, KINDS_SCHEMA).key }
-          : await readEntry(subject, CACHE_SCHEMA, PRODUCT_ARTIFACT, decompress, dependencies);
+          : await readEntry(
+              subject,
+              CACHE_SCHEMA,
+              PRODUCT_ARTIFACT,
+              decompress,
+              resolve,
+              dependencies,
+            );
       let legacy: Awaited<ReturnType<typeof readEntry>> | undefined;
       if (current.product === undefined)
         for (const schema of LEGACY_CACHE_SCHEMAS) {
-          legacy = await readEntry(subject, schema, PRODUCT_ARTIFACT, decompress);
+          legacy = await readEntry(subject, schema, PRODUCT_ARTIFACT, decompress, resolve);
           if (legacy.product !== undefined) break;
         }
       const product = current.product ?? legacy?.product;

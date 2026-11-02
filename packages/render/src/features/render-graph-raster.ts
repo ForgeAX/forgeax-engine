@@ -304,7 +304,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           ],
           executeIf: (frame) =>
             currentRenderFeaturePass(frame, featureIdentity, name)?.enabled ?? enabled,
-          encode: ({ encoder, resources }) => {
+          encodeDirect: (encoder, _graphframe, resources) => {
             const source = resources.texture(target.texture).unwrap();
             const destination = resources.texture(texture.value).unwrap();
             const extent = resources.textureViewExtent(target.view).unwrap();
@@ -384,7 +384,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
         currentRenderFeaturePass(frame, featureIdentity, name, scope)?.enabled ?? enabled,
       colorAttachments: colors,
       ...(depthStencilAttachment === undefined ? {} : { depthStencilAttachment }),
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         try {
           this.encode(
             name,

@@ -13,6 +13,7 @@ import type {
 } from './render-system-extract';
 import { createMaterialResidencyObserver } from './render-system-residency';
 import type { FrameList } from './scene/frame-list';
+import { hasRasterDemand } from './scene/raster-demand';
 import type { ViewLights } from './world/render-lights';
 
 /** The existing boolean remains the readiness authority; record only its first owner. */
@@ -72,14 +73,6 @@ const displayWorksets = new WeakMap<
   }
 >();
 
-function displayAdmitted(renderable: RenderableSnapshot): boolean {
-  return (
-    renderable.authorVisible !== false &&
-    renderable.instances?.instanceCount !== 0 &&
-    renderable.spriteInstances?.instanceCount !== 0
-  );
-}
-
 /**
  * Display workset used by recording and its later submitted-picture checks.
  * It reads only the fixed dispatch and immutable snapshots, so an unchanged
@@ -98,7 +91,7 @@ export function projectDisplayRenderables(
       displayRenderableIndices.add(entry.renderableIndex);
   }
   const value = renderables.filter(
-    (renderable, index) => displayRenderableIndices.has(index) && displayAdmitted(renderable),
+    (renderable, index) => displayRenderableIndices.has(index) && hasRasterDemand(renderable),
   );
   displayWorksets.set(dispatch, { renderables, value });
   return value;
@@ -117,7 +110,7 @@ export function projectResidualDisplayRows(
     .residual(selection)
     .filter(
       (row) =>
-        gpuOwned.displays(row) && displayAdmitted(row) && frame.cameraVisible?.(row) !== false,
+        gpuOwned.displays(row) && hasRasterDemand(row) && frame.cameraVisible?.(row) !== false,
     );
 }
 
@@ -135,7 +128,12 @@ export function projectFramePresentation(input: {
 }): FramePresentation {
   const observeResidency = createMaterialResidencyObserver(input.internals, false);
   const pending = (worldId: number, material: MaterialResource): boolean => {
-    const readiness = observeResidency(input.preparedWorlds[worldId], material.snapshot).readiness;
+    const snapshot = material.snapshot;
+    const readiness = observeResidency(
+      input.preparedWorlds[worldId],
+      snapshot,
+      material.ownsValues(snapshot),
+    ).readiness;
     return readiness === 'pending' || readiness === 'failed';
   };
   for (const renderable of input.renderables) {

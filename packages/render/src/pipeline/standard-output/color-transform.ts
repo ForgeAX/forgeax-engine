@@ -18,6 +18,7 @@ import { ok, type Result, ShaderSource } from '@forgeax/engine-types';
 import type { DeviceScope } from '../../device/device-scope';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
+import { recordContext } from '../../world/view-record-context';
 import { bradfordAdaptD65 } from './auto-exposure/oracle';
 
 export const LINEAR_HDR_DOMAIN: ColorValueDomain = 'linear-hdr';
@@ -200,10 +201,10 @@ export function addStandardColorStagePass(
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const runtime = (frame as _InternalRenderPipelineContext).runtime;
       const device = runtime.device;
-      const scope = runtime.deviceScope;
+      const scope = recordContext(runtime).deviceScope;
       const factory = runtime.immediateShaderModuleFactory ?? runtime.shaderModuleFactory;
       if (factory === undefined) throw new Error(`${name} shader factory unavailable`);
       const stageBinding = stage?.bind(device, resources, frame);

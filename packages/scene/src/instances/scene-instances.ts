@@ -1,3 +1,4 @@
+import { sceneTopoSort } from './scene-topology';
 // @forgeax/engine-scene — scene instantiation and instance-state subsystem.
 
 import {
@@ -562,7 +563,7 @@ export function worldSpawnSceneMembers(
   //    This runs AFTER mount processing (step 1) so cross-boundary
   //    `ChildOf {parent: <mount-window-localId>}` references resolve
   //    correctly (AC-24).
-  const order = sceneTopoSort(ownEntities);
+  const order = sceneTopoSort(world, ownEntities);
   for (const idx of order) {
     const node = ownEntities[idx];
     if (node === undefined) continue;
@@ -1553,53 +1554,4 @@ export function worldGetSceneAssetForInstance(
   const stateRes = worldGetSceneInstanceState(world, root);
   if (!stateRes.ok) return stateRes;
   return ok(stateRes.value.source);
-}
-
-/**
- * Topological sort over the implicit ChildOf graph (parents before children).
- * Cycle-free input always covers all n nodes; cyclic input emits whatever was
- * reachable from indegree-0 (the fallback caller handles cycle reporting via
- * `pack-cyclic-reference` at the upstream scanner / runtime path).
- */
-function sceneTopoSort(nodes: readonly CompiledSceneEntity[]): readonly number[] {
-  const n = nodes.length;
-  const childrenOf: number[][] = Array.from({ length: n }, () => []);
-  const indeg = new Uint32Array(n);
-  const localIdToIdx = new Map<number, number>();
-  for (let i = 0; i < n; i += 1) {
-    const node = nodes[i];
-    if (node === undefined) continue;
-    localIdToIdx.set(node.localId as unknown as number, i);
-  }
-  for (let i = 0; i < n; i += 1) {
-    const node = nodes[i];
-    if (node === undefined) continue;
-    const child = node.components.ChildOf;
-    if (child === undefined) continue;
-    const p = (child as Record<string, unknown>).parent;
-    if (typeof p === 'number') {
-      const parentIdx = localIdToIdx.get(p);
-      if (parentIdx !== undefined && parentIdx !== i) {
-        childrenOf[parentIdx]?.push(i);
-        indeg[i] = (indeg[i] ?? 0) + 1;
-      }
-    }
-  }
-  const order: number[] = [];
-  const queue: number[] = [];
-  for (let i = 0; i < n; i += 1) if ((indeg[i] ?? 0) === 0) queue.push(i);
-  while (queue.length > 0) {
-    const head = queue.shift();
-    if (head === undefined) break;
-    order.push(head);
-    for (const c of childrenOf[head] ?? []) {
-      indeg[c] = (indeg[c] ?? 0) - 1;
-      if ((indeg[c] ?? 0) === 0) queue.push(c);
-    }
-  }
-  // Append any nodes left unvisited (defensive — cycle would surface here).
-  for (let i = 0; i < n; i += 1) {
-    if (!order.includes(i) && nodes[i] !== undefined) order.push(i);
-  }
-  return order;
 }

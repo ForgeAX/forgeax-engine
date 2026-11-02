@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -206,6 +214,30 @@ test('a missing runtime selector fails clearly and leaves original failure evide
     assert.match(result.stderr, /declared @actions\/glob dependency is unavailable/u);
     assert.match(result.stderr, /original evidence files remain unchanged/u);
     assert.equal(readFileSync(join(root, 'receipt.json'), 'utf8'), '{"originalFailure":true}');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a symlinked runtime entrypoint still rejects report uploads', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-report-linked-entry-'));
+  try {
+    const source = join(root, 'source');
+    const linked = join(root, 'linked');
+    mkdirSync(source);
+    copyFileSync(new URL('../check-no-reports.mjs', import.meta.url), join(source, 'checker.mjs'));
+    symlinkSync(source, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    const result = spawnSync(process.execPath, [join(linked, 'checker.mjs'), '--upload-inputs'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        FORGEAX_ARTIFACT_NAME: 'failure-evidence',
+        FORGEAX_ARTIFACT_PATH: 'artifacts/reports/failure.json',
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /reports-upload-path/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

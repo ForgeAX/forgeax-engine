@@ -292,30 +292,44 @@ function assertCsmLayerSamplerFormula(shaderCode) {
     console.log('[csm] FALSIFY=force-csm-sampler-layer-formula -- pinned sampler to layer 0');
   }
   const compact = gated.replace(/\s+/g, '');
-  const pcssStart = compact.indexOf('fn_samplePcssForCascade');
-  const sampleStart = compact.indexOf('fn_sampleShadowForCascade');
-  const sampleEnd = compact.indexOf('fnevalDirectional', sampleStart);
-  if (pcssStart < 0 || sampleStart <= pcssStart || sampleEnd <= sampleStart) {
-    throw new Error('compiled CSM shader layer sampler function boundaries are missing');
-  }
-  const pcss = compact.slice(pcssStart, sampleStart);
-  const sample = compact.slice(sampleStart, sampleEnd);
+  const body = (name) => {
+    const start = compact.indexOf(`fn${name}`);
+    if (start < 0) throw new Error(`compiled CSM helper is missing: ${name}`);
+    const open = compact.indexOf('{', start);
+    let depth = 1;
+    for (let index = open + 1; index < compact.length; index++) {
+      if (compact[index] === '{') depth++;
+      if (compact[index] === '}' && --depth === 0) return compact.slice(start, index + 1);
+    }
+    throw new Error(`compiled CSM helper is unterminated: ${name}`);
+  };
+  const pcss = body('_samplePcssForCascade');
+  const sample = body('_sampleShadowForCascade');
+  const plane = body('_directionalPlaneCompare');
+  const point = body('_directionalPointCompare');
+  const vogel = body('_directionalVogel');
+  const soft = body('_directionalSoft');
   const planeGradient = pcss.match(/let(\w+)=_directionalReceiverPlaneGradient[^;]*;/)?.[1];
   if (planeGradient === undefined) throw new Error('PCSS receiver-plane gradient is missing');
-  // Naga alpha-renames locals and parameters in the composed receiver shader
-  // (`layer` -> `layer_7`); the contract is the operands, not the suffixes.
+  // Follow logical layer -> family base -> filter helper -> physical depth read.
+  // Locals and functions may carry Naga's composition/alpha-renaming suffixes.
   const required = [
-    // Naga folds the `tileUv`/`uv` alias pair into one local.
     [/let(?:tileUv|uv)(?:_\d+)?=vec2<f32>\([^;]*projCoords(?:_\d+)?\.x[^;]*projCoords(?:_\d+)?\.y[^;]*\);/, sample],
     [/letshadowLayer(?:_\d+)?=i32\(\(layer(?:_\d+)?\+layerBase(?:_\d+)?\)\);/, sample],
     [/lettileLo(?:_\d+)?=vec2<f32>\(\(1f\/texelDims[^;]*\);/, sample],
     [/lettileHi(?:_\d+)?=\(vec2\(1f\)-tileLo(?:_\d+)?\);/, sample],
     [/letoffsetUv(?:_\d+)?=clamp\([^;]*,tileLo(?:_\d+)?,tileHi(?:_\d+)?\);/, sample],
-    [/textureSampleCompareLevel\([^;]*,shadowLayer(?:_\d+)?,adjustedDepth(?:_\d+)?\)/, sample],
+    [/_directionalPlaneCompare[^;(]*\(offsetUv(?:_\d+)?,shadowLayer(?:_\d+)?,[^;]*adjustedDepth(?:_\d+)?[^;]*\);/, sample],
     [/shadow_load_raw_depth[^;]*,i32\(layer(?:_\d+)?\)\);/, pcss],
-    [new RegExp(`lettapDepth(?:_\\d+)?=\\(compareDepth(?:_\\d+)?\\+dot\\(${planeGradient},[^;]*\\);`), pcss],
+    [new RegExp(String.raw`lettapDepth(?:_\d+)?=max\(0f,\(compareDepth(?:_\d+)?\+max\(0f,dot\(${planeGradient},[^;]*;`), pcss],
     [/shadow_sample_compare[^;]*,i32\(layer(?:_\d+)?\),tapDepth(?:_\d+)?\);/, pcss],
+    [/textureSampleCompareLevel\([^;]*,layer(?:_\d+)?,depth(?:_\d+)?\)/, plane],
+    [/textureLoad\(shadowMap[^;]*,layer(?:_\d+)?,0i\)/, point],
+    [/_directionalPlaneCompare[^;(]*\([^;]*,layer(?:_\d+)?,[^;]*\)/, vogel],
+    [/_directionalPointCompare[^;(]*\([^;]*,layer(?:_\d+)?,[^;]*\)/, soft],
   ];
+  const loads = plane.match(/textureLoad\(shadowMap[^;]*?,layer(?:_\d+)?,0i\)/g) ?? [];
+  if (loads.length !== 4) throw new Error('CSM four-texel comparison lost its physical array layer');
   const missing = required.findIndex(([pattern, source]) => !pattern.test(source));
   if (missing >= 0) {
     throw new Error(`CSM layer sampler formula is missing source term ${missing}`);
@@ -418,6 +432,7 @@ function assertCsmPixels({ pixels, width, height }) {
 }
 
 // Observe initialized GPU contents and later writes through the same tape ABI.
+// This automatic CSM fixture requires [cascadeIndex, isSpot, clampNear, pad].
 function csmCasterSelectors(tape, handleId) {
   const bytes = new Uint8Array(2048);
   const apply = (hash, offset, size) => {
@@ -435,8 +450,8 @@ function csmCasterSelectors(tape, handleId) {
   const words = new Uint32Array(bytes.buffer);
   return Array.from({ length: 4 }, (_, cascade) => {
     const offset = cascade * 64;
-    if (words[offset] !== cascade || words[offset + 1] !== 0 || words[offset + 2] !== 0 || words[offset + 3] !== 0)
-      throw new Error(`cascade-index UBO header ${cascade} does not select its directional cascade`);
+    if (words[offset] !== cascade || words[offset + 1] !== 0 || words[offset + 2] !== 1 || words[offset + 3] !== 0)
+      throw new Error(`cascade-index UBO header ${cascade} must select its directional cascade and enable near-plane pancaking`);
     return words[offset];
   });
 }

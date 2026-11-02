@@ -45,27 +45,31 @@ it.each([
   const flat = testAssets(world)
     .create(Materials.standard({ baseColor: [1, 1, 1, 1] }))
     .unwrap();
-  const displaced = testAssets(world)
-    .create(
-      Materials.standard({
-        baseColor: [1, 1, 1, 1],
-        displacementTexture: {
-          texture: testAssets(world)
-            .create({
-              kind: 'texture',
-              shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
-              format: 'rgba8unorm',
-              colorSpace: 'linear',
-              mips: { kind: 'none' },
-              data: new Uint8Array([255, 0, 0, 255]),
-            })
-            .unwrap(),
-        },
-        displacementScale: -2,
-        displacementBias: 1,
-      }),
-    )
+  const height = testAssets(world)
+    .create({
+      kind: 'texture',
+      shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+      data: new Uint8Array([255, 0, 0, 255]),
+    })
     .unwrap();
+  const heightMaterial = (displacementMode: 'vertex' | 'parallax') =>
+    testAssets(world)
+      .create(
+        Materials.standard({
+          baseColor: [1, 1, 1, 1],
+          normalTexture: { texture: height },
+          displacementTexture: { texture: height },
+          displacementScale: -2,
+          displacementBias: 1,
+          displacementMode,
+        }),
+      )
+      .unwrap();
+  const displaced = heightMaterial('vertex');
+  const parallax = heightMaterial('parallax');
   const transforms = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -10, 0, 0, 1]);
   const entity = world
     .spawn(
@@ -87,6 +91,13 @@ it.each([
   expect(result).toHaveLength(1);
   expect(Array.from(result.at(0)?.localAabb ?? [])).toEqual([-1.5, -1.5, -1, 1.5, 1.5, 1]);
   expect(Array.from(geometry.aabb ?? [])).toEqual([-0.5, -0.5, 0, 0.5, 0.5, 0]);
+  // Parallax keeps geometry at the base mesh: the same height never expands bounds.
+  world.set(entity, MeshRenderer, { materials: [parallax] }).unwrap();
+  world.update(0).unwrap();
+  expect(extract().renderables).toHaveLength(0);
+  world.set(entity, MeshRenderer, { materials: [displaced] }).unwrap();
+  world.update(0).unwrap();
+  expect(extract().renderables).toHaveLength(1);
   world.set(entity, MeshRenderer, { materials: [flat] }).unwrap();
   world.update(0).unwrap();
   expect(extract().renderables).toHaveLength(0);

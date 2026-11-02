@@ -114,6 +114,7 @@ function topology(): RenderPipelineTopology {
     lane: { compute: true, storageBuffer: true, multisample: false, maxColorAttachments: 8 },
     featureTopologySignature: 'shadow-static-flip-dawn',
     gpuDrivenTopologySignature: 'shadow-static-flip-dawn',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 

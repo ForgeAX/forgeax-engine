@@ -24,7 +24,7 @@ Import components from `@forgeax/engine/render` and `Transform` from
 | Entity | Components and defaults | Limits |
 |:--|:--|:--|
 | Camera | `Transform` + `Camera { fov }` (vertical radians strictly in `(0, Math.PI)`; convert degrees with `degrees * Math.PI / 180`; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
-| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | At most one: the first is used and others are dropped with a `render-system-multi-light` warning; no `Transform` needed. `Atmosphere` needs exactly one |
+| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | Any number: the first owns CSM shadows and the View sun lane; later ones are unshadowed Cluster lights (Three.js semantics) that count toward the local-light budget; no `Transform` needed. `Atmosphere` needs exactly one |
 | Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
 | Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
 | Sky | Generate a linear HDR `EquirectAsset` in a Pack; bind it to `SkyboxBackground` and `Skylight` | One asset supplies the background and IBL. Use `Atmosphere` for physical air. |
@@ -35,7 +35,9 @@ Import components from `@forgeax/engine/render` and `Transform` from
   numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
 - Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC` with
   `exposure` about 1.1 for games (`TONEMAP_AGX` is the desaturated base curve, only for a
-  muted grade; presets in the SDK effects/lighting.md). `antialias`
+  muted grade; presets in the SDK effects/lighting.md). `exposure` is Three's
+  `toneMappingExposure` under every curve; Three WebGPU ignores `material.toneMapped`
+  (see render README "Three material.toneMapped"). `antialias`
   (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
   are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
 - Shadows: set `castShadow: true` on the light, then choose
@@ -154,6 +156,12 @@ picking, so cast interaction rays from the mono Camera. Contract:
 | RHI backend / capability | `forgeax-engine-rhi` |
 | Frame capture/replay | forgeax-engine-rhi-debug |
 
+Pending readback tickets retain their requested format, mip extent, layer and device
+generation. Resize may still read the matching accepted image. If no physical target
+matches, `observe` returns `render-target-operation-failed` without an invalid copy;
+request a new ticket for the replacement extent. Submitted copies keep their original
+receipt. See [target lifecycle](../../packages/render/README.md#target-and-probe-lifecycle-index).
+
 ## Directional shadow entry
 
 Enable `DirectionalLight.castShadow: true` before choosing a shadow filter;
@@ -169,6 +177,21 @@ shadowAngularRadius is in radians, defaults to 0.00465, and accepts
 a finite integer in [1, 64]. Other CSM fields, units, and defaults live in the
 Directional shadow quality table in
 [`packages/render/README.md`](../../packages/render/README.md); do not duplicate the schema here.
+
+For detached directional shadows, inspect the actual frame before increasing
+bias. Native CSM shares a bounded caster/receiver budget and uses one-sided
+per-texel receiver correction;
+`normalBias` is an optional world-unit offset and can move a query above a small
+caster. See the owning README for defaults and units. Automatic CSM admits
+upstream blockers and pancakes their near depth in the shared caster VS;
+explicit shadow matrices and point/spot views keep ordinary clipping. Contact
+shadow tests must also pass with screen-space contact shadows disabled. The
+CSM Browser capture gate validates the active near-clamp policy in the caster
+header together with cascade selection; the policy lane is not padding.
+The complete cube/plane contact matrix shares one renderer and World, resetting scene
+entities through `despawnAll()` per case. The contact and curved Browser owners use singleton/exclusive processes; preserve
+all cases and pixel thresholds when changing scheduling. Dawn runs both owners
+in `shadow-quality`; see the CI guide.
 
 For small-scale contact occlusion below cascade resolution (grass, foliage,
 feet), set DirectionalLight.contactShadowLength in meters (default 0, off;

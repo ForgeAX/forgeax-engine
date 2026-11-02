@@ -74,7 +74,7 @@ export function addAnalyticFogPass(
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       if (pipeline === undefined || layout === undefined) {
         const source = frame.runtime.lookupPostProcess?.(ANALYTIC_FOG_POST_PROCESS_ID)?.source;
         const factory = frame.runtime.shaderModuleFactory;

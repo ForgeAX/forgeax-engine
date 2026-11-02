@@ -149,7 +149,7 @@ function shapeRenderState(
   selected: MaterialShaderArtifact,
   coverageOnly: boolean,
 ): MaterialRenderState | undefined {
-  const renderState = shape.rendererRecording ? shape.renderState : shape.prepared.renderState;
+  const renderState = shape.renderState;
   if (selected.fragmentEntry !== 'fs_temporal') return renderState;
   return geometryRenderStateForPass(renderState, 'temporal', coverageOnly);
 }

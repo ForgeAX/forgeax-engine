@@ -677,6 +677,36 @@ export class SkinPaletteOverflowError extends Error {
   }
 }
 
+/** Detail for a recorded Skin draw outside its view's RenderQueue demand set. */
+export interface SkinDemandMissingDetail {
+  readonly worldId: number;
+  readonly entityKey: number;
+  readonly pass: 'main' | 'shadow';
+}
+
+/**
+ * Structured render diagnostic for a CPU Skin draw whose row the view's
+ * `render-skin-demand` system did not demand. Recording never composes a
+ * palette late; the draw is skipped and this error reports the gap.
+ */
+export class SkinDemandMissingError extends Error {
+  readonly code = 'skin-demand-missing' as const;
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail: SkinDemandMissingDetail;
+
+  constructor(worldId: number, entityKey: number, pass: 'main' | 'shadow') {
+    const expected =
+      "every CPU-recorded Skin draw belongs to its view's ViewSkinDemand set (render-skin-demand, RenderQueue)";
+    const hint = `entity ${entityKey} of world ${worldId} reached the ${pass} pass without a demanded Skin palette; the demand set derives from the view's ViewFrame rows and shadow casters, so a recorded row outside them means the recording selected a row its RenderQueue inputs did not name`;
+    super(`Skin draw for entity ${entityKey} (world ${worldId}) was not demanded for this view`);
+    this.name = 'SkinDemandMissingError';
+    this.expected = expected;
+    this.hint = hint;
+    this.detail = { worldId, entityKey, pass };
+  }
+}
+
 /** Detail for a skinned entity using a non-skin material shader. */
 export interface SkinMaterialMismatchDetail {
   readonly entity: number;
@@ -798,7 +828,9 @@ export type RenderFeatureErrorCode =
   | 'render-feature-pass-order-conflict'
   | 'render-feature-preparation-failed'
   | 'render-feature-prepared-state-mismatch'
-  | 'render-feature-draw-recording-failed';
+  | 'render-feature-draw-recording-failed'
+  | 'render-feature-input-unavailable'
+  | 'render-feature-batch-incomplete';
 
 export interface RenderFeatureRegistrationConflictDetail {
   readonly featureIdentity: string;
@@ -924,6 +956,29 @@ export interface RenderFeatureDrawRecordingFailedDetail {
   readonly recovery: RenderFeatureRecovery;
 }
 
+/**
+ * Why `render-feature-views` produced no Feature frame input for a recording
+ * view this frame. Each reason stops that view's recording before Features.
+ */
+export type RenderFeatureInputUnavailableReason =
+  | 'not-prepared'
+  | 'view-frame-failed'
+  | 'camera-configuration-rejected'
+  | 'published-feature-unimplemented';
+
+export interface RenderFeatureInputUnavailableDetail {
+  /** The view's Feature scope identity. */
+  readonly view: string;
+  readonly reason: RenderFeatureInputUnavailableReason;
+  /** The published Feature row this receiver does not implement. */
+  readonly featureIdentity?: string;
+}
+
+export interface RenderFeatureBatchIncompleteDetail {
+  /** Installed Features whose `render-feature:<id>` system did not join the frame. */
+  readonly missing: readonly string[];
+}
+
 export type RenderFeatureErrorDetailByCode = {
   'render-feature-registration-conflict': RenderFeatureRegistrationConflictDetail;
   'render-feature-stage-failed': RenderFeatureStageFailedDetail;
@@ -932,6 +987,8 @@ export type RenderFeatureErrorDetailByCode = {
   'render-feature-preparation-failed': RenderFeaturePreparationFailedDetail;
   'render-feature-prepared-state-mismatch': RenderFeaturePreparedStateMismatchDetail;
   'render-feature-draw-recording-failed': RenderFeatureDrawRecordingFailedDetail;
+  'render-feature-input-unavailable': RenderFeatureInputUnavailableDetail;
+  'render-feature-batch-incomplete': RenderFeatureBatchIncompleteDetail;
 };
 
 /** Machine-readable four-field diagnostic exposed by every feature error. */
@@ -1130,6 +1187,45 @@ export class RenderFeatureDrawRecordingFailedError extends Error {
   }
 }
 
+const renderFeatureInputUnavailableHint = {
+  'not-prepared': 'register render-feature-views in the Render World that stages the view',
+  'view-frame-failed': 'recover the view frame failure reported by render-view-frame',
+  'camera-configuration-rejected': 'repair the reported camera Standard configuration',
+  'published-feature-unimplemented':
+    'install the published Feature on the receiving Renderer or stop publishing it',
+} satisfies Record<RenderFeatureInputUnavailableReason, string>;
+
+/** `render-feature-views` produced no Feature frame input for the recording view. */
+export class RenderFeatureInputUnavailableError extends Error {
+  readonly code = 'render-feature-input-unavailable' as const;
+  readonly expected: string;
+  readonly hint: string;
+  readonly detail: RenderFeatureInputUnavailableDetail;
+
+  constructor(detail: RenderFeatureInputUnavailableDetail) {
+    super(`render view '${detail.view}' has no Feature frame input: ${detail.reason}`);
+    this.name = 'RenderFeatureInputUnavailableError';
+    this.expected = `render-feature-views prepares the Feature frame input of view '${detail.view}'`;
+    this.hint = renderFeatureInputUnavailableHint[detail.reason];
+    this.detail = detail;
+  }
+}
+
+/** `render-feature-batch` sealed a Feature frame that some installed Feature never joined. */
+export class RenderFeatureBatchIncompleteError extends Error {
+  readonly code = 'render-feature-batch-incomplete' as const;
+  readonly expected = 'every installed Feature joins the Renderer frame in RenderPrepare';
+  readonly hint =
+    'keep each installed render-feature:<id> system in RenderPrepare; install Features through the Renderer';
+  readonly detail: RenderFeatureBatchIncompleteDetail;
+
+  constructor(detail: RenderFeatureBatchIncompleteDetail) {
+    super(`Feature frame sealed without Features: ${detail.missing.join(', ')}`);
+    this.name = 'RenderFeatureBatchIncompleteError';
+    this.detail = detail;
+  }
+}
+
 // ── ObservationUnavailableError ───────────────────────────────────────────
 
 export type ObservationUnavailableReason =
@@ -1259,6 +1355,29 @@ export class RendererContractFailureError extends Error {
     super(`renderer ${operation} contract failed: ${cause}`);
     this.name = 'RendererContractFailureError';
     this.detail = { operation, cause };
+  }
+}
+
+export interface DebugOverlayFailedDetail {
+  readonly reason: import('../render-contract').DebugOverlayFailureCode;
+  readonly cause: unknown;
+}
+
+/**
+ * The debug overlay was skipped for a frame. The scene frame itself continues:
+ * debug geometry is diagnostic, so its failure never fails the frame.
+ */
+export class DebugOverlayFailedError extends Error {
+  readonly code = 'debug-overlay-failed' as const;
+  readonly expected = 'the debug overlay source, upload and pipeline succeed';
+  readonly hint =
+    'repair the owner named by detail.reason (source take, vertex upload, or overlay pipeline); the scene frame continues without the overlay';
+  readonly detail: DebugOverlayFailedDetail;
+
+  constructor(reason: DebugOverlayFailedDetail['reason'], cause: unknown) {
+    super(`debug overlay skipped: ${reason}`);
+    this.name = 'DebugOverlayFailedError';
+    this.detail = { reason, cause };
   }
 }
 
@@ -1538,7 +1657,7 @@ export interface RendererOperationCause {
 export interface RendererOperationDetailByCode {
   readonly 'frame-submit-rejected': {
     readonly operation: 'draw';
-    readonly stage: 'submit';
+    readonly stage: import('../assembly/renderer-frame-transaction').RendererFrameStage;
     readonly accepted: false;
     readonly cause?: RendererOperationCause;
   };
@@ -2296,6 +2415,7 @@ export type RenderError =
   | RendererExpectedOperationError
   | FrameReceiptStaleError
   | RendererContractFailureError
+  | DebugOverlayFailedError
   | ObservationUnavailableError
   | SceneDataUnavailableError
   | TaaUnavailableError
@@ -2312,6 +2432,7 @@ export type RenderError =
   | VertexColorVariantConflictError
   | SkinPaletteOverflowError
   | SkinMaterialMismatchError
+  | SkinDemandMissingError
   | MaterialSkinAttrMissingError
   | TransmissionCapabilityMissingError
   | MaterialSampledTextureBudgetExceededError
@@ -2322,6 +2443,8 @@ export type RenderError =
   | RenderFeaturePreparationFailedError
   | RenderFeaturePreparedStateMismatchError
   | RenderFeatureDrawRecordingFailedError
+  | RenderFeatureInputUnavailableError
+  | RenderFeatureBatchIncompleteError
   | EnvironmentSourceConflictError
   | FogCardinalityError
   | SunCardinalityError

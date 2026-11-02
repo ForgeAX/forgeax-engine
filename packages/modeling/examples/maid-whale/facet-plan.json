@@ -1,0 +1,632 @@
+{
+  "schema": "forgeax.maid-whale.facet-plan/2",
+  "case": "C-200-G6",
+  "units": "meters; azimuth in degrees from +z toward +x about the head axis (x 0, z -0.012)",
+  "method": "structure first. Each part is built at facet scale as units (lobes, gores, teeth) whose borders are structure lines (labels, so remesh keeps them as edges); facets lie between them. Per part: QEM to 2-3x the target, isotropic remesh at `edge` (one isotropic target: elongation along flow needs a direction-field remesh, not used) with labels preserved and clearance 0.5 mm, cleanup.tiling, then the gate on every triangle. Shells taper to a crease at free edges (no rim strips). Columns halve through transition rows where units converge (E poles), so no vertex fans out.",
+  "gate": {
+    "aspectP50": 2.0,
+    "aspectP90": 4.0,
+    "over6": 0.02,
+    "minAngleP10": 20,
+    "badValence": 0.01,
+    "sizeRatioP95": 2.0,
+    "crossings": 0,
+    "contacts": "attachmentContacts(): 32/32 within",
+    "iouDropVsG5": 0.005,
+    "spikes": "only faces tagged hair-spike (the last 0.03-0.05 of each tip): anisotropy along the flow <= 3, each spike component <= 0.07 along it; area share reported",
+    "structureLines": "every selector below matches faces, and its borders survive remesh as edges",
+    "flowP75": "<= 20 degrees per unit for units with `flow` (meshQuality's flow option through plan-units.ts planFlowScope; triangles with aspect < 1.5 skipped, skipped share <= 0.4); radial flows leave out the disk of radius edge 8 / (2 pi) about their point (meridians converge there; the plan handles it by construction), its share reported. Gated on built units; remeshed units: flow unmeasured until a direction-field remesh",
+    "loopGrid": "plan units with `limits` (declared loop grids: face, head) take aspectP50 <= 2.1; all other limits unchanged"
+  },
+  "tipTags": [
+    "hair-spike"
+  ],
+  "flowKinds": {
+    "radial": "meridian from `from` (a point, or an axis point for gores)",
+    "path": "tangent of the unit's builder path at the nearest point (`label`)",
+    "around": "circumferential about `axis` through `center`",
+    "axis": "along `dir`"
+  },
+  "parts": [
+    {
+      "name": "back-hair",
+      "form": "a continuous dome from the crown down to the split height (about the upper 55 % of the mass, facets about 0.065), then 7 outer lobes (3 left of the bow, 1 behind it, 3 right) of 0.08-0.12 tapering to points, 2 wavy outer locks per side curling out past the sleeves, and 6 lighter inner lobes between them, offset half a lobe",
+      "units": [
+        {
+          "name": "dome",
+          "faces": "createdBy:hair-back-outer",
+          "flow": {
+            "kind": "radial",
+            "from": [
+              0,
+              0.95,
+              -0.06
+            ]
+          },
+          "edge": 0.065,
+          "note": "the curtain (createdBy:hair-back-outer) remeshed at 0.07 (minEdge 0.056): 801 per m2 in the band 437-875 (at 0.065: 906); the fins sample their reach over the plate's rows only (attachments.ts fin), so the right plate stays seated on the coarser dome"
+        },
+        {
+          "name": "outer-lobes",
+          "faces": "createdBy:hair-back-lobe-*",
+          "count": 7,
+          "split": 0.6,
+          "columns": 2,
+          "flow": {
+            "kind": "path",
+            "label": "hair-back-lobe-*"
+          },
+          "edge": 0.05,
+          "facetsPerUnit": [
+            12,
+            20
+          ],
+          "note": "7 lobes, 14 facets each: body 0.045, spike 0.05 / 0.045 alternating; length 0.09-0.095, about 0.08 below the curtain's edge"
+        },
+        {
+          "name": "outer-locks",
+          "faces": "createdBy:hair-back-lock-*",
+          "pending": "not built: the remodel's curtain (hair.ts CURTAIN) ends in the lobes; the wavy outer locks curling past the sleeves are a later unit",
+          "count": 4,
+          "columns": 2,
+          "flow": {
+            "kind": "path",
+            "label": "hair-back-lock-*"
+          },
+          "edge": 0.04
+        },
+        {
+          "name": "inner-lobes",
+          "faces": "createdBy:hair-back-inner-*",
+          "count": 6,
+          "columns": 2,
+          "flow": {
+            "kind": "path",
+            "label": "hair-back-inner-*"
+          },
+          "edge": 0.05,
+          "facetsPerUnit": [
+            12,
+            20
+          ],
+          "note": "6 lobes, 14 facets each: body 0.03, spike 0.03; length 0.06"
+        }
+      ],
+      "structureLines": [
+        {
+          "faces": [
+            "createdBy:hair-back-outer",
+            "createdBy:hair-back-lobe-*"
+          ],
+          "note": "the split line"
+        },
+        {
+          "faces": [
+            "createdBy:hair-back-lobe-*"
+          ],
+          "note": "borders"
+        }
+      ],
+      "spikes": {
+        "tag": "hair-spike",
+        "length": "0.03-0.05 (lobe lengths from the G1 tip outline)",
+        "facets": "2-4 per tip to one vertex"
+      },
+      "change": "replaces the extruded mass band and its 12 knifed tips (p90 13, slivers along the strands)",
+      "built": "hair.ts style.facets: the outer mass is a curtain about 1 cm thick thinning to its lower edge (remeshed, group back-hair). The 13 lobes (LOBES) are closed solids of explicit facets, never simplified or remeshed (no faceting group): a lens section (4 lines: two edges across, two crests) narrowing over one row of 8 facets, then 4 spike facets (tagged hair-spike as built) to one point, the root closed by 2 facets: 14 facets. Lobe centres are equally spaced in azimuth about the head's centre over the curtain's bottom; half-widths are shares of the distance to the nearer neighbour (outer 0.52 / 0.37 at root / end ring, inner 0.38 / 0.30), half-depths 0.019 / 0.014 and 0.015 / 0.011. Each root lies 0.015 above the curtain's edge, 0.002 off the curtain's outermost point under it, so the curtain's end reads as splitting into lobes over it; the lobes never touch the curtain, so no designed contact (a seat contact between parts that never meet reports `apart`). Attachments (attachments.ts, remodel only): the back bow's knot keeps its plane, which touches the hair's backmost point (a lobe crest vertex), instead of being draped (a draped knot cut the lens crests between its vertices, 5 mm); its ties sample the hair 13 times across instead of 5, so they clear the narrow lobes. seatGap (attach-metrics.ts) measures both ways (part vertices to seat and seat vertices to part), so a face resting on a ridge counts as touching",
+      "informational": [
+        "the curtain (hair.ts CURTAIN) fills the volume the G5 inner mass gave behind the body: its band from 0.04 above the cap's lowest row, drift 0.08, swell to 1.73, narrowed to 0.82 in x below y 0.68; band borders knifed straight (level and radial cuts) so its walls carry no staircase folds; the back-hair group also takes 3 cap rings around the root (faceting.ts BACK_HAIR_CAP_RINGS). Right-view IoU 0.8182 vs G5 0.8105; back-hair swap net -0.0001"
+      ]
+    },
+    {
+      "name": "bangs",
+      "form": "7 pointed clumps on the edges x -0.104, -0.074, -0.054, -0.03, 0.03, 0.054, 0.074, 0.104 (ends 0.707-0.745), flat lens section, merging into the cap above the notches",
+      "units": [
+        {
+          "name": "clumps",
+          "faces": "createdBy:hair-bang-*",
+          "count": 7,
+          "columns": 2,
+          "rows": "3-5",
+          "flow": {
+            "kind": "path",
+            "label": "hair-bang-*"
+          },
+          "edge": 0.025,
+          "facetsPerUnit": [
+            26,
+            50
+          ],
+          "note": "built as facets, never remeshed (hair.ts bangFringe): one closed solid over the faceted cap and forehead, 28-46 triangles a clump. Each clump is two columns a side between its edge lines and its crest, stations about 1.6 columns apart along each line, crests staggered half a station (rows 3-4 on the wide clumps, 5-6 on the 2 cm ones, whose 1 cm columns cannot take 2.5 cm rows under the aspect gate); the partings are facet edges 2 mm under the 5 mm crests. Nothing floats and no lip: the cap is opened under the fringe along its seams (hair.ts bangOpening: knifed 1 mm inside the root line, 0.85 in the middle drooping 3 cm to the outermost edges, and inside the outer edges, before the shell), so the cap's tapered crease runs along the root as a structure line. The fringe's root line and outer edges lie on the cap (a designed contact, hair.ts fringeContacts: tag hair-fringe on hair-cap and hair-cap-wall, tolerance 5 mm, measured 2.8 and 2.7 mm) and rise over 6 cm onto the cap's former outer surface (its shell over its crease at the root, over its forehead lift below 0.79), 2.5 mm over the highest surface within 1 cm. The cap rim (hair-metrics.ts fringeCapBorder: every crease vertex where hair-cap meets hair-cap-wall above the outer edges' ends) stands at most 0.23 mm proud of the fringe along the head's radius and lies at most 1.8 mm off the seams (gates 0.5 mm and 3 mm). Density 5300 per square meter overall (2400 on the 6 cm middle clump, up to 10000 on the 2 cm ones): facetsPerUnit replaces the band (densityRule)"
+        }
+      ],
+      "structureLines": [
+        {
+          "faces": [
+            "createdBy:hair-bang-*"
+          ],
+          "note": "borders (the 6 partings, from the notches up to 0.85)"
+        }
+      ],
+      "spikes": {
+        "tag": "hair-spike",
+        "length": 0.03,
+        "facets": "2 per tip a side (4 to one point); the last 0.03, or from the notches when they lie lower"
+      },
+      "change": "the knifed groove strips (floors aspect 25+), then the remeshed knifed clumps (aspect p90 6.2, over6 11 %, slivers on the cap at their borders), become one fringe of explicit facets; the cap's front is opened under it below 0.78 within |x| 0.098 and ends in a tapered crease beneath it"
+    },
+    {
+      "name": "side-locks",
+      "form": "3 bands per side from the temples (azimuth 46-102), wave phases kept",
+      "units": [
+        {
+          "name": "locks",
+          "faces": "createdBy:hair-lock-*",
+          "count": 6,
+          "columns": 2,
+          "flow": {
+            "kind": "path",
+            "label": "hair-lock-*"
+          },
+          "edge": 0.03,
+          "note": "built as facets, never remeshed (hair.ts LOCK_FACETS, lockFacets): each lock a closed solid along its G5 draped path (wave phases kept), section L C R B (2 columns a side, the back flat toward the figure, pushed 4 mm clear of it), rings every 0.025 (closer where it narrows), the crest and back lines half a station off the edges', a 3-facet spike (tag hair-spike) over the last 0.035; rooted 1.2 cm up in its side mass's end (designed contacts, hair.ts lockContacts). 92-116 triangles a lock, 2927 per m2",
+          "facetsPerUnit": [
+            80,
+            130
+          ]
+        }
+      ],
+      "structureLines": [
+        {
+          "faces": [
+            "createdBy:hair-lock-*"
+          ],
+          "note": "borders"
+        }
+      ],
+      "spikes": {
+        "tag": "hair-spike",
+        "length": 0.04,
+        "facets": "3 per tip to one point"
+      },
+      "informational": [
+        "rows on the wave crests"
+      ]
+    },
+    {
+      "name": "cap",
+      "form": "dome over the scalp; a small cap of 5-6 facets at the whorl, then the 9 crown clumps (azimuth 48-312) as single columns, tapered at the hairline",
+      "units": [
+        {
+          "name": "crown",
+          "faces": "createdBy:hair-cap",
+          "flow": {
+            "kind": "radial",
+            "from": [
+              0,
+              0.95,
+              -0.06
+            ]
+          },
+          "edge": 0.05,
+          "densityGap": "3386 per m2 (band 739-1478) at the cap's 0.05 (FACETS hair). The cap's outer wall is ringed by group borders that keep their 1 cm rows (side masses, locks, back-hair rings, ahoge root, the fringe opening), so the remesh cannot coarsen near them; at 0.07-0.075 (minEdge 0.056-0.06) it still measured 1556-1624 while the cap failed the gate (aspect p50 2.0, over6 3 %) and the fringe crossed the cap. Reaching the band needs the cap and the parts grown from it faceted with one border network."
+        }
+      ],
+      "informational": [
+        "the 9 crown clump borders (labels hair-crown-*)",
+        "hairline crease"
+      ]
+    },
+    {
+      "name": "ahoge",
+      "form": "C-curved tapering tube, 3 columns",
+      "units": [
+        {
+          "name": "ahoge",
+          "faces": "createdBy:hair-ahoge",
+          "flow": {
+            "kind": "path",
+            "label": "hair-ahoge"
+          },
+          "edge": 0.03,
+          "tilingOpen": "open: badValence 0.05 (2 of 39 triangles hinge on valence-3/4 end vertices at the root cap and the spike base); aspect and min angle pass",
+          "note": "built as facets, never remeshed (hair.ts AHOGE_FACETS, ahogeFacets): a closed solid along the crescent's path, section a triangle (3 columns: the crest and two lower corners), tapering with the path, rings every 0.026 (closer where it narrows), the middle column half a station off the edges', a 3-facet spike (tag hair-spike) over the last 0.03; rooted 1.2 cm inside the cap's wall (designed contact, hair.ts ahogeContacts)",
+          "facetsPerUnit": [
+            20,
+            60
+          ]
+        }
+      ],
+      "spikes": {
+        "tag": "hair-spike",
+        "length": 0.03,
+        "facets": "3 to a point"
+      }
+    },
+    {
+      "name": "face",
+      "form": "the head to its topology plan (head-plan.ts, G7), low-poly like the figure (user decision 2026-10-26): one ring grid from the neck seam to the crown, remeshed into even flat facets whose edges keep the structure zones (jaw line, face border, centre profile with the nose ridge, cheek loop, ear front, hairline and cranium bands); no sliver, no pole under the eye, mouth or blush decal areas",
+      "units": [
+        {
+          "name": "face",
+          "faces": "createdBy:head-face",
+          "flow": {
+            "kind": "around",
+            "axis": [
+              0,
+              1,
+              0
+            ],
+            "center": [
+              0,
+              0.75,
+              -0.012
+            ]
+          },
+          "note": "the face plane of the head cage (head.ts rebuildHead from head-plan.ts headCage), remeshed at HEAD_FACET.face with its zone borders kept and wrapped onto the cage's limit surface; the decals' planar chart. Only x >= 0 is tiled and mirrored, welded on x = 0",
+          "edge": 0.0268
+        },
+        {
+          "name": "head",
+          "faces": "createdBy:head-skin",
+          "flow": {
+            "kind": "around",
+            "axis": [
+              0,
+              1,
+              0
+            ],
+            "center": [
+              0,
+              0.75,
+              -0.012
+            ]
+          },
+          "note": "the cheek band, under-jaw, throat and cranium of the cage (the cranium and forehead on the G2 skull the hair was layered on), faceted as the face; the seam strip to the neck (head-seam, inside the collar) is built as facets (head.ts seamStrip) and counted with the skin. The throat rows (the quarter-ellipse turn into the under-jaw plane, four 18 deg steps) are remeshed one row at a time at HEAD_FACET.throat, so the unit's edge is 0.027, not the cheek band's 0.034",
+          "edge": 0.027
+        }
+      ],
+      "shading": "flat like every facet (every edge sharp)",
+      "informational": [
+        "structure lines: jaw line, face border, centre profile, cheek-widest loop, ear-front line, hairline, neck seam (head-plan.ts structureLines, HEAD_DRAWING links)",
+        "decal areas (head-plan.ts decalBoxes, measured 2026-10-25): eyes x 0.034-0.105 y 0.673-0.732, mouth centred at 0.644, blush x 0.058-0.096 y 0.642-0.690, brows y 0.759-0.767"
+      ]
+    },
+    {
+      "name": "skin-limbs",
+      "form": "tubes (neck, arms, legs, hands) with facet columns along the limb",
+      "units": [
+        {
+          "name": "limbs",
+          "faces": "tag:arm-l|arm-r|leg-l|leg-r|hand-l|hand-r",
+          "flow": {
+            "kind": "path",
+            "label": "limb axes"
+          },
+          "edge": 0.03
+        }
+      ],
+      "informational": [
+        "joint rings"
+      ]
+    },
+    {
+      "name": "bodice-sleeves",
+      "form": "torso tube along the body axis; puff sleeves of 6-8 meridian columns, halving at the cuff",
+      "units": [
+        {
+          "name": "bodice",
+          "faces": "tag:bodice",
+          "flow": {
+            "kind": "axis",
+            "dir": [
+              0,
+              -1,
+              0
+            ]
+          },
+          "edge": 0.04
+        },
+        {
+          "name": "sleeves",
+          "faces": "tag:sleeve-l|sleeve-r",
+          "flow": {
+            "kind": "radial",
+            "from": {
+              "sleeve-l": [
+                0.0836,
+                0.5435,
+                0.0031
+              ],
+              "sleeve-r": [
+                -0.0837,
+                0.5436,
+                0.003
+              ]
+            }
+          },
+          "edge": 0.035,
+          "tilingOpen": "open until the sleeves are rebuilt (6-8 meridian columns halving at the cuff, or a direction-field remesh): no remesh meets both the mesh-quality limits and the band (2026-10-25: at 0.055 2543 per m2, aspect p90 4.4, over6 4.9 %, min-angle p10 16.8; at 0.032 4770 per m2 with the mesh-quality limits passing; 0.045-0.05 3240-3740 per m2 and over6 2.6-4 %)",
+          "flowNote": "the shoulder points: each sleeve's root centre, the mean of the vertices on its seam with the bodice (the dress top's sleeve/bodice tag border) in buildDressed({ taper: 0.04, facets: true }), 2026-10-25"
+        }
+      ],
+      "informational": [
+        "neckline",
+        "armholes",
+        "puff gathers"
+      ]
+    },
+    {
+      "name": "skirt",
+      "form": "bell of 8 gores from the waist to the hem band with the G3 box pleats rebuilt as facet units on it, 4 facet columns per gore at the hem halving to 2 toward the waist (one E pole per gore); the white hem band as 2 rows of block columns every 0.035, tapered at the hem",
+      "units": [
+        {
+          "name": "gores",
+          "faces": "tag:skirt-gore-*",
+          "except": "tag:skirt-hem|skirt-pleat",
+          "count": 8,
+          "columns": "4 -> 2",
+          "flow": {
+            "kind": "radial",
+            "from": [
+              0,
+              0.47,
+              -0.012
+            ]
+          },
+          "edge": 0.055
+        },
+        {
+          "name": "hem",
+          "faces": "tag:skirt-hem",
+          "rows": 2,
+          "columnWidth": 0.035,
+          "flow": {
+            "kind": "around",
+            "axis": [
+              0,
+              1,
+              0
+            ],
+            "center": [
+              0,
+              0.2,
+              -0.012
+            ]
+          },
+          "edge": 0.035
+        },
+        {
+          "name": "pleats",
+          "faces": "tag:skirt-pleat",
+          "count": 10,
+          "units": "two per pleat (the 2 behind the tail's root: the hem unit only): navy on the skirt (skirt-pleat-<j>, 2 segments, 20 triangles) and white on the hem band (skirt-pleat-<j>-hem, 3 segments, 28 triangles), lines staggered half a segment so long edges run down the skirt; built as facets (garments.ts skirtPleats), never remeshed",
+          "facetsPerUnit": [
+            20,
+            28
+          ],
+          "flow": {
+            "kind": "radial",
+            "from": [
+              0,
+              0.47,
+              -0.012
+            ]
+          },
+          "hemOnly": 2
+        }
+      ],
+      "structureLines": [
+        {
+          "faces": [
+            "tag:skirt-gore-*"
+          ],
+          "note": "borders at azimuth 0, 45, ..., 315, knife-cut through both walls and the hem band before faceting (garments.ts cutSkirtGores); tags, not labels, since the skirt's own label (createdBy skirt) carries the apron, tail and back bow; the tail grows on the 135-180-225 back and carries no gore tag"
+        },
+        {
+          "faces": [
+            "createdBy:skirt-pleat-*"
+          ],
+          "note": "each pleat's ridge (its unit's line C between the two slopes) and the unit borders; 10 of the G3 14 pleats are built: the 4 whose crests lie within 0.16 of the front centre sit under the apron panel and its ruffle (as in G3); the 2 within 0.08 of the back centre keep their white hem unit only, since a navy unit there crosses the tail's root (14 face pairs)"
+        }
+      ],
+      "change": "facets laid by remesh alone get the gores' direction",
+      "informational": [
+        "hem band top 0.26 in G6 (turnaround drawing: 0.264 front, 0.255 back, 0.233 side; the G3-G5 default keeps 0.22)",
+        "hem band 6.5 mm off the skirt sheet in G6 (1.5 mm before): the skirt's 4 mm wall is no longer clamped to 1.4 mm under the band, so facet chords clear FACET_CLEARANCE",
+        "remesh edges 0.07 (gores) and 0.045 (hem) with fields capped at 0.8 of them: isotropic remesh under chord and clearance limits lands about 1.5 times denser than its target, inside the bands of the unit edges 0.055 and 0.035",
+        "column halving and the 2 block rows are not built: one isotropic target per unit (direction-field remesh not used)"
+      ]
+    },
+    {
+      "name": "apron",
+      "form": "flat panel of few large facets; a ruffle of box teeth (flat front, two short sides, alternating depth) around the hem's U, each the sheet's apron front width over 9 (0.197 / 9 = 0.0219): 19 along the panel edge below 0.38, 9 along the bottom and 5 up each side; the bib a flat panel with two frill strips of 8 box-pleat units each",
+      "units": [
+        {
+          "name": "panel",
+          "faces": "createdBy:apron",
+          "edge": 0.045,
+          "note": "edge 0.045 (was 0.06): at 0.06 the remeshed two-walled panel ran 2.05x the equilateral count; at 0.045 1.41x, about 67 facets a side"
+        },
+        {
+          "name": "ruffle",
+          "faces": "createdBy:apron-ruffle-*",
+          "count": 19,
+          "flow": {
+            "kind": "path",
+            "label": "apron-ruffle-*"
+          },
+          "edge": 0.022,
+          "facetsPerUnit": [
+            10,
+            14
+          ],
+          "note": "built as facets, never remeshed (garments.ts facetUnit): 12 triangles a tooth (front 2, hidden slope 2, back 4, sides 2 + 2); the gate counts each tooth's triangles inside facetsPerUnit (density at this edge 1.05x)",
+          "width": "the sheet's apron front width over 9: the front apron bounds are skewed (x -0.1511..0.1018, centred -0.032 while the skirt hem's centre is +0.0034; the left edge takes in other white pixels), so the right half mirrored about the skirt hem's centre, 2 (0.1018 - 0.0034) = 0.197, / 9 = 0.0219 (apronFrontWidth); 19 whole teeth fit the 0.430 edge (ruffleTeethCount); the turnaround drawing asserts 20-24 mm",
+          "flowOpen": "open until a direction-field remesh: the G3 tooth shape stays; at its plain layout 51 degrees down each tooth's axis (41 against each tooth's principal axis; a staggered layout reached 18 but left cap slivers, aspect about 6.3)",
+          "flowChange": "changed: flow down each tooth (its own axis, builder curves garments.ts ruffleToothAxes). The sheet reads the teeth as vertical box folds, so facets along the tooth are faithful; 'along the hem curve' was a plan error. No layout along the hem fits the mesh-quality limits + density (70-79 degrees)."
+        },
+        {
+          "name": "bib",
+          "faces": "createdBy:apron-bib",
+          "edge": 0.04,
+          "note": "edge 0.04 (was 0.05): at 0.05 the bib is 26 triangles at 1.51x, one triangle from the band's top; at 0.04 44 at 1.46x"
+        },
+        {
+          "name": "frills",
+          "faces": "createdBy:apron-frill-*",
+          "count": 8,
+          "flow": {
+            "kind": "path",
+            "label": "frill curves"
+          },
+          "edge": 0.022,
+          "facetsPerUnit": [
+            16,
+            24
+          ],
+          "flowOpen": "open until the frill strips are remeshed along their path: since 2026-10-26 they end past the shoulder crest (no run down the back, sheet SIL-09 right view +101 mm), 4 units a side, and the shorter strip no longer meets flow p75 20 (3 a side ran 73)",
+          "note": "built as facets, never remeshed: 20 triangles a unit (two segments, lines staggered half a segment so the long edges run along the frill path), 6 units a side (2026-10-25: 8 a side ran 8597 per m2, over the band; 7 a side flow p75 24); the gate counts each unit's triangles inside facetsPerUnit and plancheck its implied density"
+        }
+      ],
+      "structureLines": [
+        {
+          "faces": [
+            "createdBy:apron-ruffle-*"
+          ],
+          "note": "tooth borders"
+        },
+        {
+          "faces": [
+            "createdBy:apron-frill-*"
+          ],
+          "note": "unit borders"
+        }
+      ],
+      "change": "replaces the 7 mm zig-zag ruffle and frill sweeps (aspect 7-11)",
+      "informational": [
+        "panel outline"
+      ],
+      "built": "garments.ts style.facets: the panel layer tapers over 0.02 (APRON_PANEL_TAPER: within the crease band closer than the clearance the remesh cannot move, 6.7 mm at 0.04 left rim slivers), remeshed directly without QEM like the bib (QEM's collapses at the creases left slivers). Ruffle teeth and frill units are facet-scale closed units (facetUnit): a triangle section (outer edge and inner edge on the cloth, a ridge) whose lines carry vertices at staggered phases (0, 1/2, 1/3, and a back midline at 0), so each face is a parallelogram split along its short diagonal: every triangle acute or near (aspect at most about 2.5) and every vertex of valence 4-6; a plain prism split gives right triangles (aspect 2 and over, failing p50) and valence-3 corners. The teeth lean by half a tooth from hem to ridge as a result. 19 teeth (TEETH) along the panel edge below 0.38, 0.005 apart (closer teeth of alternating shape crossed at the turns): back from 0.016 under the panel (past the remeshed panel's chord at the corners) out to 0.018/0.028, ridge 0.008/0.013 deep, lowered where the panel's inner wall needs it; frills: 2 strips of 8 units (FRILL_UNITS) 0.005 apart, section 0.022 wide, ridge 0.008/0.012. Labels apron-ruffle-0..18 and apron-frill-0..15, each a closed island, so its outline is its own facet edges. faceting.ts has no group for them",
+      "count": "19 = 9 along the bottom (y < 0.262) + 5 up each side, tooth pitch 0.0226 along the panel edge (0.0176 tooth + 0.005 gap)",
+      "taper": "the bib tapers (style taper) since its outline is knifed with snap 0.004: B's fold came from slivers at the knifed corners"
+    },
+    {
+      "name": "trims",
+      "form": "collar, cuffs, waistband, socks, shoes: bands and tubes of 8-12 columns around, tapered free edges",
+      "units": [
+        {
+          "name": "bands",
+          "faces": "tag:waistband|shoe-l|shoe-r",
+          "flow": {
+            "kind": "around",
+            "axis": "band axis"
+          },
+          "edge": 0.03,
+          "note": "remeshed (FACETS trims, 0.03, no curvature field)"
+        },
+        {
+          "name": "cuffs",
+          "faces": "tag:cuff-l|cuff-r",
+          "count": 2,
+          "flow": {
+            "kind": "around",
+            "axis": "band axis"
+          },
+          "edge": 0.03,
+          "facetsPerUnit": [
+            120,
+            120
+          ],
+          "note": "built as facet bands (garments.ts facetBand, TRIM_BANDS.cuff): 10 columns, 3 rows of 1.7 cm, 9 mm wall at 2 mm off the sleeve, creased at both ends; 120 triangles"
+        },
+        {
+          "name": "socks",
+          "faces": "tag:sock-l|sock-r",
+          "count": 2,
+          "flow": {
+            "kind": "around",
+            "axis": "band axis"
+          },
+          "edge": 0.03,
+          "facetsPerUnit": [
+            120,
+            120
+          ],
+          "note": "built as facet bands: 10 columns, 3 rows from 0.075 (inside the shoe, above the instep) to the sock top, 3 mm wall at 2 mm off the leg; 120 triangles"
+        },
+        {
+          "name": "collar",
+          "faces": "tag:collar",
+          "count": 1,
+          "flow": {
+            "kind": "around",
+            "axis": "band axis"
+          },
+          "edge": 0.03,
+          "facetsPerUnit": [
+            80,
+            80
+          ],
+          "note": "built as facets on the shoulder band (garments.ts facetCollar): the G3 collar's sheet (a layer 7 mm off the collar region, y 0.572-0.616) as the reference, 10 meridian columns (its middle circumference over 0.03, rounded up), 2 rows, 5 mm wall creased at both edges; 80 triangles, implied 3059 per m2; wings (F2-D-COS-11, the funnel): the dress top's neckline is cut out to |x| 57.5 mm (garments.ts COLLAR_REACH, was 50) and the lower stations at the sides move out along their meridian by up to 25.5 mm and rise by half of that (COLLAR_G6.wing/wingRise/wingPower, fading as sin^4 of the meridian angle so the front corners do not fold), 143 mm wide as the sheet; the earlier x-only flare (108 mm) crossed the dress top or broke the tiling gate"
+        }
+      ],
+      "informational": [
+        "shoe rims tapered (2026-10-25): the opening's back edge now stops 4 mm in front of the shoe top's back edge (garments.ts SHOE_OPENING_BACK_G6); the G3 opening came within 2 mm of it and every taper folded the wall in that strip (8 face pairs at y 0.094, z -0.064)",
+        "cuffs: a 9 mm white facet band creased at both free edges (no rim faces); it ends 8 mm above the sleeve's end, where the left thumb meets the crease"
+      ]
+    },
+    {
+      "name": "tail",
+      "form": "tapering tube with its fluke lobes (G5), remeshed like the rest",
+      "units": [
+        {
+          "name": "body",
+          "faces": "tag:tail",
+          "flow": {
+            "kind": "path",
+            "label": "tail"
+          },
+          "edge": 0.04,
+          "except": "tag:fluke",
+          "note": "the tail body without its flukes, faceted apart at 0.05 (faceting.ts FACETS tail): 1921 per m2; the back bow's ties touch it (attachments.ts backBow) instead of sinking 0.3 mm into it"
+        },
+        {
+          "name": "flukes",
+          "faces": "tag:fluke",
+          "flow": {
+            "kind": "path",
+            "label": "fluke-*"
+          },
+          "edge": 0.04,
+          "count": 2,
+          "facetsPerUnit": [
+            60,
+            60
+          ],
+          "note": "built as facets, never remeshed (attachments.ts facetFlukes): 6 lines along each lobe at even perimeter around the G5 lobe's sections (in the plane of the two lobes), alternate lines half a segment apart so the strips' long edges follow the lobe (4.5 segments from 16 mm inside the tail's capped end to 0.88 of the lobe), the sections' centres leaning onto the axis past 0.6 so the 6-facet fan closes evenly on the tip; the root closed flat inside the tail; 60 triangles a lobe (2026-10-27: the longer lobes of the sheet's fluke, SIL-22, at 3.5 segments had aspect p50 2.2), 3547 / 2827 per m2 (upper / lower); seated in the tail body (faceting.ts flukeContacts). 2026-10-25: rings across the lobe (5 columns, 4 stations, 50 triangles) passed R5 at 2067 per m2 with flow p75 35 / 42"
+        }
+      ],
+      "informational": [
+        "white belly border (material)",
+        "fluke lobe edges"
+      ]
+    },
+    {
+      "name": "attachments",
+      "form": "G5 bows, brooch, headdress, fins, ribbons as plates; the back-bow ties re-lofted with 6-8 stations (today 28, aspect 6.5)"
+    }
+  ],
+  "densityRule": "Each unit's density band derives from its `edge`: an equilateral tiling of edge e has 4/(sqrt(3) e^2) triangles per square meter; the band is 0.8-1.6 of that (curved and narrow regions refine). The plan check computes it; parts carry no separate band. A unit built as facets (a few triangles per tooth or pleat) carries `facetsPerUnit: [min, max]` instead: the triangle count of each of its labels stays inside it, so lowering its edge cannot pass the gate. plan-units.ts measures each unit on the model (g6-faceting gates it): `except` removes faces from a unit's selector (the gores leave out the hem band and pleats, which carry gore tags); a `pending` unit is not built yet and must match no faces; a `densityGap` records a measured miss with its numbers and reason, and the gate holds those units, and only those, outside their band.",
+  "structureLineRule": "Each structureLines entry names the faces (createdBy:<label pattern> or tag:<tag>) whose borders are structure lines; the plan check asserts each matches faces and that its borders survive remesh as edges. `informational` lines are notes, not checked.",
+  "remodelAcceptance": [
+    "every unit within its derived density band (densityRule); the sheet's large facets must read (B was near-smooth at 5-12k/m2, bangs and back hair most)",
+    "spikes: anisotropy along the flow <= 3 and each tagged component <= 0.07 (B: 11/18 failed, anisotropy 10-57, one 0.111 component, likely two merged tips): one component per tip",
+    "flow p75 <= 20 degrees per unit with a flow",
+    "face plane: flat facets inside tag face-plane, no fold over 20 deg, no pole or fan under the decal areas",
+    "apron bib, shoe opening and hair cap tapered too (B kept their rims), or justified here",
+    "cuff: the sheet's cuff is a thick white band; the overhang roll went with the taper, so rebuild it as a tapered band of cuff thickness",
+    "curvature field capped near each unit's edge (minEdge >= 0.8 edge) or off; structure lines decide where facets are fine",
+    "the two it.fails tests of g6-faceting.unit.test.ts become passing tests"
+  ]
+}

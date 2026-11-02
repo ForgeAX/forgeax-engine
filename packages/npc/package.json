@@ -15,7 +15,7 @@
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "src", "README.md", "LICENSE"],
+  "files": ["dist", "src", "!src/**/__tests__/**",  "README.md", "LICENSE"],
   "scripts": {
     "build": "tsup",
     "test": "vitest run"

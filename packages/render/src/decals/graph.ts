@@ -191,7 +191,7 @@ export function addProjectedDecalPasses(
   }
   const upload = graph.addCopyPass('decal-prepare', {
     accesses: [{ resource: uniforms.value, usage: 'copy-dst' }],
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       const buffer = resources.buffer(uniforms.value).unwrap();
       topology.forEach((_, index) => {
         frame.runtime.device.queue
@@ -225,7 +225,7 @@ export function addProjectedDecalPasses(
       storeOp: 'store' as const,
       clearValue: { r: 0, g: 0, b: 0, a: 0 },
     })),
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       if (project === undefined) {
@@ -367,7 +367,7 @@ export function addProjectedDecalPasses(
       loadOp: 'clear' as const,
       storeOp: 'store' as const,
     })),
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       if (apply === undefined) {

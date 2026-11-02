@@ -59,7 +59,7 @@ export function shadowMeshReadsForQuery(
   return { reads: new ShadowMeshReads(changes), epoch: changes.epoch, change: 'invalidated' };
 }
 
-interface DirectionalShadowCacheDecision {
+export interface DirectionalShadowCacheDecision {
   /** Why the retained directional layers cannot be reused; undefined on reuse. */
   readonly miss: ShadowViewInvalidationReason | undefined;
   readonly next: DirectionalShadowCache | null;

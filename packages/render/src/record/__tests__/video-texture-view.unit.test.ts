@@ -8,8 +8,8 @@ import type { Result, RhiError, Texture, TextureView } from '@forgeax/engine-rhi
 import { ok } from '@forgeax/engine-rhi';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import type { RenderSystemRuntime } from '../../__tests__/render-system-driver';
 import { worldRenderResources } from '../../publication/resource-scope';
-import type { RenderSystemRuntime } from '../../render-system';
 import { videoTextureView } from '../main-pass-material';
 
 interface Probe {

@@ -8,9 +8,56 @@ description: >-
 
 # forgeax-engine-debug
 
+For Candidate checkout `Unable to replace auth placeholder in .git/config`,
+inspect standalone View and Modeling Git directories before recursive checkout;
+follow [Modeling source preparation](../../scripts/ci/README.md#modeling-source-preparation).
+
+For public-source `export-source-missing` naming `packages/modeling`, prepare
+that exact gitlink in the screening checkout before export; follow [Modeling
+source preparation](../../scripts/ci/README.md#modeling-source-preparation).
+
 Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
+
+For live-daemon recovery or ordinary App Worker build timeouts under coverage,
+qualify the complete files in exclusive CPU children before changing deadlines.
+Preserve HTTP recovery, module identity and graphics falsifiers; nested native
+cases retain their own GPU admission. Follow the
+[coverage execution owners](../../scripts/ci/README.md#execution-owners).
+
+For Bevy completed-frame smoke failures, distinguish preparation receipts, the
+first ready GPU completion and later ready frames. Cold native pipeline work has
+a bounded first-ready allowance inside the unchanged total completed-frame
+budget; pending and steady receipts retain their tighter bound. Verify stalled
+cold/steady receipts still fail and count only completed ready frames.
+
+For a native job cancellation, inspect the actual test-step verdict and setup
+cost before changing test membership or timing forecasts. Optional artifact
+transport loss can trigger a complete source rebuild. Dawn keeps a 40-minute
+test-step limit and a 50-minute job bound for setup/cleanup; the total 30-minute
+CI target is separate and must not be reported as achieved by extending a bound.
+
+For a Browser command stall before Vitest prints `RUN`, inspect the
+`browser-startup` owner/phase/heap observation before assigning a Renderer cause.
+Use the same-head CI-profile Linux Focus diagnostic; preserve the original
+failure when it does not reproduce. A focused pass is not complete PR CI and
+is not evidence that the failure was an external transport error.
+
+For sky/IBL preparation deadlines inside a long native test parent, inspect the
+named resource and qualify the complete consumer in a fresh native lifetime.
+Preserve cue/pixel controls, completed frames and readiness budgets. Balance
+fixed native reservations before ordinary backfill; include complete process
+overhead and retain larger forecasts when updating timing inputs. A balanced
+native reservation does not compensate for stale ordinary-file costs: compare
+all four completed ordinary children and refresh their full file ledgers before
+repartitioning. Keep the original job deadline and all discovered files.
+Keep compiler-state call-count cases in their compiler observing realm, apart
+from unrelated publication state, while preserving all target contexts and
+artifact equality. If independent schema transitions overload one case, keep
+them as sequential falsifiers in the same cooker and verify the cached Standard
+return after each; preserve the full portable matrix and per-case budget.
+Follow the same execution-owner contract above.
 
 For production CSP fixture timeouts, distinguish Worker initialization from
 Preview teardown. Close the Vite Preview owner so unfinished HTTP connections
@@ -73,6 +120,12 @@ For material-parity timeouts, inspect binary comparison overhead before changing
 compiler concurrency or deadlines. Keep exact byte and metadata equality,
 concurrent cooks, diagnostics and crash recovery.
 
+For Modeling Dawn collection or stale-frame guards, retain the self-contained default TG scene and the native validation/recovery falsifier; an external `TG_CASE_DIR` is optional. After shader template edits, keep the probe SH work test on the actual production preblend block, regardless of `let`/`var` spelling. See [Modeling admission](../../scripts/ci/README.md#modeling-source-preparation).
+
+For a Modeling `R-internal-C` failure, rename the marked internal member and its typed callers in the kernel owner, run the complete candidate gate, merge the kernel PR, then bump the Engine pin. Preserve the naming gate; [source preparation](../../scripts/ci/README.md#modeling-source-preparation) describes candidate admission.
+
+For a Modeling coverage long tail, check the eight native project partitions across four jobs and their exact manifest membership. Preserve every test, aggregate threshold and deadline. For C-410 region-query timeouts, retain the complete brute-force connectivity oracle and original geometry falsifiers. For S7 playback timeouts, profile label inspection and preserve the complete animation case and its 600-second bound. For capture heap mismatches, verify the budgeted Node host: inherited V8 flags override Worker resource limits. See [coverage execution](../../scripts/ci/README.md#coverage-execution).
+
 For declared-material publication timeouts in an already exclusive coverage
 child, check whether a file-wide spy setting disabled the normal Node material
 Worker route. Only Naga call-count cases need the observing realm. Keep every
@@ -124,6 +177,14 @@ cached installation must both satisfy the existing
 [Browser version policy](../../scripts/ci/README.md#browser-gates). Preserve the
 original native assertions; repair stale toolchain admission rather than
 alternating implementations or retrying until a compatible runner is selected.
+
+For a Worker-policy browser failure at `replacement-epoch`, preserve the execution report and reproduce real termination. Check render-credit waiting before changing the source frame deadline; retain stale/duplicate phase fencing and the real recovery assertions. Follow [split Worker admission recovery](../../scripts/ci/README.md#split-worker-admission-recovery).
+
+For Dawn native-lane cancellations, preserve the original job and recover its
+unfinished complete owner through `ci:focus`. Placement may use only complete
+successful child receipts, with skipped-file overhead included and larger inherited
+forecasts retained. Keep all four lanes, native lifetimes and deadlines; follow
+[complete-owner placement](../../scripts/ci/README.md) before another full CI run.
 
 For Three browser group timeouts, compare each complete native/reference/replay
 journey with its planner weight. Shadow/filter mutations, manual-update replay, loading, material-output,
@@ -397,6 +458,9 @@ observations; final-head CI must still pass after a placement refresh.
 Refresh only `dawn-file-seconds.json` placement forecasts. An interrupted
 owner contributes no completion sample. Keep the four-lane sequencer and original
 native deadlines; a cost refresh alone is not proof of a faster complete gate.
+A new isolated owner inherits conservative per-file costs until its first complete
+child receipt. Replace that fallback with the measured complete-owner cost,
+including startup and cleanup; do not infer a cost from an interrupted lane.
 When the admitted worker-count policy changes, replace stale placement costs
 with complete receipts from the current policy. Keep the prior estimate for any
 interrupted owner, and require the complete final-head CI gate after recalculating.
@@ -619,6 +683,11 @@ Render and Vite Pack retain independent ordinary children; avoid binding their
 large import costs to unrelated packages.
 Include type preflight and each exclusive owner in the complete lane estimate;
 stale exclusive costs can concentrate the serial tail on one shard.
+When splitting a complete long project into native partitions, keep those halves
+on different jobs through both initial placement and refinement; two parallel
+slots must not reunite them on one runner. Prove exact file conservation with
+actual discovery and the configured sequencer, while retaining exclusive owners,
+ordinary non-coverage routing, concurrency, heaps and original deadlines.
 Type-test roots retain selected tests, imported source and ambient declarations;
 core/primary own ordinary source checks. For the runtime-vase browser tail, verify
 the shared canvas budget applies before UI edits, while full UI screenshots and

@@ -4,7 +4,7 @@
 /emsdk-cache/
 /artifacts/
 /apps/hello/lod-occlusion/artifacts/
-node_modules/
+node_modules
 dist/
 packages/dsh/lib/
 .turbo/

@@ -12,6 +12,7 @@ import type {
 import { ImportError } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import { ImporterRegistry } from '../importer-registry.js';
+import { scriptablePackFingerprintAsync } from '../scriptable-pack-fingerprint.js';
 import {
   canonicalScriptableSourcePath,
   createDeclaredPackAssetSnapshotSource,
@@ -168,7 +169,7 @@ describe('ScriptablePack external Meta staging', () => {
     expect((await lazy.readByGuid(parseGuid(GUID))).unwrap()).toEqual({
       asset: output.asset,
       generation: 1,
-      digest: 'sha256:staged',
+      digest: await scriptablePackFingerprintAsync(output.asset),
     });
   });
 
@@ -266,7 +267,7 @@ describe('ScriptablePack external Meta staging', () => {
     expect(first.unwrap()).toEqual({
       asset: outputs[0]?.asset,
       generation: 1,
-      digest: 'sha256:staged',
+      digest: await scriptablePackFingerprintAsync(outputs[0]?.asset as never),
     });
     expect(second.unwrap()).toEqual(first.unwrap());
     expect(second.unwrap().asset).not.toBe(first.unwrap().asset);
@@ -326,7 +327,10 @@ describe('ScriptablePack external Meta staging', () => {
     ]);
     expect(calls).toBe(3);
     expect(sibling.unwrap()).toEqual(first.unwrap());
-    expect(first.unwrap()).toMatchObject({ generation: 1, digest: 'sha256:staged' });
+    expect(first.unwrap()).toMatchObject({
+      generation: 1,
+      digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+    });
     (first.unwrap().asset as unknown as { values: number[] }).values[0] = 99;
     expect((await lazy.readByGuid(parseGuid(GUID))).unwrap().asset).toEqual({
       kind: 'test-effect',

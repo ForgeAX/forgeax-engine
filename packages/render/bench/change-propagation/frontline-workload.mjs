@@ -17,9 +17,24 @@ import { hash, unwrap } from './workload.mjs';
 export const frontlineVfx = () => createVfxRuntimeHost({ instanceArenas: true, nativePlanning: true, retainedResources: true, isolateViewGraph: true,
   camera: { read: (_world, views) => views[0]?.selectedView } });
 
+export async function openFrontlinePublication(assets, directory) {
+  const dist = resolve(directory);
+  const catalogBytes = await readFile(resolve(dist, 'pack-index.json'));
+  const loaded = new Map();
+  assets.setCatalogSource(createCatalogSource({ url: 'https://frontline-fixture.invalid/pack-index.json', fetch: async resource => {
+    const name = new URL(resource).pathname.slice(1), path = resolve(dist, name);
+    assert(path.startsWith(dist + sep), 'asset outside frozen publication');
+    const bytes = await readFile(path); loaded.set(name, { bytes: bytes.length, sha256: hash(bytes) });
+    return new Response(bytes);
+  } }));
+  const rows = unwrap(await assets.enumerateCatalog());
+  return { catalogBytes, rows, loaded };
+}
+
 export async function createFrontlineWorkload(assets, config) {
   assert(config.gameRoot && config.gameDist, 'frontline requires --game-root and --game-dist');
   const root = resolve(config.gameRoot), dist = resolve(config.gameDist);
+  const { catalogBytes, rows, loaded } = await openFrontlinePublication(assets, dist);
   const gameUrl = pathToFileURL(root + sep).href;
   const imported = new Set();
   // Load the real Game's pure producers/controllers against THIS Engine build.
@@ -40,17 +55,6 @@ export async function createFrontlineWorkload(assets, config) {
     },
   });
   const gameImport = name => import(pathToFileURL(resolve(root, name)).href);
-  const catalogBytes = await readFile(resolve(dist, 'pack-index.json'));
-  const catalog = JSON.parse(catalogBytes);
-  const rows = catalog.entries.entries;
-  assert(Array.isArray(rows), 'normal Game publication catalog required');
-  const loaded = new Map();
-  assets.setCatalogSource(createCatalogSource({ url: 'https://frontline-fixture.invalid/pack-index.json', fetch: async resource => {
-    const name = new URL(resource).pathname.slice(1), path = resolve(dist, name);
-    assert(path.startsWith(dist + sep), 'asset outside frozen publication');
-    const bytes = await readFile(path); loaded.set(name, { bytes: bytes.length, sha256: hash(bytes) });
-    return new Response(bytes);
-  } }));
   const mapFile = resolve(root, 'assets/maps/dust2-reconstructed-data.ts');
   const placementFile = resolve(root, 'assets/maps/dust2-reconstructed-placement.ts');
   const { default: map } = await import(pathToFileURL(mapFile).href);

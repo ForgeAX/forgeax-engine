@@ -77,6 +77,92 @@ a component object and selected array views. Numeric columns avoid that
 materialization. Expected boundary failures use the shared `Result` carrier
 from `@forgeax/engine-types`.
 
+Query spans retain one latest complete-table numeric window at each physical
+column. Equal ranges reuse borrowed typed views and frozen managed readers;
+each `get`/`mut` still returns its own shape record. Partial changed-row spans
+keep ordinary transient windows and do not displace the complete range.
+Size, backing or semantic-field changes produce another window. This does not
+extend the transient-view lifetime across structural changes.
+
+## Numeric memory services
+
+| Need | Entry | Lifetime |
+| --- | --- | --- |
+| Temporary numeric workspace | `world.frameArena.alloc(Float32Array, count)` | Entire synchronous update or grouped domain execution |
+| System-owned persistent buffer | `world.buffers.alloc(Float32Array, count)` | Explicit owner release |
+| Retained reader | `world.buffers.borrow(handle)` | Explicit once-only lease return |
+| Observation / reclamation | `world.memoryStats()` / `world.trimMemory()` | Cold, on-demand operations |
+
+```ts
+world.addSystem(Update, {
+  name: 'numeric-work', commands: 'none', queries: [],
+  fn: (world) => {
+    const scratch = world.frameArena.alloc(Float32Array, 256).unwrap();
+    scratch.fill(0); // Reused arena bytes have unspecified contents.
+  },
+}).unwrap();
+
+const retained = world.buffers.alloc(Uint32Array, 128).unwrap();
+world.buffers.view(retained).unwrap()[0] = 17;
+const reader = world.buffers.borrow(retained).unwrap();
+world.buffers.release(retained).unwrap(); // Retires the owner; reader stays valid.
+reader.release().unwrap(); // Last reader permits physical reuse.
+```
+
+World owns one segmented frame arena and one BufferPool shared by managed
+fields and persistent system allocations. Arena growth appends chunks without
+moving earlier ranges. `update` includes every fixed catch-up tick and command
+flush; reset runs after cleanup, including failures. A standalone `run` owns its
+scope; recursive domain runs join the active scope. Use
+`world.withFrameArena(() => world.run(domain))` to group synchronously contiguous
+runs. No arena view may cross a Promise, timer, generator suspension, frame
+boundary or transfer. The Render driver has yield boundaries: use phase-local
+scratch there. Ordinary JS views cannot trap every expired access.
+Returning a Promise or iterator from a system or explicit scope is rejected and
+poisons the World before another frame can reuse scratch.
+
+The pool includes a 2KiB class between 1KiB and 4KiB, so a retained 2KiB
+column does not consume 4KiB of live capacity. Reader pins and budget accounting
+use the same class through retirement.
+
+Persistent grants are opaque, frozen, unique per allocation and World-checked.
+Released grants never revive when an internal slot is reused. `view` is borrowed;
+`resize` preserves the prefix and clears discarded/newly exposed elements, but
+may replace backing, so fetch a fresh view afterward. Outstanding leases block
+resize. Leases pin storage; immutable historical values still require the domain's copy-on-write/version rules. Release with readers pending defers reuse until the last once-only
+return. A live allocation retains its current typed window, shared by view and
+borrow calls; a successful resize invalidates it, and owner release drops the
+cached window. Each borrow still has an independent once-only completion; a
+saved completion never acquires authority over a later reader or allocation.
+Do not transfer slab backing or retain raw views after their borrow
+expires. Tie system-owned allocations to the existing plugin lifecycle. Component
+arrays continue using schema writes and `setArrayRange`, preserving change
+tracking; resource values remain non-owning.
+
+`World({ memory: { arena: { maxBytes, retainBytes, maxScopeBytes },
+buffers: { maxBytes, retainBytes } } })` configures safe-integer byte limits.
+Defaults: Arena 64MiB committed / 64MiB scope / 8MiB idle retention; owned-buffer
+admission 256MiB against the shared pool / 4MiB idle retention. Growth uses
+64KiB initial regular chunks, up to 1MiB, and separate oversized demand. These
+are configurable admission/retention policies, not universal optimal sizes.
+Recently used Arena capacity survives close; cold excess retires on subsequent
+scopes or explicit trim. Idle pool maintenance has bounded backing/page visits.
+Dedicated large backing is not cached, but its slot metadata is reused.
+
+Stats count unique allocator backing, payload/capacity, typed slot metadata,
+backing allocations, copy/zero/trim work and active/pending readers. Detailed
+snapshots may enumerate allocated metadata; hot maintenance does not enumerate
+entities or all slots. Table bytes are observed separately and are not hard
+budgeted. Owned-buffer budgets do not change component admission; external
+resources, JS heap/VM, native and GPU memory remain separate populations. A
+smaller backing count is not a measured CPU or GC gain.
+
+Memory failures carry closed `MemoryError.code` and discriminated `detail`
+(request, budget, allocation, scope or handle). Validate count/layout/budget
+before publication. Invalid configuration throws at World construction;
+process-fatal OOM is not promised recoverable. Public use does not expose the
+raw BufferPool or internal slot IDs.
+
 ## Components and schema
 
 `defineComponent` accepts one closed storage vocabulary. The token exposes only
@@ -109,6 +195,9 @@ payload. `world.resolveUniqueRef<T>(handle)` reads that same payload and returns
 `unique-ref-released` or `unique-ref-stale` for invalid generations. Component
 replacement, removal and despawn own release; the read API grants no independent
 release or mutation of the store.
+Each live entry publishes one frozen success Result; payload replacement publishes
+a new Result while older results keep their original payload. The payload itself
+remains live and is not frozen or cloned.
 
 The `fields` object is deeply frozen at definition time. A value replacement
 uses the ordinary mutation path:
@@ -216,6 +305,10 @@ const { source: ChildOf, target: Children } = defineRelationship({
 const parent = world.spawn().unwrap();
 const child = world.spawn({ component: ChildOf, data: { parent } }).unwrap();
 const children = world.get(parent, Children).unwrap().entities;
+
+// Attach an existing entity: the parent argument is written into ChildOf.parent.
+const later = world.spawn().unwrap();
+world.addChild(parent, later, ChildOf, {}).unwrap();
 ```
 
 `sourceRequires` applies the same structural-boundary rule to the writable
@@ -332,6 +425,14 @@ The row iterator reuses its borrowed row facade. Read each entity/value during
 iteration; for an entity snapshot use `Array.from(query, row => row.entity)`.
 Spreading row facades and reading them after iteration retains the same final
 row rather than distinct entity snapshots.
+
+For a retained Query, `query.forEach(visit)` synchronously borrows its own traversal
+cursor and row facade. It keeps the same descriptor, structural checks and
+temporal observations as row iteration without constructing another iterator
+each call. Read rows inside the callback; do not suspend or retain them. Callback
+failure releases the cursor without advancing its observation. Reentry into that
+same Query is rejected; another Query has independent traversal state. Ordinary
+iterators retain independent cursors, including after an early `return()`.
 
 ```ts
 const query = world.query({ read: [Position] }).unwrap();
@@ -529,6 +630,12 @@ world.addSystem(FixedUpdate, {
 `world.update(deltaSeconds)` advances the clock, runs zero or more fixed steps,
 runs one update step, and flushes each system's command buffer. Clock readers
 receive a stable read view; the scheduler owns writes.
+A system may declare `commands: 'none'` when it does not enqueue deferred
+structural work. The schedule retains that capability at registration and skips
+its per-run transaction. The command argument is permanently closed: enqueue
+and commit reject, while direct World writes retain ordinary structural fences.
+The default still creates a fresh independently closed buffer per invocation;
+`replaceSystem` publishes a changed capability.
 Reverse system-set membership is rebuilt with the schedule graph after
 registration, removal or replacement. Set conditions are still evaluated once
 per execution segment and never cached across frames.
@@ -674,7 +781,7 @@ ECS World ownership simplification design.
 
 The eight BufferPool size classes bound pooling, not field capacity. Larger
 arrays use dedicated allocations; release drops their storage instead of
-retaining a large free bucket. Growth preserves bytes and slot identity, and
+retaining a large free bucket. Growth preserves bytes and live slot identity, and
 allocation failure returns the existing structured managed-buffer error. Small
 fields keep their existing allocation and reuse behavior. Game data, including
 instance transforms, remains World-owned regardless of its size.

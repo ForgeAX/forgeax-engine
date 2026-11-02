@@ -1,4 +1,5 @@
 import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
+import { ShadowViewResources } from '../record/shadow-view-resources';
 import type { SeedShaderModule } from './material-shader-policy';
 // WebGPU generation-scoped ready-state builder.
 // This owner performs one complete device-generation promotion; it receives
@@ -1031,6 +1032,7 @@ export async function buildReadyWebGPU(
       ...bloom,
     }),
   };
+  Object.assign(pipelineState, { shadowViewResources: new ShadowViewResources(pipelineState) });
   // Boot-time fallback resources submit real GPU work before the renderer is
   // published. Keep initialization as the readiness barrier for the first
   // frame: a Worker can otherwise receive `ready`, start its frame deadline,

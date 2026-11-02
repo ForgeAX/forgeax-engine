@@ -88,6 +88,7 @@ import {
 import { type CatalogListener, type CatalogSource, createCatalogSource } from './catalog-source.js';
 import type { MaterialReady } from './material/loader.js';
 import {
+  assertMaterialCookedParameters,
   assertMaterialStaticSelection,
   installMaterialReadyShaders,
   type MaterialRenderProjection,
@@ -465,6 +466,7 @@ export class AssetRegistry implements AssetReferenceOwner {
               input as MaterialAsset,
               sourceContent,
             );
+            assertMaterialCookedParameters((input as MaterialAsset).parameters, projection);
           } catch (cause) {
             if (
               cause !== null &&
@@ -904,6 +906,7 @@ export class AssetRegistry implements AssetReferenceOwner {
               projection,
               '<runtime-material>',
             );
+            assertMaterialCookedParameters(prepared.value.parameters, projection);
           } catch (cause) {
             if (
               cause !== null &&
@@ -1061,6 +1064,7 @@ export class AssetRegistry implements AssetReferenceOwner {
                 this.materialPayloadProjections.get(current),
               );
             assertMaterialStaticSelection(asset.staticSwitches, projection, '<runtime-material>');
+            assertMaterialCookedParameters(asset.parameters, projection);
           } catch (cause) {
             if (
               cause !== null &&

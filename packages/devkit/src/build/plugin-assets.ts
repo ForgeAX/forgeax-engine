@@ -402,12 +402,16 @@ export async function discoverPluginAssets(
       PackageId.format(packageId) === PackageId.format(declaration.definition.packageId) &&
       Object.keys(overrides).length === 0
     ) {
-      const product = await productCache.read({
-        definition,
-        sourcePath,
-        sourceClosure: declaration.sourceClosure,
-        publicationGeneration: 1,
-      });
+      const product = await productCache.read(
+        {
+          definition,
+          sourcePath,
+          sourceClosure: declaration.sourceClosure,
+          publicationGeneration: 1,
+        },
+        // Bootstrap blocks GUID reads, so a product that read content by GUID misses.
+        async () => undefined,
+      );
       if (product !== undefined)
         return Object.fromEntries(
           product.stagedOutputs.map((output) => [output.sourceKey, output.asset]),

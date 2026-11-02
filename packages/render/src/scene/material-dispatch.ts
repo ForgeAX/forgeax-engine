@@ -1,5 +1,9 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import type { MaterialResource } from '../material-resource';
+import {
+  type MaterialResource,
+  materialUsesSpriteGeometry,
+  ownedMaterialValues,
+} from '../material-resource';
 import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
 import { isMediumMaterial, matchesRecordMode } from '../record/material-pass-selection';
 import {
@@ -15,7 +19,6 @@ import { GenerationalWeakMap } from './generational-weak-map';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import {
   captureMaterialOverrides,
-  defaultMeshMaterial,
   effectiveMeshMaterials,
   type MeshMaterialBindingWrite,
   type MeshMaterialGeometry,
@@ -156,6 +159,8 @@ interface MaterialDemandCounts {
   readonly backs: number;
   readonly medium: number;
   readonly unfogged: number;
+  readonly borrowed: number;
+  readonly foldableSprites: number;
 }
 const EMPTY_DEMAND: MaterialDemandCounts = {
   transmission: 0,
@@ -163,11 +168,14 @@ const EMPTY_DEMAND: MaterialDemandCounts = {
   backs: 0,
   medium: 0,
   unfogged: 0,
+  borrowed: 0,
+  foldableSprites: 0,
 };
 
 function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCounts {
   if (material === undefined) return EMPTY_DEMAND;
   const snapshot = material.snapshot;
+  const owned = ownedMaterialValues(snapshot);
   const transmission = matchesRecordMode(snapshot, 'transmission');
   const roughness = snapshot.paramSnapshot?.roughness ?? snapshot.roughness;
   return {
@@ -182,6 +190,10 @@ function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCou
       snapshot.renderState?.fog === false && matchesRecordMode(snapshot, 'opaque-unfogged')
         ? material.bindings
         : 0,
+    borrowed: owned ? 0 : 1,
+    // Zero-binding accepted entries can still be consumed by actual Pass queries.
+    foldableSprites:
+      owned && snapshot.transparent === true && materialUsesSpriteGeometry(snapshot) ? 1 : 0,
   };
 }
 
@@ -198,6 +210,8 @@ function replaceDemand(
     medium: counts.medium - old.medium + current.medium,
     backs: counts.backs - old.backs + current.backs,
     unfogged: counts.unfogged - old.unfogged + current.unfogged,
+    borrowed: counts.borrowed - old.borrowed + current.borrowed,
+    foldableSprites: counts.foldableSprites - old.foldableSprites + current.foldableSprites,
   };
 }
 
@@ -244,6 +258,14 @@ export class MaterialFrame {
   }
   get hasMedium(): boolean {
     return this.counts.medium > 0;
+  }
+  /** Accepted owned Sprite materials that can participate in folding. */
+  get hasFoldableSprites(): boolean {
+    return this.counts.foldableSprites > 0;
+  }
+  /** Raw snapshots cannot prove cross-capture reuse from value or program identity. */
+  get hasBorrowedValues(): boolean {
+    return this.counts.borrowed > 0;
   }
   /** An opaque material opts out of scene fog (`renderState.fog: false`). */
   get hasUnfoggedOpaque(): boolean {
@@ -928,9 +950,7 @@ export class MaterialDispatch {
             ? direct
             : [
                 ...new Set(
-                  [defaultMeshMaterial, ...overrides].filter(
-                    (value): value is MaterialResource => value !== undefined,
-                  ),
+                  overrides.filter((value): value is MaterialResource => value !== undefined),
                 ),
               ];
         for (const resource of held) {

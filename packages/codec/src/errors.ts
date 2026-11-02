@@ -15,7 +15,17 @@ interface CodecErrorDetails {
   'ktx2-unsupported-scheme': { readonly scheme: number };
   'transcode-failed': { readonly sourceFormat: string; readonly targetFormat: string };
   'ktx2-encode-failed': { readonly mode: string; readonly reason: string };
+  'ktx2-native-unsupported': { readonly vkFormat: number; readonly reason: Ktx2NativeRejection };
 }
+
+/** Why a non-Basis KTX2 payload is outside the admitted RG8 / BC5 normal-map contract. */
+export type Ktx2NativeRejection =
+  | 'format'
+  | 'srgb-transfer'
+  | 'transfer-function'
+  | 'shape'
+  | 'scheme'
+  | 'level-length';
 
 /** Order-locked closed union of codec error codes. */
 export type CodecErrorCode = keyof CodecErrorDetails;
@@ -65,6 +75,8 @@ export function codecError<C extends CodecErrorCode>(
       'Basis transcode failed for this source/target format pair. Verify the KTX2 payload is a valid Basis (ETC1S / UASTC) texture and re-import the asset.',
     'ktx2-encode-failed':
       'Basis encode failed for this compression mode. Verify the source image dimensions / pixel format match the mode (LDR rgba8 vs HDR rgba16float) and retry the asset import.',
+    'ktx2-native-unsupported':
+      'Re-encode the texture as a linear 2D VK_FORMAT_R8G8_UNORM (16) or VK_FORMAT_BC5_UNORM_BLOCK (141) KTX2 with complete levels and no BasisLZ supercompression, or as a Basis KTX2.',
   };
 
   return {

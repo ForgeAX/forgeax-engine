@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
+import { createNativeCookCache } from '@forgeax/engine-ddc';
 import { ImporterRegistry } from '@forgeax/engine-import';
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import { copyPackData } from '@forgeax/engine-pack/runtime';
@@ -26,6 +27,8 @@ export type BuildProcessRequest =
       readonly root: string;
       readonly definitions: readonly PluginAssetDefinition[];
       readonly sessionId: string;
+      /** Project build DDC root backing each cooker's `context.cache`. */
+      readonly buildCacheRoot?: string;
     }
   | {
       readonly id: number;
@@ -74,6 +77,12 @@ export type BuildProcessRequest =
   | { readonly id: number; readonly operation: 'cancelTool'; readonly run: number }
   | { readonly id: number; readonly operation: 'dispose' };
 
+export interface BuildCookerDescriptor {
+  readonly key: string;
+  readonly timeoutMs?: number;
+  /** The project cooker's own declaration: reentrant, input-isolated cooking. */
+  readonly concurrency?: 'parallel';
+}
 export interface BuildImporterDescriptor {
   readonly key: string;
   readonly decodeImage: boolean;
@@ -110,7 +119,11 @@ function callParent(
 }
 
 const context = new Context();
-const cookers = new NativeCookerRegistry();
+let buildCacheRoot: string | undefined;
+const cookers = new NativeCookerRegistry({
+  cache: (key) =>
+    buildCacheRoot === undefined ? undefined : createNativeCookCache(buildCacheRoot, key),
+});
 const importers = new ImporterRegistry();
 let root: Fiber | undefined;
 let tail = Promise.resolve();
@@ -263,6 +276,7 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
     case 'start': {
       if (started) throw new Error('build process already started');
       started = true;
+      buildCacheRoot = request.buildCacheRoot;
       const source = new Map(
         request.definitions.map((definition) => [definition.guid, definition]),
       );
@@ -305,7 +319,14 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
       return {
         appOptions: projectAppOptions(context.get('devkitAppOptions')),
         delivery: projectDelivery(context.get('devkitDelivery')),
-        cookers: cookers.registeredCookers(),
+        cookers: cookers.registeredCookers().map((key): BuildCookerDescriptor => {
+          const cooker = cookers.get(key);
+          return {
+            key,
+            ...(cooker?.timeoutMs === undefined ? {} : { timeoutMs: cooker.timeoutMs }),
+            ...(cooker?.concurrency === 'parallel' ? { concurrency: 'parallel' as const } : {}),
+          };
+        }),
         importers: importers.registeredImporters().map((key): BuildImporterDescriptor => {
           const value = importers.get(key);
           if (!value) throw new Error(`importer disappeared during startup: ${key}`);
@@ -418,10 +439,13 @@ process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => 
   };
   // An importer may invoke the registry's own decoder through its injected context.
   // Reentrant capability calls must not wait behind that importer.
+  // A parallel cooker declared reentrant, input-isolated cooking: its cooks overlap
+  // instead of queueing behind one another.
   if (
     request.operation === 'decodeImage' ||
     request.operation === 'tool' ||
-    request.operation === 'cancelTool'
+    request.operation === 'cancelTool' ||
+    (request.operation === 'cook' && cookers.get(request.key)?.concurrency === 'parallel')
   )
     void respond();
   else tail = tail.then(respond);

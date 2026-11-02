@@ -16,6 +16,7 @@ The public entry point exports the following owners:
 | Layout | `resolveDdcLayout` | Resolve explicit build and project roots into the v2 child layout |
 | Status | `serializeDdcStatus`, `projectDdcStatusForBrowser` | Produce a versioned status envelope and a path-free browser projection |
 | Storage | `DdcEntryStore`, `ddcOutputDigest` | Stage, validate, publish, inspect, list, and remove immutable entries |
+| Native cook store | `createNativeCookCache`, `collectNativeCookGarbage` | Synchronous build-only `ByteCache` per cooker namespace under `<buildCacheRoot>/native-cook`; callers own keys and entry verification, unreadable files are misses. Reads refresh an entry's time and every write sweeps the root to `maxBytes` (default `NATIVE_COOK_CACHE_MAX_BYTES`, 4 GiB), least recently used first, never the entry just written |
 | Lifecycle | `DdcLifecycle`, `withDdcLock` | Allocate generation, fence leases, CAS heads, and recover failures |
 | Scope and GC | `createRuntimeScope`, `collectDdcGarbage` | Preserve original scope identity and sweep only unreachable project objects |
 | Errors | `DdcStoreError`, `DDC_ERROR_CODES` | Closed machine-readable errors with executable recovery actions |

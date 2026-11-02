@@ -25,6 +25,7 @@ export const MATERIAL_ERROR_CODES = [
   'material-surface-slot-missing',
   'material-surface-abi-mismatch',
   'material-surface-forbidden-interface',
+  'material-parallax-contract-invalid',
 ] as const;
 
 export type MaterialErrorCode = (typeof MATERIAL_ERROR_CODES)[number];
@@ -240,6 +241,14 @@ export interface MaterialTangentRequiredDetail {
   readonly reason: string;
 }
 
+export interface MaterialParallaxContractInvalidDetail {
+  readonly code: 'material-parallax-contract-invalid';
+  readonly material: string;
+  readonly parameter: 'displacementMode';
+  readonly field: 'normalTexture' | 'metallicTexture';
+  readonly action: 'provide-normal-texture' | 'use-packed-metallic-roughness';
+}
+
 export interface MaterialSurfaceSlotMissingDetail {
   readonly code: 'material-surface-slot-missing';
   readonly material: string;
@@ -311,6 +320,7 @@ interface MaterialErrorDetailByCode {
   readonly 'material-surface-slot-missing': MaterialSurfaceSlotMissingDetail;
   readonly 'material-surface-abi-mismatch': MaterialSurfaceAbiMismatchDetail;
   readonly 'material-surface-forbidden-interface': MaterialSurfaceForbiddenInterfaceDetail;
+  readonly 'material-parallax-contract-invalid': MaterialParallaxContractInvalidDetail;
 }
 
 export type MaterialErrorDetail = MaterialErrorDetailByCode[MaterialErrorCode];
@@ -326,6 +336,13 @@ export type MaterialErrorFor<C extends MaterialErrorCode> = {
 export type MaterialError = {
   [C in MaterialErrorCode]: MaterialErrorFor<C>;
 }[MaterialErrorCode];
+
+/** Per-field hints for `material-parallax-contract-invalid`; the policy hint is the normal-map case. */
+export const MATERIAL_PARALLAX_HINTS = {
+  normalTexture: 'parallax needs normalTexture; bumpTexture is ignored in parallax mode',
+  metallicTexture:
+    'parallax hosts its fragment height in the metallic pair; use packed metallicRoughnessTexture instead of metallicTexture',
+} as const satisfies Readonly<Record<MaterialParallaxContractInvalidDetail['field'], string>>;
 
 const MATERIAL_ERROR_POLICY = {
   'material-parent-not-found': {
@@ -432,6 +449,11 @@ const MATERIAL_ERROR_POLICY = {
   'material-surface-forbidden-interface': {
     expected: 'the Surface module declares no stage entry, resource binding, or vertex mutation',
     hint: 'remove the forbidden interface from the Surface source and recook the material',
+  },
+  'material-parallax-contract-invalid': {
+    expected:
+      'displacementMode parallax has a normalTexture value and no independent metallicTexture value',
+    hint: MATERIAL_PARALLAX_HINTS.normalTexture,
   },
 } satisfies {
   readonly [C in MaterialErrorCode]: {

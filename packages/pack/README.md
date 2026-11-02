@@ -498,13 +498,24 @@ Custom build-only content uses `PackCookSource` in the same output map:
 
 Register the matching `NativeCooker` in the build host. The host supplies the
 derived GUID, source key/path and source data; the cooker returns matching-kind
-metadata, references and artifact bytes. Missing cookers, rewritten GUIDs and
+metadata, references and artifact bytes, or an ordinary Asset payload (for
+example a baked `texture`), which the host publishes through that kind's standard
+producer under the derived GUID. Missing cookers, rewritten GUIDs and
 invalid products fail before publication. Custom sources can coexist with
 ordinary Assets and inherit normal Pack parameters and instance identities.
 They cannot override the closed ordinary Asset kinds. Authoring `readByGuid`
 can explicitly request a `PackCookSource` from the current build generation;
 that is source data, not a decoded runtime asset. Runtime custom kinds still
 need their normal Registry loader/decoder. No cooker enters the player.
+
+A host may construct `new NativeCookerRegistry({ cache })` with a build-only
+store factory. Each cook then receives `context.cache` (an `@forgeax/engine-types`
+`ByteCache`: `get`/`put` of opaque bytes by string key) namespaced to its cooker key. The store is a disposable DDC
+projection, never author truth: the cooker forwards it to a producer that owns
+its content keys and verifies its entries, so a hit must equal a fresh cook.
+DevKit build roots back it with `createNativeCookCache` over the project build
+cache, which sweeps itself to a byte bound least recently used first; registries
+without a factory cook without a store.
 
 `forgeax asset inspect --subject <source.pack.ts> --root <project> --json` executes module initialization, validates the default export, and projects canonical Meta without calling `build`. `@forgeax/engine-pack/source-node` accepts a host executor with `load` and optional `dispose`; `timeoutMs` bounds module initialization and `buildTimeoutMs` bounds one `build(context)` call. A build timeout returns one structured `pack-source-load-failed` Result with `detail.phase: 'build'`, the configured `timeoutMs`, and deterministic cleanup of the isolated worker and compile root.
 
@@ -1087,4 +1098,4 @@ Author-closure transfer uses the same relative source candidate order as scripta
 
 The module executor pool derives capacity from its retained Worker set. Its cache preparation resolves path and ownership together, and concurrent pool disposals await the same Worker retirements before removing an owned cache.
 
-`NativeCookerRegistry.runTransaction` returns the accepted `{ draft, generation }` snapshot with `status: 'committed' | 'recovered'`; only recovery carries `recoveryHint`. A failed candidate retains the previous snapshot without parallel draft or generation fields. Draft admission is shared by `runDraft`, `run` and transactions; malformed producer output and throwing transaction validation return structured failures. Publication callbacks remain responsible for atomic publication.
+`NativeCookerRegistry.runTransaction` returns the accepted `{ draft, generation }` snapshot with `status: 'committed' | 'recovered'`; only recovery carries `recoveryHint`. A failed candidate retains the previous snapshot without parallel draft or generation fields. Draft admission is shared by `runDraft`, `run` and transactions; malformed producer output and throwing transaction validation return structured failures. Publication callbacks remain responsible for atomic publication. A cooker without `concurrency: 'parallel'` is admitted one cook at a time in call order per cooker key, across every registry and instance in the process, so hosts may call `runDraft` concurrently; parallel cookers run their calls at once.

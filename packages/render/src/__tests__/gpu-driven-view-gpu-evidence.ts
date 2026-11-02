@@ -341,7 +341,9 @@ export async function runGpuDrivenLodReadbackGenerationEvidence() {
   }
 }
 
-export async function runGpuDrivenViewGpuEvidence(): Promise<GpuDrivenViewGpuEvidence> {
+export async function runGpuDrivenViewGpuEvidence(
+  computePassMode: 'separate' | 'combined' = 'separate',
+): Promise<GpuDrivenViewGpuEvidence> {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
   const rawDevice = _internal_getRawDevice(device);
@@ -460,7 +462,19 @@ export async function runGpuDrivenViewGpuEvidence(): Promise<GpuDrivenViewGpuEvi
   };
   let currentSubmission = beginSubmission(10, lodCommandOffset);
   view.setTelemetrySubmit({ frameId: 1, deviceGeneration: 0 });
-  view.addPasses(graph, 'gpu-driven', true, () => currentSubmission).unwrap();
+  view
+    .addPasses(
+      graph,
+      'gpu-driven',
+      true,
+      () => currentSubmission,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      computePassMode,
+    )
+    .unwrap();
   const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
   const encoder = device.createCommandEncoder({ label: 'gpu-driven-evidence' }).unwrap();
   compiled.execute({ encoder }).unwrap();
@@ -1162,7 +1176,9 @@ export async function runSharedGeometryCullEvidence() {
 }
 
 /** The candidate and palette addresses intentionally disagree on a real selector dispatch. */
-export async function runGpuDrivenSkinVisibleAddressEvidence() {
+export async function runGpuDrivenSkinVisibleAddressEvidence(
+  computePassMode: 'separate' | 'combined' = 'separate',
+) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const rawDevice = _internal_getRawDevice(device);
   if (rawDevice === undefined) throw new Error('Skin visible raw device unavailable');
@@ -1249,7 +1265,19 @@ export async function runGpuDrivenSkinVisibleAddressEvidence() {
       frame,
     ).unwrap();
     const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
-    view.addPasses(graph).unwrap();
+    view
+      .addPasses(
+        graph,
+        'gpu-driven',
+        true,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        computePassMode,
+      )
+      .unwrap();
     compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
     const visible = view.visibleBuffer;
     if (visible === undefined) throw new Error('Skin visible output unavailable');

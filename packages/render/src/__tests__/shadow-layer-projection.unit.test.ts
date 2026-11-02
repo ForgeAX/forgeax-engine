@@ -8,9 +8,11 @@ import {
   type ShadowLayerProjection,
   type ShadowLayerWork,
 } from '../gpu-driven/shadow-layer-projection';
+import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import { GpuSceneInputs } from '../gpu-scene-inputs';
 import { FrameSet } from '../scene/frame-set';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
+import { RowChangeLog } from '../scene/row-change-log';
 
 const BATCHES = 4;
 const FLIPS = 8;
@@ -246,11 +248,21 @@ describe('caster channel membership', () => {
       },
       slotAt: (slot: number) => rows.get(slot),
     };
+    const log = new RowChangeLog();
+    const cursors = new Map<number, SceneContentCursor>();
+    const cursorAt = (at: number) => {
+      const held = cursors.get(at);
+      if (held !== undefined) return held;
+      const cursor: SceneContentCursor = { journal: log, position: at };
+      cursors.set(at, cursor);
+      return cursor;
+    };
     const journal = {
-      get contentRevision() {
-        return revision;
+      get contentCursor() {
+        return cursorAt(revision);
       },
-      changedSlotsSince: (since: number) => (since === revision - 1 ? changed : undefined),
+      changedSlotsSince: (since: SceneContentCursor) =>
+        since.position === revision - 1 ? changed : undefined,
     };
     const channels = new ShadowChannelSlots();
     const even = channels.select(1, source, journal);

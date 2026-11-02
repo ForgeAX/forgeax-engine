@@ -84,6 +84,7 @@ This package consumes:
 - Vertex attributes: `POSITION` (VEC3, mandatory), `NORMAL` (VEC3; absent on a TRIANGLES primitive, flat normals are synthesized per the spec: indexed corners split by face normal and re-weld when every attribute matches, so the primitive stays indexed), `TEXCOORD_0` (VEC2), `TANGENT` (VEC4, optional), and `COLOR_0` (see the support matrix below) -- decoded via the accessor SoA path; `INDICES` (U8/U16/U32 scalar — U8 widens to U16; U32 preserved, narrowed to U16 by bridge when maxIndex < 65536)
 - `materials` with metallic-roughness and five KHR physical extensions mapped to pass-based `MaterialAsset` (see MaterialIr table below)
 - `textures` / `images` / `samplers` top-level arrays parsed into `GltfDoc` IR; texture index -> image index -> admitted image source; `parseGltf` owns external loading
+- `KHR_texture_basisu`: the extension's `source` replaces `textures[].source` (which is then only a PNG / JPEG fallback); sampler and per-binding `KHR_texture_transform` still apply. Images are admitted as `image/png`, `image/jpeg`, or `image/ktx2` (declared, `.ktx2` URI suffix, or KTX2 identifier sniff). KTX2 bytes go through `ctx.decodeImage` like any embedded image, where the image importer validates the container and keeps it compressed exactly as for a standalone `.ktx2` source; the material-slot color space must match the KTX2 DFD transfer function.
 - Source perspective and orthographic cameras; supplied aspect disables auto-aspect, omitted aspect follows the canvas. Omitted perspective far uses the finite Float32 maximum, producing the infinite-far limit through JSON Cook.
 
 ## COLOR_0 importer contract
@@ -169,7 +170,7 @@ configured `standardMaterialGuid`.
 
 | Array | Element | Notes |
 |:--|:--|:--|
-| `textures` | `TextureIr` | `{ sampler?, source, name? }`; `source` = image index |
+| `textures` | `TextureIr` | `{ sampler?, source, name? }`; `source` = image index (`KHR_texture_basisu.source` when present) |
 | `images` | `GltfImageIr` | `{ source, mimeType?, name? }`; source is a buffer-view result, data URI, or external URI with admitted bytes |
 | `samplers` | `SamplerIr` | `{ magFilter?, minFilter?, wrapS?, wrapT?, name? }` |
 
@@ -220,12 +221,12 @@ Sample reference: `apps/hello/skin` -- 3 Khronos Fox foxes side-by-side, each ru
 | `gltf-malformed-header` | GLB magic / version / length header rejection or missing JSON chunk |
 | `gltf-version-unsupported` | `asset.version` is not `'2.0'` |
 | `gltf-buffer-out-of-bounds` | accessor reads past `bufferView.byteLength` |
-| `gltf-extension-unsupported` | `extensionsRequired[]` lists an extension outside the supported allowlist exported as `EXTENSION_ALLOWLIST` (`EXT_mesh_gpu_instancing`, `EXT_meshopt_compression`, `KHR_lights_punctual`, `KHR_texture_transform`, transmission/IOR/volume, clearcoat, anisotropy, sheen, iridescence, specular, diffuse transmission) |
-| `gltf-accessor-type-mismatch` | invalid layout, sparse overrides or unsupported component/type; inspect the source union |
+| `gltf-extension-unsupported` | `extensionsRequired[]` lists an extension outside the supported allowlist exported as `EXTENSION_ALLOWLIST` (`EXT_mesh_gpu_instancing`, `EXT_meshopt_compression`, `KHR_lights_punctual`, `KHR_mesh_quantization`, `KHR_texture_transform`, `KHR_texture_basisu`, transmission/IOR/volume, clearcoat, anisotropy, sheen, iridescence, specular, diffuse transmission) |
+| `gltf-accessor-type-mismatch` | invalid layout, sparse overrides or unsupported component/type; inspect the source union. Under `KHR_mesh_quantization`, attributes, morph deltas and animation outputs accept BYTE/SHORT (normalized or not) and UBYTE/USHORT; normalized ints dequantize like Three.js (`/127`, `/32767`, `/255`, `/65535`, signed clamped at -1) and node transforms keep the dequantization scale |
 | `gltf-texture-load-failed` | `externalLoader` rejected for a texture `uri`; `detail.uri` carries the failing URI; hint: `'check sidecar meta.json + textures/ directory + vite-plugin-pack /__pack/lookup'` |
 | `gltf-meta-missing` | sidecar `<source>.meta.json` is absent next to the `.gltf` / `.glb` source file |
 | `gltf-instancing-count-mismatch` | `EXT_mesh_gpu_instancing` three TRS accessors (`TRANSLATION` / `ROTATION` / `SCALE`) have differing element counts |
-| `gltf-image-mime-unsupported` | `image/mimeType` is neither `image/jpeg` nor `image/png`; `detail.mimeType` carries the failing MIME; hint: `'supported: image/jpeg \| image/png; transcode externally'` |
+| `gltf-image-mime-unsupported` | `image/mimeType` is not `image/jpeg`, `image/png`, or `image/ktx2`; `detail.mimeType` carries the failing MIME; hint: `'supported: image/jpeg \| image/png; transcode externally'` |
 | `gltf-skin-joint-count-exceeded` | `skins[j].joints.length > 256` (MAX_JOINTS); hint: `'glTF skin must have <= 256 joints per skin'` |
 | `gltf-skin-joint-name-missing` | glTF node referenced by a skin joint has no `name` field; hint contains skinIndex + jointPathIndex |
 | `gltf-animation-cubicspline-unsupported` | retained external wire code; no longer emitted by this producer |

@@ -31,6 +31,7 @@ adding a new package surface.
 | Spring bone secondary motion / authored physical rig / partial skeletal blend | `forgeax-engine-physics` → `packages/animation/README.md` Managed skeletal motion; use fixed animation and ordinary saved Pack configuration |
 | Render vocabulary / frame stages / Renderer construction | `@forgeax/engine/render` + `forgeax-engine-app`（物理 owner 为 `packages/render/`，见 `packages/render/README.md`） |
 | 让东西可见：MeshFilter + MeshRenderer + Material + 灯光（含 `forgeax::sprite-lit` per-light forward） | `forgeax-engine-material` |
+| Model a game mesh in code (hard-surface, organic, curves/surfaces, rigs, UVs and bakes) and check it with `forgeax model *` | `forgeax-engine-modeling`（owner `packages/modeling/README.md` + `reference/`） |
 | 写自定义 WGSL + cooked MaterialAsset module | `forgeax-engine-shader` |
 | 加 pass / 后处理 / tonemap / bloom / fxaa / skybox | `forgeax-engine-render-pipeline` |
 | Assemble a renderer, diagnose backend selection, or recover a lost renderer | `forgeax-engine-app` + `packages/runtime/README.md` assembly owner |
@@ -50,7 +51,7 @@ adding a new package surface.
 | 状态机 / defineState / setNextState / 状态 scoped 实体 / OnEnter/OnExit | `forgeax-engine-state` |
 | 底层后端（贡献者）：opaque handle / capability / 双实现 | `forgeax-engine-rhi` |
 | 明确错误 / 测试 / CI 出错 — 症状索引与 owner 路由 | `forgeax-engine-debug`；复杂渲染问题优先上面的 RHI Debug 路径 |
-| Slow/flaky CI, Browser test-work budgets or complete cost receipts, changed-source focused reruns, or missing CI artifacts | `forgeax-engine-debug` → `scripts/ci/README.md` |
+| Slow/flaky CI, instrumented cold producers, native Dawn placement, Browser work budgets, changed-source focused reruns or missing artifacts | `forgeax-engine-debug` → `scripts/ci/README.md`; retain complete owners and original deadlines |
 | RHI 录帧 / replay / 离线 per-draw inspect (capture→inspect→dispose) — 查 bindings+drawCall+RT PNG 定位渲染症状 | `forgeax-engine-rhi-debug` |
 
 聚合非 1:1 对包：`input` 折进 `app`,`pack` 折进 `assets`,`geometry` 折进 `material`。包名册全表：`AGENTS.md §Packages`。

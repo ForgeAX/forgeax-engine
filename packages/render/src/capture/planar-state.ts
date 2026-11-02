@@ -2,7 +2,8 @@ import type { CameraSnapshot } from '../render-contract';
 import type { RenderTarget } from '../targets/contracts';
 import type { RenderTargetPhysical } from '../targets/physical';
 
-interface PlanarCapture {
+/** One planar mirror capture: the display camera, its target and the frame it was selected in. */
+export interface PlanarCapture {
   readonly camera: CameraSnapshot;
   readonly target: RenderTarget;
   readonly physical: RenderTargetPhysical;
@@ -14,8 +15,10 @@ export class PlanarCaptureState {
   private completed: PlanarCapture | undefined;
   private pending: PlanarCapture | undefined;
   private selected: PlanarCapture | undefined;
+  /** What the view's recording did with the selection; RenderCommit settles it. */
+  private recorded: { submitted: boolean; completion: Promise<unknown> | undefined } | undefined;
   dispose(): void {
-    this.completed = this.pending = this.selected = undefined;
+    this.completed = this.pending = this.selected = this.recorded = undefined;
   }
 
   prepare(
@@ -31,6 +34,7 @@ export class PlanarCaptureState {
       this.dispose();
       return undefined;
     }
+    this.recorded = undefined;
     // RenderTargetHost owns the sole physical output. Per-display target identity
     // is explicit in PlanarReflection; cadence never creates a second texture.
     const previous = this.completed;
@@ -57,7 +61,23 @@ export class PlanarCaptureState {
     return this.selected;
   }
 
-  submit(submitted: boolean, completion: Promise<unknown> | undefined) {
+  /** Record time: the view's recording ended; `submitted` whether its work reached the queue. */
+  stage(submitted: boolean, completion: Promise<unknown> | undefined): void {
+    this.recorded = { submitted, completion };
+  }
+
+  /**
+   * RenderCommit: promote the selection only when the frame was accepted and
+   * the view recorded it; any other frame, including one whose recording
+   * never ran or threw before submit, rolls the selection back.
+   */
+  settle(accepted: boolean): void {
+    const recorded = this.recorded;
+    this.recorded = undefined;
+    this.submit(accepted && recorded?.submitted === true, recorded?.completion);
+  }
+
+  private submit(submitted: boolean, completion: Promise<unknown> | undefined): void {
     const candidate = this.selected;
     if (candidate === undefined || candidate === this.completed || candidate === this.pending)
       return;

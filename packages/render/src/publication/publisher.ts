@@ -274,8 +274,9 @@ export function createRenderPublisher(
   let frameDependencies = new Set<number>();
   let revision = 0,
     disposed = false,
-    failed = false,
-    active = false;
+    failed = false;
+  let preparationPhase: 'idle' | 'preparing' | 'candidate' | 'settling' = 'idle';
+  const phaseIs = (phase: typeof preparationPhase): boolean => preparationPhase === phase;
   let lastScannedRows = 0,
     allocations = 0;
   // One record per publication slot: it crosses with its publication and
@@ -285,7 +286,7 @@ export function createRenderPublisher(
   // Metadata of the last accepted publication; the next message omits unchanged entries.
   let acceptedMetadata: RenderPublicationMetadata | undefined;
   // Camera, light and environment entries re-extract only when their inputs change.
-  const environmentGate: EnvironmentFrameGate = new EnvironmentGate();
+  const environmentGate: EnvironmentFrameGate = new EnvironmentGate(true);
   const record = (bytes: number): ArrayBuffer => {
     let value = storage ?? new ArrayBuffer(0);
     // A baseline-sized record must not keep crossing the Worker boundary: every
@@ -691,7 +692,7 @@ export function createRenderPublisher(
       const message = encodeRenderPublication(packet, acceptedMetadata);
       observation?.phase('candidate');
       this.batch.validate();
-      active = true;
+      preparationPhase = 'candidate';
       let closed = false;
       return ok({
         packet,
@@ -700,6 +701,7 @@ export function createRenderPublisher(
         accept: () => {
           if (closed || disposed || failed)
             throw new RenderPublicationError({ reason: 'revision', subject: 'closed candidate' });
+          preparationPhase = 'settling';
           try {
             observation?.phase('accept');
             this.batch.accept();
@@ -715,7 +717,6 @@ export function createRenderPublisher(
             }
             for (const key of this.programs.keys()) publishedPrograms.add(key);
             closed = true;
-            active = false;
             revision++;
             acceptedMetadata = packet.metadata;
             flights.set(revision, {
@@ -734,21 +735,26 @@ export function createRenderPublisher(
           } catch (cause) {
             failed = true;
             closed = true;
-            active = false;
             throw this.acceptanceFailure(cause);
+          } finally {
+            preparationPhase = 'idle';
           }
         },
         discard: () => {
           if (closed) return;
           closed = true;
-          active = false;
-          for (const row of featureRows)
-            this.featureSources
-              .find((feature) => feature.identity === row.identity)
-              ?.onSourceFrameDiscarded?.(row.data);
-          closeFrames(this.videoFrames, this.canvasFrames);
-          observation?.finish('discarded');
-          activeObservation = undefined;
+          preparationPhase = 'settling';
+          try {
+            for (const row of featureRows)
+              this.featureSources
+                .find((feature) => feature.identity === row.identity)
+                ?.onSourceFrameDiscarded?.(row.data);
+            closeFrames(this.videoFrames, this.canvasFrames);
+            observation?.finish('discarded');
+          } finally {
+            activeObservation = undefined;
+            preparationPhase = 'idle';
+          }
         },
       });
     }
@@ -783,40 +789,62 @@ export function createRenderPublisher(
       }
     }
 
-    /** Publish every extracted renderable; returns the unsupported source kind, if any. */
+    /** Grouping is synchronous: no temporary column escapes template admission. */
     private addRenderableTemplates(frame: ReturnType<typeof extractFrames>): string | undefined {
+      const count = frame.renderables.length;
+      if (count === 0) return undefined;
+      const entries: readonly DispatchEntry[] = Array.isArray(frame.dispatch)
+        ? frame.dispatch
+        : [...frame.dispatch];
+      const words = count * 2 + 1 + entries.length;
+      // A tiny factory is cheaper than a scope/Result/view. Large grouping
+      // uses the World's bounded arena through the end of this exact reader.
+      if (words < 256) return this.groupRenderableTemplates(frame, entries, new Int32Array(words));
+      return world
+        .withFrameArena(() => {
+          const allocated = world.frameArena.alloc(Int32Array, words);
+          if (!allocated.ok) return allocated;
+          return ok(this.groupRenderableTemplates(frame, entries, allocated.value));
+        })
+        .unwrap();
+    }
+
+    private groupRenderableTemplates(
+      frame: ReturnType<typeof extractFrames>,
+      entries: readonly DispatchEntry[],
+      storage: Int32Array,
+    ): string | undefined {
       const meshCounts = new Map<number, number>();
       for (const row of frame.renderables)
         if (row.assetHandle !== undefined)
           meshCounts.set(row.assetHandle, (meshCounts.get(row.assetHandle) ?? 0) + 1);
-      // Group dispatch entries by renderable with two numeric columns; entries
-      // are copied without their row identity only when a new template needs them.
       const count = frame.renderables.length;
-      const entries: readonly DispatchEntry[] = [...frame.dispatch];
-      const starts = new Int32Array(count + 1);
+      const cursorBase = count + 1;
+      const orderBase = count * 2 + 1;
+      storage.fill(0, 0, cursorBase);
       for (const entry of entries)
         if (entry.renderableIndex >= 0 && entry.renderableIndex < count)
-          starts[entry.renderableIndex + 1] = (starts[entry.renderableIndex + 1] as number) + 1;
-      for (let index = 0; index < count; index++)
-        starts[index + 1] = (starts[index + 1] as number) + (starts[index] as number);
-      const order = new Int32Array(starts[count] as number);
-      const cursor = starts.slice(0, count);
-      for (let index = 0; index < entries.length; index++) {
-        const renderable = (entries[index] as DispatchEntry).renderableIndex;
+          storage[entry.renderableIndex + 1] = (storage[entry.renderableIndex + 1] as number) + 1;
+      for (let i = 0; i < count; i++) {
+        storage[i + 1] = (storage[i + 1] as number) + (storage[i] as number);
+        storage[cursorBase + i] = storage[i] as number;
+      }
+      for (let i = 0; i < entries.length; i++) {
+        const renderable = (entries[i] as DispatchEntry).renderableIndex;
         if (renderable < 0 || renderable >= count) continue;
-        order[cursor[renderable] as number] = index;
-        cursor[renderable] = (cursor[renderable] as number) + 1;
+        const cursor = cursorBase + renderable;
+        storage[orderBase + (storage[cursor] as number)] = i;
+        storage[cursor] = (storage[cursor] as number) + 1;
       }
       const checked = new Set<MaterialResource>();
+      const rowDispatch = { entries, order: storage, start: 0, end: 0 };
       for (let i = 0; i < count; i++) {
         const row = frame.renderables.at(i) as RenderableSnapshot;
         const unsupported = unsupportedRenderableSource(row, checked);
         if (unsupported !== undefined) return unsupported;
-        this.addRenderableTemplate(
-          row,
-          { entries, order, start: starts[i] as number, end: starts[i + 1] as number },
-          meshCounts,
-        );
+        rowDispatch.start = orderBase + (storage[i] as number);
+        rowDispatch.end = orderBase + (storage[i + 1] as number);
+        this.addRenderableTemplate(row, rowDispatch, meshCounts);
       }
       return undefined;
     }
@@ -826,34 +854,39 @@ export function createRenderPublisher(
       rowDispatch: RowDispatch,
       meshCounts: ReadonlyMap<number, number>,
     ): void {
-      const {
-        worldId: _world,
-        entityKey,
-        transform,
-        material,
-        materials,
-        materialOverrides,
-        ...content
-      } = row;
+      const { entityKey, transform, material, materials, materialOverrides } = row;
       const references = this.materialReferences(material, materials, materialOverrides);
-      const { materials: materialReferences, overrides } = references;
       nextMaterialDependencies.set(entityKey, references.dependencies);
-      const snapshot = {
-        ...content,
-        material: references.material,
-        materials: materialReferences,
-        ...(overrides === undefined ? {} : { materialOverrides: overrides }),
-      };
-      const shareable = this.shareable(snapshot, meshCounts);
-      // Rows of one mesh/material tuple almost always share content: compare
-      // against that tuple's templates before deriving a content key.
-      const bucketKey = shareable ? `${snapshot.assetHandle}|${references.key}` : undefined;
+      const shareable = this.shareable(row, meshCounts);
+      // extractFrames owns these plain source-row envelopes. Compare the exact
+      // publication fields before constructing another envelope on a hit.
+      const bucketKey = shareable ? `${row.assetHandle}|${references.key}` : undefined;
       const bucket = bucketKey === undefined ? undefined : this.templateBuckets.get(bucketKey);
+      let snapshot: RenderPublicationTemplate['snapshot'] | undefined;
       let known =
-        bucket === undefined ? undefined : this.matchTemplate(snapshot, rowDispatch, bucket);
+        bucket === undefined
+          ? undefined
+          : this.matchRowTemplate(row, references, rowDispatch, bucket);
       let template: RenderPublicationTemplate | undefined;
       let key: string | undefined;
       if (known === undefined) {
+        const {
+          worldId: _world,
+          entityKey: _entity,
+          transform: _transform,
+          material: _material,
+          materials: _materials,
+          materialOverrides: _overrides,
+          ...content
+        } = row;
+        snapshot = {
+          ...content,
+          material: references.material,
+          materials: references.materials,
+          ...(references.overrides === undefined
+            ? {}
+            : { materialOverrides: references.overrides }),
+        };
         template = { snapshot, dispatch: strippedDispatch(rowDispatch) };
         if (shareable) {
           key = this.templateKey(template);
@@ -919,7 +952,10 @@ export function createRenderPublisher(
 
     /** False for payloads only one entity can own. */
     private shareable(
-      snapshot: RenderPublicationTemplate['snapshot'],
+      snapshot: Pick<
+        RenderableSnapshot,
+        'instances' | 'spriteInstances' | 'skinBinding' | 'pointsLines' | 'assetHandle'
+      >,
       meshCounts: ReadonlyMap<number, number>,
     ): boolean {
       // These payloads already contain the source entity identity. They
@@ -949,20 +985,60 @@ export function createRenderPublisher(
       else if (bucket.length < TEMPLATE_BUCKET_LIMIT) bucket.push(known);
     }
 
-    private matchTemplate(
-      snapshot: RenderPublicationTemplate['snapshot'],
+    private matchRowTemplate(
+      row: RenderableSnapshot,
+      materials: MaterialReferences,
       dispatch: RowDispatch,
       bucket: readonly { index: number; dependencies: readonly number[] }[],
     ): { index: number; dependencies: readonly number[] } | undefined {
+      // A custom JSON root must still take the ordinary captured-template path.
+      if (typeof (row as unknown as { toJSON?: unknown }).toJSON === 'function') return undefined;
       for (const known of bucket) {
         const candidate = this.templates[known.index] as RenderPublicationTemplate;
         if (
-          this.sameContent('snapshot', snapshot, candidate.snapshot, 0) &&
+          this.sameRowContent(row, materials, candidate.snapshot) &&
           this.sameDispatch(dispatch, candidate.dispatch)
         )
           return known;
       }
       return undefined;
+    }
+
+    private sameRowContent(
+      row: RenderableSnapshot,
+      materials: MaterialReferences,
+      candidate: RenderPublicationTemplate['snapshot'],
+    ): boolean {
+      if (
+        !this.sameContent('material', materials.material, candidate.material, 1) ||
+        !this.sameContent('materials', materials.materials, candidate.materials, 1) ||
+        !this.sameContent('materialOverrides', materials.overrides, candidate.materialOverrides, 1)
+      )
+        return false;
+      const fields = row as unknown as Record<string, unknown>;
+      const captured = candidate as unknown as Record<string, unknown>;
+      let count = materials.overrides === undefined ? 2 : 3;
+      for (const key in fields) {
+        if (
+          !Object.hasOwn(fields, key) ||
+          key === 'worldId' ||
+          key === 'entityKey' ||
+          key === 'transform' ||
+          key === 'material' ||
+          key === 'materials' ||
+          key === 'materialOverrides'
+        )
+          continue;
+        const value = fields[key];
+        if (value === undefined || typeof value === 'function') continue;
+        count++;
+        if (!this.sameContent(key, value, captured[key], 1)) return false;
+      }
+      for (const key in captured) {
+        const value = captured[key];
+        if (value !== undefined && typeof value !== 'function') count--;
+      }
+      return count === 0;
     }
 
     /** {@link sameContent} of a row's dispatch entries without their row identity fields. */
@@ -1510,7 +1586,7 @@ export function createRenderPublisher(
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       if (disposed || failed)
         return fail('disposed', 'publisher retired or failed; start a new source epoch');
-      if (active || flights.size >= maxInFlight)
+      if (!phaseIs('idle') || flights.size >= maxInFlight)
         return fail('in-flight', 'publication slots are occupied');
       materialRows.clear();
       materialSources.clear();
@@ -1526,14 +1602,21 @@ export function createRenderPublisher(
         baseline,
       );
       activeObservation = observation;
-      const preparation = new PublicationPreparation(baseline, observation);
+      preparationPhase = 'preparing';
+      let preparation: PublicationPreparation | undefined;
       try {
+        preparation = new PublicationPreparation(baseline, observation);
         return preparation.prepare(sampleTimeSeconds, temporalReset);
       } catch (cause) {
         observation?.finish('prepare-error');
         activeObservation = undefined;
-        closeFrames(preparation.videoFrames, preparation.canvasFrames);
+        if (preparation !== undefined)
+          closeFrames(preparation.videoFrames, preparation.canvasFrames);
         return fail('unsupported', cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (phaseIs('preparing')) {
+          preparationPhase = 'idle';
+        }
       }
     },
     acknowledgeFeatures(
@@ -1574,7 +1657,7 @@ export function createRenderPublisher(
       const returned = buffers[0];
       if (buffers.length !== 1 || !(returned instanceof ArrayBuffer))
         return fail('shape', 'returned storage');
-      if (active || storage !== undefined) spareStorage.push(returned);
+      if (!phaseIs('idle') || storage !== undefined) spareStorage.push(returned);
       else storage = returned;
       flights.delete(acceptedRevision);
       return ok(undefined);

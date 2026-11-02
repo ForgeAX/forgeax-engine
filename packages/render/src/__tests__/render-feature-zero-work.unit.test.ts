@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { RenderFeatureStageFailedError } from '../errors/render';
 import { createRenderFeatureHost, getRenderFeaturePlanExecutionProjection } from '../features/host';
 import type { RenderFeature, RenderFeatureSubmission } from '../features/types';
+import { abortFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 function noWorkFeature(identity: string): RenderFeature<{ readonly empty: true }> {
@@ -93,7 +94,7 @@ describe('render feature zero-work boundaries', () => {
         signature = planned.signature;
         const execution = getRenderFeaturePlanExecutionProjection(planned)?.passes[0];
         expect(execution?.graphics?.draws.map((draw) => draw.enabled)).toEqual(mask);
-        frame.onSubmitted();
+        submitFeatureFrame(host);
         const submitted = submission?.works[0]?.passes[0]?.graphics?.draws;
         expect(submitted).toHaveLength(mask.filter(Boolean).length);
         expect(submitted).toEqual(
@@ -125,11 +126,11 @@ describe('render feature zero-work boundaries', () => {
         caps: {} as never,
       });
     const rejected = frame(1);
-    rejected.onAborted();
-    const accepted = frame(2);
+    abortFeatureFrame(host);
+    frame(2);
     expect(submitted).toEqual([]);
-    accepted.onSubmitted();
-    accepted.onSubmitted();
+    submitFeatureFrame(host);
+    submitFeatureFrame(host);
     expect(submitted).toEqual([2]);
     expect(rejected.plans).toHaveLength(1);
     host.dispose();

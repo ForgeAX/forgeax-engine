@@ -34,6 +34,7 @@ import type {
 } from '../render-pipeline';
 import { getTemporalGpuState, stageTemporalGpuWrite } from '../temporal/gpu';
 import { isSceneDataTarget } from '../temporal/scene-data';
+import { recordContext } from '../world/view-record-context';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
@@ -382,7 +383,7 @@ function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
   const state = getTemporalGpuState(
     frame.frameState,
     frame.runtime.device,
-    frame.runtime.deviceScope,
+    recordContext(frame.runtime).deviceScope,
     frame.targetW,
     frame.targetH,
     true,
@@ -536,7 +537,7 @@ function resolveViewDepthBindings(
     frame.frameState.viewBindGroupCache,
     [
       frame.runtime.device,
-      frame.runtime.deviceScope ?? frame.runtime.device,
+      recordContext(frame.runtime).deviceScope ?? frame.runtime.device,
       pipeline,
       getLayout as object,
       frame.pipelineState.viewUniformBuffer,

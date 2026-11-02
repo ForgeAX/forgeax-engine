@@ -62,7 +62,7 @@ async function fixture() {
     extraAccesses: [],
     size: { width: 1, height: 1 },
   }).unwrap();
-  const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encode;
+  const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encodeDirect;
   expect(encode).toBeDefined();
   const frame = {
     runtime: {
@@ -88,7 +88,7 @@ async function fixture() {
       buffer: () => ok(buffer),
     },
     pass: { setPipeline: vi.fn(), setBindGroup: vi.fn(), draw: vi.fn() },
-  } as unknown as Parameters<RasterGraphPass<RenderPipelineFrame>['encode']>[0];
+  } as unknown as Parameters<NonNullable<RasterGraphPass<RenderPipelineFrame>['encode']>>[0];
   return {
     device,
     frame,
@@ -109,16 +109,16 @@ async function fixture() {
 
 it('rebinds Deferred geometry when only the receiver texture view changes', async () => {
   const { createGroup, context, encode, replacement, replaceReceiver, dispose } = await fixture();
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   const groups = () =>
     createGroup.mock.calls.filter(([desc]) =>
       Array.from(desc.entries).some((entry) => entry.binding === 15),
     );
   expect(groups()).toHaveLength(1);
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   expect(groups()).toHaveLength(1);
   replaceReceiver();
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   expect(groups()).toHaveLength(2);
   expect(
     Array.from(groups()[1]?.[0].entries ?? []).find((entry) => entry.binding === 15)?.resource,
@@ -140,7 +140,7 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
   };
   const upload = vi.spyOn(device.queue, 'writeTexture');
   const makePipeline = vi.spyOn(device, 'createRenderPipeline');
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   expect(upload).not.toHaveBeenCalled();
   const fitPipeline = vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
   mutable.validatedOrdered = [
@@ -165,7 +165,7 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
       },
     },
   ];
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   const lutPipeline = vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
   expect(lutPipeline).not.toBe(fitPipeline);
   expect(upload).toHaveBeenCalledTimes(1);
@@ -179,7 +179,7 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
   )?.resource;
   expect(lutView).toMatchObject({ kind: 'textureView' });
   mutable.validatedOrdered = [];
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   expect(vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0]).toBe(fitPipeline);
   expect(makePipeline).toHaveBeenCalledTimes(2);
   mutable.validatedOrdered = [
@@ -206,7 +206,7 @@ it('switches fit → mixed LUT → fit without changing the fitted layout or rea
       intensityBuffer: alternateIntensity,
     },
   } as never);
-  encode?.(context);
+  encode?.(context.pass, context.frame, context.resources);
   expect(upload).toHaveBeenCalledTimes(1);
   expect(lutGroups()).toHaveLength(2);
   expect(

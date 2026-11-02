@@ -126,7 +126,7 @@ describe('built-in MaterialAsset sources', () => {
     expect(text).toContain('@binding(16) var thicknessTexture');
     expect(text).toContain('@binding(17) var irradianceMap');
     expect(text).toMatch(
-      /#ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE\s+@group\(1\) @binding\(44\) var specularColorTextureSampler/u,
+      /#ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE\s+@group\(1\) @binding\(44\) var specularColorSampler/u,
     );
     expect(text).toMatch(
       /#ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE[\s\S]*?@group\(1\) @binding\(45\) var specularColorTexture/u,

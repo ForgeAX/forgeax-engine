@@ -9,6 +9,7 @@ import {
 import {
   type EngineWorkspaceCameraInput,
   EngineWorkspaceError,
+  type EngineWorkspacePreviewDisplayOptions,
   type EngineWorkspaceRuntime,
 } from './workspace';
 import type { EngineWorkspaceRuntimePackRequest } from './workspace-runtime-pack';
@@ -507,6 +508,25 @@ export function createEngineWorkspaceTools(
         mode: { enum: ['material', 'wireframe'] },
         collision: { type: 'boolean' },
         bounds: { type: 'boolean' },
+        overlays: {
+          type: 'object',
+          description:
+            'Overlay geometry by key (for example from model.overlay); null removes a key. Up to 16 keys and 200000 vertices each.',
+          additionalProperties: {
+            oneOf: [
+              { type: 'null' },
+              {
+                type: 'object',
+                required: ['topology', 'positions'],
+                properties: {
+                  topology: { enum: ['triangle-list', 'line-list'] },
+                  positions: { type: 'array', items: { type: 'number' } },
+                  colors: { type: 'array', items: { type: 'number' } },
+                },
+              },
+            ],
+          },
+        },
       },
       async run(args, context) {
         const owner = preview(args);
@@ -525,6 +545,13 @@ export function createEngineWorkspaceTools(
             ...(args.mode === 'material' || args.mode === 'wireframe' ? { mode: args.mode } : {}),
             ...(typeof args.collision === 'boolean' ? { collision: args.collision } : {}),
             ...(typeof args.bounds === 'boolean' ? { bounds: args.bounds } : {}),
+            ...(args.overlays !== null && typeof args.overlays === 'object'
+              ? {
+                  overlays: args.overlays as NonNullable<
+                    EngineWorkspacePreviewDisplayOptions['overlays']
+                  >,
+                }
+              : {}),
           },
           { signal: context.signal },
         );

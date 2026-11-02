@@ -105,6 +105,9 @@ import {
   type WorldExecutionFault,
   type WorldExecutionState,
 } from './execution/shared-kernel';
+import { type FrameArena, WorldFrameArena } from './frame-arena';
+import { isSuspendedMemoryResult, MemoryError } from './memory-types';
+import { OwnedBuffers } from './owned-buffers';
 import type { QueryDescriptor } from './query/query';
 import { createQuery, type Query, type QueryCreationError } from './query/query';
 import {
@@ -168,6 +171,7 @@ import {
   worldReparent,
 } from './world-entity-lifecycle';
 import { worldInternal } from './world-internal';
+import { readWorldMemoryStats, type WorldMemoryStats } from './world-memory';
 import { type WorldRead, worldRead } from './world-read';
 import {
   worldAddSystem,
@@ -198,6 +202,7 @@ import {
  * AI users: switch on `.code` for programmatic branching.
  */
 export type EcsError =
+  | MemoryError
   | AssetError
   | ArrayRangeOutOfBoundsError
   | CommandFailedError
@@ -321,6 +326,8 @@ export interface WorldInspection {
 
 /** JSON-safe schedule graph and access metadata returned by `world.scheduleData()`. */
 export interface WorldScheduleQueryData {
+  readonly read: readonly string[];
+  readonly write: readonly string[];
   readonly with: readonly string[];
   readonly without: readonly string[];
   readonly optional: readonly string[];
@@ -425,6 +432,10 @@ export class World {
   private readonly freeIndices: number[] = [];
   /** BufferPool for schema-declared variable buffers and arrays. */
   private readonly bufferPool = new BufferPool();
+  private readonly arenaOwner: WorldFrameArena;
+  readonly frameArena: FrameArena;
+  readonly buffers: OwnedBuffers;
+  private runningSchedule = false;
   /** Per-World managed unique-ref store used by lifecycle mutations. */
   private readonly uniqueRefs: UniqueRefStore = new UniqueRefStoreImpl();
   /** Per-World shared-ref store; public read-only for direct handle operations. */
@@ -474,6 +485,9 @@ export class World {
     return ok(undefined);
   }
   constructor(options: WorldOptions = {}) {
+    this.arenaOwner = new WorldFrameArena(options.memory?.arena);
+    this.frameArena = this.arenaOwner;
+    this.buffers = new OwnedBuffers(this.bufferPool, options.memory?.buffers);
     this.graph = createArchetypeGraph(options.storage === 'shared');
     this.clock = createWorldClock({ ...DEFAULT_TIME_POLICY, ...options.time });
     this.resources.entries.set(TIME_RESOURCE_KEY, {
@@ -492,6 +506,8 @@ export class World {
       getArrayRangesChangedSince: this.internalgetArrayRangesChangedSince.bind(this),
       getArrayView: this.getArrayView.bind(this),
       getBufferPool: () => this.bufferPool,
+      getFrameArena: () => this.arenaOwner,
+      maintainMemory: () => this.buffers.maintain(),
       getClockWriter: () => this.clock.writer,
       getComponentChange: this.internalgetComponentChange.bind(this),
       getComponentMutationEpochs: () => this.componentMutationEpochs,
@@ -885,6 +901,7 @@ export class World {
     deltaSeconds = 0,
   ): Result<
     void,
+    | MemoryError
     | TimeDeltaInvalidError
     | TimeConfigInvalidError
     | ScheduleScopeMismatchError
@@ -894,7 +911,13 @@ export class World {
     | import('./errors').CyclicDependencyError
     | SharedKernelFailureError
   > {
-    return worldUpdate(this, deltaSeconds);
+    if (this.runningSchedule) return err(new MemoryError({ kind: 'scope', reason: 'reentrant' }));
+    this.runningSchedule = true;
+    try {
+      return worldUpdate(this, deltaSeconds);
+    } finally {
+      this.runningSchedule = false;
+    }
   }
 
   /**
@@ -905,6 +928,7 @@ export class World {
     schedule: ScheduleToken,
   ): Result<
     void,
+    | MemoryError
     | ScheduleScopeMismatchError
     | WorldPoisonedError
     | CommandFailedError
@@ -912,7 +936,61 @@ export class World {
     | import('./errors').CyclicDependencyError
     | SharedKernelFailureError
   > {
-    return worldRun(this, schedule);
+    const wasRunning = this.runningSchedule;
+    this.runningSchedule = true;
+    try {
+      return worldRun(this, schedule);
+    } finally {
+      this.runningSchedule = wasRunning;
+    }
+  }
+
+  /** Group synchronously contiguous domain runs under one arena lifetime. */
+  withFrameArena<T, E>(run: () => Result<T, E>): Result<T, E | MemoryError> {
+    if (this.runningSchedule || this.arenaOwner.isActive || this.execution.health !== 'healthy')
+      return err(new MemoryError({ kind: 'scope', reason: 'reentrant' }));
+    this.arenaOwner.open();
+    try {
+      const result = run();
+      if (isSuspendedMemoryResult(result)) {
+        const error = new MemoryError({ kind: 'scope', reason: 'asynchronous' });
+        this[worldInternal].poisonExecution({
+          code: 'shared-kernel-failed',
+          kernelName: 'memory-scope',
+          cause: error,
+          partialWrite: true,
+          retryable: false,
+        });
+        return err(error);
+      }
+      return result;
+    } catch (cause) {
+      if (cause instanceof MemoryError) return err(cause);
+      const error = new MemoryError({ kind: 'scope', reason: 'callback-failed', cause });
+      this[worldInternal].poisonExecution({
+        code: 'shared-kernel-failed',
+        kernelName: 'memory-scope',
+        cause,
+        partialWrite: true,
+        retryable: false,
+      });
+      return err(error);
+    } finally {
+      this.arenaOwner.close();
+      this.buffers.maintain();
+    }
+  }
+
+  /** Cold observation. Shared backing is counted once; native/domain payloads are excluded. */
+  memoryStats(): WorldMemoryStats {
+    return readWorldMemoryStats(this);
+  }
+
+  /** Explicit cold-memory release; never invalidates live slots or leases. */
+  trimMemory(): Result<number, MemoryError> {
+    if (this.arenaOwner.isActive)
+      return err(new MemoryError({ kind: 'scope', reason: 'reentrant' }));
+    return ok(this.arenaOwner.trim() + this.bufferPool.trim());
   }
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -3961,6 +4039,15 @@ export class World {
   // World owns the component storage and relationship mutation primitives.
   // ──────────────────────────────────────────────────────────────────────────
 
+  /**
+   * Attach `child` under `parent` through a source relationship component such
+   * as `ChildOf`. The relationship field (`ChildOf.parent`) is written from
+   * `parent`, so `world.addChild(root, child, ChildOf, {})` is a complete call;
+   * `data` supplies only the component's other fields. Re-adding to a new
+   * parent reparents an exclusive relationship.
+   *
+   * @returns `err(RelationshipSelfCycleError)` when the edge would form a cycle.
+   */
   addChild<S extends ComponentSchema>(
     parent: EntityHandle,
     child: EntityHandle,

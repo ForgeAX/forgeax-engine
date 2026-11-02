@@ -1,7 +1,7 @@
-import { selectTranscodeTarget } from '@forgeax/engine/codec';
+import { ktx2NativeTexture, parseKtx2, selectTranscodeTarget } from '@forgeax/engine/codec';
 import { defineFeature, type FeatureCheck } from '../../lab/feature';
 import { spawnStage } from '../../lab/stage';
-import { CHECKER_KTX2_BASE64 } from './fixtures/encoded';
+import { CHECKER_KTX2_BASE64, NORMAL_BC5_KTX2_BASE64 } from './fixtures/encoded';
 import { base64Bytes, guid, installMemoryPack } from './fixtures/memory-pack';
 import { loadTexture, texturedQuad } from './fixtures/texture-quad';
 
@@ -16,7 +16,7 @@ export default defineFeature({
   summary:
     'A UASTC-LDR KTX2 texture keeps its encoded source in the asset registry; each renderer derives the best format its device allows (BC7, ASTC, ETC2, else RGBA8) and samples it through a Standard material.',
   expect:
-    'ON: the quad shows the red/blue checker transcoded from KTX2. OFF: plain white. Checks: selectTranscodeTarget picks bc7 with BC caps, astc with ASTC only, rgba8 with none, and the loaded asset preserves the 16x16 KTX2 source bytes while the rendered checker differs from the white control.',
+    'ON: the quad shows the red/blue checker transcoded from KTX2. OFF: plain white. Checks: selectTranscodeTarget picks bc7 with BC caps, astc with ASTC only, rgba8 with none; a plain BC5 KTX2 normal map keeps its blocks and decodes to RG8 for devices without BC; and the loaded asset preserves the 16x16 KTX2 source bytes while the rendered checker differs from the white control.',
   async setup({ app, world }) {
     spawnStage(world);
     const checks: FeatureCheck[] = [];
@@ -30,6 +30,15 @@ export default defineFeature({
       name: 'target selection BC7 > ASTC > RGBA8',
       ok: table.join() === 'bc7-rgba-unorm-srgb,astc-4x4-unorm-srgb,rgba8unorm-srgb',
       detail: table.join(),
+    });
+    const normal = parseKtx2(base64Bytes(NORMAL_BC5_KTX2_BASE64));
+    const blocks = normal.ok ? await ktx2NativeTexture(normal.value) : normal;
+    const rg = normal.ok ? await ktx2NativeTexture(normal.value, 'rg8unorm') : normal;
+    const texel = rg.ok ? [...(rg.value.mips[0]?.data.subarray(0, 2) ?? [])].join() : rg.error.code;
+    checks.push({
+      name: 'BC5 KTX2 normal map: BC5 blocks or decoded RG8',
+      ok: blocks.ok && blocks.value.format === 'bc5-rg-unorm' && rg.ok && texel === '186,0',
+      detail: `${blocks.ok ? blocks.value.format : blocks.error.code} / rg8 texel0=${texel}`,
     });
     let texture: Awaited<ReturnType<typeof loadTexture>>;
     const assets = app.assets;

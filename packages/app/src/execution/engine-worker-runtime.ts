@@ -3,6 +3,11 @@ import { createAudioIntentBackend } from '@forgeax/engine-audio';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { KernelDispatchResult, SharedKernelExecutor } from '@forgeax/engine-ecs/shared';
 import {
+  createVideoFrameEndpoint,
+  installWorkerVideoSourceProvider,
+  type VideoFrameEndpoint,
+} from '@forgeax/engine-graphics-extras';
+import {
   type CompositeInputLease,
   createGamepadFeedback,
   type InputBackend,
@@ -781,6 +786,32 @@ function realmBootstrapHost(
   };
 }
 
+/** Lazily wraps `init.videoPort`; one endpoint serves every realm of this Worker. */
+let videoEndpoint: VideoFrameEndpoint | undefined;
+
+/**
+ * Feed page-owned `<video>` frames into VideoAsset materials. A realm without
+ * WebCodecs `VideoFrame` keeps no provider and reports why once.
+ */
+function videoFrameBridgePlugin(port: MessagePort): Plugin {
+  return {
+    name: 'video-frame-bridge',
+    inject: ['world'],
+    apply(ctx) {
+      ctx.effect(() => {
+        videoEndpoint ??= createVideoFrameEndpoint(port);
+        const installed = installWorkerVideoSourceProvider(ctx.world, videoEndpoint);
+        if (!installed.ok) {
+          console.warn(`[forgeax] ${installed.error.code}: ${installed.error.hint}`);
+          return () => {};
+        }
+        const provider = installed.value;
+        return () => provider.dispose();
+      }, 'execution/video-frame-bridge');
+    },
+  };
+}
+
 function realmExtensionPlugins(
   candidate: WorkerRealm,
   prepared: PreparedExecutionBootstrap,
@@ -789,6 +820,9 @@ function realmExtensionPlugins(
 ): Plugin[] {
   return [
     ...(candidate.init.workers.kernels.enabled ? [sharedKernelPlugin(candidate)] : []),
+    ...(candidate.init.videoPort === undefined
+      ? []
+      : [videoFrameBridgePlugin(candidate.init.videoPort)]),
     executionBootstrapHostPlugin(
       realmBootstrapHost(candidate, stagedRenderWorker, renderer),
       renderer,
@@ -1387,10 +1421,28 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
   const renderWorker = activeRealm.renderWorker;
   if (message.render !== false && renderWorker !== undefined) {
     const waitStarted = performance.now();
+    let waiting = false;
+    const onWait = () => {
+      if (waiting) return;
+      waiting = true;
+      scope.postMessage({
+        kind: 'frame-admission',
+        worldIdentity: world.identity,
+        frameId: message.frameId,
+        phase: 'render-wait',
+      });
+    };
     do {
-      if (!(await renderWorker.waitForPublicationCapacity())) return;
+      if (!(await renderWorker.waitForPublicationCapacity(onWait))) return;
       if (realm !== activeRealm || message.frameId <= lastFrameId) return;
     } while (!renderWorker.hasPublicationCapacity);
+    if (waiting)
+      scope.postMessage({
+        kind: 'frame-admission',
+        worldIdentity: world.identity,
+        frameId: message.frameId,
+        phase: 'source',
+      });
     creditWaitMs = performance.now() - waitStarted;
   }
   if (realm !== activeRealm) return;
@@ -1586,6 +1638,7 @@ scope.onmessage = (event): void => {
           scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
         } finally {
           target?.init.bootstrapPort?.close();
+          videoEndpoint?.close();
           scope.close();
         }
       });

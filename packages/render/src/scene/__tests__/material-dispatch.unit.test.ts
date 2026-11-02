@@ -958,3 +958,63 @@ it('bulk binding appends member pages instead of copying one roster page per mem
     slots.filter((row) => row.slot % 2 === 0).map((row) => row.entityKey),
   );
 });
+
+it('admits the implicit default only when effective Mesh slots actually consume it', async () => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const { defaultMeshMaterial } = await import('../mesh-materials');
+  const owned = new MaterialResource({ ...material(201), immutableValues: true });
+  const owner = new MaterialDispatch();
+  const original = slot(0, owned);
+  const row = {
+    ...original,
+    snapshot: { ...original.snapshot, materialOverrides: [owned] },
+  };
+  owner.bind(0, row.snapshot);
+  const meshes = new MeshFrame().with(0, 1, createPrimitiveMesh('cube').unwrap());
+  const complete = query(owner, fixedSlots([row]), meshes);
+  const captured = owner.materials();
+  expect([...complete]).toHaveLength(1);
+  expect(captured.get(owned)?.bindings).toBe(1);
+  expect(captured.get(defaultMeshMaterial)).toBeUndefined();
+  expect(captured.hasBorrowedValues).toBe(false);
+
+  const fallback = { ...row, snapshot: { ...row.snapshot, materialOverrides: [] } };
+  owner.bind(0, fallback.snapshot);
+  const usedDefault = query(owner, fixedSlots([fallback]), meshes);
+  expect(usedDefault.some((entry) => entry.materialHandle === 0)).toBe(true);
+  expect(owner.materials().get(defaultMeshMaterial)?.bindings).toBe(1);
+  expect(owner.materials().hasBorrowedValues).toBe(true);
+  expect(captured.get(defaultMeshMaterial)).toBeUndefined();
+  expect(captured.hasBorrowedValues).toBe(false);
+
+  owner.bind(0, row.snapshot);
+  query(owner, fixedSlots([row]), meshes);
+  expect(owner.materials().get(defaultMeshMaterial)).toBeUndefined();
+  expect(owner.materials().hasBorrowedValues).toBe(false);
+});
+
+it('captures actual owned Sprite folding demand, including zero-binding accepted entries', () => {
+  const sprite = new MaterialResource({
+    ...material(77),
+    transparent: true,
+    immutableValues: true,
+    passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+  });
+  const empty = new MaterialFrame(undefined);
+  const accepted = empty.with(sprite, 0);
+  expect(empty.hasFoldableSprites).toBe(false);
+  expect(accepted.hasFoldableSprites).toBe(true);
+  expect(
+    accepted.withAccepted(accepted.get(sprite) as NonNullable<ReturnType<MaterialFrame['get']>>, 4)
+      .hasFoldableSprites,
+  ).toBe(true);
+  const opaque = accepted.with(sprite, 0, { ...sprite.snapshot, transparent: false });
+  expect(opaque.hasFoldableSprites).toBe(false);
+  expect(accepted.hasFoldableSprites).toBe(true);
+  expect(accepted.without(sprite).hasFoldableSprites).toBe(false);
+  const { immutableValues: _owned, ...borrowedSnapshot } = sprite.snapshot;
+  const borrowed = accepted.with(sprite, 0, borrowedSnapshot);
+  expect(borrowed.hasBorrowedValues).toBe(true);
+  expect(borrowed.hasFoldableSprites).toBe(false);
+});

@@ -186,6 +186,37 @@ describe('native build root process', () => {
     await expect(session.cookers[0].cook({ guid })).rejects.toThrow('unavailable');
   }, 30_000);
 
+  it('backs each cooker context with a namespaced build DDC store that outlives the session', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      for (const key of ['fixture-a', 'fixture-b'])
+        ctx.effect(() => ctx.nativeCookers.register({ key,
+          cook(input, context) {
+            const seen = context.cache?.get('job');
+            if (seen === undefined) context.cache?.put('job', new Uint8Array([key.length, 7]));
+            return { guid: input.guid, payload: { seen: seen === undefined ? null : [...seen], cache: context.cache !== undefined },
+              refs: [], artifacts: {}, inputFingerprint: key };
+          }
+        }));
+    } };`);
+    const buildCacheRoot = resolve(facts.root, '.forgeax/ddc/build-cache');
+    const cook = async (session: ProjectCookers, key: string) => {
+      const cooker = session.cookers.find((candidate) => candidate.key === key);
+      if (!cooker) throw new Error(`required fixture cooker ${key} missing`);
+      return (await cooker.cook({ guid })).payload;
+    };
+    const first = await loadProjectCookers(facts, [], {}, { buildCacheRoot });
+    sessions.push(first);
+    expect(await cook(first, 'fixture-a')).toEqual({ seen: null, cache: true });
+    expect(await cook(first, 'fixture-b')).toEqual({ seen: null, cache: true });
+    await first.dispose();
+    const second = await loadProjectCookers(facts, [], {}, { buildCacheRoot });
+    sessions.push(second);
+    expect(await cook(second, 'fixture-a')).toEqual({ seen: [9, 7], cache: true });
+    const storeless = await loadProjectCookers(facts, []);
+    sessions.push(storeless);
+    expect(await cook(storeless, 'fixture-a')).toEqual({ seen: null, cache: false });
+  }, 30_000);
+
   it('rejects a builtin key collision and leaves no build process artifacts', async () => {
     const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
       ctx.effect(() => ctx.nativeCookers.register({ key: 'builtin', cook() {} }));
@@ -323,6 +354,68 @@ describe('build environment deadlines', () => {
       else await expect(session.dispose()).rejects.toThrow('process terminated');
       await session.dispose();
     }
+    expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
+  }, 30_000);
+
+  it('gives a cooker its declared cook bound instead of the session default', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'slow', timeoutMs: 5000,
+        cook: (input) => new Promise((done) => setTimeout(() => done({ guid: input.guid, payload: {},
+          refs: [], artifacts: {}, inputFingerprint: 'slow' }), 400)) }));
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'hung', timeoutMs: 300,
+        cook: () => new Promise(() => {}) }));
+    } };`);
+    const session = await loadProjectCookers(facts, [], {}, { operationTimeoutMs: 100 });
+    sessions.push(session);
+    const [slow, hung] = session.cookers;
+    if (!slow || !hung) throw new Error('required fixture cookers missing');
+    expect([slow.key, slow.timeoutMs, hung.timeoutMs]).toEqual(['slow', 5000, 300]);
+    // 400 ms is past the 100 ms session default but inside the declared 5 s.
+    await expect(slow.cook({ guid })).resolves.toMatchObject({ guid });
+    const started = performance.now();
+    await expect(hung.cook({ guid })).rejects.toThrow('exceeded 300ms; process terminated');
+    expect(performance.now() - started).toBeGreaterThanOrEqual(250);
+    await session.dispose();
+    expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
+  }, 30_000);
+
+  it('forwards a parallel declaration and overlaps its cooks in the build process', async () => {
+    // Each cook records how many cooks of its cooker were running when it started.
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      const make = (key, concurrency) => {
+        let active = 0;
+        return { key, ...(concurrency ? { concurrency } : {}), async cook(input) {
+          const peak = ++active;
+          await new Promise((done) => setTimeout(done, 150));
+          active--;
+          return { guid: input.guid, payload: { peak }, refs: [], artifacts: {}, inputFingerprint: key };
+        } };
+      };
+      ctx.effect(() => ctx.nativeCookers.register(make('overlap', 'parallel')));
+      ctx.effect(() => ctx.nativeCookers.register(make('serial')));
+    } };`);
+    const session = await loadProjectCookers(facts, [], {}, { operationTimeoutMs: 5000 });
+    sessions.push(session);
+    const [overlap, serial] = session.cookers;
+    if (!overlap || !serial) throw new Error('required fixture cookers missing');
+    expect([overlap.concurrency, serial.concurrency]).toEqual(['parallel', undefined]);
+    const peaks = async (cooker: typeof overlap) =>
+      (await Promise.all([1, 2, 3].map(() => cooker.cook({ guid })))).map(
+        (draft) => (draft.payload as { peak: number }).peak,
+      );
+    expect(Math.max(...(await peaks(overlap)))).toBe(3);
+    expect(Math.max(...(await peaks(serial)))).toBe(1);
+    await session.dispose();
+  }, 30_000);
+
+  it('rejects a cooker whose declared bound is not positive finite milliseconds', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'bad', timeoutMs: 0, cook() {} }));
+    } };`);
+    await expect(loadProjectCookers(facts, [])).rejects.toMatchObject({
+      code: 'plugin-startup-failed',
+      detail: { cause: { name: 'RangeError', message: expect.stringContaining('timeoutMs') } },
+    });
     expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
   }, 30_000);
 });

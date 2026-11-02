@@ -218,7 +218,7 @@ function encodeMipmapBlit(
   levels: number,
   pipeline: RenderPipeline,
   cache: MipmapPipelineCache,
-): Result<Texture, RhiError> {
+): Result<readonly Texture[], RhiError> {
   const arrayLayerCount = descriptor.arrayLayerCount ?? 1;
   if (!Number.isSafeInteger(arrayLayerCount) || arrayLayerCount < 1)
     return err(
@@ -237,16 +237,39 @@ function encodeMipmapBlit(
   });
   if (!scratchRes.ok) return scratchRes;
   const scratch = scratchRes.value;
+  const transient = [scratch];
   const fail = (error: RhiError): Result<never, RhiError> => {
-    device.destroyTexture(scratch);
+    for (const resource of transient) device.destroyTexture(resource);
     return err(error);
   };
+  // WebGL2 cannot reinterpret an array layer as a sampler2D texture. Keep
+  // the blit shader's 2D input physical: copy one layer/mip into a reusable
+  // 2D staging chain before sampling it. This also serves cube faces.
+  let source = texture;
+  if (arrayLayerCount > 1) {
+    const staging = device.createTexture({
+      label: 'mipmap-array-source',
+      size: [descriptor.width, descriptor.height],
+      mipLevelCount: levels - 1,
+      format: descriptor.format,
+      usage: 0x02 | 0x04,
+    });
+    if (!staging.ok) return fail(staging.error);
+    source = staging.value;
+    transient.push(source);
+  }
   for (let layer = 0; layer < arrayLayerCount; layer++) {
     for (let i = 1; i < levels; i++) {
-      const srcViewRes = device.createTextureView(texture, {
+      if (source !== texture)
+        encoder.copyTextureToTexture(
+          { texture, mipLevel: i - 1, origin: { x: 0, y: 0, z: layer } },
+          { texture: source, mipLevel: i - 1 },
+          [mipDimension(descriptor.width, i - 1), mipDimension(descriptor.height, i - 1), 1],
+        );
+      const srcViewRes = device.createTextureView(source, {
         baseMipLevel: i - 1,
         mipLevelCount: 1,
-        baseArrayLayer: layer,
+        baseArrayLayer: 0,
         arrayLayerCount: 1,
         dimension: '2d',
       });
@@ -292,7 +315,7 @@ function encodeMipmapBlit(
     }
   }
 
-  return ok(scratch);
+  return ok(transient);
 }
 
 /**
@@ -334,7 +357,7 @@ export function encodeMipmaps(
   return ok(() => {
     if (released) return;
     released = true;
-    device.destroyTexture(encoded.value);
+    for (const texture of encoded.value) device.destroyTexture(texture);
   });
 }
 

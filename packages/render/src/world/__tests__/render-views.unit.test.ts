@@ -3,18 +3,23 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CameraSnapshot } from '../../render-contract';
 import type { RenderTarget } from '../../targets/contracts';
 import {
+  assertViewCameras,
   RenderView,
+  RenderViewInput,
   RenderViews,
   ViewChannelsValue,
   ViewEyeValue,
   ViewRecorder,
 } from '../render-views';
-import { createRenderWorld } from '../render-world';
+import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../render-world';
 
 function camera(entityKey: number, view: Partial<NonNullable<CameraSnapshot['view']>> = {}) {
   return {
     entityKey,
     historyVersion: 1,
+    world: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+    fov: 1,
+    aspect: 1,
     view: {
       viewport: new Float32Array([0, 0, 1, 1]),
       order: 0,
@@ -28,10 +33,28 @@ function camera(entityKey: number, view: Partial<NonNullable<CameraSnapshot['vie
 }
 
 function fixture() {
+  let frame = 0;
   const world = createRenderWorld();
   const views = new RenderViews(world);
-  const sync = (cameras: readonly CameraSnapshot[], captures: readonly CameraSnapshot[] = []) =>
-    views.sync({ cameras, captures, attachment: () => 'world-a' });
+  const sync = (
+    cameras: readonly CameraSnapshot[],
+    captures: readonly CameraSnapshot[] = [],
+    maxRenderShortSide = 0,
+  ) => {
+    assertViewCameras(cameras, maxRenderShortSide > 0);
+    world.insertResource(RenderViewInput, {
+      cameras,
+      captures,
+      maxRenderShortSide,
+      primary: false,
+      primaryCamera: undefined,
+      canvas: { width: 64, height: 64 },
+      attachment: () => 'world-a',
+      targetExtent: () => ({ width: 32, height: 16 }),
+    });
+    beginRenderFrame(world, ++frame);
+    endRenderFrame(world);
+  };
   const spies = {
     spawn: vi.spyOn(world, 'spawn'),
     despawn: vi.spyOn(world, 'despawn'),
@@ -45,11 +68,10 @@ function fixture() {
 
 describe('RenderViews', () => {
   it('applies a host budget to selected display snapshots without changing source cameras', () => {
-    const { world, views } = fixture();
+    const { world, views, sync: syncViews } = fixture();
     const { view: _view, ...display } = camera(7);
     const cameras = Object.freeze([Object.freeze(display)]);
-    const sync = (maxRenderShortSide?: number) =>
-      views.sync({ cameras, captures: [], attachment: () => 'world-a', maxRenderShortSide });
+    const sync = (maxRenderShortSide?: number) => syncViews(cameras, [], maxRenderShortSide);
     sync();
     expect(views.displayCount).toBe(0);
     sync(720);
@@ -67,10 +89,10 @@ describe('RenderViews', () => {
   });
 
   it('keeps stricter authored budgets and target dimensions independent of the host budget', () => {
-    const { world, views } = fixture();
+    const { world, views, sync } = fixture();
     const target = { descriptor: { width: 2048, height: 1024 } } as unknown as RenderTarget;
     const cameras = [camera(1, { maxRenderShortSide: 480 }), camera(2), { ...camera(3), target }];
-    views.sync({ cameras, captures: [], attachment: () => 'world-a', maxRenderShortSide: 720 });
+    sync(cameras, [], 720);
     expect(
       views.ordered.map((entity) => world.get(entity, RenderView).unwrap().maxRenderShortSide),
     ).toEqual([480, 720, 0]);
@@ -90,6 +112,9 @@ describe('RenderViews', () => {
     expect(spies.set).toHaveBeenCalledTimes(1);
     expect(views.ordered[0]).toBe(entity);
     expect(world.get(entity, RenderView).unwrap().maxRenderShortSide).toBe(1080);
+    const primary = views.primary;
+    if (primary === undefined) throw Error('expected shared primary view');
+    expect(world.get(primary, RenderView).unwrap().maxRenderShortSide).toBe(0);
   });
 
   it('spawns one entity per CameraView and composes them by order', () => {

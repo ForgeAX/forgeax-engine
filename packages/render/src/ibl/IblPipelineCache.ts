@@ -45,7 +45,7 @@ import {
   type Result,
   type RhiCommandEncoder,
   type RhiDevice,
-  type RhiError,
+  RhiError,
   type RhiRenderPassEncoder,
   type Sampler,
   type ShaderModule,
@@ -125,7 +125,7 @@ export interface IblPipelineCache {
   faceUniformsBgl?: BindGroupLayout;
   /** group(1) BGL for the equirect-to-cube pass (texture_2d + sampler). */
   equirectGroup1Bgl?: BindGroupLayout;
-  /** group(1) BGL for irradiance + prefilter (texture_cube + sampler). */
+  /** group(1) BGL for irradiance (PMREM atlas texture_2d + sampler). */
   cubeGroup1Bgl?: BindGroupLayout;
   /** group(0) BGL for prefilter (face + prefilter uniforms). */
   prefilterGroup0Bgl?: BindGroupLayout;
@@ -313,6 +313,58 @@ export function iblPrefilterGroup0Entries(
   ];
 }
 
+function retiredIblPreparation(): RhiError {
+  return new RhiError({
+    code: 'rhi-not-available',
+    expected: 'IBL pipeline preparation keeps its live device scope',
+    hint: 'discard retired preparation and retry on the current Renderer',
+  });
+}
+
+/** Shader preparation may outlive its owner; revalidate before any device layout call. */
+async function prepareIblShaderModules(
+  scope: DeviceScope,
+  device: IblRhiOwner,
+  factory: IblShaderModuleFactory,
+): Promise<
+  Result<
+    readonly [ShaderModule, ShaderModule, ShaderModule, ShaderModule],
+    RhiError | IblPipelineError
+  >
+> {
+  const composed = iblComposedShadersCache;
+  // Mock-device path: factory returns synthetic modules. Both production
+  // (composed) and unit-test (placeholder code) paths converge here.
+  const fallbackCode = '@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }';
+  const src = composed ?? {
+    equirectToCube: fallbackCode,
+    irradiance: fallbackCode,
+    prefilter: fallbackCode,
+    brdfLut: fallbackCode,
+  };
+
+  const modules = await Promise.all([
+    factory(device, { code: src.equirectToCube, label: 'ibl-equirect-to-cube' }),
+    factory(device, { code: src.irradiance, label: 'ibl-irradiance' }),
+    factory(device, { code: src.prefilter, label: 'ibl-prefilter' }),
+    factory(device, { code: src.brdfLut, label: 'ibl-brdf-lut' }),
+  ]);
+  if (!scope.isAlive()) return err(retiredIblPreparation());
+  for (const m of modules) {
+    if (!m.ok) return err(m.error);
+  }
+  const shaderModules = modules.flatMap((module) => (module.ok ? [module.value] : []));
+  if (shaderModules.length !== 4) {
+    return err(iblPipelineError('shader-modules', 'ibl-shader-module-missing'));
+  }
+  const [mEq, mIr, mPr, mBr] = shaderModules;
+  if (mEq === undefined || mIr === undefined || mPr === undefined || mBr === undefined) {
+    return err(iblPipelineError('shader-modules', 'ibl-shader-module-missing'));
+  }
+
+  return ok([mEq, mIr, mPr, mBr] as const);
+}
+
 /**
  * Create 4 independent GPURenderPipelines + their shared / per-pass bind
  * group layouts. Pipeline slots are stored on the per-device cache and
@@ -329,6 +381,7 @@ export async function createIblPipelines(
   factory: IblShaderModuleFactory,
   cubeOutputFormat: TextureFormat = 'rgba16float',
 ): Promise<Result<IblPipelineSet, RhiError | IblPipelineError>> {
+  if (!scope.isAlive()) return err(retiredIblPreparation());
   const cache = getOrCreateIblCache(scope);
   if (
     cache.equirectToCubePipeline !== undefined &&
@@ -349,34 +402,9 @@ export async function createIblPipelines(
   const outputFormat = cubeOutputFormat;
   cache.outputFormat = outputFormat;
 
-  const composed = iblComposedShadersCache;
-  // Mock-device path: factory returns synthetic modules. Both production
-  // (composed) and unit-test (placeholder code) paths converge here.
-  const fallbackCode = '@vertex fn vs() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }';
-  const src = composed ?? {
-    equirectToCube: fallbackCode,
-    irradiance: fallbackCode,
-    prefilter: fallbackCode,
-    brdfLut: fallbackCode,
-  };
-
-  const modules = await Promise.all([
-    factory(device, { code: src.equirectToCube, label: 'ibl-equirect-to-cube' }),
-    factory(device, { code: src.irradiance, label: 'ibl-irradiance' }),
-    factory(device, { code: src.prefilter, label: 'ibl-prefilter' }),
-    factory(device, { code: src.brdfLut, label: 'ibl-brdf-lut' }),
-  ]);
-  for (const m of modules) {
-    if (!m.ok) return err(m.error);
-  }
-  const shaderModules = modules.flatMap((module) => (module.ok ? [module.value] : []));
-  if (shaderModules.length !== 4) {
-    return err(iblPipelineError('shader-modules', 'ibl-shader-module-missing'));
-  }
-  const [mEq, mIr, mPr, mBr] = shaderModules;
-  if (mEq === undefined || mIr === undefined || mPr === undefined || mBr === undefined) {
-    return err(iblPipelineError('shader-modules', 'ibl-shader-module-missing'));
-  }
+  const modules = await prepareIblShaderModules(scope, device, factory);
+  if (!modules.ok) return modules;
+  const [mEq, mIr, mPr, mBr] = modules.value;
 
   // D-9: faceUniforms BGL shared across 3 pipelines (equirect / irradiance /
   // prefilter). The prefilter additionally needs binding(1) for prefUniforms;
@@ -407,13 +435,15 @@ export async function createIblPipelines(
   if (!equirectGroup1.ok) return err(equirectGroup1.error);
   cache.equirectGroup1Bgl = equirectGroup1.value;
 
+  // The irradiance sum reads the finished PMREM atlas (a 2D CubeUV layout),
+  // not the full-resolution cube; see ibl-irradiance.wgsl.
   const cubeGroup1 = device.createBindGroupLayout({
-    label: 'ibl-cube-group1-bgl',
+    label: 'ibl-irradiance-group1-bgl',
     entries: [
       {
         binding: 0,
         visibility: GPU_SHADER_STAGE_FRAGMENT,
-        texture: { sampleType: 'float', viewDimension: 'cube' },
+        texture: { sampleType: 'float', viewDimension: '2d' },
       },
       {
         binding: 1,
@@ -815,18 +845,6 @@ export async function runIblPrecompute(
     if (!equirectBgResult.ok) return fail('equirect-bg', equirectBgResult.error);
     const equirectBg: BindGroup = equirectBgResult.value;
 
-    // Bind group: cube group(1) for irradiance + prefilter.
-    const cubeBgResult = device.createBindGroup({
-      label: 'ibl-cube-bg',
-      layout: cubeGroup1Bgl,
-      entries: [
-        { binding: 0, resource: { kind: 'textureView', value: opts.cubeView } },
-        { binding: 1, resource: { kind: 'sampler', value: sampler } },
-      ],
-    });
-    if (!cubeBgResult.ok) return fail('cube-bg', cubeBgResult.error);
-    const cubeBg: BindGroup = cubeBgResult.value;
-
     // (a) equirect-to-cube: 6 face draws.
     const cubeFaceViews = opts.cubeFaceViews;
     for (let face = 0; face < 6; face++) {
@@ -862,40 +880,7 @@ export async function runIblPrecompute(
     const cubeOpportunity = await yieldBetweenBatches('equirect-to-cube');
     if (!cubeOpportunity.ok) return err(cubeOpportunity.error);
 
-    // (b) irradiance convolve: 6 face draws.
-    for (let face = 0; face < 6; face++) {
-      const irrFaceView = irrFaceViews[face];
-      if (irrFaceView === undefined) return fail('irradiance-face-view');
-      const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
-        label: 'ibl-irradiance',
-        colorAttachments: [
-          {
-            view: irrFaceView,
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          },
-        ],
-      });
-      const faceBgResult = device.createBindGroup({
-        label: `ibl-irr-face-bg-${face}`,
-        layout: faceUniformsBgl,
-        entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
-      });
-      if (!faceBgResult.ok) return fail('irr-face-bg', faceBgResult.error);
-      pass.setPipeline(irradiancePipeline);
-      pass.setBindGroup(0, faceBgResult.value);
-      pass.setBindGroup(1, cubeBg);
-      pass.setVertexBuffer(0, opts.cubeVertexBuffer);
-      pass.draw(6, 1, face * 6, 0);
-      pass.end();
-
-      const irradianceFaceStage = await submitStage(`irradiance-face-${face}`, true);
-      if (!irradianceFaceStage.ok) return err(irradianceFaceStage.error);
-    }
-    const irradianceOpportunity = await yieldBetweenBatches('irradiance');
-    if (!irradianceOpportunity.ok) return err(irradianceOpportunity.error);
-
+    // (b) PMREM prefilter: progressive GGX levels into the CubeUV atlas.
     const prefilterInputs = device.createBindGroup({
       label: 'ibl-prefilter-inputs',
       layout: prefilterGroup1Bgl,
@@ -944,6 +929,52 @@ export async function runIblPrecompute(
       const yielded = await yieldBetweenBatches(`prefilter-level-${level}`);
       if (!yielded.ok) return err(yielded.error);
     }
+
+    // (c) irradiance convolve: 6 face draws over the finished PMREM atlas.
+    // It runs after the prefilter so it can read a band-limited level; a
+    // point-sampled full-resolution cube aliases small bright sources.
+    const irradianceInputs = device.createBindGroup({
+      label: 'ibl-irradiance-inputs',
+      layout: cubeGroup1Bgl,
+      entries: [
+        { binding: 0, resource: { kind: 'textureView', value: candidatePrefilterView } },
+        { binding: 1, resource: { kind: 'sampler', value: sampler } },
+      ],
+    });
+    if (!irradianceInputs.ok) return fail('irradiance-inputs', irradianceInputs.error);
+    const irradianceBg: BindGroup = irradianceInputs.value;
+    for (let face = 0; face < 6; face++) {
+      const irrFaceView = irrFaceViews[face];
+      if (irrFaceView === undefined) return fail('irradiance-face-view');
+      const pass: RhiRenderPassEncoder = encoder.beginRenderPass({
+        label: 'ibl-irradiance',
+        colorAttachments: [
+          {
+            view: irrFaceView,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      const faceBgResult = device.createBindGroup({
+        label: `ibl-irr-face-bg-${face}`,
+        layout: faceUniformsBgl,
+        entries: [iblFaceUniformEntry(opts.faceUniformsBuffer, face)],
+      });
+      if (!faceBgResult.ok) return fail('irr-face-bg', faceBgResult.error);
+      pass.setPipeline(irradiancePipeline);
+      pass.setBindGroup(0, faceBgResult.value);
+      pass.setBindGroup(1, irradianceBg);
+      pass.setVertexBuffer(0, opts.cubeVertexBuffer);
+      pass.draw(6, 1, face * 6, 0);
+      pass.end();
+
+      const irradianceFaceStage = await submitStage(`irradiance-face-${face}`, true);
+      if (!irradianceFaceStage.ok) return err(irradianceFaceStage.error);
+    }
+    const irradianceOpportunity = await yieldBetweenBatches('irradiance');
+    if (!irradianceOpportunity.ok) return err(irradianceOpportunity.error);
 
     // (d) brdf-lut: fullscreen triangle.
     {

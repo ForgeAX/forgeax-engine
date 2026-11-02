@@ -56,6 +56,7 @@ function topology(bloom: 'off' | 'on', bloomIntensity = 1): RenderPipelineTopolo
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 

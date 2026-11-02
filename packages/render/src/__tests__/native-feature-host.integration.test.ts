@@ -18,6 +18,7 @@ import {
   ownRenderFeatureProgramData,
 } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 async function fixture() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -121,7 +122,7 @@ describe('native primary work through the actual Feature Host', () => {
   it('keeps real work facts, current counts and scopes while sharing native topology', async () => {
     const f = await fixture();
     try {
-      const first = f.host.runFrame([f.input(1)]);
+      const first = prepareFeatureFrame(f.host, [f.input(1)]);
       expect(first.frame.errors).toEqual([]);
       expect(required(first.frame.plans[0]).plan.resources).toHaveLength(4);
       expect(first.views.get('main') ?? first.views.get('view:main')).toBeDefined();
@@ -129,12 +130,10 @@ describe('native primary work through the actual Feature Host', () => {
       expect(required(view.plans[0]).plan.passes).toHaveLength(1);
       expect(hasNativeRenderFeatureExecutionSignature(required(first.frame.plans[0]))).toBe(true);
       const signature = required(first.frame.plans[0]).signature;
-      first.frame.onSubmitted();
-      view.onSubmitted();
-      first.onSubmitted();
+      submitFeatureFrame(f.host);
       expect(f.counts()).toEqual({ submitted: 1, aborted: 0, sourceFeedback: 1 });
       f.setGroups(2);
-      const next = f.host.runFrame([f.input(2)]);
+      const next = prepareFeatureFrame(f.host, [f.input(2)]);
       expect(next.frame.errors).toEqual([]);
       expect(required(next.frame.plans[0]).signature).toBe(signature);
       const current = required(
@@ -153,9 +152,7 @@ describe('native primary work through the actual Feature Host', () => {
           ).dispatches[0],
         ).workgroups,
       ).toEqual([1]);
-      next.frame.onSubmitted();
-      required([...next.views.values()][0]).onSubmitted();
-      next.onSubmitted();
+      submitFeatureFrame(f.host);
     } finally {
       f.host.dispose().unwrap();
       f.gpuWork.dispose();
@@ -164,23 +161,21 @@ describe('native primary work through the actual Feature Host', () => {
   it('keeps abort separate from ACK and rejects same-count replacement and device reuse', async () => {
     const f = await fixture();
     try {
-      const first = f.host.runFrame([f.input(1)]);
-      first.frame.onSubmitted();
-      required([...first.views.values()][0]).onSubmitted();
-      first.onSubmitted();
+      const first = prepareFeatureFrame(f.host, [f.input(1)]);
+      submitFeatureFrame(f.host);
       const before = required(first.frame.plans[0]).signature;
       f.setSize(32);
-      const failed = f.host.runFrame([f.input(2)]);
+      const failed = prepareFeatureFrame(f.host, [f.input(2)]);
       expect(failed.frame.errors).toEqual([]);
       expect(required(failed.frame.plans[0]).signature).not.toBe(before);
-      failed.onAborted();
+      abortFeatureFrame(f.host);
       expect(f.counts()).toEqual({ submitted: 1, aborted: 1, sourceFeedback: 1 });
       f.setSize(16);
-      const recovery = f.host.runFrame([f.input(3, 1)]);
+      const recovery = prepareFeatureFrame(f.host, [f.input(3, 1)]);
       expect(recovery.frame.errors).toEqual([]);
       expect(required(recovery.frame.plans[0]).generation).toBe(1);
       expect(required(recovery.frame.plans[0]).signature).not.toBe(before);
-      recovery.onAborted();
+      abortFeatureFrame(f.host);
     } finally {
       f.host.dispose().unwrap();
       f.gpuWork.dispose();
@@ -190,11 +185,11 @@ describe('native primary work through the actual Feature Host', () => {
     const f = await fixture();
     f.setReverseWork();
     try {
-      const batch = f.host.runFrame([f.input(1)]);
+      const batch = prepareFeatureFrame(f.host, [f.input(1)]);
       expect(batch.frame.errors).toEqual([]);
       expect(batch.frame.plans).toHaveLength(1);
       expect(required([...batch.views.values()][0]).plans).toHaveLength(1);
-      batch.onAborted();
+      abortFeatureFrame(f.host);
     } finally {
       f.host.dispose().unwrap();
       f.gpuWork.dispose();
@@ -228,21 +223,20 @@ describe('native primary work through the actual Feature Host', () => {
       caps: {} as never,
     });
     try {
-      const first = host.runFrame([input(1)]);
-      first.frame.onSubmitted();
-      first.onSubmitted();
-      const next = host.runFrame([input(2)]);
+      prepareFeatureFrame(host, [input(1)]);
+      submitFeatureFrame(host);
+      const next = prepareFeatureFrame(host, [input(2)]);
       expect(next.frame.errors).toHaveLength(1);
       expect(next.frame.preparationPending).toBe(true);
       expect(next.frame.plans).toHaveLength(0);
       expect(aborted).toBe(1);
-      next.onAborted();
+      abortFeatureFrame(host);
       saved = undefined;
-      const fresh = host.runFrame([input(3)]);
+      const fresh = prepareFeatureFrame(host, [input(3)]);
       expect(fresh.frame.errors).toEqual([]);
       expect(fresh.frame.plans).toHaveLength(1);
       expect(required(required(host.inspection?.()).signatures[0]).nativeCalls).toBe(2);
-      fresh.onAborted();
+      abortFeatureFrame(host);
     } finally {
       host.dispose().unwrap();
     }
@@ -263,7 +257,7 @@ describe('native primary work through the actual Feature Host', () => {
     };
     const host = createRenderFeatureHost([feature]).unwrap();
     try {
-      const batch = host.runFrame([
+      const batch = prepareFeatureFrame(host, [
         {
           identity: 'main',
           render: true,
@@ -276,7 +270,7 @@ describe('native primary work through the actual Feature Host', () => {
       ]);
       expect(batch.frame.errors).toEqual([]);
       expect(reads).toBe(0);
-      batch.onAborted();
+      abortFeatureFrame(host);
     } finally {
       host.dispose().unwrap();
     }

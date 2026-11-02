@@ -2,7 +2,7 @@
 **Language**: **简体中文** · [English](README.en.md)
 
 <p align="center">
-  <img src="https://forgeax.github.io/logo.svg" width="96" alt="ForgeAX" />
+  <img src="https://forgeax.github.io/logo.svg" width="96" alt="天工引擎 ForgeAX" />
 </p>
 
 <h1 align="center">ForgeAX Engine</h1>

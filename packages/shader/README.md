@@ -2,6 +2,10 @@
 
 ## Public shader input boundary
 
+Direct text admission compacts fragments and computes its complete source identity
+once. Equal content reuses the Registry's canonical source; device forks borrow
+that admitted source without rehashing it. No expanded body is memoized.
+
 The build manifest is the single published shader input catalog. The plugin
 composes engine WGSL modules and material rows once; runtime resolves the
 content-addressed result through `ShaderRegistry`. The shared View module is
@@ -624,6 +628,7 @@ code-specific `detail` and `hint`:
 | `material-surface-slot-missing` | Standard pass has no `surface` module slot | Add the slot to the authored pass and re-cook |
 | `material-surface-abi-mismatch` | Surface export does not match the ABI required by the selected material model | Repair the producer-reported expected signature and re-cook; Standard uses `surface_v1`, while single-layer medium uses `single_layer_medium_surface_v1` |
 | `material-surface-forbidden-interface` | Surface declares a stage, resource, or vertex mutation | Remove the forbidden interface and re-cook |
+| `material-parallax-contract-invalid` | `displacementMode` parallax lacks `normalTexture` or sets an independent `metallicTexture` (`detail.field`) | Provide `normalTexture`, or use packed `metallicRoughnessTexture`; see the `displacementMode` constraint list |
 | `material-physical-contract-invalid` | A root physical layer is incomplete or unsupported | Repair the root parameter fragment before composing or cooking |
 
 Single-layer medium frame resources use the same declared shader ABI at 1x and
@@ -811,7 +816,8 @@ declaration. Canonical Engine Standard schemas retain it. An explicit
 `staticSwitches.alphaClipping: false` removes the field and supplies zero
 cutoff to Standard Surface and temporal coverage. With alpha hash and
 displacement also explicitly disabled, the known Standard shadow selects
-opaque position-only coverage; view/local clipping and LOD remain active.
+opaque coverage with position and vertex-normal bias inputs; material maps,
+view/local clipping and LOD retain their selected contracts.
 
 See [Alpha Hash authoring and verification](../render/README.md#alpha-hash).
 
@@ -846,6 +852,10 @@ entries call the same level-zero sampling kernel. The existing Standard
 parameter schema owns `displacementTexture`, `displacementScale` and
 `displacementBias`; texture coordinates remain per-slot. Material
 specialization constants apply to both vertex and fragment stages.
+Caster slope bias uses the transformed source vertex normal before material
+position displacement, matching UE WPO ordering. Displaced triangle normals are
+reconstructed in fragments for lighting. The depth oracle retains source normals;
+the independent face-normal oracle remains the lighting reference.
 
 See [Standard vertex displacement](../render/README.md#standard-vertex-displacement)
 for authoring, density and bounds behavior. Pack cooking validates both rigid
@@ -963,3 +973,25 @@ padding), making its host size 80 bytes. Forward and Deferred share the same
 Lambert conversion and diffuse material response, before occlusion and physical
 layer composition. Probe-mode uniforms retain this independent global input.
 The default is zero and Unlit/data shaders do not consume it.
+
+## Shadow caster projection
+
+Standard, Unlit and mesh-particle casters share
+`forgeax_shadow::surface::projectShadowPosition(worldPosition, worldNormal)`.
+Automatic orthographic CSM clamps Reverse-Z near depth before applying a
+bounded, texel-sized caster bias. Host culling admits upstream blockers while
+retaining side/far planes. Point/spot perspective views and explicit shadow
+matrices keep ordinary clipping. The existing header carries the per-view policy
+without changing its byte layout or invariant vertex-position contract.
+
+`forgeax_view::common::directionalShadowCasterBias` owns the automatic budget.
+The half-texel constant grows by two texels per unit of actual tangent slope,
+then caps at 6.25 texels. It does not saturate at 45 degrees: that excessive
+intermediate-angle displacement erased centimeter-scale blockers.
+Directional receivers compensate authored-normal overlap and apply bounded,
+one-sided plane correction at each filtered texel. PCF quality and authored
+radius remain separate. Directional variance moments retain native Reverse-Z depth through
+both RG16F passes and comparison; perspective spots and constant-bias cameras retain forward-depth moments.
+The existing raw-depth capability selects point loads for per-texel comparisons;
+other profiles use the comparison-sampler fallback with the same references.
+See the Render README for units and acceptance.

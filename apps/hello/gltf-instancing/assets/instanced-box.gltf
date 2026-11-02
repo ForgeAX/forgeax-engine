@@ -3,7 +3,7 @@
     "version": "2.0",
     "generator": "forgeax hello-gltf-instancing fork (POSITION + INDICES + EXT_mesh_gpu_instancing N=4)"
   },
-  "extensionsUsed": ["EXT_mesh_gpu_instancing"],
+  "extensionsUsed": ["EXT_mesh_gpu_instancing", "KHR_materials_unlit"],
   "scene": 0,
   "scenes": [{ "name": "SceneFoo", "nodes": [0, 1] }],
   "nodes": [
@@ -50,6 +50,7 @@
   "materials": [
     {
       "name": "MatFoo",
+      "extensions": { "KHR_materials_unlit": {} },
       "pbrMetallicRoughness": {
         "baseColorFactor": [0.7, 0.45, 0.2, 1.0]
       }

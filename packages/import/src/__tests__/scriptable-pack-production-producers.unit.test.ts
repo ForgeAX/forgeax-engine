@@ -269,7 +269,7 @@ describe('standard ScriptablePack output producers', () => {
       scene: 'scene-pack/4',
       skeleton: 'ordinary-pod/1',
       skin: 'ordinary-pod/1',
-      texture: 'texture-pack/1',
+      texture: 'texture-pack/2',
       terrain: 'ordinary-pod/1',
       'navigation-mesh': 'ordinary-pod/1',
       tileset: 'ordinary-pod/1',

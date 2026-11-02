@@ -1,12 +1,13 @@
 import { meshSsboBufferBinding } from '../assembly/mesh-ssbo-grow';
 import type { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
+import type { FrameList } from '../scene/frame-list';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
 import { detectNineSliceScaleTooSmall } from './main-pass-material';
 import { drawMaterial } from './material-pass-selection';
 import { materialUniformSlot } from './material-uniforms';
 import { resolveSpriteInstancesBuffer, uploadSpriteInstanceBuffer } from './sprite-instance-buffer';
-// @forgeax/engine-runtime - RenderSystem record stage: main-pass sprite draws.
+// @forgeax/engine-runtime - RendererState record stage: main-pass sprite draws.
 // feat-20260704 M5/w31: further-split from main-pass.ts (AC-05 <=1500 lines/file).
 // recordSpritePass + sprite entity/transparent/instance-buffer helpers, moved verbatim.
 
@@ -18,6 +19,7 @@ import {
   type RhiRenderPassEncoder,
 } from '@forgeax/engine-rhi';
 import type { MaterialRenderState } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import type { GpuBuffer } from '../gpu-resource';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
@@ -28,6 +30,7 @@ import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 import { SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET } from '../pbr-pipeline';
 import { standardTopologyVariantSet } from '../pipeline-spec';
 import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import { renderWorldFor } from '../world/render-world';
 import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
 import { recordGeometryDraws, resolveGeometryInstancesBindGroup } from './main-pass-geometry';
 import {
@@ -88,7 +91,7 @@ export function recordSpritePass(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder,
   matchedIndices: Set<number> | null,
-  materialSlotIndices: readonly (readonly number[])[],
+  materialSlotIndices: FrameList<readonly number[]>,
   sampleCount: number,
   resolveMaterialBindGroup: (
     materialSlot: number,
@@ -99,6 +102,25 @@ export function recordSpritePass(
   ) => BindGroup,
   selectedDispatch?: DispatchList,
 ): void {
+  const world = renderWorldFor(c.runtime);
+  if (!world.frameArena.isActive) {
+    world
+      .withFrameArena(() =>
+        ok(
+          recordSpritePass(
+            c,
+            pass,
+            matchedIndices,
+            materialSlotIndices,
+            sampleCount,
+            resolveMaterialBindGroup,
+            selectedDispatch,
+          ),
+        ),
+      )
+      .unwrap();
+    return;
+  }
   const {
     runtime,
     pipelineState,
@@ -270,7 +292,7 @@ function recordSpriteTransparentPbrDraws(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder,
   matchedIndices: Set<number> | null,
-  materialSlotIndices: readonly (readonly number[])[],
+  materialSlotIndices: FrameList<readonly number[]>,
   sampleCount: number,
   resolveMaterialBindGroup: (
     slot: number,
@@ -307,7 +329,7 @@ function recordSpriteTransparentPbrDraws(
       const row = nextRow++;
       if (matchedIndices !== null && !matchedIndices.has(entry.renderableIndex)) continue;
       if (isSprite(drawMaterial(c, row).materialShaderId)) continue;
-      for (const slot of c.materialSlotIndices[row] ?? []) {
+      for (const slot of c.materialSlotIndices.at(row) ?? []) {
         const material = c.materialSlots[slot];
         if (material?.transparent === true)
           add(entry.renderableIndex, material.materialHandle ?? 0);
@@ -530,6 +552,9 @@ function recordSpriteEntityDraws(
       const instancePayload = uniformFallback
         ? spriteInst.transforms
         : packInstanceStorageBuffer(
+            renderWorldFor(runtime)
+              .frameArena.alloc(Float32Array, spriteInst.transforms.length * 2)
+              .unwrap(),
             spriteInst.transforms,
             spriteEntry.source.temporal?.previousInstances?.transforms,
             spriteInst.generations,
@@ -596,7 +621,7 @@ function recordSpriteEntityDraws(
         .byteOffset,
     ]);
 
-    const materialSlot = materialSlotIndices[i]?.[0] ?? 0;
+    const materialSlot = materialSlotIndices.at(i)?.[0] ?? 0;
 
     // The same material owner serves HDR and linear-LDR draws. Do not
     // replace authored samplers, texture sources or cooked layouts here.

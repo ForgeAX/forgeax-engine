@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest';
 import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 const descriptor = {
   wgsl: '@compute @workgroup_size(1) fn main() {}',
@@ -141,7 +142,7 @@ it('holds presentation pending for declared compute preparation until backend co
   };
   const host = createRenderFeatureHost([feature]).unwrap();
   const frame = () =>
-    host.runFrame([
+    prepareFeatureFrame(host, [
       {
         worlds: [],
         owner: 0,
@@ -157,7 +158,7 @@ it('holds presentation pending for declared compute preparation until backend co
     const pending = frame();
     expect(pending.frame.preparationPending).toBe(true);
     expect(pending.frame.errors).toHaveLength(1);
-    pending.onAborted();
+    abortFeatureFrame(host);
     const finish = f.completions[0];
     if (finish === undefined) throw Error('missing actual backend completion');
     finish(ok(f.native()));
@@ -167,8 +168,7 @@ it('holds presentation pending for declared compute preparation until backend co
     expect(ready.frame.errors).toEqual([]);
     expect(ready.frame.plans).toHaveLength(1);
     expect(ready.frame.plans[0]?.plan.passes).toEqual([]);
-    ready.frame.onSubmitted();
-    ready.onSubmitted();
+    submitFeatureFrame(host);
   } finally {
     host.dispose();
     f.owner.dispose().unwrap();

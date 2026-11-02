@@ -36,6 +36,7 @@ const expectedCodes = [
   'material-surface-slot-missing',
   'material-surface-abi-mismatch',
   'material-surface-forbidden-interface',
+  'material-parallax-contract-invalid',
 ] as const;
 
 const expectedPolicy = {
@@ -143,6 +144,11 @@ const expectedPolicy = {
   'material-surface-forbidden-interface': {
     expected: 'the Surface module declares no stage entry, resource binding, or vertex mutation',
     hint: 'remove the forbidden interface from the Surface source and recook the material',
+  },
+  'material-parallax-contract-invalid': {
+    expected:
+      'displacementMode parallax has a normalTexture value and no independent metallicTexture value',
+    hint: 'parallax needs normalTexture; bumpTexture is ignored in parallax mode',
   },
 } satisfies Record<MaterialErrorCode, { expected: string; hint: string }>;
 

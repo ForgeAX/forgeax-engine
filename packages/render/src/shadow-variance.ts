@@ -48,6 +48,9 @@ export function addVarianceShadowPasses(
   };
   const parameters = graph.createBuffer('shadow-variance-params', { size: views.length * 256 });
   if (!parameters.ok) return parameters;
+  const forwardDepth = (frame: RenderPipelineFrame, item: VarianceShadowView) =>
+    item.kind === 'spot' ||
+    (frame as _InternalRenderPipelineContext).shadowUpdatePolicy?.(item)?.constantBias === true;
   const values = (frame: RenderPipelineFrame, item: VarianceShadowView) => {
     const internal = frame as _InternalRenderPipelineContext;
     const policy = internal.shadowUpdatePolicy?.(item);
@@ -70,11 +73,12 @@ export function addVarianceShadowPasses(
     new Float32Array(bytes).set([extent[0], extent[1], radius]);
     new Uint32Array(bytes)[3] = samples;
     new Float32Array(bytes)[4] = item.size / size;
+    new Float32Array(bytes)[5] = forwardDepth(frame, item) ? 1 : 0;
     return new Uint8Array(bytes);
   };
   const uploaded = graph.addCopyPass('shadow-variance-prepare', {
     accesses: [{ resource: parameters.value, usage: 'copy-dst' }],
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       if (
         (frame as _InternalRenderPipelineContext).pipelineState.extendedLightingAvailable !== true
       )
@@ -111,6 +115,7 @@ export function addVarianceShadowPasses(
     if (!vertical.ok) return vertical;
     let initial = true;
     let dirty = false;
+    let encodedForward: boolean | undefined;
     for (const phase of ['vertical', 'horizontal'] as const) {
       const target = phase === 'vertical' ? vertical.value.view : output.value;
       const added = graph.addRasterPass(`shadow-variance-${layer}-${phase}`, {
@@ -127,20 +132,21 @@ export function addVarianceShadowPasses(
             view: target,
             loadOp: 'clear',
             storeOp: 'store',
-            clearValue: { r: 1, g: 0, b: 0, a: 1 },
+            clearValue: (frame) => ({ r: forwardDepth(frame, item) ? 1 : 0, g: 0, b: 0, a: 1 }),
           },
         ],
         executeIf: (frame) => {
           if (phase === 'vertical') {
             dirty =
               (retained === undefined ? initial : !retained.retained(label, layer)) ||
+              encodedForward !== forwardDepth(frame, item) ||
               item.rastered() ||
               (frame as _InternalRenderPipelineContext).shadowUpdatePolicy?.(item)?.auto === true;
             initial = false;
           }
           return dirty;
         },
-        encode: ({ pass, frame, resources }) => {
+        encodeDirect: (pass, frame, resources) => {
           const internal = frame as _InternalRenderPipelineContext;
           const device = frame.runtime.device;
           if (program === undefined) {
@@ -234,7 +240,10 @@ export function addVarianceShadowPasses(
           pass.setPipeline(program[phase]);
           pass.setBindGroup(0, group, [ordinal * 256]);
           pass.draw(3, 1, 0, 0);
-          if (phase === 'horizontal') retained?.rastered(label, layer);
+          if (phase === 'horizontal') {
+            encodedForward = forwardDepth(frame, item);
+            retained?.rastered(label, layer);
+          }
         },
       });
       if (!added.ok) return added;

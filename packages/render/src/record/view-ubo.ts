@@ -10,6 +10,7 @@ import { type Mat4, mat4 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { normalizeClippingPlanes } from '@forgeax/engine-types';
 import { jitterCameraProjection } from '../camera-projection';
+import { DirectionalLight } from '../components/directional-light';
 import {
   DirectionalShadowFilterValue,
   type DirectionalShadowQuality,
@@ -62,6 +63,10 @@ export const TRANSLUCENT_VIEW_SLOT_BASE =
   REFLECTION_PROBE_VIEW_SLOT_BASE + REFLECTION_PROBE_VIEW_SLOT_COUNT;
 export const PLANAR_REFLECTION_UNIFORM_OFFSET =
   VIEW_UNIFORM_SLOT_STRIDE * (TRANSLUCENT_VIEW_SLOT_BASE + TRANSLUCENT_FOG_COMPOSITIONS.length);
+/** viewProjection, plane and enabled lanes of the planar reflection projection. */
+export const PLANAR_REFLECTION_UNIFORM_SIZE = 96;
+/** A never-written, therefore disabled, projection inside the same slot. */
+export const PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET = PLANAR_REFLECTION_UNIFORM_OFFSET + 256;
 export const VIEW_UNIFORM_BUFFER_SIZE = PLANAR_REFLECTION_UNIFORM_OFFSET + VIEW_UNIFORM_SLOT_STRIDE;
 
 export function translucentViewOffset(composition: TranslucentFogComposition): number {
@@ -306,7 +311,7 @@ function writeClippingLanes(
       planes.length,
       clipping.intersection === true ? 1 : 0,
       clipping.clipShadows === true ? 1 : 0,
-      0,
+      clipping.caps === true ? 1 : 0,
     ],
     280,
   );
@@ -494,8 +499,8 @@ function writeDirectionalShadowLanes(
   // accepted quality union occupies the existing four-float tail [128..131].
   // Point and Spot pcfKernelSize stay in their own snapshot paths and never
   // enter this Directional View projection.
-  viewPayload[126] = lights.depthBias ?? 0.00001;
-  viewPayload[127] = lights.normalBias ?? 0.05;
+  viewPayload[126] = lights.depthBias ?? (DirectionalLight.fields.depthBias.default as number);
+  viewPayload[127] = lights.normalBias ?? (DirectionalLight.fields.normalBias.default as number);
   const filterCarrier = directionalShadowFilterCarrier(lights.cascades?.directionalShadowQuality);
   viewPayload[128] = filterCarrier[0] ?? 0;
   viewPayload[129] = filterCarrier[1] ?? 0;

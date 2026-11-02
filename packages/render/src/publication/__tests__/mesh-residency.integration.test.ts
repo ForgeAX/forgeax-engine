@@ -8,7 +8,7 @@ import { assert, expect, it, vi } from 'vitest';
 import { createPublishedMeshResidencyHost } from '../../assembly/published-mesh-residency';
 import { MeshFilter, MeshRenderer, Visibility, VisibilityStateValue } from '../../components';
 import { GpuResidencyCache } from '../../device/gpu-residency';
-import { createDynamicGeometryFrameBindings } from '../../record/dynamic-geometry-consumption';
+import { DynamicGeometryReceipt } from '../../record/dynamic-geometry-receipt';
 import type { FrameReceipt } from '../../render-contract';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
@@ -125,7 +125,7 @@ async function gpuFixture() {
     allocations.push(result);
     return result;
   });
-  const bindings = createDynamicGeometryFrameBindings();
+  const bindings = new DynamicGeometryReceipt();
   let finish!: () => void;
   const upload = new Promise<void>((resolve) => {
     finish = resolve;
@@ -138,7 +138,8 @@ async function gpuFixture() {
     currentGeneration: () => generation,
     completeUploads: () => upload,
     isCurrentFrame: (candidate) => candidate === frame,
-    recordStageLane: bindings.recordStageLane,
+    recordStageLane: (...a: Parameters<DynamicGeometryReceipt['recordStageLane']>) =>
+      bindings.recordStageLane(...a),
   });
   return {
     ...f,
@@ -220,10 +221,9 @@ it('waits for physical upload and reads only an exact current submitted frame', 
   const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
   const entity = required(accepted.frame.renderables.at(0)).entityKey;
   const entry = { source: required(accepted.frame.renderables.at(0)) };
-  f.bindings.begin();
   f.bindings.onRenderableDraw([accepted.resources])(entry, 'gpu');
   expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBeUndefined();
-  f.bindings.commit(true);
+  f.bindings.commit();
   expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBe('gpu');
   expect(prepared.recordStageLane({ ...f.frame() }, entity).ok).toBe(false);
   const previous = f.frame();

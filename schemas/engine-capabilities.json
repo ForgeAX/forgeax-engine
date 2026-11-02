@@ -1688,6 +1688,10 @@
     {
       "name": "Maintenance CLI",
       "form": "development"
+    },
+    {
+      "name": "ECS numeric memory services",
+      "form": "opt-in"
     }
   ]
 }

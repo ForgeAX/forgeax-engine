@@ -483,6 +483,60 @@ export function calculateSphereClusterBounds(
  * @returns `ok(written light-index entry count)` on success; `err(ClusterBinError)` with code
  *   'index-overflow' on overflow. The count lets the upload owner avoid copying unused capacity.
  */
+/** The common ordered index kernel; profiling and ordinary paths share these writes. */
+function writeClusterLight(
+  lightIdx: number,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+  gridX: number,
+  gridY: number,
+  clusterCursors: Uint32Array,
+  lightIndexList: Uint32Array,
+): void {
+  for (let cz = minZ; cz <= maxZ; cz++) {
+    for (let cy = minY; cy <= maxY; cy++) {
+      for (let cx = minX; cx <= maxX; cx++) {
+        const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
+        const cursor = clusterCursors[clusterIdx] ?? 0;
+        lightIndexList[cursor] = lightIdx;
+        clusterCursors[clusterIdx] = cursor + 1;
+      }
+    }
+  }
+}
+
+/** No profiling callbacks or per-light lexical environments in ordinary preparation. */
+function writeClusterMembership(
+  lightCount: number,
+  lightBounds: Int32Array,
+  gridX: number,
+  gridY: number,
+  clusterCursors: Uint32Array,
+  lightIndexList: Uint32Array,
+): void {
+  for (let lightIdx = 0; lightIdx < lightCount; lightIdx++) {
+    const at = lightIdx * 6;
+    if ((lightBounds[at] ?? -1) < 0) continue;
+    writeClusterLight(
+      lightIdx,
+      lightBounds[at] ?? 0,
+      lightBounds[at + 1] ?? 0,
+      lightBounds[at + 2] ?? 0,
+      lightBounds[at + 3] ?? -1,
+      lightBounds[at + 4] ?? -1,
+      lightBounds[at + 5] ?? -1,
+      gridX,
+      gridY,
+      clusterCursors,
+      lightIndexList,
+    );
+  }
+}
+
 export function bin(
   lights: ReadonlyArray<{ readonly position: Vec3; readonly range: number }>,
   view: Mat4,
@@ -649,7 +703,16 @@ export function bin(
     return reserved;
   });
 
-  if (options.writeMembership !== false) {
+  if (options.writeMembership !== false && profile === undefined) {
+    writeClusterMembership(
+      lights.length,
+      lightBounds,
+      gridX,
+      gridY,
+      clusterCursors,
+      lightIndexList,
+    );
+  } else if (options.writeMembership !== false) {
     runClusterBinProfilePhase(profile, 'light-index-write', () => {
       for (let lightIdx = 0; lightIdx < lights.length; lightIdx++) {
         const boundsOffset = lightIdx * 6;
@@ -672,16 +735,19 @@ export function bin(
         });
         if (!valid) continue;
         runClusterBinProfilePhase(profile, 'light-index-write/cluster-write', () => {
-          for (let cz = minZ; cz <= maxZ; cz++) {
-            for (let cy = minY; cy <= maxY; cy++) {
-              for (let cx = minX; cx <= maxX; cx++) {
-                const clusterIdx = cz * gridY * gridX + cy * gridX + cx;
-                const cursor = clusterCursors[clusterIdx] ?? 0;
-                lightIndexList[cursor] = lightIdx;
-                clusterCursors[clusterIdx] = cursor + 1;
-              }
-            }
-          }
+          writeClusterLight(
+            lightIdx,
+            minX,
+            minY,
+            minZ,
+            maxX,
+            maxY,
+            maxZ,
+            gridX,
+            gridY,
+            clusterCursors,
+            lightIndexList,
+          );
         });
       }
     });

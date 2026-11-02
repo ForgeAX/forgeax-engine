@@ -1,5 +1,5 @@
 // @perf-budget-skip: intentional real Vite server integration gate.
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DdcEntryStore, ddcOutputDigest } from '@forgeax/engine-ddc';
@@ -203,7 +203,8 @@ describe('DevSession through a real Vite server', () => {
   });
 
   it('publishes derived DDC entries without watching them and preserves author and user watch policies', async () => {
-    root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-vite-watch-'));
+    // Vite emits canonical paths; macOS tmpdir() may contain the /var alias.
+    root = await realpath(await mkdtemp(join(tmpdir(), 'forgeax-ddc-vite-watch-')));
     const projectDdcRoot = join(root, '.forgeax', 'ddc', 'v2');
     const authored = `${projectDdcRoot}-author`;
     await mkdir(authored, { recursive: true });

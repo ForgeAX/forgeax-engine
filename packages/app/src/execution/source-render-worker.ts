@@ -63,6 +63,15 @@ function renderReadyLimits(
 }
 
 /** Sealed publications bounded by the same finite capacity as Host admission. */
+/**
+ * GPU completion watchdog of one published frame: never sooner than the App frame deadline
+ * (a slow software frame inside its budget is not a lost Renderer) nor than 30 s; none when
+ * the App waits without a deadline.
+ */
+export function renderFrameDeadlineMs(frameTimeoutMs: number | null | undefined): number | null {
+  return frameTimeoutMs === null ? null : Math.max(30_000, frameTimeoutMs ?? 0);
+}
+
 export class SourceRenderWorker {
   private worker: Worker | undefined;
   private publisher: ReturnType<typeof createRenderPublisher> | undefined;
@@ -568,8 +577,10 @@ export class SourceRenderWorker {
         [canvas, hostChannel.port1],
       );
       // The same failure owner handles a GPU queue that never completes.
+      const frameDeadlineMs = renderFrameDeadlineMs(this.init.frameTimeoutMs);
       this.armFrameDeadline = () => {
-        this.deadline = setTimeout(() => failure('Render Worker frame timed out'), 30_000);
+        if (frameDeadlineMs === null) return;
+        this.deadline = setTimeout(() => failure('Render Worker frame timed out'), frameDeadlineMs);
       };
     });
   }
@@ -598,13 +609,15 @@ export class SourceRenderWorker {
    * only when the current session is ready and has a publication slot. Loss
    * clears the old queue; that is not capacity in the replacement session.
    */
-  async waitForPublicationCapacity(): Promise<boolean> {
+  async waitForPublicationCapacity(onWait?: () => void): Promise<boolean> {
     while (!this.disposed) {
+      if (!this.hasPublicationCapacity) onWait?.();
       const ready = this.readyWait;
       await ready;
       if (ready !== this.readyWait) continue;
       if (!this.inspectionReady) return false;
       if (this.hasPublicationCapacity) return true;
+      onWait?.();
       await new Promise<void>((resolve) => this.capacityWaiters.push(resolve));
     }
     return false;

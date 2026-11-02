@@ -191,16 +191,32 @@ export interface EngineWorkspaceAssetBinding {
   readonly meta?: EngineWorkspaceAssetFacts;
 }
 
+/**
+ * Caller-provided overlay geometry in JSON transport form: a vertex-colored
+ * triangle list or a line list in the subject's local space (for example the
+ * output of the `model.overlay` tool).
+ */
+export interface EngineWorkspacePreviewOverlay {
+  readonly topology: 'triangle-list' | 'line-list';
+  readonly positions: readonly number[];
+  /** Linear RGBA per vertex; omitted means white. */
+  readonly colors?: readonly number[];
+}
+
 export interface EngineWorkspacePreviewDisplayOptions {
   readonly mode?: 'material' | 'wireframe';
   readonly collision?: boolean;
   readonly bounds?: boolean;
+  /** Add or replace overlays by key; `null` removes one. Keys absent from the record are kept. */
+  readonly overlays?: Readonly<Record<string, EngineWorkspacePreviewOverlay | null>>;
 }
 
 export interface EngineWorkspacePreviewDisplay {
   readonly mode: 'material' | 'wireframe';
   readonly collision: boolean;
   readonly bounds: boolean;
+  /** Keys of the caller-provided overlays currently shown. */
+  readonly overlays: readonly string[];
   readonly uv?: {
     readonly channels: readonly number[];
     readonly layout?: {

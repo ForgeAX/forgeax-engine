@@ -35,6 +35,7 @@ function spotTopology(spotMapSize = 32): RenderPipelineTopology {
     lane: { compute: true, storageBuffer: true, multisample: false, maxColorAttachments: 8 },
     featureTopologySignature: 'static-layer-retention',
     gpuDrivenTopologySignature: 'static-layer-retention',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 
@@ -230,7 +231,10 @@ describe('static shadow layer retention', () => {
       'static:graph-compiled',
       'final:graph-compiled',
     ]);
-    expect(firstOps.filter((op) => op.startsWith('compute:'))).toHaveLength(6);
+    expect(firstOps.filter((op) => op.startsWith('compute:'))).toEqual([
+      'compute:gpu-driven.shadow.spot-atlas-0.view-selection',
+      'compute:gpu-driven.shadow.spot-atlas-0.static.view-selection',
+    ]);
     pool._commitResourceReplacement(1);
     expect(update(1)).toEqual(['hit', 'hit']);
     const secondOps: string[] = [];
@@ -242,7 +246,7 @@ describe('static shadow layer retention', () => {
     expect(secondOps.filter((op) => op.startsWith('compute:'))).toHaveLength(0);
     pool._commitResourceReplacement(1);
 
-    // Real recording prepares the pool before ensureCompiledFrameGraph changes the generation.
+    // Real recording prepares the pool before the graph compile changes the generation.
     expect(update(1)).toEqual(['hit', 'hit']);
     const replacement = compile(device, pool.staticLayers, undefined, undefined, false, pool);
     const replacementOps: string[] = [];
@@ -250,7 +254,9 @@ describe('static shadow layer retention', () => {
       'static:hit',
       'final:graph-compiled',
     ]);
-    expect(replacementOps.filter((op) => op.startsWith('compute:'))).toHaveLength(6);
+    expect(replacementOps.filter((op) => op.startsWith('compute:'))).toEqual(
+      firstOps.filter((op) => op.startsWith('compute:')),
+    );
     pool._commitResourceReplacement(2);
     expect(update(2)).toEqual(['hit', 'hit']);
     expect(frame(device, replacement, pool.staticLayers, 'submit', undefined, pool)).toEqual([
@@ -287,7 +293,9 @@ describe('static shadow layer retention', () => {
       'static:hit',
       'final:graph-compiled',
     ]);
-    expect(rawOps.filter((op) => op.startsWith('compute:'))).toHaveLength(3);
+    expect(rawOps.filter((op) => op.startsWith('compute:'))).toEqual([
+      'compute:gpu-driven.shadow.spot-atlas-0.view-selection',
+    ]);
     expect(rawOps.filter((op) => op.startsWith('raster:'))).toHaveLength(1);
     pool._commitResourceReplacement();
     for (const graph of [first, replacement, aborted, raw]) (await graph.retire()).unwrap();

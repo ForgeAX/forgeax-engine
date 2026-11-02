@@ -14,7 +14,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { isGlobalWorkspaceInstall } from '../workspace-install-scope.mjs';
 
-const action = readFileSync('.github/actions/prepare-view-checkout/action.yml', 'utf8');
+const action = readFileSync('.github/actions/prepare-source-checkouts/action.yml', 'utf8');
 const scalar = (source, name) =>
   source
     .match(new RegExp(`^\\s*(?:- )?${name}:\\s*(.*?)\\s*$`, 'm'))?.[1]
@@ -61,7 +61,7 @@ function missingViewSources(workflow) {
           /sha=\$\(git rev-parse HEAD:tools\/view\)[\s\S]*?echo ["']sha=\$sha["']/.test(step))
       )
         pins.add(scalar(step, 'id'));
-      if (uses === './.github/actions/prepare-view-checkout') {
+      if (uses === './.github/actions/prepare-source-checkouts') {
         ready = unconditional && scalar(step, 'token') !== undefined;
       }
       if (!rootDirectory(scalar(step, 'working-directory') ?? scalar(header, 'working-directory')))
@@ -100,7 +100,7 @@ test('every global workspace installer materializes View from its current Engine
 const workflow = (steps) => `name: fixture\njobs:\n  consumer:\n    steps:\n${steps}`;
 const checkout = '      - uses: actions/checkout@v5\n        with:\n          submodules: false\n';
 const prepare =
-  '      - uses: ./.github/actions/prepare-view-checkout\n        with:\n          token: ${{ secrets.GHA }}\n';
+  '      - uses: ./.github/actions/prepare-source-checkouts\n        with:\n          token: ${{ secrets.GHA }}\n';
 const install = '      - run: pnpm install --frozen-lockfile\n';
 const literal =
   '      - name: Resolve View\n        id: view-pin\n        run: echo "sha=$(git rev-parse HEAD:tools/view)" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v5\n        with:\n          repository: ForgeAX/forgeax-view\n          ref: ${{ steps.view-pin.outputs.sha }}\n          path: tools/view\n          token: ${{ secrets.GHA }}\n          persist-credentials: false\n';

@@ -26,7 +26,6 @@ import type {
   InstalledFrameGraph,
   RenderFrameState,
 } from '../record/frame-snapshot';
-import { executeCompiledFrameGraph } from '../record/typed-frame-graph';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../render-pipeline';
 import {
   commitTemporalGpuSubmit,
@@ -37,6 +36,9 @@ import {
 } from '../temporal/gpu';
 import { createTemporalView } from '../temporal/view';
 import { addTypedTemporalResolvePass } from '../typed-render-graph-primitives';
+import { ViewRecorder, ViewSubmission } from '../world/render-views';
+import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
+import { executeCompiledFrameGraph } from './frame-recording-driver';
 
 function installedGraph(graph: unknown, topologyKey: string): InstalledFrameGraph {
   const noTarget = (): undefined => undefined;
@@ -63,6 +65,11 @@ function selectedEnvironment(sourceKey?: string) {
     fogs: [],
     suns: [],
   }).unwrap();
+}
+
+/** RenderRecord opens `encoder`, the one the frame's graph passes record into. */
+function recordInto(device: RhiDevice, encoder: RhiCommandEncoder): void {
+  vi.spyOn(device, 'createCommandEncoder').mockReturnValueOnce(ok(encoder));
 }
 
 function temporalResolveFrame(
@@ -352,7 +359,10 @@ function executeReplayCapture(
   const internals = {
     errorRegistry: { fire: (error: unknown) => errors.push(error) },
     device: {
+      // RenderRecord opens the submission's one encoder.
+      createCommandEncoder: () => ok(encoder),
       queue: {
+        onSubmittedWorkDone: () => Promise.resolve(),
         submit: () => {
           submits += 1;
           return failureStage === 'submit'
@@ -375,10 +385,11 @@ function executeReplayCapture(
         internals,
         frameState,
         { pipelineState: {} } as never,
-        encoder,
         undefined,
-        () => {
-          commits += 1;
+        {
+          onSubmitted: () => {
+            commits += 1;
+          },
         },
       );
     } catch (error) {
@@ -1274,10 +1285,10 @@ describe('renderer successful-submit transaction', () => {
         encoder: device.createCommandEncoder({ label: 'temporal-readiness-probe' }).unwrap(),
         pipelineState: {},
       } as unknown as RenderPipelineFrame,
-      device.createCommandEncoder({ label: 'temporal-readiness-probe-submit' }).unwrap(),
     );
     expect(result).toBe(false);
     expect(submits).not.toHaveBeenCalled();
+    settleTemporalFrame(frameState, { device, errorRegistry: errors }, false);
     expect(frameState.activeTemporalGpuState).toBeUndefined();
     expect(frameState.temporalGpuState).toBeUndefined();
     expect(candidate.childScope.resourceDelta()).toBe(0);
@@ -1364,18 +1375,23 @@ describe('renderer successful-submit transaction', () => {
       frameState,
       failureAt === 'pipeline' ? null : {},
     );
+    recordInto(device, failedFrame.encoder);
     const failed = executeCompiledFrameGraph(
       { device, errorRegistry: errors } as never,
       frameState,
       failedFrame,
-      failedFrame.encoder,
       undefined,
-      () => gpuCommitAfterSubmit.push(submits.mock.calls.length),
+      {
+        onSubmitted: () => {
+          gpuCommitAfterSubmit.push(submits.mock.calls.length);
+        },
+      },
     );
     expect(failed).toBe(false);
     expect(submits).not.toHaveBeenCalled();
     expect(gpuCommitAfterSubmit).toEqual([]);
     expect(observed[0]).toMatchObject({ code: 'pass-encode-failed' });
+    settleTemporalFrame(frameState, { device, errorRegistry: errors }, false);
     const cause = (observed[0] as { detail?: { cause?: unknown } }).detail?.cause;
     expect(cause).toBeInstanceOf(RhiError);
     expect(cause).toMatchObject({
@@ -1417,17 +1433,24 @@ describe('renderer successful-submit transaction', () => {
       }),
     });
     const retryFrame = temporalResolveFrame(device, scope, frameState, {});
+    recordInto(device, retryFrame.encoder);
     const retried = executeCompiledFrameGraph(
       { device, errorRegistry: errors } as never,
       frameState,
       retryFrame,
-      retryFrame.encoder,
       undefined,
-      () => gpuCommitAfterSubmit.push(submits.mock.calls.length),
+      {
+        onSubmitted: () => {
+          gpuCommitAfterSubmit.push(submits.mock.calls.length);
+        },
+      },
     );
     expect(retried).toBe(true);
     expect(submits).toHaveBeenCalledTimes(1);
     expect(gpuCommitAfterSubmit).toEqual([1]);
+    // History advances in RenderCommit, never before the accepted attempt settles.
+    expect(frameState.activeTemporalGpuState).toBe(active);
+    settleTemporalFrame(frameState, { device, errorRegistry: errors }, true);
     expect(frameState.activeTemporalGpuState).not.toBe(active);
     expect(frameState.temporalView.frameIndex).toBe(8);
     expect(frameState.temporalView.accepted?.sampleTimeSeconds).toBe(1.016);
@@ -1449,6 +1472,41 @@ import {
   TemporalViewHistory,
 } from '../temporal/frame';
 import type { TemporalView } from '../temporal/view';
+
+/**
+ * Settle one view's recorded attempt in a Render World frame: RenderCommit
+ * advances temporal history only for an accepted attempt of this frame, and
+ * RenderCleanup discards whatever it left staged.
+ */
+function settleTemporalFrame(
+  frameState: RenderFrameState,
+  internals: object,
+  accepted: boolean,
+): void {
+  const world = createRenderWorld();
+  world
+    .spawn(
+      {
+        component: ViewSubmission,
+        data: { accepted, attempt: 1, scene: true, temporal: false },
+      },
+      {
+        component: ViewRecorder,
+        data: {
+          state: world.allocUniqueRef('ViewRecorder', {
+            owner: {
+              frameState,
+              internals,
+              skin: { trackSubmittedWork: () => undefined, complete: () => [] },
+            },
+          }),
+        },
+      },
+    )
+    .unwrap();
+  beginRenderFrame(world, 1);
+  endRenderFrame(world);
+}
 
 /** A history whose accepted TAA view is `accepted`, with `pending` staged. */
 function acceptedTemporalView(

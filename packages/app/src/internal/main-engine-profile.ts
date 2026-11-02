@@ -1,5 +1,5 @@
 import { animationPlugin } from '@forgeax/engine-animation';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import {
   type ActionConfig,
   type InputBackend,
@@ -23,7 +23,7 @@ import { assetProfilePlugins, type EngineProfileBase } from './engine-profile-co
 interface MainEngineProfileOptions extends EngineProfileBase {
   readonly rendererDebugDrawHost?: RendererDebugDrawHost;
   readonly rendererFeatureHost?: RenderFeatureHost;
-  readonly onDebugDrawReady?: (debugDraw: DebugDraw) => void;
+  readonly onDebugDrawReady?: (debugDraw: DebugDrawSource) => void;
   readonly input?: InputBackend | undefined;
   readonly inputDispose?: (() => void) | undefined;
   readonly inputMap?: readonly ActionConfig[] | undefined;
@@ -31,7 +31,7 @@ interface MainEngineProfileOptions extends EngineProfileBase {
 
 function debugDrawPlugin(
   context: RendererDebugDrawHost,
-  onReady: (debugDraw: DebugDraw) => void,
+  onReady: (debugDraw: DebugDrawSource) => void,
 ): Plugin {
   return {
     name: 'debug-draw',

@@ -17,7 +17,7 @@ import { createApp } from '@forgeax/engine-app';
 const app = await createApp({ canvas });
 app.debugDraw.line([0, 0, 0], [1, 1, 1], [1, 0, 0, 1]);  // red line
 app.debugDraw.sphere([0, 0, 0], 1, [0, 1, 0, 1]);         // green sphere
-// app.debugDraw is auto-flushed at the end of every frame -- no manual flush needed
+// app.debugDraw is a CPU source: the Renderer takes it once per frame and draws it in every view
 
 // ---- low path (hand-rolled RHI) ----
 const r = await createDebugDraw({ device, queue, createShaderModule });
@@ -47,6 +47,12 @@ All shapes are **line-list** wireframe (never filled). No persistent storage -- 
 Runtime auto-attach wiring lives in `packages/runtime/src/debug-draw-glue.ts` -- the debug-draw package itself stays dependency-free of the runtime graph/pipeline machinery.
 
 ## API reference
+
+### Runtime overlay ownership
+
+`app.debugDraw` is a `DebugDrawSource`: shape calls only stage CPU vertices. The Renderer owns every GPU object (vertex buffer, program, per-format pipelines, per-view uniform) and takes the source once per Renderer frame in `render-debug-overlay-prepare`, so every view of that frame draws the same geometry. Geometry belongs to the frame that staged it: an update-only step or a frame that does not draw discards it instead of accumulating.
+
+An overlay failure skips the overlay and never fails the frame. The Renderer fires one `debug-overlay-failed` error per `detail.reason` until a frame passes without it (`overlay-source-failed`, `overlay-upload-failed`, `overlay-pipeline-failed`) and projects the latest outcome on `renderer.inspect().debugOverlay`.
 
 ### `createDebugDraw(opts)` -- factory
 

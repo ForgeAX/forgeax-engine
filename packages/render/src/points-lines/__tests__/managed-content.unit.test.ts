@@ -11,8 +11,10 @@ import { Materials } from '../../materials';
 import { worldRenderResources } from '../../publication/resource-scope';
 import type { ValidatedRenderable } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
+import { RenderView } from '../../world/render-views';
+import { createRenderWorld } from '../../world/render-world';
+import { adoptViewPointsLines } from '../../world/view-points-lines';
 import { createPointsLinesSnapshot } from '../snapshot';
-import { StandardPointsLinesOwner } from '../standard-owner';
 
 it('consumes edits at draw time without replacing the source row, and fences resized geometry', async () => {
   const assets = new AssetRegistry();
@@ -23,7 +25,9 @@ it('consumes edits at draw time without replacing the source row, and fences res
   const geometry = createWireframeGeometry(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
   const mesh = assets.create(geometry).unwrap();
   const material = assets.create(Materials.unlit([1, 1, 1, 1])).unwrap();
-  const owner = new StandardPointsLinesOwner({ device } as RenderSystemInternals);
+  const renderWorld = createRenderWorld();
+  const view = renderWorld.spawn({ component: RenderView, data: { primary: true } }).unwrap();
+  const owner = adoptViewPointsLines(renderWorld, view, { device } as RenderSystemInternals);
   const source = createPointsLinesSnapshot({
     worldId: 0,
     entityKey: 1,
@@ -45,9 +49,11 @@ it('consumes edits at draw time without replacing the source row, and fences res
     const first = owner.prepare(entry, false);
     expect(first).toBeDefined();
     const original = first?.vertexBuffer;
+    owner.commit(undefined);
     const meshRevision = owner.inspections()[0]?.meshGeneration;
     assets.update(material, { values: { baseColor: [1, 0, 0, 1] } }).unwrap();
     expect(owner.prepare(entry, false)?.vertexBuffer).toBe(original);
+    owner.commit(undefined);
     expect(owner.inspections()[0]?.meshGeneration).toBe(meshRevision);
     const allocations = created.mock.calls.length;
     for (let i = 0; i < 260; i++) {
@@ -56,6 +62,7 @@ it('consumes edits at draw time without replacing the source row, and fences res
       expect(owner.prepare(entry, false)?.vertexBuffer).toBe(original);
     }
     expect(created.mock.calls.length).toBe(allocations);
+    owner.commit(undefined);
     expect(owner.inspections()[0]?.meshGeneration).not.toBe(meshRevision);
     expect(entry.source.pointsLines).toBe(source);
     expect(source).not.toHaveProperty('meshGeneration');
@@ -63,7 +70,7 @@ it('consumes edits at draw time without replacing the source row, and fences res
     const done = new Promise<void>((resolve) => {
       complete = resolve;
     });
-    owner.track(done);
+    owner.commit(done);
     // A resized source allocates a new pair; the old one retires behind its fence.
     const resized = createWireframeGeometry(createPlaneGeometry(1, 1).unwrap()).unwrap();
     assets.replace(mesh, resized).unwrap();

@@ -1,7 +1,8 @@
 // check-extensions.ts - KHR / vendor extension gate.
 //
 // Required-extension support contains EXT_mesh_gpu_instancing,
-// EXT_meshopt_compression, KHR_lights_punctual, KHR_texture_transform, and
+// EXT_meshopt_compression, KHR_mesh_quantization, KHR_lights_punctual,
+// KHR_texture_transform, KHR_texture_basisu, and
 // the KHR material transmission/IOR/volume/clearcoat/anisotropy/sheen/
 // iridescence/specular extensions. The exported list is the public supported
 // extension surface consumed by both the required-extension gate and callers
@@ -29,8 +30,10 @@ export const EXTENSION_ALLOWLIST: readonly string[] = [
   'EXT_mesh_gpu_instancing',
   'EXT_meshopt_compression',
   'KHR_draco_mesh_compression',
+  'KHR_mesh_quantization',
   'KHR_lights_punctual',
   'KHR_texture_transform',
+  'KHR_texture_basisu',
   'KHR_materials_unlit',
   'KHR_materials_emissive_strength',
   'KHR_materials_transmission',

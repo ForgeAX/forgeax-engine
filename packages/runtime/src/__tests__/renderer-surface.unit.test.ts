@@ -175,7 +175,6 @@ function makeFrameState(): MockObj {
     instanceBuffers: new Map(),
     transientInstanceBuffers: [],
     warnedZeroLightStandard: false,
-    warnedMultiLightDirectional: false,
     warnedSkyboxTonemapNone: false,
     warnedMissingBaseColorTextureHandles: new Set<number>(),
     warnedNineSliceScaleEntities: new Set<number>(),

@@ -253,8 +253,7 @@ describe('StereoCamera World extraction', () => {
       layout: 'side-by-side',
       swapEyes: false,
     });
-    const eye = selectCameraRoles(world, entity, { width: 100, height: 200, eye: 'left' })
-      .display[0];
+    const eye = cameraForView(display, entity, { width: 100, height: 200, eye: 'left' });
     expect(eye?.eye?.side).toBe('left');
     expect(eye?.position[0]).toBeCloseTo(-0.05, 6);
   });

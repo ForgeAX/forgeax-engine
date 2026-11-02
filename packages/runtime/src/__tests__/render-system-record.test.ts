@@ -1399,12 +1399,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         null,
         'transparent',
       );
-      expect(selected).toEqual(
-        new Map([
-          [0, new Set([2])],
-          [1, new Set([2])],
-        ]),
-      );
+      // Readonly membership may use an immutable singleton. Compare every row
+      // and handle, including their order, without requiring a native Set brand.
+      expect(Array.from(selected ?? [], ([row, handles]) => [row, Array.from(handles)])).toEqual([
+        [0, [2]],
+        [1, [2]],
+      ]);
     });
   });
 }

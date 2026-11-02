@@ -39,11 +39,11 @@ it('keeps derived render states and variant keys only while their authored recor
   expect(record.deref()).toBeUndefined();
 });
 
-it('keeps material passes only for live dispatch lists', async () => {
+it('releases borrowed material groups when their caller releases them', async () => {
   const [released, releasedPasses] = (() => {
     const dispatch = [entry(0), entry(1)];
     const passes = selectedMaterialPasses(dispatch, false);
-    expect(selectedMaterialPasses(dispatch, false)).toBe(passes);
+    expect(selectedMaterialPasses(dispatch, false).get(1)?.get(1)).toBe(dispatch[1]);
     expect(passes.get(1)?.get(1)).toBe(dispatch[1]);
     return [new WeakRef(dispatch), new WeakRef(passes)] as const;
   })();
@@ -51,4 +51,15 @@ it('keeps material passes only for live dispatch lists', async () => {
   await collect();
   expect(released.deref()).toBeUndefined();
   expect(releasedPasses.deref()).toBeUndefined();
+});
+
+it('re-reads a borrowed dispatch replaced in place without changing its length', () => {
+  const dispatch = [entry(0, 1), entry(1, 2)];
+  const before = selectedMaterialPasses(dispatch, false);
+  dispatch[0] = entry(2, 3);
+  const after = selectedMaterialPasses(dispatch, false);
+  expect(after.has(0)).toBe(false);
+  expect(after.get(2)?.get(3)).toBe(dispatch[0]);
+  expect(after.get(1)?.get(2)).toBe(dispatch[1]);
+  expect(before.get(0)?.get(1)).toMatchObject({ renderableIndex: 0, materialHandle: 1 });
 });

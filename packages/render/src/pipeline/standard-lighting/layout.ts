@@ -1,4 +1,4 @@
-export const DEFAULT_CLUSTER_GRID = { x: 16, y: 9, z: 24 } as const;
+export const DEFAULT_CLUSTER_GRID = Object.freeze({ x: 16, y: 9, z: 24 } as const);
 export const CLUSTER_GRID_STRIDE_U32 = 2 as const;
 export const LIGHT_INDEX_LIST_CAPACITY = 1048576 as const;
 export const MAX_LIGHTS = 256 as const;

@@ -181,7 +181,7 @@ The descriptor projections above are wrapped by an internal `ExplicitUndefined<T
 | `'queue-write-buffer-out-of-bounds'` | `writeBuffer(buf, offset, data)` offset alignment or bounds violation; `.hint` carries concrete `got X` / `got Y` / `got Z` numbers | W3C 23.2 writeBuffer |
 | `'render-system-no-camera'` | Retained error vocabulary for existing external consumers. Current RenderSystem accepts zero cameras as a normal clear/UI frame and does not emit this code (engine-internal phase, feat-20260509-ecs-render-bridge-mvp D-S7) | engine-internal RenderSystem |
 | `'render-system-multi-camera'` | RenderSystem found N>1 entities matching `(Transform + Camera)`; the first archetype iteration hit is rendered, subsequent Cameras are ignored (D-S7) | engine-internal RenderSystem |
-| `'render-system-multi-light'` | RenderSystem found N>1 `DirectionalLight` entities; PointLight / SpotLight / RectArea lights are admitted through the shared Cluster corpus. 0-light + standard renders black (physically correct). `.detail = { type: 'directional', got: number }` identifies the offending bucket | engine-internal RenderSystem |
+| `'render-system-multi-light'` | Retained error vocabulary for existing external consumers. Current RenderSystem renders every `DirectionalLight` (the first owns CSM shadows and the atmosphere sun; later ones are unshadowed Cluster members) and does not emit this code. `.detail = { type: 'directional', got: number }` | engine-internal RenderSystem |
 | `'asset-not-registered'` | A `MeshFilter.assetHandle` is not in `engine.assets` (`AssetRegistry.get(handle)` returned undefined); the single entity is skipped (other entities continue rendering — charter proposition 9 graceful degradation). `.detail = { assetHandle: number }` carries the offending handle | engine-internal RenderSystem |
 | `'device-lost'` | `GPUDevice.lost` Promise resolved (spec 22.1 device lost flow); driver crash / power saver / extension swap. `.expected` / `.hint` template guides callers to `renderer.onError(cb)` + page reload (feat-20260511-asset-system-v1 D-P4 + R-02 §2.1) | W3C 22.1 device lost |
 | `'oom'` | `GPUOutOfMemoryError` subtype — buffer / texture allocation exceeded available GPU memory. `.hint` suggests `.destroy()` prior resources / split work across submissions / check `device.limits.maxBufferSize` | W3C 22.2 GPUOutOfMemoryError |
@@ -458,7 +458,7 @@ if (!dr.ok) {
     case 'queue-write-buffer-out-of-bounds': /* realign offset, re-check buffer.size */ break;
     case 'render-system-no-camera':   /* legacy diagnostic; current zero-camera frames are valid */ break;
     case 'render-system-multi-camera':/* deduplicate Camera entities or wait for feat-future-multi-viewport */ break;
-    case 'render-system-multi-light': /* keep one DirectionalLight; local lights use Cluster */ break;
+    case 'render-system-multi-light': /* retained vocabulary; not emitted */ break;
     case 'asset-not-registered':      /* use HANDLE_CUBE / HANDLE_TRIANGLE imports; or feat-future-asset-system custom register */ break;
     case 'device-lost':               /* renderer.onError fan-out + page reload; driver / OS-side recovery */ break;
     case 'oom':                       /* release prior buffers/textures via .destroy(); shrink descriptor; check device.limits.maxBufferSize */ break;

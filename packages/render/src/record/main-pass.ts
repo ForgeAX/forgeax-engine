@@ -36,6 +36,8 @@ import {
   FORWARD_PASS_SELECTOR,
   matchPass,
 } from '../systems/pass-selector';
+import { recordContext } from '../world/view-record-context';
+import { FirstEntryMap } from './first-entry-map';
 import { materialSlotsByClass } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
@@ -63,6 +65,7 @@ import { reflectionProbeMaterial } from './reflection-probe-material';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { buildMatchedMaterialHandlesByRenderable, filterDispatchBySelector } from './shadow-pass';
+import { SingleMaterialHandleSet } from './single-material-handle-set';
 import type { SkinTaskBinding } from './skin-tasks';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
 
@@ -290,8 +293,16 @@ function recordModeIndex(mode: MainPassRecordMode): number {
 /** Capture finalized facts only after the record owner has ordered its validation rows. */
 export function createMainPassMaterialSelectionOwner(
   input: Omit<MaterialSelectionContext, 'mainPassMaterialSelection'>,
+  prepared?: {
+    readonly selector: PassSelector | undefined;
+    readonly excludeSelector: PassSelector | undefined;
+    readonly recordMode: MainPassRecordMode;
+  },
 ): MainPassMaterialSelectionOwner {
   const { dispatch, validatedOrdered, materialSlots, materialSlotIndices } = input;
+  const preparedSelector = prepared?.selector;
+  const preparedMode = prepared?.recordMode;
+  const preparedExclude = prepared?.excludeSelector;
   const selectedDispatch: (DispatchList | undefined)[] = [];
   // Four exact selector identities and five equivalent material modes bound
   // this scratch to sixteen lane pairs; no per-query key strings or hash maps.
@@ -307,6 +318,9 @@ export function createMainPassMaterialSelectionOwner(
       const index = stockSelectorIndex(selector);
       if (c.dispatch !== dispatch || c.validatedOrdered !== validatedOrdered || index < 0)
         return filterDispatchBySelector(c.dispatch, selector);
+      // The Scene Pass producer already selected every entry with this exact
+      // stock selector. Preserve its fixed dispatch key for downstream grouping.
+      if (selector === preparedSelector) return dispatch;
       selectedDispatch[index] ??= filterDispatchBySelector(dispatch, selector);
       return selectedDispatch[index];
     },
@@ -338,6 +352,17 @@ export function createMainPassMaterialSelectionOwner(
       const modeIndex = recordModeIndex(mode);
       const cached = selected.modes[modeIndex];
       if (cached !== undefined) return cached;
+      // A complete owned Scene Pass already admitted each selected submesh.
+      // Its exact request needs no second row/material-mode projection.
+      if (
+        prepared !== undefined &&
+        modeIndex !== 4 &&
+        selected.membership !== null &&
+        selector === preparedSelector &&
+        mode === preparedMode &&
+        excludeSelector === preparedExclude
+      )
+        return selected.membership;
       const value =
         modeIndex !== 4 && selected.membership?.size === 0
           ? selected.membership
@@ -358,13 +383,14 @@ export function matchedMaterialsForRecordMode(
     mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color';
   const filtered = new Map<number, ReadonlySet<number>>();
   if (mode === 'transmission' && matchedMaterials === null) return filtered;
+  const singletons = new FirstEntryMap<number, SingleMaterialHandleSet>();
   let nextRow = 0;
   for (const entry of c.validatedOrdered) {
     const row = nextRow++;
     const dispatchHandles = matchedMaterials?.get(entry.renderableIndex);
     if (!surfaceMode && matchedMaterials !== null && dispatchHandles === undefined) continue;
-    let handles: Set<number> | undefined;
-    for (const slot of c.materialSlotIndices[row] ?? []) {
+    let handles: Set<number> | SingleMaterialHandleSet | undefined;
+    for (const slot of c.materialSlotIndices.at(row) ?? []) {
       const material = c.materialSlots[slot];
       if (material === undefined) throw new Error('Material selection has no submitted material');
       const handle = material.materialHandle ?? 0;
@@ -374,12 +400,31 @@ export function matchedMaterialsForRecordMode(
         filtered.set(entry.renderableIndex, dispatchHandles);
         break;
       }
-      handles ??= new Set<number>();
-      handles.add(handle);
+      handles = includeMaterialHandle(handles, handle, singletons);
     }
     if (handles !== undefined) filtered.set(entry.renderableIndex, handles);
   }
   return filtered;
+}
+
+/** Repeated singleton lanes share a value; a second distinct handle owns its Set. */
+function includeMaterialHandle(
+  handles: Set<number> | SingleMaterialHandleSet | undefined,
+  handle: number,
+  singletons: FirstEntryMap<number, SingleMaterialHandleSet>,
+): Set<number> | SingleMaterialHandleSet {
+  if (handles === undefined) {
+    let singleton = singletons.get(handle);
+    if (singleton === undefined) {
+      singleton = new SingleMaterialHandleSet(handle);
+      singletons.set(handle, singleton);
+    }
+    return singleton;
+  }
+  if (handles instanceof SingleMaterialHandleSet)
+    return handles.has(handle) ? handles : new Set([handles.onlyHandle, handle]);
+  handles.add(handle);
+  return handles;
 }
 
 /** Native Scene Pass rows include all CPU geometry and hidden pipeline preparation. */
@@ -762,7 +807,7 @@ function selectEntityMaterials(
       entry.renderableIndex,
       handles ??
         new Set(
-          (c.materialSlotIndices[index] ?? []).map(
+          (c.materialSlotIndices.at(index) ?? []).map(
             (slot) => c.materialSlots[slot]?.materialHandle ?? 0,
           ),
         ),
@@ -885,7 +930,7 @@ function publishIblBindingInspection(
       : c.store.getCubemapIbl(c.skylight.equirectHandle, c.world);
   const prefilterViewMipCount =
     activeCache?.prefilterLevelCount ?? (activeViews === undefined ? 1 : 0);
-  const deviceGeneration = runtime.deviceScope.generation;
+  const deviceGeneration = recordContext(runtime).deviceScope.generation;
   const resource = (view: object, sampler: object) => ({
     viewIdentity: getOpaqueResourceIdentity(view),
     samplerIdentity: getOpaqueResourceIdentity(sampler),

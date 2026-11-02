@@ -79,20 +79,8 @@ export interface DebugDrawOptions {
   readonly depthMode?: DepthMode | undefined;
 }
 
-/**
- * Immediate-mode debug-draw instance.
- *
- * Shape calls (line / sphere / aabb / frustum) append vertices to a CPU staging
- * buffer. `flush(encoder, view, viewProj)` uploads staging to a GPU vertex buffer
- * and issues a single `draw` call with line-list topology.
- *
- * After `destroy()`, shape calls are no-ops (with a single console.warn) and
- * `flush()` returns `Result.err({ code: 'flushed-after-destroy' })`.
- */
-export interface DebugDraw {
-  /** Whether this frame has staged line vertices waiting to be encoded. */
-  hasWork(): boolean;
-
+/** The immediate-mode shape API shared by the low-path instance and the Renderer-consumed source. */
+export interface DebugDrawShapes {
   /** Push a line segment from `a` to `b` with the given color. */
   line(a: Vec3, b: Vec3, color: ColorLike): void;
 
@@ -125,6 +113,21 @@ export interface DebugDraw {
    * Maps Bevy `gizmos.axes(transform, length)`.
    */
   axes(worldMat: Mat4, length: number): void;
+}
+
+/**
+ * Immediate-mode debug-draw instance.
+ *
+ * Shape calls (line / sphere / aabb / frustum) append vertices to a CPU staging
+ * buffer. `flush(encoder, view, viewProj)` uploads staging to a GPU vertex buffer
+ * and issues a single `draw` call with line-list topology.
+ *
+ * After `destroy()`, shape calls are no-ops (with a single console.warn) and
+ * `flush()` returns `Result.err({ code: 'flushed-after-destroy' })`.
+ */
+export interface DebugDraw extends DebugDrawShapes {
+  /** Whether this frame has staged line vertices waiting to be encoded. */
+  hasWork(): boolean;
 
   /**
    * Upload CPU staging to GPU vertex buffer, issue a single draw call,

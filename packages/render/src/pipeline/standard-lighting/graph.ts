@@ -196,7 +196,7 @@ export function addStandardClusterMembershipPass(
     // executing this pass would only turn an otherwise valid frame into a
     // null-backend encode failure.
     executeIf: shouldExecuteStandardClusterMembershipPass,
-    encode: ({ pass, frame }) => {
+    encodeDirect: (pass, frame, _graphresources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const pipeline = internal.pipelineState.hdrpClusterMembershipPipeline;
       const bindings = internal.hdrpClusterMembershipBindGroup;

@@ -38,6 +38,7 @@ export async function verifyGpuUiParity(options: {
     device,
     shaders: gpuShaders,
     createShaderModule: options.createShaderModule,
+    retire: (owner, release) => void owner.queue.onSubmittedWorkDone().then(release, release),
   });
   const results: {
     name: string;
@@ -81,7 +82,6 @@ export async function verifyGpuUiParity(options: {
       );
       device.queue.submit([encoder.finish().unwrap()]).unwrap();
       const completed = device.queue.onSubmittedWorkDone();
-      raster.submitted(completed);
       await completed;
       const mapped = (await staging.mapAsync(1)).unwrap();
       const actual = new Uint8Array(expected.length);

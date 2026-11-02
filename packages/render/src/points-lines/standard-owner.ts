@@ -12,13 +12,12 @@ import {
   GPU_BUFFER_USAGE_INDEX,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import { renderAssetRevision } from '../publication/resource-scope';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
-import type {
-  PointsLinesRecordOwner,
-  PointsLinesRecordSubmission,
-  RenderSystemInternals,
-} from '../record/render-context';
+import type { PointsLinesRecordSubmission, RenderSystemInternals } from '../record/render-context';
+import type { RenderableSnapshot } from '../render-system-extract';
+import { type FrameList, sparseRowsOf } from '../scene/frame-list';
 import { admitPointsLines } from './admission';
 import { PointsLinesExpansionCache, pointsLinesSourceSlot } from './expansion-cache';
 import type { PointsLinesInspection, PointsLinesSourceError } from './inspection';
@@ -41,6 +40,32 @@ type PointsLinesGpuResources = {
 };
 type PointsLinesPreparationAdapter = PointsLinesLanePreparationAdapter<PointsLinesGpuResources>;
 
+/** One Points/Lines row a view prepared in RenderPrepare; `submission` is undefined for a refused row. */
+export interface PreparedPointsLines {
+  readonly submission: PointsLinesRecordSubmission | undefined;
+  /** The row's dense address in the view's Points/Lines parameter buffer, below the outcome's `slots`. */
+  readonly slot: number;
+  /** True once the row's mesh or material changed since it was prepared. */
+  stale(): boolean;
+}
+
+/** The view's Points/Lines preparation of one Renderer frame, or the cause it recovers from. */
+export type PointsLinesFrameOutcome =
+  | {
+      readonly ok: true;
+      readonly rows: ReadonlyMap<string, PreparedPointsLines>;
+      /** The parameter-buffer slots the prepared rows address; the view buffer grows to hold them. */
+      readonly slots: number;
+    }
+  | { readonly ok: false; readonly cause: unknown };
+
+/** The identity a prepared row is taken by. */
+export function pointsLinesRowKey(
+  source: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>,
+): string {
+  return `${source.worldId}:${source.entityKey}`;
+}
+
 /**
  * The Standard renderer's single Points/Lines prepare owner.
  *
@@ -50,25 +75,79 @@ type PointsLinesPreparationAdapter = PointsLinesLanePreparationAdapter<PointsLin
  * shared across lanes and this owner keeps the one prepared vertex/index
  * resource pair for each retained identity.
  */
-export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
+export class StandardPointsLinesOwner {
   private readonly cache = new PointsLinesExpansionCache();
   private readonly preparations = new Map<string, PointsLinesPreparationAdapter>();
   private readonly retiring = new Set<PointsLinesPreparationAdapter>();
-  private readonly active = new Map<string, PointsLinesInspection>();
+  /** What this view's current attempt prepared; promoted by `commit`, dropped by `discard`. */
+  private pending = new Map<string, PointsLinesInspection>();
+  private published = new Map<string, PointsLinesInspection>();
   private readonly layoutProjection = deriveVertexLayoutProjection(DEFAULT_VERTEX_ATTRIBUTE_MAP);
+  /** The RenderPrepare outcome of the Renderer frame it names; recording takes it. */
+  private frameOutcome: { frame: number; outcome: PointsLinesFrameOutcome } | undefined;
 
   constructor(private readonly internals: RenderSystemInternals) {}
 
-  beginFrame(): void {
-    this.active.clear();
+  /**
+   * Admit and upload every Points/Lines row of the view's frame for one lane;
+   * never throws. Refusals are rows without a submission and publish their
+   * inspection; any other failure is the outcome's cause.
+   */
+  prepareFrame(
+    rows: FrameList<RenderableSnapshot>,
+    scopeOf: (worldId: number) => RenderResourceScope,
+    clustered: boolean,
+  ): PointsLinesFrameOutcome {
+    try {
+      // This frame's attempt observes only what it prepares here.
+      this.pending = new Map();
+      const prepared = new Map<string, PreparedPointsLines>();
+      for (const source of sparseRowsOf(rows, 'pointsLines')) {
+        const points = source.pointsLines;
+        // Every retained row is prepared: the camera cull is a draw-time predicate, and a
+        // capture pass admits rows without it.
+        if (points === undefined) continue;
+        const world = scopeOf(source.worldId);
+        const mesh = renderAssetRevision(world, points.meshHandle) ?? 0;
+        const material = renderAssetRevision(world, points.materialHandle) ?? 0;
+        prepared.set(pointsLinesRowKey(source), {
+          submission: this.prepare({ source, world }, clustered),
+          slot: prepared.size,
+          stale: () =>
+            (renderAssetRevision(world, points.meshHandle) ?? 0) !== mesh ||
+            (renderAssetRevision(world, points.materialHandle) ?? 0) !== material,
+        });
+      }
+      return { ok: true, rows: prepared, slots: prepared.size };
+    } catch (cause) {
+      return { ok: false, cause };
+    }
   }
 
-  prepare(entry: ValidatedRenderable, clustered: boolean): PointsLinesRecordSubmission | undefined {
-    return this.prepareWithMaps(entry, clustered, this.internals, this.preparations, this.active);
+  /** Keep the outcome `prepareFrame` produced for the Renderer frame `frame`. */
+  stage(frame: number, outcome: PointsLinesFrameOutcome): void {
+    this.frameOutcome = { frame, outcome };
+  }
+
+  /** Drop the staged outcome once the Renderer frame is over. */
+  settle(): void {
+    this.frameOutcome = undefined;
+  }
+
+  /** The outcome staged for `frame`; undefined when no preparation ran for it. */
+  stagedOutcome(frame: number): PointsLinesFrameOutcome | undefined {
+    return this.frameOutcome?.frame === frame ? this.frameOutcome.outcome : undefined;
+  }
+
+  prepare(
+    entry: Pick<ValidatedRenderable, 'source' | 'world'>,
+    clustered: boolean,
+  ): PointsLinesRecordSubmission | undefined {
+    return this.prepareWithMaps(entry, clustered, this.internals, this.preparations, this.pending);
   }
 
   private prepareWithMaps(
-    entry: ValidatedRenderable,
+    entry: Pick<ValidatedRenderable, 'source' | 'world'>,
     clustered: boolean,
     runtime: RenderSystemInternals,
     preparations: Map<string, PointsLinesPreparationAdapter>,
@@ -224,6 +303,18 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     };
   }
 
+  /** The accepted attempt's observations become the published inspection, fenced by its GPU work. */
+  commit(completed: Promise<unknown> | undefined): void {
+    this.published = this.pending;
+    this.pending = new Map();
+    if (completed !== undefined) this.track(completed);
+  }
+
+  /** A rejected attempt publishes nothing; the previous inspection stays. */
+  discard(): void {
+    this.pending = new Map();
+  }
+
   /** Retired cache rows may still be named by an earlier view in this submission. */
   track(completed: Promise<unknown>): void {
     for (const preparation of this.preparations.values())
@@ -239,7 +330,9 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     for (const preparation of this.preparations.values()) preparation.resetForDeviceLoss();
     for (const preparation of this.retiring) preparation.resetForDeviceLoss();
     this.retiring.clear();
-    this.active.clear();
+    this.pending.clear();
+    this.published.clear();
+    this.frameOutcome = undefined;
   }
 
   abandonForDeviceLoss(): void {
@@ -248,7 +341,9 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     }
     for (const preparation of this.retiring) preparation.abandonForDeviceLoss();
     this.retiring.clear();
-    this.active.clear();
+    this.pending.clear();
+    this.published.clear();
+    this.frameOutcome = undefined;
   }
 
   dispose(): void {
@@ -257,8 +352,13 @@ export class StandardPointsLinesOwner implements PointsLinesRecordOwner {
     this.cache.clear();
   }
 
+  /** Detached copies of the last accepted attempt's observations. */
   inspections(): readonly PointsLinesInspection[] {
-    return [...this.active.values()];
+    return [...this.published.values()].map((inspection) => ({
+      ...inspection,
+      cache: { ...inspection.cache },
+      ...(inspection.refusal === undefined ? {} : { refusal: { ...inspection.refusal } }),
+    }));
   }
 
   private backend(runtime: RenderSystemInternals): PointsLinesBackend {

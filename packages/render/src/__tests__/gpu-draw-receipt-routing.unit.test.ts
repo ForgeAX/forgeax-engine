@@ -4,7 +4,7 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
-import { createDynamicGeometryFrameBindings } from '../record/dynamic-geometry-consumption';
+import { DynamicGeometryReceipt } from '../record/dynamic-geometry-receipt';
 import { emitGpuDrivenDrawReceipts } from '../record/gpu-draw-receipts';
 import { defaultMaterialSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
@@ -60,30 +60,26 @@ describe('GPU draw receipt routing', () => {
     ['gpu', 'cpu', 'mixed'],
   ] as const)('combines %s and %s draws for only the submitted mesh', (first, second, expected) => {
     const world = new World();
-    const bindings = createDynamicGeometryFrameBindings();
+    const bindings = new DynamicGeometryReceipt();
     const original = row(0);
-    bindings.begin();
     const consume = bindings.onRenderableDraw([world].map(worldRenderResources));
     consume(original, first);
     consume(original, second);
     consume(original, first);
-    bindings.commit(true);
+    bindings.commit();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 9)).toBe(expected);
 
     // A replacement mesh owns a fresh lane even within this frame.
-    bindings.begin();
     const consumeReplacement = bindings.onRenderableDraw([world].map(worldRenderResources));
     consumeReplacement(original, first);
     consumeReplacement(original, second);
     const replacement = { source: { ...original.source, assetHandle: 10 } };
     consumeReplacement(replacement, second);
-    bindings.commit(true);
+    bindings.commit();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 9)).toBeUndefined();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 10)).toBe(second);
-
-    bindings.begin();
     bindings.onRenderableDraw([world].map(worldRenderResources))(original, first);
-    bindings.commit(false);
+    bindings.clear();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 9)).toBeUndefined();
     expect(bindings.recordStageLane(worldRenderResources(world), 42, 10)).toBeUndefined();
   });
@@ -96,8 +92,7 @@ describe('GPU draw receipt routing', () => {
     const worlds = [second, first];
     const worldKeys = scene.visibilityWorldKeysFor(worlds.map(worldRenderResources));
     expect(worldKeys).toEqual([originalKeys[1], originalKeys[0]]);
-    const bindings = createDynamicGeometryFrameBindings();
-    bindings.begin();
+    const bindings = new DynamicGeometryReceipt();
     const consume = bindings.onRenderableDraw(worlds.map(worldRenderResources));
     const receipts: { world: string; submesh: number; lane: string; ready: boolean }[] = [];
     const rows = [row(0), row(1)];
@@ -117,7 +112,7 @@ describe('GPU draw receipt routing', () => {
         consume(drawn, receipt.lane);
       },
     );
-    bindings.commit(true);
+    bindings.commit();
     expect(receipts).toEqual([{ world: second.identity, submesh: 7, lane: 'gpu', ready: true }]);
     expect(bindings.isConsumed(worldRenderResources(second), 42, 9)).toBe(true);
     expect(bindings.recordStageLane(worldRenderResources(second), 42, 9)).toBe('gpu');
@@ -146,8 +141,7 @@ describe('GPU draw receipt routing', () => {
 
   it('keeps failed submission geometry unconsumed', () => {
     const world = new World();
-    const bindings = createDynamicGeometryFrameBindings();
-    bindings.begin();
+    const bindings = new DynamicGeometryReceipt();
     const consume = bindings.onRenderableDraw([world].map(worldRenderResources));
     const rows = [row(0)];
     emitGpuDrivenDrawReceipts(
@@ -155,7 +149,7 @@ describe('GPU draw receipt routing', () => {
       receiptSelection(rows, (batch) => batch.binding?.drawItemIndex === 2),
       (entry, _submesh, receipt) => consume(entry, receipt.lane),
     );
-    bindings.commit(false);
+    bindings.clear();
     expect(bindings.isConsumed(worldRenderResources(world), 42, 9)).toBe(false);
   });
 });

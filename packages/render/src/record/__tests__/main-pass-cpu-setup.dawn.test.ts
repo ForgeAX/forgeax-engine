@@ -168,7 +168,8 @@ it('restores native geometry after Points/Lines without relying on GPU-only CPU 
     targetH: 32,
     viewBindGroup: viewGroup,
     pointsLines: {
-      prepare: (entry: unknown) =>
+      slot: () => 0,
+      submission: (entry: unknown) =>
         entry === points
           ? {
               vertexBuffer: points.mesh.vertexBuffer.handle,

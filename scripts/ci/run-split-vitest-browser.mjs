@@ -60,6 +60,7 @@ const directLightBrowserFile =
 const instancingStaticBrowserFile =
   'apps/parity/instancing-static/src/__tests__/instances.browser.test.ts';
 const thinWrapperBrowserFile = 'packages/app/__tests__/thin-wrapper.browser.test.ts';
+const thinWrapperThrowBrowserFile = 'packages/app/__tests__/thin-wrapper-throw.browser.test.ts';
 const solarAtmosphereBrowserFiles = [
   'packages/runtime/src/__tests__/solar-atmosphere-calibration.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-fog-time.browser.test.ts',
@@ -101,7 +102,14 @@ const shortRendererBootstrapBrowserFiles = new Set([
 ]);
 const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
+const shadowQualityBrowserFiles = new Set([
+  'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts',
+  'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts',
+]);
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run 41269699158 exhausted a mixed 300 s process. Keep the complete
+  // shared-renderer contact matrix away from competing software GPU owners.
+  ...shadowQualityBrowserFiles,
   // Run 40654473789 crossed the unchanged 120 s render/reference/replay case
   // beside a 111 s lighting-channel group on the same eight-CPU affinity set.
   'packages/three/src/__tests__/render.browser.test.ts',
@@ -130,6 +138,12 @@ const exclusiveRunnerBrowserFiles = new Set([
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
 ]);
 const browserProcessIsolatedFiles = new Set([
+  ...shadowQualityBrowserFiles,
+  // Run 40671760654 exhausted one 300 s process with all three native owners.
+  // Preserve each complete journey and its existing deadline in its own process.
+  'packages/runtime/src/__tests__/point-light-decay.browser.test.ts',
+  'packages/runtime/src/__tests__/point-light-shadow.browser.test.ts',
+  'packages/runtime/src/__tests__/point-sprites.browser.test.ts',
   'packages/three/src/__tests__/render.browser.test.ts',
   ...threeShadowBrowserFiles,
   ...threeMaterialOutputBrowserFiles,
@@ -142,6 +156,8 @@ const browserProcessIsolatedFiles = new Set([
   directLightBrowserFile,
   instancingStaticBrowserFile,
   thinWrapperBrowserFile,
+  // Its renderer-host module mock must not share the real App/Worker owner.
+  thinWrapperThrowBrowserFile,
   renderWorkerPreloadBrowserFile,
   'apps/learn-render/1.getting-started/5.transformations/src/__tests__/onerror-gate.browser.test.ts',
   'apps/learn-render/1.getting-started/2.hello-triangle/src/__tests__/onerror-gate.browser.test.ts',
@@ -297,6 +313,10 @@ const measuredBrowserFileSeconds = new Map(Object.entries(measuredBrowserSeconds
 const renderWorkerBrowserFile =
   /^packages\/app\/__tests__\/(?:render-worker[a-z-]*|worker-policy|engine-worker-asset-loss)\.browser\.test\.ts$/;
 function estimatedBrowserFileSeconds(file) {
+  // Scheduling estimate until a complete isolated CI receipt is available.
+  if (file === 'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts')
+    return 120;
+  if (file === 'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts') return 180;
   // Full native/reference/replay journeys. These are scheduling estimates;
   // unknown-file weights grouped them into a 300 s timeout in run 39384469626.
   if (file === 'packages/three/src/__tests__/output.browser.test.ts') return 100;

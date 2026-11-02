@@ -4,6 +4,7 @@ import type { InstanceBoundsCache } from '../instances-derived-bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { MeshDrawSlots } from '../record/mesh-draw-slots';
+import { NativeDrawRosterOwner } from '../record/native-draw-roster';
 import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
 import { type FrameList, FrameProjection, RetainedFrameProjection } from './frame-list';
 import type { FrameSet } from './frame-set';
@@ -25,6 +26,7 @@ import type {
   RenderSceneBounds,
   RenderSceneInspection,
   RenderSceneOperation,
+  RenderSceneRecord,
   RenderSceneResyncReason,
   RenderSceneSlot,
 } from './render-scene-types';
@@ -57,6 +59,7 @@ export class RenderScene {
   private meshes: MeshFrame;
   private preparation: FrameSet;
   private readonly meshDrawSlots = new MeshDrawSlots();
+  private readonly nativeDrawRoster = new NativeDrawRosterOwner();
   private temporalTracking = false;
   private history = SubmittedHistory.cut();
   private materialized:
@@ -107,6 +110,8 @@ export class RenderScene {
   /** Release owned rows; borrowed rows stay with their owner. */
   dispose(): void {
     if (this.ownsRows) this.rows.dispose();
+    this.meshDrawSlots.clear();
+    this.nativeDrawRoster.clear();
     this.pin();
   }
 
@@ -136,12 +141,14 @@ export class RenderScene {
     return this.preparation;
   }
 
-  beginMeshDrawFrame(sources?: FrameList<RenderableSnapshot>): void {
+  beginMeshDrawFrame(sources?: Iterable<RenderableSnapshot>): void {
     const scene = this;
-    this.meshDrawSlots.beginFrame(
+    const draws =
       sources === undefined
         ? undefined
         : (function* () {
+            // beginFrame consumes each pair before advancing this private iterator.
+            let draw: { record: RenderSceneRecord; key: string } | undefined;
             for (const source of sources) {
               const key =
                 source.nativeDraw?.key ??
@@ -151,9 +158,16 @@ export class RenderScene {
               if (key === undefined) continue;
               const record = scene.lookup(source.worldId, source.entityKey);
               if (record === undefined) throw new Error('A draw must belong to the retained Scene');
-              yield { record, key };
+              if (draw === undefined) draw = { record, key };
+              else {
+                draw.record = record;
+                draw.key = key;
+              }
+              yield draw;
             }
-          })(),
+          })();
+    this.meshDrawSlots.beginFrame(
+      draws === undefined ? undefined : this.nativeDrawRoster.capture(draws),
     );
   }
 
@@ -368,18 +382,14 @@ export class RenderScene {
     const history = this.history;
     const temporal = this.temporalTracking;
     const memo = this.temporalBySlot;
-    // Several Scene Passes read the same slots in one recording; resolve each once.
-    const resolved = new Map<number, RenderableSnapshot | undefined>();
+    // Mesh and temporal owners already memoize immutable row versions. A
+    // frame-local slot map would register every consumed row again each frame.
     return (slot) => {
-      if (resolved.has(slot)) return resolved.get(slot);
       const record = current.slotAt(slot);
       const source = record === undefined ? undefined : meshDrawSnapshot(record.snapshot, meshes);
-      const value =
-        source === undefined || !temporal
-          ? source
-          : temporalDrawSnapshot(source, counters, current, history, materials, memo);
-      resolved.set(slot, value);
-      return value;
+      return source === undefined || !temporal
+        ? source
+        : temporalDrawSnapshot(source, counters, current, history, materials, memo);
     };
   }
 
@@ -618,7 +628,9 @@ export function sceneRow(
 }
 
 export function sceneSnapshotDelta(slots: FrameList<RenderSceneSlot>): RenderSceneApplyResult {
+  const journal = slots instanceof SceneSlotFrame ? slots.journal : undefined;
   return {
+    ...(journal === undefined ? {} : { journal }),
     created: slots.length,
     updated: 0,
     removed: 0,

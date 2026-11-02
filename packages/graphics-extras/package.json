@@ -11,6 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs"
     },
+    "./video-importer": {
+      "types": "./dist/video-importer.d.ts",
+      "import": "./dist/video-importer.mjs"
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.mjs",
@@ -18,6 +22,7 @@
   "files": [
     "dist",
     "src",
+    "!src/**/__tests__/**",
     "README.md",
     "LICENSE"
   ],

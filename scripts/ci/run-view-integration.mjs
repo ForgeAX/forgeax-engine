@@ -43,6 +43,7 @@ const steps = [
     ],
   ],
   ['contracts', 'pnpm', ['exec', 'tsc', '--noEmit', '-p', 'tools/view-plugins/tsconfig.json']],
+  ['contracts', 'node', ['--test', 'tools/view-plugins/modeling/__tests__/model.test.mjs']],
   [
     'contracts',
     'node',
@@ -59,6 +60,7 @@ const steps = [
   ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
   ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
   ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']],
   [
     'diagnostics',
     'node',

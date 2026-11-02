@@ -177,8 +177,8 @@ function standardTopology(
 /**
  * @internal
  * The sole built-in pipeline entry point. All local lights use the same
- * prepared Cluster topology; the profile chooses only Forward or Deferred
- * graph shape and never a second lighting authority.
+ * prepared Cluster topology; the view's planned opaque lane chooses only the
+ * Forward or Deferred graph shape and never a second lighting authority.
  */
 export function buildStandard(
   context: StandardPipelineBuildContext,
@@ -204,7 +204,7 @@ export function buildStandard(
   }
   if (
     (topology.projectedDecals?.length ?? 0) > 0 &&
-    (profile.renderPath !== 'deferred' || topology.camera.antialias === 'msaa')
+    (topology.opaque.lane !== 'deferred' || topology.camera.antialias === 'msaa')
   )
     throw new ProjectedDecalInvalidError(
       'renderPath',
@@ -213,17 +213,8 @@ export function buildStandard(
   const effective = standardTopology(topology, profile);
   const lighting = resolveStandardTopologyInput(context);
   if (!lighting.ok) return lighting;
-  // A missing Camera is an intentional clear-only frame. Keep it on the
-  // forward raster lane so clustered resources cannot introduce work.
-  if (effective.clearOnly === true) {
-    return buildStandardForwardLane(
-      standardContext,
-      effective,
-      lighting.value,
-      reuseAdjacentShadow,
-    );
-  }
-  return profile.renderPath === 'forward'
+  // RenderQueue planned the opaque lane; a clear-only frame plans Forward.
+  return effective.opaque.lane === 'forward'
     ? buildStandardForwardLane(standardContext, effective, lighting.value, reuseAdjacentShadow)
     : buildStandardDeferredLane(standardContext, effective, lighting.value, reuseAdjacentShadow);
 }

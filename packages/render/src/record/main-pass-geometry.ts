@@ -6,8 +6,19 @@ import { requiresProbeBlendRecord } from '../assembly/material/artifact-probe-bl
 import { meshSsboBufferBinding, meshSsboByteOffset } from '../assembly/mesh-ssbo-grow';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { markPipelinePreparationPending } from '../render-system-presentation';
-import { GenerationalWeakMap } from '../scene/generational-weak-map';
+import type { FrameList } from '../scene/frame-list';
+import { recordContext } from '../world/view-record-context';
 import { FirstEntryMap } from './first-entry-map';
+import {
+  includeMaterialPass,
+  type MaterialPasses,
+  type MaterialPassLookup,
+  type PreparedGeometryMaterialPasses,
+} from './material-pass-groups';
+
+export { sameOpaqueTemporalDraw } from './material-pass-groups';
+
+import { renderWorldFor } from '../world/render-world';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { variantSetFromDefines } from './helpers';
@@ -17,7 +28,7 @@ import { materialUniformSlot } from './material-uniforms';
 import type { SkinTaskBinding } from './skin-tasks';
 import { resolveSpriteInstancesBuffer } from './sprite-instance-buffer';
 import { submeshRange } from './submesh-range';
-// @forgeax/engine-runtime - RenderSystem record stage: main-pass geometry draws.
+// @forgeax/engine-runtime - RendererState record stage: main-pass geometry draws.
 // feat-20260704 M5/w31: further-split from main-pass.ts (AC-05 <=1500 lines/file).
 // recordGeometryDraws + resolveGeometryInstanceBuffer, moved verbatim.
 
@@ -57,6 +68,7 @@ import {
   planInstanceUpload,
 } from '../instances';
 import {
+  clippingCapRenderState,
   derivedRenderState,
   isReflectedTransform,
   transformRenderState,
@@ -100,6 +112,7 @@ import {
   instanceCollectionCacheKey,
   worldEntityKey,
 } from './frame-snapshot';
+import type { RenderableDrawReceipt } from './gpu-draw-receipts';
 import {
   geometryRenderStateForTopology,
   materialDiagnosticsEnabled,
@@ -135,24 +148,6 @@ import {
 
 const DEFAULT_MATERIAL_DRAWS: readonly undefined[] = Object.freeze([undefined]);
 const EMPTY_MATERIAL_DRAWS: readonly DispatchEntry[] = Object.freeze([]);
-
-/** Compared only within one renderable/material: omitted slots share its Surface owner. */
-export function sameOpaqueTemporalDraw(a: DispatchEntry, b: DispatchEntry): boolean {
-  return (
-    ((isStandardPbrMaterialShader(a.materialShaderId) &&
-      a.materialShaderId === b.materialShaderId) ||
-      (a.tags.SurfaceKind === 'standard' &&
-        b.tags.SurfaceKind === 'standard' &&
-        a.tags.SurfaceModule === b.tags.SurfaceModule &&
-        a.tags.GeometryVariant === b.tags.GeometryVariant)) &&
-    a.renderState?.blend === undefined &&
-    b.renderState?.blend === undefined &&
-    a.renderState?.stencil === undefined &&
-    b.renderState?.stencil === undefined &&
-    a.stencilReference === b.stencilReference &&
-    renderStateHash(a.renderState) === renderStateHash(b.renderState)
-  );
-}
 
 type GeometryInstanceDraw = {
   readonly instanceBuffer: Buffer;
@@ -676,7 +671,7 @@ export function recordGeometryDraws(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder | undefined,
   matchedMaterials: ReadonlyMap<number, ReadonlySet<number>> | null,
-  materialSlotIndices: readonly (readonly number[])[],
+  materialSlotIndices: FrameList<readonly number[]>,
   sampleCount: number,
   meshGroup2: BindGroup | null,
   meshBindGroup: BindGroup | null,
@@ -716,8 +711,13 @@ export function recordGeometryDraws(
     viewBindGroup,
     viewBindGroupDynamicOffset = 0,
   } = c;
-  const materialPasses = selectedMaterialPasses(selectedDispatch, passKind === 'temporal');
+  const prepared = admittedGeometryMaterialPasses(c, selectedDispatch, passKind === 'temporal');
+  const materialPasses =
+    prepared?.groups ?? selectedMaterialPasses(selectedDispatch, passKind === 'temporal');
   const diagnosticsEnabled = materialDiagnosticsEnabled();
+  const pipelineDrawReceipts =
+    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+      ?.FORGEAX_MATERIAL_PIPELINE_DIAGNOSTICS === '1';
   const colorFormatOverride = c.transparentColorFormat as GPUTextureFormat | undefined;
   // The prepared Standard topology is the frame authority. A bind-group
   // identity is only a resource result; using it to infer the shader lane
@@ -780,9 +780,6 @@ export function recordGeometryDraws(
   let additionalColorFormats: readonly GPUTextureFormat[] | undefined;
   let additionalColorFormatsKey: string | undefined;
   let standardFallbackFormats: readonly GPUTextureFormat[] | undefined;
-  const recordOcclusionCandidate = (draw: () => void): void => {
-    draw();
-  };
   const resolveMaterialPipeline = (
     materialShaderId: string,
     renderState: MaterialSnapshot['renderState'],
@@ -1058,6 +1055,8 @@ export function recordGeometryDraws(
             transparentDepthReadState,
           );
     }
+    if (isStandardPbrMaterialShader(smMaterialShaderId) && !isSkinEntry)
+      pipelineRenderState = clippingCapRenderState(pipelineRenderState, c.camera.clipping);
     // Fog composition follows the authored blend, before OIT replaces it.
     const viewOffset = viewOffsetForBlend(pipelineRenderState?.blend, pipelineRenderState?.fog);
     if (oitAccumulateDraw) pipelineRenderState = oitAccumulateRenderState(pipelineRenderState);
@@ -1414,10 +1413,11 @@ export function recordGeometryDraws(
   const recordPointsLines = (
     entry: import('./frame-snapshot').ValidatedRenderable,
     i: number,
-    submission: NonNullable<ReturnType<NonNullable<typeof c.pointsLines>['prepare']>>,
+    submission: NonNullable<ReturnType<NonNullable<typeof c.pointsLines>['submission']>>,
     style: NonNullable<RenderableSnapshot['pointsLines']>['style'],
   ): void => {
     bindStencilReference(entry.stencilReference ?? 0);
+    const pointsLinesOffset = (c.pointsLines?.slot(entry) ?? 0) * POINTS_LINES_VIEW_SLOT_STRIDE;
     // Like a transparent submesh, a blended point/line draw belongs to the
     // LDR blend sub-pass only; drawing it here too would blend it twice.
     const pointsLinesMaterial = drawMaterial(c, i);
@@ -1428,7 +1428,7 @@ export function recordGeometryDraws(
     )
       return;
     const pointsLinesBindGroup = resolveMaterialBindGroup(
-      materialSlotIndices[i]?.[0] ?? 0,
+      materialSlotIndices.at(i)?.[0] ?? 0,
       pointsLinesMaterial,
       entry.source.entityKey,
       entry.world ?? c.world,
@@ -1459,7 +1459,7 @@ export function recordGeometryDraws(
       c.targetH,
       entry.source.transform.world,
       style,
-      entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
+      pointsLinesOffset,
     );
     pass.setBindGroup(
       0,
@@ -1469,7 +1469,7 @@ export function recordGeometryDraws(
           pointsLinesMaterial.renderState?.blend,
           pointsLinesMaterial.renderState?.fog,
         ),
-        entry.renderableIndex * POINTS_LINES_VIEW_SLOT_STRIDE,
+        pointsLinesOffset,
       ]),
       0,
       2,
@@ -1511,7 +1511,7 @@ export function recordGeometryDraws(
     bindingState.instancesBuffer = identityInstanceBuffer;
     bindingState.instanceBindGroup = pointsLinesInstancesBg;
     bindingState.probeOffset = -1;
-    recordOcclusionCandidate(() => recordPointsLinesDraw(pass, submission.plan));
+    recordPointsLinesDraw(pass, submission.plan);
     c.onRenderableDraw?.(entry);
     pass.setBindGroup(0, viewBindGroup as BindGroup, [viewBindGroupDynamicOffset, 0]);
     lastViewOffset = viewBindGroupDynamicOffset;
@@ -1578,8 +1578,9 @@ export function recordGeometryDraws(
     submeshMaterial: MaterialSnapshot,
     selectedShaderId: string | undefined,
   ): BindGroup => {
-    const materialSlot = materialSlotIndices[i]?.[sourceSlot] ?? materialSlotIndices[i]?.[0] ?? 0;
-    logMaterialPipelineDrawReceipt(entry, materialSlot, submeshMaterial);
+    const materialSlot =
+      materialSlotIndices.at(i)?.[sourceSlot] ?? materialSlotIndices.at(i)?.[0] ?? 0;
+    if (pipelineDrawReceipts) logMaterialPipelineDrawReceipt(entry, materialSlot, submeshMaterial);
     const perSubmeshBg =
       c.profilePhase === undefined
         ? resolveMaterialBindGroup(
@@ -1664,7 +1665,7 @@ export function recordGeometryDraws(
         expected: 'a Skin Binding for the selected material Skin contract',
         hint: 'bind a complete Skin source before recording a Skin-input material',
       });
-    entitySkinTask ??= runtime.demandSkinTask?.(entry.source);
+    entitySkinTask ??= runtime.skinTask?.(entry.source, 'main');
     const skinTask = entitySkinTask;
     if (skinTask === undefined) return null;
     const selectedGroup = geometrySkinBindGroup(c, skinTask, meshBinding, group2Contract);
@@ -1703,6 +1704,89 @@ export function recordGeometryDraws(
             : undefined,
         pipelineReady: true,
       })}`,
+    );
+  };
+
+  // One synchronous geometry pass owns its prepared submit callbacks. Nested
+  // recording has its own locals. Equal adjacent draws share immutable facts;
+  // entity and submesh identity still travel through every presentation callback.
+  let submittedEntry: ValidatedRenderable;
+  let submittedSubmesh: number;
+  let submittedMaterial: MaterialSnapshot;
+  let submittedPass: DispatchEntry | undefined;
+  let submittedPipeline: RenderPipeline;
+  let submittedMaterialPipeline: MaterialShaderPipelineEntry | null;
+  let submittedShader: string | undefined;
+  let submittedFold: FoldBucket | undefined;
+  let submittedRange: ReturnType<typeof submeshRange>;
+  let submittedInstances: readonly GeometryInstanceDraw[];
+  let presentedFacts: RenderableDrawReceipt | undefined;
+  let presentedHasPass = false;
+  const recordPreparedSubmesh = (
+    draw: GeometryInstanceDraw,
+    command: 'draw' | 'draw-indexed',
+  ): void => {
+    const unsupportedLineage =
+      passKind !== 'forward' ||
+      submittedFold !== undefined ||
+      submittedEntry.source.instances !== undefined ||
+      submittedEntry.source.skinBinding !== undefined ||
+      draw.instanceCount !== 1;
+    const hasPass = submittedPass !== undefined;
+    const passIndex = submittedPass === undefined ? 0 : submittedPass.passIndex;
+    if (
+      presentedFacts === undefined ||
+      presentedFacts.pipeline !== submittedPipeline ||
+      presentedFacts.material !== submittedMaterial ||
+      presentedFacts.unsupportedLineage !== unsupportedLineage ||
+      presentedFacts.programKey !== submittedShader ||
+      presentedHasPass !== hasPass ||
+      (hasPass && !Object.is(presentedFacts.passIndex, passIndex))
+    ) {
+      const facts: {
+        -readonly [K in keyof RenderableDrawReceipt]: RenderableDrawReceipt[K];
+      } = {
+        lane: 'cpu',
+        ready: true,
+        pipeline: submittedPipeline,
+        material: submittedMaterial,
+        unsupportedLineage,
+      };
+      if (hasPass) facts.passIndex = passIndex;
+      if (submittedShader !== undefined) facts.programKey = submittedShader;
+      presentedFacts = Object.freeze(facts);
+      presentedHasPass = hasPass;
+    }
+    recordPresented(submittedEntry, submittedSubmesh, presentedFacts, submittedFold);
+    if (surfacePass === undefined || draw.surfaceFrameBase === undefined) return;
+    c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
+      kind: command,
+      count: submittedRange.count,
+      first: submittedRange.first,
+      instanceCount: draw.instanceCount,
+      firstInstance: 0,
+      surfaceFrameBase: draw.surfaceFrameBase,
+      memberIds: draw.surfaceMemberIds ?? [],
+      pipelineIdentity: getOpaqueResourceIdentity(submittedPipeline as object),
+      ...(submittedMaterialPipeline?.receipt === undefined
+        ? {}
+        : {
+            receiptIdentity: submittedMaterialPipeline.receipt.identity,
+            receiptGeneration: submittedMaterialPipeline.receipt.generation,
+          }),
+    });
+  };
+  const submitPreparedSubmesh = (): void => {
+    submitSubmeshDraws(
+      pass,
+      bindingState,
+      submittedPipeline,
+      submittedInstances,
+      submittedEntry.mesh.indexed,
+      submittedRange.count,
+      submittedRange.first,
+      submittedRange.baseVertex,
+      recordPreparedSubmesh,
     );
   };
 
@@ -1756,58 +1840,17 @@ export function recordGeometryDraws(
     pass.setBindGroup(2, group2BindGroup, group2DynamicOffsets);
     const range = submeshRange(entry.mesh, smIdx);
 
-    profileGeometrySegment(c, passKind, 'draw-submit', () =>
-      recordOcclusionCandidate(() =>
-        submitSubmeshDraws(
-          pass,
-          bindingState,
-          smPipelineHandle,
-          instanceDraws,
-          entry.mesh.indexed,
-          range.count,
-          range.first,
-          range.baseVertex,
-          (draw, command) => {
-            recordPresented(
-              entry,
-              smIdx,
-              {
-                lane: 'cpu',
-                ready: true,
-                pipeline: smPipelineHandle,
-                material: submeshMaterial,
-                ...(selectedPass === undefined ? {} : { passIndex: selectedPass.passIndex }),
-                unsupportedLineage:
-                  passKind !== 'forward' ||
-                  fold !== undefined ||
-                  entry.source.instances !== undefined ||
-                  entry.source.skinBinding !== undefined ||
-                  draw.instanceCount !== 1,
-                ...(smMaterialShaderId === undefined ? {} : { programKey: smMaterialShaderId }),
-              },
-              fold,
-            );
-            if (surfacePass === undefined || draw.surfaceFrameBase === undefined) return;
-            c.frameState.surfaceSubmissionObservation?.record(surfacePass, {
-              kind: command,
-              count: range.count,
-              first: range.first,
-              instanceCount: draw.instanceCount,
-              firstInstance: 0,
-              surfaceFrameBase: draw.surfaceFrameBase,
-              memberIds: draw.surfaceMemberIds ?? [],
-              pipelineIdentity: getOpaqueResourceIdentity(smPipelineHandle as object),
-              ...(materialPipelineEntry?.receipt === undefined
-                ? {}
-                : {
-                    receiptIdentity: materialPipelineEntry.receipt.identity,
-                    receiptGeneration: materialPipelineEntry.receipt.generation,
-                  }),
-            });
-          },
-        ),
-      ),
-    );
+    submittedEntry = entry;
+    submittedSubmesh = smIdx;
+    submittedMaterial = submeshMaterial;
+    submittedPass = selectedPass;
+    submittedPipeline = smPipelineHandle;
+    submittedMaterialPipeline = materialPipelineEntry;
+    submittedShader = smMaterialShaderId;
+    submittedFold = fold;
+    submittedRange = range;
+    submittedInstances = instanceDraws;
+    profileGeometrySegment(c, passKind, 'draw-submit', submitPreparedSubmesh);
     if (diagnosticsEnabled) {
       recordIblPipelineBinding(c, submeshMaterial, smPipelineHandle, perSubmeshBg);
     }
@@ -1925,8 +1968,9 @@ export function recordGeometryDraws(
     // The typed transparent pass uses this common draw owner. Consume the
     // same fold plan as the legacy sprite pass, including coverage/depth draws.
     if (c.foldDispatchPlan?.skipIndices.has(i) === true) return;
-    const pointsLinesSubmission = c.pointsLines?.prepare(entry, clusteredLighting);
     const pointsLines = entry.source.pointsLines;
+    const pointsLinesSubmission =
+      pointsLines === undefined ? undefined : c.pointsLines?.submission(entry);
     if (pointsLines !== undefined && pointsLinesSubmission?.plan.drawCount !== 1) return;
     // feat-20260609 M2: skip entities that don't match the pass selector.
     if (matchedMaterials !== null && !matchedMaterials.has(entry.renderableIndex)) return;
@@ -1937,7 +1981,7 @@ export function recordGeometryDraws(
     if (
       selectedDispatch === undefined &&
       splitLdrSprite &&
-      everyMaterialSlotTransparent(c, materialSlotIndices[i])
+      everyMaterialSlotTransparent(c, materialSlotIndices.at(i))
     )
       return;
     entityMeshSlot = meshSlot;
@@ -1964,7 +2008,7 @@ export function recordGeometryDraws(
   // A capture may sort against a different camera. Follow its selected dispatch
   // while retaining the original row index for material slots and GPU payloads.
   const drawOrder =
-    selectedDispatch !== undefined && c.foldDispatchPlan == null
+    selectedDispatch !== undefined && c.foldDispatchPlan == null && prepared?.ordered !== true
       ? dispatchDrawOrder(validatedOrdered, materialPasses)
       : undefined;
   for (let ordinal = 0; ordinal < validatedOrdered.length; ordinal++) {
@@ -1972,78 +2016,54 @@ export function recordGeometryDraws(
   }
 }
 
-/**
- * A material usually selects one pass. Keep that dispatch directly and
- * allocate a pass list only when another distinct draw actually exists.
- */
-type MaterialPasses = Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>;
-const EMPTY_MATERIAL_PASSES: MaterialPasses = new Map();
-/** A fixed dispatch list selects fixed passes; graph nodes re-read it every frame. */
-const materialPassesByDispatch = new GenerationalWeakMap<
-  object,
-  { readonly length: number; readonly passes: [MaterialPasses?, MaterialPasses?] }
->();
+/** Overrides keep ordinary selection and order reads unless every actual owner key agrees. */
+function admittedGeometryMaterialPasses(
+  c: Pick<_InternalRenderPipelineContext, 'geometryMaterialPasses' | 'validatedOrdered'>,
+  dispatch: DispatchList | undefined,
+  temporal: boolean,
+): PreparedGeometryMaterialPasses | undefined {
+  const prepared = c.geometryMaterialPasses;
+  return prepared !== undefined &&
+    prepared.dispatch === dispatch &&
+    prepared.validatedOrdered === c.validatedOrdered &&
+    prepared.temporal === temporal
+    ? prepared
+    : undefined;
+}
 
+/** Borrowed dispatch has no immutable owner and is read on every call. */
 export function selectedMaterialPasses(
   selectedDispatch: DispatchList | undefined,
   temporal: boolean,
-): ReadonlyMap<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>> {
-  if (selectedDispatch === undefined || selectedDispatch.length === 0) return EMPTY_MATERIAL_PASSES;
-  let cached = materialPassesByDispatch.get(selectedDispatch);
-  if (cached !== undefined && cached.length !== selectedDispatch.length) cached = undefined;
-  const slot = temporal ? 1 : 0;
-  const hit = cached?.passes[slot];
-  if (hit !== undefined) return hit;
-  const materialPasses = groupSelectedMaterialPasses(
-    selectedDispatch,
-    temporal ? 'temporal' : 'forward',
-  );
-  if (cached === undefined) {
-    cached = { length: selectedDispatch.length, passes: [] };
-    materialPassesByDispatch.set(selectedDispatch, cached);
-  }
-  cached.passes[slot] = materialPasses;
-  return materialPasses;
-}
-
-function groupSelectedMaterialPasses(
-  selectedDispatch: DispatchList | undefined,
-  passKind: PassKind,
-): Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>> {
-  const materialPasses = new Map<number, FirstEntryMap<number, DispatchEntry | DispatchEntry[]>>();
+): ReadonlyMap<number, MaterialPasses> {
+  const materialPasses = new Map<number, MaterialPasses>();
   for (const dispatch of selectedDispatch ?? EMPTY_MATERIAL_DRAWS) {
     let byMaterial = materialPasses.get(dispatch.renderableIndex);
     if (byMaterial === undefined) {
       byMaterial = new FirstEntryMap();
       materialPasses.set(dispatch.renderableIndex, byMaterial);
     }
-    const passes = byMaterial.get(dispatch.materialHandle);
-    if (passes === undefined) byMaterial.set(dispatch.materialHandle, dispatch);
-    else if (Array.isArray(passes)) {
-      if (passKind !== 'temporal' || !hasSameOpaqueTemporalDraw(passes, dispatch))
-        passes.push(dispatch);
-    } else if (passKind !== 'temporal' || !sameOpaqueTemporalDraw(passes, dispatch)) {
-      byMaterial.set(dispatch.materialHandle, [passes, dispatch]);
-    }
+    includeMaterialPass(byMaterial, dispatch, temporal);
   }
   return materialPasses;
-}
-
-function hasSameOpaqueTemporalDraw(
-  passes: readonly DispatchEntry[],
-  dispatch: DispatchEntry,
-): boolean {
-  for (const previous of passes) {
-    if (sameOpaqueTemporalDraw(previous, dispatch)) return true;
-  }
-  return false;
 }
 
 /** Selected-dispatch order first, then the remaining rows in validated order. */
 function dispatchDrawOrder(
   validatedOrdered: readonly ValidatedRenderable[],
-  materialPasses: ReadonlyMap<number, unknown>,
-): number[] {
+  materialPasses: Pick<MaterialPassLookup, 'size' | 'keys'>,
+): number[] | undefined {
+  // The retained phase normally publishes rows in this exact dispatch order.
+  // Equal complete keys prove the ordinal loop already follows the selected
+  // commands; no reverse index or second draw-order array is required.
+  if (materialPasses.size === validatedOrdered.length) {
+    let ordinal = 0;
+    for (const key of materialPasses.keys()) {
+      if (validatedOrdered[ordinal]?.renderableIndex !== key) break;
+      ordinal += 1;
+    }
+    if (ordinal === validatedOrdered.length) return undefined;
+  }
   const remaining = new Map<number, number>();
   for (let index = 0; index < validatedOrdered.length; index++)
     remaining.set((validatedOrdered[index] as ValidatedRenderable).renderableIndex, index);
@@ -2144,15 +2164,9 @@ function logMaterialPipelineDrawReceipt(
   materialSlot: number,
   material: MaterialSnapshot,
 ): void {
-  const processValue = (
-    globalThis as {
-      process?: { env?: Record<string, string | undefined> };
-    }
-  ).process;
   if (
-    processValue?.env?.FORGEAX_MATERIAL_PIPELINE_DIAGNOSTICS !== '1' ||
-    (material.materialShaderId !== 'forgeax::default-standard-pbr' &&
-      material.materialShaderId !== 'forgeax::pbr-skin')
+    material.materialShaderId !== 'forgeax::default-standard-pbr' &&
+    material.materialShaderId !== 'forgeax::pbr-skin'
   )
     return;
   console.error(
@@ -2180,6 +2194,23 @@ function uploadInstanceRanges(
   sourceOffsetInstances = 0,
   previousInst: NonNullable<RenderableSnapshot['temporal']>['previousInstances'] = undefined,
 ): InstanceUploadResult {
+  const world = renderWorldFor(c.runtime);
+  if (!world.frameArena.isActive)
+    return world
+      .withFrameArena(() =>
+        ok(
+          uploadInstanceRanges(
+            c,
+            inst,
+            buffer,
+            ranges,
+            storageBacked,
+            sourceOffsetInstances,
+            previousInst,
+          ),
+        ),
+      )
+      .unwrap();
   const strideBytes =
     (storageBacked ? INSTANCE_STORAGE_STRIDE_FLOATS : 16) * Float32Array.BYTES_PER_ELEMENT;
   const uploadedRanges: { start: number; end: number }[] = [];
@@ -2220,7 +2251,13 @@ function uploadInstanceRanges(
             sourceOffsetInstances + end,
           );
     const payload = storageBacked
-      ? packInstanceStorageBuffer(source, previousSource, currentGenerations, previousGenerations)
+      ? packInstanceStorageBuffer(
+          world.frameArena.alloc(Float32Array, source.length * 2).unwrap(),
+          source,
+          previousSource,
+          currentGenerations,
+          previousGenerations,
+        )
       : source;
     const written = c.runtime.device.queue.writeBuffer(buffer, start * strideBytes, payload);
     if (!written.ok) {
@@ -2261,7 +2298,7 @@ function reportInstanceResidency(
   c.frameState.instanceCollections?._reportResidency({
     collectionId: inst.collectionId,
     frameNumber: c.frameState.frameNumber,
-    residentGeneration: c.runtime.deviceScope.generation,
+    residentGeneration: recordContext(c.runtime).deviceScope.generation,
     lane: input.lane,
     requestedBytes: input.requestedBytes,
     supportedBytes: input.supportedBytes,
@@ -2499,6 +2536,8 @@ export function resolveGeometryInstanceBuffer(
   if (entry.source.spriteInstances !== undefined) return spriteInstanceDraws(c, entry);
   const probeBinding = resolveInstanceProbeBinding(c, entry, useProbeBlend);
   if (inst === undefined) {
+    if (probeBinding === undefined)
+      return identityInstanceDraws.length === 0 ? null : identityInstanceDraws;
     const identity = identityInstanceDraws[0];
     if (identity === undefined) return null;
     return [

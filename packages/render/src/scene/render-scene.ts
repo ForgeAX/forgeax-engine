@@ -8,10 +8,11 @@ import { RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { projectGlyphView } from '../glyph-source';
 import type { SubmissionPlan } from '../gpu-driven/batch-topology';
-import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import {
   type GpuDrivenMaterialProgramIndex,
   GpuDrivenMaterialProgramProjection,
+  gpuShadowProgramsCompatible,
 } from '../gpu-driven/material-artifacts';
 import type { GpuScene } from '../gpu-scene';
 import type {
@@ -19,21 +20,18 @@ import type {
   GpuDrivenStructureMetrics,
   PersistentRenderSceneInspection,
 } from '../inspection-types';
-import type { PointsLinesInspection } from '../points-lines/inspection';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderPublicationIdentity } from '../publication/contract';
 import type { PreparedRenderPublication } from '../publication/receiver';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { worldEntityKey } from '../record/frame-snapshot';
 import {
-  type ReflectionProbeFact,
   ReflectionProbeProjection,
   type ReflectionProbeSelectionResult,
 } from '../reflection/projection';
 import type {
   DispatchList,
   ExtractedFrame,
-  GpuOwnedFrame,
   MaterialSnapshotCachesByWorld,
   RenderableSnapshot,
 } from '../render-system-extract';
@@ -42,17 +40,20 @@ import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
 import { projectTerrainView, terrainSectionKey } from '../terrain/view.js';
 import { projectTilemapView } from '../tilemap-source';
 import type { TransmissionDemand } from '../transmission/projection';
+import { registerMaterialSystems } from '../world/material-systems';
+import type { ProbeRoster } from '../world/render-probes';
+import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
+import {
+  type RenderSceneAdoption,
+  RenderSceneDelta,
+  type RenderSceneSource,
+  registerSceneSystem,
+} from '../world/scene-systems';
 import type { DrawEvidence } from './draw-evidence';
-import { type FrameList, FrameProjection } from './frame-list';
-import type { FrameSet } from './frame-set';
+import { type FrameList, FrameProjection, sparseRowsOf } from './frame-list';
+import { FrameIntersection } from './frame-set';
 import type { MaterialFrame } from './material-dispatch';
 import type { MeshFrame } from './mesh-frame';
-import {
-  cullPersistentFrame,
-  cullResidualFrame,
-  type PersistentCullMemo,
-  type ResidualCullMemo,
-} from './persistent-cull';
 import { attachProbeRecord, attachProbeRecords, type ProbeAttachMemo } from './probe-attach';
 import type { ProbeBlendBufferProjection } from './probe-blend';
 import { type FrameCacheTally, worldBounds, writeBounds } from './render-scene-snapshots';
@@ -70,6 +71,7 @@ import {
 import type { SceneSlotFrame } from './scene-slots';
 import { SlotIdentityKeys } from './scene-slots';
 import { SkinFrames, type SkinSceneFrame } from './skin-scene-inputs';
+import { ViewCull } from './view-cull';
 
 export type {
   RenderSceneApplyResult,
@@ -89,10 +91,12 @@ export {
   type SceneCompositionOptions,
 } from './scene-composition';
 
-/** Adopt accepted material classes before a retained view reads the shared batch plan. */
-function sourcePlanOf(entry: CompositionEntry): SubmissionPlan {
-  entry.topology.adoptMaterials(entry.materialDispatch.materials(), entry.projection.slotAt);
-  return entry.topology.sourcePlan();
+/** The frame's adopted advance; rethrows the adoption failure. */
+function adoptedAdvance(adoption: RenderSceneAdoption): SceneAdvance {
+  if (adoption.failure !== undefined) throw adoption.failure;
+  if (adoption.advance === undefined)
+    throw new Error('A view records only after the frame adopted its scene in RenderExtract');
+  return adoption.advance;
 }
 
 /**
@@ -141,6 +145,10 @@ export interface PersistentShadowCasterProjection {
   ) => boolean;
   readonly renderables: FrameList<RenderableSnapshot>;
   readonly dispatch: DispatchList;
+  /** CPU Skin candidates under a current shadow owner, resolved from this fixed frame. */
+  readonly skinRows?: (
+    owner: Pick<GpuDrawSelection, 'ownsAll'> | undefined,
+  ) => Iterable<RenderableSnapshot>;
   readonly materialPrograms?: GpuDrivenMaterialProgramIndex;
 }
 
@@ -207,6 +215,17 @@ export interface PersistentVisibilityProjection {
 /** Draw keys the GPU-driven raster owned last primary frame, in its world-key space. */
 export interface GpuRasterOwnership {
   readonly selection: GpuDrawSelection;
+  /**
+   * GPU Shadow execution coverage and its accepted material programs. A direct
+   * residual caster does not erase other bindings' GPU coverage. Capture-face
+   * shadows and unavailable pools keep the conservative absent proof.
+   */
+  readonly shadows:
+    | {
+        readonly selection: GpuDrawSelection;
+        readonly programs: GpuDrivenMaterialProgramIndex;
+      }
+    | undefined;
 }
 
 /** One view's state over the shared composition. */
@@ -214,8 +233,8 @@ interface ViewEntry {
   readonly shared: CompositionEntry;
   /** This view's submitted history and draw addresses over the shared rows. */
   readonly projection: RenderScene;
-  /** Residual rows of this view's submitted GPU selection, kept from topology and selection diffs. */
-  readonly residual: ResidualRoster;
+  /** This view's camera admission: cull memos and the residual roster of its GPU selection. */
+  readonly cull: ViewCull;
   temporalDemanded: boolean;
   /** The shared advance this view last observed. */
   seq: number;
@@ -247,8 +266,12 @@ export class PersistentRenderScene {
   private readonly stopAssetChanges: (() => void) | undefined;
   private view: ViewEntry | undefined;
   private shadowProjection: PersistentShadowCasterProjection | undefined;
+  private shadowSkinResidual = new ResidualRoster();
+  private shadowSkinIntersection = new FrameIntersection();
   private readonly materialProgramProjection = new GpuDrivenMaterialProgramProjection();
   private gpuRasterOwned: GpuRasterOwnership | undefined;
+  private rasterLaneCandidate: { readonly owned: GpuRasterOwnership | undefined } | undefined;
+  private latestRasterLane: GpuRasterOwnership | undefined;
   private terrainCandidate: FrameList<RenderableSnapshot> = [];
   private terrainAccepted = new Map<string, RenderableSnapshot>();
   private temporalCapture:
@@ -257,10 +280,6 @@ export class PersistentRenderScene {
   private readonly probeAttachMemo: ProbeAttachMemo = {
     bySnapshot: new WeakMap(),
     previous: undefined,
-  };
-  private readonly cullMemo: { value: PersistentCullMemo | undefined } = { value: undefined };
-  private readonly residualCullMemo: { value: ResidualCullMemo | undefined } = {
-    value: undefined,
   };
   private readonly temporalCounters: FrameCacheTally = { hits: 0, misses: 0 };
   private visibilityProjectionHits = 0;
@@ -279,8 +298,11 @@ export class PersistentRenderScene {
   /** The active set the revision stands for: an owned key copy, or a fixed slot roster. */
   private lastActiveEntityKeys: ReadonlySet<number> | undefined;
   private activeEntityEpoch = -1;
-  private pointsLinesInspections: readonly PointsLinesInspection[] = [];
   private readonly reflectionProbes = new ReflectionProbeProjection();
+  /** The private Render World of {@link extractComposition}, which runs the frame phases itself. */
+  private direct:
+    | { readonly world: World; readonly source: RenderSceneSource; frame: number }
+    | undefined;
 
   /** `shared` defaults to a private composition; `ownsShared` disposes it with this view. */
   constructor(
@@ -367,7 +389,7 @@ export class PersistentRenderScene {
       view = {
         shared: advance.entry,
         projection: kept?.projection ?? new RenderScene(advance.entry.projection.sceneRows),
-        residual: new ResidualRoster(),
+        cull: new ViewCull(),
         temporalDemanded: false,
         seq: advance.seq - 1,
         skin: undefined,
@@ -395,12 +417,13 @@ export class PersistentRenderScene {
   private retireView(): void {
     const view = this.view;
     this.view = undefined;
+    this.shadowSkinResidual = new ResidualRoster();
+    this.shadowSkinIntersection = new FrameIntersection();
     this.probeAttachMemo.previous = undefined;
-    this.cullMemo.value = undefined;
-    this.residualCullMemo.value = undefined;
     this.shadowProjection = undefined;
     this.materialProgramProjection.clear();
     this.temporalCapture = undefined;
+    this.latestRasterLane = undefined;
     this.terrainCandidate = [];
     this.terrainAccepted.clear();
     this.visibilityProjectionCache = undefined;
@@ -586,7 +609,7 @@ export class PersistentRenderScene {
     this.visibilityProjectionRevision += 1;
   }
   /** Project probe facts and per-row selection; only changed rows are re-selected. */
-  projectReflectionProbes(probes: readonly ReflectionProbeFact[]): void {
+  projectReflectionProbes(probes: ProbeRoster): void {
     const view = this.view;
     if (view === undefined) return;
     const entry = view.shared;
@@ -620,12 +643,25 @@ export class PersistentRenderScene {
     return this.reflectionProbes.snapshot();
   }
 
-  /** Apply a prepared publication to the shared composition, then derive this view's frame. */
+  /**
+   * Standalone entries: apply a prepared publication to the shared composition
+   * through this scene's private Render World (the same scene, adoption and
+   * material systems the Renderer runs), then derive this view's frame.
+   */
   consumePublication(input: PreparedRenderPublication): ExtractedFrame {
-    return this.deriveFramePlan(
-      this.follow(this.sharedStep(() => this.shared.consume(input))),
-      input.frame,
-    );
+    const direct = this.directRenderWorld(this.options.assets);
+    direct.source.staged = true;
+    direct.source.publication = input;
+    return this.followPublication(this.runDirectFrame(direct), input.frame);
+  }
+
+  /** Run one frame of the private Render World; its scene adoption is the step. */
+  private runDirectFrame(
+    direct: NonNullable<PersistentRenderScene['direct']>,
+  ): RenderSceneAdoption {
+    beginRenderFrame(direct.world, ++direct.frame);
+    endRenderFrame(direct.world);
+    return direct.world.getResource<RenderSceneAdoption>(RenderSceneDelta);
   }
 
   /** A failed shared step that retired the composition retires this view with it. */
@@ -651,12 +687,60 @@ export class PersistentRenderScene {
     assets: AssetRegistry,
     buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
     leases?: readonly RenderReadLease[],
-    frameKey?: number,
   ): ExtractedFrame {
-    const { advance, resourceFrame } = this.sharedStep(() =>
-      this.shared.extract(worlds, owner, assets, buildCandidateFrame, leases, frameKey),
-    );
+    const direct = this.directRenderWorld(assets);
+    const source = direct.source;
+    let resourceFrame: ExtractedFrame | undefined;
+    source.staged = true;
+    source.assets = assets;
+    source.worlds = worlds;
+    source.owner = { cameraOwner: owner.cameraOwner, resourceOwner: owner.resourceOwner };
+    source.leases = leases;
+    // The step's first built frame is its resource frame.
+    source.buildCandidateFrame = (request) => {
+      const frame = buildCandidateFrame(request);
+      resourceFrame ??= frame;
+      return frame;
+    };
+    const adoption = this.runDirectFrame(direct);
+    const advance = this.sharedStep(() => adoptedAdvance(adoption));
+    return this.deriveFramePlan(this.follow(advance), resourceFrame ?? buildCandidateFrame('none'));
+  }
+
+  private directRenderWorld(
+    assets: AssetRegistry | undefined,
+  ): NonNullable<PersistentRenderScene['direct']> {
+    if (this.direct !== undefined) return this.direct;
+    const world = createRenderWorld();
+    const source = registerSceneSystem(world, this.shared, assets);
+    registerMaterialSystems(world);
+    this.direct = { world, source, frame: 0 };
+    return this.direct;
+  }
+
+  /**
+   * Derive this view's frame from the frame's shared scene adoption (the
+   * `render-scene` system's product), building only its own resource frame,
+   * which it fences on `resourceWorld`'s asset closure. An adoption failure is
+   * this view's extraction failure.
+   */
+  followAdoption(
+    adoption: RenderSceneAdoption,
+    buildCandidateFrame: (request: PersistentRenderCandidateRequest) => ExtractedFrame,
+    resourceWorld: World | undefined,
+  ): ExtractedFrame {
+    const advance = this.sharedStep(() => adoptedAdvance(adoption));
+    const resourceFrame = buildCandidateFrame('none');
+    this.shared.fenceViewResourceFrame(resourceWorld, resourceFrame);
     return this.deriveFramePlan(this.follow(advance), resourceFrame);
+  }
+
+  /** Derive this view's frame from the adopted publication and its own camera rewrite. */
+  followPublication(adoption: RenderSceneAdoption, frame: ExtractedFrame): ExtractedFrame {
+    return this.deriveFramePlan(
+      this.follow(this.sharedStep(() => adoptedAdvance(adoption))),
+      frame,
+    );
   }
 
   /** Retire one view's derived state without invalidating shared source facts. */
@@ -672,21 +756,64 @@ export class PersistentRenderScene {
   }
 
   /**
-   * Record the draws the GPU-driven raster owned in the last primary frame.
-   * Resident renderables whose every draw it owned bypass the CPU frustum cull:
-   * the GPU view pass culls them against the same bounds, and a camera move
-   * then leaves the admission set, filtered plan and material table unchanged.
-   * A renderable with any CPU-drawn residual (blend, transmission, fallback)
-   * keeps the CPU cull, since that draw has no GPU cull behind it.
+   * Stage the draws this attempt's GPU-driven raster owns; `undefined` stages
+   * the direct lane. The view adopts it only through {@link commitRasterLane}
+   * for an accepted submission, so a rejected frame's lane never steers the
+   * next frame's cull.
    */
-  setGpuDrivenRasterLane(owned: GpuRasterOwnership | undefined): void {
-    this.gpuRasterOwned = owned;
+  stageRasterLane(owned: GpuRasterOwnership | undefined): void {
+    this.rasterLaneCandidate = { owned };
+    this.latestRasterLane = owned;
   }
 
-  private gpuCullBypass(owner: object): ((snapshot: RenderableSnapshot) => boolean) | undefined {
-    const owned = this.gpuRasterOwned;
-    if (owned === undefined || !this.shared.gpuResidentFor(owner)) return undefined;
-    return (snapshot) => owned.selection.ownsAll(snapshot);
+  /**
+   * Adopt the staged lane of this view's accepted submission. Resident
+   * renderables whose every draw the GPU raster owned bypass the CPU frustum
+   * cull next frame: the GPU view pass culls them against the same bounds, and
+   * a camera move then leaves the admission set, filtered plan and material
+   * table unchanged. A renderable with any CPU-drawn residual (blend,
+   * transmission, fallback) keeps the CPU cull, since that draw has no GPU cull
+   * behind it.
+   */
+  commitRasterLane(): void {
+    const candidate = this.rasterLaneCandidate;
+    if (candidate === undefined) return;
+    this.gpuRasterOwned = candidate.owned;
+    this.rasterLaneCandidate = undefined;
+  }
+
+  /**
+   * The view's latest staged GPU raster lane, accepted or not, while the GPU
+   * Scene is resident; `render-skin-demand` predicts this frame's GPU-drawn
+   * Skin rows from it. An unaccepted attempt (pipelines still preparing) keeps
+   * the lane it prepared, so its successor does not widen demand to every row.
+   * `shadowSelection` covers only bindings the GPU Shadow executions draw
+   * under compatible accepted programs. Undefined before any
+   * GPU-lane attempt, after a direct-lane attempt and while not resident.
+   */
+  skinDemandLane():
+    | {
+        readonly selection: GpuDrawSelection;
+        readonly shadowSelection: GpuDrawSelection | undefined;
+      }
+    | undefined {
+    const lane = this.latestRasterLane;
+    const view = this.view;
+    if (lane === undefined || view === undefined || !this.shared.gpuResidentFor(view.shared.token))
+      return undefined;
+    return {
+      selection: lane.selection,
+      shadowSelection: gpuShadowProgramsCompatible(
+        lane.shadows?.programs,
+        this.shadowProjection?.materialPrograms,
+      )
+        ? lane.shadows?.selection
+        : undefined,
+    };
+  }
+
+  private gpuCullSelection(owner: object): GpuDrawSelection | undefined {
+    return this.shared.gpuResidentFor(owner) ? this.gpuRasterOwned?.selection : undefined;
   }
 
   detach(world: World): void {
@@ -708,17 +835,8 @@ export class PersistentRenderScene {
     );
   }
 
-  setPointsLinesInspections(inspections: readonly PointsLinesInspection[]): void {
-    this.pointsLinesInspections = inspections.map((inspection) => ({
-      ...inspection,
-      cache: { ...inspection.cache },
-      ...(inspection.refusal === undefined ? {} : { refusal: { ...inspection.refusal } }),
-    }));
-  }
-
   dispose(): void {
     this.stopAssetChanges?.();
-    this.pointsLinesInspections = [];
     retireInOrder(
       () => this.retireView(),
       () => {
@@ -744,8 +862,8 @@ export class PersistentRenderScene {
     return this.shared.materialFrame();
   }
 
-  inspect(): PersistentRenderSceneInspection {
-    return { ...this.shared.inspect(), pointsLines: this.pointsLinesInspections };
+  inspect(): Omit<PersistentRenderSceneInspection, 'pointsLines'> {
+    return this.shared.inspect();
   }
 
   /** Current CPU composition is the scene authority even before GPU tables exist. */
@@ -764,7 +882,7 @@ export class PersistentRenderScene {
     const materials = entry.materialDispatch.materials();
     const retained = this.compositionRetainedScene();
     const unavailable = entry.unavailableSlots;
-    const sourcePlan = sourcePlanOf(entry);
+    const sourcePlan = this.shared.batchPlan(entry);
     const draws: DrawEvidence = {
       slots,
       meshes,
@@ -816,18 +934,18 @@ export class PersistentRenderScene {
     };
   }
 
-  /**
-   * Receipt of a submitted frame. Previous poses were already written when
-   * rows changed; the receipt starts the next frame's stamp once per renderer
-   * submission and this view's history.
-   */
-  commitTemporalFrame(terrainReady = true, frameKey?: number): Result<void, RhiError> {
-    const shared = this.shared.commitFrame(frameKey, this.temporalCapture !== undefined);
-    if (!shared.ok) {
-      this.temporalCapture = undefined;
-      return shared;
-    }
+  /** This view staged a temporal capture for the frame being submitted. */
+  get temporalStaged(): boolean {
+    return this.temporalCapture !== undefined;
+  }
 
+  /**
+   * Receipt of this view's submitted frame. Previous poses were already
+   * written when rows changed; the shared rows' stamp advances once per
+   * Renderer submission in the Render World commit, and this commits only the
+   * view's own history.
+   */
+  commitTemporalFrame(terrainReady = true): Result<void, RhiError> {
     const temporalCapture = this.temporalCapture;
     if (temporalCapture !== undefined) {
       try {
@@ -857,9 +975,10 @@ export class PersistentRenderScene {
     return ok(undefined);
   }
 
-  /** Drop a staged temporal capture when the owning frame did not submit. */
+  /** Drop the attempt's staged temporal capture and raster lane when its frame did not submit. */
   discardTemporalFrame(): void {
     this.terrainCandidate = [];
+    this.rasterLaneCandidate = undefined;
     this.temporalCapture = undefined;
   }
 
@@ -880,126 +999,6 @@ export class PersistentRenderScene {
 
   pointsLinesSnapshots(): readonly PointsLinesRetainedSnapshot[] {
     return this.view?.projection.pointsLinesSnapshots() ?? [];
-  }
-
-  /**
-   * GPU-lane frames test only residual rows and stay uncompacted; the classic
-   * lane, and frames with view-generated rows, compact the culled frame.
-   */
-  private cullFrame(
-    entry: ViewEntry,
-    ownedFrame: ExtractedFrame,
-    materialFrame: MaterialFrame,
-    meshFrame: MeshFrame,
-    skinFrame: SkinSceneFrame | undefined,
-    hasGeneratedDraws: boolean,
-  ): ReturnType<typeof cullPersistentFrame> {
-    // Frame rank is roster rank, so a ranked candidate verifies its row
-    // instead of searching the identity tree.
-    const roster = entry.projection.slotsSnapshot();
-    const boundsOf = (
-      snapshot: RenderableSnapshot,
-      index: number,
-      out: box3.Box3,
-      row?: RenderSceneSlot,
-    ): boolean => {
-      const slot =
-        sceneRow(row ?? (index >= 0 ? roster.at(index) : undefined), snapshot) ??
-        entry.projection.slotOf(snapshot);
-      if (snapshot.terrainSection !== undefined || snapshot.generatedMesh !== undefined)
-        return writeBounds(worldBounds(snapshot), out);
-      return slot === undefined
-        ? writeBounds(entry.projection.cullingWorldBounds(snapshot), out)
-        : entry.projection.writeCullingWorldBoundsAt(
-            slot,
-            out,
-            meshFrame,
-            materialFrame,
-            skinFrame,
-          );
-    };
-    const owned = this.gpuCullBypass(entry.shared.token);
-    const selection = this.gpuRasterOwned?.selection;
-    if (owned !== undefined && selection !== undefined && !hasGeneratedDraws) {
-      this.cullMemo.value = undefined;
-      return cullResidualFrame(
-        ownedFrame,
-        materialFrame,
-        boundsOf,
-        this.gpuOwnedFrame(entry),
-        selection,
-        this.residualCullMemo,
-      );
-    }
-    this.residualCullMemo.value = undefined;
-    return cullPersistentFrame(
-      ownedFrame,
-      materialFrame,
-      boundsOf,
-      this.cullMemo,
-      owned,
-      meshFrame,
-      hasGeneratedDraws || entry.shared.unavailableSlots.size > 0
-        ? ownedFrame.renderables
-        : entry.shared.materialDispatch,
-      entry.shared.materialDispatch.revisionValue(),
-    );
-  }
-
-  /**
-   * Residual rows are unbatched geometry and members of uncovered bindings,
-   * retained by the view's roster from topology and selection diffs. Slot
-   * roster and plan are fixed for this frame; rows resolve by slot address.
-   */
-  private gpuOwnedFrame(entry: ViewEntry): GpuOwnedFrame {
-    const slots = entry.projection.slotsSnapshot();
-    const plan = sourcePlanOf(entry.shared);
-    const unbatched = entry.shared.topology.unbatchedSlots;
-    const dispatch = entry.shared.materialDispatch;
-
-    const rowAt = this.slotDraws(entry);
-    // One fixed residual list per selection; frame rows resolve only when read.
-    let memo:
-      | {
-          selection: GpuDrawSelection;
-          set: FrameSet;
-          records: readonly RenderSceneSlot[];
-          rows?: readonly RenderableSnapshot[];
-        }
-      | undefined;
-    const residualOf = (selection: GpuDrawSelection) => {
-      if (memo?.selection === selection) return memo;
-      const records: RenderSceneSlot[] = [];
-      const set = entry.residual.sync(plan, unbatched, selection);
-      const unavailable = entry.shared.unavailableSlots;
-      for (const slot of set) {
-        // An unpublished retained slot keeps its row for recovery but has no
-        // dispatch binding or accepted material version; it draws nothing.
-        if (unavailable.has(slot)) continue;
-        const record = slots.slotAt(slot);
-        if (record !== undefined) records.push(record);
-      }
-      memo = { selection, set, records };
-      return memo;
-    };
-    return {
-      residual(selection) {
-        const residual = residualOf(selection);
-        residual.rows ??= residual.records.flatMap((record) => rowAt(record.slot) ?? []);
-        return residual.rows;
-      },
-      residualSet: (selection) => residualOf(selection).set,
-      residualSlots: (selection) => residualOf(selection).records,
-      displays(row) {
-        const slot = slots.identitySlot(row.worldId, row.entityKey);
-        return slot !== undefined && dispatch.displays(slot);
-      },
-      row(worldId, entity) {
-        const slot = slots.identitySlot(worldId, entity);
-        return slot === undefined ? undefined : rowAt(slot);
-      },
-      slots,
-    };
   }
 
   /** Internal topology fact; the renderer does not expose demand as public API. */
@@ -1030,7 +1029,6 @@ export class PersistentRenderScene {
     );
     projection.setTemporalTracking(view.temporalDemanded);
     this.shared.projectProbes(entry, candidateFrame);
-    this.projectReflectionProbes(candidateFrame.reflectionProbes ?? []);
     const materialized = projection.materialize();
     const candidates = view.temporalDemanded
       ? projection.materializeTemporal(
@@ -1089,16 +1087,26 @@ export class PersistentRenderScene {
       projection.hasSource('glyph') ||
       projection.hasSource('tilemap');
     const skinFrame = this.prepareSkinFrame(view);
-    const { frame: result, subsurface } = this.cullFrame(
-      view,
-      ownedFrame,
-      materialFrame,
-      meshFrame,
-      skinFrame,
+    const { frame: result, subsurface } = view.cull.cull({
+      shared: entry,
+      projection,
+      frame: ownedFrame,
+      materials: materialFrame,
+      meshes: meshFrame,
+      skin: skinFrame,
       hasGeneratedDraws,
-    );
+      gpuSelection: this.gpuCullSelection(entry.token),
+      plan: () => this.shared.batchPlan(entry),
+      slotDraws: () => this.slotDraws(view),
+    });
     const materialProgramProjection = this.materialProgramProjection;
     const shadowSlots = projection.slotsSnapshot();
+    const skinSlots = shadowSlots.indexedSlots('skin');
+    const skinDrawAt = this.slotDraws(view);
+    const shadowPlan = this.shared.batchPlan(entry);
+    const shadowUnbatched = entry.topology.unbatchedSlots;
+    const shadowSkinResidual = this.shadowSkinResidual;
+    const shadowSkinIntersection = this.shadowSkinIntersection;
     this.shadowProjection = {
       meshDraws: projection,
       content: {
@@ -1117,6 +1125,29 @@ export class PersistentRenderScene {
       },
       renderables: ownedFrame.renderables,
       dispatch: ownedFrame.dispatch,
+      *skinRows(owner) {
+        if (
+          skinSlots === undefined ||
+          hasGeneratedDraws ||
+          (owner !== undefined && !(owner instanceof GpuDrawSelection))
+        ) {
+          for (const row of sparseRowsOf(ownedFrame.renderables, 'skin'))
+            if (row.skinBinding !== undefined && owner?.ownsAll(row) !== true) yield row;
+          return;
+        }
+        const members =
+          owner === undefined
+            ? skinSlots
+            : shadowSkinIntersection.sync(
+                skinSlots,
+                shadowSkinResidual.sync(shadowPlan, shadowUnbatched, owner),
+              );
+        for (const slot of members.borrowKeys()) {
+          if (unavailable.has(slot)) continue;
+          const row = skinDrawAt(slot);
+          if (row !== undefined) yield row;
+        }
+      },
       get materialPrograms() {
         return materialProgramProjection.project(ownedFrame.dispatch, materialFrame);
       },

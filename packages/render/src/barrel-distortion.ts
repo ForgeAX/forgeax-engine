@@ -33,6 +33,11 @@ const COMPUTED_UV_BOUNDARY_EPSILON = Number.EPSILON * 16;
 
 const ownedMappings = new WeakSet<BarrelDistortionMapping>();
 
+/** Internal proof that every submitted field and matrix belongs to this realm. */
+export function ownsBarrelDistortionMapping(mapping: BarrelDistortionMapping): boolean {
+  return ownedMappings.has(mapping);
+}
+
 /**
  * Detach and deep-freeze a mapping before it crosses a public or realm
  * boundary. Worker structured cloning drops the source object's frozen state,

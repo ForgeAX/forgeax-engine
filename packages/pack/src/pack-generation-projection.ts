@@ -10,13 +10,18 @@ const imports = new Set([
   '@forgeax/engine/types',
   '@forgeax/engine/math',
   '@forgeax/engine/geometry',
+  '@forgeax/engine/modeling',
   '@forgeax/engine/pack/source',
   '@forgeax/engine-types',
   '@forgeax/engine-math',
   '@forgeax/engine-geometry',
+  '@forgeax/engine-modeling',
   '@forgeax/engine-pack/source',
   '@forgeax/engine/pack/guid',
   '@forgeax/engine-pack/guid',
+  // Pure WASM simplification over build outputs; Mesh LOD requests (design X4).
+  '@forgeax/engine/import/mesh-lod-generator',
+  '@forgeax/engine-import/mesh-lod-generator',
 ]);
 const namedImports: Readonly<Record<string, ReadonlySet<string>>> = {
   render: new Set([

@@ -70,6 +70,25 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     return this.present[slot] === 1 ? (this.columns[slot * WIDTH + INSTANCE_COUNT] as number) : 0;
   }
 
+  /** Direct numeric columns for consumers that do not need a detached allocation view. */
+  transformStart(slot: number): number | undefined {
+    return this.present[slot] === 1
+      ? (this.columns[slot * WIDTH + TRANSFORM_START] as number)
+      : undefined;
+  }
+
+  instanceTransformStart(slot: number): number | undefined {
+    return this.present[slot] === 1
+      ? (this.columns[slot * WIDTH + INSTANCE_TRANSFORM_START] as number)
+      : undefined;
+  }
+
+  instanceTransformCount(slot: number): number | undefined {
+    return this.present[slot] === 1
+      ? (this.columns[slot * WIDTH + INSTANCE_TRANSFORM_COUNT] as number)
+      : undefined;
+  }
+
   get(slot: number): PrimitiveAllocation<Mesh, Ranges> | undefined {
     if (this.present[slot] !== 1) return undefined;
     const base = slot * WIDTH;

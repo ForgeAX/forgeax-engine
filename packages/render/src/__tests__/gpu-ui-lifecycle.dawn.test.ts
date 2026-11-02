@@ -171,6 +171,7 @@ it('retires actual GPU UI buffers and textures after completion across ten mount
             return frame;
           },
         },
+        retire: (owner, release) => void owner.queue.onSubmittedWorkDone().then(release, release),
         createShaderModule: async (owner, code) =>
           (await createShaderModule(owner, { code })).unwrap(),
       });
@@ -216,7 +217,8 @@ it('retires actual GPU UI buffers and textures after completion across ten mount
             for (let offset = 3; offset < expected.length; offset += 4) expected[offset] = 255;
           }
           const beforeTransfers = transfers;
-          compositor.prepare(0, size, size, true, 'srgb', stage.capture);
+          const frame = submitted + 1;
+          compositor.prepare(frame, 0, size, size, true, 'srgb', stage.capture);
           expect(transfers - beforeTransfers, stage.name).toBe(stage.changed ? 1 : 0);
           const bytesPerRow = Math.ceil((size * 4) / 256) * 256;
           const staging = device
@@ -234,7 +236,9 @@ it('retires actual GPU UI buffers and textures after completion across ten mount
               passes.push(descriptor.label ?? '');
               return begin.call(encoder, descriptor);
             };
-            compositor.encode(encoder, required(surface));
+            expect(compositor.encode(frame, encoder, required(surface)).kind, stage.name).toBe(
+              'encoded',
+            );
             encoder.beginRenderPass = begin;
             expect(passes.filter((label) => label === 'screen-ui-composite')).toHaveLength(1);
             expect(
@@ -251,7 +255,6 @@ it('retires actual GPU UI buffers and textures after completion across ten mount
             const completion = device.queue.onSubmittedWorkDone().then(() => {
               completed++;
             });
-            compositor.submitted(completion);
             const beforeDispose = resources.snapshot();
             expect(beforeDispose.unknownByteResources).toBe(0);
             expect(beforeDispose.liveCount).toBeGreaterThan(2);

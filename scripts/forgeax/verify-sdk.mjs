@@ -27,6 +27,7 @@ import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
 import { buildCacheEntries } from './sdk-template-cache.mjs';
+import { verifySdkModeling } from './verify-sdk-modeling.mjs';
 import { createSdkVerifierProcess, readSdkProjectDocument } from './verify-sdk-process.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
@@ -1771,6 +1772,18 @@ if (selected('project')) {
       evidenceRoot: resolve(dirname(archive), 'view-zip'),
       env: offlineEnv,
       group,
+    }),
+  );
+}
+
+if (selected('project') && process.platform === 'linux') {
+  projectEvidence.modeling = await sdkGpuStage('verifyInstalledModelingCli', () =>
+    verifySdkModeling({
+      sdkRoot,
+      project,
+      evidenceRoot: resolve(dirname(archive), 'modeling-sdk', basename(unpackRoot)),
+      env: offlineEnv,
+      run: execFileAsync,
     }),
   );
 }

@@ -52,7 +52,11 @@ export function spawnCore(
   return ok(spawnedEntity);
 }
 
-/** Attach a child and maintain the relationship mirror through component storage. */
+/**
+ * Attach a child and maintain the relationship mirror through component storage.
+ * The relationship's source field (for example `ChildOf.parent`) is always
+ * written from `parent`; `data` supplies only the component's other fields.
+ */
 export function worldAddChild<S extends ComponentSchema>(
   world: World,
   parent: EntityHandle,
@@ -61,7 +65,8 @@ export function worldAddChild<S extends ComponentSchema>(
   data: Partial<InputShapeOf<S>>,
 ): Result<void, EcsError> {
   const holderComp = component as Component;
-  if (relationshipRole(holderComp)?.kind !== 'source') {
+  const role = relationshipRole(holderComp);
+  if (role?.kind !== 'source') {
     return err(new ComponentNotPresentError(child as number, component.name));
   }
 
@@ -73,19 +78,21 @@ export function worldAddChild<S extends ComponentSchema>(
   if (!childResult.ok) return childResult;
   const childSlot = entityIndex(child);
 
-  const role = relationshipRole(holderComp);
-  if (child === parent && !(role?.kind === 'source' && role.allowSelf)) {
+  if (child === parent && !role.allowSelf) {
     return err(new RelationshipSelfCycleError(component.name, child as number, child as number));
   }
   const cycleHit =
-    child === parent && role?.kind === 'source' && role.allowSelf
+    child === parent && role.allowSelf
       ? null
       : relationshipChainCycleHit(world, holderComp, parentSlot, parentGeneration, childSlot);
   if (cycleHit !== null) {
     return err(new RelationshipSelfCycleError(component.name, child as number, cycleHit as number));
   }
 
-  return world.addComponent(child, { component, data });
+  // The parent argument is the edge: write it into the source field so a call
+  // that omits (or contradicts) it in `data` cannot attach a null parent.
+  const edge = { ...data, [role.sourceField]: parent } as Partial<InputShapeOf<S>>;
+  return world.addComponent(child, { component, data: edge });
 }
 
 /** Detach a child only when its current relationship target matches `parent`. */

@@ -20,7 +20,6 @@ import type {
   RhiDevice,
   RhiError,
   RhiInstance,
-  RhiRenderPassEncoder,
   RenderPipeline as RhiRenderPipeline,
   Sampler,
   Texture,
@@ -177,6 +176,17 @@ export interface PhysicalViewExtent {
   readonly width: number;
   readonly height: number;
   readonly eye?: import('./components/stereo-camera').StereoEye;
+}
+
+/**
+ * A composed view's resolved camera, Render World state written before
+ * RenderPrepare: its physical recording extent and its final camera (aspect
+ * and stereo eye applied); `camera` is undefined while the view's camera
+ * entity is absent from the frame.
+ */
+export interface ResolvedViewCamera {
+  readonly extent: PhysicalViewExtent;
+  readonly camera: CameraSnapshot | undefined;
 }
 
 export interface CameraSnapshot {
@@ -363,7 +373,11 @@ interface RenderPipelineRuntime {
     >;
   };
   readonly errorRegistry: { fire(error: RendererError): void };
+  /** The installed overlay source; the `debug-overlay` pass reads its prepared outcome, never the source. */
   readonly debugOverlay?: RenderDebugOverlay | undefined;
+  /** The Render World and view entity the pass reads its prepared overlay outcome from. */
+  readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
+  readonly viewEntity?: import('@forgeax/engine-ecs').EntityHandle | undefined;
   readonly lookupPostProcess?: (id: string) => PostProcessShaderEntry | undefined;
   readonly getPostProcessParamsBuffer?: (id: string) => Buffer | undefined;
   readonly getPostProcessPipeline?: (
@@ -374,26 +388,76 @@ interface RenderPipelineRuntime {
   ) => RhiRenderPipeline | null;
 }
 
+/** The one line-list program and vertex layout of the debug overlay; the source supplies it, the Renderer compiles it. */
+export interface DebugOverlayShader {
+  readonly vertexWgsl: string;
+  readonly fragmentWgsl: string;
+  readonly vertexEntry: string;
+  readonly fragmentEntry: string;
+  readonly vertexStrideBytes: number;
+  /** `@group(0) @binding(0)` of the program is a 64-byte view-projection uniform. */
+  readonly attributes: readonly {
+    readonly format: 'float32x3' | 'unorm8x4';
+    readonly offset: number;
+    readonly shaderLocation: number;
+  }[];
+}
+
+/** One frame's staged vertices as the Renderer uploads them. */
+export interface DebugOverlayBatch {
+  /** `vertexCount` vertices of the shader's stride; valid until the source stages again. */
+  readonly bytes: Uint8Array;
+  readonly vertexCount: number;
+  /** Vertices beyond the source's hard capacity were discarded this frame. */
+  readonly truncated: boolean;
+}
+
 /**
- * Render-owned declaration for an app-provided debug overlay. App owns the
- * concrete DebugDraw instance and its GPU lifecycle; Render only records this
- * capability in the typed graph.
+ * Render-owned declaration for an app-provided debug overlay: CPU data only.
+ * The Renderer owns every GPU object (`DebugOverlayResidency`); the source
+ * supplies the program and the frame's vertices.
  */
 export interface RenderDebugOverlay {
-  /** False lets the graph skip the load/store pass before opening an encoder. */
-  readonly hasWork?: (() => boolean) | undefined;
-  /** `colorFormat` is the graph target the pass records into, not the swapchain format. */
-  encode(
-    pass: RhiRenderPassEncoder,
-    viewProj: import('@forgeax/engine-math').Mat4,
-    colorFormat: TextureFormat,
-  ): Result<void, unknown>;
+  /** CPU-only: this frame's vertices, consumed once. null = nothing this frame. */
+  take(): DebugOverlayBatch | null;
+  readonly shader: DebugOverlayShader;
+}
+
+/** The closed reasons a frame's overlay is skipped; each names one former `throw`. */
+export type DebugOverlayFailureCode =
+  | 'overlay-source-failed'
+  | 'overlay-upload-failed'
+  | 'overlay-pipeline-failed';
+
+/** What `render-debug-overlay-prepare` produced for one Renderer frame. */
+export type DebugOverlayOutcome =
+  | { readonly kind: 'none'; readonly frame: number }
+  | {
+      readonly kind: 'staged';
+      readonly frame: number;
+      readonly vertexCount: number;
+      readonly truncated: boolean;
+    }
+  | {
+      readonly kind: 'failed';
+      readonly frame: number;
+      readonly code: DebugOverlayFailureCode;
+      readonly cause: unknown;
+    };
+
+/** Detached projection of {@link DebugOverlayOutcome} on `Renderer.inspect().debugOverlay`. */
+export interface DebugOverlayInspection {
+  readonly frame: number;
+  readonly kind: DebugOverlayOutcome['kind'];
+  readonly vertexCount?: number;
+  readonly truncated?: boolean;
+  readonly code?: DebugOverlayFailureCode;
 }
 
 /**
  * The leaf frame context consumed by RenderPipeline and graph primitives.
- * Concrete assembly data is added only by the internal record extension in
- * render-system.ts, so this contract never imports the RenderSystem owner.
+ * Concrete assembly data is added only by the internal record context, so this
+ * contract never imports a renderer lifecycle owner.
  */
 export interface RenderPipelineContext {
   readonly pipelineState: RenderPipelineStateView;
@@ -512,6 +576,18 @@ export interface RenderPreparationSchedule {
   readonly checkpoint: () => Promise<void>;
   readonly signal?: AbortSignal;
   readonly isCurrent?: () => boolean;
+}
+
+export interface RenderInspectionOptions<
+  K extends keyof RenderInspection = keyof RenderInspection,
+> {
+  readonly pipelineLibrary?: boolean;
+  /** Start/stop an explicit diagnostic route retention scope. */
+  readonly pipelineLibraryCollection?: boolean;
+  readonly pipelineLibraryLimits?: import('@forgeax/engine-rhi').PipelineLibraryLimits;
+  readonly runtimeRequests?: boolean;
+  /** Select fields before producing scene inventories; omission returns the full snapshot. */
+  readonly fields?: readonly K[];
 }
 
 export interface Renderer {
@@ -648,13 +724,9 @@ export interface Renderer {
   currentDeviceGeneration?: () => number;
   /** Detached bounds from an extracted World or the bound publication source; undefined if unavailable. */
   bounds(world: World | RenderPublicationIdentity, entity: number): RenderSceneBounds | undefined;
-  inspect(options?: {
-    readonly pipelineLibrary?: boolean;
-    /** Start/stop an explicit diagnostic route retention scope. */
-    readonly pipelineLibraryCollection?: boolean;
-    readonly pipelineLibraryLimits?: import('@forgeax/engine-rhi').PipelineLibraryLimits;
-    readonly runtimeRequests?: boolean;
-  }): RenderInspection;
+  inspect<K extends keyof RenderInspection = keyof RenderInspection>(
+    options?: RenderInspectionOptions<K>,
+  ): Pick<RenderInspection, K>;
   /** Opt-in diagnostic; caller holds this receipt until readback finishes. */
   observeGeometry?: (
     receipt: FrameReceipt,
@@ -1058,6 +1130,8 @@ export interface RenderObservationInspection {
  * execution.
  */
 export interface RenderInspection {
+  /** The latest debug overlay outcome; absent when no overlay source was ever installed. */
+  readonly debugOverlay?: DebugOverlayInspection;
   readonly pipelineLibrary?: import('@forgeax/engine-rhi').PipelineLibraryInspection;
   /** Complete optional Renderer preparation, including native work and CPU source analysis. */
   readonly backgroundPipelineLibraryState?: 'running' | 'done' | 'failed';

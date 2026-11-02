@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createRenderFeatureHost } from '../features/host';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 describe('held view resource ownership', () => {
   it('keeps held buffers without allocation or work, then retires removed views', async () => {
@@ -33,7 +34,8 @@ describe('held view resource ownership', () => {
     const create = vi.spyOn(device, 'createBuffer');
     const destroy = vi.spyOn(device, 'destroyBuffer');
     const frame = (views: readonly { identity: string; render: boolean }[]) => {
-      const result = host.runFrame(
+      const result = prepareFeatureFrame(
+        host,
         views.map((view) => ({
           ...view,
           worlds: [],
@@ -45,9 +47,7 @@ describe('held view resource ownership', () => {
         })),
       );
       expect(result.frame.errors).toEqual([]);
-      result.frame.onSubmitted();
-      for (const view of result.views.values()) view.onSubmitted();
-      result.onSubmitted();
+      submitFeatureFrame(host);
       for (const batch of result.preparedResourceBatches) batch.release().unwrap();
       return result;
     };

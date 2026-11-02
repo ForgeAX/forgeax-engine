@@ -17,6 +17,7 @@ import {
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { worldEntityKey } from '../record/frame-snapshot';
 import type { MorphSnapshot } from '../render-system-extract';
+import { recordContext } from '../world/view-record-context';
 import type { DeviceScope } from './device-scope';
 import type { MeshGpuHandles } from './gpu-residency';
 
@@ -520,11 +521,11 @@ export function resolveMorphGeometry(
   if (
     input === undefined ||
     input.device !== internals.device ||
-    input.scope !== internals.deviceScope
+    input.scope !== recordContext(internals).deviceScope
   ) {
     input = {
       device: internals.device,
-      scope: internals.deviceScope,
+      scope: recordContext(internals).deviceScope,
       factory: internals.immediateShaderModuleFactory ?? internals.shaderModuleFactory,
       reportError: (error) => internals.errorRegistry.fire(error),
     };

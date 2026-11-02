@@ -150,10 +150,21 @@ export interface ExecutionInitMessage {
   readonly kind: 'init';
   /** App-owned startup policy also bounds Renderer realm creation and replacement. */
   readonly startupTimeoutMs: number | null;
+  /**
+   * App frame deadline (omitted: the App's 2 s default; null: none). The Render Worker's
+   * GPU completion watchdog never fires before it, nor before 30 s.
+   */
+  readonly frameTimeoutMs?: number | null;
   readonly canvas: OffscreenCanvas;
   readonly bootstrapUrl: string;
   readonly bootstrapData?: import('./types').ExecutionBootstrapValue;
   readonly bootstrapPort?: MessagePort;
+  /**
+   * Worker end of the page video bridge. The page keeps the other end and
+   * serves `<video>` frames for VideoAsset materials (graphics-extras
+   * `createVideoFrameHost` / `installWorkerVideoSourceProvider`).
+   */
+  readonly videoPort?: MessagePort;
   /** Realm-serializable asset catalog configuration. */
   readonly assetCatalog?: ExecutionAssetCatalog;
   readonly shaderManifestUrl?: string;
@@ -360,6 +371,12 @@ export type EngineToHostMessage =
       readonly kind: 'render-complete';
       readonly epoch: number;
       readonly frame: ExecutionFrameCompletion;
+    }
+  | {
+      readonly kind: 'frame-admission';
+      readonly worldIdentity: string;
+      readonly frameId: number;
+      readonly phase: 'render-wait' | 'source';
     }
   | ExecutionReadyMessage
   | ExecutionFrameSubmitted

@@ -100,7 +100,7 @@ export function addProbeCardPasses(
         { resource: samples, usage: stage === 'sampleCards' ? 'storage-write' : 'storage-read' },
         ...CARD_TEXTURES.map((name) => ({ resource: atlas[name], usage: 'sampled-read' as const })),
       ],
-      encode: ({ pass, resources, frame }) => {
+      encodeDirect: (pass, frame, resources) => {
         const global = currentGlobal(frame),
           value = current(frame);
         const range = (resource: GraphBuffer, size: number) => ({
@@ -134,7 +134,7 @@ export function addProbeCardPasses(
       })),
       { resource: diagnostics, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources, frame }) => {
+    encodeDirect: (pass, frame, resources) => {
       const range = (resource: GraphBuffer, size: number) => ({
         buffer: resources.buffer(resource).unwrap(),
         size,
@@ -221,7 +221,7 @@ export function addCardAtlasPasses(
               clearValue: { r: 0, g: 0, b: 0, a: 0 },
             },
           ],
-          encode: ({ pass, resources, frame }) =>
+          encodeDirect: (pass, frame, resources) =>
             encodeMipmapLevel(
               current(frame).device,
               pass,
@@ -294,7 +294,7 @@ export function addCardAtlasPasses(
         depthStoreOp: 'store',
         depthClearValue: 1,
       },
-      encode: ({ pass, frame }) => record(frame, pass),
+      encodeDirect: (pass, frame, _graphresources) => record(frame, pass),
     });
     if (!captured.ok) return err(captured.error);
   }

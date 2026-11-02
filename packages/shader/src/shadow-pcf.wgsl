@@ -287,14 +287,15 @@ fn sample_shadow_2d_soft(shadowMap: texture_depth_2d_array, shadowSampler: sampl
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_view::common::{shadowMoments, spotModifierSampler}
 #endif
-fn sample_shadow_variance(uv : vec2<f32>, layer : i32, reversedDepth : f32, extent : vec2<f32>) -> f32 {
+fn sample_shadow_variance(uv : vec2<f32>, layer : i32, reversedDepth : f32, extent : vec2<f32>, forwardDepth : bool) -> f32 {
 #ifdef EXTENDED_LIGHTING_AVAILABLE
   let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMoments));
   let distribution = textureSampleLevel(shadowMoments, spotModifierSampler, clamp(uv, edge, extent - edge), layer, 0.0).rg;
-  let depth = 1.0 - reversedDepth;
-  if (depth <= distribution.x) { return 1.0; }
+  let forward = forwardDepth;
+  let depth = select(reversedDepth, 1.0 - reversedDepth, forward);
+  if (select(depth >= distribution.x, depth <= distribution.x, forward)) { return 1.0; }
   let variance = max(0.0000001, distribution.y * distribution.y);
-  let delta = depth - distribution.x;
+  let delta = distribution.x - depth;
   return clamp((variance / (variance + delta * delta) - 0.3) / 0.65, 0.0, 1.0);
 #else
   return 1.0;

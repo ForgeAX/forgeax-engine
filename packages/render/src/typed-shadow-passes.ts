@@ -10,6 +10,11 @@ import { ok, type Result } from '@forgeax/engine-types';
 import { PointShadowAtlasUninitializedError } from './errors/render';
 import type { RenderFeatureShadowDraws } from './features/render-graph-raster';
 import {
+  captureShadowViewIdentity,
+  directionalShadowViewIdentity,
+  staticShadowViewIdentity,
+} from './gpu-driven/shadow-view-identity';
+import {
   type ShadowDirtyRect,
   type ShadowViewIdentity,
   type ShadowViewProjection,
@@ -60,12 +65,12 @@ function shadowViewCacheMiss(
   const context = frame as _InternalRenderPipelineContext;
   const gpuShadowViews = context.gpuDrivenShadowViews;
   if (identity.terrainReceiver !== undefined) {
-    const logical = { kind: 'directional' as const, index: identity.index };
+    const logical = directionalShadowViewIdentity(identity.index);
     const final = gpuShadowViews?.invalidationReason(logical);
     if (final !== undefined) return final;
     // An active final view without a static view belongs to a light that
     // disabled its static cache; the final view alone decides.
-    const staticReason = gpuShadowViews?.invalidationReason({ ...logical, layer: 'static' });
+    const staticReason = gpuShadowViews?.invalidationReason(staticShadowViewIdentity(logical));
     return (
       (staticReason === 'uncached' ? undefined : staticReason) ?? context.directionalShadowCacheMiss
     );
@@ -354,7 +359,7 @@ function recordShadowPass(
       depthClearValue: 0,
     },
     executeIf: raster.executeIf,
-    encode: ({ pass, frame, resources }) =>
+    encodeDirect: (pass, frame, resources) =>
       raster.encode(frame, pass, (counted) => encode(counted, frame, resources), name),
   });
 }
@@ -393,7 +398,7 @@ function recordStaticLayeredShadowPass(
   extraAccesses: readonly GraphAccess[],
   reuseAdjacentShadow = false,
 ): Result<ShadowViewRaster, RenderGraphError> {
-  const staticIdentity: ShadowViewIdentity = Object.freeze({ ...identity, layer: 'static' });
+  const staticIdentity: ShadowViewIdentity = Object.freeze(staticShadowViewIdentity(identity));
   const staticProjection = projectGpuDrivenShadow(staticIdentity);
   if (!staticProjection.ok) return staticProjection;
   const staticLayer = shadowLayerTarget(
@@ -470,7 +475,7 @@ function recordStaticLayeredShadowPass(
       );
       return rasterFinal;
     },
-    encode: ({ encoder, resources }) => {
+    encodeDirect: (encoder, _graphframe, resources) => {
       const source = resources.texture(staticArray.texture);
       if (!source.ok) throw source.error;
       const destination = resources.texture(target.texture);
@@ -578,7 +583,7 @@ function addDirectionalCascadePass(
   varianceDirectional: boolean,
 ): Result<DirectionalCascadeWork, RenderGraphError> {
   const { projectGpuDrivenShadow, shadowFeatures, reuseAdjacentShadow } = options;
-  const identity = Object.freeze({ kind: 'directional' as const, index: cascade });
+  const identity = directionalShadowViewIdentity(cascade);
   const shadowProjection = projectGpuDrivenShadow?.(identity, options.cameraPyramid);
   if (shadowProjection !== undefined && !shadowProjection.ok) return shadowProjection;
   const layer = shadowLayerTarget(
@@ -691,7 +696,7 @@ function addTerrainReceiverCascadePass(
       rasterFinal = raster.executeIf(frame, staticChanged ? 'static-layer-changed' : undefined);
       return rasterFinal;
     },
-    encode: ({ encoder, resources }) => {
+    encodeDirect: (encoder, _graphframe, resources) => {
       const source = resources.texture(directionalStatic.texture);
       if (!source.ok) throw source.error;
       const target = resources.texture(directionalTarget.texture);
@@ -721,7 +726,7 @@ function addDirectionalShadowObservation(
 ): Result<void, RenderGraphError> {
   return graph.addCopyPass('directional-shadow-observation', {
     accesses: [{ resource: directionalTarget.view, usage: 'copy-src' }],
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const texture = resources.texture(directionalTarget.texture);
       if (!texture.ok) throw texture.error;
@@ -835,7 +840,7 @@ function addPointShadowFacePass(
     face,
   });
   if (shadowProjection !== undefined && !shadowProjection.ok) return shadowProjection;
-  const identity = Object.freeze({ kind: 'point' as const, index: pointIndex, face });
+  const identity = captureShadowViewIdentity({ kind: 'point', index: pointIndex, face });
   const faceView = graph.view(atlas, {
     label: `point-shadow-${pointIndex}-${face}`,
     dimension: '2d',
@@ -939,7 +944,7 @@ function addSpotShadowPass(
   variance: VarianceShadowView[],
 ): Result<void | ShadowViewRaster, RenderGraphError> {
   const { projectGpuDrivenShadow, shadowFeatures, reuseAdjacentShadow } = options;
-  const identity = Object.freeze({ kind: 'spot' as const, index: spotIndex });
+  const identity = captureShadowViewIdentity({ kind: 'spot', index: spotIndex });
   const shadowProjection = projectGpuDrivenShadow?.(identity, options.cameraPyramid);
   if (shadowProjection !== undefined && !shadowProjection.ok) return shadowProjection;
   const layer = shadowLayerTarget(graph, spot, `spot-shadow-layer-${spotIndex}`, spotIndex);

@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 
 const { runSmokeAppFrames } = await import(
   new URL('../../apps/bevy/scripts/renderer-smoke.mjs', import.meta.url).href
@@ -79,4 +79,80 @@ it('fails when the App stops producing RAF callbacks before a ready frame', asyn
   const test = fixture([]);
   await expect(runSmokeAppFrames(test.app, test.pump, 1)).rejects.toThrow('exhausted');
   expect(test.state().stopped).toBe(true);
+});
+
+it('retains the five-second GPU deadline and reports the stalled receipt phase', async () => {
+  vi.useFakeTimers();
+  try {
+    const test = fixture([[{ presentation: 'pending', completed: new Promise(() => {}) }]]);
+    const result = runSmokeAppFrames(test.app, test.pump, 60);
+    const rejected = expect(result).rejects.toThrow(
+      'Smoke GPU frame completion exceeded its credit budget: {"ready":0,"target":60,"presentation":"pending"}',
+    );
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    await vi.advanceTimersByTimeAsync(5000);
+    await rejected;
+    expect(test.state()).toEqual({ pumps: 1, stopped: true, subscribed: false });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('allows the first ready GPU completion to finish cold setup inside the total budget', async () => {
+  vi.useFakeTimers();
+  try {
+    const completed = new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 6000));
+    const test = fixture([[{ presentation: 'ready', completed }]]);
+    const observed = runSmokeAppFrames(test.app, test.pump, 1).then(
+      (value: number) => ({ value }),
+      (error: Error) => ({ error: error.message }),
+    );
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(2));
+    await vi.advanceTimersByTimeAsync(6002);
+    expect(await observed).toEqual({ value: 1 });
+    expect(test.state()).toEqual({ pumps: 1, stopped: true, subscribed: false });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps the five-second completion bound after the first ready picture', async () => {
+  vi.useFakeTimers();
+  try {
+    const test = fixture([
+      [{ presentation: 'ready', completed: Promise.resolve({ ok: true }) }],
+      [{ presentation: 'ready', completed: new Promise(() => {}) }],
+    ]);
+    const result = runSmokeAppFrames(test.app, test.pump, 60);
+    const rejected = expect(result).rejects.toThrow('"ready":1,"target":60');
+    await vi.waitFor(() => {
+      expect(test.state().pumps).toBe(2);
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    await vi.advanceTimersByTimeAsync(5001);
+    await rejected;
+    expect(test.state()).toEqual({ pumps: 2, stopped: true, subscribed: false });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('rejects a first ready GPU completion that exceeds its cold-start allowance', async () => {
+  vi.useFakeTimers();
+  try {
+    const test = fixture([[{ presentation: 'ready', completed: new Promise(() => {}) }]]);
+    let settled = false;
+    const result = runSmokeAppFrames(test.app, test.pump, 60).finally(() => {
+      settled = true;
+    });
+    const rejected = expect(result).rejects.toThrow('GPU frame completion exceeded');
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1001);
+    await rejected;
+    expect(test.state()).toEqual({ pumps: 1, stopped: true, subscribed: false });
+  } finally {
+    vi.useRealTimers();
+  }
 });

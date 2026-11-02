@@ -251,7 +251,8 @@ export function createFeatureSceneSdf(internals: RenderSystemInternals) {
         builder
           .addComputePass(`scene-sdf.compose:${key}`, {
             accesses,
-            encode: ({ pass }) => region.compose(pass, region.input, region.voxelCount).unwrap(),
+            encodeDirect: (pass, _graphframe, _graphresources) =>
+              region.compose(pass, region.input, region.voxelCount).unwrap(),
           })
           .unwrap();
       }

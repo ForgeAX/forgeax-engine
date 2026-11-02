@@ -41,6 +41,15 @@ branch on `error.code` and repair a diagnosable stale edge, mirror mismatch, or
 cycle through `World.set`/`World.removeComponent` (or the owning structural
 command) before retrying while the World is healthy.
 
+## Numeric workspace ownership
+
+Scene topology uses the World's synchronous FrameArena for temporary numeric
+indegree/visited buffers and returns an independently owned order. Direct
+instantiation opens its own scope; instantiation inside an active World execution
+joins that scope. Propagation's persistent hierarchy markers use `world.buffers`
+and are released with their last propagation registration. Their semantic dirty
+state remains Scene-owned; no per-frame mirror or extra ECS entities are added.
+
 ## Affine authoring
 
 `Transform` stores one authored local transform: `pos`, `quat`, `scale`, and

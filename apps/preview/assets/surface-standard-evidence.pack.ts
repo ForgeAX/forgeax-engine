@@ -136,6 +136,25 @@ export default definePack({
     ok({
       'material/planar-red': Materials.unlit([1, 0, 0, 1]),
       'material/planar-green': Materials.unlit([0, 1, 0, 1]),
+      // A cooked glass: its program declares the dedicated transmission backdrop.
+      'material/cooked-glass': Materials.standard({
+        baseColor: [0.9, 0.95, 1, 1],
+        roughness: 0.05,
+        transmission: 0.9,
+        ior: 1.5,
+      }),
+      'material/planar-mirror': Materials.standard({
+        baseColor: [0.9, 0.9, 0.9, 1],
+        metallic: 1,
+        roughness: 0.05,
+        planarReflection: true,
+      }),
+      'material/planar-rough-mirror': Materials.standard({
+        baseColor: [0.9, 0.9, 0.9, 1],
+        metallic: 1,
+        roughness: 0.8,
+        planarReflection: true,
+      }),
       'material/painted-evidence': defaultPhysical,
       'material/rusted-iron-custom-physical': customPhysical,
       'material/shore-sand': Materials.standard({

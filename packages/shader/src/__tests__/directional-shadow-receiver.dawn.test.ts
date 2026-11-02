@@ -50,8 +50,16 @@ function receiverClause(file: (typeof files)[number]): string {
   return text.slice(start, end).replaceAll('evalDirectionalShadowFactorAtPixel(', 'countedShadow(');
 }
 
+const casterBiasFunction = source('common.wgsl').match(
+  /fn directionalShadowCasterBias[\s\S]*?\n}/,
+)?.[0];
+if (casterBiasFunction === undefined) throw new Error('Missing shared caster bias function');
+
 const common = `
 #define_import_path forgeax_view::common
+${casterBiasFunction}
+struct CasterPolicy { clampNear: u32 };
+const shadowCasterCascade = CasterPolicy(0u);
 struct View {
   lightDir: vec3<f32>, lightColor: vec3<f32>,
   depthBias: f32, normalBias: f32, cascadeCount: f32, cascadeBlend: f32,

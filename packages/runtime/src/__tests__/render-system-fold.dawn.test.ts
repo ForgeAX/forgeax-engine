@@ -20,7 +20,7 @@
 // (Layer.value, posZ) run -> 2 fold buckets (no cross-material cell merge).
 //
 // mode-bypass boundary (D-5): modes 2/3 (LAYER_YZ / DISTANCE) yield N
-// singleton buckets for N entries (no fold). plan.headBuckets is empty;
+// direct draws for N entries (no fold). plan.headBuckets is empty;
 // plan.skipIndices is empty; dispatch loop falls through per-entity
 // byte-identically.
 //
@@ -227,7 +227,7 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
     expect(plan.skipIndices.size).toBe(CHUNKS * (CELLS_PER_CHUNK - 1));
   });
 
-  it('mode-bypass D-5: mode 2/3 (LAYER_YZ / DISTANCE) + 50 single-material entries -> 50 singleton buckets, 0 folded, all drawIndexed per-entity', () => {
+  it('mode-bypass D-5: mode 2/3 (LAYER_YZ / DISTANCE) + 50 single-material entries -> no fold buckets, 0 folded, all drawIndexed per-entity', () => {
     // feat-20260630 D-2 / AC-05: LAYER_Y was removed from the bypass set
     // because it now folds on posY (world[13]). Only LAYER_YZ (composite
     // foot-Y key) and DISTANCE (per-entity camera distance) remain as
@@ -244,9 +244,8 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
 
     for (const mode of [TRANSPARENT_SORT_MODE_LAYER_YZ, TRANSPARENT_SORT_MODE_DISTANCE] as const) {
       const buckets = foldDispatchBuckets(entries, mode, renderables);
-      // Mode bypass: each entry is its own singleton bucket.
-      expect(buckets).toHaveLength(N);
-      for (const b of buckets) expect(b.bucketSize).toBe(1);
+      // Mode bypass: each entry is its own direct draw.
+      expect(buckets).toEqual([]);
 
       const plan = buildFoldDispatchPlan(buckets, renderableToValidated);
       // foldedBucketCount counts only bucketSize > 1 buckets; under bypass
@@ -290,7 +289,7 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
   it('cross-bucket boundary: distinct posZ in same material run -> distinct buckets (no transitive fold)', () => {
     // posZ varies per entry; even with identical layer + material, the bucket
     // key (layer, posZ, material) splits adjacent entries into separate
-    // singleton buckets (3 entries -> 3 singleton buckets).
+    // direct draws (3 entries -> 3 direct draws).
     const entries: DispatchEntry[] = [
       mockDispatchEntry({ renderableIndex: 0, materialHandle: 9, layer: 50 }),
       mockDispatchEntry({ renderableIndex: 1, materialHandle: 9, layer: 50 }),
@@ -303,8 +302,7 @@ describe('fold operator dawn integration (w7) — drawIndexed count drops to buc
     ];
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
-    expect(buckets).toHaveLength(3);
-    for (const b of buckets) expect(b.bucketSize).toBe(1);
+    expect(buckets).toEqual([]);
 
     const renderableToValidated = new Map<number, number>([
       [0, 0],

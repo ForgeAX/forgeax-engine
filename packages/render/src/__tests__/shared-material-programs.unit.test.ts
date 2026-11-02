@@ -9,9 +9,11 @@ import {
   collectGpuDrivenMaterialArtifacts,
   GpuDrivenMaterialExecutionRetention,
   GpuDrivenMaterialProgramProjection,
+  prepareHiddenMaterialExecutions,
 } from '../gpu-driven/material-artifacts';
 import { prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
 import { MaterialResource } from '../material-resource';
+import type { ValidatedRenderable } from '../record/frame-snapshot';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import { MaterialDispatch, MaterialFrame } from '../scene/material-dispatch';
@@ -165,6 +167,64 @@ function fixture(count = 1) {
     rows,
   };
 }
+
+it('retains hidden preparation joins across rows and passes, but rechecks accepted inputs', () => {
+  const f = fixture(2);
+  const entries = f.rows.map((row, index) => ({
+    ...row,
+    meshSlot: index,
+    mesh: {} as ValidatedRenderable['mesh'],
+    renderState: undefined,
+    stencilReference: undefined,
+  }));
+  let current = f.artifact;
+  let available = true;
+  const resolve = () => (available ? current : undefined);
+  const firstEntry = entries[0];
+  if (firstEntry === undefined) throw new Error('Expected a validated row');
+  const read = (entry = firstEntry, pass: 'forward' | 'shadow' = 'forward') => {
+    const value = [
+      ...prepareHiddenMaterialExecutions(entry, f.owner.materials(), pass, resolve),
+    ][0];
+    if (value === undefined) throw new Error('Expected a hidden execution');
+    return value;
+  };
+  const first = read();
+  read(entries[1]);
+  read(entries[0], 'shadow');
+  expect(read().draw.binding).toBe(first.draw.binding);
+  expect(read().execution).toBe(first.execution);
+  // Frame validation can wrap the same immutable source again. Its geometry
+  // and accepted material inputs still belong to the original join.
+  expect(read({ ...firstEntry }).execution).toBe(first.execution);
+  available = false;
+  expect(() => read()).toThrow();
+  available = true;
+  current = { ...current };
+  const recompiled = read();
+  expect(recompiled.execution).not.toBe(first.execution);
+  f.material.adopt({ ...f.snapshot, roughness: 0.125 });
+  f.owner.adopt(f.material);
+  const adopted = read();
+  expect(adopted.execution).not.toBe(recompiled.execution);
+  expect(adopted.execution.route !== 'none' && adopted.execution.material.roughness).toBe(0.125);
+  const source = firstEntry.source;
+  if (source.gpuDrivenDraws === undefined) throw new Error('Expected native draws');
+  const changed = {
+    ...firstEntry,
+    source: {
+      ...source,
+      gpuDrivenDraws: source.gpuDrivenDraws.map((draw) => ({
+        ...draw,
+        count: 3,
+        geometry: { ...draw.geometry, draw: { ...draw.geometry.draw, count: 3 } },
+      })),
+    },
+  };
+  const next = read(changed);
+  expect(next.draw.binding).not.toBe(first.draw.binding);
+  expect(next.draw.key.count).toBe(3);
+});
 
 it('selects shared Forward and Shadow programs without expanding dispatch', () => {
   const f = fixture(512);

@@ -10,7 +10,7 @@ export default defineProject({
     // node project picks them up and fails (no `createImageBitmap` /
     // `OffscreenCanvas` in node env). Mirrors packages/audio-webaudio and
     // packages/runtime policy.
-    exclude: ['**/node_modules/**', '**/dist/**', '**/*.browser.test.ts'],
+    exclude: ['**/node_modules/**', '**/dist/**', '**/*.browser.test.ts', '**/*.browser-no-webgpu.test.ts'],
     typecheck: {
       enabled: true,
       tsconfig: './tsconfig.json',

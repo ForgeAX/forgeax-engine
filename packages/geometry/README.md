@@ -379,7 +379,7 @@ Key differences from Three.js:
 |:--|:--|
 | Loading external mesh formats (glTF, FBX, OBJ) | glTF and FBX are owned by `@forgeax/engine-gltf` / `@forgeax/engine-fbx`; runtime consumption uses `@forgeax/engine-assets-runtime` after the source-plus-Meta sidecar pipeline |
 | GPU upload / handle minting | Geometry is pure-function CPU POD; registration and GPU residency are `AssetRegistry` + `GpuResourceStore` in `@forgeax/engine-runtime` |
-| Procedural mesh editing (extrude, bevel, CSG) | Out of scope for the leaf geometry package; these are future `@forgeax/engine-geometry-edit` or equivalent |
+| Procedural mesh editing (extrude, inset, mirror; later bevel and CSG) | Owned by [`@forgeax/engine/modeling`](../modeling/README.md); Geometry stays the leaf factory and layout owner |
 | Non-procedural mesh data (skinned vertices, morph targets) | Skin data lives on the `MeshAsset` POD after import; this package only populates position / normal / uv |
 | `Result.unwrap()` convenience | Caller calls `.unwrap()` from `@forgeax/engine-ecs`; this package only produces `Result` |
 

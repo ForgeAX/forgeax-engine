@@ -28,6 +28,7 @@ import { prepareHiddenMaterialExecutions } from '../gpu-driven/material-artifact
 import type { PreparedRasterBindings } from '../gpu-driven/prepared-raster-bundle';
 import type { GpuDrivenShadowBatchProjection } from '../gpu-driven/production-raster';
 import { sameMaterialArtifact } from '../gpu-driven/production-raster-prepare';
+import { staticShadowViewIdentity } from '../gpu-driven/shadow-view-identity';
 import {
   type ShadowDirtyRect,
   type ShadowViewIdentity,
@@ -85,6 +86,7 @@ import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-con
 import { directionalShadowCasterOffset, spotShadowCasterOffset } from './shadow-caster-uniforms';
 import { shadowViewContains } from './shadow-culling';
 import { capturesShadowBundleWorkload, recordShadowBundleWorkload } from './shadow-raster-ledger';
+import { shadowViewBindingKeys } from './shadow-view-resources';
 import { SingleMaterialHandleSet } from './single-material-handle-set';
 import { submeshRange } from './submesh-range';
 import { POINTS_LINES_VIEW_BYTES, pointShadowViewOffset, VIEW_UNIFORM_BYTES } from './view-ubo';
@@ -126,8 +128,16 @@ function ensureTypedShadowViewBg(
   viewOffset: number,
   cascadeOffset: number,
   variant: string,
+  owned = false,
 ): BindGroup | null {
   const { runtime, frameState, pipelineState } = c;
+  if (owned) {
+    const hit = pipelineState.shadowViewResources
+      ?.resolve(pipelineState, frameState.viewBindGroupCache)
+      ?.get(variant);
+    if (hit !== undefined) return hit;
+  }
+
   const shadowSampler = pipelineState.perPassResources.shadowSampler;
   if (shadowSampler === null) return null;
   const extendedLighting = pipelineState.extendedLightingAvailable ?? false;
@@ -136,49 +146,24 @@ function ensureTypedShadowViewBg(
   const cookieMatrixBuffer = pipelineState.cookieMatrixBuffer;
   const ltcLambertTextureView = pipelineState.ltcLambertTextureView;
   const ltcGgxTextureView = pipelineState.ltcGgxTextureView;
-  const extendedLightingCacheKeys: object[] = [];
-  if (extendedLighting) {
-    if (
-      iesProfileTextureView === undefined ||
+  if (
+    extendedLighting &&
+    (iesProfileTextureView === undefined ||
       cookieTextureView === undefined ||
       cookieMatrixBuffer === undefined ||
       ltcLambertTextureView === undefined ||
-      ltcGgxTextureView === undefined
-    ) {
-      return null;
-    }
-    extendedLightingCacheKeys.push(
-      pipelineState.defaultSampler,
-      iesProfileTextureView,
-      cookieTextureView,
-      ltcLambertTextureView,
-      ltcGgxTextureView,
-      cookieMatrixBuffer,
-    );
-  }
+      ltcGgxTextureView === undefined)
+  )
+    return null;
   const projectorAvailable = pipelineState.projectorAvailable !== false;
   const lowLimitCloudBindings = !extendedLighting && !projectorAvailable;
+  const binding = shadowViewBindingKeys(pipelineState);
+  if (binding === undefined) return null;
+  const keys = binding.keys;
   try {
     return getOrCreateFromChain(
       frameState.viewBindGroupCache,
-      [
-        pipelineState.viewUniformBuffer,
-        pipelineState.shadowArrayFallbackTextureView,
-        shadowSampler,
-        pipelineState.shadowAtlasFallbackTextureView,
-        pipelineState.shadowParamsBuffer,
-        pipelineState.shadowCasterCascadeBuffer,
-        pipelineState.shadowArrayFallbackTextureView,
-        ...(extendedLighting
-          ? extendedLightingCacheKeys
-          : projectorAvailable
-            ? [pipelineState.defaultWhiteTextureView, pipelineState.defaultSampler]
-            : []),
-        pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer,
-        ...(lowLimitCloudBindings
-          ? []
-          : [pipelineState.defaultWhiteTextureView, pipelineState.defaultSampler]),
-      ],
+      keys,
       variant,
       () => {
         // These entries are only consumed on an actual cache miss. The fixed
@@ -1385,7 +1370,7 @@ function recordGpuDrivenShadowIfPublished(
   const selections = [current.selection];
   const complete = true;
   if (identity.layer === undefined) {
-    const staticIdentity: ShadowViewIdentity = { ...identity, layer: 'static' };
+    const staticIdentity: ShadowViewIdentity = staticShadowViewIdentity(identity);
     const retained = c.gpuDrivenShadowViews?.submission(staticIdentity);
     if (
       retained !== undefined &&
@@ -1474,7 +1459,7 @@ export function encodeStaticShadowPass(
   dirty?: { readonly rects: readonly ShadowDirtyRect[]; readonly size: number },
   reuseAdjacentShadow = false,
 ): void {
-  const staticIdentity: ShadowViewIdentity = { ...identity, layer: 'static' };
+  const staticIdentity: ShadowViewIdentity = staticShadowViewIdentity(identity);
   if (c.gpuDrivenShadowViews?.submission(staticIdentity) === undefined) return;
   let viewBg: BindGroup | null;
   if (identity.kind === 'directional') {
@@ -1483,6 +1468,7 @@ export function encodeStaticShadowPass(
       0,
       directionalShadowCasterOffset(identity.index),
       `view-shadow-directional-${identity.index}`,
+      reuseAdjacentShadow,
     );
   } else if (identity.kind === 'point') {
     const face = identity.face;
@@ -1492,6 +1478,7 @@ export function encodeStaticShadowPass(
       pointShadowViewOffset(identity.index, face),
       0,
       `view-shadow-point-${identity.index}-${face}`,
+      reuseAdjacentShadow,
     );
   } else {
     if (spotShadowAt(c, identity.index) === undefined) return;
@@ -1500,6 +1487,7 @@ export function encodeStaticShadowPass(
       0,
       spotShadowCasterOffset(identity.index),
       `view-shadow-spot-${identity.index}`,
+      reuseAdjacentShadow,
     );
   }
   const materialBg = viewBg === null ? null : ensureSpotShadowMaterialBg(c);
@@ -1570,6 +1558,7 @@ export function encodeDirectionalShadowPass(
     0,
     directionalShadowCasterOffset(cascadeIndex),
     `view-shadow-directional-${cascadeIndex}`,
+    reuseAdjacentShadow,
   );
   const materialBg = viewBg === null ? null : ensureSpotShadowMaterialBg(c);
   const capable = c.gpuDrivenShadowViews?.submission(directionalIdentity) !== undefined;
@@ -1625,6 +1614,7 @@ export function encodePointShadowPass(
     pointShadowViewOffset(layer, face),
     0,
     `view-shadow-point-${layer}-${face}`,
+    reuseAdjacentShadow,
   );
   const materialBg = viewBg === null ? null : ensureSpotShadowMaterialBg(c);
   const pointIdentity = { kind: 'point' as const, index: layer, face };
@@ -1667,6 +1657,7 @@ export function encodeSpotShadowPass(
     0,
     spotShadowCasterOffset(tile),
     `view-shadow-spot-${tile}`,
+    reuseAdjacentShadow,
   );
   const materialBg = viewBg === null ? null : ensureSpotShadowMaterialBg(c);
   const spotIdentity = { kind: 'spot' as const, index: tile };
@@ -2343,7 +2334,7 @@ export function recordShadowCasterDraws(
               expected: 'a Skin Binding for the selected ShadowCaster contract',
               hint: 'bind a complete Skin source before recording a Skin-input material',
             });
-          const task = runtime.demandSkinTask?.(entry.source);
+          const task = runtime.skinTask?.(entry.source, 'shadow');
           if (task === undefined) continue;
           const group = geometrySkinBindGroup(c, task, meshBinding, contract);
           if (group === null)
@@ -2398,8 +2389,8 @@ export function recordShadowCasterDraws(
           bindGroupCounts: c.bindGroupCounts,
         };
         const materialSlot =
-          c.materialSlotIndices[materialRowBase + i]?.[sm.materialSlot] ??
-          c.materialSlotIndices[materialRowBase + i]?.[0];
+          c.materialSlotIndices.at(materialRowBase + i)?.[sm.materialSlot] ??
+          c.materialSlotIndices.at(materialRowBase + i)?.[0];
         if (materialSlot === undefined) {
           throw new RhiError({
             code: 'rhi-descriptor-invalid',

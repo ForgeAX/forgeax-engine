@@ -6,6 +6,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { CloudLayer, type CloudLayerData } from '../components/cloud-layer';
 import { DirectionalLight } from '../components/directional-light';
 import { type CloudLayerError, CloudLayerOwnerConflictError } from '../errors/cloud';
+import { queryEnvironment } from '../extract/environment-gate';
 import { cloudLayerSourceKey, type ValidatedCloudLayer, validateCloudLayer } from './parameters';
 
 export interface CloudLayerCandidate {
@@ -69,7 +70,7 @@ export function extractCloudLayer(
   // failure; once the component is registered, query failures remain visible
   // through the surrounding World extraction boundary.
   try {
-    const query = world.query({ read: [CloudLayer] });
+    const query = queryEnvironment(world, { read: [CloudLayer] });
     if (!query.ok) return ok(undefined);
     for (const row of query.value) {
       owner ??= row.entity;
@@ -101,7 +102,7 @@ export function extractCloudLayer(
   let sunDirection: readonly [number, number, number] | undefined;
   let sunRadiance: readonly [number, number, number] | undefined;
   try {
-    const query = world.query({ read: [DirectionalLight] });
+    const query = queryEnvironment(world, { read: [DirectionalLight] });
     if (query.ok) {
       const read = world[worldRead];
       for (const span of query.value.spans().unwrap()) {

@@ -37,8 +37,8 @@ import type {
   GpuDrivenProductionInspection,
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
-import { reflectedRenderState } from '../material-render-state';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
+import { clippingCapRenderState, reflectedRenderState } from '../material-render-state';
+import { isCanonicalStandardPbrMaterialShader, isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
@@ -195,6 +195,7 @@ import {
 import { restrictShadowCasterClasses, ShadowCasterClassifier } from './shadow-caster-classes';
 import { ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-projection-publication';
+import { staticShadowViewIdentity } from './shadow-view-identity';
 import {
   type ShadowCameraCullDilation,
   type ShadowViewIdentity,
@@ -292,6 +293,8 @@ export interface PreparedGpuDrivenFrame {
   readonly worldKeys: readonly number[];
   /** Shared execution queried by each actual draw consumer. */
   readonly selection: GpuDrawSelection;
+  /** Actual GPU Shadow executions; direct residual casters do not erase this coverage. */
+  readonly shadowSelection?: GpuDrawSelection | undefined;
   readonly standardPbrFrameResources: GpuDrivenStandardPbrFrameResources;
   /** Published Surface admission and its pass lane decision. */
   readonly surfaceSubmission?: SurfaceGpuSubmissionAdmission;
@@ -1645,7 +1648,9 @@ export class GpuDrivenProduction {
       materialRaster.visibleBindingIdentity,
       skinRaster?.visibleBindingIdentity,
     );
-    const discardSignature = frame.viewClippingLive ? '|view-clipping' : '';
+    const discardSignature = frame.viewClippingLive
+      ? `|view-clipping${frame.input.camera.clipping?.caps === true ? '-caps' : ''}`
+      : '';
     const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${discardSignature}`;
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${discardSignature}`;
 
@@ -1666,6 +1671,7 @@ export class GpuDrivenProduction {
       },
       worldKeys: scene.worldKeys ?? [],
       selection: filtered.selection,
+      shadowSelection: frame.shadowFiltered?.selection,
       shadowDirectRequired: shadowDirectRequired(scene, input.batchExecutions),
       ...(surfaceSubmission === undefined ? {} : { surfaceSubmission }),
       standardPbrFrameResources: {
@@ -1811,6 +1817,7 @@ export class GpuDrivenProduction {
       lateOcclusion,
       undefined,
       target.rendererRecording ? () => this.liveRasterCache?.meshBindings.capture() : undefined,
+      rendererRecording ? 'combined' : 'separate',
     );
     if (!outputs.ok) return outputs;
     const accesses = this.rasterGraphAccesses(graph, outputs.value, frame.materialRaster);
@@ -2053,7 +2060,10 @@ export class GpuDrivenProduction {
       ),
       layoutProjection: recording ? mesh.layoutProjection : undefined,
       topology: recording ? batch.key.topology : undefined,
-      renderState: recording ? prepared.renderState : undefined,
+      renderState:
+        deformation === 'skin' || !isStandardPbrMaterialShader(artifact.material)
+          ? prepared.renderState
+          : clippingCapRenderState(prepared.renderState, frame.input.camera.clipping),
       standardTextureMask: recording ? prepared.standardTextureMask : undefined,
       preparationFactory: frame.input.materialPipelinePreparationFactory,
       visibleSurface: frame.input.visibleSurface !== undefined,
@@ -2805,7 +2815,7 @@ export class GpuDrivenProduction {
     const input = restrictShadowCasterChannels(requested, this.shadowChannelSlots, pass);
     retained.push(input.identity);
     if (!shadowViewHasStaticLayer(input.identity)) return this.projectShadowView(pass, input);
-    const staticIdentity: ShadowViewIdentity = { ...input.identity, layer: 'static' };
+    const staticIdentity: ShadowViewIdentity = staticShadowViewIdentity(input.identity);
     const viewClasses = restrictShadowCasterClasses(classes, input.candidatePrimitiveIndices);
     const singleLayer = input.staticLayer === false;
     this.syncShadowLayerMode(pass.pool, input.identity, staticIdentity, singleLayer);
@@ -3481,7 +3491,7 @@ export class GpuDrivenProduction {
       if (entry.layer !== undefined) continue;
       let total = 0;
       let claimed = 0;
-      for (const identity of [entry, { ...entry, layer: 'static' as const }])
+      for (const identity of [entry, staticShadowViewIdentity(entry)])
         for (const batch of this.shadowViews?.submission(identity)?.plan.batches ?? []) {
           total += batch.candidates.length;
           if (batch.visibleCapacity > 0) claimed += batch.candidates.length;

@@ -17,6 +17,7 @@ import { postProcessShaderModuleLabel } from '../../fullscreen-post-process-pass
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../../render-contract';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
+import { recordContext } from '../../world/view-record-context';
 import type { StandardLutGraphProjection } from './lut-gpu';
 
 interface ToneLutProgram {
@@ -89,7 +90,7 @@ export function addStandardToneLutPass(
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
-    encode: ({ frame, pass, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const { runtime } = frame as _InternalRenderPipelineContext;
       const device = runtime.device;
       const binding = lut.bind(frame);
@@ -114,7 +115,7 @@ export function addStandardToneLutPass(
         label: postProcessShaderModuleLabel(entry.source),
       });
       if (!source.ok) throw source.error;
-      const scope = runtime.deviceScope;
+      const scope = recordContext(runtime).deviceScope;
       const programs =
         scope === undefined ? localPrograms : scope.isAlive() ? programsFor(scope) : undefined;
       let program = programs?.find(

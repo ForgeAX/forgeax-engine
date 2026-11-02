@@ -68,7 +68,7 @@ async function fixture() {
     frame: frame as unknown as RenderPipelineFrame,
     resources: { textureView: () => ok(view), buffer: () => ok(buffer) },
     pass: { setPipeline: vi.fn(), setBindGroup: vi.fn(), draw: vi.fn() },
-  } as unknown as Parameters<RasterGraphPass<RenderPipelineFrame>['encode']>[0];
+  } as unknown as Parameters<NonNullable<RasterGraphPass<RenderPipelineFrame>['encode']>>[0];
   const build = (
     options: {
       format?: TextureFormat;
@@ -120,10 +120,10 @@ async function fixture() {
       extraAccesses: [],
       size: { width: options.width ?? 1, height: 1 },
     }).unwrap();
-    const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encode;
+    const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encodeDirect;
     expect(encode).toBeDefined();
     return () => {
-      encode?.(context);
+      encode?.(context.pass, context.frame, context.resources);
       return vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
     };
   };

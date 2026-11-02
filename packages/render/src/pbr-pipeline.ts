@@ -36,13 +36,20 @@ import type {
 import {
   type ShaderCatalog,
   STANDARD_DIRECT_DFG_LUT_BINDING,
+  STANDARD_PARALLAX_DISPLACEMENT_BIT,
+  STANDARD_PARALLAX_HEIGHT_PAIR,
   STANDARD_PHYSICAL_BINDING_START,
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
   STANDARD_PIPELINE_PARAM_SCHEMA,
+  standardMaskHasBit,
   standardPhysicalTextureFields,
   standardTextureMask,
 } from '@forgeax/engine-shader';
-import { derive, type ParamSchemaEntry } from '@forgeax/engine-types';
+import { derive, type ParamSchemaEntry, STANDARD_DISPLACEMENT_MODES } from '@forgeax/engine-types';
+import {
+  materialUsesPlanarReflection,
+  PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES,
+} from './capture/planar-material';
 import { materialUsesDirectDfgLut } from './device/direct-dfg-lut';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from './gpu-stage';
 import type { PipelineSpec } from './pipeline-spec-types';
@@ -201,12 +208,28 @@ export function buildPbrMaterialUserRegionEntries(
 const STANDARD_NORMAL_BIT = standardTextureMask([{ name: 'normalTexture', type: 'texture2d' }]);
 const STANDARD_BUMP_BIT = standardTextureMask([{ name: 'bumpTexture', type: 'texture2d' }]);
 
-/** Normal takes precedence; canonical shaders bind the selected input in the normal slot. */
-export function standardNormalInputField(field: string, mask: number | undefined): string {
-  if (field !== 'normalTexture' || mask === undefined) return field;
-  return (mask & STANDARD_NORMAL_BIT) === 0 && (mask & STANDARD_BUMP_BIT) !== 0
-    ? 'bumpTexture'
-    : field;
+/**
+ * The author field a Standard pair binds. Normal takes precedence over bump in
+ * the canonical normal pair. In parallax mode the metallic pair carries the
+ * height's own view and sampler: a derived layout projection
+ * (`STANDARD_PARALLAX_HEIGHT_PAIR`). A canonical draw reads the mode from its
+ * pipeline mask; a sparse cooked root without a mask reads its closed value.
+ */
+export function standardInputField(
+  field: string,
+  mask: number | undefined,
+  displacementMode?: unknown,
+): string {
+  if (field === 'normalTexture' && mask !== undefined)
+    return (mask & STANDARD_NORMAL_BIT) === 0 && (mask & STANDARD_BUMP_BIT) !== 0
+      ? 'bumpTexture'
+      : field;
+  if (field !== STANDARD_PARALLAX_HEIGHT_PAIR.host) return field;
+  const parallax =
+    mask === undefined
+      ? displacementMode === STANDARD_DISPLACEMENT_MODES.parallax
+      : standardMaskHasBit(mask, STANDARD_PARALLAX_DISPLACEMENT_BIT);
+  return parallax ? STANDARD_PARALLAX_HEIGHT_PAIR.resource : field;
 }
 
 /** A shared layout may prune from a complete, single-source registration only. */
@@ -230,6 +253,18 @@ export function sharedMaterialBindingDeclarations(
   return lookup.ok ? lookup.value.program.materialBindings : undefined;
 }
 
+/**
+ * A cooked program that declares the dedicated transmission backdrop (the
+ * texture after its sampler at user-region end + 6) owns that ABI: its layout and
+ * bindings keep the pair even below the canonical dedicated budget.
+ */
+export function programDeclaresTransmissionBackdrop(
+  materialBindings: readonly number[] | undefined,
+  userRegionEnd: number,
+): boolean {
+  return materialBindings?.includes(userRegionEnd + 7) === true;
+}
+
 /** Preserve resource slots while dropping unavailable or shared resources. */
 export function omittedStandardMaterialBindings(
   textureFields: readonly string[],
@@ -242,7 +277,10 @@ export function omittedStandardMaterialBindings(
   const omitted = new Set<number>();
   if (standard && !transmissionAvailable) {
     textureFields.forEach((name, index) => {
-      if (name === 'transmissionTexture' || name === 'thicknessTexture') {
+      if (
+        (name === 'transmissionTexture' || name === 'thicknessTexture') &&
+        materialBindings?.includes(2 + index * 2) !== true
+      ) {
         omitted.add(1 + index * 2);
         omitted.add(2 + index * 2);
       }
@@ -1741,7 +1779,11 @@ export function buildBindGroupLayoutDescriptor(
       const afterTransmission = [...afterIbl, ...appendInjection(afterIbl, 'transmission')];
       const engineRegion =
         options.caps?.transmissionBackdrop === false &&
-        spec.shader.id !== 'forgeax::single-layer-medium'
+        spec.shader.id !== 'forgeax::single-layer-medium' &&
+        !programDeclaresTransmissionBackdrop(
+          sharedMaterialBindingDeclarations(options.registry, spec.shader.id),
+          userRegion.length,
+        )
           ? afterIbl
           : afterTransmission;
       const afterSurfaceMedium =
@@ -1769,6 +1811,9 @@ export function buildBindGroupLayoutDescriptor(
                 texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
               },
             ]
+          : []),
+        ...(materialUsesPlanarReflection(effectiveSchema)
+          ? PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES
           : []),
         ...(spec.shader.id === 'forgeax::single-layer-medium'
           ? []

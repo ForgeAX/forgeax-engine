@@ -192,10 +192,19 @@ describe('volumetric fog RenderGraph topology', () => {
     expect(passes).not.toContain('temporalInit');
     expect(passes).not.toContain('volume_temporal_init');
     expect(passes).not.toContain('textureStore(volume_history');
+    const commitSource = readFileSync(
+      fileURLToPath(new URL('../record/volumetric-fog-commit.ts', import.meta.url)),
+      'utf8',
+    );
+    // Recording guards the accepted graph; render-history-admission reads the committed slot.
+    const admissionSource = readFileSync(
+      fileURLToPath(new URL('../world/history-admission-systems.ts', import.meta.url)),
+      'utf8',
+    );
     expect(frameSource).toContain('volumetricFogHistoryGraph');
-    expect(frameSource).toContain('volumetricFogHistorySlot');
-    expect(frameSource).toContain('volumetricFogHistorySignature');
-    expect(frameSource).toContain('promoteVolumetricFogHistory(');
+    expect(admissionSource).toContain('volumetricFogHistorySlot');
+    expect(admissionSource).toContain('volumetricFogHistorySignature');
+    expect(commitSource).toContain('promoteVolumetricFogHistory(');
     expect(
       readFileSync(fileURLToPath(new URL('../record/volume-params.ts', import.meta.url)), 'utf8'),
     ).toContain('params[32] = fog.worldTimeSeconds ?? 0');
@@ -213,12 +222,41 @@ describe('volumetric fog RenderGraph topology', () => {
       fileURLToPath(new URL('../record/typed-frame-graph.ts', import.meta.url)),
       'utf8',
     );
-    expect(recordSource).toContain('temporalFrameTransaction.stage');
-    expect(recordSource).toContain('promoteVolumetricFogParams(frameState.volumetricFogParams)');
-    expect(recordSource).toContain('hasVolumetricFogCapability');
-    expect(submitSource).toContain('yield* recordFrameTransaction(steps,');
+    expect(recordSource).not.toContain('temporalFrameTransaction.stage');
+    expect(
+      readFileSync(fileURLToPath(new URL('../world/temporal-systems.ts', import.meta.url)), 'utf8'),
+    ).toContain('temporalFrameTransaction.stage');
+    expect(
+      readFileSync(
+        fileURLToPath(new URL('../record/volumetric-fog-commit.ts', import.meta.url)),
+        'utf8',
+      ),
+    ).toContain('promoteVolumetricFogParams(frameState.volumetricFogParams)');
+    expect(recordSource).not.toContain('promoteVolumetricFogParams(');
+    expect(recordSource).not.toContain('hasVolumetricFogCapability');
+    expect(
+      readFileSync(fileURLToPath(new URL('../record/view-topology.ts', import.meta.url)), 'utf8'),
+    ).toContain('hasVolumetricFogCapability');
+    expect(submitSource).toContain('export function recordCompiledFrameGraph(');
+    expect(submitSource).not.toContain('recordFrameTransaction');
+    expect(
+      readFileSync(
+        fileURLToPath(new URL('../world/frame-submit-systems.ts', import.meta.url)),
+        'utf8',
+      ),
+    ).toContain('input.device.queue.submit(buffers)');
     expect(submitSource).not.toContain('queue.submit(');
-    expect(submitSource).toContain('commitStagedTemporalGpuState(frameState');
+    const settlementSource = readFileSync(
+      fileURLToPath(new URL('../world/graph-submission-systems.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(submitSource).toContain('frameState.graphSubmission = submission');
+    expect(settlementSource).not.toContain('commitStagedTemporalGpuState');
+    const temporalSource = readFileSync(
+      fileURLToPath(new URL('../world/temporal-systems.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(temporalSource).toContain('commitStagedTemporalGpuState(frameState');
   });
 
   it('requires the manifest-owned shader bundle in addition to compute/storage caps', async () => {

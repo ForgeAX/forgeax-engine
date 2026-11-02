@@ -1,5 +1,6 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
+import { createClusterBinScratch } from '../cluster-binner';
 import {
   DEFAULT_CLUSTER_GRID,
   LIGHT_INDEX_LIST_CAPACITY,
@@ -28,6 +29,60 @@ function coveringLight(kind: 'point' | 'spot' | 'rect-area' = 'point') {
 }
 
 describe('Standard CPU membership allocation', () => {
+  it('reuses caller-owned scratch while keeping prior membership outputs detached', () => {
+    const scratch = createClusterBinScratch();
+    const frame = makeFrame([coveringLight()]);
+    const first = prepareStandardLighting(frame, scratch).unwrap();
+    expect(first.scratch).toBe(scratch);
+    const previous = {
+      grid: first.clusterGrid.slice(),
+      indices: first.lightIndexList.slice(),
+      bounds: first.lightBounds.slice(),
+    };
+    const counts = scratch.clusterCounts;
+    const cursors = scratch.clusterCursors;
+    const deltas = scratch.clusterDeltas;
+    for (const local of [[], [coveringLight('spot'), coveringLight('rect-area')], frame.local]) {
+      const changed = { ...frame, local };
+      const shared = prepareStandardLighting(changed, scratch).unwrap();
+      const fresh = prepareStandardLighting(changed).unwrap();
+      expect(shared.clusterGrid).toEqual(fresh.clusterGrid);
+      expect(shared.lightIndexList).toEqual(fresh.lightIndexList);
+      expect(shared.lightBounds).toEqual(fresh.lightBounds);
+      expect(shared.membershipEntryCount).toBe(fresh.membershipEntryCount);
+      expect(scratch.clusterCounts).toBe(counts);
+      expect(scratch.clusterCursors).toBe(cursors);
+      expect(scratch.clusterDeltas).toBe(deltas);
+    }
+    expect(first.clusterGrid).toEqual(previous.grid);
+    expect(first.lightIndexList).toEqual(previous.indices);
+    expect(first.lightBounds).toEqual(previous.bounds);
+    const independent = prepareStandardLighting(frame, createClusterBinScratch()).unwrap();
+    expect(independent.scratch).not.toBe(scratch);
+    expect(independent.clusterGrid).toEqual(first.clusterGrid);
+  });
+
+  it('grows scratch for a changed grid and recovers after a complete overflow failure', () => {
+    const scratch = createClusterBinScratch();
+    const frame = makeFrame([coveringLight()]);
+    const first = prepareStandardLighting(frame, scratch).unwrap();
+    const previous = first.clusterGrid.slice();
+    const overflow = prepareStandardLighting(
+      {
+        ...frame,
+        local: Array.from({ length: 32 }, () => coveringLight()),
+        grid: { x: 32, y: 32, z: 33 },
+      },
+      scratch,
+    );
+    expect(overflow.ok).toBe(false);
+    if (!overflow.ok) expect(overflow.error.code).toBe('standard-cluster-index-overflow');
+    const recovered = prepareStandardLighting(frame, scratch).unwrap();
+    expect(recovered.clusterGrid).toEqual(first.clusterGrid);
+    expect(recovered.lightIndexList).toEqual(first.lightIndexList);
+    expect(first.clusterGrid).toEqual(previous);
+  });
+
   it('bounds one-light backing storage by the complete membership without shrinking the GPU ABI', () => {
     const result = prepareStandardLighting(makeFrame([coveringLight()]));
     expect(result.ok).toBe(true);

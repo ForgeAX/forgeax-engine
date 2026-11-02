@@ -4,6 +4,7 @@ import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { RenderSystemInternals } from '../../record/render-context';
 import type { CameraSnapshot } from '../../render-contract';
+import { recordContext } from '../../world/view-record-context';
 import {
   createAutoExposureGpuResources,
   retireAutoExposureGpuResources,
@@ -162,7 +163,7 @@ export function stageStandardOutputStates(
     (internals as RenderSystemInternals & { readonly observationFrameId?: number })
       .observationFrameId ?? frameState.frameNumber;
   const targetGeneration = Math.max(1, camera?.historyVersion ?? 0);
-  const deviceEpoch = internals.deviceScope.generation;
+  const deviceEpoch = recordContext(internals).deviceScope.generation;
 
   if (output.exposure.kind === 'auto') {
     let state = frameState.autoExposureState;

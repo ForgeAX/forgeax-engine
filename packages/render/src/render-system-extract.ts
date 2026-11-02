@@ -15,6 +15,7 @@ import {
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import {
+  captureMaterialSnapshot,
   MaterialResource,
   materialResource,
   runtimeMaterialShaderIdForMaterial,
@@ -197,7 +198,11 @@ import type {
   FogFrame,
   FogSelectionFailure,
 } from './extract/environment';
-import { readEnvironmentPose } from './extract/environment-gate';
+import {
+  noteEnvironmentInputs,
+  queryEnvironment,
+  readEnvironmentPose,
+} from './extract/environment-gate';
 import type { GpuDrivenDrawSnapshot } from './extract/gpu-driven';
 import { resolveVisibility, type VisibilitySnapshot } from './extract/visibility';
 import type {
@@ -216,7 +221,12 @@ import {
 import type { PointsLinesRetainedSnapshot } from './points-lines/snapshot';
 import { type RenderResourceScope, renderAssetRevision } from './publication/resource-scope';
 import type { ReflectionProbeFact } from './reflection/projection';
-import type { CameraSnapshot, CubeCameraSnapshot, PhysicalViewExtent } from './render-contract';
+import type {
+  CameraSnapshot,
+  CubeCameraSnapshot,
+  PhysicalViewExtent,
+  ResolvedViewCamera,
+} from './render-contract';
 import { getActiveCamera, selectActiveCameraIndex } from './systems/active-camera';
 import { selectPasses } from './systems/pass-selector';
 import type { RenderTarget } from './targets/contracts';
@@ -562,12 +572,16 @@ export type LightSnapshot =
  * owner's adopted roster through a view's {@link ViewLights}. Cascades are
  * not a source fact: each view fits its own (see `world/render-lights.ts`).
  *
- * `directional` is the first directional light; `directionalCount` counts
- * every DirectionalLight so record can warn when more than one exists.
+ * `directional` is the first directional light: it owns the View sun lane,
+ * CSM shadows and the atmosphere. `additionalDirectional` holds every later
+ * DirectionalLight; record packs them into the Standard Cluster as unshadowed
+ * directional slots. `directionalCount` counts every DirectionalLight.
  */
 export interface LightRoster {
   readonly directional: DirectionalLightSnapshot | undefined;
   readonly directionalCount: number;
+  /** Unshadowed DirectionalLights after the first; absent means none. */
+  readonly additionalDirectional?: readonly DirectionalLightSnapshot[];
   readonly point: readonly PointLightSnapshot[];
   readonly spot: readonly SpotLightSnapshot[];
   readonly rect: readonly RectAreaDirectLightSnapshot[];
@@ -1286,19 +1300,23 @@ export function appendMaterialDispatchEntries(
  */
 export interface GpuOwnedFrame {
   /** Draw rows keeping a CPU-recorded draw under `selection`, in slot order. */
-  residual(selection: GpuDrawSelection): readonly RenderableSnapshot[];
+  residual(selection: GpuDrawSelection): FrameList<RenderableSnapshot>;
   /** Slot set of the same residual rows, retained from topology and selection diffs. */
   residualSet(selection: GpuDrawSelection): import('./scene/frame-set').FrameSet;
   /** Scene rows of the same residual set; readers of Scene facts never resolve frame rows. */
   residualSlots(
     selection: GpuDrawSelection,
-  ): readonly import('./scene/render-scene-types').RenderSceneSlot[];
+  ): FrameList<import('./scene/render-scene-types').RenderSceneSlot>;
+  /** CPU Skin rows of this frame's selection, derived from fixed sparse and residual membership. */
+  residualSkin?(): Iterable<RenderableSnapshot>;
   /** Whether the frame's material query gives a row a display (non-ShadowCaster) Pass. */
   displays(row: RenderableSnapshot): boolean;
   /** One frame row by source identity, without enumerating the frame. */
   row(worldId: number, entity: number): RenderableSnapshot | undefined;
   /** The slot roster the frame covers. */
   readonly slots: import('./scene/scene-slots').SceneSlotFrame;
+  /** The committed raster selection the cull tested residual rows under. */
+  readonly selection: GpuDrawSelection;
 }
 
 /**
@@ -1587,6 +1605,33 @@ export function collectAuthoredMaterialSamplerFields(
 }
 
 export { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
+
+/**
+ * A skinned row certifies its position when the program it actually draws
+ * with does: a stock axis program (the default ShadowCaster) selects its
+ * `SKINNING_DISABLED=false` variants for Skin geometry, so every one of them
+ * must carry the proof; the static primary receipt says nothing about them.
+ */
+export function skinnedPositionProof(
+  receipt: MaterialProgramAbi | undefined,
+  key: string,
+  shaders: Pick<AssetRegistry['shaderRegistry'], 'materialShaderManifestEntry'>,
+): boolean {
+  if (receipt !== undefined && materialProgramUsesSkin(receipt))
+    return receipt.positionBounds === 'standard-input';
+  const skinned = shaders
+    .materialShaderManifestEntry(key)
+    ?.variants.filter((variant) => variant.defines.SKINNING_DISABLED === false);
+  return (
+    skinned !== undefined &&
+    skinned.length > 0 &&
+    skinned.every(
+      (variant) =>
+        variant.receipt?.positionBounds === 'standard-input' &&
+        materialProgramUsesSkin(variant.receipt),
+    )
+  );
+}
 
 /**
  * Select the runtime identity for one resolved material. A cooked publication
@@ -2308,7 +2353,7 @@ export function storeMaterialSnapshot(
   world: RenderResourceScope,
   programSelections?: readonly MaterialProgramSelection[],
 ): MaterialSnapshotCacheEntry {
-  const accepted = { ...snapshot, immutableValues: true as const };
+  const accepted = captureMaterialSnapshot(snapshot);
   const previous = cache.get(handleRaw);
   const resource = previous === undefined ? undefined : materialResource(previous.snapshot);
   if (resource === undefined) new MaterialResource(accepted);
@@ -2468,9 +2513,10 @@ export function prepareMaterialSnapshot({
       key === undefined ? undefined : assetsRef.shaderRegistry.findMaterialArtifact(key);
     if (
       shader?.ok !== true ||
-      shader.value.receipt?.positionBounds !== 'standard-input' ||
-      (geometry === 'skinned' &&
-        (shader.value.receipt === undefined || !materialProgramUsesSkin(shader.value.receipt)))
+      key === undefined ||
+      (geometry === 'skinned'
+        ? !skinnedPositionProof(shader.value.receipt, key, assetsRef.shaderRegistry)
+        : shader.value.receipt?.positionBounds !== 'standard-input')
     )
       positionBounds = undefined;
     const reads = shader?.ok ? shader.value.program.entryPoints : undefined;
@@ -2911,7 +2957,7 @@ export function computeDirectionalCsm(
   config: DirectionalCsmConfig,
   cameraData: CsmCameraData | undefined,
   retainedMatrices?: readonly Float32Array[],
-  normalBiasWorld = 0.05,
+  normalBiasWorld = DirectionalLight.fields.normalBias.default as number,
 ): DirectionalCsmResult | null {
   const cascadeCount = Math.round(config.cascadeCount);
   const quality = directionalShadowQualityFromF32(
@@ -2998,8 +3044,8 @@ export function computeDirectionalCsm(
     const maxY = centerY + half;
     const minZ = centerZ - half;
     // A receiver's caster can sit behind the display camera, toward the light
-    // beyond the receiver slice. Reaching past the whole shadow range's sphere
-    // admits every such caster without a rotation-dependent bound.
+    // beyond the receiver slice. Keep a stable finite depth fit; upstream
+    // blockers beyond it use five-plane culling and VS near pancaking.
     const nearZ = centerZ + half + 2 * full.radius;
     const orthoProj = mat4.create();
     mat4.orthographicReverseZ(orthoProj, minX, maxX, maxY, minY, -nearZ, -minZ);
@@ -3079,7 +3125,8 @@ export interface PreparedExtractContext {
   readonly cullCameras: readonly CameraSnapshot[] | undefined;
   /** Explicit display-camera entity for this world's camera-owner extract. */
   readonly cameraEntityKey?: number;
-  readonly viewExtent?: PhysicalViewExtent;
+  /** A composed view's resolved camera; it replaces the display camera selection. */
+  readonly view?: ResolvedViewCamera;
   readonly renderables: 'full' | 'none';
   readonly renderableEntities: ReadonlySet<number> | undefined;
   readonly retainHidden: boolean;
@@ -3126,7 +3173,10 @@ const ALL_VISIBLE: VisibilitySnapshot = {
 
 export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
   const snapshots: CubeCameraSnapshot[] = [];
-  const query = world.query({ read: [CubeCamera], with: [Transform, GlobalTransform] }).unwrap();
+  const query = queryEnvironment(world, {
+    read: [CubeCamera],
+    with: [Transform, GlobalTransform],
+  }).unwrap();
   for (const row of query) {
     const cameraTarget = world[worldRead].getFieldValue(
       row.entity,
@@ -3170,9 +3220,10 @@ export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
 
 export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[] {
   const facts: ReflectionProbeFact[] = [];
-  const query = world
-    .query({ read: [ReflectionProbe], with: [Transform, GlobalTransform] })
-    .unwrap();
+  const query = queryEnvironment(world, {
+    read: [ReflectionProbe],
+    with: [Transform, GlobalTransform],
+  }).unwrap();
   for (const row of query) {
     const probePriority = world[worldRead].getFieldValue(
       row.entity,
@@ -3279,6 +3330,7 @@ export function projectAuxiliaryCamerasForView(
                 planes: display.clipping.planes.map((plane) => [...plane] as const),
                 intersection: display.clipping.intersection === true,
                 clipShadows: false,
+                ...(display.clipping.caps === true ? { caps: true } : {}),
               },
             }),
         ...(camera.entityKey === undefined ? {} : { entityKey: camera.entityKey }),
@@ -3296,14 +3348,12 @@ export function projectAuxiliaryCamerasForView(
 export function selectCameraRoles(
   world: World,
   requestedEntityKey?: number,
-  viewExtent?: PhysicalViewExtent,
+  view?: ResolvedViewCamera,
 ): CameraRoleSelection {
   const snapshots = collectCameraSnapshots(world);
   const cameras = snapshots.filter((camera) => camera.planarReflection === undefined);
   const planar = snapshots.filter((camera) => camera.planarReflection !== undefined);
   const views = cameras.filter((camera) => camera.view !== undefined);
-  const viewCamera =
-    viewExtent === undefined ? undefined : cameraForView(cameras, requestedEntityKey, viewExtent);
   const displayEntities = cameras
     .filter((camera) => camera.target === undefined && camera.view === undefined)
     .map((camera) => camera.entityKey ?? 0);
@@ -3320,10 +3370,10 @@ export function selectCameraRoles(
     ? displayEntities[activeCameraIndex]
     : (displayEntities[activeCameraIndex] ?? displayEntities[0]);
   const display =
-    viewExtent !== undefined
-      ? viewCamera === undefined
+    view !== undefined
+      ? view.camera === undefined
         ? []
-        : [viewCamera]
+        : [view.camera]
       : views.length > 0
         ? views
         : displayEntityKey === undefined
@@ -3374,7 +3424,7 @@ export function prepareExtractContext(
     readonly cull?: 'self' | 'none' | 'external';
     readonly cullCameras?: readonly CameraSnapshot[];
     readonly cameraEntityKey?: number;
-    readonly viewExtent?: PhysicalViewExtent;
+    readonly view?: ResolvedViewCamera;
     readonly renderables?: 'full' | 'none';
     readonly renderableEntities?: ReadonlySet<number>;
     readonly retainHidden?: boolean;
@@ -3407,7 +3457,7 @@ export function prepareExtractContext(
     cull: options.cull ?? 'self',
     cullCameras: options.cullCameras,
     ...(options.cameraEntityKey === undefined ? {} : { cameraEntityKey: options.cameraEntityKey }),
-    ...(options.viewExtent === undefined ? {} : { viewExtent: options.viewExtent }),
+    ...(options.view === undefined ? {} : { view: options.view }),
     renderables,
     worldId: options.worldId ?? 0,
     renderableEntities: options.renderableEntities,
@@ -3438,13 +3488,14 @@ export function fogState(world: World): {
 }
 
 export function selectFogFrame(world: World): FogFrame | undefined {
+  noteEnvironmentInputs(world, [Fog]);
   // Query compilation is owned once per World; Query refreshes its matched
   // tables when the ECS structure changes, while iteration reads current Fog
   // values. This keeps the frame boundary free of repeated descriptor work.
   const fogCandidates: FogCandidate[] = [];
   let fogQuery = fogQueries.get(world);
   if (fogQuery === undefined) {
-    fogQuery = world.query({ read: [Fog] }).unwrap();
+    fogQuery = queryEnvironment(world, { read: [Fog] }).unwrap();
     fogQueries.set(world, fogQuery);
   }
   for (const row of fogQuery) {
@@ -3500,7 +3551,7 @@ export function extractVolumeSnapshot(
 ): ExtractedVolumetricFog | undefined {
   const elapsed = world.getResource(Time).elapsed;
   const worldTimeSeconds = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
-  const query = world.query({ read: [VolumetricFog] }).unwrap();
+  const query = queryEnvironment(world, { read: [VolumetricFog] }).unwrap();
   const authorings: VolumetricFogAuthoring[] = [];
   const members: ExtractedVolumetricFog[] = [];
   let selectedLight:

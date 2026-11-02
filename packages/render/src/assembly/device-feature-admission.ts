@@ -1,6 +1,8 @@
 import { RAY_QUERY_FEATURE, type RhiAdapter, type RhiDevice } from '@forgeax/engine-rhi';
 import {
+  STANDARD_PARALLAX_DISPLACEMENT_BIT,
   type StandardSharedTransmissionHost,
+  standardMaskHasBit,
   standardSharedTransmissionConflicts,
 } from '@forgeax/engine-shader';
 import { ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES } from '../environment/capability';
@@ -60,6 +62,26 @@ export function standardTransmissionAdmission(
   if (transmissionBackdropAvailable(sampledTextureLimit)) return { kind: 'dedicated' };
   const conflicts = standardSharedTransmissionConflicts(material.standardTextureMask ?? 0);
   return conflicts.length === 0 ? { kind: 'shared' } : { kind: 'exceeded', conflicts };
+}
+
+/**
+ * Parallax reads its fragment height through the metallic pair. Below the
+ * dedicated budget, shared transmission takes that pair over and parallax
+ * evaluates as plain normal mapping (`normal-mapping`); geometry stays at the
+ * base mesh either way. `undefined` means the draw is not in parallax mode.
+ */
+export function standardParallaxAdmission(
+  material: Pick<
+    MaterialSnapshot,
+    'materialShaderId' | 'surfaceModel' | 'paramSnapshot' | 'standardTextureMask'
+  >,
+  sampledTextureLimit: number | undefined,
+): 'parallax' | 'normal-mapping' | undefined {
+  if (!standardMaskHasBit(material.standardTextureMask ?? 0, STANDARD_PARALLAX_DISPLACEMENT_BIT))
+    return undefined;
+  return standardTransmissionAdmission(material, sampledTextureLimit)?.kind === 'shared'
+    ? 'normal-mapping'
+    : 'parallax';
 }
 
 /**

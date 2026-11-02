@@ -1,9 +1,9 @@
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, FrameArena, World } from '@forgeax/engine-ecs';
 import { Instances } from '@forgeax/engine-render';
 import { MorphWeights } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MeshAsset } from '@forgeax/engine-types';
-import { skinnedPositions } from './skinned-positions';
+import { deformationStorage, skinnedPositions } from './skinned-positions';
 
 export type PoseUnavailableReason =
   | 'cpu-geometry-unavailable'
@@ -14,11 +14,14 @@ export type PoseUnavailableReason =
  * Morph is local, then Skin is world-space. All scratch belongs to this query.
  * Authored default weights are materialized by scene producers into MorphWeights;
  * absent live weights are neutral, exactly as render extraction.
+ * With an arena, returned geometry is borrowed until its scope closes;
+ * only detached hit records may leave the public query.
  */
 export function currentMeshPositions(
   world: World,
   entity: EntityHandle,
   mesh: MeshAsset,
+  arena?: FrameArena,
 ):
   | { positions: Float32Array; bounds: MeshAsset['aabb']; worldSpace: boolean; deformed: boolean }
   | { reason: PoseUnavailableReason } {
@@ -51,7 +54,9 @@ export function currentMeshPositions(
         return { reason: 'morph-pose-unavailable' };
       if (weights[k] === 0) continue;
       if (!morphed) {
-        positions = new Float32Array(positions);
+        const copy: Float32Array = deformationStorage(positions.length, arena);
+        copy.set(positions);
+        positions = copy;
         morphed = true;
       }
       for (let i = 0; i < positions.length; i++) {
@@ -79,7 +84,8 @@ export function currentMeshPositions(
       entity,
       mesh,
       positions,
-      morphed ? positions : new Float32Array(positions.length),
+      morphed ? positions : deformationStorage(positions.length, arena),
+      arena,
     );
     if (!pose) return { reason: 'skinned-pose-unavailable' };
     return { ...pose, worldSpace: true, deformed: true };

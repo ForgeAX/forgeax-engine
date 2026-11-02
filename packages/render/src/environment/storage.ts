@@ -12,6 +12,7 @@ import type { RenderFrameState } from '../record/frame-snapshot';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { SelectedEnvironmentFrame } from './frame';
 
 type Runtime = { readonly device: RhiDevice; readonly deviceScope: DeviceScope };
@@ -124,9 +125,9 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
       expected: 'selected atmosphere source',
       hint: 'rebuild the graph after environment selection changes',
     });
-  let owner = owners.get(runtime.deviceScope);
+  let owner = owners.get(recordContext(runtime).deviceScope);
   if (owner === undefined) {
-    const scope = runtime.deviceScope.createChild('atmosphere');
+    const scope = recordContext(runtime).deviceScope.createChild('atmosphere');
     try {
       owner = {
         current: undefined,
@@ -144,7 +145,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
       scope.retire();
       throw error;
     }
-    owners.set(runtime.deviceScope, owner);
+    owners.set(recordContext(runtime).deviceScope, owner);
   }
   const previous = owner.current;
   if (previous?.environment.environmentSignature === environment.environmentSignature)
@@ -287,7 +288,7 @@ function lease(runtime: Runtime, storage: Generation): AtmosphereLease {
       if (released) return;
       released = true;
       storage.pins--;
-      if (storage.pins === 0 && owners.get(runtime.deviceScope)?.current !== storage)
+      if (storage.pins === 0 && owners.get(recordContext(runtime).deviceScope)?.current !== storage)
         retire(runtime, storage);
     },
   };
@@ -295,7 +296,7 @@ function lease(runtime: Runtime, storage: Generation): AtmosphereLease {
 
 /** Stop retaining display storage when its owner is removed; pinned captures finish. */
 export function releaseAtmosphere(runtime: Runtime): void {
-  const owner = owners.get(runtime.deviceScope);
+  const owner = owners.get(recordContext(runtime).deviceScope);
   const previous = owner?.current;
   if (owner === undefined || previous === undefined) return;
   owner.current = undefined;

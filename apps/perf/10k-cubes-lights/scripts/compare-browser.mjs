@@ -84,6 +84,8 @@ function queryString() {
     pointLights: String(config.pointLights),
     spotLights: String(config.spotLights),
     profile: process.env.PERF_PROFILE ?? '0',
+    // The producer must outlive warmup, measurement and the completion sentinel.
+    frameLimit: String(config.warmupFrames + config.measureFrames + 2),
   });
   return query.toString();
 }
@@ -311,6 +313,7 @@ async function runOne({ implementation, path, globalName }, baseUrl, runIndex) {
       },
     };
   } catch (error) {
+    const lastEvidence = await page.evaluate(name => globalThis[name], globalName).catch(() => null);
     return {
       implementation,
       run: runIndex + 1,
@@ -318,7 +321,7 @@ async function runOne({ implementation, path, globalName }, baseUrl, runIndex) {
       errors: [error instanceof Error ? error.message : String(error)],
       pageErrors,
       consoleErrors,
-      evidence: null,
+      evidence: compactEvidence(lastEvidence),
       samples: null,
     };
   } finally {

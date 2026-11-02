@@ -42,6 +42,22 @@ describe('mesh.preview canonical contract', () => {
     ).toMatchObject({ ok: false });
   });
 
+  it('admits zero-thickness bounds and rejects inverted bounds', () => {
+    const flat = { min: [-1, 0, -1], max: [1, 0, 1] };
+    expect(
+      meshPreviewDescriptor.argsSchema.parse({
+        ...request,
+        binding: { ...request.binding, aabb: flat },
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      meshPreviewDescriptor.argsSchema.parse({
+        ...request,
+        binding: { ...request.binding, aabb: { min: [0, 1, 0], max: [1, 0, 1] } },
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
   it('rejects partial drawing and inverted AABB framing', async () => {
     const contribution = createMeshPreviewContribution(async () => ({
       ok: true,

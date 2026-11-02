@@ -1,13 +1,25 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, Time, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { Transform, TransformInterpolation } from '@forgeax/engine-scene';
+import { GlobalTransform, Transform, TransformInterpolation } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it, vi } from 'vitest';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight } from '../../components';
-import { EnvironmentGate, readEnvironmentPose } from '../../extract/environment-gate';
+import {
+  Camera,
+  DirectionalLight,
+  MeshFilter,
+  MeshRenderer,
+  MotionBlur,
+  PointLight,
+} from '../../components';
+import {
+  EnvironmentGate,
+  queryEnvironment,
+  readEnvironmentPose,
+} from '../../extract/environment-gate';
 import * as environmentExtraction from '../../extract/world-environment';
 import { Materials } from '../../materials';
+import { setActiveCamera } from '../../systems/active-camera';
 import { createRenderPublisher } from '../publisher';
 import { RenderPublicationReceiver } from '../receiver';
 import { renderPublicationTransfers } from '../record';
@@ -82,7 +94,7 @@ function session() {
 }
 
 describe('change-driven source environment', () => {
-  it('re-extracts conservatively for unrelated writes while preserving equal published values', () => {
+  it('ignores unrelated writes while preserving published values', () => {
     const s = session();
     const Clock = defineComponent('EnvironmentUnrelatedClock', { value: 'f32' });
     const clock = s.world.spawn({ component: Clock, data: { value: 0 } }).unwrap();
@@ -97,7 +109,63 @@ describe('change-driven source environment', () => {
         expect(next.metadata.lights).toBe(first.metadata.lights);
         expect(next.metadata.cameras).toBe(first.metadata.cameras);
       }
-      expect(extractions).toHaveBeenCalledTimes(3);
+      expect(extractions).not.toHaveBeenCalled();
+    } finally {
+      s.dispose();
+    }
+  });
+
+  it('ignores unrelated membership while admitting environment removal and new generations', () => {
+    const s = session();
+    const Other = defineComponent('EnvironmentUnrelatedMembership', { value: 'f32' });
+    try {
+      const first = s.frame();
+      extractions.mockClear();
+      const other = s.world.spawn({ component: Other, data: {} }).unwrap();
+      s.frame();
+      s.world.despawn(other).unwrap();
+      s.frame();
+      expect(extractions).not.toHaveBeenCalled();
+      s.world.removeComponent(s.lamp, PointLight).unwrap();
+      const removed = s.frame();
+      expect(removed.metadata.lights.point).toHaveLength(0);
+      expect(first.metadata.lights.point).toHaveLength(1);
+      s.world.addComponent(s.lamp, { component: PointLight, data: { intensity: 9 } }).unwrap();
+      expect(s.frame().metadata.lights.point[0]?.intensity).toBe(9);
+      s.world.despawn(s.lamp).unwrap();
+      expect(s.frame().metadata.lights.point).toHaveLength(0);
+      s.world
+        .spawn(
+          { component: PointLight, data: { intensity: 12 } },
+          { component: Transform, data: {} },
+        )
+        .unwrap();
+      s.world.update(1 / 60).unwrap();
+      expect(s.frame().metadata.lights.point[0]?.intensity).toBe(12);
+      expect(extractions).toHaveBeenCalledTimes(4);
+    } finally {
+      s.dispose();
+    }
+  });
+
+  it('observes optional camera membership, missing pose joins and ActiveCamera resource values', () => {
+    const s = session();
+    try {
+      const second = s.world.spawn({ component: Camera, data: { fov: Math.PI / 4 } }).unwrap();
+      const first = s.frame();
+      s.world.addComponent(s.camera, { component: MotionBlur, data: {} }).unwrap();
+      expect(s.frame().metadata.cameras[0]?.motionBlur).toBeDefined();
+      s.world.removeComponent(s.camera, MotionBlur).unwrap();
+      expect(s.frame().metadata.cameras[0]?.motionBlur).toBeUndefined();
+      s.world.addComponent(second, { component: Transform, data: { pos: [1, 2, 3] } }).unwrap();
+      s.world.update(1 / 60).unwrap();
+      setActiveCamera(s.world, second);
+      expect(s.frame().metadata.cameras[0]?.entityKey).toBe(Number(second));
+      expect(first.metadata.cameras[0]?.entityKey).toBe(Number(s.camera));
+      s.world.removeComponent(second, GlobalTransform).unwrap();
+      s.world.removeComponent(second, Transform).unwrap();
+      s.world.update(1 / 60).unwrap();
+      expect(s.frame().metadata.cameras[0]?.entityKey).toBe(Number(s.camera));
     } finally {
       s.dispose();
     }
@@ -177,6 +245,36 @@ describe('EnvironmentGate inputs', () => {
     world.set(entity, Input, { value: 2 }).unwrap();
     read();
     expect(runs).toBe(3);
+  });
+
+  it('restores actual input observation after nested and failed extractions', () => {
+    const world = new World();
+    const Input = defineComponent('EnvironmentObservedInput', { value: 'f32' });
+    const Other = defineComponent('EnvironmentNestedInput', { value: 'f32' });
+    const entity = world
+      .spawn({ component: Input, data: {} }, { component: Other, data: {} })
+      .unwrap();
+    const outer = new EnvironmentGate<number>(true);
+    const inner = new EnvironmentGate<number>(true);
+    outer.assetsChanged = inner.assetsChanged = false;
+    let runs = 0;
+    const read = () =>
+      outer.read(world, 'outer', () => {
+        runs++;
+        expect(() =>
+          inner.read(world, 'inner', () => {
+            queryEnvironment(world, { read: [Other] }).unwrap();
+            throw new Error('probe');
+          }),
+        ).toThrow('probe');
+        queryEnvironment(world, { read: [Input] }).unwrap();
+        return { value: runs, timeDependent: false };
+      });
+    expect(read()).toBe(1);
+    world.set(entity, Other, { value: 2 }).unwrap();
+    expect(read()).toBe(1);
+    world.set(entity, Input, { value: 2 }).unwrap();
+    expect(read()).toBe(2);
   });
 
   function gated() {

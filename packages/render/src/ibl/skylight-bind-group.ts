@@ -3,6 +3,7 @@ import {
   directDfgLutBytes,
   STANDARD_PHYSICAL_BINDING_START,
 } from '@forgeax/engine-shader';
+import { PLANAR_REFLECTION_UNIFORM_SIZE } from '../record/view-ubo';
 
 // Skylight resources share the Standard material bind group. Solid environments
 // use constant radiance cubes and the same GGX DFG data as Three.js r184;
@@ -345,7 +346,7 @@ export function assembleMaterialWithSkylightEntries(
           value: {
             buffer: surfaceMedium.planarUniform,
             offset: surfaceMedium.planarUniformOffset,
-            size: 96,
+            size: PLANAR_REFLECTION_UNIFORM_SIZE,
           },
         },
       },

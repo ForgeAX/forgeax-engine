@@ -1128,7 +1128,7 @@ function projectDeferredGpuDriven(
   return context.projectGpuDriven({
     format: targets.scene.format,
     sampleCount: targets.scene.sampleCount,
-    lateOcclusion: topology.config?.gpuOcclusion !== false,
+    lateOcclusion: topology.opaque.lateOcclusion,
     ...(fallback === undefined ? {} : { additionalColorFormats: [fallback.format] }),
   });
 }
@@ -1201,6 +1201,7 @@ function addDeferredForwardStages(
       shadows: sources.shadows,
       cloudShadow: sources.cloudShadow,
       ssao: sources.ssao,
+      planarReflection: targetCaptures,
       clusterReads: clusters === null ? [] : standardClusterReadAccesses(clusters),
     }),
     gpuDriven,

@@ -10,7 +10,7 @@ describe('auto exposure GPU pass contract', () => {
   it('encodes clear, histogram, and adapt in one compute pass with a fixed cohort', () => {
     type Descriptor = {
       readonly accesses: readonly unknown[];
-      readonly encode: (context: never) => void;
+      readonly encodeDirect: (encoder: never, frame: never, resources: never) => void;
     };
     const passes: Array<{ name: string; kind: string; descriptor: Descriptor }> = [];
     const graph = {
@@ -58,14 +58,19 @@ describe('auto exposure GPU pass contract', () => {
       ),
       createBindGroup: vi.fn((descriptor: unknown) => ok({ descriptor })),
     };
-    const encoded = passes[0]?.descriptor.encode({
+    const context = {
       pass: { setPipeline, setBindGroup, dispatchWorkgroups },
       frame: { runtime: { device, immediateShaderModuleFactory: shaderFactory } },
       resources: {
         textureView: () => ok({}),
         buffer: () => ok({}),
       },
-    } as never);
+    };
+    const encoded = passes[0]?.descriptor.encodeDirect(
+      context.pass as never,
+      context.frame as never,
+      context.resources as never,
+    );
 
     expect(encoded).toBeUndefined();
     expect(pipelineNames).toEqual([

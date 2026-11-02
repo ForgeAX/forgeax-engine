@@ -1,5 +1,5 @@
 import type { AssetHandle } from '@forgeax/engine-types';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawShapes } from '@forgeax/engine-debug-draw';
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import {
   compute2dBounds,
@@ -139,7 +139,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
   return { instances };
 }
 
-function drawBounds(debugDraw: DebugDraw, bounds: ReturnType<typeof compute2dBounds>): void {
+function drawBounds(debugDraw: DebugDrawShapes, bounds: ReturnType<typeof compute2dBounds>): void {
   if (!bounds.ok) return;
   const box = bounds.value.aabb;
   debugDraw.aabb(vec3.create(box[0], box[1], 3), vec3.create(box[2], box[3], 3), [0.95, 0.15, 0.1, 1]);
@@ -152,7 +152,7 @@ function drawBounds(debugDraw: DebugDraw, bounds: ReturnType<typeof compute2dBou
   );
 }
 
-export function drawMesh2dArcsBounds(debugDraw: DebugDraw, scene: Mesh2dArcsScene): void {
+export function drawMesh2dArcsBounds(debugDraw: DebugDrawShapes, scene: Mesh2dArcsScene): void {
   for (const instance of scene.instances) {
     drawBounds(
       debugDraw,

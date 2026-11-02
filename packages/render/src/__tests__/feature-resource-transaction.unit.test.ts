@@ -11,13 +11,8 @@ import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { resolveStandardRenderFeatureTargets } from '../features/targets';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
-function submit(batch: RenderFeatureFrameBatch) {
-  expect(batch.frame.errors).toEqual([]);
-  batch.frame.onSubmitted();
-  for (const view of batch.views.values()) view.onSubmitted();
-  batch.onSubmitted();
-}
 async function fixture(feature: RenderFeature<unknown>) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -70,7 +65,11 @@ describe('Feature resource frame transaction', () => {
         }),
     };
     const f = await fixture(feature);
-    const frame = () => f.host.runFrame([{ ...f.common, identity: 'a', render }]);
+    const submit = (batch: RenderFeatureFrameBatch) => {
+      expect(batch.frame.errors).toEqual([]);
+      submitFeatureFrame(f.host);
+    };
+    const frame = () => prepareFeatureFrame(f.host, [{ ...f.common, identity: 'a', render }]);
     submit(frame());
     render = false;
     const held = frame();
@@ -122,15 +121,19 @@ describe('Feature resource frame transaction', () => {
         }),
     };
     const f = await fixture(feature);
+    const submit = (batch: RenderFeatureFrameBatch) => {
+      expect(batch.frame.errors).toEqual([]);
+      submitFeatureFrame(f.host);
+    };
     const create = vi.spyOn(f.device, 'createBuffer');
-    const frame = () => f.host.runFrame([{ ...f.common, identity: 'a', render: true }]);
+    const frame = () => prepareFeatureFrame(f.host, [{ ...f.common, identity: 'a', render: true }]);
     const first = frame();
     submit(first);
     const previous = create.mock.results[0]?.value;
     if (previous?.ok !== true) throw new Error('Missing submitted buffer');
     name = 'replacement';
     const failed = frame();
-    failed.onAborted();
+    abortFeatureFrame(f.host);
     for (const batch of failed.preparedResourceBatches) batch.release().unwrap();
     expect(f.destroy.mock.calls.some(([buffer]) => buffer === previous.value)).toBe(false);
     name = 'old';
@@ -148,6 +151,10 @@ describe('Feature resource frame transaction', () => {
 
   it('resizes the production Motion Blur view without resetting another view and can retry an aborted resize', async () => {
     const f = await fixture(createMotionBlurFeature());
+    const submit = (batch: RenderFeatureFrameBatch) => {
+      expect(batch.frame.errors).toEqual([]);
+      submitFeatureFrame(f.host);
+    };
     const targets = resolveStandardRenderFeatureTargets({
       tonemap: 'aces',
       antialias: 'taa',
@@ -157,7 +164,8 @@ describe('Feature resource frame transaction', () => {
       cloudHistory: false,
     });
     const frame = (width: number) =>
-      f.host.runFrame(
+      prepareFeatureFrame(
+        f.host,
         ['a', 'b'].map((identity) => ({
           ...f.common,
           identity,
@@ -188,7 +196,7 @@ describe('Feature resource frame transaction', () => {
     const other = buffers(first, 'b');
     const failed = frame(128);
     expect(failed.frame.errors).toEqual([]);
-    failed.onAborted();
+    abortFeatureFrame(f.host);
     for (const batch of failed.preparedResourceBatches) batch.release().unwrap();
     const retried = frame(128);
     submit(retried);

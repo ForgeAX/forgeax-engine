@@ -6,8 +6,11 @@ import {
   materialChildForbiddenFields,
 } from './asset.js';
 import type { MaterialError } from './errors.js';
-import { createMaterialError } from './errors.js';
+import { createMaterialError, MATERIAL_PARALLAX_HINTS } from './errors.js';
 import { materialPhysicalContractResult } from './standard-layer-plan.js';
+import { STANDARD_DISPLACEMENT_MODES } from './standard-schema.js';
+
+const DISPLACEMENT_MODE_VALUES: readonly unknown[] = Object.values(STANDARD_DISPLACEMENT_MODES);
 
 export type MaterialTable = Readonly<Record<string, MaterialAsset>>;
 
@@ -145,8 +148,39 @@ export function validateMaterialValues(
         }),
       );
     }
+    if (name === 'displacementMode' && !DISPLACEMENT_MODE_VALUES.includes(value)) {
+      return err(
+        createMaterialError('material-value-type-mismatch', {
+          code: 'material-value-type-mismatch',
+          material,
+          parameter: name,
+          expectedType: 'u32 0 (vertex) | 1 (parallax)',
+          actualType: String(value),
+        }),
+      );
+    }
   }
   return ok(true);
+}
+
+// Parallax fades to plain normal mapping, so it needs a normal map; its
+// fragment height is hosted in the metallic pair, so no independent metallic map.
+function validateParallaxNormal(
+  material: string,
+  values: Readonly<Record<string, MaterialValue | null>>,
+): Result<true, MaterialError> {
+  if (values.displacementMode !== STANDARD_DISPLACEMENT_MODES.parallax) return ok(true);
+  const present = (name: string) => values[name] !== undefined && values[name] !== null;
+  if (present('normalTexture') && !present('metallicTexture')) return ok(true);
+  const field = present('normalTexture') ? 'metallicTexture' : 'normalTexture';
+  const error = createMaterialError('material-parallax-contract-invalid', {
+    code: 'material-parallax-contract-invalid',
+    material,
+    parameter: 'displacementMode',
+    field,
+    action: field === 'normalTexture' ? 'provide-normal-texture' : 'use-packed-metallic-roughness',
+  });
+  return err({ ...error, hint: MATERIAL_PARALLAX_HINTS[field] });
 }
 
 function validateValues(
@@ -254,8 +288,11 @@ function resolveChain(
         parameter.default === undefined ? [] : [[parameter.name, parameter.default]],
       ),
     );
-    const valid = validateValues(id, { ...defaults, ...values }, current.parameters);
+    const effective = { ...defaults, ...values };
+    const valid = validateValues(id, effective, current.parameters);
     if (!valid.ok) return valid;
+    const parallax = validateParallaxNormal(id, effective);
+    if (!parallax.ok) return parallax;
     return ok({ leaf, chain: [id], asset: { ...current, values } });
   }
 
@@ -283,6 +320,15 @@ function resolveChain(
   const valid = validateValues(id, current.values ?? {}, parentResult.value.asset.parameters);
   if (!valid.ok) return valid;
   const merged = mergeMaterial(parentResult.value.asset, current);
+  const parallax = validateParallaxNormal(id, {
+    ...Object.fromEntries(
+      (merged.parameters ?? []).flatMap((parameter) =>
+        parameter.default === undefined ? [] : [[parameter.name, parameter.default]],
+      ),
+    ),
+    ...merged.values,
+  });
+  if (!parallax.ok) return parallax;
   if (merged.passes === undefined || merged.passes.length === 0) {
     return err(
       createMaterialError('material-no-effective-pass', {

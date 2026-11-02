@@ -14,9 +14,9 @@ enable primitive_index;
 #endif
 #pragma material_slot surface
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-#import forgeax_material::displacement::{displaceVertex, displacedNormal}
+#import forgeax_material::displacement::{displaceVertex, displacedNormal, parallaxSourceUvOffset}
 #endif
-#import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
+#import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping, viewClippingCap}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
 #import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer}
@@ -234,11 +234,11 @@ enable primitive_index;
 @group(1) @binding(41) var iridescenceThicknessTexture : texture_2d<f32>;
 #endif
 #ifdef SPECULAR_TEXTURE_AVAILABLE
-@group(1) @binding(42) var specularTextureSampler : sampler;
+@group(1) @binding(42) var specularSampler : sampler;
 @group(1) @binding(43) var specularTexture : texture_2d<f32>;
 #endif
 #ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE
-@group(1) @binding(44) var specularColorTextureSampler : sampler;
+@group(1) @binding(44) var specularColorSampler : sampler;
 @group(1) @binding(45) var specularColorTexture : texture_2d<f32>;
 #endif
 #ifdef DIFFUSE_TRANSMISSION_TEXTURE_AVAILABLE
@@ -328,10 +328,10 @@ fn materialTextureFilteringWitness() {
   let iridescenceThicknessWitness = textureSample(iridescenceThicknessTexture, iridescenceThicknessSampler, vec2<f32>(0.0));
 #endif
 #ifdef SPECULAR_TEXTURE_AVAILABLE
-  let specularWeightWitness = textureSample(specularTexture, specularTextureSampler, vec2<f32>(0.0));
+  let specularWeightWitness = textureSample(specularTexture, specularSampler, vec2<f32>(0.0));
 #endif
 #ifdef SPECULAR_COLOR_TEXTURE_AVAILABLE
-  let specularColorWitness = textureSample(specularColorTexture, specularColorTextureSampler, vec2<f32>(0.0));
+  let specularColorWitness = textureSample(specularColorTexture, specularColorSampler, vec2<f32>(0.0));
 #endif
 #ifdef DIFFUSE_TRANSMISSION_TEXTURE_AVAILABLE
   let diffuseTransmissionWitness = textureSample(diffuseTransmissionTexture, diffuseTransmissionSampler, vec2<f32>(0.0));
@@ -410,6 +410,44 @@ fn materialTextureFilteringWitness() {
 @group(2) @binding(7) var ssaoBlurredTexture       : texture_2d<f32>;
 @group(2) @binding(8) var ssaoBlurredSampler       : sampler;
 #endif
+#endif
+
+#ifdef PLANAR_REFLECTION_AVAILABLE
+struct StandardPlanarReflection {
+  viewProjection : mat4x4<f32>,
+  plane : vec4<f32>,
+  enabledAndPadding : vec4<f32>,
+};
+// The display camera's PlanarReflection capture and its mirrored projection.
+// Wherever no capture is current, captures included, the projection is disabled.
+@group(1) @binding(73) var standardPlanarReflectionTexture : texture_2d<f32>;
+@group(1) @binding(74) var<uniform> standardPlanarReflection : StandardPlanarReflection;
+
+// A fragment on the reflection plane, facing along its normal, sees its mirror
+// image instead of the environment radiance; the split-sum response keeps the
+// material Fresnel, and the sharp image fades into the prefiltered environment
+// by roughness 0.5. The shading normal's tilt off the plane, times
+// distortion (y), shifts the lookup toward the tilt's mirrored screen direction.
+fn standardPlanarSpecular(position : vec3<f32>, normal : vec3<f32>, shadingNormal : vec3<f32>,
+  roughness : f32, environment : vec3<f32>, response : vec3<f32>) -> vec3<f32> {
+  let planar = standardPlanarReflection;
+  let weight = clamp(1.0 - 2.0 * roughness, 0.0, 1.0);
+  if (planar.enabledAndPadding.x == 0.0 || weight == 0.0 ||
+      abs(dot(planar.plane, vec4<f32>(position, 1.0))) > 0.001 ||
+      dot(normal, planar.plane.xyz) < 0.999) { return environment; }
+  let clip = planar.viewProjection * vec4<f32>(position, 1.0);
+  if (clip.w <= 0.0) { return environment; }
+  let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) { return environment; }
+  let tilt = shadingNormal - planar.plane.xyz * dot(shadingNormal, planar.plane.xyz);
+  let probe = planar.viewProjection * vec4<f32>(position + tilt, 1.0);
+  let to = probe.xy / probe.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5) - uv;
+  var lookup = uv;
+  if (probe.w > 0.0 && length(to) > 1e-6) { lookup += normalize(to) * length(tilt) * planar.enabledAndPadding.y; }
+  let reflected = textureSampleLevel(standardPlanarReflectionTexture, prefilterSampler, clamp(lookup, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
+  let mirrored = reflected.rgb * response + environment * (1.0 - clamp(reflected.a, 0.0, 1.0));
+  return mix(environment, mirrored, weight);
+}
 #endif
 
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
@@ -544,7 +582,7 @@ fn standardVertexPosition(in : VsIn) -> vec3<f32> {
   return terrainVertex(in.pos, terrainHeightTexture, material.terrainSection, material.terrainLod, material.terrainNeighbors);
 #else
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  if (standardUsesDisplacementTexture()) {
+  if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement()) {
     return displaceVertex(in.pos, in.normal, displacementTexture, displacementTexture_sampler,
       material.displacementScale, material.displacementBias,
       material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata, material.displacementTextureCoordinatesRotation,
@@ -800,6 +838,46 @@ fn standardObjectToWorld(in : VsOut) -> mat3x3<f32> {
 // default keeps both discards for every other consumer of this template.
 @id(64001) override standardSurfaceDiscards: u32 = 3u;
 
+// Parallax displacement shifts the height slot's source UV set before every
+// Surface and layer sample. Derivatives precede discard and row selection.
+// The march reads the derived fragment height binding, which the compiler
+// projects onto its hosted pair; shared transmission withdraws it.
+fn standardParallaxInput(in : VsOut) -> VsOut {
+  var shifted = in;
+#ifdef PARALLAX_HEIGHT_FRAGMENT_AVAILABLE
+#ifndef STANDARD_UV_INPUT_UNUSED
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  let positionDx = dpdx(in.worldPos);
+  let positionDy = dpdy(in.worldPos);
+  let uvDx = array<vec4<f32>, 4>(dpdx(in.uvPair0), dpdx(in.uvPair1), dpdx(in.uvPair2), dpdx(in.uvPair3));
+  let uvDy = array<vec4<f32>, 4>(dpdy(in.uvPair0), dpdy(in.uvPair1), dpdy(in.uvPair2), dpdy(in.uvPair3));
+#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
+  material = selectedMaterial(in.materialAddress.x);
+#endif
+  if (standardUsesDisplacementTexture() && standardUsesParallaxDisplacement()) {
+    var pairs = array<vec4<f32>, 4>(in.uvPair0, in.uvPair1, in.uvPair2, in.uvPair3);
+    let uvSet = u32(clamp(material.displacementTextureCoordinatesMetadata.x, 0.0, 7.0));
+    let pairIndex = uvSet / 2u;
+    let upper = (uvSet & 1u) != 0u;
+    let delta = parallaxSourceUvOffset(parallaxHeightTexture, parallaxHeightTexture_sampler,
+      material.displacementScale, material.displacementBias,
+      material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata,
+      material.displacementTextureCoordinatesRotation,
+      select(pairs[pairIndex].xy, pairs[pairIndex].zw, upper), select(uvDx[pairIndex].xy, uvDx[pairIndex].zw, upper),
+      select(uvDy[pairIndex].xy, uvDy[pairIndex].zw, upper), positionDx, positionDy, in.worldNormal,
+      in.worldTangent, viewDirectionToCamera(in.worldPos), standardObjectToWorld(in));
+    pairs[pairIndex] = pairs[pairIndex] + select(vec4<f32>(delta, 0.0, 0.0), vec4<f32>(0.0, 0.0, delta), upper);
+    shifted.uvPair0 = pairs[0];
+    shifted.uvPair1 = pairs[1];
+    shifted.uvPair2 = pairs[2];
+    shifted.uvPair3 = pairs[3];
+  }
+#endif
+#endif
+#endif
+  return shifted;
+}
+
 // Standard owns the lighting and pass policy; the selected Surface owns only
 // the base facts exchanged through surface_v1.
 fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec3<f32>) -> SurfaceData {
@@ -848,7 +926,8 @@ fn evaluateStandardSurface(in : VsOut, frontFacing : bool, geometricNormal : vec
 #endif
   var vertexNormal = in.worldNormal;
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  if (standardUsesDisplacementTexture() && (material.displacementScale != 0.0 || material.displacementBias != 0.0)) {
+  if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement() &&
+    (material.displacementScale != 0.0 || material.displacementBias != 0.0)) {
     vertexNormal = triangleNormal;
   }
 #endif
@@ -965,7 +1044,7 @@ fn standardSurfaceSpecular(in : VsOut, surface : SurfaceData, dielectricF0 : f32
   );
   specularColor = specularColor * sampleMaterialTexture(
     specularColorTexture,
-    specularColorTextureSampler,
+    specularColorSampler,
     specularUv,
     material.specularColorTextureCoordinatesMetadata.zw,
   ).rgb;
@@ -981,7 +1060,7 @@ fn standardSurfaceSpecular(in : VsOut, surface : SurfaceData, dielectricF0 : f32
   );
   specularWeight = specularWeight * sampleMaterialTexture(
     specularTexture,
-    specularTextureSampler,
+    specularSampler,
     specularWeightUv,
     material.specularTextureCoordinatesMetadata.zw,
   ).a;
@@ -1006,8 +1085,27 @@ fn standardSsrCoverage() -> f32 {
   return coverage;
 }
 
+// A clipping cap fragment is shaded as a front-facing point on the cut plane.
+fn standardCappedInput(in : VsOut, frontFacing : bool) -> VsOut {
+  let cap = viewClippingCap(in.worldPos, frontFacing);
+  var capped = in;
+  if (cap.capped) {
+    capped.worldPos = cap.positionWS;
+    capped.worldNormal = cap.normalWS;
+  }
+  return capped;
+}
+
+fn standardCappedFacing(in : VsOut, frontFacing : bool) -> bool {
+  return frontFacing || viewClippingCap(in.worldPos, frontFacing).capped;
+}
+
 // Forward shading shared by the sorted (fs_main, fs_opaque) and OIT (fs_oit*) entries.
 fn standardForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit {
+  return standardForwardLitSurface(standardCappedInput(standardParallaxInput(in), frontFacing), standardCappedFacing(in, frontFacing));
+}
+
+fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardLit {
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
   var rawGeometry = surfaceGeometryNormal(dpdx(in.worldPos), dpdy(in.worldPos), vec3<f32>(0.0));
@@ -1263,10 +1361,14 @@ fn standardForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit {
     );
   }
 #endif
-  let environment = evaluateStandardEnvironment(in.worldPos, physicalNormal, v,
+  var environment = evaluateStandardEnvironment(in.worldPos, physicalNormal, v,
     diffuseAlbedo, transmissionAlbedo, metallic, iblRoughness, f0, dielectricSpecular, metallicF0, skylight, irradianceMap, irradianceSampler,
     prefilterMap, prefilterSampler, brdfLut, skylightPrefilterMap,
     probeShPreblend, probeLocalBlendFraction);
+#ifdef PLANAR_REFLECTION_AVAILABLE
+  environment.specular = standardPlanarSpecular(in.worldPos, geometricNormal, physicalNormal, iblRoughness,
+    environment.specular, environment.response.rgb);
+#endif
   let ao = surface.occlusion;
   let specularEnvironmentScale = decodeSpecularEnvironmentScale(
     vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB), skylight.intensity);
@@ -1650,6 +1752,18 @@ fn fs_oit_premultiplied(in : VsOut, @builtin(front_facing) frontFacing : bool) -
 fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool
 #ifdef VISIBLE_SURFACE_AVAILABLE
   , @builtin(primitive_index) primitiveIndex : u32
+#endif
+) -> GBufferOutput {
+  return standardGBuffer(standardCappedInput(standardParallaxInput(in), frontFacing), standardCappedFacing(in, frontFacing)
+#ifdef VISIBLE_SURFACE_AVAILABLE
+    , primitiveIndex
+#endif
+  );
+}
+
+fn standardGBuffer(in : VsOut, frontFacing : bool
+#ifdef VISIBLE_SURFACE_AVAILABLE
+  , primitiveIndex : u32
 #endif
 ) -> GBufferOutput {
   // Freeze actual triangle geometry before clipping or alpha discard. The

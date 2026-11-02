@@ -13,7 +13,7 @@
 import { World } from '@forgeax/engine-ecs';
 
 import { Transform } from '@forgeax/engine-scene';
-import { Camera, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
+import { Camera, type FrameReceipt, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -65,6 +65,10 @@ interface R5ProbeResult {
   badSubmitDone: boolean;
   badSubmitResult: { ok: boolean; code?: string; hint?: string; reason?: string; message?: string } | null;
   nextFrameAfterBadSubmit: boolean;
+  baselineFrameId: number;
+  recoveryFrameId: number;
+  baselineReady: boolean;
+  recoveryReady: boolean;
   onErrorEvents: Array<{ code: string; hint: string; timestamp: number }>;
 }
 
@@ -79,6 +83,10 @@ const P: R5ProbeResult = {
   badSubmitDone: false,
   badSubmitResult: null,
   nextFrameAfterBadSubmit: false,
+  baselineFrameId: 0,
+  recoveryFrameId: 0,
+  baselineReady: false,
+  recoveryReady: false,
   onErrorEvents: [],
 };
 win().__r5Probe = P;
@@ -93,6 +101,29 @@ async function waitForMatchingOnError(code: string, fromIndex: number): Promise<
     await new Promise<void>((resolve) => setTimeout(resolve, 16));
   }
   return hasMatchingOnError(code, fromIndex);
+}
+
+/** Establish the fault precondition through the public completed-frame receipt. */
+async function waitForBaselinePicture(draw: () => FrameReceipt): Promise<FrameReceipt> {
+  const deadline = performance.now() + 30_000;
+  for (;;) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const frame = draw();
+    const completed = await frame.completed;
+    if (!completed.ok) throw completed.error;
+    if (frame.presentation === 'ready') return frame;
+    if (performance.now() >= deadline)
+      throw new Error(`baseline picture unavailable: ${frame.presentationPendingReason?.code ?? 'unknown'}`);
+  }
+}
+
+/** The first post-fault submission must complete with geometry, without retries. */
+async function requireRecoveryPicture(frame: FrameReceipt): Promise<FrameReceipt> {
+  const completed = await frame.completed;
+  if (!completed.ok) throw completed.error;
+  if (frame.presentation !== 'ready')
+    throw new Error(`recovery picture unavailable: ${frame.presentationPendingReason?.code ?? 'unknown'}`);
+  return frame;
 }
 
 let _resolveReady: () => void;
@@ -157,13 +188,13 @@ const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unw
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const lease = worldAttachment1.value;
-    const drawFrame = (label = 'frame'): void => {
+    const drawFrame = (label = 'frame'): FrameReceipt => {
       const frame = renderer.draw({
         leases: [lease],
         camera: { lease },
         environment: { lease },
       });
-      if (frame.ok) return;
+      if (frame.ok) return frame.value;
       const detail = serializableDetail((frame.error as { detail?: unknown }).detail ?? null);
       P.drawFailures.push({ code: frame.error.code, hint: frame.error.hint || '', detail });
       log(`${label} draw failed: ${frame.error.code} ${frame.error.hint || ''}`);
@@ -228,10 +259,17 @@ const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unw
         { component: MeshRenderer, data: {} },
       );
 
-      world.update().unwrap();
+      // Accepted submissions may still be clear-only readiness fallbacks.
+      // Establish a completed geometry picture before testing its recovery;
+      // the post-fault assertion below still admits exactly the next frame.
+      const baseline = await waitForBaselinePicture(() => {
+        world.update().unwrap();
+        return drawFrame('mode-b baseline frame');
+      });
+      P.baselineFrameId = baseline.frameId;
+      P.baselineReady = true;
+      log('baseline picture ready, frame=' + P.baselineFrameId);
       await nextAnimationFrame();
-      drawFrame('mode-b baseline frame');
-      await new Promise((r) => requestAnimationFrame(r));
 
       // Trigger a submit-period validation error on the engine's OWN live
       // device (host-owned device), not a freshly-spun second device. On the
@@ -301,7 +339,9 @@ const primitiveTriangle = sceneAssets.create(createPrimitiveMesh('triangle').unw
         // Next frame with the same renderer must still render (AC-06).
         await new Promise((r) => requestAnimationFrame(r));
         world.update().unwrap();
-        drawFrame('mode-b recovery frame');
+        const recovery = await requireRecoveryPicture(drawFrame('mode-b recovery frame'));
+        P.recoveryFrameId = recovery.frameId;
+        P.recoveryReady = true;
         await new Promise((r) => requestAnimationFrame(r));
         await new Promise((r) => requestAnimationFrame(r));
         P.nextFrameAfterBadSubmit = true;

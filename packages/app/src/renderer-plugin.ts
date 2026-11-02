@@ -168,11 +168,11 @@ export function pointShadowPlugin(): Plugin {
       }
       const capability: PointShadowCapability = {
         inspect() {
-          const inspection = renderer.inspect().pointShadow;
+          const inspection = renderer.inspect({ fields: ['pointShadow'] }).pointShadow;
           return Object.freeze({ ...(inspection ?? INACTIVE_POINT_SHADOW) });
         },
         admit(requested) {
-          const inspection = renderer.inspect();
+          const inspection = renderer.inspect({ fields: ['capabilities', 'pointShadow'] });
           return admitPointShadowBudget(
             requested,
             inspection.capabilities.storageBuffer !== true

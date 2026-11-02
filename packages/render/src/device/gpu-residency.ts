@@ -2842,7 +2842,7 @@ export class GpuResidencyCache {
           kind: 'texture',
           shape: sourceTex.shape,
           format: projected.outputFormat,
-          data: halfFloat.f32ToF16Bytes(sourceTex.data),
+          data: halfFloat.f32ToF16Bytes(sourceTex.data, { clampFinite: true }),
           colorSpace: 'linear',
           mips: { kind: 'none' },
         }

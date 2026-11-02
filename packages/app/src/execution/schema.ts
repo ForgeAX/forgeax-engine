@@ -144,6 +144,16 @@ function isRenderLimits(render: ExecutionRenderSection): boolean {
   );
 }
 
+function isRenderLoss(loss: unknown): boolean {
+  return (
+    isRecord(loss) &&
+    hasExactKeys(loss, ['epoch', 'cause']) &&
+    Number.isSafeInteger(loss.epoch) &&
+    (loss.epoch as number) >= 2 &&
+    typeof loss.cause === 'string'
+  );
+}
+
 function isRenderSection(
   render: ExecutionRenderSection,
   renderWorker: ExecutionWorkerDecision,
@@ -157,9 +167,11 @@ function isRenderSection(
       'completedFrame',
       ...('capabilities' in render ? ['capabilities'] : []),
       ...('limits' in render ? ['limits'] : []),
+      ...('lastLoss' in render ? ['lastLoss'] : []),
     ])
   )
     return false;
+  if ('lastLoss' in render && !isRenderLoss(render.lastLoss)) return false;
   if ('capabilities' in render && !isRenderCapabilities(render.capabilities)) return false;
   if ('limits' in render && !isRenderLimits(render)) return false;
   if (!renderWorker.enabled || !['alive', 'rebuilding', 'failed', 'stopped'].includes(render.state))

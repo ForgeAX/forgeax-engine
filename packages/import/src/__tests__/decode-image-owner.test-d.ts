@@ -40,8 +40,10 @@ describe('ImportRunnerFs decodeImage owner', () => {
     expectTypeOf<Awaited<ReturnType<RunnerDecodeImage>>>().toEqualTypeOf<DecodeImageResult>();
   });
 
-  it('preserves the PNG/JPEG/TGA input contract and optional host injection', () => {
-    expectTypeOf<DecodeImageMime>().toEqualTypeOf<'image/png' | 'image/jpeg' | 'image/x-tga'>();
+  it('preserves the PNG/JPEG/TGA/KTX2 input contract and optional host injection', () => {
+    expectTypeOf<DecodeImageMime>().toEqualTypeOf<
+      'image/png' | 'image/jpeg' | 'image/x-tga' | 'image/ktx2'
+    >();
     expectTypeOf<ImportRunnerFs['decodeImage']>().toEqualTypeOf<DecodeImage | undefined>();
   });
 

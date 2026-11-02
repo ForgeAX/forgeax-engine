@@ -38,6 +38,13 @@ world.addSystem(FixedUpdate, {
 world.update(1 / 60).unwrap();
 ```
 
+A retained Query also supports synchronous `query.forEach(row => { ... })`.
+It reuses that Query's borrowed cursor instead of allocating another iterator.
+Read the row during the callback; do not suspend or retain it. Callback failure
+closes without advancing a temporal observation, and same-Query reentry is
+rejected. Use numeric batches/spans for numerical kernels and the existing row
+iterator when traversal must be suspended or exited early.
+
 `Time` and `FixedTime` are World-owned resources. Systems read them; hosts never write time resources directly.
 
 ## Cordis owns lifecycle; ECS runs the hot path
@@ -181,6 +188,24 @@ if (!result.ok) {
 ```
 
 `'schedule-scope-mismatch'` means a target system, set, or fixed anchor belongs to the other schedule. `world.run(token)` returns the same code when the domain token (from `defineSchedule`) has no registered system in this World, so register a system on that domain token before running it. Keep dependent systems and sets in the same scope; do not catch and ignore the failure or add a compatibility registration path.
+
+## Numeric workspace lifetime
+
+Use `world.frameArena.alloc(TypedArrayConstructor, count)` for synchronous
+scratch inside `update`/`run`; initialize the elements read. It survives fixed
+ticks and command drains, then expires on outer scope close. Group contiguous
+synchronous domain runs with `withFrameArena`; never carry scratch across await,
+yield, transport, snapshots or GPU completion.
+Returning a Promise/iterator from a system or scope poisons the World; schedule
+suspended work through its existing owner instead.
+
+For system-owned cross-frame numeric buffers, use `world.buffers.alloc`,
+`view`, `resize` and `release`. Bind release to the real plugin owner. Borrow a
+lease for an independently completing reader; owner release retires storage,
+and the last lease return permits reuse. Resize requires no active leases.
+Public grants never revive with raw slot reuse. Components retain their schema
+and World write paths. Read the [ECS memory contract](../../packages/ecs/README.md#numeric-memory-services)
+for budgets, trim, borrowed-view limits and observation coverage.
 
 ## Query model
 

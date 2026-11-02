@@ -3,7 +3,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { runInNewContext } from 'node:vm';
@@ -358,11 +358,17 @@ test('archive project owns independent runs and installed View while source keep
     'offlineEnv',
     'archive',
     'dirname',
+    'basename',
+    'unpackRoot',
+    'project',
+    'projectEvidence',
+    'verifySdkModeling',
     body,
   );
   const observed = {};
   const independentCommands = [];
   const viewSourceRoots = [];
+  const modelingProbes = [];
   for (const group of ['project', 'source', 'all']) {
     const stages = [];
     await execute(
@@ -394,14 +400,42 @@ test('archive project owns independent runs and installed View while source keep
       {},
       '/sdk.zip',
       dirname,
+      basename,
+      '/unpack',
+      '/project',
+      {},
+      async ({ sdkRoot, project, evidenceRoot }) => {
+        modelingProbes.push({ group, sdkRoot, project, evidenceRoot });
+      },
     );
     observed[group] = stages;
   }
   assert.deepEqual(observed, {
-    project: ['verifyIndependentRun', 'verifyInstalledViewRuntimeJS', 'verifyInstalledViewRuntime'],
+    project: [
+      'verifyIndependentRun',
+      'verifyInstalledViewRuntimeJS',
+      'verifyInstalledViewRuntime',
+      ...(process.platform === 'linux' ? ['verifyInstalledModelingCli'] : []),
+    ],
     source: [],
-    all: ['verifyIndependentRun', 'verifyPairedViewTool', 'verifyInstalledViewRuntime'],
+    all: [
+      'verifyIndependentRun',
+      'verifyPairedViewTool',
+      'verifyInstalledViewRuntime',
+      ...(process.platform === 'linux' ? ['verifyInstalledModelingCli'] : []),
+    ],
   });
+  assert.deepEqual(
+    modelingProbes,
+    process.platform === 'linux'
+      ? ['project', 'all'].map((group) => ({
+          group,
+          sdkRoot: '/sdk',
+          project: '/project',
+          evidenceRoot: resolve(dirname('/sdk.zip'), 'modeling-sdk', 'unpack'),
+        }))
+      : [],
+  );
   assert.deepEqual(viewSourceRoots, [{ group: 'all', root: '/source' }]);
   assert.deepEqual(
     independentCommands,

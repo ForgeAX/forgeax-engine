@@ -1,6 +1,6 @@
 import type { Context, Plugin } from '@forgeax/engine-plugin';
 import type { ToolApi, ToolRunOptions, ToolTerminal } from '@forgeax/engine-tool-runtime';
-import { createToolClient, type ToolClient } from './tools/client.js';
+import { createToolClient, type ToolClient, type ToolClientOptions } from './tools/client.js';
 
 /** The DevKit command surface is a Host capability, not a second CLI runtime. */
 interface DevkitCliService {
@@ -24,7 +24,10 @@ declare module '@forgeax/engine-plugin' {
  * every other Host. The binary only owns startup/disposal; command discovery,
  * dispatch and project extension loading belong to this startup capability.
  */
-export function createDevkitCliStartup(projectRoot: string): DevkitCliStartup {
+export function createDevkitCliStartup(
+  projectRoot: string,
+  projectDiscovery?: ToolClientOptions['projectDiscovery'],
+): DevkitCliStartup {
   let closed = false;
   const lifecycle = new AbortController();
   const active = new Set<Promise<unknown>>();
@@ -113,6 +116,7 @@ export function createDevkitCliStartup(projectRoot: string): DevkitCliStartup {
       if (closed) return Promise.reject(new Error('devkit CLI Host has been disposed'));
       client ??= createToolClient({
         projectRoot,
+        ...(projectDiscovery === undefined ? {} : { projectDiscovery }),
         ...(ownerContext === undefined ? {} : { context: ownerContext }),
         ...(toolApi === undefined ? {} : { toolApi }),
       }).then(wrapClient);

@@ -236,6 +236,29 @@ export const devKitWorkspacePlugin = {
       fiberId: String(ctx.fiber.uid),
       tools,
     });
+    // Project-scoped modeling inspection for workspace frontends (the View modeling
+    // plugin); loaded lazily so a backend without modeling work never imports the renderer.
+    const modelingProviders = import('./workspace-modeling-tools.js').then(
+      ({ createWorkspaceModelingTools }) => {
+        const handles = new Map<string, ReturnType<ToolApi['registerProvider']>>();
+        const byRealm = createWorkspaceModelingTools((context) => {
+          const session = forCaller(context.caller);
+          return session?.project?.project.root;
+        });
+        for (const [realm, list] of byRealm) {
+          const handle = api.registerProvider({
+            providerId: `engine-workspace-modeling:${realm}:${ctx.fiber.uid}`,
+            sourceId: ENGINE_WORKSPACE_TOOL_SOURCE,
+            realm,
+            module: '@forgeax/engine-devkit',
+            fiberId: String(ctx.fiber.uid),
+            tools: list,
+          });
+          for (const tool of list) handles.set(tool.descriptor.id, handle);
+        }
+        return handles;
+      },
+    );
     const capabilities = backend.transport.register(ENGINE_WORKSPACE_CAPABILITIES_SERVICE, () => ({
       apiVersion: runtime.apiVersion,
       operations: tools.map(
@@ -260,10 +283,13 @@ export const devKitWorkspacePlugin = {
         ) {
           throw new TypeError('Engine workspace call requires an operation');
         }
+        const owner = payload.operation.startsWith('model.')
+          ? ((await modelingProviders).get(payload.operation) ?? provider)
+          : provider;
         const terminal = await api.run(payload.operation, 'args' in payload ? payload.args : {}, {
           sourceId: ENGINE_WORKSPACE_TOOL_SOURCE,
-          providerId: provider.owner.providerId,
-          generation: provider.owner.generation,
+          providerId: owner.owner.providerId,
+          generation: owner.owner.generation,
           caller,
           signal,
         }).terminal;
@@ -322,6 +348,8 @@ export const devKitWorkspacePlugin = {
       capabilities();
       disconnect();
       await provider.revoke('Engine workspace plugin disposed');
+      for (const handle of new Set((await modelingProviders.catch(() => new Map())).values()))
+        await handle.revoke('Engine workspace plugin disposed');
       await Promise.all([...thumbnails.values()].map((owner) => owner.close()));
       thumbnails.clear();
       await Promise.all([...runtimes].map((session) => session.dispose()));

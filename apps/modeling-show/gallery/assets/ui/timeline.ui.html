@@ -1,0 +1,20 @@
+<section class="caption" aria-live="polite">
+  <strong data-ui-part="title">Modeling Show</strong>
+  <span data-ui-part="beat">Loading the subjects...</span>
+  <small data-ui-part="step"></small>
+  <small data-ui-part="legend"></small>
+  <small data-ui-part="source"></small>
+  <small data-ui-part="label"></small>
+</section>
+<aside class="panel" aria-label="Debug panel">
+  <button type="button" data-ui-part="panel-toggle" aria-expanded="false">Debug panel</button>
+  <div class="panel-body" data-ui-part="panel"></div>
+</aside>
+<section class="timeline" aria-label="Show timeline">
+  <div class="segments" data-ui-part="segments" role="group" aria-label="Show segments"></div>
+  <div class="scrub">
+    <button type="button" data-ui-action="toggle" data-ui-part="toggle">Pause</button>
+    <input type="range" min="0" max="1000" value="0" data-ui-part="scrub" aria-label="Position in the segment" />
+    <span data-ui-part="position">0%</span>
+  </div>
+</section>

@@ -109,3 +109,9 @@ performance budget. Use `PERF_RUNS`, `PERF_WARMUP_FRAMES`,
 `PERF_MEASURE_FRAMES`, `PERF_CUBES`, `PERF_POINT_LIGHTS`, and
 `PERF_SPOT_LIGHTS` to scale it; keep both implementations on the same values
 when comparing results.
+
+The comparison requests `frameLimit = warmup + measured + 2` from the Three
+producer. Its standalone page still defaults to 600 updates. A longer measurement
+therefore keeps the same workload running rather than waiting beyond a stopped
+producer. Timeout reports retain the last observed workload/frame evidence; they
+never fill missing samples or shorten the requested window.

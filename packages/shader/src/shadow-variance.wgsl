@@ -1,4 +1,5 @@
-// Two separable passes store Three r184's mean and standard deviation in RG16F.
+// Orthographic CSM retains Reverse-Z mean and standard deviation in RG16F.
+// Perspective spots retain their existing forward-depth encoding.
 struct Params { extent : vec2<f32>, radius : f32, samples : u32, outputToSource : vec4<f32> };
 @group(0) @binding(0) var<uniform> params : Params;
 @group(0) @binding(1) var depth : texture_depth_2d;
@@ -19,8 +20,8 @@ fn fs_vertical(@builtin(position) pixel : vec4<f32>) -> @location(0) vec2<f32> {
   var squared = 0.0;
   for (var i = 0u; i < params.samples; i++) {
     let coord = vec2<i32>(clamp(floor(pixel.xy + vec2<f32>(0, offset(i))), vec2<f32>(0), params.extent - 1.0));
-    // Native depth is reversed; retain source depth before half-float rounding.
-    let value = 1.0 - textureLoad(depth, coord, 0);
+    let reversedDepth = textureLoad(depth, coord, 0);
+    let value = select(reversedDepth, 1.0 - reversedDepth, params.outputToSource.y > 0.5);
     mean += value;
     squared += value * value;
   }

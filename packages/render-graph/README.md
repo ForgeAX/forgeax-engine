@@ -67,6 +67,26 @@ console.log(compiled.inspect());
 await compiled.retire();
 ```
 
+### Allocation-explicit pass callbacks
+
+Use `encodeDirect(pass, frame, resources)` for raster/compute callbacks and
+`encodeDirect(encoder, frame, resources)` for copy callbacks when an argument
+record adds no meaning. The graph calls these directly without constructing a
+context object or rotating a scratch record. `encode(context)` retains a fresh
+argument record per invocation. Declare exactly one form; both preserve the
+callback receiver and the graph's ordinary execution, error and retirement rules.
+
+```ts
+builder.addComputePass('simulate', {
+  accesses: [{ resource: particles, usage: 'storage-read-write' }],
+  encodeDirect: (pass, _frame, resources) => {
+    pass.setPipeline(simulatePipeline);
+    pass.setBindGroup(0, simulationBindings(resources.buffer(particles).unwrap()));
+    pass.dispatchWorkgroups(256);
+  },
+}).unwrap();
+```
+
 ### Resource declaration
 
 | Method | Ownership | Physical usage |

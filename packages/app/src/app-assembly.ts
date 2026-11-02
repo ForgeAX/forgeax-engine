@@ -1,7 +1,7 @@
 // Realm-neutral App assembly and frame/lifecycle ownership.
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { AudioBackend } from '@forgeax/engine-audio';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import { createWorldContext, type World } from '@forgeax/engine-ecs';
 import type { InputBackend } from '@forgeax/engine-input';
 import type { Platform } from '@forgeax/engine-platform';
@@ -244,7 +244,7 @@ export interface BuildAppArgs {
   /** Optional App-owned RHI capture capability. */
   readonly rhiCapture?: RhiCapture | undefined;
   /** feat-20260615 debug-draw M5: DebugDraw instance created by createDebugDrawOnReady. */
-  readonly debugDraw?: DebugDraw | undefined;
+  readonly debugDraw?: DebugDrawSource | undefined;
   /** feat-20260629 M4 / w20: remote eval server handle from createAppFromCanvas. */
   readonly remoteHandle?: { readonly port: number; close(): Promise<void> } | undefined;
   /**
@@ -356,6 +356,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
     beforeDraw: observation.prepareFrame,
+    onFrameSkipped: () => args.debugDraw?.discard(),
     pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };

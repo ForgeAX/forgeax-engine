@@ -4,7 +4,7 @@ import type { EntityHandle } from '../entity-handle';
 import { defineRelationship } from '../relationship-index';
 import { World } from '../world';
 
-const SAMPLE_ROUNDS = 31;
+const SAMPLE_ROUNDS = 201;
 const WARMUP_ROUNDS = 5;
 const PARENT_COUNT = 8;
 const CHILD_COUNT = 512;
@@ -89,9 +89,10 @@ function runWorldWorkload(mode: 'baseline' | 'candidate'): number {
 
 function measure(): { baseline: SampleStats; candidate: SampleStats } {
   const samples = { baseline: [] as number[], candidate: [] as number[] };
-  // Warm both complete workloads before collecting 31 observations. At this
-  // sample count, nearest-rank p95 is the second-highest result; alternating
-  // order limits bias from compilation and runner drift.
+  // Keep a fixed, unfiltered population of complete World workloads. With 31
+  // samples p95 is only the second-highest result; 201 makes it the eleventh
+  // highest without changing the unit or 5% stop rule. Alternating order limits
+  // compilation and runner drift; allocation and GC remain inside the timer.
   for (let round = -WARMUP_ROUNDS; round < SAMPLE_ROUNDS; round += 1) {
     const order =
       round % 2 === 0 ? (['baseline', 'candidate'] as const) : (['candidate', 'baseline'] as const);

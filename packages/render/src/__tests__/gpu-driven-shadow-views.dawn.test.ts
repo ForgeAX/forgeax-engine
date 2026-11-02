@@ -114,6 +114,7 @@ function topology(): RenderPipelineTopology {
     },
     featureTopologySignature: 'shadow-view-dawn-test',
     gpuDrivenTopologySignature: 'shadow-view-dawn-test',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 
@@ -321,8 +322,9 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
   });
 
   it('observes shadow cull counters for 60 submissions without decoding visible members', async () => {
-    const adapter = (await rhi.requestAdapter()).unwrap();
-    const device = (await adapter.requestDevice()).unwrap();
+    const { device, native } = await nativeDeviceFixture();
+    const bufferCreates = vi.spyOn(device, 'createBuffer');
+    native.pushErrorScope('validation');
     const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
     const shaderModuleFactory = { createShaderModule: () => ok(shader) };
     const projection = new RenderScene();
@@ -381,7 +383,15 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
         pool.project(graph, identity).unwrap();
         const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
         const encoder = device.createCommandEncoder().unwrap();
+        const copies = vi.spyOn(encoder, 'copyBufferToBuffer');
         compiled.execute({ encoder }).unwrap();
+        expect(copies).toHaveBeenCalledTimes(1);
+        const counterCopy = copies.mock.calls[0];
+        const readback = bufferCreates.mock.calls
+          .filter(([descriptor]) => descriptor.label === 'gpu-driven-view-lodReadback')
+          .at(-1)?.[0];
+        expect(readback).toBeDefined();
+        expect(counterCopy?.[2]).toBe(readback?.size);
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
         await device.queue.onSubmittedWorkDone();
         instanceRows.mockClear();
@@ -395,10 +405,12 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       }
       expect(fullSelections).not.toHaveBeenCalled();
       expect(observedInstanceLookups).toBe(0);
+      expect(await native.popErrorScope()).toBeNull();
     } finally {
       observations.mockRestore();
       fullSelections.mockRestore();
       instanceRows.mockRestore();
+      bufferCreates.mockRestore();
       pool.dispose();
       scene.dispose();
     }
@@ -719,12 +731,7 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
             : identity.kind === 'point'
               ? `gpu-driven.shadow.point-cube-face-${identity.index}-${identity.face}`
               : `gpu-driven.shadow.spot-atlas-${identity.index}`;
-        return [
-          `${prefix}.view-reset`,
-          `${prefix}.frustum-compact`,
-          `${prefix}.finalize-indirect`,
-          `${prefix}.lod-selection-readback`,
-        ];
+        return [`${prefix}.view-selection`, `${prefix}.lod-selection-readback`];
       }),
     );
 
@@ -868,14 +875,14 @@ describe('GPU-driven shadow views Dawn structural evidence', () => {
       throw new Error('shadow identities missing');
     }
     expect(pool.project(invalidatedGraph, directionalIdentity).unwrap().passNames).toEqual([]);
-    expect(pool.project(invalidatedGraph, pointIdentity).unwrap().passNames).toHaveLength(3);
+    expect(pool.project(invalidatedGraph, pointIdentity).unwrap().passNames).toHaveLength(1);
     expect(pool.project(invalidatedGraph, spotIdentity).unwrap().passNames).toEqual([]);
     expect(
       invalidatedGraph
         .compile({ device, surfaceSize: { width: 1, height: 1 } })
         .unwrap()
         .inspect().passes,
-    ).toHaveLength(4);
+    ).toHaveLength(2);
 
     const publishEncoder = device.createCommandEncoder().unwrap();
     compiled.execute({ encoder: publishEncoder }).unwrap();

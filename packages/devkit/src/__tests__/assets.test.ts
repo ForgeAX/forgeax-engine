@@ -111,6 +111,8 @@ describe('asset commands', () => {
     ['music.mp3', 'audio', 'audio'],
     ['music.ogg', 'audio', 'audio'],
     ['music.flac', 'audio', 'audio'],
+    ['billboard.mp4', 'video', 'video'],
+    ['billboard.webm', 'video', 'video'],
   ])('adds %s with producer-owned topology and preserves identity', async (name, importer, kind) => {
     const root = await fixture();
     try {
@@ -130,6 +132,7 @@ describe('asset commands', () => {
     'sky.hdr',
     'sound.wav',
     'grade.cube',
+    'billboard.mp4',
   ])('imports the producer output of asset add for %s', async (name) => {
     const root = await fixture();
     try {

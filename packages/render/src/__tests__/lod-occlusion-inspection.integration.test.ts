@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { resolveInspectionBuild } from '../render-system';
 import { inspectLodOcclusion } from '../scene/visibility/inspection';
+import { resolveInspectionBuild } from './render-system-driver';
 
 describe('LOD occlusion inspection lifecycle', () => {
   it('uses the build-tool revision for inspection submits', () => {

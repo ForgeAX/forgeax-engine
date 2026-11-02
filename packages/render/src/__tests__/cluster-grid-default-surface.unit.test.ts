@@ -15,9 +15,8 @@ const recordSource = readFileSync(new URL('../record/frame-lighting.ts', import.
 describe('cluster grid default owner', () => {
   it('keeps all record-stage fallbacks on the pipeline owner', () => {
     expect(DEFAULT_CLUSTER_GRID).toEqual({ x: 16, y: 9, z: 24 });
-    expect(
-      layoutSource.match(/export const DEFAULT_CLUSTER_GRID\s*=\s*\{ x: 16, y: 9, z: 24 \}/g),
-    ).toHaveLength(1);
+    expect(Object.isFrozen(DEFAULT_CLUSTER_GRID)).toBe(true);
+    expect(layoutSource.match(/export const DEFAULT_CLUSTER_GRID\s*=/g)).toHaveLength(1);
     expect(ownerSource).toMatch(/DEFAULT_CLUSTER_GRID/);
     expect(recordSource.match(/clusterGrid \?\? DEFAULT_CLUSTER_GRID/g)).toHaveLength(1);
     expect(recordSource).not.toMatch(/clusterGrid \?\? \{\s*x: 16,\s*y: 9,\s*z: 24,\s*\}/);

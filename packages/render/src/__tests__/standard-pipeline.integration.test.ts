@@ -19,13 +19,14 @@ import {
 } from '../pipeline/standard-profile';
 import type { FrameObservationDomain } from '../render-contract';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
-import type { SurfaceProfile } from '../render-system';
 import { admitSsrSpatial } from '../ssr/admission';
 import {
   SUBSURFACE_ATTACHMENT_BYTES,
   SUBSURFACE_DEFERRED_COLOR_FORMATS,
 } from '../standard-attachments';
 import { addTypedFullscreenPass } from '../typed-render-graph-primitives';
+import { type OpaquePassPlan, planOpaque } from '../world/pass-plan-systems';
+import type { SurfaceProfile } from './render-system-driver';
 
 const rawOnlyProfile: SurfaceProfile = {
   kind: 'raw-only',
@@ -52,7 +53,7 @@ function topology(
   overrides: TopologyOverrides = {},
 ): RenderPipelineTopology {
   const { camera: cameraOverride, ...rest } = overrides;
-  return {
+  const planned: Omit<RenderPipelineTopology, 'opaque'> & { opaque?: OpaquePassPlan } = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: profile,
     config: profile.ssao ? { ssao: { enabled: true } } : undefined,
@@ -86,6 +87,17 @@ function topology(
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
     ...rest,
+  };
+  // Fixtures plan the opaque lane exactly as the view's RenderQueue does.
+  return {
+    ...planned,
+    opaque:
+      rest.opaque ??
+      planOpaque({
+        renderPath: (planned.standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
+        gpuOcclusion: planned.config?.gpuOcclusion,
+        clearOnly: planned.clearOnly === true,
+      }),
   };
 }
 

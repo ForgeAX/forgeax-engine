@@ -294,7 +294,7 @@ function auditRenderOwnership(root) {
     derivedBounds: 'packages/render/src/instances-derived-bounds.ts',
     extract: 'packages/render/src/render-system-extract-tail.ts',
     observation: 'packages/render/src/mesh-material-bindings.ts',
-    render: 'packages/render/src/render-system.ts',
+    render: 'packages/render/src/view-inspection.ts',
     materialInspection: 'packages/assets-runtime/src/material/inspection.ts',
   };
   if (!Object.values(paths).every((path) => pathExists(root, path))) return null;

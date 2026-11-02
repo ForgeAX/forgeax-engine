@@ -1,14 +1,12 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
+import { listTrackedFiles } from './lib/tracked-files.mjs';
 
-const trackedFiles = execFileSync(
-  'git',
-  ['ls-files', '--cached', '--others', '--exclude-standard'],
-  { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-)
-  .split('\n')
-  .filter(Boolean);
+const trackedFiles = listTrackedFiles(process.cwd(), [
+  '--cached',
+  '--others',
+  '--exclude-standard',
+]);
 
 const testFilePattern = /(^|\/)[^/]+\.(?:test-d|test|spec|bench)\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
 const forbiddenDirectoryPattern = /(^|\/)(?:test|tests|__test__)(?:\/|$)/;

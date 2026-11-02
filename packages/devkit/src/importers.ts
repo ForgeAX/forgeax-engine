@@ -2,6 +2,7 @@ import { audioImporter } from '@forgeax/engine-audio-webaudio/audio-importer';
 import { fbxImporter } from '@forgeax/engine-fbx';
 import { fontImporter } from '@forgeax/engine-font/font-importer';
 import { gltfImporter } from '@forgeax/engine-gltf/node-importer';
+import { videoImporter } from '@forgeax/engine-graphics-extras/video-importer';
 import { imageImporter } from '@forgeax/engine-image/image-importer';
 import { iesImporter } from '@forgeax/engine-import';
 import { objImporter, stlImporter, svgImporter } from '@forgeax/engine-mesh-io';
@@ -18,5 +19,6 @@ export const DEFAULT_IMPORTERS: readonly Importer[] = [
   svgImporter,
   fontImporter,
   iesImporter,
+  videoImporter,
   createUiImporter(),
 ];

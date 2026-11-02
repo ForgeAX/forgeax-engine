@@ -1,6 +1,6 @@
 import type { BindGroup, BindGroupLayout, Buffer, TextureView } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
-import type { MaterialSnapshot } from '../../render-system-extract';
+import { defaultMaterialSnapshot, type MaterialSnapshot } from '../../render-system-extract';
 import type { RenderTargetTextureSource } from '../../targets/contracts';
 import type { MaterialBgAssemblyCacheEntry } from '../frame-snapshot';
 import { isMaterialBgAssemblyCacheHit } from '../main-pass-material';
@@ -252,5 +252,39 @@ describe('material bind-group assembly cache', () => {
         {} as TextureView,
       ),
     ).toBe(false);
+  });
+
+  it('rebinds a planar material when the planar projection buffer changes', () => {
+    // Captures bind their own retired-and-recreated capture-view buffer at
+    // binding 74; a cached group from a retired view references a destroyed buffer.
+    const retired = { label: 'capture-view' } as never;
+    const current = { label: 'capture-view' } as never;
+    const cached = {
+      material: { textureHandles: new Map() },
+      materialBgl: {},
+      materialBuffer: {},
+      materialResources: [],
+      preparedTextures: [],
+      uniformResources: [],
+      skylightResources: {},
+      planarReflection: { view: undefined, uniform: retired },
+      bindGroup: {},
+    } as unknown as MaterialBgAssemblyCacheEntry;
+    const hit = (uniform: never) =>
+      isMaterialBgAssemblyCacheHit(
+        cached,
+        { ...defaultMaterialSnapshot(), textureHandles: new Map() },
+        cached.materialBgl,
+        cached.materialBuffer,
+        cached.skylightResources,
+        true,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        uniform,
+      );
+    expect(hit(retired)).toBe(true);
+    expect(hit(current)).toBe(false);
   });
 });

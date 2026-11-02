@@ -104,6 +104,7 @@ describe('renderer instance projection', () => {
     const moved = project(projection, world, 1, matrices(9));
     expect(moved.generations).toEqual(before.generations);
     const payload = packInstanceStorageBuffer(
+      new Float32Array(Math.floor(moved.transforms.length / 16) * 32),
       moved.transforms,
       before.transforms,
       moved.generations,

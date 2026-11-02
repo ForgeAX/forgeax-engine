@@ -3,6 +3,7 @@ import { materialProgramContextForPass } from '@forgeax/engine-pack/material-coo
 import {
   createMaterialProgramArtifactReceipt,
   GPU_DRIVEN_MATERIAL_ROW_BYTES,
+  standardParallaxSelectable,
 } from '@forgeax/engine-shader';
 import type {
   MaterialParameter,
@@ -1370,18 +1371,21 @@ function stockSurfaceInputDefines(
   context: MaterialVariantContext,
 ): Readonly<Record<string, boolean>> {
   const parameterNames = new Set(schema.map((entry) => entry.name));
+  const parallaxSelectable = standardParallaxSelectable((name) => parameterNames.has(name));
   return {
     STANDARD_UV_INPUT_UNUSED: stockSurface && !schema.some((entry) => entry.type === 'texture2d'),
     STANDARD_TANGENT_INPUT_UNUSED:
       stockSurface &&
       !parameterNames.has('normalTexture') &&
       !parameterNames.has('clearcoatNormalTexture') &&
-      !parameterNames.has('anisotropyStrength'),
+      !parameterNames.has('anisotropyStrength') &&
+      !parallaxSelectable,
     STANDARD_OBJECT_BASIS_UNUSED:
       stockSurface &&
       !parameterNames.has('triplanarSpace') &&
       !parameterNames.has('normalMapSpace') &&
-      !parameterNames.has('transmission'),
+      !parameterNames.has('transmission') &&
+      !parallaxSelectable,
     STANDARD_VERTEX_MATERIAL_UNUSED:
       stockSurface && context.geometry !== 'terrain' && !parameterNames.has('displacementTexture'),
     STANDARD_OBJECT_POSITION_UNUSED:

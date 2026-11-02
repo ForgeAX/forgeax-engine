@@ -48,16 +48,29 @@ function sameGeometry(
 }
 
 /** A row-material binding answers through its group for every material the group holds. */
-function selectionKey(binding: GpuDrivenBatchBinding): MaterialResource | RowMaterialGroup {
+export function gpuDrawCoverageKey(
+  binding: GpuDrivenBatchBinding,
+): MaterialResource | RowMaterialGroup {
   return binding.rowGroup ?? binding.material;
 }
 
 const MASK_DRAWS = 31;
-const MASK_COMPUTED = 1 << 31;
 const MASK_DRAWS_ALL = 0x7fffffff;
 
 /** Shared execution membership, queried by the draw that is about to consume it. */
 export class GpuDrawSelection {
+  #fixedCoverage = false;
+  /** Producer-only admission of immutable execution/binding routes. */
+  static fixed(batches: FrameList<GpuDrivenBatch>): GpuDrawSelection {
+    const selection = new GpuDrawSelection(batches);
+    selection.#fixedCoverage = true;
+    return selection;
+  }
+  static isFixedCoverage(selection: GpuDrawSelection): boolean {
+    return (
+      Object.getPrototypeOf(selection) === GpuDrawSelection.prototype && selection.#fixedCoverage
+    );
+  }
   /** Source-addressed index by material, or by group for row-material batches. */
   #materials: Map<MaterialResource | RowMaterialGroup, Worlds> | undefined;
   /** Row-material groups of the index; one per batch class. */
@@ -109,7 +122,7 @@ export class GpuDrawSelection {
     for (const owned of this.#byBinding.values())
       for (const batch of owned) {
         const binding = batch.binding as GpuDrivenBatchBinding;
-        const key = selectionKey(binding);
+        const key = gpuDrawCoverageKey(binding);
         let worlds = materials.get(key);
         if (worlds === undefined) {
           worlds = new Map();
@@ -182,7 +195,7 @@ export class GpuDrawSelection {
    */
   coversBinding(binding: GpuDrivenBatchBinding): boolean {
     const owned = this.materials
-      .get(selectionKey(binding))
+      .get(gpuDrawCoverageKey(binding))
       ?.get(binding.worldId)
       ?.get(binding.assetHandle)
       ?.get(binding.drawItemIndex);
@@ -251,12 +264,12 @@ export class GpuDrawSelection {
     return false;
   }
 
-  /** Bit i answers compact draw i; bit 31 marks a computed mask. */
+  /** Bit i answers compact draw i; the WeakMap already distinguishes a cached zero. */
   private ownershipMask(source: RenderableSnapshot, passKind: PassKind): number {
     const masks = passKind === 'temporal' ? this.#temporalMasks : this.#forwardMasks;
     let mask = masks.get(source);
     if (mask !== undefined) return mask;
-    mask = MASK_COMPUTED;
+    mask = 0;
     const draws = source.gpuDrivenDraws;
     if (draws !== undefined && gpuDrivenGeometryEligible(source))
       for (let index = 0; index < draws.length; index++) {
@@ -339,4 +352,4 @@ export class GpuDrawSelection {
   }
 }
 
-export const EMPTY_GPU_DRAW_SELECTION = new GpuDrawSelection([]);
+export const EMPTY_GPU_DRAW_SELECTION = GpuDrawSelection.fixed([]);

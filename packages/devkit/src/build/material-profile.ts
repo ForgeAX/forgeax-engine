@@ -5,8 +5,8 @@ export function materialBuildCapabilityGuard(profile: BuildOptions['materialProf
   if (profile === undefined) return '';
   if (profile !== 'webgpu-storage') throw new Error('unsupported material build profile');
   return `const materialBuildCaps = workerExecution && typeof app.remoteEval === 'function'
-      ? await app.remoteEval('const inspected = await execution.inspectRenderer(); if (!inspected.ok) throw inspected.error; return inspected.value.capabilities;')
-      : app.renderer.inspect().capabilities;
+      ? await app.remoteEval('const inspected = await execution.inspectRenderer({ fields: ["capabilities"] }); if (!inspected.ok) throw inspected.error; return inspected.value.capabilities;')
+      : app.renderer.inspect({ fields: ['capabilities'] }).capabilities;
     if (materialBuildCaps?.backendKind !== 'webgpu' || materialBuildCaps.compute !== true || materialBuildCaps.storageBuffer !== true)
       throw new Error('forgeax: webgpu-storage validation build requires actual WebGPU compute/storage; fallback is unsupported');`;
 }

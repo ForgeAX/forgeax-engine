@@ -48,6 +48,7 @@ function topology(device: RhiDevice): RenderPipelineTopology {
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'deferred', lateOcclusion: true },
   };
 }
 

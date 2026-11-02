@@ -14,7 +14,7 @@ import { GpuBuffer } from '../gpu-resource';
 import { createSkylightFallback } from '../ibl/skylight-bind-group';
 import { MaterialResource } from '../material-resource';
 import { worldRenderResources } from '../publication/resource-scope';
-import { DirectDrawPhase } from '../record/direct-draw-phase';
+import { type DirectDrawInput, DirectDrawPhase } from '../record/direct-draw-phase';
 import { prepareDirectionalShadowCache } from '../record/directional-shadow-cache';
 import { buildDispatchPlan } from '../record/fold-buckets';
 import type { RenderFrameState } from '../record/frame-snapshot';
@@ -40,6 +40,12 @@ import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import { nativeDeviceFixture } from './native-device-fixture';
 import { skinTaskFixture } from './skin-task-fixture';
+
+/** Queue then emit: one recording-time sync of a retained phase. */
+function drawn(phase: DirectDrawPhase, input: DirectDrawInput) {
+  phase.queue(input);
+  return phase.emit();
+}
 
 // Real residual recording and dynamic material offsets, not a PBR lighting surrogate.
 // The depth witness also makes two wrong-but-equal empty images fail independently.
@@ -762,7 +768,7 @@ export async function verifyManagedShadowRecording(): Promise<void> {
         nativePlan.batches.map((batch) => [defined(batch.binding), row.mesh]),
       );
       const routeRows = (rightDirect: boolean) =>
-        new DirectDrawPhase().sync({
+        drawn(new DirectDrawPhase(), {
           scene: {
             plan: {
               ...nativePlan,
@@ -1276,7 +1282,7 @@ export async function verifyMixedSkinPassRecording(): Promise<void> {
           pipelineState: { ...f.context.pipelineState, pbrSkinMeshBindGroupLayout: skinLayout },
           runtime: {
             ...f.context.runtime,
-            demandSkinTask: demand,
+            skinTask: demand,
             getMaterialShaderPipelineEntry: (...args: unknown[]) => ({
               pipeline: args[18] === 'vs_second' ? skinPipeline : f.pipeline,
               group2Contract: args[18] === 'vs_second' ? ('skin' as const) : ('mesh' as const),

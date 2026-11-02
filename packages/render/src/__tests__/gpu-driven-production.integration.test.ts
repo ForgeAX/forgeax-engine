@@ -63,13 +63,15 @@ import * as gpuDrawReceipts from '../record/gpu-draw-receipts';
 import * as mainPass from '../record/main-pass';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
-import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
+import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
+import { publishRenderSubmission, renderWorldFor } from '../world/render-world';
+import { executeCompiledFrameGraph } from './frame-recording-driver';
 import {
   admitGpuFixture,
   mesh,
@@ -78,9 +80,20 @@ import {
   standardPbrInputs,
   updateSnapshot,
 } from './gpu-driven-production-fixture';
+import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 import { renderLifecycleManifestUrl, standardPbrFixtureVariants } from './shader-manifest-fixture';
 
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
+
+/** The frame's shared submission accepted: a recorded graph transaction may commit its history. */
+function acceptFrame(internals: object): void {
+  publishRenderSubmission(renderWorldFor(internals), {
+    accepted: true,
+    completion: undefined,
+    creditCompletion: undefined,
+    generation: 0,
+  });
+}
 
 describe('GPU-driven scene-index mesh address selection', () => {
   it('keeps direct batches on their local group and rebuilds clustered group(2) around the same projection buffer', () => {
@@ -608,8 +621,17 @@ describe('GPU-driven production projection', () => {
             selection.context.capability === 'storage-buffer',
         );
       expect(forward?.abi?.vertexInputs.some((input) => input.semantic === 'normal')).toBe(true);
-      expect(shadow?.abi?.vertexInputs.map((input) => input.semantic)).toEqual(['position']);
-      expect(shadow?.abi?.receiptIdentity).not.toBe(forward?.abi?.receiptIdentity);
+      // The shared caster projection consumes the geometric normal for its VS bias.
+      expect(shadow?.abi?.vertexInputs.map((input) => input.semantic)).toEqual([
+        'position',
+        'normal',
+      ]);
+      // Equal layouts share ABI receipts; distinct pass programs retain their artifacts.
+      expect(shadow?.abi?.receiptIdentity).toBe(forward?.abi?.receiptIdentity);
+      const programDigest = (selection: typeof forward) =>
+        record.programs.find((program) => program.selections.some((item) => item === selection))
+          ?.artifact.digest;
+      expect(programDigest(shadow)).not.toBe(programDigest(forward));
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -1391,17 +1413,16 @@ describe('GPU-driven production projection', () => {
       shadowViews: [],
     } as unknown as ViewLights;
     const compile = () =>
-      ensureCompiledFrameGraph(
+      compileAndAdoptViewGraph({
         internals,
-        state,
+        frameState: state,
         pipelineState,
-        makeZeroCameraFallbackSnapshot(),
+        camera: makeZeroCameraFallbackSnapshot(),
         lights,
-        1,
-        1,
-        undefined,
-        current,
-      );
+        surface: { width: 1, height: 1 },
+        shadowDepthLayers: ensureShadowDepthLayers(state, internals.device),
+        gpuDriven: current,
+      });
     const boundVertices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setVertexBuffer');
     const boundIndices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setIndexBuffer');
     const encode = (compiled: NonNullable<ReturnType<typeof compile>>) => {
@@ -1409,13 +1430,14 @@ describe('GPU-driven production projection', () => {
       boundIndices.mockClear();
       expect(state.compiledFrameGraph?.graph).toBe(compiled);
       const encoder = internals.device.createCommandEncoder().unwrap();
+      // RenderRecord opens the encoder the graph passes record into.
+      vi.spyOn(internals.device, 'createCommandEncoder').mockReturnValueOnce(ok(encoder));
+      acceptFrame(internals);
       expect(
-        executeCompiledFrameGraph(
-          internals,
-          state,
-          { encoder, pipelineState } as unknown as RenderPipelineFrame,
+        executeCompiledFrameGraph(internals, state, {
           encoder,
-        ),
+          pipelineState,
+        } as unknown as RenderPipelineFrame),
       ).toBe(true);
       expect(
         boundVertices.mock.calls.some(([, buffer]) => buffer === resident.vertexBuffer.handle),

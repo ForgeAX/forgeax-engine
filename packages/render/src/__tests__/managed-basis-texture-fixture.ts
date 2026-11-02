@@ -2,8 +2,13 @@ import { basisEncode } from '@forgeax/engine-codec/encode';
 import { ok, type TextureAsset } from '@forgeax/engine-types';
 import { textureContribution } from '../../../image/src/runtime/asset-decoders';
 
-export async function encodedTexture(color = 127, srgb = false): Promise<TextureAsset> {
+export async function encodedTexture(
+  color = 127,
+  srgb = false,
+  channels: 'rgba' | 'rg' = 'rgba',
+): Promise<TextureAsset> {
   const bytes = await basisEncode(new Uint8Array(16 * 16 * 4).fill(color), {
+    channels,
     mode: 'uastc-ldr',
     width: 16,
     height: 16,

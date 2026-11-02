@@ -1,4 +1,5 @@
-/** Actual frame work can be read from native arrays or a retained scene root. */
+/** Actual frame work can be read from native arrays or a retained scene root.
+ * Iterator results may be reused; captured row values remain independent. */
 export interface FrameList<T> extends Iterable<T> {
   readonly length: number;
   at(index: number): T | undefined;
@@ -130,7 +131,7 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
  * Projects each source step into one reused result object; consumers read the
  * value before the next step, so a walk allocates per walk, not per row.
  */
-class ProjectionIterator<T, U> implements IterableIterator<U> {
+export class ProjectionIterator<T, U> implements IterableIterator<U> {
   #index = 0;
   readonly #result: { value: U | undefined; done: boolean } = { value: undefined, done: false };
   constructor(
@@ -157,10 +158,15 @@ class ProjectionIterator<T, U> implements IterableIterator<U> {
   }
 }
 
+/** Sparse source facts the retained scene root indexes while writing its rows. */
+export type SparseRowKind = 'terrain' | 'capsule' | 'skin' | 'pointsLines' | 'raster';
+
 export interface RetainedRowFacts<U> {
   readonly lodCandidateCount: number;
+  /** Captured raster membership proof; absent for ordinary/custom projections. */
+  readonly rasterRowCount?: number | undefined;
   /** Rows carrying the sparse source fact, in row order. */
-  sparseRows(kind: 'terrain' | 'capsule'): IterableIterator<U>;
+  sparseRows(kind: SparseRowKind): IterableIterator<U>;
 }
 
 /**
@@ -179,26 +185,12 @@ export class RetainedFrameProjection<T, U> extends FrameProjection<T, U> {
   }
 }
 
-/** The retained scene root under row-preserving projections, if the list is one. */
-function retainedFacts<U>(list: FrameList<U>): RetainedFrameProjection<unknown, U> | undefined {
-  let node: FrameList<unknown> = list;
-  while (node instanceof FrameProjection) {
-    if (node instanceof RetainedFrameProjection && node.facts !== undefined)
-      return node as RetainedFrameProjection<unknown, U>;
-    node = node.source;
-  }
-  return undefined;
-}
-
-/**
- * LOD candidate count of a frame list: read from the retained scene projection
- * under any chain of row-preserving projections, else counted by walking rows.
- */
+/** Only an admitted retained projection owns its LOD count; custom mappings remain live. */
 export function lodCandidateCountOf(
   list: FrameList<{ readonly lods?: readonly unknown[] | undefined }>,
 ): number {
-  const retained = retainedFacts(list);
-  if (retained?.facts !== undefined) return retained.facts.lodCandidateCount;
+  if (list instanceof RetainedFrameProjection && list.facts !== undefined)
+    return list.facts.lodCandidateCount;
   return list.reduce((total, row) => total + ((row.lods?.length ?? 0) > 0 ? 1 : 0), 0);
 }
 
@@ -206,7 +198,13 @@ export function lodCandidateCountOf(
  * The rows that can carry a sparse source fact: the owner's index when the list is
  * the retained scene root itself, otherwise every row (the caller filters by the fact).
  */
-export function sparseRowsOf<U>(list: FrameList<U>, kind: 'terrain' | 'capsule'): Iterable<U> {
+export function sparseRowsOf<U>(list: FrameList<U>, kind: SparseRowKind): Iterable<U> {
   const facts = list instanceof RetainedFrameProjection ? list.facts : undefined;
   return facts === undefined ? list : { [Symbol.iterator]: () => facts.sparseRows(kind) };
+}
+
+/** Raster membership belongs to the captured root; borrowed/custom rows stay live. */
+export function rasterRowsOf<U>(list: FrameList<U>): Iterable<U> {
+  const facts = list instanceof RetainedFrameProjection ? list.facts : undefined;
+  return facts?.rasterRowCount === undefined ? list : sparseRowsOf(list, 'raster');
 }

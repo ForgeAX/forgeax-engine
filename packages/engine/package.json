@@ -60,6 +60,7 @@
     "@forgeax/engine-interaction": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
     "@forgeax/engine-mesh-io": "workspace:*",
+    "@forgeax/engine-modeling": "workspace:*",
     "@forgeax/engine-naga": "workspace:*",
     "@forgeax/engine-navigation": "workspace:*",
     "@forgeax/engine-net": "workspace:*",

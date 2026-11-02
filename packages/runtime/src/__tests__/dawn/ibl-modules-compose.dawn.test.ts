@@ -80,7 +80,7 @@ describe('t41 (b) -- 6-module ibl-* family naga_oil composition', () => {
   );
 
   it.skipIf(!dawnReady)(
-    '(b2) ibl_shared + ibl_irradiance compose (texture_cube @group(1))',
+    '(b2) ibl_shared + ibl_irradiance compose (PMREM atlas @group(1))',
     async () => {
       const shared = readSourceSync('ibl-shared.wgsl');
       const irradiance = readSourceSync('ibl-irradiance.wgsl');
@@ -103,6 +103,7 @@ describe('t41 (b) -- 6-module ibl-* family naga_oil composition', () => {
           'forgeax_pbr::ibl_shared': shared,
           'forgeax_pbr::brdf': readSourceSync('brdf.wgsl'),
           'forgeax_pbr::ibl_irradiance': irradiance,
+          'forgeax_pbr::pmrem': readSourceSync('ibl-pmrem.wgsl'),
         },
         {},
       );

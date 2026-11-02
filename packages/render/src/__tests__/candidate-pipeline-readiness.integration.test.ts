@@ -34,6 +34,7 @@ import {
 } from '../components';
 import { ANTIALIAS_FXAA, ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
+import type { RenderFeature } from '../features/types';
 import { Materials } from '../materials';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { createRenderPublisher } from '../publication/publisher';
@@ -61,9 +62,23 @@ struct CandidateVertex { @location(0) position: vec3<f32> }
 @fragment fn fs_gbuffer() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 `;
 
-async function fixture(pass: HeldPass, published = false, pointShadow = false, unlit = false) {
+async function fixture(
+  pass: HeldPass,
+  published = false,
+  pointShadow = false,
+  unlit = false,
+  asyncModules = false,
+  features: readonly RenderFeature<unknown>[] = [],
+) {
   const identity = { source: 'candidate-pipeline', epoch: 1 };
   const device: RhiDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  let holdModules = false;
+  const moduleReleases: (() => void)[] = [];
+  const heldModules: string[] = [];
+  const releaseModules = () => {
+    holdModules = false;
+    for (const resolve of moduleReleases.splice(0)) resolve();
+  };
   let hold = false;
   let rejected = false;
   const failure = new RhiError({
@@ -154,8 +169,21 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     } as unknown as HTMLCanvasElement,
     {
       ...(published ? { publicationSource: identity } : {}),
+      features,
       rhi: {
         ...rhi,
+        ...(asyncModules
+          ? {
+              createShaderModuleImmediate: undefined,
+              createShaderModule: async (...args: Parameters<typeof rhi.createShaderModule>) => {
+                if (holdModules) {
+                  heldModules.push(args[1].label ?? 'unlabeled');
+                  await new Promise<void>((resolve) => moduleReleases.push(resolve));
+                }
+                return rhi.createShaderModule(...args);
+              },
+            }
+          : {}),
         requestAdapter: async () =>
           ok({
             features: new Set<GPUFeatureName>(),
@@ -306,6 +334,11 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
     held,
     created,
     asyncPipelines,
+    heldModules,
+    holdModules: () => {
+      holdModules = true;
+    },
+    releaseModules,
     release,
     reject: () => {
       rejected = true;
@@ -331,6 +364,7 @@ async function fixture(pass: HeldPass, published = false, pointShadow = false, u
       }).unwrap(),
     }),
     dispose: async () => {
+      releaseModules();
       release();
       await renderer.dispose();
       publisher?.dispose();
@@ -1134,6 +1168,90 @@ it('invalidates prepared candidate raster credentials when the actual graph is r
     expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
     expect(prepared.isCurrent()).toBe(false);
     await prepared.release();
+  } finally {
+    await f.dispose();
+  }
+});
+
+it('keeps a published candidate pending while its validated shader module is compiling', async () => {
+  const f = await fixture('color', true, false, false, true);
+  try {
+    f.release();
+    const shader = 'game::pending-candidate-module';
+    f.assets.shaderRegistry.installMaterialArtifact(shader, {
+      source: `${rasterDeclarations}\n// candidate async module`,
+      paramSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
+      receipt: createStandardPbrArtifactReceipt(false, true),
+    });
+    const original = Materials.standard({ baseColor: [0.2, 0.6, 0.8, 1] });
+    if (original.passes === undefined) throw Error('Missing Standard passes');
+    const material = f.assets
+      .create({
+        ...original,
+        passes: original.passes.map((pass) =>
+          pass.name === 'forward' ? { ...pass, program: { module: shader } } : pass,
+        ),
+      })
+      .unwrap();
+    const chunk = f.world
+      .spawn(
+        { component: Transform, data: {} },
+        { component: MeshFilter, data: { assetHandle: f.next } },
+        { component: MeshRenderer, data: { materials: [material] } },
+        { component: Visibility, data: { state: VisibilityStateValue.hidden } },
+      )
+      .unwrap();
+    expect((await f.draw()).presentation).toBe('ready');
+    f.holdModules();
+    let settled = false;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(structuredClone(f.publishedInput(chunk)), 'received')
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    for (let frame = 0; frame < 4; frame++) expect((await f.draw()).presentation).toBe('ready');
+    expect(f.heldModules.length).toBeGreaterThan(0);
+    expect(settled).toBe(false);
+    f.releaseModules();
+    const prepared = (await finish(f, pending)).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+    await prepared.release();
+  } finally {
+    await f.dispose();
+  }
+});
+
+it('does not acknowledge view Feature work when a native PSO submits only a preparation barrier', async () => {
+  const submitted = vi.fn();
+  const feature: RenderFeature<unknown> = {
+    identity: 'view-barrier-receipt',
+    extract: () => ok(undefined),
+    plan: (_value, { views }) =>
+      ok({
+        work: views.map((view) => ({
+          scope: { view: view.identity },
+          resources: [],
+          passes: [],
+        })),
+      }),
+    onFrameSubmitted: submitted,
+  };
+  const f = await fixture('color', false, false, false, false, [feature]);
+  try {
+    expect(submitted).toHaveBeenCalled();
+    submitted.mockClear();
+    f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+    const pending = await f.draw();
+    expect(f.held.length).toBeGreaterThan(0);
+    expect(pending.presentation).toBe('pending');
+    expect(submitted).not.toHaveBeenCalled();
+    f.release();
+    let ready = false;
+    for (let frame = 0; frame < 10 && !ready; frame++)
+      ready = (await f.draw()).presentation === 'ready';
+    expect(ready).toBe(true);
+    expect(submitted).toHaveBeenCalledTimes(1);
   } finally {
     await f.dispose();
   }

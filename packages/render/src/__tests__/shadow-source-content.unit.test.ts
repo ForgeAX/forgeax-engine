@@ -18,7 +18,7 @@ it('clears bounded old/new footprints when a changed source caster leaves the st
     const before = f.input();
     const warm = updateShadowView(f.pool, before).unwrap();
     f.pool._commitResourceReplacement();
-    const revision = f.scene.contentRevision;
+    const revision = f.scene.contentCursor;
     const transform = f.scene.transformBuffer;
     const resourceGeneration = warm.view.inspect().resourceGeneration;
     const delta = f.update(shadowSourceSnapshot(1, -14, 4));
@@ -84,7 +84,7 @@ it('adds a declared static caster using only its bounded footprint', async () =>
   try {
     updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
-    const revision = f.scene.contentRevision;
+    const revision = f.scene.contentCursor;
     const delta = f.update({ ...shadowSourceSnapshot(3, 20), mobility: 'static' });
     const added = delta.createdSlots[0]?.slot;
     expect(added).toBeDefined();
@@ -109,7 +109,7 @@ it('clears removed caster footprints, including the last caster, then retains th
     updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
     for (const entityKey of [1, 2]) {
-      const revision = f.scene.contentRevision;
+      const revision = f.scene.contentCursor;
       const delta = f.apply([{ kind: 'remove', worldId: 0, entityKey }]);
       expect(delta.removedSlots).toHaveLength(1);
       const next = f.input();
@@ -363,7 +363,7 @@ it('redraws fully when a changed caster leaving the static class has unbounded h
   try {
     updateShadowView(f.pool, f.input()).unwrap();
     f.pool._commitResourceReplacement();
-    const revision = f.scene.contentRevision;
+    const revision = f.scene.contentCursor;
     const { localAabb: _localAabb, ...unbounded } = shadowSourceSnapshot(1, -14, 4);
     f.update(unbounded);
     const next = f.input();

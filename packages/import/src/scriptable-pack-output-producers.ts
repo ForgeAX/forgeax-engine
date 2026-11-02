@@ -1,3 +1,4 @@
+import { ktx2Bc5SourceMismatch } from '@forgeax/engine-codec';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   ANIMATION_CLIP_SAMPLES_ARTIFACT,
@@ -328,9 +329,32 @@ function bytes(value: Uint8Array | Uint8ClampedArray): Uint8Array {
   return Uint8Array.from(value);
 }
 
+function encodedBc5Product(texture: TextureAsset): AssetOutputProduct {
+  const { shape, mips } = texture;
+  const mismatch =
+    texture.format !== 'bc5-rg-unorm' ||
+    texture.colorSpace !== 'linear' ||
+    shape.viewDimension !== '2d' ||
+    mips.kind === 'generate'
+      ? 'a linear 2D bc5-rg-unorm texture with an authored mip chain'
+      : ktx2Bc5SourceMismatch(texture.data, {
+          width: shape.extent.width,
+          height: shape.extent.height,
+          levelCount: mips.kind === 'packed' ? mips.levelCount : 1,
+        });
+  if (mismatch !== undefined)
+    throw new TypeError(`KTX2 texture output is not admitted: ${mismatch}`);
+  return {
+    payload: texture,
+    refs: [],
+    artifacts: { body: { mediaType: 'image/ktx2', bytes: bytes(texture.data) } },
+  };
+}
+
 function textureProduct(input: AssetOutputInput): AssetOutputProduct {
   if (input.asset.kind !== 'texture') throw new TypeError('expected TextureAsset');
   const texture = input.asset as TextureAsset;
+  if (texture.encoding === 'ktx2') return encodedBc5Product(texture);
   const layout = deriveTextureLayout({
     shape: texture.shape,
     format: texture.format,
@@ -642,7 +666,7 @@ export const meshAssetDataProducer = meshProducer('mesh-data/2', meshDataProduct
 export const meshAssetOutputProducer = meshProducer('mesh-binary/7', meshProduct);
 export const textureAssetOutputProducer = createSafeProducer(
   'texture',
-  'texture-pack/1',
+  'texture-pack/2',
   textureProduct,
 );
 

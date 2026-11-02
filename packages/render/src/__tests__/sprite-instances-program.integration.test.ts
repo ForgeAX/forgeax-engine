@@ -124,6 +124,7 @@ it.each([
         if (entry.spriteInstances) {
           expect(entry.spriteInstances.instanceCount).toBe(2);
           const packed = interleaveSpriteInstanceBuffer(
+            new Float32Array((entry.spriteInstances.transforms.length / 16) * 36),
             entry.spriteInstances.transforms,
             entry.spriteInstances.regions,
             true,
@@ -131,9 +132,14 @@ it.each([
           expect(packed.byteLength).toBe(2 * 144);
           expect(Array.from(packed.slice(32, 36))).toEqual(Array.from(regions.slice(0, 4)));
           expect(Array.from(packed.slice(68, 72))).toEqual(Array.from(regions.slice(4, 8)));
-          expect(interleaveSpriteInstanceBuffer(transforms, regions, false).byteLength).toBe(
-            2 * 80,
-          );
+          expect(
+            interleaveSpriteInstanceBuffer(
+              new Float32Array((transforms.length / 16) * 20),
+              transforms,
+              regions,
+              false,
+            ).byteLength,
+          ).toBe(2 * 80);
         }
       }
     }

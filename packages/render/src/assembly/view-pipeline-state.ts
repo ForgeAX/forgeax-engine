@@ -17,6 +17,7 @@ import {
   initializeShadowCasterUniforms,
   SHADOW_CASTER_BUFFER_SIZE,
 } from '../record/shadow-caster-uniforms';
+import { ShadowViewResources } from '../record/shadow-view-resources';
 import { SHADOW_PARAMS_BYTES, VIEW_UNIFORM_BUFFER_SIZE } from '../record/view-ubo';
 import { createMeshSsboGrowController, INITIAL_MESH_SSBO_SLOT_COUNT } from './mesh-ssbo-grow';
 import {
@@ -179,5 +180,6 @@ export function createViewPipelineState(
           spotModifierUploadState: { ies: new Map(), cookie: new Map(), cookieMatrix: new Map() },
         }),
   };
+  Object.assign(state, { shadowViewResources: new ShadowViewResources(state) });
   return { state, mesh };
 }

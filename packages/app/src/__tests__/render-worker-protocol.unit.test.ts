@@ -1,5 +1,6 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
+  type PreparedPublishedMeshResidency,
   type RenderError,
   type RendererEvent,
   RendererOperationError,
@@ -987,6 +988,82 @@ it("keeps mesh preparation behind the yielded frame's existing serial draw drain
     first.resolve({ ok: true, value: undefined });
     second.resolve({ ok: true, value: undefined });
     turn.resolve(undefined);
+    receive({ data: { kind: 'dispose' } });
+    await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+  }
+});
+
+it('starts a queued mesh control before later draw traffic without blocking candidate progress', async () => {
+  const first = deferred<{ ok: true; value: undefined }>(),
+    second = deferred<{ ok: true; value: undefined }>();
+  const before = deferred<void>(),
+    after = deferred<void>(),
+    prepared = deferred<{ ok: true; value: PreparedPublishedMeshResidency }>();
+  mocks.turn.mockReturnValueOnce(before.promise).mockReturnValueOnce(after.promise);
+  mocks.draw
+    .mockImplementationOnce(() => ({
+      ok: true,
+      value: { deviceGeneration: 7, completed: first.promise },
+    }))
+    .mockImplementationOnce(() => ({
+      ok: true,
+      value: { deviceGeneration: 7, completed: second.promise },
+    }))
+    .mockReturnValue({
+      ok: true,
+      value: { deviceGeneration: 7, completed: Promise.resolve({ ok: true, value: undefined }) },
+    });
+  mocks.prepareMesh.mockReturnValue(prepared.promise);
+  const { post, receive } = await start({ renderTaskYield: 'features', renderPipelineCapacity: 4 });
+  const ready = {
+    ok: true as const,
+    value: {
+      deviceGeneration: 7,
+      isCurrent: () => true,
+      recordStageLane: () => ({ ok: true as const, value: undefined }),
+      release: () => Promise.resolve(),
+    },
+  };
+  try {
+    receive({ data: drawMessage(1) });
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledOnce());
+    receive({ data: drawMessage(2) });
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledOnce());
+    receive({
+      data: {
+        kind: 'mesh-prepare',
+        requestId: 1,
+        entity: 42,
+        input: {
+          source: 'test',
+          epoch: 1,
+          meshHandle: 1,
+          mesh: createBoxGeometry(1, 1, 1).unwrap(),
+        },
+      },
+    });
+    receive({ data: drawMessage(3) });
+    await Promise.resolve();
+    expect(mocks.prepareMesh).not.toHaveBeenCalled();
+    first.resolve({ ok: true, value: undefined });
+    before.resolve(undefined);
+    await vi.waitFor(() => expect(mocks.turn).toHaveBeenCalledTimes(2));
+    expect(mocks.draw).toHaveBeenCalledTimes(2);
+    expect(mocks.prepareMesh).toHaveBeenCalledOnce();
+    // Candidate preparation may need the next draw; do not await it in the draw drain.
+    after.resolve(undefined);
+    await vi.waitFor(() => expect(mocks.draw).toHaveBeenCalledTimes(3));
+    expect(post.mock.calls.some(([m]) => m.kind === 'mesh-ready')).toBe(false);
+    prepared.resolve(ready);
+    await vi.waitFor(() =>
+      expect(post.mock.calls.some(([m]) => m.kind === 'mesh-ready')).toBe(true),
+    );
+  } finally {
+    first.resolve({ ok: true, value: undefined });
+    second.resolve({ ok: true, value: undefined });
+    before.resolve(undefined);
+    after.resolve(undefined);
+    prepared.resolve(ready);
     receive({ data: { kind: 'dispose' } });
     await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
   }

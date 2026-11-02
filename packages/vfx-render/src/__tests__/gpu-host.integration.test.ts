@@ -12,6 +12,10 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { resolveFeatureWorkResources } from '../../../render/src/features/frame-plan';
+import {
+  createRenderFeatureHost,
+  type RenderFeatureFrameInput,
+} from '../../../render/src/features/host';
 import { renderFeaturePlanSignature } from '../../../render/src/features/plan';
 import { cookedEffectFixture } from '../../../vfx/src/__tests__/cooked-effect-fixture';
 import { runtimeEffectFixture } from '../../../vfx/src/__tests__/runtime-effect-fixture';
@@ -287,6 +291,43 @@ describe('GPU VFX public host', () => {
       indirectDraws: 0,
       subjectOutputs: 0,
     });
+    await host.detachWorld({ world });
+  });
+
+  it('prepares an empty Feature frame when the attached world has no GPU compute', async () => {
+    const assets = new AssetRegistry();
+    const world = new World({ assets });
+    const selectedView = {
+      position: new Float32Array([3, 4, 5]),
+      right: new Float32Array([1, 0, 0]),
+      up: new Float32Array([0, 1, 0]),
+      viewProjection: new Float32Array(16),
+    };
+    const host = createVfxRuntimeHost({ camera: { read: () => selectedView } });
+    expect(await host.attachWorld({ world, assets })).toMatchObject({ ok: true });
+    const featureHost = createRenderFeatureHost([host.feature]).unwrap();
+    const open = featureHost.beginFrame([
+      {
+        identity: 'main',
+        render: true,
+        worlds: [world],
+        owner: 0,
+        frameNumber: 2,
+        selectedView,
+        caps: { compute: false, indirectDrawing: false } as RenderFeatureFrameInput['caps'],
+      },
+    ]);
+    featureHost.prepareFeature(open, host.feature.identity);
+    const empty = featureHost.finishFrame(open);
+    expect(empty.frame.errors).toEqual([]);
+    expect(
+      empty.frame.plans.every(
+        ({ plan }) => plan.resources.length === 0 && plan.passes.length === 0,
+      ),
+    ).toBe(true);
+    expect(empty.preparedResourceBatches).toEqual([]);
+    expect(featureHost.abortFrame(empty)).toEqual([]);
+    featureHost.dispose();
     await host.detachWorld({ world });
   });
 

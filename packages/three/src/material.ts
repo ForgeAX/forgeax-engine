@@ -377,6 +377,19 @@ function projectSurface(
   }
 }
 
+/** Three owns its shadow-side defaults independently of native caster policy. */
+function shadowCullMode(
+  material: SupportedMaterial,
+  varianceShadow: boolean,
+): NonNullable<MaterialRenderState['cullMode']> {
+  let side = material.shadowSide ?? material.side;
+  if (material.shadowSide === null && !varianceShadow) {
+    if (side === FrontSide) side = BackSide;
+    else if (side === BackSide) side = FrontSide;
+  }
+  return side === DoubleSide ? 'none' : side === BackSide ? 'front' : 'back';
+}
+
 /** WebGPU output conversion belongs to the camera's finishing pass. */
 export function projectMaterial(
   material: SupportedMaterial,
@@ -391,16 +404,7 @@ export function projectMaterial(
     const state = {
       ...pass.renderState,
       ...(material.stencilWrite ? { stencilReference: material.stencilRef } : {}),
-      ...(shadow && (material.shadowSide !== null || varianceShadow)
-        ? {
-            cullMode:
-              (material.shadowSide ?? material.side) === DoubleSide
-                ? ('none' as const)
-                : (material.shadowSide ?? material.side) === BackSide
-                  ? ('front' as const)
-                  : ('back' as const),
-          }
-        : {}),
+      ...(shadow ? { cullMode: shadowCullMode(material, varianceShadow) } : {}),
     };
     if (
       material instanceof MeshPhysicalMaterial &&

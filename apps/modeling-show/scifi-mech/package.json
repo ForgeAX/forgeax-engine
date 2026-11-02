@@ -1,0 +1,12 @@
+{
+  "name": "@forgeax/app-modeling-show-scifi-mech",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "C-410 sci-fi mech bake case: the interactive page subject c-410 (low mesh with baked maps, high detail preview).",
+  "forgeax": {
+    "frameTimeoutMs": 60000,
+    "startupTimeoutMs": 600000
+  }
+}

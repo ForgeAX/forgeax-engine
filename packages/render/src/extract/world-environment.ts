@@ -70,7 +70,7 @@ import {
   Severity,
   selectCameraRoles,
 } from '../render-system-extract';
-import { readEnvironmentPose } from './environment-gate';
+import { queryEnvironment, readEnvironmentPose } from './environment-gate';
 
 type WorldInternalView = ReturnType<typeof createWorldInternalView>;
 type RgbTuple = readonly [number, number, number];
@@ -78,7 +78,7 @@ type RgbTuple = readonly [number, number, number];
 /** Produces light, camera and atmosphere facts once, before renderable projection. */
 export function extractWorldEnvironment(
   world: World,
-  context: Pick<PreparedExtractContext, 'assets' | 'cameraEntityKey' | 'worldId' | 'viewExtent'>,
+  context: Pick<PreparedExtractContext, 'assets' | 'cameraEntityKey' | 'worldId' | 'view'>,
   worldInternal: WorldInternalView,
   fog: ExtractedFrame['fog'],
 ) {
@@ -97,7 +97,7 @@ export function extractWorldEnvironment(
   const volumetricFogSource = extractVolumeSnapshot(world, assets, worldInternal);
   const cloudLayer = extractCloudLayerOrRoute(world, worldInternal);
 
-  const cameraRoles = selectCameraRoles(world, context.cameraEntityKey, context.viewExtent);
+  const cameraRoles = selectCameraRoles(world, context.cameraEntityKey, context.view);
   const cameras = [...cameraRoles.display];
   const auxiliaryCameras = cameraRoles.auxiliary;
   const cubeCameras = collectCubeCameraSnapshots(world);
@@ -140,6 +140,7 @@ export function extractWorldEnvironment(
   const lights: LightRoster = {
     directional: sun.directional,
     directionalCount: sun.directionalCount,
+    additionalDirectional: sun.additional,
     point: points.snapshots,
     spot: spotSnapshots,
     rect: rectSnapshots,
@@ -360,10 +361,11 @@ function directionalShadowFieldsOf(world: World, entity: EntityHandle) {
  */
 function extractDirectionalLights(world: World, worldInternal: WorldInternalView) {
   let directional: DirectionalLightSnapshot | undefined;
+  const additional: DirectionalLightSnapshot[] = [];
   let directionalCount = 0;
   let castShadow: boolean | undefined;
   let shadowFields: ReturnType<typeof directionalShadowFieldsOf> | undefined;
-  for (const row of world.query({ read: [DirectionalLight] }).unwrap()) {
+  for (const row of queryEnvironment(world, { read: [DirectionalLight] }).unwrap()) {
     const lLightingChannels = world[worldRead].getFieldValue(
       row.entity,
       DirectionalLight,
@@ -376,7 +378,6 @@ function extractDirectionalLights(world: World, worldInternal: WorldInternalView
     ) as number;
     if (!admitLightChannels(worldInternal, lLightingChannels, lShadowCasterChannels)) continue;
     directionalCount += 1;
-    if (directional !== undefined) continue;
     const lIntensity = world[worldRead].getFieldValue(
       row.entity,
       DirectionalLight,
@@ -387,9 +388,7 @@ function extractDirectionalLights(world: World, worldInternal: WorldInternalView
       DirectionalLight,
       'contactShadowLength',
     ) as number;
-    const lCastShadow =
-      world[worldRead].getFieldValue(row.entity, DirectionalLight, 'castShadow') === 1;
-    directional = {
+    const snapshot: DirectionalLightSnapshot = {
       kind: 'directional',
       lightingChannels: lLightingChannels,
       entity: row.entity,
@@ -402,10 +401,19 @@ function extractDirectionalLights(world: World, worldInternal: WorldInternalView
       intensity: lIntensity,
       contactShadowLength: lContactShadowLength,
     };
-    castShadow = lCastShadow;
+    // The first admitted light owns the View sun lane, CSM, contact shadows
+    // and atmosphere. Later lights are unshadowed Cluster members, matching
+    // Three.js where every DirectionalLight lights but only castShadow ones
+    // own a shadow map.
+    if (directional !== undefined) {
+      additional.push(snapshot);
+      continue;
+    }
+    directional = snapshot;
+    castShadow = world[worldRead].getFieldValue(row.entity, DirectionalLight, 'castShadow') === 1;
     shadowFields = directionalShadowFieldsOf(world, row.entity);
   }
-  return { directional, directionalCount, castShadow, shadowFields };
+  return { directional, additional, directionalCount, castShadow, shadowFields };
 }
 
 type DirectionalExtraction = ReturnType<typeof extractDirectionalLights>;
@@ -513,12 +521,10 @@ function extractPointLights(
   // snapshot index so the post-extract pointShadow join can stamp
   // `shadowAtlasLayer + shadowNear + shadowFar` onto the matching PointLight.
   const entities: number[] = [];
-  const pointLightQuery = world
-    .query({
-      read: [PointLight],
-      optional: [Transform, GlobalTransform],
-    })
-    .unwrap();
+  const pointLightQuery = queryEnvironment(world, {
+    read: [PointLight],
+    optional: [Transform, GlobalTransform],
+  }).unwrap();
   for (const row of pointLightQuery) {
     const pDecay = world[worldRead].getFieldValue(row.entity, PointLight, 'decay') as number;
     const pLightingChannels = world[worldRead].getFieldValue(
@@ -710,12 +716,10 @@ function extractSpotLights(
   lightTextureSlices: Map<number, number>,
 ): SpotLightSnapshot[] {
   const spotSnapshots: SpotLightSnapshot[] = [];
-  const spotLightQuery = world
-    .query({
-      read: [SpotLight],
-      optional: [Transform, GlobalTransform],
-    })
-    .unwrap();
+  const spotLightQuery = queryEnvironment(world, {
+    read: [SpotLight],
+    optional: [Transform, GlobalTransform],
+  }).unwrap();
   for (const row of spotLightQuery) {
     const sLightingChannels = world[worldRead].getFieldValue(
       row.entity,
@@ -993,12 +997,10 @@ function extractRectAreaLights(
   lightTextureSlices: Map<number, number>,
 ): RectAreaDirectLightSnapshot[] {
   const rectSnapshots: RectAreaDirectLightSnapshot[] = [];
-  const rectLightQuery = world
-    .query({
-      read: [RectAreaLight],
-      optional: [Transform, GlobalTransform],
-    })
-    .unwrap();
+  const rectLightQuery = queryEnvironment(world, {
+    read: [RectAreaLight],
+    optional: [Transform, GlobalTransform],
+  }).unwrap();
   for (const row of rectLightQuery) {
     const lightLightingChannels = world[worldRead].getFieldValue(
       row.entity,
@@ -1181,9 +1183,9 @@ function extractPointShadows(
   worldInternal: WorldInternalView,
 ): PointShadowSnapshot[] {
   const pointShadowSnapshots: PointShadowSnapshot[] = [];
-  const pointShadowQuery = world
-    .query({ read: [Transform, GlobalTransform, PointLightShadow, PointLight] })
-    .unwrap();
+  const pointShadowQuery = queryEnvironment(world, {
+    read: [Transform, GlobalTransform, PointLightShadow, PointLight],
+  }).unwrap();
   for (const row of pointShadowQuery) {
     const psShadowCasterChannels = world[worldRead].getFieldValue(
       row.entity,
@@ -1398,7 +1400,10 @@ function skylightSnapshotOf(world: World, entity: EntityHandle): SkylightSnapsho
  * (t27) uses skylightCount.
  */
 function extractSkylight(world: World) {
-  const skylightQuery = world.query({ read: [Skylight], optional: [GlobalTransform] }).unwrap();
+  const skylightQuery = queryEnvironment(world, {
+    read: [Skylight],
+    optional: [GlobalTransform],
+  }).unwrap();
   let skylight: SkylightSnapshot | undefined;
   let skylightCount = 0;
   for (const row of skylightQuery) {
@@ -1413,7 +1418,7 @@ function extractLightProbes(
   worldId: PreparedExtractContext['worldId'],
   worldInternal: WorldInternalView,
 ): LightProbeSnapshot[] {
-  const lightProbeQuery = world.query({ read: [LightProbe, GlobalTransform] }).unwrap();
+  const lightProbeQuery = queryEnvironment(world, { read: [LightProbe, GlobalTransform] }).unwrap();
   const lightProbes: LightProbeSnapshot[] = [];
   for (const row of lightProbeQuery) {
     const probeIrradiance = readRenderArrayView(
@@ -1451,7 +1456,7 @@ function extractLightProbes(
  * skyboxCount.
  */
 function extractSkybox(world: World) {
-  const skyboxQuery = world.query({ read: [SkyboxBackground] }).unwrap();
+  const skyboxQuery = queryEnvironment(world, { read: [SkyboxBackground] }).unwrap();
   let skybox: SkyboxSnapshot | undefined;
   let skyboxCount = 0;
   for (const row of skyboxQuery) {
@@ -1557,7 +1562,10 @@ function environmentCandidatesOf(
       sourceKey: `equirect:${imageEnvironment.equirectHandle}`,
     });
   }
-  const atmosphereQuery = world.query({ read: [Atmosphere], optional: [GlobalTransform] }).unwrap();
+  const atmosphereQuery = queryEnvironment(world, {
+    read: [Atmosphere],
+    optional: [GlobalTransform],
+  }).unwrap();
   for (const row of atmosphereQuery) {
     environmentCandidates.push({
       kind: 'atmosphere',

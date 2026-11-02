@@ -23,6 +23,7 @@
     "dist",
     "schema",
     "src",
+    "!src/**/__tests__/**",
     "scripts",
     "README.md",
     "LICENSE"

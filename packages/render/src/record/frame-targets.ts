@@ -6,6 +6,7 @@ import {
 } from '@forgeax/engine-rhi';
 import type { RenderGraphExecutionPhase } from '../render-contract';
 import type { ViewLights } from '../world/render-lights';
+import { recordContext } from '../world/view-record-context';
 import {
   configurePipelineSurface,
   type PipelineState,
@@ -75,7 +76,7 @@ export function acquireSwapChainTarget(
   internals: RenderSystemInternals,
   pipelineState: PipelineState,
 ): { texture: Texture; view: TextureView; targetW: number; targetH: number } | null {
-  const output = internals.viewOutput?.texture ?? internals.presentationOutput;
+  const output = recordContext(internals).viewOutput?.texture ?? internals.presentationOutput;
   if (output !== undefined) {
     const view = internals.device.createTextureView(output, {
       format: pipelineState.colorAttachmentFormat,
@@ -87,8 +88,9 @@ export function acquireSwapChainTarget(
     return {
       texture: output,
       view: view.value,
-      targetW: internals.viewOutput?.width ?? internals.canvas.width,
-      targetH: internals.viewOutput?.height ?? internals.canvas.height,
+      targetW: recordContext(internals).viewOutput?.width ?? recordContext(internals).canvas.width,
+      targetH:
+        recordContext(internals).viewOutput?.height ?? recordContext(internals).canvas.height,
     };
   }
   const canvasContext: RhiCanvasContext | null = internals.context;
@@ -110,7 +112,7 @@ export function acquireSwapChainTarget(
       canvasContext,
       configuredDevice?.value ?? internals.device,
       pipelineState,
-      internals.outputColorSpace,
+      recordContext(internals).outputColorSpace,
     );
     if (!configured.ok) {
       internals.errorRegistry.fire(configured.error);
@@ -145,8 +147,8 @@ export function acquireSwapChainTarget(
   return {
     texture: currentTextureResult.value,
     view,
-    targetW: internals.canvas.width | 0,
-    targetH: internals.canvas.height | 0,
+    targetW: recordContext(internals).canvas.width | 0,
+    targetH: recordContext(internals).canvas.height | 0,
   };
 }
 
@@ -185,8 +187,14 @@ export function frameTargetExtent(
 ): { targetW: number; targetH: number } {
   const capture = captureOnly ? captureTarget : undefined;
   return {
-    targetW: (capture?.width ?? internals.viewOutput?.width ?? internals.canvas.width) | 0,
-    targetH: (capture?.height ?? internals.viewOutput?.height ?? internals.canvas.height) | 0,
+    targetW:
+      (capture?.width ??
+        recordContext(internals).viewOutput?.width ??
+        recordContext(internals).canvas.width) | 0,
+    targetH:
+      (capture?.height ??
+        recordContext(internals).viewOutput?.height ??
+        recordContext(internals).canvas.height) | 0,
   };
 }
 

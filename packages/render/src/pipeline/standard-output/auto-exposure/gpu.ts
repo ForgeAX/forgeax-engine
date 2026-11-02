@@ -296,7 +296,7 @@ export function addAutoExposureGraphPasses(
       { resource: projection.resources.candidate, usage: 'storage-write' },
       { resource: projection.resources.parameters, usage: 'storage-read' },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       meterState ??= createAutoExposureMeterState(frame);
       const source = resources.textureView(projection.source.view);
       const histogramBuffer = resources.buffer(projection.resources.histogram);

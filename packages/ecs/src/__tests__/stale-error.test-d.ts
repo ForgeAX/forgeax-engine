@@ -1,3 +1,4 @@
+import type { MemoryErrorCode } from '../memory-types';
 import { Update } from '../schedule-token';
 // AC-L5 stale-error compile-assertion vehicle.
 //
@@ -152,7 +153,7 @@ describe('[w13] EcsErrorCode union completeness — stale codes present', () => 
     // If shared-ref-stale is NOT in the union, this switch block would
     // still compile because the type level never would not trigger —
     // this test-d proves the code IS in the union.
-    const assertExhaustive = (code: EcsErrorCode): string => {
+    const assertExhaustive = (code: Exclude<EcsErrorCode, MemoryErrorCode>): string => {
       switch (code) {
         case 'stale-entity':
         case 'component-already-present':

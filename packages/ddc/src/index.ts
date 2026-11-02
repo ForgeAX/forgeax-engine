@@ -49,6 +49,13 @@ export {
   withDdcLock,
 } from './lifecycle.js';
 export {
+  collectNativeCookGarbage,
+  createNativeCookCache,
+  NATIVE_COOK_CACHE_MAX_BYTES,
+  type NativeCookCacheOptions,
+  type NativeCookGcResult,
+} from './native-cook-cache.js';
+export {
   type AcceptedPublicationCandidate,
   type AcceptedPublicationStore,
   createAcceptedPublicationStore,

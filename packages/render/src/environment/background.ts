@@ -135,7 +135,7 @@ export function addAtmosphereBackground(
       { resource: vertices.value, usage: 'copy-dst' },
     ],
     executeIf: dirty,
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       const environment = frameOf(frame).frameState.environmentFrame;
       const sun = environment?.sun;
       if (environment?.source.kind !== 'atmosphere' || sun === undefined) {
@@ -266,7 +266,7 @@ export function addAtmosphereBackground(
       ],
       colorAttachments: [{ view: faceView.value, loadOp: 'clear', storeOp: 'store' }],
       executeIf: dirty,
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         const current = ensureState(frame);
         current.cubeGroup = frame.runtime.device
           .createBindGroup({
@@ -323,7 +323,7 @@ export function addAtmosphereBackground(
     // uses the normal scene depth authority, so alpha blending sees the sky
     // and no later background pass can overwrite a transparent foreground.
     colorAttachments: [{ view: color.view, loadOp: 'clear', storeOp: 'store' }],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const current = ensureState(frame);
       current.backgroundGroup = createAtmosphereBackgroundGroup(
         frame.runtime.device,

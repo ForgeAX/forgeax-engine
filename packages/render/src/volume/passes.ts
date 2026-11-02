@@ -26,6 +26,7 @@ import type {
   RenderPipelineTarget,
   RenderPipelineTopology,
 } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { VolumetricFogLightKind } from './capability';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from './component';
 import { volumeCompositeScissor } from './composite-scissor';
@@ -84,7 +85,7 @@ function volumeContext(frame: RenderPipelineFrame): VolumeProgramContext {
   if (runtime.shaderModuleFactory === undefined) throw pipelineError('shader module factory');
   return {
     device: runtime.device,
-    deviceScope: runtime.deviceScope,
+    deviceScope: recordContext(runtime).deviceScope,
     shaderModuleFactory: runtime.shaderModuleFactory,
   };
 }
@@ -358,7 +359,7 @@ function addVolumetricFogPasses(
       { resource: inputs.resources.froxelView, usage: 'storage-write' },
       { resource: inputs.spotShadow, usage: 'sampled-read' },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       inject ??= volumeComputeState(
         volumeContext(frame),
         shaderSource(frame, 'inject'),
@@ -424,7 +425,7 @@ function addVolumetricFogPasses(
         ? []
         : [{ resource: inputs.cloudShadow, usage: 'sampled-read' as const }]),
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       integrate ??= volumeComputeState(
         volumeContext(frame),
         shaderSource(frame, 'integrate'),
@@ -552,7 +553,7 @@ function addVolumetricFogPasses(
       { resource: inputs.params, usage: 'uniform-read' },
       { resource: inputs.view, usage: 'uniform-read' },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       temporal ??= volumeComputeState(
         volumeContext(frame),
         shaderSource(frame, 'temporal'),
@@ -608,7 +609,7 @@ function addVolumetricFogPasses(
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       if (composite === undefined) {
         const state = volumeCompositeState(
           volumeContext(frame),

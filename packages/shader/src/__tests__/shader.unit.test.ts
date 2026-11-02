@@ -314,7 +314,7 @@ import {
     {
       file: 'ibl-irradiance.wgsl',
       importPath: 'forgeax_pbr::ibl_irradiance',
-      expectedGroup1: ['texture_cube'],
+      expectedGroup1: ['texture_2d'],
     },
     {
       file: 'ibl-prefilter.wgsl',

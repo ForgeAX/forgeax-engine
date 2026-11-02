@@ -5,6 +5,7 @@ import { MaterialResource } from '../material-resource';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { MaterialSnapshot } from '../render-system-extract';
 import { MaterialFrame } from '../scene/material-dispatch';
+import { recordContext } from '../world/view-record-context';
 import {
   applyMaterialTextureUvScales,
   applyParamSnapshotToUbo,
@@ -148,7 +149,7 @@ const allocations = new WeakMap<object, MaterialUniformSlots>();
 function allocation(runtime: RenderSystemRuntime): MaterialUniformSlots {
   // Capture runtimes inherit the storage controller from their display view.
   // One physical buffer must have one address allocator across those runtimes.
-  const owner = runtime.meshSsboState ?? runtime;
+  const owner = recordContext(runtime).meshSsboState ?? runtime;
   let slots = allocations.get(owner);
   if (slots === undefined) {
     slots = new MaterialUniformSlots();
@@ -293,8 +294,8 @@ export function prepareMaterialUniform(
   const slots = allocation(runtime);
   const slot = slots.slot(material, resources);
   const capacity =
-    (runtime.meshSsboState?.materialSlotCount ?? 0) < slots.count
-      ? runtime.growMeshSsbo?.(0, slots.count)
+    (recordContext(runtime).meshSsboState?.materialSlotCount ?? 0) < slots.count
+      ? recordContext(runtime).growMeshSsbo?.(0, slots.count)
       : undefined;
   if (capacity?.ok === false)
     throw new RhiError({

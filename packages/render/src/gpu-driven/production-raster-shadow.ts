@@ -4,6 +4,7 @@ import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuScene } from '../gpu-scene';
+import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import { reflectedRenderState } from '../material-render-state';
 import type { RecordProfileRunner } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
@@ -93,12 +94,12 @@ export interface ShadowBatchFacts {
   readonly worldId: number;
 }
 
-type ChannelScene = Pick<GpuScene, 'contentRevision' | 'changedSlotsSince'>;
+type ChannelScene = Pick<GpuScene, 'contentCursor' | 'changedSlotsSince'>;
 type ChannelSource = Pick<PersistentGpuDrivenState, 'slots' | 'slotAt'>;
 
 interface ChannelSlots {
   readonly scene: ChannelScene;
-  readonly revision: number;
+  readonly content: SceneContentCursor;
   readonly slots: FrameSet;
 }
 
@@ -117,10 +118,10 @@ export class ShadowChannelSlots {
   select(mask: number, source: ChannelSource, scene: ChannelScene): FrameSet {
     this.#requested.add(mask);
     const retained = this.#masks.get(mask);
-    const revision = scene.contentRevision;
-    if (retained?.scene === scene && retained.revision === revision) return retained.slots;
+    const content = scene.contentCursor;
+    if (retained?.scene === scene && retained.content === content) return retained.slots;
     const changed =
-      retained?.scene === scene ? scene.changedSlotsSince(retained.revision) : undefined;
+      retained?.scene === scene ? scene.changedSlotsSince(retained.content) : undefined;
     let slots = retained?.slots ?? new FrameSet();
     if (changed === undefined) {
       slots = FrameSet.from(
@@ -132,7 +133,7 @@ export class ShadowChannelSlots {
       for (const slot of changed)
         slots = admitsChannels(source.slotAt(slot), mask) ? slots.with(slot) : slots.without(slot);
     }
-    this.#masks.set(mask, { scene, revision, slots });
+    this.#masks.set(mask, { scene, content, slots });
     return slots;
   }
 
@@ -218,7 +219,7 @@ export function shadowArtifactsChanged(
   if (previous.artifacts === artifacts) return false;
   return previous.plan.batches.some((batch) => {
     const key = shadowMaterialKey(batch);
-    return artifacts.has(key) && previous.artifacts.get(key) !== artifacts.get(key);
+    return artifacts.has(key) && previous.artifacts.get(key)?.key !== artifacts.get(key)?.key;
   });
 }
 
@@ -336,7 +337,7 @@ export function sameConsumedArtifact(
 ): boolean {
   if (previous === artifacts) return true;
   const key = shadowMaterialKey(batch);
-  return previous?.get(key) === artifacts.get(key);
+  return previous?.get(key)?.key === artifacts.get(key)?.key;
 }
 
 export function createShadowBatchProjection(

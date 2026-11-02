@@ -5,7 +5,7 @@ import {
   validateAssetBudgetBytes,
 } from '@forgeax/engine-assets-runtime';
 import { type AudioBackend, createAudioIntentBackend } from '@forgeax/engine-audio';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import { createWorldContext, World, worldPlugin } from '@forgeax/engine-ecs';
 import type { InputBackend } from '@forgeax/engine-input';
 import type { Platform } from '@forgeax/engine-platform';
@@ -232,7 +232,7 @@ export async function createApp(
   // needs a live World reference.
   const shouldStartRemote = readRemoteServeFlag();
 
-  let debugDraw: DebugDraw | undefined;
+  let debugDraw: DebugDrawSource | undefined;
 
   // The canvas form owns world lifetime, in contrast to the assemble form
   // where the host owns it.

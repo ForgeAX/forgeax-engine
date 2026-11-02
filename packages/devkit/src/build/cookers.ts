@@ -12,6 +12,7 @@ import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js
 import type { ProjectFacts } from '../types.js';
 import type {
   BuildCallbackRequest,
+  BuildCookerDescriptor,
   BuildImporterDescriptor,
   BuildProcessRequest,
 } from './build-process.js';
@@ -49,7 +50,11 @@ export async function loadProjectCookers(
   facts: ProjectFacts,
   builtins: readonly NativeCooker[],
   resolution: Pick<InlineConfig, 'resolve' | 'plugins'> = {},
-  options: BuildSessionDeadlines & { readonly inventory?: PluginSourceInventory } = {},
+  options: BuildSessionDeadlines & {
+    readonly inventory?: PluginSourceInventory;
+    /** Build DDC root backing the native cookers' `context.cache`; absent, cooks have no store. */
+    readonly buildCacheRoot?: string;
+  } = {},
 ): Promise<ProjectCookers> {
   for (const timeout of [
     options.startupTimeoutMs,
@@ -210,7 +215,7 @@ export async function loadProjectCookers(
     const started = await request<{
       appOptions: DevKitAppOptions;
       delivery: DevKitDeliveryOptions;
-      cookers: readonly string[];
+      cookers: readonly BuildCookerDescriptor[];
       importers: readonly BuildImporterDescriptor[];
     }>(
       {
@@ -219,14 +224,26 @@ export async function loadProjectCookers(
         root: facts.roots.build,
         definitions: records.map((record) => record.definition),
         sessionId: randomUUID(),
+        ...(options.buildCacheRoot === undefined ? {} : { buildCacheRoot: options.buildCacheRoot }),
       },
       options.startupTimeoutMs ?? 60_000,
     );
     const keys = new Set(builtins.map((cooker) => cooker.key));
-    const remote = started.cookers.map((key): NativeCooker => {
+    const remote = started.cookers.map(({ key, timeoutMs, concurrency }): NativeCooker => {
       if (keys.has(key)) throw new TypeError(`duplicate builtin/project cooker ${key}`);
       keys.add(key);
-      return { key, cook: (input) => request<NativeCookDraft>({ operation: 'cook', key, input }) };
+      // A cooker-declared bound replaces the session's default cook deadline.
+      return {
+        key,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+        // The build child admits overlapping requests to a parallel cooker at once.
+        ...(concurrency === 'parallel' ? { concurrency } : {}),
+        cook: (input) =>
+          request<NativeCookDraft>(
+            { operation: 'cook', key, input },
+            timeoutMs ?? options.operationTimeoutMs ?? 60_000,
+          ),
+      };
     });
     const importers = started.importers.map(
       (descriptor): Importer => ({

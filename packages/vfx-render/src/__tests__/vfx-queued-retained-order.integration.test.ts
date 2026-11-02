@@ -12,6 +12,10 @@ import {
   vfxGpuRuntimePlugin,
 } from '@forgeax/engine-vfx';
 import { expect, it, vi } from 'vitest';
+import {
+  prepareFeatureFrame,
+  submitFeatureFrame,
+} from '../../../render/src/__tests__/feature-frame-driver';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 import {
   cloneOwnedRenderFeaturePlanSignatureSnapshot,
@@ -165,7 +169,7 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
       phaseTick: i.phaseTick,
       sequence: i.sequence,
     }));
-    const batch = host.runFrame([
+    const batch = prepareFeatureFrame(host, [
       {
         identity: 'main',
         render: true,
@@ -190,9 +194,7 @@ it('distinguishes actual managed VFX queued/retained ordering from tick-count to
       view: describePlan(view.plan),
       viewPlan: view.plan,
     };
-    batch.frame.onSubmitted();
-    for (const v of batch.views.values()) v.onSubmitted();
-    batch.onSubmitted();
+    submitFeatureFrame(host);
     for (const lease of batch.preparedResourceBatches) lease.release().unwrap();
     return row;
   };
@@ -300,7 +302,7 @@ it('keeps managed module snapshots exact without reserializing shared programs',
   let previousView: RenderFeaturePlanSignatureSnapshot | undefined;
   const frame = (frameNumber: number) => {
     world.update(1 / 60).unwrap();
-    const batch = host.runFrame([
+    const batch = prepareFeatureFrame(host, [
       {
         identity: 'main',
         render: true,
@@ -334,9 +336,7 @@ it('keeps managed module snapshots exact without reserializing shared programs',
         if (index === 0) previousFrame = expected;
         else previousView = expected;
       }
-      batch.frame.onSubmitted();
-      for (const view of batch.views.values()) view.onSubmitted();
-      batch.onSubmitted();
+      submitFeatureFrame(host);
       // The real host already admitted these immutable programs. Further signature
       // snapshots must use the owned nodes instead of scanning shader bodies.
       expect(metrics.serializedCharacters).toBe(0);

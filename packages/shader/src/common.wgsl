@@ -226,6 +226,14 @@ fn transformNormal(worldFromLocal: mat4x4<f32>, normal: vec3<f32>) -> vec3<f32> 
   return (cof0 * normal.x + cof1 * normal.y + cof2 * normal.z) / det;
 }
 
+// One automatic directional bias budget, shared by caster and receiver.
+// Preserve small blockers at intermediate angles; reach the slope cap only
+// at genuinely grazing incidence, rather than saturating at tan(theta) = 1.
+fn directionalShadowCasterBias(cosine: f32, worldTexel: f32, depthSpan: f32) -> f32 {
+  let slope = min(sqrt(max(0.0, 1.0 - cosine * cosine)) / max(cosine, 0.00001), 2.875);
+  return min(0.1, (0.5 + 2.0 * slope) * worldTexel / max(depthSpan, 0.00001));
+}
+
 // Retained CPU ProbeBlendRecord ABI: 4 scalar lanes plus 9 vec4 lanes = 160 B.
 // The last lane carries padding for the 27 f32 SH coefficients. Sky residual
 // is derived in lighting-probe.wgsl, never stored as a second fraction.
@@ -363,13 +371,14 @@ struct ShadowCasterCascade {
   // cascade, 1 = spot perspective). Repurposes the former `shadowCasterPadA`
   // lane. The shadow_caster vertex shader branches on this.
   isSpot : u32,
-  // Two trailing u32 pad lanes (zero-initialised host-side) keep `index`/
+  // The policy lane and trailing u32 pad keep `index`/
   // `isSpot` in the first 16 B vec4 so the `mat4x4<f32>` below starts at a
   // 16 B-aligned offset (WebGL2 GLES 3.0 requirement). Field names are unique
   // across the composed module surface so naga_oil's writeback substitution
   // does not collide with prior `pad0` / `pad1` members in other shared
   // structs (Material, SkylightUniforms).
-  shadowCasterPadB : u32,
+  // Whole-scene orthographic CSM near pancaking; authored matrices disable it.
+  clampNear : u32,
   shadowCasterPadC : u32,
   // feat-20260625 M2 / w10 (D-1): spot perspective light-view-projection
   // matrix (perspective(outerCone*2) x lookAt). Written per spot tile pass.

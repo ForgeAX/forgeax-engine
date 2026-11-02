@@ -2,6 +2,7 @@ import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import type { CapsuleShadowSnapshot } from '../capsule-shadow/world-capsules';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { SkinSceneFrame } from '../scene/skin-scene-inputs';
+import { worldEntityKey } from './frame-snapshot';
 import { type SkinTaskBinding, SkinTasks } from './skin-tasks';
 
 const CAPSULE_NOT_SKINNED = Object.freeze({ status: 'not-skinned' as const });
@@ -22,10 +23,11 @@ export interface RecordingSkinTaskHost {
 }
 
 /**
- * Renderer-scoped recording Skin lifecycle. One fixed Skin frame binds lazily at
- * the first actual CPU draw demand and stays fixed until the recording
- * completes. Physical task buffers belong to one device; task buffers and both
- * Scene roots retire after the accepted submission's GPU completion.
+ * Renderer-scoped recording Skin lifecycle. One fixed Skin frame binds at the
+ * view's first Skin demand (`render-skin-demand` in RenderQueue, or a capsule
+ * read) and stays fixed until the recording completes. Physical task buffers
+ * belong to one device; task buffers and both Scene roots retire after the
+ * accepted submission's GPU completion.
  */
 export class RecordingSkinTasks {
   private tasks: SkinTasks | undefined;
@@ -48,10 +50,25 @@ export class RecordingSkinTasks {
     this.host.roots.discardSkinFrame();
   }
 
-  demand(source: Pick<RenderableSnapshot, 'worldId' | 'entityKey'>): SkinTaskBinding | undefined {
-    const tasks = this.actual();
-    const slot = this.frame?.slots.lookup(source.worldId, source.entityKey);
-    return slot === undefined ? undefined : tasks.demand(slot);
+  /**
+   * Compose and upload the palettes of every CPU Skin row a view may draw,
+   * keyed by `worldEntityKey`; `undefined` marks a row without a Scene slot or
+   * whose current pose is unavailable (no draw). Only `render-skin-demand`
+   * calls this, in RenderQueue, before the view records its draws; recording
+   * reads the returned bindings and never composes a palette itself.
+   */
+  prepareDemand(
+    rows: Iterable<Pick<RenderableSnapshot, 'worldId' | 'entityKey'>>,
+  ): Map<number, SkinTaskBinding | undefined> {
+    const demand = new Map<number, SkinTaskBinding | undefined>();
+    for (const source of rows) {
+      const key = worldEntityKey(source.worldId, source.entityKey);
+      if (demand.has(key)) continue;
+      const tasks = this.actual();
+      const slot = this.frame?.slots.lookup(source.worldId, source.entityKey);
+      demand.set(key, slot === undefined ? undefined : tasks.demand(slot));
+    }
+    return demand;
   }
 
   capsules(source: RenderableSnapshot): CapsuleShadowSnapshot | undefined {

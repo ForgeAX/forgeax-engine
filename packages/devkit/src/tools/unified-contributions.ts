@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { createModelingTools } from '@forgeax/engine-modeling/tools';
 import {
   type ArtifactRef,
   defineCommand,
@@ -24,6 +25,7 @@ import {
   assetResolveInputSchema,
   assetVerifyInputSchema,
 } from './catalog.js';
+import { createModelRenderTool, createModelReplayTool } from './model-render.js';
 
 type CommandValue =
   | {
@@ -805,6 +807,9 @@ export function createUnifiedCommandContributions(
   ];
   return [
     ...createOperationHistoryTools(projectRoot),
+    ...createModelingTools({ projectRoot }),
+    createModelRenderTool(projectRoot),
+    createModelReplayTool(projectRoot),
     ...(['start', 'status', 'stop'] as const).map((operation) =>
       command(
         `backend.${operation}`,

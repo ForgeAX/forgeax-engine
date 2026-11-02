@@ -63,6 +63,19 @@ async function fixture(): Promise<{
   return { root, dist, manifest };
 }
 
+/** Deterministic incompressible bytes (xorshift32). */
+function noise(length: number, seed: number): Buffer {
+  const bytes = Buffer.allocUnsafe(length);
+  let x = seed >>> 0 || 1;
+  for (let index = 0; index < length; index += 1) {
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    bytes[index] = x & 0xff;
+  }
+  return bytes;
+}
+
 describe('single HTML delivery', () => {
   it('bundles the module, embeds resources, escapes script sentinels, and writes a checksum', async () => {
     const { root, dist, manifest } = await fixture();
@@ -120,10 +133,8 @@ describe('single HTML delivery', () => {
 
   it('writes a large single-html closure with lazy resource nodes and a matching digest', async () => {
     const { root, dist, manifest } = await fixture();
-    const large = Buffer.allocUnsafe(8 * 1024 * 1024);
-    for (let index = 0; index < large.length; index += 1) {
-      large[index] = (index * 31 + 17) & 0xff;
-    }
+    // Incompressible bytes stay stored as they are (compressible ones are gzip-stored).
+    const large = noise(8 * 1024 * 1024, 17);
     const worker = Buffer.from(
       "new Worker(new URL('./nested-worker.js', import.meta.url), { type: 'module' });\n",
     );

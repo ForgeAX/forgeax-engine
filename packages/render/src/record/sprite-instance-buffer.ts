@@ -1,4 +1,5 @@
 import { type Buffer, RhiError } from '@forgeax/engine-rhi';
+import { ok } from '@forgeax/engine-types';
 import { GpuBuffer } from '../gpu-resource';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
@@ -7,6 +8,7 @@ import {
 } from '../gpu-usage';
 import type { InstanceBufferCacheEntry } from '../instance-buffer-cache';
 import type { SpriteInstancesSnapshot } from '../render-system-extract';
+import { renderWorldFor } from '../world/render-world';
 import { worldEntityKey } from './frame-snapshot';
 import { INSTANCE_UBO_FULL_ARRAY_BYTES } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
@@ -19,6 +21,7 @@ export type { SpriteInstancesSnapshot } from '../render-system-extract';
  * function, so the record path has one source of count-mismatch errors.
  */
 export function interleaveSpriteInstanceBuffer(
+  out: Float32Array,
   transforms: Float32Array,
   regions: Float32Array,
   includePrevious = false,
@@ -26,7 +29,8 @@ export function interleaveSpriteInstanceBuffer(
   const count = transforms.length / 16;
   const stride = includePrevious ? 36 : 20;
   const regionOffset = includePrevious ? 32 : 16;
-  const out = new Float32Array(count * stride);
+  if (out.length !== count * stride)
+    throw new RangeError('Sprite instance output must match the packed instance count');
   for (let i = 0; i < count; i++) {
     const dstBase = i * stride;
     const transformBase = i * 16;
@@ -77,6 +81,13 @@ export function resolveSpriteInstancesBuffer(
   fallbackCount: number,
 ): { buffer: Buffer; count: number } {
   const { runtime } = c;
+  const world = renderWorldFor(runtime);
+  if (!world.frameArena.isActive)
+    return world
+      .withFrameArena(() =>
+        ok(resolveSpriteInstancesBuffer(c, spriteEntry, fallbackBuffer, fallbackCount)),
+      )
+      .unwrap();
   let buffer = fallbackBuffer;
   let count = fallbackCount;
   const spriteInstancesSnap: SpriteInstancesSnapshot | undefined =
@@ -85,6 +96,9 @@ export function resolveSpriteInstancesBuffer(
     if (spriteInstancesSnap.instanceCount === 0) return { buffer, count: 0 };
     const uniformFallback = runtime.device.caps.storageBuffer === false;
     const interleaved = interleaveSpriteInstanceBuffer(
+      world.frameArena
+        .alloc(Float32Array, spriteInstancesSnap.instanceCount * (uniformFallback ? 20 : 36))
+        .unwrap(),
       spriteInstancesSnap.transforms,
       spriteInstancesSnap.regions,
       !uniformFallback,

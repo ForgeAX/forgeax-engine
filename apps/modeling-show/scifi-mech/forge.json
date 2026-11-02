@@ -1,0 +1,13 @@
+{
+  "id": "modeling-show-scifi-mech",
+  "name": "scifi-mech C-410",
+  "schemaVersion": "3.0.0",
+  "assetRoots": [
+    "assets"
+  ],
+  "roots": {
+    "build": "c5917a5b-dc2c-52d2-90ff-390896dc080e",
+    "engine": "4b6ddeef-f7fe-53cd-aba5-c3faec6b5984",
+    "frontend": "753722d7-1b9c-563d-880e-b3c05d016c57"
+  }
+}

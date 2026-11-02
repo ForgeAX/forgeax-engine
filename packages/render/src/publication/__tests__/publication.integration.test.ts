@@ -57,12 +57,13 @@ function fixture(
   options: ConstructorParameters<typeof AssetRegistry>[0] = {},
   maxInFlight?: 2 | 3,
   features: readonly RenderFeature<unknown>[] = [],
+  memory?: NonNullable<ConstructorParameters<typeof World>[0]>['memory'],
 ) {
   const assets = new AssetRegistry({
     ...options,
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
-  const world = new World({ assets });
+  const world = new World({ assets, ...(memory === undefined ? {} : { memory }) });
   const cube = assets.create(BUILTIN_CUBE).unwrap();
   const quad = assets.create(BUILTIN_QUAD).unwrap();
   const defaultMaterial = assets.create(Materials.standard({ baseColor: [1, 1, 1, 1] })).unwrap();
@@ -1773,6 +1774,94 @@ it('does not walk or republish descendants when an unrelated parent component is
       }
       f.publish();
     }
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
+  }
+});
+
+it('prevents reentrant preparation during extraction and discard settlement', () => {
+  let publisher: ReturnType<typeof createRenderPublisher> | undefined;
+  const attempts: boolean[] = [];
+  let extracts = 0;
+  let discards = 0;
+  const attempt = () => {
+    const result = publisher?.prepare(0);
+    attempts.push(result?.ok === true);
+    if (result?.ok) result.value.discard();
+  };
+  const feature: RenderFeature<unknown> = {
+    identity: 'preparation-scratch-reentry',
+    extract: () => {
+      if (extracts++ === 0) attempt();
+      return ok({});
+    },
+    plan: () => ok({ work: [] }),
+    onSourceFrameDiscarded: () => {
+      if (discards++ === 0) attempt();
+    },
+  };
+  const f = fixture({}, 3, [feature]);
+  publisher = f.publisher;
+  try {
+    const first = publisher.prepare(0).unwrap();
+    expect(attempts).toEqual([false]);
+    const templates = structuredClone(first.packet.templates);
+    first.discard();
+    expect(attempts).toEqual([false, false]);
+    const retry = publisher.prepare(0).unwrap();
+    expect(retry.packet.templates).toEqual(templates);
+    expect(first.packet.templates).toEqual(templates);
+    expect(() => first.accept()).toThrow('closed candidate');
+    first.discard();
+    expect(() => retry.accept()).not.toThrow();
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
+  }
+});
+
+it('returns a grouping arena denial without poisoning the source World and retries a smaller baseline', () => {
+  const f = fixture({}, 3, [], { arena: { maxScopeBytes: 256 } });
+  const extra = Array.from({ length: 128 }, () => f.spawn());
+  try {
+    f.world.update(0).unwrap();
+    const denied = f.publisher.prepare(0);
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) expect(denied.error.detail.subject).toContain('memory');
+    for (const entity of extra) f.world.despawn(entity).unwrap();
+    expect(f.world.update(0).ok).toBe(true);
+    const retry = f.publisher.prepare(0).unwrap();
+    expect(retry.packet.baseline).toBe(true);
+    expect(retry.packet.upserts.length).toBe(4);
+    retry.discard();
+  } finally {
+    f.publisher.dispose();
+    f.receiver.dispose();
+    f.scene.dispose();
+  }
+});
+
+it('keeps detached templates across reused grouping scratch and reaches a warm backing plateau', () => {
+  const f = fixture();
+  const extra = Array.from({ length: 128 }, () => f.spawn());
+  try {
+    f.world.update(0).unwrap();
+    const initial = f.publisher.prepare(0).unwrap();
+    const templates = structuredClone(initial.packet.templates);
+    initial.discard();
+    const before = f.world.memoryStats().arena;
+    for (let cycle = 0; cycle < 20; cycle++) {
+      f.world.set(extra[0] as never, Transform, { pos: [cycle, 0, 0] }).unwrap();
+      f.world.update(0).unwrap();
+      const candidate = f.publisher.prepare(0).unwrap();
+      expect(candidate.packet.upserts.length).toBe(260);
+      expect(initial.packet.templates).toEqual(templates);
+      candidate.discard();
+    }
+    expect(f.world.memoryStats().arena.backingAllocations).toBe(before.backingAllocations);
   } finally {
     f.publisher.dispose();
     f.receiver.dispose();

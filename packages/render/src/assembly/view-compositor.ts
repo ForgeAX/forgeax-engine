@@ -192,7 +192,7 @@ export function createViewCompositor(internals: RenderSystemInternals) {
                 clearValue: { r: 0, g: 0, b: 0, a: 1 },
               },
             ],
-            encode: ({ pass, frame, resources: resolved }) => {
+            encodeDirect: (pass, frame, resolved) => {
               frame.views.forEach((view, index) => {
                 const input = inputs[index];
                 const pipeline = viewPipelines[index];
@@ -222,7 +222,7 @@ export function createViewCompositor(internals: RenderSystemInternals) {
           unwrap(
             graph.addCopyPass('final-display-observation', {
               accesses: [{ resource: colorView, usage: 'copy-src' }],
-              encode: ({ encoder, frame }) =>
+              encodeDirect: (encoder, frame, _graphresources) =>
                 encodeFrameObservationCapture(internals, encoder, {
                   texture: frame.output,
                   domain: 'final-display',

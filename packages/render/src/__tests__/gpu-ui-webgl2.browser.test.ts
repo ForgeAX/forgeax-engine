@@ -52,6 +52,7 @@ it('executes the shipped UI shaders through Naga GLSL300 and integer WebGL2 inpu
     raster = await createGpuUiRaster({
       device,
       shaders: gpuShaders,
+      retire: (owner, release) => void owner.queue.onSubmittedWorkDone().then(release, release),
       createShaderModule: async (owner, code) =>
         (await createShaderModule(owner, { code })).unwrap(),
     });
@@ -119,7 +120,6 @@ it('executes the shipped UI shaders through Naga GLSL300 and integer WebGL2 inpu
         );
         device.queue.submit([encoder.finish().unwrap()]).unwrap();
         const completed = device.queue.onSubmittedWorkDone();
-        raster.submitted(completed);
         const mapped = (await staging.mapAsync(1)).unwrap();
         try {
           const bytes = new Uint8Array(mapped.getMappedRange().unwrap());

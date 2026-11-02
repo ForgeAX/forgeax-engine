@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { encodePng } from '@forgeax/engine-image/png';
-import { completeReadyFrame, drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { createSmokePlatform } from '../../../../../scripts/smoke-platform.mjs';
 import { dirname, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -458,25 +458,23 @@ if (!started.ok) {
 let frames = 0;
 let cubeFaceSubmissions = 0;
 const reflectionPassNames = new Set();
-const recordSubmittedPasses = () => {
+const readyDeadline = Date.now() + 60_000;
+while (frames < MIN_FRAMES) {
+  if (Date.now() >= readyDeadline) throw new Error('cube reflection did not complete its ready-frame budget');
+  const item = rafQueue.shift();
+  if (item === undefined) break;
+  now += 16.67;
+  latestDrawReceipt = undefined;
+  item.callback(now);
+  if (latestDrawReceipt === undefined) throw new Error('smoke frame did not submit a draw');
+  (await latestDrawReceipt.completed).unwrap();
+  // Completed preparation barriers do not prove a captured cube exists yet.
+  if (latestDrawReceipt.presentation === 'ready') frames += 1;
   for (const passName of renderer.inspect().perFramePassNames) {
     if (passName.startsWith('cube-capture-face.')) cubeFaceSubmissions++;
     if (REFLECTION_EVIDENCE) reflectionPassNames.add(passName);
   }
-};
-for (; frames < MIN_FRAMES; frames += 1) {
-  await completeReadyFrame(async () => {
-    const item = rafQueue.shift();
-    if (item === undefined) throw new Error('smoke app did not schedule the next frame');
-    now += 16.67;
-    latestDrawReceipt = undefined;
-    item.callback(now);
-    if (latestDrawReceipt === undefined) throw new Error('smoke frame did not submit a draw');
-    (await latestDrawReceipt.completed).unwrap();
-    recordSubmittedPasses();
-    await delay(0);
-    return latestDrawReceipt;
-  });
+  await delay(0);
 }
 // Main-camera readiness does not imply that all progressive cube views have
 // submitted. Keep the readback tickets outside that preparation window.
@@ -489,7 +487,10 @@ while (cubeFaceSubmissions < CUBE_CAMERA_FACE_ORDER.length) {
     camera: { lease: attached.value },
     environment: { lease: attached.value },
   });
-  recordSubmittedPasses();
+  for (const passName of renderer.inspect().perFramePassNames) {
+    if (passName.startsWith('cube-capture-face.')) cubeFaceSubmissions++;
+    if (REFLECTION_EVIDENCE) reflectionPassNames.add(passName);
+  }
   await delay(0);
 }
 const tickets = [];
@@ -511,17 +512,26 @@ for (let face = 0; face < CUBE_CAMERA_FACE_ORDER.length; face += 1) {
     console.error(`[smoke] FAIL - world update failed: ${updated.error.code}`);
     process.exit(1);
   }
-  drawn = await drawReadyFrame(renderer, {
+  const next = renderer.draw({
     leases: [attached.value],
     camera: { lease: attached.value },
     environment: { lease: attached.value },
   });
+  if (!next.ok) {
+    console.error(`[smoke] FAIL - receipt draw failed: ${next.error.code}`);
+    process.exit(1);
+  }
+  drawn = next.value;
+  const completed = await next.value.completed;
+  if (!completed.ok) {
+    console.error(`[smoke] FAIL - receipt completion failed: ${completed.error.code}`);
+    process.exit(1);
+  }
 }
 const observed = await renderer.observe(drawn, {
   include: ['target-readbacks'],
   targetReadbacks: tickets,
 });
-if (!observed.ok) throw observed.error;
 let finalReceipt = drawn;
 if (!REFLECTION_EVIDENCE) {
   const updated = world.update(1 / 60);
@@ -927,7 +937,6 @@ const report = {
   stableTargetIds: [TARGET_ID],
   launchUrl: 'dawn://learn-render/6.pbr/4.render-target-reflection',
   frames,
-  cubeFaceSubmissions,
   backend: inspection.capabilities.backendKind,
   device: `rhi-device:${inspection.frame.deviceGeneration}`,
   sourceSha: SOURCE_SHA,

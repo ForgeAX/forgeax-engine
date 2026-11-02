@@ -85,6 +85,8 @@ describe('material.preview sampled-texture budget', () => {
       required: 21,
       transmission: 'exceeded',
       conflicts: ['metallicTexture', 'roughnessTexture'],
+      parallax: 'none',
+      warnings: [],
     });
     expect(
       materialSampledTextureBudgetFacts({ ...ownerFacts, sampledTextureConflicts: '' }),
@@ -93,6 +95,23 @@ describe('material.preview sampled-texture budget', () => {
       materialSampledTextureBudgetFacts({ ...ownerFacts, sampledTextureTransmission: 'maybe' }),
     ).toBeUndefined();
     expect(materialSampledTextureBudgetFacts({ subjectDigest: 'sha256:subject' })).toBeUndefined();
+  });
+
+  it('warns that parallax falls back to normal mapping under shared transmission', () => {
+    const facts = materialSampledTextureBudgetFacts({
+      ...ownerFacts,
+      sampledTextureRequired: 16,
+      sampledTextureTransmission: 'shared',
+      sampledTextureConflicts: '',
+      sampledTextureParallax: 'normal-mapping',
+    });
+    expect(facts?.parallax).toBe('normal-mapping');
+    expect(facts?.warnings).toEqual([
+      expect.stringMatching(/parallax.*normal mapping.*shared transmission.*16-texture/),
+    ]);
+    expect(
+      materialSampledTextureBudgetFacts({ ...ownerFacts, sampledTextureParallax: 'maybe' }),
+    ).toBeUndefined();
   });
 
   it.each([

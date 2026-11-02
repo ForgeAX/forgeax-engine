@@ -145,14 +145,27 @@ async function fixture(t) {
   }
   const viewCommit = await commit(view, 'independent View source');
   await git(root, 'submodule', 'add', view, 'tools/view');
+  const modeling = resolve(temporary, 'modeling');
+  await mkdir(modeling);
+  await git(modeling, 'init', '-q');
+  for (const path of ['package.json', 'LICENSE', 'README.md', 'src/index.ts']) {
+    await mkdir(resolve(modeling, path, '..'), { recursive: true });
+    await writeFile(
+      resolve(modeling, path),
+      path === 'LICENSE' ? 'Apache-2.0 Modeling license\n' : '{}\n',
+    );
+  }
+  const modelingCommit = await commit(modeling, 'independent Modeling source');
+  await git(root, 'submodule', 'add', modeling, 'packages/modeling');
   await writeFile(resolve(root, 'engine.txt'), 'engine revision 1\n');
   const engineCommit = await commit(root, 'pin dependency');
-  return { root, destination, upstream, sourceCommit, viewCommit, engineCommit };
+  return { root, destination, upstream, sourceCommit, viewCommit, modelingCommit, engineCommit };
 }
 
 test('SDK archives the Engine gitlink revision, including licenses, without remote access', async (t) => {
   const context = await fixture(t);
-  const { root, destination, upstream, engineCommit, sourceCommit, viewCommit } = context;
+  const { root, destination, upstream, engineCommit, sourceCommit, viewCommit, modelingCommit } =
+    context;
   const checkout = resolve(root, dependency);
   await writeFile(resolve(checkout, 'wgpu/src/lib.rs'), 'pub const VERSION: u32 = 2;\n');
   await commit(checkout, 'unselected newer source');
@@ -171,6 +184,7 @@ test('SDK archives the Engine gitlink revision, including licenses, without remo
     { root: dependency, commit: sourceCommit },
     { root: 'third_party/blitz', commit: sourceCommit },
     { root: 'tools/view', commit: viewCommit },
+    { root: 'packages/modeling', commit: modelingCommit },
   ]);
   assert.equal(
     await readFile(resolve(destination, 'tools/view/LICENSE'), 'utf8'),

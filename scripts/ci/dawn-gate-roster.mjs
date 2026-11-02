@@ -12,6 +12,13 @@ export const VFX_DEPTH_DAWN_TEST_FILE =
 // Vitest configuration and local/PR/nightly execution derive from these groups.
 export const DAWN_ISOLATED_GROUPS = [
   {
+    id: 'shadow-quality',
+    files: [
+      'packages/runtime/src/__tests__/cube-plane-shadow-contact.dawn.test.ts',
+      'packages/runtime/src/__tests__/curved-shadow-receiver.dawn.test.ts',
+    ],
+  },
+  {
     id: 'surface-pipelines',
     files: [
       'packages/runtime/src/__tests__/surface-standard-pipeline.dawn.test.ts',
@@ -29,6 +36,22 @@ export const DAWN_ISOLATED_GROUPS = [
   {
     id: 'feature-depth',
     files: ['packages/runtime/src/__tests__/feature-depth-material.dawn.test.ts'],
+  },
+  {
+    // The complete S6 capture journey owns a fresh native parent process;
+    // keep both case tests and their original budgets outside ordinary backfill.
+    id: 'modeling-s6',
+    // Reserve placement headroom for this long build/bake/capture journey.
+    // This is a forecast reserve, not a completed timing sample or a deadline.
+    placementReserveSeconds: 1_200,
+    files: ['packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts'],
+  },
+  {
+    id: 'modeling-show',
+    // Run 41306958512 missed the original sky-preparation deadline inside
+    // ordinary-3. Keep all cues, pixel controls and sixty completed frames
+    // in one fresh native lifetime; the scene and readiness budget stay fixed.
+    files: ['apps/modeling-show/__tests__/show.dawn.test.ts'],
   },
   { id: 'vfx-depth', files: [VFX_DEPTH_DAWN_TEST_FILE] },
   {
@@ -128,36 +151,43 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Complete native owners share four lanes; ordinary files fill the remaining
 // time using the latest measured costs. Each process keeps its native lifetime.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze([
-    'ordinary-1',
-    'surface-pipelines',
-    'gi-1',
-    'direct-light',
-    'gi-6',
-    'heavy-1',
-    'renderer',
-    'screen-probe',
-    'gi-5',
-  ]),
+  Object.freeze(['ordinary-1', 'modeling-s6']),
   Object.freeze([
     'ordinary-2',
     'gi-2',
+    'gi-4',
     'compact-2',
-    'vfx-depth',
-    'transmission',
-    'heavy-3',
+    'feature-depth',
+    'heavy-2',
+    'modeling-show',
+    'surface-pipelines',
     'timing-lifecycle',
+    'vfx-depth',
   ]),
-  Object.freeze(['ordinary-3', 'feature-depth', 'gi-3', 'compact-3', 'heavy-2', 'heavy-4']),
+  Object.freeze([
+    'ordinary-3',
+    'gi-1',
+    'compact-3',
+    'gi-5',
+    'gi-6',
+    'heavy-3',
+    'screen-probe',
+    'transmission',
+  ]),
   Object.freeze([
     'ordinary-4',
+    'renderer',
+    'gpu-timing',
+    'compact-1',
+    'direct-light',
+    'gi-3',
+    'heavy-1',
+    'heavy-4',
+    'nested-discard',
     'rect-source',
     'shadow-fields',
-    'compact-1',
-    'nested-discard',
+    'shadow-quality',
     'specular-aa',
-    'gpu-timing',
-    'gi-4',
   ]),
 ]);
 

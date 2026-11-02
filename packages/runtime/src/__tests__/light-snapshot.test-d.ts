@@ -100,13 +100,17 @@ function consumeDirectLight(snapshot: DirectLightSnapshot): number {
       return snapshot.cosInner + snapshot.cosOuter;
     case 'rect-area':
       return snapshot.halfWidth + snapshot.halfHeight;
+    case 'directional':
+      return snapshot.intensity;
     default:
       return assertNever(snapshot);
   }
 }
 
-test('DirectLightSlot kind is closed and includes only finite direct lights', () => {
-  expectTypeOf<DirectLightSlotKind>().toEqualTypeOf<'point' | 'spot' | 'rect-area'>();
+test('DirectLightSlot kind is closed and includes additional unshadowed directional lights', () => {
+  expectTypeOf<DirectLightSlotKind>().toEqualTypeOf<
+    'point' | 'spot' | 'rect-area' | 'directional'
+  >();
   void consumeDirectLight;
   expectTypeOf<DirectionalCascades['directionalShadowQuality']>().toEqualTypeOf<
     DirectionalShadowQuality | undefined

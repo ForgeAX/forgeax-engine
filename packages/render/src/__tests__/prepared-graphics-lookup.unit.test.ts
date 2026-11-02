@@ -10,6 +10,7 @@ import {
 } from '../features/prepared-graphics-store';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 function oldLookup(transaction: PreparedGraphicsTransaction, reference: RenderFeaturePreparedRef) {
@@ -203,7 +204,7 @@ describe('prepared graphics owner lookup', () => {
           }),
         });
         expect(result.errors).toEqual([]);
-        result.onSubmitted();
+        submitFeatureFrame(host);
       }
       expect(resolved).toBe(12);
       expect(enumerations).toBe(0);
@@ -302,7 +303,8 @@ describe('prepared graphics owner lookup', () => {
         ['right', 'left'],
       ]) {
         revision += 1;
-        const batch = host.runFrame(
+        const batch = prepareFeatureFrame(
+          host,
           viewOrder.map((identity) => ({
             identity,
             render: true,
@@ -326,12 +328,8 @@ describe('prepared graphics owner lookup', () => {
           })),
         );
         expect(batch.frame.errors).toEqual([]);
-        batch.frame.onSubmitted();
-        for (const view of batch.views.values()) {
-          expect(view.errors).toEqual([]);
-          view.onSubmitted();
-        }
-        batch.onSubmitted();
+        for (const view of batch.views.values()) expect(view.errors).toEqual([]);
+        submitFeatureFrame(host);
       }
       expect(resolved).toEqual(['left:1', 'right:1', 'right:2', 'left:2']);
     } finally {

@@ -50,6 +50,26 @@ replacement; pixel-region writes require native texel/block content.
 For `image/ktx2` and `image/basis` artifacts, the codec hint is optional: Image
 reads the profile from the validated container and rejects a conflicting hint.
 
+A KTX2 whose `vkFormat` is not 0 is a non-Basis payload. Image admits exactly two:
+`VK_FORMAT_R8G8_UNORM` (16) and `VK_FORMAT_BC5_UNORM_BLOCK` (141), linear 2D
+tangent-space normal data with optional per-level Zstandard. The importer writes
+an `image/ktx2` body without `assetCodec` and a `rg8unorm` / `bc5-rg-unorm`
+payload; `Meta.colorSpace: 'srgb'` is `image-conversion-inspect-ktx2-color-space-conflict`.
+At decode, RG8 levels are unwrapped into a native `rg8unorm` texture with packed
+mips; BC5 stays an encoded `encoding: 'ktx2'`, `format: 'bc5-rg-unorm'` source so
+the Renderer can select BC5 or its decoded RG8 per device. Every other vkFormat,
+an sRGB or missing DFD transfer function, a non-2D shape, BasisLZ, or a wrong
+level length is the codec's `ktx2-native-unsupported` with a closed `reason`
+(import diagnostic `image-conversion-inspect-ktx2-native-unsupported`; decode
+`asset-decode-failed` with that cause). Producers write such files with
+`encodeKtx2Native` from `@forgeax/engine-codec/encode`.
+
+The importer `decodeImage` seam also accepts `image/ktx2` for KTX2 embedded in
+other sources (glTF `KHR_texture_basisu`). It applies the standalone `.ktx2`
+rules: the container is inspected, never transcoded or re-encoded, and the
+caller's `colorSpace` must match the DFD transfer function. Resize and
+`compressionMode` settings do not apply to already-compressed bytes.
+
 Renderer derives a format from the consuming device's BC/ASTC/ETC capabilities
 on first use, while source content stays device-neutral across Workers. No
 compressed source means no runtime transcoder initialization. Pending preparation
@@ -193,7 +213,7 @@ retaining a rejected diagnostic.
 HDR equirectangular sources (`.hdr`) are decoded at build-time by `imageImporter`'s HDR arm. The importer:
 1. Detects `.hdr` sources by file extension
 2. Decodes RGBE data via `decodeHdr` -> `Float32Array`
-3. Converts f32 -> f16 bytes via `halfFloat.f32ToF16Bytes` (`@forgeax/engine-math`)
+3. Converts f32 -> f16 bytes via `halfFloat.f32ToF16Bytes(bytes, { clampFinite: true })` (`@forgeax/engine-math`). Radiance above the f16 range is clamped to 65504, like three.js `HDRLoader`, so a bright sun texel never becomes `+Inf`.
 4. Produces an `EquirectAsset` POD: `format: 'rgba16float'`, `colorSpace: 'linear'`
 
 The sidecar (`.hdr.meta.json`) declares `subAssets[0].kind: 'equirect'` (a dedicated asset kind; the prior `cube-texture` kind + its `importSettings.cubeFaceSize`/`specularMipLevels` are removed -- the equirect-to-cubemap projection params are decided internally by the render-system). At build-catalog time, the `.hdr` extension passes through as a `kind: 'equirect'` catalog row with `ImageMetadata(format: 'rgba16float')`. The `vite-plugin-pack` import step stores the f16 payload as an asset-local Pack v2 artifact. At runtime, `assets.load(guid, 'equirect')` loads that local artifact through `equirectContribution` -- transparent to the consumer. The loaded `EquirectAsset` binds declaratively to `Skylight.equirect` / `SkyboxBackground.equirect`; the equirect-to-cubemap projection + IBL precompute run engine-internally.

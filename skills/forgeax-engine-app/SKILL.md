@@ -115,6 +115,7 @@ const report = result.value.execution.report();
 | Fixed skeletal animation | Set `animation: { cadence: 'fixed' }` and World fixed time; App forwards the Animation-owned POD to Host/Engine Worker, including rebuild. Add the motion plugin without duplicating default animation. |
 | Require a worker | Set its policy to `true`; handle `app-execution-worker-unavailable` |
 | Disable independent rendering | Set `render: false`; configure the co-located Renderer |
+| WebGPU adapter cannot be acquired | Keep `auto`; usable Worker WebGL2 remains eligible. Inspect `report.capabilities.workerWebGpu` for admission and `report.render.capabilities.backendKind` for the actual backend |
 | Shared numeric kernels | Leave `kernels: 'auto'`, serve COOP/COEP and inspect actual `kernelDispatch` |
 | Host-only bootstrap | Set `engine: false`; leave dependent policies auto or false |
 | Partial Kernel write | Call `app.execution.rebuild()` and use the new World identity |

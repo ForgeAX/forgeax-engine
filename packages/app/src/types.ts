@@ -12,7 +12,7 @@
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
 import type { AssetRegistry, CatalogSource } from '@forgeax/engine-assets-runtime';
 import type { AudioBackend } from '@forgeax/engine-audio';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import type { TimePolicy, World } from '@forgeax/engine-ecs';
 import type { ActionConfig, InputBackend } from '@forgeax/engine-input';
 import type { PhysicsWorld, PhysicsWorld2D } from '@forgeax/engine-physics';
@@ -363,7 +363,7 @@ export interface App {
    * Undefined when debug-draw is not wired (assemble-form createApp with
    * no explicit debugDraw creation — the auto-attach is canvas-form only).
    */
-  readonly debugDraw?: DebugDraw | undefined;
+  readonly debugDraw?: DebugDrawSource | undefined;
   /**
    * Begin host frame scheduling:
    *   - first call: Result.ok(undefined)

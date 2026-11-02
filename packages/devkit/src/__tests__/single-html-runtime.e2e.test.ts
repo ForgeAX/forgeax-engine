@@ -238,13 +238,119 @@ document.documentElement.dataset.forgeaxGameReady = 'true';
       await rm(root, { recursive: true, force: true });
     }
   }, 180_000);
+  it('stores compressible resources gzip-compressed and serves them decoded to page and Worker', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-gzip-e2e-'));
+    const dist = resolve(root, 'dist');
+    const output = resolve(root, 'release', 'gzip.html');
+    const rows = Array.from({ length: 20_000 }, (_, index) => ({
+      index,
+      name: `part-${index % 97}`,
+      pose: [0, 1, 0],
+    }));
+    const data = Buffer.from(JSON.stringify(rows));
+    await mkdir(dist, { recursive: true });
+    try {
+      await Promise.all([
+        writeFile(resolve(dist, 'index.html'), '<!doctype html><html><body></body></html>'),
+        writeFile(resolve(dist, 'data.json'), data),
+        writeFile(
+          resolve(dist, 'worker.js'),
+          "const text = await (await fetch(new URL('./data.json', import.meta.url))).text();\npostMessage({ kind: 'worker-data', length: text.length, last: JSON.parse(text).at(-1).index });\n",
+        ),
+        writeFile(resolve(dist, 'forgeax-dist.json'), '{}\n'),
+      ]);
+      const artifact = (path: string, mediaType: string, bytes: number) => ({
+        path,
+        mediaType,
+        bytes,
+        sha256: '',
+      });
+      const manifest: DistManifest = {
+        schemaVersion: '1.0.0',
+        project: { id: 'single-html-gzip-e2e', name: 'Single HTML Gzip E2E' },
+        base: './',
+        runtime: { packIndexUrl: 'data.json', shaderManifestUrl: 'data.json' },
+        artifacts: [
+          artifact('data.json', 'application/json', data.byteLength),
+          artifact('worker.js', 'text/javascript', 200),
+        ],
+      };
+      const packaged = await writeSingleHtml({
+        distRoot: dist,
+        output,
+        manifest,
+        bundle: {
+          entrySource: `const text = await (await fetch('./data.json')).text();
+document.documentElement.dataset.pageData = String(text.length);
+const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+worker.onmessage = (event) => { document.documentElement.dataset.workerData = JSON.stringify(event.data); };`,
+          artifacts: [],
+        },
+      });
+      expect(packaged.ok).toBe(true);
+      if (!packaged.ok) return;
+      const html = await readFile(output, 'utf8');
+      // Stored compressed: the page is far smaller than the base64 of the raw JSON.
+      expect(packaged.value.html.bytes).toBeLessThan(data.byteLength / 4);
+      expect(html).toContain(
+        '"path":"data.json","mime":"application/json","index":0,"encoding":"gzip"',
+      );
+
+      const executablePath = browserExecutable();
+      const browser = await chromium.launch({
+        headless: true,
+        ...(executablePath === undefined ? {} : { executablePath }),
+        chromiumSandbox: true,
+      });
+      const page = await browser.newPage({ serviceWorkers: 'block' });
+      const requests: string[] = [];
+      const pageErrors: string[] = [];
+      page.on('request', (request) => requests.push(request.url()));
+      page.on('pageerror', (error) => pageErrors.push(error.message));
+      try {
+        await page.goto(pathToFileURL(output).href, { waitUntil: 'load', timeout: 60_000 });
+        await page.waitForFunction(
+          () => document.documentElement.dataset.workerData !== undefined,
+          undefined,
+          {
+            timeout: 30_000,
+          },
+        );
+        const seen = await page.evaluate(() => ({
+          page: document.documentElement.dataset.pageData,
+          worker: document.documentElement.dataset.workerData,
+        }));
+        expect(seen.page).toBe(String(data.byteLength));
+        expect(JSON.parse(seen.worker ?? '{}')).toEqual({
+          kind: 'worker-data',
+          length: data.byteLength,
+          last: 19_999,
+        });
+        expect(requests.filter((url) => !/^(?:data:|blob:)/i.test(url))).toEqual([
+          pathToFileURL(output).href,
+        ]);
+        expect(pageErrors).toEqual([]);
+      } finally {
+        await page.close();
+        await browser.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('opens a large single-html resource without decoding it during bootstrap', async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-large-runtime-e2e-'));
     const dist = resolve(root, 'dist');
     const output = resolve(root, 'release', 'large-runtime.html');
+    // Incompressible, so the resource stays as large as the test needs.
     const large = Buffer.allocUnsafe(32 * 1024 * 1024);
+    let x = 23;
     for (let index = 0; index < large.length; index += 1) {
-      large[index] = (index * 17 + 23) & 0xff;
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      large[index] = x & 0xff;
     }
     await mkdir(dist, { recursive: true });
     try {
@@ -455,6 +561,126 @@ self.onmessage = async (event) => {
           kind: 'static-ready',
           value: 42,
         });
+        expect(requests.filter((url) => /^https?:/i.test(url))).toEqual([]);
+        expect(failed).toEqual([]);
+        expect(consoleErrors).toEqual([]);
+        expect(pageErrors).toEqual([]);
+      } finally {
+        await page.close();
+        await browser.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  it('packages a module worker entry whose shared chunk graph cannot bundle as one IIFE', async () => {
+    // Mirrors the generated engine Worker runtime: the worker statically imports
+    // a chunk shared with the main entry and lazily loads physics backends whose
+    // shared core dynamically imports them back, so its graph code-splits.
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-single-html-split-worker-e2e-'));
+    const dist = resolve(root, 'dist');
+    const output = resolve(root, 'release', 'split-worker.html');
+    await mkdir(resolve(dist, 'assets'), { recursive: true });
+    try {
+      await Promise.all([
+        writeFile(
+          resolve(dist, 'index.html'),
+          '<!doctype html><html><body><script type="module" src="./assets/main.js"></script></body></html>',
+        ),
+        writeFile(
+          resolve(dist, 'assets/shared.js'),
+          "export const sharedMarker = (value) => 'shared:' + String(value);\n",
+        ),
+        writeFile(
+          resolve(dist, 'assets/physics-core.js'),
+          `export const load2d = () => import('./physics-2d.js');
+export const load3d = () => import('./physics-3d.js');
+export const gravity = 10;
+`,
+        ),
+        writeFile(
+          resolve(dist, 'assets/physics-2d.js'),
+          "import { gravity } from './physics-core.js';\nexport const world2d = gravity * 2;\n",
+        ),
+        writeFile(
+          resolve(dist, 'assets/physics-3d.js'),
+          "import { gravity } from './physics-core.js';\nexport const world3d = gravity * 3;\n",
+        ),
+        writeFile(
+          resolve(dist, 'assets/main.js'),
+          `import { sharedMarker } from './shared.js';
+const worker = new Worker(new URL('./engine-worker-runtime.js', import.meta.url), { type: 'module' });
+worker.onmessage = (event) => {
+  document.documentElement.dataset.splitWorkerReady = sharedMarker('main') + '|' + event.data;
+};
+worker.onerror = (event) => {
+  document.documentElement.dataset.splitWorkerError = event.message || 'worker-error';
+};
+`,
+        ),
+        writeFile(
+          resolve(dist, 'assets/engine-worker-runtime.js'),
+          `import { sharedMarker } from './shared.js';
+import('./physics-2d.js').then(({ world2d }) => self.postMessage(sharedMarker(world2d)));
+`,
+        ),
+      ]);
+      const manifest: DistManifest = {
+        schemaVersion: '1.0.0',
+        project: { id: 'single-html-split-worker-e2e', name: 'Single HTML Split Worker E2E' },
+        base: './',
+        runtime: { packIndexUrl: 'pack-index.json', shaderManifestUrl: 'shaders/manifest.json' },
+        artifacts: [],
+      };
+      await writeFile(resolve(dist, 'forgeax-dist.json'), JSON.stringify(manifest));
+      const indexHtml = await readFile(resolve(dist, 'index.html'), 'utf8');
+      const bundle = await bundleSingleHtmlEntry(dist, indexHtml);
+      if (!bundle.ok) {
+        throw new Error(`${bundle.error.code}: ${JSON.stringify(bundle.error.detail)}`);
+      }
+      const packaged = await writeSingleHtml({
+        distRoot: dist,
+        output,
+        manifest,
+        bundle: bundle.value,
+      });
+      if (!packaged.ok) {
+        throw new Error(`${packaged.error.code}: ${JSON.stringify(packaged.error.detail)}`);
+      }
+
+      const executablePath = browserExecutable();
+      const browser = await chromium.launch({
+        headless: true,
+        ...(executablePath === undefined ? {} : { executablePath }),
+        args: ['--force-color-profile=srgb', '--force-device-scale-factor=1'],
+        chromiumSandbox: true,
+      });
+      const page = await browser.newPage({ serviceWorkers: 'block' });
+      const requests: string[] = [];
+      const failed: string[] = [];
+      const consoleErrors: string[] = [];
+      const pageErrors: string[] = [];
+      page.on('request', (request) => requests.push(request.url()));
+      page.on('requestfailed', (request) =>
+        failed.push(`${request.url()}: ${request.failure()?.errorText ?? 'failed'}`),
+      );
+      page.on('console', (message) => {
+        if (message.type() === 'error') consoleErrors.push(message.text());
+      });
+      page.on('pageerror', (error) => pageErrors.push(error.message));
+      try {
+        await page.goto(pathToFileURL(output).href, { waitUntil: 'load', timeout: 120_000 });
+        await page.waitForFunction(
+          () =>
+            document.documentElement.dataset.splitWorkerReady !== undefined ||
+            document.documentElement.dataset.splitWorkerError !== undefined,
+          undefined,
+          { timeout: 15_000 },
+        );
+        const result = await page.evaluate(() => ({ ...document.documentElement.dataset }));
+        expect(result.splitWorkerError).toBeUndefined();
+        expect(result.splitWorkerReady).toBe('shared:main|shared:20');
         expect(requests.filter((url) => /^https?:/i.test(url))).toEqual([]);
         expect(failed).toEqual([]);
         expect(consoleErrors).toEqual([]);

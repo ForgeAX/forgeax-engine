@@ -38,7 +38,11 @@ function roster(ledger: ShadowRasterLedger, frameId = 7): LodObservationCapture 
         eye: undefined,
         graphGeneration: 4,
         state: 'rendered',
-        system: { captureShadowWorkload: (id: number) => ledger.captureWorkload(id) },
+        owner: {
+          frameState: { shadowRaster: ledger },
+          gpuDriven: { inspect: () => ({ shadowViews: undefined }) },
+          skin: { paletteUploadBytes: 0 },
+        },
       } as unknown as LodObservationCapture['views'][number],
     ],
   };

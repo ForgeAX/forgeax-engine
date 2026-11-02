@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { standardPipeline as urpPipeline } from '../../../render/src/pipeline/standard-pipeline';
 import { emptyFrameRecordingOutputs } from '../../../render/src/record/frame-snapshot';
 import type { CameraSnapshot } from '../../../render/src/render-contract';
+import { TemporalViewHistory } from '../../../render/src/temporal/frame';
 import type { ViewLights } from '../../../render/src/world/render-lights';
 
 afterEach(() => vi.restoreAllMocks());
@@ -277,7 +278,7 @@ afterEach(() => vi.restoreAllMocks());
       const internals = makeRecorderInternals(log);
       const ps = makePipelineState(internals as never);
       (internals as { getPipelineState: () => unknown }).getPipelineState = () => ps;
-      const { recordFrame } = await import('../../../render/src/record/frame');
+      const { recordFrame } = await import('../../../render/src/__tests__/frame-recording-driver');
       const cameras = [makeCamera('none')];
       recordFrame(
         internals as never,
@@ -288,6 +289,7 @@ afterEach(() => vi.restoreAllMocks());
         [],
         {
           frameNumber: 0,
+          temporalView: new TemporalViewHistory(),
           compiledFrameGraph: null,
           frameOutputs: emptyFrameRecordingOutputs(),
           retiredCompiledFrameGraphs: new Set(),
@@ -295,7 +297,6 @@ afterEach(() => vi.restoreAllMocks());
           transientInstanceBuffers: [],
           warnedZeroLightStandard: false,
           warnedShadowDisabled: false,
-          warnedMultiLightDirectional: false,
           warnedMultiLightPoint: false,
           warnedMultiLightSpot: false,
           warnedSkyboxTonemapNone: false,
@@ -319,7 +320,6 @@ afterEach(() => vi.restoreAllMocks());
         undefined,
         0,
         undefined,
-        0,
       );
 
       // M1 / w7: the render-graph allocates ALL color targets (including HDR)

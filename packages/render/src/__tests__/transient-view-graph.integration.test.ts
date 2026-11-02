@@ -22,6 +22,7 @@ import {
 } from '../features/transient-view-graph';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 const identity = 'test.transient-particles';
 const size = { width: 8, height: 4 };
@@ -183,7 +184,7 @@ async function fixture() {
   function prepare(next: number, nextEpoch: number) {
     count = next;
     epoch = nextEpoch;
-    const batch = host.runFrame([
+    const batch = prepareFeatureFrame(host, [
       {
         identity: 'main',
         render: true,
@@ -211,7 +212,8 @@ async function fixture() {
     batches.push(batch);
     const view = required(batch.views.get('main'));
     expect(view.errors).toEqual([]);
-    batch.commitPreparedResources();
+    // Seal the detached allocation without acknowledging unrecorded work.
+    submitFeatureFrame(host, []);
     const plan = required(view.plans[0]);
     const execution = required(getRenderFeaturePlanExecutionProjection(plan));
     return { batch, plan, execution };
@@ -222,7 +224,6 @@ async function fixture() {
     prepare,
     async dispose() {
       for (const batch of batches) {
-        batch.onAborted();
         for (const resources of batch.preparedResourceBatches) resources.release().unwrap();
       }
       gpu.dispose().unwrap();

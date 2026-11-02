@@ -23,8 +23,11 @@ describe.skipIf(!browserReady)('GPU-driven View Browser WebGPU', () => {
       0,
     ]);
   });
-  it('produces compact visible IDs and portable indirect args on the real browser device', async () => {
-    await expect(runGpuDrivenViewGpuEvidence()).resolves.toEqual({
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('produces real browser indirect args with %s passes', async (mode) => {
+    await expect(runGpuDrivenViewGpuEvidence(mode)).resolves.toEqual({
       visibleInstance: 0,
       indexCount: 12,
       instanceCount: 1,

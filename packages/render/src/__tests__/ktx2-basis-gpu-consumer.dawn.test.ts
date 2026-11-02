@@ -33,6 +33,10 @@ const SOURCE_CODE_SHA = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: '
 const AUTHORED_LDR_REFERENCE = Uint8Array.from(
   Array.from({ length: 4 * 4 }, () => [64, 128, 192, 255]).flat(),
 );
+// A two-channel (normal XY) source: BC5 / EAC RG11 / RG8 sample (X, Y, 0, 1).
+const AUTHORED_RG_REFERENCE = Uint8Array.from(
+  Array.from({ length: 4 * 4 }, () => [64, 192, 0, 255]).flat(),
+);
 const AUTHORED_HDR_REFERENCE = new Uint8Array(4 * 4 * 8);
 for (let pixel = 0; pixel < 4 * 4; pixel += 1) {
   const view = new DataView(AUTHORED_HDR_REFERENCE.buffer, pixel * 8, 8);
@@ -55,6 +59,7 @@ type InputProfile = {
   readonly container: 'ktx2' | 'basis';
   readonly model: 'etc1s' | 'uastc-ldr' | 'uastc-hdr';
   readonly colorSpace: 'srgb' | 'linear';
+  readonly channels: 'rgba' | 'rg';
   readonly bytes: Uint8Array;
   readonly reference: Uint8Array;
   readonly referenceSource: string;
@@ -89,17 +94,25 @@ let inputs: readonly InputProfile[] = [];
 beforeAll(async () => {
   if (!pkgBuilt) return;
   mkdirSync(dirname(GPU_EVIDENCE_PATH), { recursive: true });
-  const encode = async (mode: 'etc1s' | 'uastc-ldr' | 'uastc-hdr'): Promise<Uint8Array> => {
+  const encode = async (
+    mode: 'etc1s' | 'uastc-ldr' | 'uastc-hdr',
+    channels: 'rgba' | 'rg' = 'rgba',
+  ): Promise<Uint8Array> => {
     const result = await basisEncode(
-      mode === 'uastc-hdr' ? AUTHORED_HDR_REFERENCE : AUTHORED_LDR_REFERENCE,
+      mode === 'uastc-hdr'
+        ? AUTHORED_HDR_REFERENCE
+        : channels === 'rg'
+          ? AUTHORED_RG_REFERENCE
+          : AUTHORED_LDR_REFERENCE,
       {
         mode,
         width: 4,
         height: 4,
-        srgb: mode !== 'uastc-hdr',
-        perceptual: mode !== 'uastc-hdr',
+        srgb: mode !== 'uastc-hdr' && channels === 'rgba',
+        perceptual: mode !== 'uastc-hdr' && channels === 'rgba',
         uastcSupercompression: mode === 'uastc-ldr',
         mipGen: false,
+        channels,
       },
     );
     if (!result.ok) throw new Error(result.error.code);
@@ -133,6 +146,7 @@ beforeAll(async () => {
       container: 'ktx2',
       model: 'etc1s',
       colorSpace: 'srgb',
+      channels: 'rgba',
       bytes: await encode('etc1s'),
       reference: AUTHORED_LDR_REFERENCE,
       referenceSource: 'format-tier1-authored-4x4-rgba8-pattern-v1',
@@ -142,6 +156,7 @@ beforeAll(async () => {
       container: 'ktx2',
       model: 'uastc-ldr',
       colorSpace: 'srgb',
+      channels: 'rgba',
       bytes: await encode('uastc-ldr'),
       reference: AUTHORED_LDR_REFERENCE,
       referenceSource: 'format-tier1-authored-4x4-rgba8-pattern-v1',
@@ -151,15 +166,27 @@ beforeAll(async () => {
       container: 'ktx2',
       model: 'uastc-hdr',
       colorSpace: 'linear',
+      channels: 'rgba',
       bytes: await encode('uastc-hdr'),
       reference: AUTHORED_HDR_REFERENCE,
       referenceSource: 'format-tier1-authored-4x4-rgba16-pattern-v1',
+    },
+    {
+      id: 'ktx2-uastc-rg',
+      container: 'ktx2',
+      model: 'uastc-ldr',
+      colorSpace: 'linear',
+      channels: 'rg',
+      bytes: await encode('uastc-ldr', 'rg'),
+      reference: AUTHORED_RG_REFERENCE,
+      referenceSource: 'b20-bk-e1-authored-4x4-rg-normal-v1',
     },
     {
       id: 'basis-uastc-ldr',
       container: 'basis',
       model: 'uastc-ldr',
       colorSpace: 'srgb',
+      channels: 'rgba',
       bytes: rawBasis,
       reference: AUTHORED_LDR_REFERENCE,
       referenceSource: 'format-tier1-authored-4x4-rgba8-pattern-v1',
@@ -275,7 +302,7 @@ function structuredError(code: string, expected: string, hint: string) {
 
 function requiredCompressionFeature(format: string): GPUFeatureName | undefined {
   if (format.startsWith('bc')) return 'texture-compression-bc';
-  if (format.startsWith('etc2')) return 'texture-compression-etc2';
+  if (format.startsWith('etc2') || format.startsWith('eac')) return 'texture-compression-etc2';
   if (format.startsWith('astc')) return 'texture-compression-astc';
   return undefined;
 }
@@ -291,7 +318,7 @@ async function textureFor(
     }
 > {
   const selected = selectTranscodeTarget(
-    { model: input.model, srgb: input.colorSpace === 'srgb', channels: 'rgba' },
+    { model: input.model, srgb: input.colorSpace === 'srgb', channels: input.channels },
     caps,
   );
   const decoded = await textureContribution.decoder.decode({
@@ -328,7 +355,11 @@ async function readbackTexture(
   const width = texture.shape.extent.width;
   const height = texture.shape.extent.height;
   const hdr = texture.format === 'rgba16float' || texture.format.startsWith('bc6h');
-  const outputFormat: GPUTextureFormat = hdr ? 'rgba16float' : 'rgba8unorm-srgb';
+  const outputFormat: GPUTextureFormat = hdr
+    ? 'rgba16float'
+    : texture.colorSpace === 'srgb'
+      ? 'rgba8unorm-srgb'
+      : 'rgba8unorm';
   const outputBytesPerPixel = hdr ? 8 : 4;
   const shader = await createShaderModule(device, {
     label: 'ktx2-basis-normalize',
@@ -498,10 +529,10 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
       for (const [armIndex, [caps, arm]] of capabilityArms.entries()) {
         const guid = guidFor(inputIndex, armIndex);
         const selected = selectTranscodeTarget(
-          { model: input.model, srgb: input.colorSpace === 'srgb', channels: 'rgba' },
+          { model: input.model, srgb: input.colorSpace === 'srgb', channels: input.channels },
           caps,
         );
-        const selection = selected.startsWith('rgba') ? 'fallback' : 'selected';
+        const selection = /^(rgba|rg8|r8)/.test(selected) ? 'fallback' : 'selected';
         const reference = referenceFor(input);
         const result = await textureFor(input, caps);
         if (!result.ok) {
@@ -646,9 +677,9 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis real GPU texture consumer matrix', () => 
       `${JSON.stringify({ schemaVersion: 'format-tier1-ktx2-gpu/1', featureId: FEATURE_ID, generatedAt: new Date().toISOString(), sourceCodeSha: SOURCE_CODE_SHA, status: 'complete', rows }, null, 2)}\n`,
       'utf8',
     );
-    // biome-ignore lint/suspicious/noConsole: the twenty-cell matrix is the GPU evidence
+    // biome-ignore lint/suspicious/noConsole: the 25-cell matrix is the GPU evidence
     console.log(JSON.stringify({ status: 'complete', rows }));
-    expect(rows).toHaveLength(20);
+    expect(rows).toHaveLength(25);
     expect(rows.filter((row) => row.status === 'error')).toEqual([]);
     expect(
       rows

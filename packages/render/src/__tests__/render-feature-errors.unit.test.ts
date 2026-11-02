@@ -15,6 +15,8 @@ const renderFeatureErrorCodes: readonly RenderFeatureErrorCode[] = [
   'render-feature-preparation-failed',
   'render-feature-prepared-state-mismatch',
   'render-feature-draw-recording-failed',
+  'render-feature-input-unavailable',
+  'render-feature-batch-incomplete',
 ];
 
 function describeError(error: RenderFeatureErrorDescriptor): string {
@@ -33,6 +35,10 @@ function describeError(error: RenderFeatureErrorDescriptor): string {
       return error.detail.featureIdentity;
     case 'render-feature-draw-recording-failed':
       return error.detail.featureIdentity;
+    case 'render-feature-input-unavailable':
+      return error.detail.view;
+    case 'render-feature-batch-incomplete':
+      return error.detail.missing.join(',');
   }
 }
 
@@ -63,7 +69,7 @@ describe('scene-data render error contract', () => {
 
 describe('render feature error vocabulary', () => {
   it('keeps the feature codes closed and machine-readable', () => {
-    expect(renderFeatureErrorCodes).toHaveLength(7);
+    expect(renderFeatureErrorCodes).toHaveLength(9);
     expect(describeError).toBeTypeOf('function');
   });
 

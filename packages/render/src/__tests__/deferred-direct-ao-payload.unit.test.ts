@@ -6,7 +6,7 @@ import {
   DEFERRED_LIGHTING_PARAMS_BYTES,
 } from '../pipeline/standard-deferred-lighting';
 
-type Pass = { encode: (context: never) => void };
+type Pass = { encodeDirect: (encoder: never, frame: never, resources: never) => void };
 
 function fixture(screenAo: boolean, strength: number | undefined) {
   let copy!: Pass;
@@ -50,7 +50,7 @@ function fixture(screenAo: boolean, strength: number | undefined) {
     runtime: { device: { queue: { writeBuffer } } },
   };
   const resources = { buffer: (ref: unknown) => ok(ref) };
-  copy.encode({ frame, resources, encoder: { clearBuffer: vi.fn() } } as never);
+  copy.encodeDirect({ clearBuffer: vi.fn() } as never, frame as never, resources as never);
   return { graph, writeBuffer, raster };
 }
 
@@ -86,8 +86,9 @@ describe('actual deferred direct AO uniform owners', () => {
     });
     try {
       expect(() =>
-        f.raster.encode({
-          frame: {
+        f.raster.encodeDirect(
+          undefined as never,
+          {
             runtime: {
               device: { createBindGroupLayout },
               deviceScope: scope,
@@ -95,8 +96,9 @@ describe('actual deferred direct AO uniform owners', () => {
               shaderModuleFactory: { createShaderModule: () => ok({}) },
             },
             pipelineState: { viewBindGroupLayout: {} },
-          },
-        } as never),
+          } as never,
+          undefined as never,
+        ),
       ).toThrow(stop);
       expect(createBindGroupLayout.mock.calls[0]?.[0]).toMatchObject({
         entries: expect.arrayContaining([

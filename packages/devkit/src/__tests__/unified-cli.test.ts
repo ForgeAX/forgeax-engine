@@ -315,6 +315,7 @@ describe('unified CLI', () => {
       'dev',
       'engine',
       'help',
+      'model',
       'preview',
       'profile',
       'project',

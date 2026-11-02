@@ -198,6 +198,7 @@ export async function createWorkerExecutionApp(
         ? {}
         : { assetBudgetBytes: options.appOptions.assetBudgetBytes }),
       timeoutMs: startupTimeoutMs,
+      frameTimeoutMs,
       workers: options.selection,
     });
   } catch (cause) {
@@ -353,6 +354,7 @@ export async function createWorkerExecutionApp(
   let resumeAfterHostShow = false;
   let frameDeadline: ReturnType<typeof setTimeout> | undefined;
   type FrameAdmission = {
+    readonly phase: HostMessage<'frame-admission'>['phase'];
     readonly session: EngineWorkerSession;
     readonly worldIdentity: string;
     readonly frameId: number;
@@ -453,7 +455,7 @@ export async function createWorkerExecutionApp(
     releasePhaseCatalog = undefined;
   };
 
-  const clearFrameAdmissionWatchdog = (expected?: FrameAdmission): void => {
+  const clearFrameAdmissionWatchdog = (expected?: Omit<FrameAdmission, 'phase'>): void => {
     if (
       expected !== undefined &&
       (frameAdmission === undefined ||
@@ -551,16 +553,27 @@ export async function createWorkerExecutionApp(
     finishProfile();
   };
 
-  const armFrameAdmission = (worldIdentity: string, frameId: number): void => {
+  const armFrameAdmission = (
+    worldIdentity: string,
+    frameId: number,
+    phase: FrameAdmission['phase'] = 'source',
+  ): void => {
     const admission = {
+      phase,
       session,
       worldIdentity,
       frameId,
     } as const;
     frameAdmission = admission;
     if (state !== 'running') return;
-    // Initial source publication can still perform deferred preparation.
-    const timeoutMs = frameId === 1 ? startupTimeoutMs : frameTimeoutMs;
+    // Render-credit waits can include GPU loss detection and replacement startup.
+    // Source execution resumes its original steady deadline after admission.
+    const timeoutMs =
+      frameId === 1
+        ? startupTimeoutMs
+        : frameTimeoutMs === null || phase === 'source'
+          ? frameTimeoutMs
+          : startupTimeoutMs;
     if (timeoutMs === null) return;
     frameDeadline = setTimeout(() => {
       // The callback can remain queued after a matching submitted message
@@ -813,7 +826,7 @@ export async function createWorkerExecutionApp(
     state = 'running';
     setEngineHealth('running');
     if (frameAdmission !== undefined)
-      armFrameAdmission(frameAdmission.worldIdentity, frameAdmission.frameId);
+      armFrameAdmission(frameAdmission.worldIdentity, frameAdmission.frameId, frameAdmission.phase);
     scheduleFrame();
   };
   const onPlatformEvent = (event: PlatformEvent): void => {
@@ -982,7 +995,13 @@ export async function createWorkerExecutionApp(
     clearFrameAdmissionWatchdog();
     report = {
       ...report,
-      render: { epoch: renderEpoch, state: 'rebuilding', submittedFrame: 0, completedFrame: 0 },
+      render: {
+        epoch: renderEpoch,
+        state: 'rebuilding',
+        submittedFrame: 0,
+        completedFrame: 0,
+        lastLoss: { epoch: renderEpoch, cause: message.detail },
+      },
     };
     const offscreen = replaceCanvas();
     session.post(
@@ -1040,6 +1059,21 @@ export async function createWorkerExecutionApp(
       presentation: message.frame.presentation ?? 'pending',
     });
     if (state === 'running') scheduleFrame();
+  };
+  const onFrameAdmission = (message: HostMessage<'frame-admission'>): void => {
+    const admission = frameAdmission;
+    if (
+      (state !== 'running' && state !== 'paused') ||
+      report.render?.state !== 'alive' ||
+      admission === undefined ||
+      admission.session !== session ||
+      admission.worldIdentity !== message.worldIdentity ||
+      admission.frameId !== message.frameId ||
+      admission.phase === message.phase
+    )
+      return;
+    clearFrameAdmissionWatchdog(admission);
+    armFrameAdmission(message.worldIdentity, message.frameId, message.phase);
   };
   const onFrameSubmitted = (message: HostMessage<'frame-submitted'>): void => {
     const admission = frameAdmission;
@@ -1313,6 +1347,9 @@ export async function createWorkerExecutionApp(
         return;
       case 'render-complete':
         onRenderComplete(message);
+        return;
+      case 'frame-admission':
+        onFrameAdmission(message);
         return;
       case 'frame-submitted':
         onFrameSubmitted(message);

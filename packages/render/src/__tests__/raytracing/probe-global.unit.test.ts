@@ -961,7 +961,7 @@ for (const failure of [
       assert(current.retained);
       expect(current.retained.revision).toBeGreaterThan(before.retained.revision);
       expect(current.retained.meshes).toBe(before.retained.meshes);
-      expect(current.scene.changedSlotsSince(before.revision)).toContain(0);
+      expect(current.scene.changedSlotsSince(before.content)).toContain(0);
       const planning = vi.spyOn(fieldEdits, 'diffFieldEdit');
       cleanup.push(() => planning.mockRestore());
       let injected = false;

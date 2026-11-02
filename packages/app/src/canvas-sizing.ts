@@ -74,7 +74,7 @@ export function refreshCanvasDeviceLimit(
 ): void {
   let limit: number | undefined;
   try {
-    limit = renderer.inspect().limits?.maxTextureDimension2D;
+    limit = renderer.inspect({ fields: ['limits'] }).limits?.maxTextureDimension2D;
   } catch {
     // Optional inspection cannot bypass the conservative startup budget.
   }

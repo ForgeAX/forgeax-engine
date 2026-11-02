@@ -74,7 +74,7 @@ export function drawMaterial(
   row: number,
   sourceSlot = 0,
 ): MaterialSnapshot {
-  const indices = c.materialSlotIndices[row];
+  const indices = Number.isInteger(row) && row >= 0 ? c.materialSlotIndices.at(row) : undefined;
   const slot = indices?.[sourceSlot] ?? indices?.[0];
   const material = slot === undefined ? undefined : c.materialSlots[slot];
   if (material === undefined) throw new Error('Draw has no fixed submitted material slot');

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { Hash } from 'node:crypto';
+import { createHash, Hash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,34 @@ import {
 } from '../package-finalizer.js';
 
 const GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
+
+function legacyRevision(value: unknown): string {
+  function stable(input: unknown): unknown {
+    if (input instanceof Uint8Array) {
+      return {
+        byteLength: input.byteLength,
+        digest: createHash('sha256').update(input).digest('hex'),
+      };
+    }
+    if (Array.isArray(input)) {
+      return Object.hasOwn(input, 'toJSON') ||
+        input.some((item) => item !== null && typeof item === 'object')
+        ? input.map(stable)
+        : input;
+    }
+    if (input !== null && typeof input === 'object') {
+      return Object.fromEntries(
+        Object.entries(input)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, item]) => [key, stable(item)]),
+      );
+    }
+    return input;
+  }
+  return createHash('sha256')
+    .update(JSON.stringify(stable(value)))
+    .digest('hex');
+}
 
 function product(overrides: Partial<PackageProduct> = {}): PackageProduct {
   return {
@@ -41,6 +69,150 @@ function product(overrides: Partial<PackageProduct> = {}): PackageProduct {
 }
 
 describe('engine-pack terminal product and finalizer contract', () => {
+  it('preserves native escaping, scalar omission and custom serializer order', () => {
+    const make = (calls: string[]) => {
+      const original = {
+        toJSON(key: string) {
+          calls.push(`object ${key} ${this === original ? 'original' : 'clone'}`);
+          return { z: 2, a: undefined };
+        },
+      };
+      const values = [1, undefined, NaN, Infinity, -Infinity, -0, () => 1, Symbol('omitted')];
+      values.length = 10;
+      const inherited = Object.setPrototypeOf(
+        [1, 2],
+        Object.create(Array.prototype, {
+          toJSON: {
+            get() {
+              calls.push('get array serializer');
+              return (key: string) => {
+                calls.push(`array ${key}`);
+                return { z: 1, a: 2 };
+              };
+            },
+          },
+        }),
+      );
+      return {
+        get z() {
+          calls.push('get z');
+          return 1;
+        },
+        get a() {
+          calls.push('get a');
+          return original;
+        },
+        values,
+        inherited,
+        ownArray: Object.assign([1, 2], {
+          toJSON() {
+            throw new Error('own array serializer is removed by the ordering pass');
+          },
+        }),
+        date: new Date(0),
+        omitted: undefined,
+        text: `${'x'.repeat(48 * 1024 - 1)}\ud83d\ude80\ud800\udc00\ud800\u0000\n"\\`,
+      };
+    };
+    const oldCalls: string[] = [];
+    const newCalls: string[] = [];
+    expect(packageTransportRevision(make(newCalls))).toBe(legacyRevision(make(oldCalls)));
+    expect(newCalls).toEqual(oldCalls);
+    expect(newCalls).toEqual([
+      'get z',
+      'get a',
+      'object a clone',
+      'get array serializer',
+      'array inherited',
+    ]);
+  });
+
+  it('preserves unsupported root and cyclic/custom serializer failures', () => {
+    expect(() => packageTransportRevision(undefined)).toThrow(TypeError);
+    expect(() => packageTransportRevision(1n)).toThrow(TypeError);
+    const cycle: { self?: unknown } = {};
+    cycle.self = cycle;
+    expect(() => packageTransportRevision(cycle)).toThrow(RangeError);
+    expect(() => packageTransportRevision({ toJSON: () => cycle })).toThrow(TypeError);
+  });
+
+  it('invokes author serializers without reading their own call property', () => {
+    const toJSON = Object.assign((key: string) => ({ key, z: 1, a: 2 }), {
+      call() {
+        throw new Error('native JSON must not read the callback call property');
+      },
+    });
+    const input = { nested: { toJSON } };
+    expect(packageTransportRevision(input)).toBe(legacyRevision(input));
+  });
+
+  it('publishes a repeated-text package larger than its real Node heap limit', async () => {
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      '--experimental-strip-types',
+      '--max-old-space-size=64',
+      '--max-semi-space-size=4',
+      fileURLToPath(new URL('./package-finalizer-memory.fixture.mjs', import.meta.url)),
+      'repeated-text',
+    ]);
+    const result = JSON.parse(stdout);
+    expect(result.sourceRevision).toBe(
+      'c3ae6819f04e8805bfdfaf82742ddb547955810bbd64f3e754adfd32aaa828f1',
+    );
+    expect(result.digest).toBe(
+      'sha256:07ff97e6dbac8395ec6975efde0d4dd161b676c29f91d714519a7669ccde5183',
+    );
+    expect(result.semanticBytes).toBeGreaterThan(96 * 1024 * 1024);
+    expect(result.semanticBytes).toBeGreaterThan(result.heapLimit);
+    expect(result.digest).toBe(`sha256:${result.semanticDigest}`);
+    expect(result.retainedPayload).toBe(true);
+    expect(result.payloadValues).toBe(96);
+  }, 30_000);
+  it('bounds native JSON writes across revision, digest and package publication', async () => {
+    const payload = {
+      text: [
+        ...Array(96).fill('x'.repeat(2048)),
+        `${'x'.repeat(48 * 1024 - 1)}\ud83d\ude80\ud800\n`,
+      ],
+    };
+    const input = { assets: [{ guid: GUID, kind: 'material', payload, refs: [], artifacts: {} }] };
+    const expectedRevision = legacyRevision(input);
+    const expectedPublication = JSON.stringify({
+      assets: [{ artifacts: {}, guid: GUID, kind: 'material', payload, refs: [] }],
+      kind: 'internal-text-package',
+      schemaVersion: '2.0.0',
+    });
+    const stringify = JSON.stringify;
+    // Reproduce the production single-string limit at a small, deterministic
+    // threshold. The real producer must never submit a whole package to JSON.
+    const limited = vi.spyOn(JSON, 'stringify').mockImplementation((value, ...args) => {
+      const json = stringify(value, ...args);
+      if (json !== undefined && json.length > 64 * 1024) {
+        throw new RangeError('package exceeds the bounded native JSON write');
+      }
+      return json;
+    });
+    try {
+      let publication: Uint8Array | undefined;
+      const result = await finalizePackageTransportSource(input, {
+        base: '/',
+        packagePath: 'bounded.pack.json',
+        artifactPath: (guid, key) => `${guid}/${key}.bin`,
+        sink: (_path, bytes) => {
+          publication = bytes;
+        },
+      });
+      expect(result.pack.assets[0]?.payload).toBe(payload);
+      if (publication === undefined) throw new Error('missing publication');
+      expect(new TextDecoder().decode(publication)).toBe(expectedPublication);
+      expect(JSON.parse(new TextDecoder().decode(publication)).assets[0].payload).toEqual(payload);
+      expect(result.sourceRevision).toBe(expectedRevision);
+      expect(result.digest).toBe(
+        `sha256:${createHash('sha256').update(expectedPublication).digest('hex')}`,
+      );
+    } finally {
+      limited.mockRestore();
+    }
+  });
   it('returns one package authority without retaining an unused serialized copy', async () => {
     const input = product();
     const finalized = await finalizePackageTransportSource(input, {

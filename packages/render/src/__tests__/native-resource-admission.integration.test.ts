@@ -5,6 +5,7 @@ import {
   createRenderFeatureHost,
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameBatch,
+  type RenderFeatureHost,
 } from '../features/host';
 import { createPreparedResourceMaps } from '../features/native-resource-admission';
 import {
@@ -15,6 +16,7 @@ import {
   type RenderFeatureNativeResourceDomain,
 } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 it('observes later inherited writes while isolated resource copies keep their accepted values', () => {
   const parent = createPreparedResourceMaps();
@@ -130,7 +132,7 @@ async function fixture() {
   };
   const host = createRenderFeatureHost([feature]).unwrap();
   const frame = (number: number, generation = 0) =>
-    host.runFrame([
+    prepareFeatureFrame(host, [
       {
         identity: 'main',
         render: true,
@@ -184,11 +186,9 @@ async function fixture() {
   };
 }
 
-function submit(batch: RenderFeatureFrameBatch) {
+function submit(host: RenderFeatureHost, batch: RenderFeatureFrameBatch) {
   expect(batch.frame.errors).toEqual([]);
-  batch.frame.onSubmitted();
-  for (const view of batch.views.values()) view.onSubmitted();
-  batch.onSubmitted();
+  submitFeatureFrame(host);
 }
 
 it('prepares once, keeps current upload/dispatch values, and retains inherited names after the root owner retires', async () => {
@@ -197,10 +197,10 @@ it('prepares once, keeps current upload/dispatch values, and retains inherited n
   const write = vi.spyOn(f.device.queue, 'writeBuffer');
   try {
     const first = f.frame(1);
-    submit(first);
+    submit(f.host, first);
     f.setValue(2);
     const second = f.frame(2);
-    submit(second);
+    submit(f.host, second);
     expect(f.state().cold).toBe(1);
     expect(f.state().viewCold).toBe(1);
     expect(create).toHaveBeenCalledTimes(1);
@@ -219,7 +219,7 @@ it('prepares once, keeps current upload/dispatch values, and retains inherited n
     ).toEqual([2]);
     f.onlyView();
     const inherited = f.frame(3);
-    submit(inherited);
+    submit(f.host, inherited);
     expect(f.state().viewCold).toBe(1);
     expect(create).toHaveBeenCalledTimes(1);
     expect([...inherited.views.values()][0]?.plans[0]?.plan.resources).toHaveLength(0);
@@ -232,23 +232,23 @@ it('does not advance source ACK on abort and restores canonical ownership after 
   const f = await fixture();
   try {
     const first = f.frame(1);
-    submit(first);
+    submit(f.host, first);
     const token = f.state().domain;
     if (token === undefined) throw new Error('Missing domain');
     f.replace();
     const replacement = f.frame(2);
     expect(replacement.frame.errors).toEqual([]);
-    replacement.onAborted();
+    abortFeatureFrame(f.host);
     expect(f.state().submitted).toBe(1);
     expect(f.state().aborted).toBe(1);
     f.restore(token);
     const restored = f.frame(3);
-    submit(restored);
+    submit(f.host, restored);
     expect(f.state().cold).toBe(2);
     const next = f.frame(4, 1);
     expect(next.frame.errors).toEqual([]);
     expect(f.state().cold).toBe(3);
-    next.onAborted();
+    abortFeatureFrame(f.host);
   } finally {
     f.dispose();
   }
@@ -258,7 +258,7 @@ it('closes admission callbacks after both a finished plan and a failed unfinishe
   const f = await fixture();
   try {
     const first = f.frame(1);
-    submit(first);
+    submit(f.host, first);
     expect(() => f.state().saved?.upload('frame', 'state', 0, new Uint32Array([4]))).toThrow(
       'closed',
     );
@@ -333,18 +333,18 @@ it('captures an actual unresolved compute admission and clears it after completi
       reason: 'rhi-not-available:pipeline-pending',
     });
     expect(create).toHaveBeenCalledOnce();
-    pending.onAborted();
+    abortFeatureFrame(f.host);
     if (settle === undefined) throw Error('Missing actual async compute request');
     settle();
     await Promise.resolve();
     const ready = f.frame(2);
     expect(ready.frame.preparationPendingReason).toBeUndefined();
-    submit(ready);
+    submit(f.host, ready);
     f.host.recover({ frameNumber: 3, caps: f.device.caps }).unwrap();
     const recovered = f.frame(3, 1);
     expect(recovered.frame.preparationPendingReason?.preparationStage).toBe('native-admission');
     expect(create).toHaveBeenCalledTimes(2);
-    recovered.onAborted();
+    abortFeatureFrame(f.host);
     expect(pending.frame.preparationPendingReason?.reason).toBe(
       'rhi-not-available:pipeline-pending',
     );
@@ -365,7 +365,7 @@ it('does not call a later source-plan exception native compilation merely becaus
       featureIdentity: 'forgeax.vfx-render.gpu-particles',
       preparationStage: 'source-plan',
     });
-    failed.onAborted();
+    abortFeatureFrame(f.host);
   } finally {
     f.dispose();
   }

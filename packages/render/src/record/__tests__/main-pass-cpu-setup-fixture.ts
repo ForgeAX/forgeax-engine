@@ -173,6 +173,7 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
       materialUniformBuffer: { buffer: material, sizeInBytes: materialData.byteLength },
       meshStorageBuffer: { buffer: mesh, sizeInBytes: meshData.byteLength },
     },
+    camera: { clipping: undefined },
     frameState: { instanceBuffers: new Map(), instancesBgShared: new WeakMap() },
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     dispatchCounts: { unlit: 0, standard: 0 },

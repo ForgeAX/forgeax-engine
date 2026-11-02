@@ -129,6 +129,7 @@ vi.mock('../browser-frame-signal', () => ({
 }));
 
 import { createWorkerExecutionApp } from '../execution/host-controller';
+import { isExecutionReport } from '../execution/schema';
 
 const capabilities = {
   worker: { available: true, reason: 'test' },
@@ -277,6 +278,142 @@ describe('Worker frame admission watchdog', () => {
     }
   });
 
+  it('uses the startup boundary while a split frame waits for render credit, then restores the source deadline', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-wait',
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(app.lastError).toBeUndefined();
+      expect(frames()).toHaveLength(2);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'source',
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'source',
+      });
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it.each([
+    'render-wait',
+    'source',
+  ] as const)('retains the %s admission phase across native visibility suspension', async (phase) => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-wait',
+      });
+      visibility(false);
+      await vi.advanceTimersByTimeAsync(11_000);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase,
+      });
+      expect(app.lastError).toBeUndefined();
+      visibility(true);
+      await vi.advanceTimersByTimeAsync(2_001);
+      if (phase === 'render-wait') {
+        expect(app.lastError).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(8_000);
+      }
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: phase === 'render-wait' ? 10_000 : 2_000 },
+      });
+      expect(frames()).toHaveLength(2);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('bounds render-credit waits and ignores duplicate phase notices rather than extending them', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      const waiting = {
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-wait',
+      } as const;
+      emit(waiting);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(app.lastError).toBeUndefined();
+      emit(waiting);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 10_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('rejects stale render-credit phase notices before they can replace the source watchdog', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: 'retired-world',
+        frameId: next.frameId,
+        phase: 'render-wait',
+      });
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId - 1,
+        phase: 'render-wait',
+      });
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
   it.each([
     'engine-worker',
     'render-worker',
@@ -287,6 +424,13 @@ describe('Worker frame admission watchdog', () => {
       callbacks.at(-1)?.(16);
       const pending = probes.sessionPost.mock.calls.at(-1)?.[0] as ExecutionFrameMessage;
       const posted = probes.sessionPost.mock.calls.length;
+      if (tier === 'render-worker')
+        listener()({
+          kind: 'frame-admission',
+          worldIdentity: pending.worldIdentity,
+          frameId: pending.frameId,
+          phase: 'render-wait',
+        });
       await vi.advanceTimersByTimeAsync(120_001);
       callbacks.at(-1)?.(120_017);
       expect(app.lastError).toBeUndefined();
@@ -862,8 +1006,19 @@ describe('Worker frame admission watchdog', () => {
       await vi.advanceTimersByTimeAsync(3000);
       expect(app.lastError).toBeUndefined();
       expect(app.execution.report().frame).toMatchObject({ completed: 0, inFlight: 1 });
+      // The loss cause stays observable through the report, beside the epoch it ended.
+      expect(app.execution.report().render).toMatchObject({
+        epoch: 2,
+        state: 'rebuilding',
+        lastLoss: { epoch: 2, cause: 'loss before source update' },
+      });
+      expect(isExecutionReport(app.execution.report())).toBe(true);
 
       emit({ kind: 'render-ready', epoch: 2 });
+      expect(app.execution.report().render).toMatchObject({
+        state: 'alive',
+        lastLoss: { epoch: 2, cause: 'loss before source update' },
+      });
       callbacks.at(-1)?.(3040);
       expect(frames()).toEqual([frame]);
       probes.now = 3050;

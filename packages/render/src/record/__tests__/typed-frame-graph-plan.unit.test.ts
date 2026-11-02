@@ -1,12 +1,12 @@
 import { ok } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { executeCompiledFrameGraph } from '../../__tests__/frame-recording-driver';
 import type { RenderFeaturePlannedFrame } from '../../features/plan';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../../gpu-texture-usage';
 import { createAutoExposureGraphPlan } from '../../pipeline/standard-output/auto-exposure/graph';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../../temporal/frame';
 import { getTextureIdentity, validateGraphTargetCaptureReadback } from '../frame-snapshot';
 import {
-  executeCompiledFrameGraph,
   type RenderFeatureGraphCandidate,
   renderFeatureGraphPlanSignature,
   updateRenderFeaturePlanRevision,
@@ -23,6 +23,8 @@ const captureDescriptor = {
 type CaptureOverrides = {
   readonly target?: boolean;
   readonly onSubmitted?: () => void;
+  readonly onPhysical?: (done: Promise<unknown>) => void;
+  readonly track?: (done: Promise<void>) => void;
   readonly descriptor?: {
     readonly format?: 'rgba16float' | 'rgba8unorm';
     readonly size?: { readonly width: number; readonly height: number };
@@ -78,15 +80,23 @@ function executeCapture(overrides: CaptureOverrides = {}) {
   } as never;
   const internals = {
     errorRegistry: { fire: (error: unknown) => errors.push(error) },
-    device: { queue: { submit: () => ok(undefined) } },
+    // RenderRecord opens the submission's one encoder.
+    device: {
+      createCommandEncoder: () => ok(encoder),
+      queue: { submit: () => ok(undefined), onSubmittedWorkDone: () => Promise.resolve() },
+    },
   } as never;
   const submitted = executeCompiledFrameGraph(
     internals,
     frameState,
     { pipelineState: {} } as never,
-    encoder,
     undefined,
-    overrides.onSubmitted === undefined ? undefined : { onSubmitted: overrides.onSubmitted },
+    {
+      ...(overrides.onSubmitted === undefined ? {} : { onSubmitted: overrides.onSubmitted }),
+      ...(overrides.track === undefined ? {} : { onSubmittedWork: overrides.track }),
+    },
+    undefined,
+    overrides.onPhysical,
   );
   return { submitted, errors, copies };
 }
@@ -233,4 +243,21 @@ describe('typed frame graph feature plan authority', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.code).toBe(expectedCode);
   });
+});
+
+it('delivers the graph physical fence to resource owners when its observation callback throws', () => {
+  const failure = new Error('observation failed');
+  const tracked = vi.fn();
+  let fence: Promise<unknown> | undefined;
+  expect(() =>
+    executeCapture({
+      onPhysical: (done) => {
+        fence = done;
+        throw failure;
+      },
+      track: tracked,
+    }),
+  ).toThrow(failure);
+  expect(fence).toBeInstanceOf(Promise);
+  expect(tracked).toHaveBeenCalledExactlyOnceWith(fence);
 });

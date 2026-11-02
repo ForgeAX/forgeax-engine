@@ -56,6 +56,19 @@ function sameReflection(
   return Object.keys(target).length === count + (source.frontFace === undefined ? 1 : 0);
 }
 
+/**
+ * Clipping caps (ClippingOptions.caps) shade the back faces seen through a cut, so
+ * opaque back-culled Standard draws of a capping view rasterize both sides.
+ */
+export function clippingCapRenderState(
+  state: MaterialRenderState | undefined,
+  clipping: { readonly planes: readonly unknown[]; readonly caps?: boolean } | undefined,
+): MaterialRenderState | undefined {
+  if (clipping?.caps !== true || clipping.planes.length === 0) return state;
+  if (state?.blend !== undefined || (state?.cullMode ?? 'back') !== 'back') return state;
+  return { ...state, cullMode: 'none' };
+}
+
 export function transformRenderState(
   state: MaterialRenderState | undefined,
   world: Float32Array,
@@ -116,12 +129,13 @@ export function materialDepthStencil(
   };
 }
 
-/** Like Three's non-VSM shadow side, generated casters render the opposite
- * face of a single-sided surface. Closed meshes avoid self-shadow acne;
- * explicitly double-sided surfaces keep both faces. Custom passes own their state. */
+/** Generated casters preserve the material's sidedness, as in UE's CSM path.
+ * Entry-surface depth remains an occluder when receiver bias/filter taps move
+ * inside a solid near contact. Exit-face depth can report those taps as lit.
+ * Explicit double-sided surfaces and custom passes retain their authored state. */
 export function shadowCasterRenderState(state: MaterialRenderState = {}): MaterialRenderState {
   return {
-    cullMode: state.cullMode === 'none' ? 'none' : state.cullMode === 'front' ? 'back' : 'front',
+    cullMode: state.cullMode ?? 'back',
     ...(state.frontFace === undefined ? {} : { frontFace: state.frontFace }),
     ...(state.depthBias === undefined ? {} : { depthBias: state.depthBias }),
     ...(state.depthBiasSlopeScale === undefined

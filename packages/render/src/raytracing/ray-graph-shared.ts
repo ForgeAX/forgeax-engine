@@ -115,7 +115,7 @@ export function addRayReconstructionPasses(
         { resource: view, usage: 'uniform-read' },
         { resource: config, usage: 'uniform-read' },
       ],
-      encode: ({ pass, resources }) =>
+      encodeDirect: (pass, _graphframe, resources) =>
         reconstruction.kernel
           .record(
             pass,
@@ -168,7 +168,7 @@ export function addRayDiffuseCompositePass(
         : [{ resource: reflectionResponse, usage: 'sampled-read' as const }]),
     ],
     colorAttachments: [{ view: target.scene.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ pass, resources }) =>
+    encodeDirect: (pass, _graphframe, resources) =>
       current()
         .record(
           pass,

@@ -20,6 +20,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { defaultMaterialSnapshot } from '../render-system-extract';
 import { MaterialFrame } from '../scene/material-dispatch';
+import { RowChangeLog } from '../scene/row-change-log';
 
 const IDENTITY = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -39,7 +40,10 @@ const binding = {
 };
 
 describe('ShadowCasterClassifier source membership', () => {
-  const scene = { contentRevision: 0, changedSlotsSince: () => [] };
+  const scene = {
+    contentCursor: { journal: new RowChangeLog(), position: 0 },
+    changedSlotsSince: () => [],
+  };
   const slots = [
     { slot: 0, snapshot: {} },
     { slot: 1, snapshot: { skinBinding: {}, capsuleShadowRequested: true } },

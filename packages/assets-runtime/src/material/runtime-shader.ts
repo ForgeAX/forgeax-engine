@@ -75,6 +75,28 @@ export function assertMaterialStaticSelection(
   throw Object.assign(new Error(error.message), error);
 }
 
+/** Standard parameters whose resources and shading exist only in a cooked program. */
+const COOKED_ONLY_PARAMETERS: ReadonlySet<string> = new Set(['planarReflection']);
+
+/** A code-created material cannot select a cooked-only capability: the default program lacks it. */
+export function assertMaterialCookedParameters(
+  parameters: readonly { readonly name: string }[] | undefined,
+  projection: MaterialRenderProjection | undefined,
+  material = '<runtime-material>',
+): void {
+  if (projection !== undefined) return;
+  const selection = (parameters ?? [])
+    .filter((parameter) => COOKED_ONLY_PARAMETERS.has(parameter.name))
+    .map((parameter) => `parameter:${parameter.name}`);
+  if (selection.length === 0) return;
+  const error = createMaterialError('material-specialization-not-cooked', {
+    code: 'material-specialization-not-cooked',
+    material,
+    staticSelection: selection.sort(),
+  });
+  throw Object.assign(new Error(error.message), error);
+}
+
 export function sameMaterialContext(
   left: MaterialCookProgramContext,
   right: MaterialCookProgramContext,

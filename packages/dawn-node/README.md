@@ -11,6 +11,11 @@ by the browser and does not use this Node carrier.
 | Linux | Exact upstream `webgpu@0.4.0`, an optional peer named `upstream-webgpu` | Consumers opt in with `upstream-webgpu@npm:webgpu@0.4.0`; the workspace installs it as a development dependency |
 | Windows x64 | Pinned Dawn with built DXC; GPU qualification pending | Host x64 source build |
 
+DevKit opts into the Linux prebuilt provider for its Node-only GPU commands,
+including `model render` and `model replay`. The carrier remains an optional
+peer for other consumers. Installing those packaged bytes does not compile Dawn;
+macOS and Windows still require their explicit host native preparation.
+
 ## Build and installation
 
 The public JavaScript and declaration exports point to checked-in `src` files, so

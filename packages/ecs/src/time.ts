@@ -1,4 +1,5 @@
 import type { AssetReferenceOwner } from '@forgeax/engine-types';
+import type { WorldMemoryOptions } from './memory-types';
 
 export interface TimeResource {
   readonly delta: number;
@@ -61,6 +62,7 @@ export interface TimePolicy {
 }
 
 export interface WorldOptions {
+  readonly memory?: WorldMemoryOptions;
   readonly assets?: AssetReferenceOwner;
   readonly time?: TimePolicy;
   /** SAB-backed dense numeric columns for a SharedKernel-capable Engine Realm. */

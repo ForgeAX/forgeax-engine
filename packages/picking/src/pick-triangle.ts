@@ -2,7 +2,7 @@ import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { mat4, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
 import { Instances } from '@forgeax/engine-render';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
-import { isTriangleTopology } from '@forgeax/engine-types';
+import { isTriangleTopology, ok } from '@forgeax/engine-types';
 import { currentMeshPositions, type PoseUnavailableReason } from './current-positions';
 import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
 import { computeScreenRay, rayHitsMeshBounds, type ScreenRay } from './pick-core';
@@ -124,6 +124,8 @@ export function pickTriangle(
 
 /** Query exact triangles against a ray derived from the accepted display frame. */
 export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): TrianglePickResult {
+  if (!world.frameArena.isActive)
+    return world.withFrameArena(() => ok(pickTriangleWithScreenRay(world, screen))).unwrap();
   const origin = screen.ray;
   let best: TriangleHit | undefined;
   let unsupportedReason: TrianglePickUnavailableReason | undefined;
@@ -143,7 +145,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
     }
     const [instanceTransforms, instanceCount] = instances;
 
-    const pose = currentMeshPositions(world, entity, mesh);
+    const pose = currentMeshPositions(world, entity, mesh, world.frameArena);
     if ('reason' in pose) {
       if (pose.reason !== 'cpu-geometry-unavailable') {
         unsupportedReason ??= pose.reason;

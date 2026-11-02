@@ -17,7 +17,7 @@
 
 import type { CodecResult } from './errors.js';
 import { codecError } from './errors.js';
-import type { Ktx2Parsed } from './ktx2.js';
+import { type Ktx2Parsed, ktx2ChannelLanes } from './ktx2.js';
 import { transcodeTargetSpecs } from './transcode.js';
 import type {
   BasisFile,
@@ -184,13 +184,18 @@ export function inspectBasisSource(
   };
 }
 
-/** Keep raw Basis and KTX2 output bytes faithful to the selected GPU format. */
-function projectChannels(data: Uint8Array, channels: 1 | 2 | undefined): Uint8Array {
+/** Keep raw Basis and KTX2 output bytes faithful to the selected GPU format; `lanes`
+ * names the RGBA decode lane of each source channel. */
+function projectChannels(
+  data: Uint8Array,
+  channels: 1 | 2 | undefined,
+  lanes: readonly number[] = [0, 1],
+): Uint8Array {
   if (channels === undefined) return data;
   const packed = new Uint8Array((data.length / 4) * channels);
   for (let pixel = 0; pixel < data.length / 4; pixel++) {
     for (let channel = 0; channel < channels; channel++) {
-      packed[pixel * channels + channel] = data[pixel * 4 + channel] as number;
+      packed[pixel * channels + channel] = data[pixel * 4 + (lanes[channel] ?? channel)] as number;
     }
   }
   return packed;
@@ -224,6 +229,7 @@ export async function transcodeKtx2(
   }
 
   const targetEnum = mod.transcoder_texture_format[target.basis].value;
+  const { lanes } = ktx2ChannelLanes(parsed);
   const file = new mod.KTX2File(parsed.rawBytes);
   try {
     traceBasisPhase('ktx2.file.start');
@@ -259,7 +265,7 @@ export async function transcodeKtx2(
         level,
         width: info.origWidth,
         height: info.origHeight,
-        data: projectChannels(dst, target.channels),
+        data: projectChannels(dst, target.channels, lanes),
       });
     }
 

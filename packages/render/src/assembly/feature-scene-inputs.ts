@@ -16,6 +16,7 @@ import {
   type RenderTargetPhysical,
   retireRenderTargetPhysical,
 } from '../targets/physical';
+import { recordContext } from '../world/view-record-context';
 import { createFeatureSceneSdf, type FeatureSceneSdfSource } from './feature-scene-sdf';
 
 interface DepthInput {
@@ -74,8 +75,8 @@ export function createFeatureSceneInputs(
         return { view };
       }
       const key = JSON.stringify([identity, resource.name]);
-      const width = Math.max(1, internals.canvas.width);
-      const height = Math.max(1, internals.canvas.height);
+      const width = Math.max(1, recordContext(internals).canvas.width);
+      const height = Math.max(1, recordContext(internals).canvas.height);
       const device = internals.device;
       let input = requested.get(key)?.input ?? depths.get(key);
       if (
@@ -100,7 +101,7 @@ export function createFeatureSceneInputs(
               sampled: false,
               readback: false,
             },
-            internals.deviceScope.generation,
+            recordContext(internals).deviceScope.generation,
             true,
           ),
         );
@@ -156,6 +157,7 @@ export function createFeatureSceneInputs(
           physical: input.physical,
           layer: 0,
           sceneInput: true,
+          featureIdentity: identity,
           faceCamera: {
             ...makeZeroCameraFallbackSnapshot(),
             world,

@@ -1,16 +1,36 @@
 import type { Buffer } from '@forgeax/engine-rhi';
+import { ok } from '@forgeax/engine-types';
 import { GpuBuffer } from '../gpu-resource';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
+import { renderWorldFor } from '../world/render-world';
+import type { ValidatedRenderable } from './frame-snapshot';
 import {
   type FoldBucket,
+  type FoldDispatchPlan,
   INSTANCE_UBO_FULL_ARRAY_BYTES,
   packInstanceStorageBuffer,
 } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
+
+function foldInstanceBufferKey(drawIndex: number): number {
+  return -1 - drawIndex;
+}
+
+/** Physical fold slots belong to actual admitted draw heads, across graph nodes. */
+export function* retainedFoldInstanceKeys(
+  plan: FoldDispatchPlan | null,
+  rows: readonly ValidatedRenderable[],
+): Iterable<number> {
+  if (plan === null) return;
+  for (const head of plan.headBuckets.keys()) {
+    const row = rows[head];
+    if (row !== undefined) yield foldInstanceBufferKey(row.renderableIndex);
+  }
+}
 
 /** Both transparent draw owners consume one fold payload and resident cache. */
 export function resolveFoldInstanceBuffer(
@@ -19,9 +39,20 @@ export function resolveFoldInstanceBuffer(
   drawIndex: number,
 ): Buffer | null {
   const { runtime, frameState } = c;
-  const key = -1 - drawIndex;
+  const world = renderWorldFor(runtime);
+  if (!world.frameArena.isActive)
+    return world.withFrameArena(() => ok(resolveFoldInstanceBuffer(c, bucket, drawIndex))).unwrap();
+  const key = foldInstanceBufferKey(drawIndex);
   const uniform = runtime.device.caps.storageBuffer === false;
-  const payload = uniform ? bucket.transforms : packInstanceStorageBuffer(bucket.transforms);
+  const payload = uniform
+    ? bucket.transforms
+    : packInstanceStorageBuffer(
+        world.frameArena.alloc(Float32Array, bucket.transforms.length * 2).unwrap(),
+        bucket.transforms,
+        undefined,
+        undefined,
+        undefined,
+      );
   let resident = frameState.instanceBuffers.get(key);
   if (resident === undefined || resident.uploadedByteLength !== payload.byteLength) {
     const created = runtime.device.createBuffer({

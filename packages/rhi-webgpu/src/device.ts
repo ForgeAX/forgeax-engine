@@ -599,6 +599,10 @@ class WebGpuRenderCommands implements RhiRenderCommands {
 }
 
 /** Render pass encoder; its own fields are the spec pass state. */
+// One bounded vacant sequence; reentrant calls acquire independent storage.
+const MAX_RETAINED_BUNDLE_HANDLES = 16;
+let freeBundleHandles: (GPURenderBundle | undefined)[] | undefined;
+
 class WebGpuRenderPassEncoder extends WebGpuRenderCommands implements RhiRenderPassEncoder {
   ended = false;
   // [[occlusion_query_active]] (research §2.1): true when a beginOcclusionQuery
@@ -643,11 +647,18 @@ class WebGpuRenderPassEncoder extends WebGpuRenderCommands implements RhiRenderP
   }
 
   executeBundles(bundles: Iterable<RenderBundle>): Result<void, RhiError> {
+    const handles = freeBundleHandles ?? [];
+    freeBundleHandles = undefined;
     try {
-      const rawBundles = Array.from(bundles, (bundle) => bundle as unknown as GPURenderBundle);
-      this.renderPass.executeBundles(rawBundles);
-      for (const bundle of rawBundles) this.references.add(bundle);
-      COMMAND_COUNTS.bundlesExecuted += rawBundles.length;
+      let count = 0;
+      for (const bundle of bundles) handles[count++] = bundle as unknown as GPURenderBundle;
+      handles.length = count;
+      // Every element in the active sequence was assigned above. Native WebGPU
+      // consumes it synchronously; no vacant slot crosses the API boundary.
+      this.renderPass.executeBundles(handles as GPURenderBundle[]);
+      for (let index = 0; index < count; index++)
+        this.references.add(handles[index] as GPURenderBundle);
+      COMMAND_COUNTS.bundlesExecuted += count;
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -657,6 +668,13 @@ class WebGpuRenderPassEncoder extends WebGpuRenderCommands implements RhiRenderP
           hint: String(cause),
         }),
       );
+    } finally {
+      // Keep only bounded recording storage and release every native handle.
+      // Larger sequences remain ordinary values instead of raising retained capacity.
+      if (handles.length <= MAX_RETAINED_BUNDLE_HANDLES) {
+        handles.fill(undefined);
+        freeBundleHandles ??= handles;
+      }
     }
   }
 

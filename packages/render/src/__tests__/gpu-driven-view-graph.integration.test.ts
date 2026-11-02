@@ -14,12 +14,15 @@ import { MaterialResource } from '../material-resource';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
-import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
+import { ensureShadowDepthLayers, promoteGraphCandidate } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
+import { publishRenderSubmission, renderWorldFor } from '../world/render-world';
+import { executeCompiledFrameGraph } from './frame-recording-driver';
+import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 import { updateGpuView } from './helpers/gpu-input-read-domain';
 
 const material = new MaterialResource({
@@ -98,6 +101,16 @@ function preparedFrame(view: GpuDrivenView): PreparedGpuDrivenFrame {
         : projected;
     },
   };
+}
+
+/** The frame's shared submission accepted: a recorded graph transaction may commit its history. */
+function acceptFrame(internals: object): void {
+  publishRenderSubmission(renderWorldFor(internals), {
+    accepted: true,
+    completion: undefined,
+    creditCompletion: undefined,
+    generation: 0,
+  });
 }
 
 describe('GpuDrivenView graph projection', () => {
@@ -211,17 +224,16 @@ describe('GpuDrivenView graph projection', () => {
       shadowViews: [],
     } as unknown as ViewLights;
     const compile = (prepared?: PreparedGpuDrivenFrame) =>
-      ensureCompiledFrameGraph(
+      compileAndAdoptViewGraph({
         internals,
         frameState,
         pipelineState,
-        makeZeroCameraFallbackSnapshot(),
+        camera: makeZeroCameraFallbackSnapshot(),
         lights,
-        1,
-        1,
-        undefined,
-        prepared,
-      );
+        surface: { width: 1, height: 1 },
+        shadowDepthLayers: ensureShadowDepthLayers(frameState, internals.device),
+        gpuDriven: prepared,
+      });
 
     const first = compile();
     expect(first).not.toBeNull();
@@ -264,7 +276,10 @@ describe('GpuDrivenView graph projection', () => {
     expect(errors).toHaveLength(0);
   });
 
-  it('records reset, compact, and finalize in one typed graph', async () => {
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('records ordered selection kernels with %s physical passes', async (mode) => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -316,34 +331,69 @@ describe('GpuDrivenView graph projection', () => {
     });
 
     const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
-    expect(view.addPasses(graph).ok).toBe(true);
+    expect(
+      view.addPasses(
+        graph,
+        undefined,
+        true,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        mode,
+      ).ok,
+    ).toBe(true);
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
-    expect(compiled.inspect().passes).toMatchObject([
-      { name: 'gpu-driven.view-reset', kind: 'compute', dependencies: [] },
-      {
-        name: 'gpu-driven.frustum-compact',
-        kind: 'compute',
-        dependencies: ['gpu-driven.view-reset'],
-      },
-      {
-        name: 'gpu-driven.finalize-indirect',
-        kind: 'compute',
-        dependencies: ['gpu-driven.frustum-compact'],
-      },
-      {
-        name: 'gpu-driven.lod-selection-readback',
-        kind: 'copy',
-        dependencies: ['gpu-driven.frustum-compact', 'gpu-driven.finalize-indirect'],
-      },
-    ]);
+    expect(compiled.inspect().passes).toMatchObject(
+      mode === 'combined'
+        ? [
+            { name: 'gpu-driven.view-selection', kind: 'compute', dependencies: [] },
+            {
+              name: 'gpu-driven.lod-selection-readback',
+              kind: 'copy',
+              dependencies: ['gpu-driven.view-selection'],
+            },
+          ]
+        : [
+            { name: 'gpu-driven.view-reset', kind: 'compute', dependencies: [] },
+            {
+              name: 'gpu-driven.frustum-compact',
+              kind: 'compute',
+              dependencies: ['gpu-driven.view-reset'],
+            },
+            {
+              name: 'gpu-driven.finalize-indirect',
+              kind: 'compute',
+              dependencies: ['gpu-driven.frustum-compact'],
+            },
+            {
+              name: 'gpu-driven.lod-selection-readback',
+              kind: 'copy',
+              dependencies: ['gpu-driven.frustum-compact', 'gpu-driven.finalize-indirect'],
+            },
+          ],
+    );
     const encoder = device.createCommandEncoder({ label: 'gpu-driven-view' }).unwrap();
+    const dispatches: number[][] = [];
+    const begin = encoder.beginComputePass.bind(encoder);
+    vi.spyOn(encoder, 'beginComputePass').mockImplementation((descriptor) => {
+      const pass = begin(descriptor);
+      const dispatch = pass.dispatchWorkgroups.bind(pass);
+      vi.spyOn(pass, 'dispatchWorkgroups').mockImplementation((...groups) => {
+        dispatches.push(groups as number[]);
+        return dispatch(...groups);
+      });
+      return pass;
+    });
     compiled.execute({ encoder }).unwrap();
+    expect(dispatches).toEqual([[1], [1], [1]]);
     encoder.finish().unwrap();
-    expect((device as RhiNullDevice).framePassNames).toEqual([
-      'gpu-driven.view-reset',
-      'gpu-driven.frustum-compact',
-      'gpu-driven.finalize-indirect',
-    ]);
+    expect((device as RhiNullDevice).framePassNames).toEqual(
+      mode === 'combined'
+        ? ['gpu-driven.view-selection']
+        : ['gpu-driven.view-reset', 'gpu-driven.frustum-compact', 'gpu-driven.finalize-indirect'],
+    );
 
     view.dispose();
     sceneAvailability.scene.dispose();
@@ -420,17 +470,16 @@ describe('GpuDrivenView graph projection', () => {
       shadowViews: [],
     } as unknown as ViewLights;
     const compile = (prepared: PreparedGpuDrivenFrame, width = 1) =>
-      ensureCompiledFrameGraph(
+      compileAndAdoptViewGraph({
         internals,
         frameState,
         pipelineState,
-        makeZeroCameraFallbackSnapshot(),
+        camera: makeZeroCameraFallbackSnapshot(),
         lights,
-        width,
-        1,
-        undefined,
-        prepared,
-      );
+        surface: { width, height: 1 },
+        shadowDepthLayers: ensureShadowDepthLayers(frameState, internals.device),
+        gpuDriven: prepared,
+      });
 
     Object.defineProperty(device, 'surfaceViewFormats', {
       configurable: true,
@@ -457,14 +506,17 @@ describe('GpuDrivenView graph projection', () => {
     const initialEncoder = device
       .createCommandEncoder({ label: 'gpu-driven-view-initial' })
       .unwrap();
+    // RenderRecord opens the encoder the graph passes record into.
+    vi.spyOn(device, 'createCommandEncoder').mockReturnValueOnce(ok(initialEncoder));
+    acceptFrame(internals);
     expect(
-      executeCompiledFrameGraph(
-        internals,
-        frameState,
-        { encoder: initialEncoder, pipelineState } as unknown as RenderPipelineFrame,
-        initialEncoder,
-      ),
+      executeCompiledFrameGraph(internals, frameState, {
+        encoder: initialEncoder,
+        pipelineState,
+      } as unknown as RenderPipelineFrame),
     ).toBe(true);
+    // `render-graph-settle` promotes the accepted view's candidate in RenderCommit.
+    promoteGraphCandidate(frameState);
 
     Object.defineProperty(device, 'surfaceViewFormats', {
       configurable: true,
@@ -514,14 +566,17 @@ describe('GpuDrivenView graph projection', () => {
     const acceptedEncoder = device
       .createCommandEncoder({ label: 'gpu-driven-view-accepted' })
       .unwrap();
+    // RenderRecord opens the encoder the graph passes record into.
+    vi.spyOn(device, 'createCommandEncoder').mockReturnValueOnce(ok(acceptedEncoder));
+    acceptFrame(internals);
     expect(
-      executeCompiledFrameGraph(
-        internals,
-        frameState,
-        { encoder: acceptedEncoder, pipelineState } as unknown as RenderPipelineFrame,
-        acceptedEncoder,
-      ),
+      executeCompiledFrameGraph(internals, frameState, {
+        encoder: acceptedEncoder,
+        pipelineState,
+      } as unknown as RenderPipelineFrame),
     ).toBe(true);
+    // `render-graph-settle` promotes the accepted view's candidate in RenderCommit.
+    promoteGraphCandidate(frameState);
     expect(retirePrevious).toHaveBeenCalledOnce();
     await device.queue.onSubmittedWorkDone();
     await Promise.resolve();

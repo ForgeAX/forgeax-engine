@@ -2,14 +2,19 @@ import {
   defineComponent,
   defineRelationship,
   type EntityHandle,
+  type Query,
   type World,
 } from '@forgeax/engine-ecs';
+import { vec3 } from '@forgeax/engine-math';
 import {
   type DirectionalShadowQuality,
   directionalShadowQualityFromF32,
 } from '../components/directional-shadow-filter';
+import {
+  captureShadowViewIdentity,
+  directionalShadowViewIdentity,
+} from '../gpu-driven/shadow-view-identity';
 import type { ShadowViewIdentity } from '../inspection-types';
-import { shadowPlanes } from '../record/shadow-culling';
 import {
   CSM_CAMERA_KEYS,
   type CsmCameraData,
@@ -23,7 +28,8 @@ import {
 } from '../render-system-extract';
 import { sameValue } from '../same-value';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
-import { createRenderWorld, RenderPrepare } from './render-world';
+import { shadowPlanes } from '../shadow-frustum';
+import { renderWorldFor } from './render-world';
 
 /** Spot shadow tiles in the renderer-owned spot depth array. */
 export const SPOT_SHADOW_LAYERS = 4;
@@ -45,6 +51,9 @@ type LightFacts =
   | SpotLightSnapshot
   | RectAreaDirectLightSnapshot;
 
+/** `RenderLight.kind` values. */
+const LightKindValue = Object.freeze({ directional: 0, point: 1, spot: 2, rect: 3 } as const);
+
 /**
  * A light in the Render World. `shadowLayer` is the atlas layer (point cube or
  * spot tile) the light holds for its whole lifetime, so another light's arrival
@@ -52,6 +61,7 @@ type LightFacts =
  * carry that layer as `shadowAtlasLayer` / `shadowAtlasTile`.
  */
 export const RenderLight = defineComponent('RenderLight', {
+  kind: { type: 'enum', default: LightKindValue.directional, labels: LightKindValue },
   shadowLayer: { type: 'i32', default: -1 },
   facts: 'unique<LightFacts>',
 });
@@ -71,11 +81,56 @@ export const { source: ShadowViewOf, target: LightShadowViews } = defineRelation
   linkedSpawn: true,
 });
 
+/** A view entity's cascade views follow it: despawning the view despawns them. */
+export const { source: CascadeViewOf, target: ViewCascadeViews } = defineRelationship({
+  sourceName: 'CascadeViewOf',
+  sourceField: 'view',
+  targetName: 'ViewCascadeViews',
+  targetField: 'views',
+  exclusive: true,
+  linkedSpawn: true,
+});
+
+/**
+ * A view entity's directional cascade fit and the lights it records with;
+ * written only by `render-cascade-fit`.
+ */
+export const ViewCascadeFit = defineComponent('ViewCascadeFit', {
+  fit: 'unique<ViewCascadeFit>',
+});
+
+/** The cascade matrices a view's last accepted scene submission rasterized. */
+export interface CascadeHistory {
+  lightViewProj: readonly Float32Array[] | undefined;
+}
+
+/**
+ * The lights a view entity records with, fitted this frame by
+ * `render-cascade-fit`; undefined while the view is not fitted (disabled, the
+ * shared capture view, or no fit system).
+ */
+export function viewLightsOf(
+  world: World,
+  entity: EntityHandle | undefined,
+): ViewLights | undefined {
+  if (entity === undefined || !world.hasComponent(entity, ViewCascadeFit)) return undefined;
+  return world.resolveUniqueRef<ViewRecord>(world.get(entity, ViewCascadeFit).unwrap().fit).unwrap()
+    .lights;
+}
+
+/**
+ * A view entity's submitted cascade history, the projection its next fit
+ * retains; written only by `render-cascade-history`.
+ */
+export const ViewCascadeHistory = defineComponent('ViewCascadeHistory', {
+  history: 'unique<CascadeHistory>',
+});
+
 /** Light-space projection a point face or spot shadow view retains between light changes. */
 export interface ShadowViewProjection {
   readonly identity: ShadowViewIdentity;
   readonly matrix: Float32Array;
-  /** Six frustum planes derived once from `matrix`. */
+  /** Six plane lanes derived once; automatic CSM disables the near lane for pancaking. */
   readonly planes: Float32Array;
 }
 
@@ -117,6 +172,28 @@ export interface ViewLights extends LightRoster {
   readonly shadowViews: readonly ShadowViewProjection[];
 }
 
+/** The light owning a point face or spot shadow view: its stable cube layer or spot tile. */
+export function shadowViewLight(
+  lights: ViewLights,
+  identity: ShadowViewIdentity,
+): PointShadowSnapshot | SpotLightSnapshot | undefined {
+  return identity.kind === 'point'
+    ? lights.pointShadow.find((light) => light.shadowAtlasLayer === identity.index)
+    : identity.kind === 'spot'
+      ? lights.spot.find((light) => light.shadowAtlasTile === identity.index)
+      : undefined;
+}
+
+/** The caster channels a shadow view rasters; an unauthored mask admits every channel. */
+export function shadowViewCasterChannels(
+  lights: ViewLights,
+  identity: ShadowViewIdentity,
+): number | undefined {
+  return identity.kind === 'directional'
+    ? lights.directionalCsmConfig?.shadowCasterChannels
+    : shadowViewLight(lights, identity)?.shadowCasterChannels;
+}
+
 /**
  * Fit a directional light's cascades for one camera. Without a fittable
  * camera the cascade metadata (count, split planes, map size) remains so the
@@ -135,9 +212,9 @@ export function fitDirectionalCascades(
       ...csm,
       views: csm.lightViewProj.map((matrix, index) =>
         Object.freeze({
-          identity: Object.freeze({ kind: 'directional' as const, index }),
+          identity: directionalShadowViewIdentity(index),
           matrix,
-          planes: shadowPlanes(matrix),
+          planes: shadowPlanes(matrix, config.shadowViewProjection === undefined),
         }),
       ),
     };
@@ -166,7 +243,9 @@ export function fitDirectionalCascades(
 }
 
 /** One recording view's retained light read, cascade fit and cascade view entities. */
-interface ViewRecord {
+export interface ViewRecord {
+  /** The view entity its cascade views follow; undefined for a hand-driven capture fit. */
+  readonly view: EntityHandle | undefined;
   config: LightRoster['directionalCsmConfig'];
   direction: LightRoster['directionalCsmDirection'];
   normalBias: number | undefined;
@@ -183,8 +262,9 @@ interface ViewRecord {
   lights: ViewLights | undefined;
 }
 
-function createViewRecord(): ViewRecord {
+export function createViewRecord(view?: EntityHandle): ViewRecord {
   return {
+    view,
     config: undefined,
     direction: undefined,
     normalBias: undefined,
@@ -289,6 +369,7 @@ function sameDirectional(stored: LightRoster, source: LightRoster): boolean {
   return (
     stored.directionalCount === source.directionalCount &&
     sameValue(stored.directional, source.directional) &&
+    sameList(stored.additionalDirectional ?? [], source.additionalDirectional ?? []) &&
     sameValue(stored.directionalCsmConfig, source.directionalCsmConfig) &&
     sameValue(stored.directionalCsmDirection, source.directionalCsmDirection) &&
     stored.depthBias === source.depthBias &&
@@ -308,85 +389,92 @@ function keyOf(
 
 /** Ingest identity translation of one light kind: source key to entity, and its layer pool. */
 interface LightKind {
+  readonly value: number;
   readonly shadow: 'point' | 'spot' | undefined;
   readonly declared: Map<number, { readonly entity: EntityHandle; seen: number }>;
   /** Free atlas layers, lowest first. */
   readonly free: number[];
 }
 
-function lightKind(shadow: LightKind['shadow'], capacity = 0): LightKind {
-  return { shadow, declared: new Map(), free: freeList(capacity) };
+function lightKind(value: number, shadow: LightKind['shadow'], capacity = 0): LightKind {
+  return { value, shadow, declared: new Map(), free: freeList(capacity) };
 }
 
 /**
- * Source-driven light entities. The `render-lights` RenderPrepare system turns
- * a frame's extracted lights into one entity per light: a new light spawns, a
+ * Source-driven light entities. A recording view's extraction hands its
+ * lights to {@link RenderLights.adopt}, which turns them into one entity per light: a new light spawns, a
  * vanished one despawns, a changed one is rewritten, and a steady frame writes
  * nothing. Each shadow-capable light holds a stable atlas layer and one
  * {@link ShadowView} entity per face, so adding or removing a light never moves
  * another light's shadow identity.
  *
  * `roster` is the retained light roster in source order: its arrays hold the
- * light entities' facts and keep their identity until a light changes. Each
- * recording view reads it through {@link RenderLights.viewLights}, which adds
- * the view's directional cascades: one {@link ShadowView} entity per cascade
- * of each (light, view), refitted only when the camera or light changed.
+ * light entities' facts and keep their identity until a light changes.
+ * `render-cascade-fit` adds each view entity's directional cascades through
+ * {@link RenderLights.fitView}: one {@link ShadowView} entity per cascade of
+ * each (light, view), refitted only when the camera, light or submitted
+ * history changed. A capture's cube faces and the shared capture view fit by
+ * hand through {@link RenderLights.viewLights}.
  */
 export class RenderLights {
   roster: LightRoster = EMPTY;
   /** Point faces then spots, in roster order; replaced only when a shadow view changes. */
   shadowViews: readonly ShadowViewProjection[] = Object.freeze([]);
-  private readonly directional = lightKind(undefined);
-  private readonly point = lightKind('point', SHADOW_ATLAS_DEFAULT_LAYERS);
-  private readonly spot = lightKind('spot', SPOT_SHADOW_LAYERS);
-  private readonly rect = lightKind(undefined);
-  private pending: LightRoster | undefined;
+  private readonly directional = lightKind(LightKindValue.directional, undefined);
+  private readonly point = lightKind(LightKindValue.point, 'point', SHADOW_ATLAS_DEFAULT_LAYERS);
+  private readonly spot = lightKind(LightKindValue.spot, 'spot', SPOT_SHADOW_LAYERS);
+  private readonly rect = lightKind(LightKindValue.rect, undefined);
   /** The source roster last adopted. */
   private adopted: LightRoster | undefined;
-  /** Per-view cascade fits and the light read each view retains, keyed by the recording view. */
+  /** Shadowed point lights (pointShadow order) then casting spots: the `shadowViews` order. */
+  private shadowed: readonly EntityHandle[] = Object.freeze([]);
+  private orderChanged = false;
+  /** Lights whose shadow views refit this run; reused. */
+  private readonly refit = new Set<EntityHandle>();
+  /** Hand-driven capture fits and the light read each retains, keyed by the recording. */
   private readonly views = new Map<object, ViewRecord>();
   private syncs = 0;
 
-  constructor(readonly world: World) {
-    world
-      .addSystem(RenderPrepare, {
-        name: 'render-lights',
-        queries: [],
-        fn: () => this.apply(),
-      })
-      .unwrap();
-  }
+  constructor(readonly world: World) {}
 
   /**
-   * Reconcile the light entities with a frame's extracted lights inside
-   * `RenderPrepare`. A steady frame compares in place and returns the retained
-   * roster without running the system.
+   * Reconcile the light entities with a frame's extracted roster (the
+   * `render-lights` system). A change-driven source hands over the same
+   * roster while its lights hold still; an equal one compares in place and
+   * writes nothing.
    */
-  sync(source: LightRoster): LightRoster {
-    // A change-driven source hands over the same roster while its lights hold still.
-    if (source === this.adopted) return this.roster;
-    if (!this.matches(source)) {
-      this.pending = source;
-      const ran = this.world.run(RenderPrepare);
-      this.pending = undefined;
-      if (!ran.ok) throw ran.error;
-    }
+  adopt(source: LightRoster): void {
+    if (source === this.adopted) return;
+    if (!this.matches(source)) this.apply(source);
     this.adopted = source;
-    return this.roster;
   }
 
   /**
-   * The lights `view` records with: `roster` (the adopted roster, or a
-   * capture's frozen copy of it) and this view's directional cascades. The
+   * The lights a hand-driven capture `view` records with: `roster` (the
+   * adopted roster, or a capture's frozen copy of it) and its directional cascades. The
    * cascades refit only when the camera, the directional light or the
    * retained projection changed; a steady frame returns the same object.
    */
-  viewLights(view: object, roster: LightRoster, fit: CascadeFit): ViewLights {
+  viewLights(
+    view: object,
+    roster: LightRoster,
+    fit: CascadeFit,
+    /** The view entity whose despawn takes the cascade views with it. */
+    owner?: EntityHandle,
+  ): ViewLights {
     let record = this.views.get(view);
     if (record === undefined) {
-      record = createViewRecord();
+      record = createViewRecord(owner);
       this.views.set(view, record);
     }
+    return this.fitView(record, roster, fit);
+  }
+
+  /**
+   * Fit one view record's cascades (`render-cascade-fit` for a view entity's
+   * {@link ViewCascadeFit}, or a hand-driven capture key).
+   */
+  fitView(record: ViewRecord, roster: LightRoster, fit: CascadeFit): ViewLights {
     if (!sameFit(record, roster, fit)) {
       record.config = roster.directionalCsmConfig;
       record.direction = roster.directionalCsmDirection;
@@ -413,6 +501,7 @@ export class RenderLights {
     record.lights = Object.freeze({
       directional: roster.directional,
       directionalCount: roster.directionalCount,
+      additionalDirectional: roster.additionalDirectional ?? [],
       point: roster.point,
       spot: roster.spot,
       rect: roster.rect,
@@ -439,6 +528,18 @@ export class RenderLights {
     this.despawnCascadeViews(record);
   }
 
+  /** A view entity stopped fitting (disabled, or now the shared capture view): drop its fit. */
+  retireFit(record: ViewRecord): void {
+    if (!record.fitted) return;
+    this.despawnCascadeViews(record);
+    record.fitted = false;
+    record.cascades = undefined;
+    record.camera = undefined;
+    record.retained = undefined;
+    record.roster = undefined;
+    record.lights = undefined;
+  }
+
   /** Spawn or rewrite one shadow view entity per cascade of a view's fit. */
   private writeCascadeViews(record: ViewRecord): void {
     const world = this.world;
@@ -459,12 +560,17 @@ export class RenderLights {
       const entity = entities[cascade];
       if (entity === undefined)
         entities.push(
-          world
-            .spawn(
-              { component: ShadowViewOf, data: { light } },
-              { component: ShadowView, data: { projection: handle } },
-            )
-            .unwrap(),
+          (record.view === undefined
+            ? world.spawn(
+                { component: ShadowViewOf, data: { light } },
+                { component: ShadowView, data: { projection: handle } },
+              )
+            : world.spawn(
+                { component: ShadowViewOf, data: { light } },
+                { component: CascadeViewOf, data: { view: record.view } },
+                { component: ShadowView, data: { projection: handle } },
+              )
+          ).unwrap(),
         );
       else world.set(entity, ShadowView, { projection: handle }).unwrap();
     }
@@ -495,10 +601,7 @@ export class RenderLights {
     );
   }
 
-  private apply(): void {
-    const source = this.pending;
-    if (source === undefined) return;
-    this.pending = undefined;
+  private apply(source: LightRoster): void {
     const frame = ++this.syncs;
     const shadows = new Map<number, PointShadowSnapshot>();
     for (const [index, shadow] of source.pointShadow.entries())
@@ -539,12 +642,19 @@ export class RenderLights {
     }
     for (const entity of shadowed) this.acquire(this.point, entity);
     for (const entity of spots) if (this.wantsTile(entity)) this.acquire(this.spot, entity);
-    const views: ShadowViewProjection[] = [];
-    for (const entity of shadowed) views.push(...this.refreshViews(this.point, entity));
-    for (const entity of spots) views.push(...this.refreshViews(this.spot, entity));
+    const order = [...shadowed, ...spots.filter((entity) => this.layerOf(entity) >= 0)];
+    const retainedOrder = this.shadowed;
+    if (
+      retainedOrder.length !== order.length ||
+      order.some((entity, index) => entity !== retainedOrder[index])
+    ) {
+      this.shadowed = Object.freeze(order);
+      this.orderChanged = true;
+    }
     this.roster = Object.freeze({
       ...(directional === undefined ? EMPTY : (this.facts(directional) as DirectionalLightFacts)),
       directionalCount: source.directionalCount,
+      additionalDirectional: Object.freeze([...(source.additionalDirectional ?? [])]),
       point: Object.freeze(points.map((entity) => this.facts(entity) as PointLightSnapshot)),
       spot: Object.freeze(spots.map((entity) => this.facts(entity) as SpotLightSnapshot)),
       rect: Object.freeze(rects.map((entity) => this.facts(entity) as RectAreaDirectLightSnapshot)),
@@ -552,9 +662,27 @@ export class RenderLights {
         shadowed.map((entity) => this.pointShadow(entity) as PointShadowSnapshot),
       ),
     });
-    const retained = this.shadowViews;
-    if (retained.length !== views.length || views.some((view, index) => view !== retained[index]))
-      this.shadowViews = Object.freeze(views);
+  }
+
+  /**
+   * Refit the point face and spot views of each light
+   * whose layer, facts or point shadow changed, then republish the ordered
+   * `shadowViews` only if a view or the order changed (the
+   * `render-shadow-views` system, over its changed-row queries).
+   */
+  fitShadowViews(lights: Query, shadows: Query): void {
+    const refit = this.refit;
+    for (const row of lights) refit.add(row.entity);
+    for (const row of shadows) refit.add(row.entity);
+    let changed = this.orderChanged;
+    this.orderChanged = false;
+    for (const entity of refit)
+      if (this.world.hasComponent(entity, RenderLight) && this.refreshViews(entity)) changed = true;
+    refit.clear();
+    if (!changed) return;
+    const views: ShadowViewProjection[] = [];
+    for (const entity of this.shadowed) views.push(...this.currentViews(entity));
+    this.shadowViews = Object.freeze(views);
   }
 
   /** Spawn or rewrite one light entity. */
@@ -572,6 +700,7 @@ export class RenderLights {
         .spawn({
           component: RenderLight,
           data: {
+            kind: kind.value,
             shadowLayer: -1,
             facts: world.allocUniqueRef('LightFacts', stamp(kind, -1, facts, shadow)),
           },
@@ -625,41 +754,54 @@ export class RenderLights {
     if (shadow !== undefined) this.writeShadow(entity, layer, shadow);
   }
 
-  /**
-   * The light's shadow views in face order, spawned or rewritten when its layer
-   * or matrices changed.
-   */
-  private refreshViews(kind: LightKind, entity: EntityHandle): readonly ShadowViewProjection[] {
-    const layer = this.layerOf(entity);
-    const matrices = layer < 0 ? undefined : this.viewMatrices(kind, entity);
-    if (matrices === undefined) return [];
+  /** The light's shadow view projections, in face order. */
+  private currentViews(entity: EntityHandle): ShadowViewProjection[] {
     const world = this.world;
-    const entities = this.viewEntities(entity);
-    const current = entities.map((view) =>
+    return this.viewEntities(entity).map((view) =>
       world
         .resolveUniqueRef<ShadowViewProjection>(world.get(view, ShadowView).unwrap().projection)
         .unwrap(),
     );
+  }
+
+  /**
+   * Spawn or rewrite the light's shadow views in face order when its layer or
+   * matrices changed; true when a view was written.
+   */
+  private refreshViews(entity: EntityHandle): boolean {
+    const kind = this.kindOf(entity);
+    if (kind === undefined) return false;
+    const layer = this.layerOf(entity);
+    const matrices = layer < 0 ? undefined : this.viewMatrices(kind, entity);
+    if (matrices === undefined) return false;
+    const world = this.world;
+    const entities = this.viewEntities(entity);
+    const current = this.currentViews(entity);
     if (
       current.length === matrices.length &&
       current.every(
         (view, face) => view.identity.index === layer && sameValue(view.matrix, matrices[face]),
       )
     )
-      return current;
-    const views: ShadowViewProjection[] = [];
+      return false;
     for (let face = 0; face < matrices.length; face += 1) {
       const matrix = new Float32Array(matrices[face] as Float32Array);
+      const priorIdentity = current[face]?.identity;
       const projection: ShadowViewProjection = Object.freeze({
-        identity: Object.freeze(
-          kind.shadow === 'point'
-            ? { kind: 'point' as const, index: layer, face }
-            : { kind: 'spot' as const, index: layer },
+        identity: captureShadowViewIdentity(
+          priorIdentity?.kind === kind.shadow &&
+            priorIdentity?.index === layer &&
+            priorIdentity?.face === (kind.shadow === 'point' ? face : undefined) &&
+            priorIdentity?.layer === undefined &&
+            priorIdentity?.terrainReceiver === undefined
+            ? priorIdentity
+            : kind.shadow === 'point'
+              ? { kind: 'point' as const, index: layer, face }
+              : { kind: 'spot' as const, index: layer },
         ),
         matrix,
         planes: shadowPlanes(matrix),
       });
-      views.push(projection);
       const handle = world.allocUniqueRef('ShadowViewProjection', projection);
       const view = entities[face];
       if (view === undefined)
@@ -671,7 +813,16 @@ export class RenderLights {
           .unwrap();
       else world.set(view, ShadowView, { projection: handle }).unwrap();
     }
-    return views;
+    return true;
+  }
+
+  private kindOf(entity: EntityHandle): LightKind | undefined {
+    const value = this.world.get(entity, RenderLight).unwrap().kind;
+    return value === LightKindValue.point
+      ? this.point
+      : value === LightKindValue.spot
+        ? this.spot
+        : undefined;
   }
 
   /** Face matrices of a light's shadow views. */
@@ -768,7 +919,6 @@ function freeList(capacity: number): number[] {
 }
 
 const OWNERS = new WeakMap<World, RenderLights>();
-const PRIVATE_WORLDS = new WeakMap<object, World>();
 
 /** The Render World's one light owner. */
 export function renderLightsOf(world: World): RenderLights {
@@ -780,15 +930,41 @@ export function renderLightsOf(world: World): RenderLights {
   return owner;
 }
 
-/**
- * The light owner of a record context's Render World. A RenderSystem built
- * without a Renderer keeps a private Render World for its lights.
- */
+/** The light owner of a record context's Render World. */
 export function renderLightsFor(owner: { readonly renderWorld?: World | undefined }): RenderLights {
-  let world = owner.renderWorld ?? PRIVATE_WORLDS.get(owner);
-  if (world === undefined) {
-    world = createRenderWorld();
-    PRIVATE_WORLDS.set(owner, world);
-  }
-  return renderLightsOf(world);
+  return renderLightsOf(renderWorldFor(owner));
+}
+
+/** The retained atmosphere Sun a capture generation pins its directional light to. */
+export interface PinnedSun {
+  readonly direction: ArrayLike<number>;
+  readonly color: ArrayLike<number>;
+  readonly intensity: number;
+}
+
+/**
+ * A capture generation's roster: the directional pinned to the retained
+ * atmosphere Sun (the roster itself when either side is absent).
+ */
+export function pinAtmosphereSun<T extends LightRoster>(lights: T, sun: PinnedSun | undefined): T {
+  if (sun === undefined || lights.directional === undefined) return lights;
+  const direction = vec3.create(
+    -(sun.direction[0] ?? 0),
+    -(sun.direction[1] ?? 0),
+    -(sun.direction[2] ?? 0),
+  );
+  return {
+    ...lights,
+    directional: {
+      ...lights.directional,
+      direction,
+      color: vec3.create(
+        (sun.color[0] ?? 0) * sun.intensity,
+        (sun.color[1] ?? 0) * sun.intensity,
+        (sun.color[2] ?? 0) * sun.intensity,
+      ),
+      intensity: sun.intensity,
+    },
+    directionalCsmDirection: vec3.create(direction[0] ?? 0, direction[1] ?? 0, direction[2] ?? 0),
+  };
 }

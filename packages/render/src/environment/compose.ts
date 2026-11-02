@@ -48,7 +48,7 @@ export function addAtmosphereComposition(
       { resource: color.view, usage: 'color-attachment' },
     ],
     colorAttachments: [{ view: color.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ frame, pass, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const device = frame.runtime.device;
       if (state === undefined) {
         const source = frame.atmosphereShaders?.compose;

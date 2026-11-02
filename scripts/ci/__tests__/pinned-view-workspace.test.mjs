@@ -4,10 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { isRootRuntimeInstall } from '../workspace-install-scope.mjs';
 
 const workflowPaths = ['ci.yml', 'native-ray-query.yml'];
 const viewPinCommand = 'git submodule update --init --depth=1 -- tools/view';
-const viewPinAction = 'uses: ./.github/actions/prepare-view-checkout';
+const viewPinAction = 'uses: ./.github/actions/prepare-source-checkouts';
 
 test('root workspace installation admits the tracked View revision, not a cached View manifest', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-view-pin-'));
@@ -135,6 +136,8 @@ test('every root frozen install restores the View pin unless that job already ch
         /run: (?:pnpm install --frozen-lockfile|node scripts\/ci\/prepare-pnpm-workspace\.mjs --install)/,
       );
       if (install < 0) continue;
+      const command = job.slice(install, job.indexOf('\n', install)).replace(/^run:\s*/, '');
+      if (isRootRuntimeInstall(command)) continue;
       const before = job.slice(0, install);
       assert.ok(
         before.includes(viewPinAction) ||

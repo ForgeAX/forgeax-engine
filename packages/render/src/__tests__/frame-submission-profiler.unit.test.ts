@@ -1,15 +1,17 @@
 import { createProfiler, type RecorderSession } from '@forgeax/engine-profiler';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { err } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import type { RenderSystemInternals } from '../record/render-context';
+import { RENDER_PHASE_CATALOG } from '../render-contract';
+import { createRenderWorld } from '../world/render-world';
+import { installSurfaceUi, type UiCompositorOwner } from '../world/surface-ui';
 import {
   type FrameRecording,
   profileFrameRecording,
   submitFrameRecordings,
-} from '../assembly/frame-recording';
-import type { RenderSystemInternals } from '../record/render-context';
-import { RENDER_PHASE_CATALOG } from '../render-contract';
+} from './frame-recording-driver';
 
 type Failure = 'none' | 'presentation' | 'finish' | 'before-submit' | 'submit';
 
@@ -17,6 +19,8 @@ async function fixture(enabled = true, failure: Failure = 'none') {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
   const encoder = device.createCommandEncoder().unwrap();
+  // RenderRecord opens the submission encoder this fixture times.
+  vi.spyOn(device, 'createCommandEncoder').mockReturnValue(ok(encoder) as never);
   let micros = 0;
   let resolveCompletion!: () => void;
   const completion = new Promise<undefined>((resolve) => {
@@ -60,21 +64,33 @@ async function fixture(enabled = true, failure: Failure = 'none') {
     micros += 109;
     return completion;
   });
+  const world = createRenderWorld();
+  const ui = installSurfaceUi(
+    world,
+    {
+      generation: 1,
+      encode() {
+        events.push('presentation');
+        micros += 101;
+        if (failure === 'presentation') throw error;
+        return { kind: 'encoded' };
+      },
+    } as unknown as UiCompositorOwner,
+    'rgba8unorm',
+  );
+  ui.outcome = { kind: 'retained', frame: 0, generation: 1 };
   const internals = {
     profiler,
-    encodePresentation() {
-      events.push('presentation');
-      micros += 101;
-      if (failure === 'presentation') throw error;
-    },
+    device,
+    deviceScope: { generation: 1 },
+    context: { getCurrentTexture: () => ok({}) },
+    canvas: { width: 1, height: 1 },
   } as unknown as RenderSystemInternals;
   const resumed: boolean[] = [];
   const errors: RhiError[] = [];
   function* view(): FrameRecording {
     micros += 7;
     const accepted = yield {
-      encoder,
-      device,
       beforeSubmit() {
         events.push('before-submit');
         micros += 13;
@@ -116,7 +132,11 @@ async function fixture(enabled = true, failure: Failure = 'none') {
     completed,
     resumed,
     errors,
-    run: () => submitFrameRecordings([recording(), recording()], undefined, internals),
+    run: () =>
+      submitFrameRecordings({ world, device, rendererInternals: internals }, [
+        recording(),
+        recording(),
+      ]),
     capture() {
       if (session === undefined) throw new Error('capture is disabled');
       expect(session.endPhase().ok).toBe(true);
@@ -145,10 +165,11 @@ describe('shared Renderer submission CPU phases', () => {
     const phases = capture.records.filter(
       (row) => row.kind === 'phase' && row.phase.startsWith('submission/'),
     );
+    // Submission includes fence registration and a second live-input check before publication.
     expect(phases).toMatchObject([
       { phase: 'submission/presentation', durationMicros: 101 },
       { phase: 'submission/finish', durationMicros: 103 },
-      { phase: 'submission/submit', durationMicros: 273 },
+      { phase: 'submission/submit', durationMicros: 283 },
     ]);
     for (const phase of phases)
       expect(phase).toMatchObject({
@@ -171,7 +192,7 @@ describe('shared Renderer submission CPU phases', () => {
     await f.settleLater();
     expect(f.profiler.latestCapture()).toBe(capture);
     expect(phases.map((row) => row.kind === 'phase' && row.durationMicros)).toEqual([
-      101, 103, 273,
+      101, 103, 283,
     ]);
   });
 

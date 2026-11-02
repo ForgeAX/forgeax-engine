@@ -5,9 +5,15 @@ import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-
 import { expect, it, vi } from 'vitest';
 import { createPluginPackInternal } from '../plugin-pack.js';
 
-it('retains native cooker concurrency through dev publication and publishes every cooked output', async () => {
+it.each([
+  0, 1100,
+])('retains native cooker concurrency and complete publication after %i ms startup', async (startupDelayMs) => {
   const root = await mkdtemp(join(tmpdir(), 'authored-pack-concurrency-'));
   const finish: Array<() => void> = [];
+  let signalStarted: () => void;
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
   let active = 0;
   let peak = 0;
   const cooker: NativeCooker = {
@@ -16,6 +22,7 @@ it('retains native cooker concurrency through dev publication and publishes ever
     async cook(raw) {
       const input = raw as { guid: string; source: object };
       peak = Math.max(peak, ++active);
+      signalStarted();
       try {
         return await new Promise<NativeCookDraft>((resolve) => {
           finish.push(() =>
@@ -40,13 +47,17 @@ it('retains native cooker concurrency through dev publication and publishes ever
       join(root, 'fixture.pack.ts'),
       `export default {
       schemaVersion: '2.0.0', packageId: new Uint8Array(16).fill(79),
-      build() { return { ok: true, value: Object.fromEntries(Array.from({ length: 4 }, (_, marker) => [
+      async build() {
+        await new Promise(resolve => setTimeout(resolve, ${startupDelayMs}));
+        return { ok: true, value: Object.fromEntries(Array.from({ length: 4 }, (_, marker) => [
         'volume/' + marker, { kind: 'test-volume', execution: 'cooked', source: { marker } },
       ])) }; },
     };`,
     );
     plugin.configureServer({ middlewares: { use() {} }, ws: { send() {} } });
     pending = plugin.ready();
+    // Cold authored-module startup precedes the bounded parallel-admission check.
+    await Promise.race([started, pending]);
     await vi.waitFor(() => expect(finish).toHaveLength(4));
   } finally {
     const drain = setInterval(() => {

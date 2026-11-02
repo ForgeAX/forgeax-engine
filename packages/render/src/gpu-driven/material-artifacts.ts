@@ -16,7 +16,7 @@ import type { RenderSystemInternals } from '../record/render-context';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
 import type { FramePresentationPendingReason } from '../render-contract';
 import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
-import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
 import { MaterialFrame } from '../scene/material-dispatch';
@@ -26,6 +26,7 @@ import {
   requestMaterialAbiRasterPipeline,
   standardSurfaceDiscardMask,
 } from './production-raster-material';
+import { materialBatchClass } from './row-materials';
 
 type MaterialPrograms = {
   readonly materialHandle: number;
@@ -101,6 +102,32 @@ export interface GpuDrivenMaterialProgramIndex {
     material: MaterialResource,
   ): (MaterialPrograms & { readonly snapshot: MaterialSnapshot }) | undefined;
   readonly overlays: DispatchOverlays;
+}
+
+/** Whether a staged GPU shadow route still describes the current material programs. */
+export function gpuShadowProgramsCompatible(
+  previous: GpuDrivenMaterialProgramIndex | undefined,
+  current: GpuDrivenMaterialProgramIndex | undefined,
+): boolean {
+  if (previous === undefined || current === undefined) return false;
+  if (previous === current) return true;
+  if (previous.materials.hasBorrowedValues || current.materials.hasBorrowedValues) return false;
+  if (previous.materials === current.materials) return true;
+  let compatible = true;
+  current.materials.changesSince(previous.materials, (before, after) => {
+    if (!compatible) return;
+    if (before === undefined || after === undefined) {
+      compatible = false;
+      return;
+    }
+    if (before.snapshot === after.snapshot) return;
+    // The batch owner already defines which program, binding and route facts
+    // permit one GPU execution to serve different numeric material values.
+    // Raw/custom programs without that proof keep the conservative CPU demand.
+    const beforeClass = materialBatchClass(before.snapshot);
+    compatible = beforeClass !== undefined && beforeClass === materialBatchClass(after.snapshot);
+  });
+  return compatible;
 }
 
 // Accepted versions are replaced as materials change; see GenerationalWeakMap.
@@ -478,20 +505,49 @@ function sameOrderedEntries<K, V>(
 }
 
 /** Explicit candidate rows use the same geometry/material join as retained scene batches. */
+const hiddenPreparations = new WeakMap<
+  RenderableSnapshot,
+  {
+    readonly draws: ReturnType<typeof eligibleGpuDrivenDraws>;
+    readonly programs: GpuDrivenMaterialProgramProjection;
+    readonly forward: GpuDrivenMaterialExecutionRetention;
+    readonly shadow: GpuDrivenMaterialExecutionRetention;
+  }
+>();
+const EMPTY_HIDDEN_DISPATCH: DispatchList = Object.freeze([]);
+
 export function* prepareHiddenMaterialExecutions(
   entry: ValidatedRenderable,
   materials: MaterialFrame | undefined,
   pass: 'forward' | 'shadow',
   resolve: RenderSystemInternals['getMaterialShaderArtifact'],
 ) {
-  const draws = eligibleGpuDrivenDraws(entry.source);
+  // A validated source owns fixed geometry and bindings. Frame validation may
+  // wrap that same source in a new entry. Do not recapture
+  // those bindings for every hidden PSO lane: doing so defeats the ordinary
+  // execution retention, even when the material and shader are unchanged.
+  // Sources are weak keys; no frame context, device or resolver is retained here.
+  let retained = materials === undefined ? undefined : hiddenPreparations.get(entry.source);
+  if (retained === undefined && materials !== undefined) {
+    retained = {
+      draws: eligibleGpuDrivenDraws(entry.source),
+      programs: new GpuDrivenMaterialProgramProjection(),
+      forward: new GpuDrivenMaterialExecutionRetention(),
+      shadow: new GpuDrivenMaterialExecutionRetention(),
+    };
+    hiddenPreparations.set(entry.source, retained);
+  }
+  const draws = retained?.draws ?? eligibleGpuDrivenDraws(entry.source);
   if (draws.length === 0) return;
   let fixed = materials;
   if (fixed === undefined) {
     fixed = new MaterialFrame(undefined);
     for (const draw of draws) fixed = fixed.with(draw.binding.material);
   }
-  const programs = new GpuDrivenMaterialProgramProjection().project([], fixed);
+  const programs = (retained?.programs ?? new GpuDrivenMaterialProgramProjection()).project(
+    EMPTY_HIDDEN_DISPATCH,
+    fixed,
+  );
   const collected = collectGpuDrivenMaterialArtifacts({
     batches: draws,
     resolve,
@@ -500,6 +556,7 @@ export function* prepareHiddenMaterialExecutions(
     reflectionFallback: false,
     probeBlend: false,
     shadowViews: pass === 'shadow',
+    ...(retained === undefined ? {} : { retention: retained[pass] }),
   });
   for (const draw of draws) {
     const execution = collected.batchExecutions.get(draw.binding)?.[pass];

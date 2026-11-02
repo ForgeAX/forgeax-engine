@@ -13,6 +13,7 @@ import { smaaLookupData } from '../features/smaa/lookup-data';
 import { SMAA_PROGRAMS } from '../features/smaa/shaders';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
+import { abortFeatureFrame, prepareFeatureFrame } from './feature-frame-driver';
 
 describe('SMAA authoring and production programs', () => {
   it('projects the public Camera mode without temporal jitter or history', () => {
@@ -75,7 +76,8 @@ describe('SMAA authoring and production programs', () => {
     const selectedCamera = extractCameraSnapshots(world)[0];
     if (selectedCamera === undefined) throw new Error('Camera fixture missing');
     const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
-    const batch = host.runFrame(
+    const batch = prepareFeatureFrame(
+      host,
       [
         {
           identity: 'disabled',
@@ -105,7 +107,7 @@ describe('SMAA authoring and production programs', () => {
       for (const program of SMAA_PROGRAMS) expect(sources.get(program.name)).toBe(program.source);
       expect(batch.views.get('held')?.plans).toHaveLength(0);
     } finally {
-      batch.onAborted();
+      abortFeatureFrame(host);
       host.dispose();
     }
   });

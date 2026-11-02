@@ -188,7 +188,7 @@ afterEach(() => vi.restoreAllMocks());
       const { internals } = makeRecorderInternals(log);
       const ps = makePipelineState();
       (internals as { getPipelineState: () => unknown }).getPipelineState = () => ps;
-      const { recordFrame } = await import('../../../render/src/record/frame');
+      const { recordFrame } = await import('../../../render/src/__tests__/frame-recording-driver');
       recordFrame(
         internals as never,
         new World() as never,
@@ -204,7 +204,6 @@ afterEach(() => vi.restoreAllMocks());
           transientInstanceBuffers: [],
           warnedZeroLightStandard: false,
           warnedShadowDisabled: false,
-          warnedMultiLightDirectional: false,
           warnedMultiLightPoint: false,
           warnedMultiLightSpot: false,
           warnedSkyboxTonemapNone: false,
@@ -228,7 +227,6 @@ afterEach(() => vi.restoreAllMocks());
         undefined,
         0,
         undefined,
-        0,
       );
 
       // No FXAA intermediate texture should be allocated when antialias='none'.
@@ -243,7 +241,7 @@ afterEach(() => vi.restoreAllMocks());
       const { internals } = makeRecorderInternals(log);
       const ps = makePipelineState();
       (internals as { getPipelineState: () => unknown }).getPipelineState = () => ps;
-      const { recordFrame } = await import('../../../render/src/record/frame');
+      const { recordFrame } = await import('../../../render/src/__tests__/frame-recording-driver');
       recordFrame(
         internals as never,
         new World() as never,
@@ -259,7 +257,6 @@ afterEach(() => vi.restoreAllMocks());
           transientInstanceBuffers: [],
           warnedZeroLightStandard: false,
           warnedShadowDisabled: false,
-          warnedMultiLightDirectional: false,
           warnedMultiLightPoint: false,
           warnedMultiLightSpot: false,
           warnedSkyboxTonemapNone: false,
@@ -283,7 +280,6 @@ afterEach(() => vi.restoreAllMocks());
         undefined,
         0,
         undefined,
-        0,
       );
 
       // TODO (feat-20260608-ci-time-cut): row 2/3/4 placeholders pruned -- they

@@ -29,6 +29,8 @@ const defaultGroupSize = 4;
 const defaultMaxWorkers = 1;
 const maxGroupConcurrency = 3;
 const maxChildOutputBytes = 64 * 1024 * 1024;
+// The required coverage-perf job owns these complete runtime CPU-budget cases.
+const uninstrumentedPerformanceFiles = ['packages/modeling/src/__tests__/perf-tiers.unit.test.ts'];
 const serialCoveragePreflights = [
   {
     project: '@forgeax/engine-render',
@@ -51,6 +53,20 @@ const isolatedChildProjects = new Set([
   '@forgeax/engine-vite-plugin-pack',
   '@forgeax/engine-rhi-wgpu',
   '@forgeax/engine-runtime',
+]);
+// Run 41202344079 left two eight-partition lanes at the 45-minute job bound,
+// while the other complete lanes finished in 19/32 minutes. Finer native
+// partitions distribute the same file roster across four bounded jobs without
+// adding workers. The new-child weight is a placement estimate, not a timing
+// sample from a failed or interrupted child; complete CI owns runtime acceptance.
+// The reservation now derives from the complete current file forecast (rounded
+// to five seconds per balanced partition), replacing the original 1,000 s estimate.
+// DevKit and Render reservations divide complete successful project receipts;
+// these new half-project owners remain estimates until complete CI qualifies them.
+const projectPartitions = new Map([
+  ['@forgeax/engine-modeling', { count: 16, weight: 675 }],
+  ['@forgeax/engine-devkit', { count: 2, weight: 590, coverageOnly: true }],
+  ['@forgeax/engine-render', { count: 2, weight: 550, coverageOnly: true }],
 ]);
 const devkitNativeUnitFileSets = [
   {
@@ -78,12 +94,53 @@ const devkitNativeUnitFiles = devkitNativeUnitFileSets.flatMap(({ files }) => fi
 // the explicitly estimated cold-scene additions documented below.
 const isolatedCoverageFileSets = [
   {
-    // Run 40681888760 crossed the unchanged 5 s large-source identity deadline.
-    // Cold SHA-256 admission dominates the retained 30 MiB + 3 MiB workload;
-    // drain competing coverage children while keeping the complete file.
+    // Run 41208138238 crossed the unchanged cockpit budget beside another
+    // instrumented child. The full 21-case file passes alone with V8 coverage.
+    // This is an exclusive placement estimate, not a failed-child timing sample.
+    project: '@forgeax/engine-modeling',
+    files: ['packages/modeling/examples/mech-gt/__tests__/s6c.unit.test.ts'],
+    weight: 240,
+  },
+  {
+    // The complete merged-source local command crossed the original 5 s / 30 s
+    // bounds under neighboring Runtime work. Both full files pass serially;
+    // preserve their workloads and budgets in one exclusive instrumented child.
+    project: '@forgeax/engine-render',
+    files: [
+      'packages/render/src/__tests__/gpu-driven-batch-topology-pbr.unit.test.ts',
+      'packages/render/src/__tests__/direct-shadow-preparation.integration.test.ts',
+    ],
+    weight: 90,
+  },
+  {
+    // Run 40653718555 crossed the unchanged 5 s budget while hashing the
+    // complete 30 + 3 MiB source-identity oracle beside platform coverage.
+    // Preserve the whole file; this exclusive placement weight is an estimate.
     project: '@forgeax/engine-rhi-webgpu',
     files: ['packages/rhi-webgpu/src/__tests__/pipeline-library.unit.test.ts'],
-    weight: 10,
+    weight: 15,
+  },
+  {
+    // Runs 40643748921 and 40646042246 contended cold production cooking and irradiance recovery
+    // with instrumented Shader children on eight CPUs. Keep the full files and
+    // their 30 s / 5 s deadlines; this is a placement estimate, not a new timing receipt.
+    project: '@forgeax/engine-render',
+    files: [
+      'packages/render/src/__tests__/gpu-driven-production.integration.test.ts',
+      'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
+    ],
+    weight: 100,
+  },
+  {
+    // The same run crossed both unchanged 60 s budgets while processing the
+    // complete transmission permutation oracle and >256 MiB source identities.
+    // Preserve their cardinality and assertions in one exclusive CPU child.
+    project: '@forgeax/engine-shader',
+    files: [
+      'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
+      'packages/shader/src/__tests__/material-program.test.ts',
+    ],
+    weight: 180,
   },
   {
     // Run 39497388005 shared cold 100k World initialization with Render's
@@ -109,7 +166,7 @@ const isolatedCoverageFileSets = [
       'packages/shader-compiler/src/material/__tests__/pack-program-reuse.integration.test.ts',
       'packages/shader-compiler/src/material/__tests__/node-program-compiler.integration.test.ts',
     ],
-    weight: 35,
+    weight: 40,
   },
   {
     // Run 40650966486 spent 247.73 s in this file inside the shared Pack child;
@@ -122,20 +179,14 @@ const isolatedCoverageFileSets = [
     weight: 250,
   },
   {
-    // Run 40646042246 crossed both 60 s deadlines while this instrumented
-    // source-quota / capability-matrix owner competed with broad Render.
-    project: '@forgeax/engine-shader',
+    project: '@forgeax/engine-vite-plugin-pack',
+    // This consumer owns both the Render factory and the compiler. A fresh
+    // observing realm preserves the portable matrix without an upward compiler
+    // dependency or unrelated publication state. Placement weight is estimated.
     files: [
-      'packages/shader/src/__tests__/default-standard-pbr-transmission.unit.test.ts',
-      'packages/shader/src/__tests__/material-program.test.ts',
+      'packages/vite-plugin-pack/src/__tests__/material-program-schema-reuse.integration.test.ts',
     ],
-    weight: 100,
-  },
-  {
-    // The same run crossed the unchanged 30 s real material-cook deadline.
-    project: '@forgeax/engine-render',
-    files: ['packages/render/src/__tests__/gpu-driven-production.integration.test.ts'],
-    weight: 35,
+    weight: 40,
   },
   {
     // Repository scans keep their existing deadlines without competing with
@@ -158,6 +209,21 @@ const isolatedCoverageFileSets = [
   },
   {
     project: '@forgeax/engine-devkit',
+    // Run 41301727815 crossed the existing startup deadline beside instrumented
+    // imports. Keep all real HTTP/daemon cases and their original budgets.
+    files: ['packages/devkit/src/__tests__/live-dev-client.test.ts'],
+    weight: 90,
+  },
+  {
+    project: '@forgeax/engine-devkit',
+    // The same run timed out the ordinary App Worker build at 60 s. Its complete
+    // file owns CPU preparation; nested native cases retain their own GPU lease.
+    // Both new weights are placement estimates, not failed-child timing samples.
+    files: ['packages/devkit/src/__tests__/worker-module-identity.integration.test.ts'],
+    weight: 120,
+  },
+  {
+    project: '@forgeax/engine-devkit',
     // Two real `project play` runs (Vite runtime + sandboxed Chromium) share one
     // fixture root. Weight is an estimate from two cold-start Vite fixtures,
     // not yet a CI measurement.
@@ -172,9 +238,6 @@ const isolatedCoverageFileSets = [
     files: [
       'packages/render/src/__tests__/raytracing/diffuse-gi.unit.test.ts',
       'packages/render/src/__tests__/raytracing/gi-view.unit.test.ts',
-      // Run 40742615957 crossed the unchanged 5 s partial-write recovery
-      // deadline beside broad DevKit coverage (58.078 s for the whole file).
-      'packages/render/src/__tests__/raytracing/probe-global.unit.test.ts',
     ],
     weight: 70,
   },
@@ -200,41 +263,55 @@ export function isExclusiveCoverageGroup(group) {
   // an unrelated instrumented child consume their CPU/memory headroom.
   return group.files.length > 0;
 }
-// Median project seconds from CI runs 38313136540 and 38316658619, excluding
+// Current complete project costs from run 41215740814 raise the retained
+// medians from CI runs 38313136540 and 38316658619, excluding
 // isolated files. Allocate each child's measured import/coverage/cleanup overhead
 // equally across its files, then round project totals to five seconds. Small
 // projects use the default; report order stays the canonical project order.
 const defaultCoverageProjectWeight = 10;
 const coverageProjectWeights = new Map([
-  ['@forgeax/engine-animation', 35],
-  ['@forgeax/engine-app', 95],
-  ['@forgeax/engine-assets-runtime', 70],
-  ['@forgeax/engine-codec', 25],
-  ['@forgeax/engine-devkit', 455],
+  ['@forgeax/engine-animation', 75],
+  ['@forgeax/engine-app', 220],
+  ['@forgeax/engine-assets-runtime', 160],
+  ['@forgeax/engine-audio', 15],
+  ['@forgeax/engine-audio-webaudio', 20],
+  ['@forgeax/engine-codec', 65],
+  ['@forgeax/engine-devkit', 1180],
   ['@forgeax/engine-ecs', 55],
   ['@forgeax/engine-fbx', 25],
   ['@forgeax/engine-geometry', 30],
-  ['@forgeax/engine-gltf', 40],
+  ['@forgeax/engine-gltf', 65],
   ['@forgeax/engine-image', 20],
-  ['@forgeax/engine-import', 50],
+  ['@forgeax/engine-import', 55],
   ['@forgeax/engine-input', 35],
-  ['@forgeax/engine-math', 20],
-  ['@forgeax/engine-net', 25],
-  ['@forgeax/engine-pack', 85],
-  ['@forgeax/engine-physics-rapier3d', 30],
-  ['@forgeax/engine-render', 540],
+  ['@forgeax/engine-math', 30],
+  ['@forgeax/engine-net', 40],
+  ['@forgeax/engine-net-websocket', 15],
+  ['@forgeax/engine-pack', 165],
+  ['@forgeax/engine-physics-rapier2d', 15],
+  ['@forgeax/engine-physics-rapier3d', 90],
+  ['@forgeax/engine-platform-wechat', 30],
+  ['@forgeax/engine-preview', 15],
+  ['@forgeax/engine-profiler', 15],
+  ['@forgeax/engine-render', 1100],
   ['@forgeax/engine-rhi-debug', 40],
-  ['@forgeax/engine-runtime', 385],
+  ['@forgeax/engine-runtime', 505],
   ['@forgeax/engine-scene', 20],
   ['@forgeax/engine-shader', 25],
-  ['@forgeax/engine-shader-compiler', 170],
-  ['@forgeax/engine-types', 15],
-  ['@forgeax/engine-vfx-render', 30],
-  ['@forgeax/engine-vite-plugin-pack', 90],
-  ['@forgeax/engine-vite-plugin-shader', 75],
+  ['@forgeax/engine-shader-compiler', 300],
+  ['@forgeax/engine-three', 35],
+  ['@forgeax/engine-tool-runtime', 15],
+  ['@forgeax/engine-types', 35],
+  ['@forgeax/engine-ui', 15],
+  ['@forgeax/engine-ui-blitz', 30],
+  ['@forgeax/engine-vfx', 20],
+  ['@forgeax/engine-vfx-compiler', 20],
+  ['@forgeax/engine-vfx-render', 35],
+  ['@forgeax/engine-vite-plugin-pack', 200],
+  ['@forgeax/engine-vite-plugin-shader', 220],
 ]);
 // The all-project preflight runs before any coverage child on shard 0.
-const typecheckSeconds = 115;
+const typecheckSeconds = 185;
 const coverageThresholds = [
   '--coverage.thresholds.lines=0',
   '--coverage.thresholds.functions=0',
@@ -397,7 +474,7 @@ export function projectGroups(projects, size) {
     const groups = [];
     let sharedProjects = [];
     for (const project of group) {
-      if (isolatedChildProjects.has(project)) {
+      if (isolatedChildProjects.has(project) || projectPartitions.has(project)) {
         if (sharedProjects.length) groups.push(sharedProjects);
         groups.push([project]);
         sharedProjects = [];
@@ -423,7 +500,7 @@ export function coverageGroups(projects, size, { isolateFiles = true } = {}) {
     ({ project }) => projects.includes(project),
   );
   const excludes = fileSets.flatMap(({ files }) => files);
-  return projectGroups(projects, size).flatMap((group) => [
+  const groups = projectGroups(projects, size).flatMap((group) => [
     {
       label: group.join(','),
       projects: group,
@@ -443,6 +520,19 @@ export function coverageGroups(projects, size, { isolateFiles = true } = {}) {
         gpuLease,
       })),
   ]);
+  return groups.flatMap((group) => {
+    const partition =
+      group.files.length === 0 &&
+      group.projects.length === 1 &&
+      projectPartitions.get(group.projects[0]);
+    if (!partition || (partition.coverageOnly && !isolateFiles)) return [group];
+    return Array.from({ length: partition.count }, (_value, index) => ({
+      ...group,
+      label: `${group.label}:shard-${index + 1}-of-${partition.count}`,
+      shard: `${index + 1}/${partition.count}`,
+      weight: partition.weight,
+    }));
+  });
 }
 
 export function coverageGroupOrder(groups) {
@@ -471,33 +561,102 @@ export function scheduledGroupOrder(groups, { coverage, localGpuLease }) {
 // Estimate the actual parallel-then-exclusive execution, including typecheck.
 // Use the reference CI's two slots on every runner when placing groups: actual
 // runner resources may limit execution but must not change the shared partition.
-export function assignCoverageShards(groups, shardCount, { typecheck = true } = {}) {
-  const lanes = Array.from({ length: shardCount }, (_value, shard) => ({
+function coverageLanes(shardCount, typecheck) {
+  return Array.from({ length: shardCount }, (_value, shard) => ({
     parallel: Array(2).fill(shard === 0 && typecheck && shardCount > 1 ? typecheckSeconds : 0),
     exclusive: 0,
   }));
-  const append = (lane, group) => {
-    const next = { parallel: [...lane.parallel], exclusive: lane.exclusive };
-    if (isExclusiveCoverageGroup(group)) next.exclusive += group.weight;
-    else next.parallel[next.parallel[0] <= next.parallel[1] ? 0 : 1] += group.weight;
-    return next;
-  };
-  const finish = (lane) => Math.max(...lane.parallel) + lane.exclusive;
+}
+
+function appendCoverageLane(lane, group) {
+  const next = { parallel: [...lane.parallel], exclusive: lane.exclusive };
+  if (isExclusiveCoverageGroup(group)) next.exclusive += group.weight;
+  else next.parallel[next.parallel[0] <= next.parallel[1] ? 0 : 1] += group.weight;
+  return next;
+}
+
+function coverageLaneFinish(lane) {
+  return Math.max(...lane.parallel) + lane.exclusive;
+}
+
+function coverageAssignmentFinish(groups, assignment, shardCount, typecheck) {
+  const lanes = coverageLanes(shardCount, typecheck);
+  for (const index of coverageGroupOrder(groups)) {
+    const shard = assignment[index];
+    lanes[shard] = appendCoverageLane(lanes[shard], groups[index]);
+  }
+  return Math.max(...lanes.map(coverageLaneFinish));
+}
+
+// A project split must span jobs. Otherwise two parallel slots can attract both
+// new halves and reconstruct the original long project on one slow runner.
+function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
+  const group = groups[index];
+  if (!group.shard) return true;
+  const count = Number(group.shard.split('/')[1]);
+  const siblings = groups.filter(
+    (candidate, position) =>
+      position !== index &&
+      candidate.shard &&
+      candidate.projects[0] === group.projects[0] &&
+      assignment[position] === shard,
+  ).length;
+  return siblings < Math.ceil(count / shardCount);
+}
+
+// Improve only by moving one complete child; every iteration strictly lowers
+// the slowest lane under the same two-slot then exclusive execution model.
+function refineCoverageAssignment(groups, assignment, shardCount, typecheck) {
+  let current = assignment;
+  let finish = coverageAssignmentFinish(groups, current, shardCount, typecheck);
+  for (;;) {
+    let best = current;
+    let bestFinish = finish;
+    for (let index = 0; index < groups.length; index++) {
+      for (let shard = 0; shard < shardCount; shard++) {
+        if (
+          shard === current[index] ||
+          !canPlaceCoverageGroup(groups, current, index, shard, shardCount)
+        )
+          continue;
+        const candidate = [...current];
+        candidate[index] = shard;
+        const candidateFinish = coverageAssignmentFinish(groups, candidate, shardCount, typecheck);
+        if (candidateFinish < bestFinish) {
+          best = candidate;
+          bestFinish = candidateFinish;
+        }
+      }
+    }
+    if (best === current) return current;
+    current = best;
+    finish = bestFinish;
+  }
+}
+
+export function assignCoverageShards(groups, shardCount, { typecheck = true } = {}) {
+  const lanes = coverageLanes(shardCount, typecheck);
   const weights = groups.map((group) => group.weight * (isExclusiveCoverageGroup(group) ? 2 : 1));
   const order = groups
     .map((_group, index) => index)
     .sort((a, b) => weights[b] - weights[a] || a - b);
-  const assignment = Array(groups.length).fill(0);
+  const assignment = Array(groups.length).fill(-1);
   for (const index of order) {
-    const candidates = lanes.map((lane) => append(lane, groups[index]));
-    let selected = 0;
-    for (let shard = 1; shard < shardCount; shard += 1) {
-      if (finish(candidates[shard]) < finish(candidates[selected])) selected = shard;
+    const candidates = lanes.map((lane) => appendCoverageLane(lane, groups[index]));
+    let selected = -1;
+    for (let shard = 0; shard < shardCount; shard += 1) {
+      if (!canPlaceCoverageGroup(groups, assignment, index, shard, shardCount)) continue;
+      if (
+        selected < 0 ||
+        coverageLaneFinish(candidates[shard]) < coverageLaneFinish(candidates[selected])
+      )
+        selected = shard;
     }
+    if (selected < 0) throw new Error(`no coverage lane admits ${groups[index].label}`);
     assignment[index] = selected;
     lanes[selected] = candidates[selected];
   }
-  return assignment;
+  return refineCoverageAssignment(groups, assignment, shardCount, typecheck);
 }
 
 // Every shard records the full expected roster it derived; the merge
@@ -653,10 +812,17 @@ export function buildGroupArgs({
     'run',
     ...group.projects.flatMap((project) => ['--project', project]),
     ...group.files,
+    ...(group.shard ? [`--shard=${group.shard}`] : []),
     `--maxWorkers=${maxWorkers}`,
   ];
   if (!coverage) {
-    return [...args, ...group.excludes.map((file) => `--exclude=${file}`), ...vitestArgs];
+    return [
+      ...args,
+      ...group.excludes.map(
+        (file) => `--exclude=${path.resolve(rootDir, file).replaceAll('\\', '/')}`,
+      ),
+      ...vitestArgs,
+    ];
   }
   return [
     ...args,
@@ -664,8 +830,15 @@ export function buildGroupArgs({
     // only own instrumented runtime tests.
     '--typecheck.enabled=false',
     '--coverage',
-    ...serialCoveragePreflights.map(({ file }) => `--exclude=${file}`),
-    ...group.excludes.map((file) => `--exclude=${file}`),
+    ...serialCoveragePreflights.map(
+      ({ file }) => `--exclude=${path.resolve(rootDir, file).replaceAll('\\', '/')}`,
+    ),
+    ...uninstrumentedPerformanceFiles.map(
+      (file) => `--exclude=${path.resolve(rootDir, file).replaceAll('\\', '/')}`,
+    ),
+    ...group.excludes.map(
+      (file) => `--exclude=${path.resolve(rootDir, file).replaceAll('\\', '/')}`,
+    ),
     '--coverage.reporter=json',
     `--coverage.reportsDirectory=${coverageDir}`,
     ...coverageThresholds,

@@ -567,8 +567,12 @@ Renderer's submission rather than opening a separate queue path.
 `prepareMipmaps` and `blitMipmapsSync` accept `arrayLayerCount` for 2D array and
 cube textures; omission retains the single-layer 2D path. Every layer samples
 only its preceding mip and copies the result back into the same layer. All
-layers share one transient 2D scratch chain, preserving sRGB conversion and the
-WebGL2 feedback-loop workaround. Renderer residency supplies the layer count
+layers share one transient 2D render scratch chain. Array and cube sources also
+share a 2D staging chain: each source layer/mip is copied there before sampling.
+WebGL2 cannot reinterpret an array slice as a physical `sampler2D` texture;
+sampling such a view produces invalid lower mips. Staging preserves sRGB
+filtering, layer identity and the feedback-loop workaround without disabling
+mips or changing authored samplers. Renderer residency supplies the layer count
 from the existing texture layout. Recovery preparation still records without
 submitting, and its owner finishes or discards the same transaction.
 

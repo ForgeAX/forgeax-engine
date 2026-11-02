@@ -104,6 +104,19 @@ test('Three authored-light shadow journeys retain three complete independent pro
   assert.ok(targets.every((target) => browserGroupWeight([target]) > 5));
 });
 
+test('complete shadow quality matrices own exclusive browser processes', () => {
+  for (const name of ['cube-plane-shadow-contact', 'curved-shadow-receiver']) {
+    const file = `packages/runtime/src/__tests__/${name}.browser.test.ts`;
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+    for (const size of [1, 8, 24]) {
+      assert.deepEqual(
+        dryRunGroups(size).filter((group) => group.includes(file)),
+        [[file]],
+      );
+    }
+  }
+});
+
 test('host groups keep their deadline and start without Python or a GPU lease', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'forgeax-browser-host-'));
   const fixture = join(temporary, 'vitest.mjs');
@@ -754,6 +767,16 @@ test('renderer construction owners retain dedicated process boundaries', () => {
   assert.match(browserRunner, /thinWrapperBrowserFile/);
 });
 
+test('mocked renderer construction owns a fresh browser process', () => {
+  const file = 'packages/app/__tests__/thin-wrapper-throw.browser.test.ts';
+  const groups = dryRunGroups();
+  assert.deepEqual(
+    groups.filter((group) => group.includes(file)),
+    [[file]],
+    'renderer-host module mocks must not share an owner with real App/Worker construction',
+  );
+});
+
 test('Wave 1 rendering owners fit within the ordinary browser group budget', () => {
   const groups = dryRunGroups();
   const wave1Files = [
@@ -1276,4 +1299,19 @@ test('exclusive renderer owners drain neighboring browser groups', async () => {
     visited.toSorted((a, b) => a - b),
     groups.map((_group, index) => index),
   );
+});
+
+test('point-light and sprite journeys retain separate original process deadlines', () => {
+  const files = ['point-light-decay', 'point-light-shadow', 'point-sprites'].map(
+    (name) => `packages/runtime/src/__tests__/${name}.browser.test.ts`,
+  );
+  for (const size of [1, 8, 24]) {
+    const groups = dryRunGroups(size);
+    for (const file of files) {
+      assert.deepEqual(
+        groups.filter((group) => group.includes(file)),
+        [[file]],
+      );
+    }
+  }
 });

@@ -360,4 +360,17 @@ export {
   QueryBatchUnavailableError,
   type QueryBatchUnavailableReason,
 } from './errors/query-batch-errors';
+export type { FrameArena, FrameArenaStats } from './frame-arena';
+export type {
+  MemoryArray,
+  MemoryArrayConstructor,
+  MemoryBudget,
+  MemoryErrorCode,
+  MemoryErrorDetail,
+  WorldMemoryOptions,
+} from './memory-types';
+export { MemoryError } from './memory-types';
+export type { BufferHandle, BufferLease, OwnedBuffers } from './owned-buffers';
 export type { NumericField, QueryBatch, QueryBatchColumns, ReadonlyColumn } from './query/batch';
+
+export type { WorldMemoryStats } from './world-memory';

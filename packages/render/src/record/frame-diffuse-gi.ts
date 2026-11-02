@@ -1,9 +1,13 @@
+import { recordContext } from '../world/view-record-context';
 // Per-frame preparation of the renderer-owned diffuse GI owners (probe
 // placement, exact ray diffuse, irradiance field, baked field, screen probes)
 // and their shared submission fence/track/commit lifecycle.
 
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import { RhiError } from '@forgeax/engine-rhi';
+import { isTimestampQueryAdmitted } from '../assembly/device-feature-admission';
+import { DynamicResolutionController } from '../pipeline/dynamic-resolution';
 import type { RenderExtent } from '../pipeline/render-extent';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { RendererBakedField } from '../raytracing/renderer-baked-field';
@@ -15,8 +19,17 @@ import type { VisibleSurfaceProjection } from '../raytracing/visible-surface';
 import type { CameraSnapshot } from '../render-contract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { TemporalView } from '../temporal/view';
-import type { ViewLights } from '../world/render-lights';
-import type { RenderFrameState } from './frame-snapshot';
+import { requireGiSubmissions, viewDiffuseGiOf } from '../world/gi-systems';
+import { type ViewLights, viewLightsOf } from '../world/render-lights';
+import { renderWorldFor } from '../world/render-world';
+import {
+  type StagedViewInputs,
+  stagedViewInputs,
+  type ViewFrameState,
+} from '../world/view-frame-systems';
+import type { ViewSettlementOwner } from '../world/view-settlement';
+import { projectFrameVisibleSurface } from './frame-admission';
+import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from './frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from './render-context';
 
 interface InternalRenderSize {
@@ -38,8 +51,8 @@ function internalRenderSize(
   renderExtent: RenderExtent | undefined,
 ): InternalRenderSize {
   return {
-    width: renderExtent?.internalWidth ?? Math.max(1, internals.canvas.width),
-    height: renderExtent?.internalHeight ?? Math.max(1, internals.canvas.height),
+    width: renderExtent?.internalWidth ?? Math.max(1, recordContext(internals).canvas.width),
+    height: renderExtent?.internalHeight ?? Math.max(1, recordContext(internals).canvas.height),
   };
 }
 
@@ -75,11 +88,11 @@ function prepareProbePlacement(
   visibleSurface: VisibleSurfaceProjection | undefined,
   size: InternalRenderSize,
   renderReadLeases: readonly RenderReadLease[] | undefined,
-): void {
+): RenderFrameState['probePlacementFrame'] {
   const placement = internals.standardProfile?.probePlacement;
   if (placement === undefined) {
     frameState.probePlacement?.disable();
-    return;
+    return undefined;
   }
   if (visibleSurface === undefined || scene === undefined)
     throw new RhiError({
@@ -92,7 +105,7 @@ function prepareProbePlacement(
     { internals, world, worlds, surfaces: visibleSurface.slotBases },
     scene,
   );
-  frameState.probePlacementFrame = frameState.probePlacement.prepare({
+  return frameState.probePlacement.prepare({
     runtime: internals,
     seeds: placement.seeds,
     ...(placement.global === undefined
@@ -232,7 +245,9 @@ function prepareScreenProbe(
 
 /**
  * Prepare the display view's GI owners. Capture-only frames keep every owner
- * untouched and record without GI.
+ * untouched and record without GI. The `view-diffuse-gi` RenderPrepare system
+ * calls it through {@link prepareViewDiffuseGi}; commit and retirement are the
+ * `gi-submission-*` systems.
  */
 export function prepareFrameDiffuseGi(
   internals: RenderSystemInternals,
@@ -249,7 +264,7 @@ export function prepareFrameDiffuseGi(
   captureOnly: boolean,
 ): FrameDiffuseGi {
   const size = internalRenderSize(internals, renderExtent);
-  prepareProbePlacement(
+  const probePlacement = prepareProbePlacement(
     internals,
     frameState,
     world,
@@ -260,40 +275,216 @@ export function prepareFrameDiffuseGi(
     size,
     renderReadLeases,
   );
-  const probePlacement = frameState.probePlacementFrame;
   // A capture view writes raw scene output and consumes no GI field.
-  if (captureOnly || internals.captureView !== undefined) {
-    return {
+  if (captureOnly || recordContext(internals).captureView !== undefined) {
+    return enqueueFrameDiffuseGi(internals, {
       rayDiffuse: undefined,
       irradianceField: undefined,
       bakedField: undefined,
       screenProbe: undefined,
       probePlacement,
-    };
+    });
   }
-  const rayDiffuse = prepareRayDiffuse(
-    internals,
-    frameState,
-    scene,
-    visibleSurface,
-    worlds,
-    lights,
-    pipelineState,
-    size,
+  let rayDiffuse: FrameDiffuseGi['rayDiffuse'];
+  let irradianceField: FrameDiffuseGi['irradianceField'];
+  let bakedField: FrameDiffuseGi['bakedField'];
+  let screenProbe: FrameDiffuseGi['screenProbe'];
+  try {
+    rayDiffuse = prepareRayDiffuse(
+      internals,
+      frameState,
+      scene,
+      visibleSurface,
+      worlds,
+      lights,
+      pipelineState,
+      size,
+    );
+    irradianceField = prepareIrradianceField(
+      internals,
+      frameState,
+      scene,
+      worlds,
+      lights,
+      camera,
+      size,
+      renderReadLeases,
+    );
+    bakedField = prepareBakedField(internals, frameState, size);
+    screenProbe = prepareScreenProbe(internals, frameState, size);
+  } catch (cause) {
+    // The placement frame never reaches the Render World queue.
+    probePlacement?.abort();
+    throw cause;
+  }
+  return enqueueFrameDiffuseGi(internals, {
+    rayDiffuse,
+    irradianceField,
+    bakedField,
+    screenProbe,
+    probePlacement,
+  });
+}
+
+const NO_DIFFUSE_GI: FrameDiffuseGi = Object.freeze({
+  rayDiffuse: undefined,
+  irradianceField: undefined,
+  bakedField: undefined,
+  screenProbe: undefined,
+  probePlacement: undefined,
+});
+
+/** A view's RenderPrepare product: its dynamic-resolution extent and the GI owners it prepared. */
+export interface PreparedViewDiffuseGi {
+  readonly resolution: DynamicResolutionController;
+  readonly renderExtent: RenderExtent | undefined;
+  readonly gi: FrameDiffuseGi;
+}
+
+/**
+ * Why `view-diffuse-gi` could not prepare a view: its frame inputs were
+ * unreadable, its dynamic resolution failed to configure, its visible-surface
+ * projection was unavailable, or a GI owner failed to prepare.
+ */
+export type ViewDiffuseGiFailureCode =
+  | 'view-inputs-unavailable'
+  | 'resolution-failed'
+  | 'visible-surface-failed'
+  | 'gi-prepare-failed';
+
+/** The view's prepared GI, or the closed code and structured cause its recording rethrows. */
+export type ViewDiffuseGiOutcome =
+  | { readonly ok: true; readonly value: PreparedViewDiffuseGi }
+  | { readonly ok: false; readonly code: ViewDiffuseGiFailureCode; readonly cause: unknown };
+
+function configureViewResolution(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  world: RenderResourceScope,
+  worlds: readonly RenderResourceScope[],
+  camera: CameraSnapshot,
+): Omit<PreparedViewDiffuseGi, 'gi'> {
+  frameState.dynamicResolution ??= new DynamicResolutionController();
+  const resolution = frameState.dynamicResolution;
+  const renderExtent = resolution.configure(
+    camera.dynamicResolution,
+    worlds[camera.worldId ?? 0] ?? world,
+    camera.entityKey ?? 0,
+    Math.max(1, recordContext(internals).canvas.width),
+    Math.max(1, recordContext(internals).canvas.height),
+    recordContext(internals).deviceScope?.generation ?? 0,
+    isTimestampQueryAdmitted(internals.device.caps),
   );
-  const irradianceField = prepareIrradianceField(
-    internals,
-    frameState,
-    scene,
-    worlds,
-    lights,
-    camera,
-    size,
-    renderReadLeases,
-  );
-  const bakedField = prepareBakedField(internals, frameState, size);
-  const screenProbe = prepareScreenProbe(internals, frameState, size);
-  return { rayDiffuse, irradianceField, bakedField, screenProbe, probePlacement };
+  return { resolution, renderExtent };
+}
+
+/**
+ * Prepare one staged view's dynamic resolution and, when it renders its
+ * picture, its GI owners. The inputs are RenderPrepare state: the view's
+ * camera and hoisted canvas extent, its `render-cascade-fit` lights, its GPU
+ * scene (read only when a GI profile records) and the `visible-surface-rows`
+ * projection. A failure is returned with its closed code, never thrown; the
+ * view's recording rethrows its cause inside its record recovery.
+ */
+export function prepareViewDiffuseGi(
+  world: World,
+  entity: EntityHandle,
+  owner: ViewSettlementOwner,
+  staged: ViewFrameState,
+): ViewDiffuseGiOutcome {
+  const { internals, frameState } = owner;
+  let inputs: StagedViewInputs;
+  try {
+    inputs = stagedViewInputs(world, staged);
+  } catch (cause) {
+    return { ok: false, code: 'view-inputs-unavailable', cause };
+  }
+  const { frame, mode, cameras, scopes, resourceWorld, composition } = inputs;
+  // No Camera records the internal fallback snapshot, which renders no GI.
+  const camera = cameras[0] ?? makeZeroCameraFallbackSnapshot();
+  let resolution: Omit<PreparedViewDiffuseGi, 'gi'>;
+  try {
+    resolution = configureViewResolution(internals, frameState, resourceWorld, scopes, camera);
+  } catch (cause) {
+    return { ok: false, code: 'resolution-failed', cause };
+  }
+  const lights = viewLightsOf(world, entity);
+  const pipelineState = recordContext(internals).getPipelineState();
+  // Held and capture-only recordings consume no GI; a view without lights or
+  // pipeline state never reaches recording.
+  if (mode !== true || cameras.length === 0 || lights === undefined || pipelineState === null)
+    return { ok: true, value: { ...resolution, gi: NO_DIFFUSE_GI } };
+  const scene = owner.scene.compositionGpuDrivenState();
+  let visibleSurface: VisibleSurfaceProjection | undefined;
+  try {
+    visibleSurface = projectFrameVisibleSurface(internals, scene, frame.renderables);
+  } catch (cause) {
+    return { ok: false, code: 'visible-surface-failed', cause };
+  }
+  try {
+    const gi = prepareFrameDiffuseGi(
+      internals,
+      frameState,
+      resourceWorld,
+      scopes,
+      camera,
+      lights,
+      pipelineState,
+      scene,
+      visibleSurface,
+      resolution.renderExtent,
+      composition.leases,
+      false,
+    );
+    return { ok: true, value: { ...resolution, gi } };
+  } catch (cause) {
+    return { ok: false, code: 'gi-prepare-failed', cause };
+  }
+}
+
+/**
+ * The recording's {@link ViewDiffuseGi} of this frame. A recording outside a
+ * Render World frame (direct record helpers) configures its resolution and
+ * records without GI; a GI profile there is a structured failure.
+ */
+export function consumeViewDiffuseGi(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  world: RenderResourceScope,
+  worlds: readonly RenderResourceScope[],
+  camera: CameraSnapshot,
+): PreparedViewDiffuseGi {
+  const prepared = viewDiffuseGiOf(renderWorldFor(internals), internals.viewEntity);
+  if (prepared !== undefined) {
+    if (!prepared.ok) throw prepared.cause;
+    const placement = prepared.value.gi.probePlacement;
+    if (
+      placement === undefined ||
+      placement.fence.currentGeneration() === placement.fence.capturedGeneration
+    )
+      return prepared.value;
+    // A Feature extract mutated the placement source after RenderPrepare: the
+    // view records without it and the stale source rejects the submission.
+    placement.abort();
+    return { ...prepared.value, gi: { ...prepared.value.gi, probePlacement: undefined } };
+  }
+  const profile = internals.standardProfile;
+  if (profile?.diffuseGi !== undefined || profile?.probePlacement !== undefined)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'the view GI the view-diffuse-gi RenderPrepare system prepared',
+      hint: 'record diffuse GI inside a Render World frame of the composition owner',
+    });
+  return {
+    ...configureViewResolution(internals, frameState, world, worlds, camera),
+    gi: NO_DIFFUSE_GI,
+  };
+}
+
+/** The Render World frame commits this view's GI once submitted and aborts it otherwise. */
+function enqueueFrameDiffuseGi(internals: RenderSystemInternals, gi: FrameDiffuseGi) {
+  if (hasDiffuseGiWork(gi)) requireGiSubmissions(internals).prepared.push(gi);
+  return gi;
 }
 
 /** Continuous geometry reprojects screen probes and the ray-diffuse reconstructions. */

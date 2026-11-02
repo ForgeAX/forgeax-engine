@@ -30,6 +30,7 @@ import { productionCspCommands } from '../packages/wgpu-wasm/scripts/__tests__/p
 import { browserFixtureInputs } from '../scripts/ci/browser-fixture-inputs.mjs';
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../scripts/ci/browser-process-cache.mjs';
+import { browserStartupDiagnostics } from '../scripts/ci/browser-startup-diagnostics.mjs';
 import materialContractInventory from '../scripts/material-contract-inventory.json' with {
   type: 'json',
 };
@@ -275,7 +276,10 @@ export function createBrowserProject() {
     },
     // File-only discovery uses this project's actual include/exclude rules;
     // it must not initialize renderer or asset publications.
-    plugins: process.argv.includes('list') && process.argv.includes('--filesOnly') ? [] : plugins,
+    plugins:
+      process.argv.includes('list') && process.argv.includes('--filesOnly')
+        ? []
+        : [...browserStartupDiagnostics('browser'), ...plugins],
     server: {
       // Loop state is not a browser source; test discovery exclusions do not filter Vite watches.
       watch: { ignored: ['**/.forgeax-harness/**'] },

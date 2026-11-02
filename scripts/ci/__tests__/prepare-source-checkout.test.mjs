@@ -26,6 +26,7 @@ test('Source preparation restores the Engine pin without accessing unrelated pri
   }
   writeFileSync(resolve(source, 'Cargo.toml'), '[package]\nname = "fixture"\n');
   writeFileSync(resolve(source, 'source.rs'), 'old source\n');
+  writeFileSync(resolve(source, 'package.json'), '{"name":"fixture-modeling"}\n');
   git(source, 'add', '.');
   git(source, 'commit', '-qm', 'source');
   const previous = git(source, 'rev-parse', 'HEAD');
@@ -34,6 +35,7 @@ test('Source preparation restores the Engine pin without accessing unrelated pri
   const expected = git(source, 'rev-parse', 'HEAD');
   git(root, 'submodule', 'add', source, 'third_party/wgpu');
   git(root, 'submodule', 'add', source, 'third_party/blitz');
+  git(root, 'submodule', 'add', source, 'packages/modeling');
   git(root, 'config', '-f', '.gitmodules', 'submodule.assets.path', 'forgeax-engine-assets');
   git(
     root,
@@ -48,6 +50,7 @@ test('Source preparation restores the Engine pin without accessing unrelated pri
   git(root, 'commit', '-qm', 'pin');
   git(root, 'submodule', 'deinit', '--force', '--', 'third_party/wgpu');
   git(root, 'submodule', 'deinit', '--force', '--', 'third_party/blitz');
+  git(root, 'submodule', 'deinit', '--force', '--', 'packages/modeling');
   writeFileSync(resolve(source, 'source.rs'), 'newer unselected source\n');
   git(source, 'commit', '-qam', 'advance upstream');
   for (let index = 0; index < 2; index += 1) {
@@ -58,6 +61,29 @@ test('Source preparation restores the Engine pin without accessing unrelated pri
       { path: 'third_party/blitz', commit: expected },
     ]);
   }
+  await t.test(
+    'explicit Modeling preparation restores its exact pin without unrelated private sources',
+    () => {
+      const prepared = spawnSync(process.execPath, [script, 'packages/modeling'], {
+        cwd: root,
+        env,
+        encoding: 'utf8',
+      });
+      assert.equal(prepared.status, 0, prepared.stderr);
+      assert.deepEqual(JSON.parse(prepared.stdout), [
+        { path: 'packages/modeling', commit: expected },
+      ]);
+      git(root, '-C', 'packages/modeling', 'checkout', '--detach', previous);
+      const restored = spawnSync(process.execPath, [script, 'packages/modeling'], {
+        cwd: root,
+        env,
+        encoding: 'utf8',
+      });
+      assert.equal(restored.status, 0, restored.stderr);
+      assert.equal(git(root, '-C', 'packages/modeling', 'rev-parse', 'HEAD'), expected);
+      assert.ok(existsSync(resolve(root, 'packages/modeling/package.json')));
+    },
+  );
   await t.test(
     'consumer preparation updates existing stale checkouts before admitting inputs',
     async () => {

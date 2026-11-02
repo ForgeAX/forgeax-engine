@@ -53,7 +53,9 @@ it('executes retained-shadow replacement compute with a fresh arena after old re
     const depthOnly = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
     expect(f.pool.project(depthOnly, source.identity).unwrap().passNames).toEqual([]);
     const replacement = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
-    expect(f.pool.project(replacement, source.identity, true).unwrap().passNames).toHaveLength(3);
+    expect(f.pool.project(replacement, source.identity, true).unwrap().passNames).toEqual([
+      'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+    ]);
     expect(demands).toHaveBeenCalled();
     expect(Object.is(next.buffer().unwrap().buffer, oldBuffer)).toBe(false);
     next.seal().unwrap();

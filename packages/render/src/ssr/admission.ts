@@ -658,6 +658,20 @@ function unavailableResult(
   });
 }
 
+/** The admission of a view that does not request SSR. */
+export function notRequestedSsrAdmission(
+  lane: SsrSpatialLane,
+  viewRange: number,
+): SsrSpatialAdmission {
+  return Object.freeze({
+    status: 'not-requested',
+    lane,
+    config: undefined,
+    viewRange,
+    work: ZERO_SPATIAL_WORK,
+  });
+}
+
 /**
  * Admit the active camera's schema-derived component into the M1 spatial
  * path. No graph/resource handle crosses this boundary.
@@ -670,15 +684,7 @@ export function admitSsrSpatial(input: {
   const environment = input.environment;
   const viewRange = camera.far - camera.near;
   const config = camera.screenSpaceReflection;
-  if (config === undefined) {
-    return Object.freeze({
-      status: 'not-requested',
-      lane: environment.lane,
-      config: undefined,
-      viewRange,
-      work: ZERO_SPATIAL_WORK,
-    });
-  }
+  if (config === undefined) return notRequestedSsrAdmission(environment.lane, viewRange);
 
   const valid = validateScreenSpaceReflection(config, { viewRange });
   if (!valid.ok) {

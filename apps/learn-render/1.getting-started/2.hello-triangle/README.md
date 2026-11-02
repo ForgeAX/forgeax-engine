@@ -35,3 +35,11 @@ pnpm --filter "@forgeax/app-learn-render-1-getting-started-2-hello-triangle" dev
 | smoke gate | dawn-node 300 帧像素回读 | OOS-10 / D-7：smoke 子集只跑 4.textures + 7.camera；1.2 视觉正确性靠人眼 + 本地 dev server 校对 |
 
 教材路径从本目录读，遇到 dawn-node smoke / pixel-parity / dual-projection 这类工程话题时跳到 `apps/hello/triangle/README.md` 拓展。
+
+## R5 fallback recovery probe
+
+`r5-probe.html#mode=b` first waits for a completed ready geometry picture, then
+injects the invalid submission on the same device. Exactly the next renderer
+frame must complete with `presentation: ready` and non-black pixels. A successful
+clear-only submission is not a recovered triangle. The full verifier retains
+the 15,000-entity mode, channel proof, no-panic assertions and its original budget.

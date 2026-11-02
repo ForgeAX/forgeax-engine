@@ -73,6 +73,7 @@ import {
   getTemporalParamsBuffer,
   stageTemporalGpuWrite,
 } from './temporal/gpu';
+import { recordContext } from './world/view-record-context';
 
 function resolvedView(resources: GraphResourceResolver, view: GraphTextureView): TextureView {
   const result = resources.textureView(view);
@@ -124,7 +125,7 @@ export function addObservationCapturePass(
 ): Result<void, RenderGraphError> {
   return graph.addCopyPass(`${domain}-observation`, {
     accesses: [{ resource: target.view, usage: 'copy-src' }],
-    encode: ({ encoder, frame, resources }) => {
+    encodeDirect: (encoder, frame, resources) => {
       const texture = resources.texture(target.texture);
       if (!texture.ok) throw texture.error;
       const internal = frame as _InternalRenderPipelineContext;
@@ -155,7 +156,7 @@ export function addObservationCapturePass(
             frame.extent === undefined
               ? { width: frame.targetW, height: frame.targetH }
               : renderExtentSize(frame.extent, 'internal');
-          frame.runtime.encodeFramebufferSnapshots?.(encoder, {
+          recordContext(frame.runtime).encodeFramebufferSnapshots?.(encoder, {
             texture: texture.value,
             format: target.format,
             ...size,
@@ -206,7 +207,7 @@ export function addTypedSkyboxPass(
         clearValue: typedFrameClearColor,
       },
     ],
-    encode: ({ pass, frame }) => {
+    encodeDirect: (pass, frame, _graphresources) => {
       encodeSkyboxPass(frame as _InternalRenderPipelineContext, pass);
     },
   });
@@ -379,7 +380,7 @@ export function addTypedScenePass(
                 context.frameState.installedPipelineConfig?.ssao?.enabled === true),
             probeBlend:
               (context.frameState.probeBlendRecordProjection?.projection.records.length ?? 0) > 0,
-            reflectionFallback: context.frameState.reflectionFallbackDemand === true,
+            reflectionFallback: context.reflectionFallbackDemand === true,
           }),
         artifacts,
         factory,
@@ -565,7 +566,7 @@ export function addTypedScenePass(
       stencilLoadOp: options.depthLoadOp ?? 'clear',
       stencilStoreOp: 'store',
     },
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = detachedScenePassContext(frame, request);
       const directionalShadow =
         options.directionalShadow === undefined
@@ -707,7 +708,7 @@ export function addReflectionFallbackObservationPass(
 ): Result<void, RenderGraphError> {
   return graph.addCopyPass('reflection-fallback-observation', {
     accesses: [{ resource: target.view, usage: 'copy-src' }],
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const texture = resources.texture(target.texture);
       if (!texture.ok) throw texture.error;
@@ -801,7 +802,7 @@ export function addTypedBloomPasses(
           clearValue: { r: 0, g: 0, b: 0, a: 0 },
         },
       ],
-      encode: ({ pass, frame, resources }) =>
+      encodeDirect: (pass, frame, resources) =>
         descriptor.encode(
           frame as _InternalRenderPipelineContext,
           legacyResolver(resources, named),
@@ -886,7 +887,7 @@ export function addTypedSsaoPasses(
         clearValue: { r: 1, g: 1, b: 1, a: 1 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const normal = resolvedView(resources, targets.normal.view);
       const depthView = resolvedView(resources, depth.value);
       recordSsaoCalcPass(
@@ -922,7 +923,7 @@ export function addTypedSsaoPasses(
         clearValue: { r: 1, g: 1, b: 1, a: 1 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const normal = resolvedView(resources, targets.normal.view);
       const depthView = resolvedView(resources, depth.value);
       recordSsaoBlurPass(
@@ -1018,12 +1019,13 @@ function addTemporalSecondaryReactivityRows(
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const state = getTemporalGpuState(
         internal.frameState,
         frame.runtime.device,
-        (frame.runtime as import('./record/render-context').RenderSystemRuntime).deviceScope,
+        recordContext(frame.runtime as import('./record/render-context').RenderSystemRuntime)
+          .deviceScope,
         frame.targetW,
         frame.targetH,
       );
@@ -1157,12 +1159,13 @@ export function addTypedTemporalResolvePass(
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const state = getTemporalGpuState(
         internal.frameState,
         frame.runtime.device,
-        (frame.runtime as import('./record/render-context').RenderSystemRuntime).deviceScope,
+        recordContext(frame.runtime as import('./record/render-context').RenderSystemRuntime)
+          .deviceScope,
         frame.targetW,
         frame.targetH,
       );
@@ -1318,7 +1321,7 @@ export function addTypedFullscreenPass(
         a: options.clearColor?.[3] ?? 1,
       },
     })),
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       if (options.outputOnly && frame.runtime.lookupPostProcess?.(options.shader) === undefined) {
         return;
       }
@@ -1393,7 +1396,7 @@ export function addTypedCompositePostEffects(
         { resource: effectInput.view, usage: 'copy-src' },
         { resource: scratch.value.view, usage: 'copy-dst' },
       ],
-      encode: ({ encoder, resources }) => {
+      encodeDirect: (encoder, _graphframe, resources) => {
         const source = resources.texture(effectInput.texture);
         if (!source.ok) throw source.error;
         const destination = resources.texture(scratch.value.texture);

@@ -356,6 +356,21 @@ it('captures material source once before source-reference verification', () => {
   expect(registry.materialProgram(second).source).toBe(second);
 });
 
+it('admits a new source with one complete text traversal for its identity', () => {
+  const registry = new ShaderRegistry({ manifestUrl: undefined });
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  let source: ShaderSource;
+  try {
+    source = registry.shaderSource('// first\n\n// second');
+    expect(read).toHaveBeenCalledTimes(1);
+  } finally {
+    read.mockRestore();
+  }
+  expect(source.read()).toBe('// first\n\n// second');
+  expect(registry.shaderSource(source)).toBe(source);
+  expect(registry.shaderSource(source.read())).toBe(source);
+});
+
 it('hashes a newly admitted raw source only once', () => {
   const registry = new ShaderRegistry({ manifestUrl: undefined });
   const text = 'fn singleHashSource() {}';

@@ -83,6 +83,14 @@ texture.needsUpdate = true;
 `source.dataReady` alone does not upload new pixels. `texture.onUpdate` runs when
 the version is admitted to a ready native submission.
 
+The small-map variance startup tests retain Three's zero bias/normalBias defaults.
+Variance rendering also admits shadow receivers as casters, matching Three.
+Both references can therefore contain self-shadow stripes from forward-depth
+RG16F moments and zero comparison separation. Passing cross-renderer parity is
+not an acne-free quality verdict; native shadow quality uses independent
+shadow-on/off lighting and known-unoccluded receiver oracles. Increasing bias
+can suppress stripes while detaching contacts, so both conditions need checking.
+
 Shadows remain off until explicitly enabled:
 
 ```ts
@@ -100,6 +108,11 @@ Directional shadows use the authored shadow camera. Point and spot shadows,
 Basic/PCF/PCFSoft/VSM selection, shadow side/layers, bias, normal bias, radius,
 intensity and manual `autoUpdate`/`needsUpdate` project to the native renderer.
 As in r184, point lights use Vogel filtering for every non-Basic selection.
+The adapter explicitly owns Three's shadow-sidedness policy: a null
+`shadowSide` reverses single-sided color culling for non-VSM shadows, while VSM
+uses the color side. An explicit `shadowSide` overrides either default. This
+projection stays independent of native generated casters, which preserve
+authored culling for contact correctness.
 Native Forgeax CSM defaults and the Game3D template's shadow distance are unchanged.
 
 ## Inspect and compare

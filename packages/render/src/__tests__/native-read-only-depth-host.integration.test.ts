@@ -12,6 +12,7 @@ import {
 import { createRenderFeatureTarget } from '../features/targets';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing fixture');
@@ -126,7 +127,7 @@ async function fixture(permission = true, diagnostic: boolean | 'absent' = true)
       }),
   });
   const run = (frameNumber: number, generation = 0) => {
-    const batch = host.runFrame([input(frameNumber, generation)]);
+    const batch = prepareFeatureFrame(host, [input(frameNumber, generation)]);
     expect(batch.frame.errors).toEqual([]);
     const view = required([...batch.views.values()][0]);
     expect(view.errors).toEqual([]);
@@ -138,9 +139,7 @@ async function fixture(permission = true, diagnostic: boolean | 'absent' = true)
       planned,
       execution,
       submit() {
-        batch.frame.onSubmitted();
-        view.onSubmitted();
-        batch.onSubmitted();
+        submitFeatureFrame(host);
       },
     };
   };
@@ -171,7 +170,7 @@ describe('Host current read-only depth pipeline authority', () => {
       const result = f.run(1);
       expect(result.execution.passes).toHaveLength(2);
       expect(f.host.inspection?.().featureReadOnlyDepthBatchDiagnostic).toBeUndefined();
-      result.batch.onAborted();
+      abortFeatureFrame(f.host);
     } finally {
       f.host.dispose().unwrap();
     }
@@ -179,7 +178,7 @@ describe('Host current read-only depth pipeline authority', () => {
   it('publishes only current enabled preparation counts, including a genuine zero-hit frame', async () => {
     const f = await fixture();
     try {
-      const first = f.run(1);
+      f.run(1);
       const snapshot = f.host.inspection?.().featureReadOnlyDepthBatchDiagnostic;
       expect(snapshot).toEqual({
         frameNumber: 1,
@@ -195,14 +194,14 @@ describe('Host current read-only depth pipeline authority', () => {
       expect(
         projectRendererFeatureInspection(f.host).featureHost?.featureReadOnlyDepthBatchDiagnostic,
       ).toEqual(snapshot);
-      first.batch.onAborted();
+      abortFeatureFrame(f.host);
       f.setDiagnostic(false);
       const off = f.run(2);
       expect(f.host.inspection?.().featureReadOnlyDepthBatchDiagnostic).toBeUndefined();
       off.submit();
       f.setDiagnostic(true);
       f.pending.add('sampled');
-      const pending = f.run(3);
+      f.run(3);
       expect(f.host.inspection?.().featureReadOnlyDepthBatchDiagnostic).toMatchObject({
         frameNumber: 3,
         beforePasses: 2,
@@ -211,7 +210,7 @@ describe('Host current read-only depth pipeline authority', () => {
         admittedPasses: 1,
       });
       expect(snapshot?.frameNumber).toBe(1);
-      pending.batch.onAborted();
+      abortFeatureFrame(f.host);
       f.host.advancePreparedGeneration();
       expect(f.host.inspection?.().featureReadOnlyDepthBatchDiagnostic).toBeUndefined();
     } finally {
@@ -235,7 +234,7 @@ describe('Host current read-only depth pipeline authority', () => {
         expect(next.execution.passes).toHaveLength(permission ? 1 : 2);
         expect(first.planned.generation).toBe(0);
         expect(next.planned.generation).toBe(1);
-        next.batch.onAborted();
+        abortFeatureFrame(f.host);
       } finally {
         f.host.dispose().unwrap();
       }
@@ -246,9 +245,9 @@ describe('Host current read-only depth pipeline authority', () => {
     for (const permission of [false, true]) {
       const f = await fixture(permission);
       try {
-        const result = f.run(1);
+        f.run(1);
         counts.push(f.reads());
-        result.batch.onAborted();
+        abortFeatureFrame(f.host);
       } finally {
         f.host.dispose().unwrap();
       }
@@ -269,7 +268,7 @@ describe('Host current read-only depth pipeline authority', () => {
       const next = f.run(2);
       expect(next.execution.passes).toHaveLength(1);
       expect(next.execution.passes[0]?.graphics?.draws).toHaveLength(2);
-      next.batch.onAborted();
+      abortFeatureFrame(f.host);
     } finally {
       f.host.dispose().unwrap();
     }
@@ -280,7 +279,7 @@ describe('Host current read-only depth pipeline authority', () => {
       f.setStencil(true);
       const result = f.run(1);
       expect(result.execution.passes).toHaveLength(2);
-      result.batch.onAborted();
+      abortFeatureFrame(f.host);
     } finally {
       f.host.dispose().unwrap();
     }

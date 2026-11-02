@@ -59,14 +59,14 @@ it('applies pose-only rows by rewriting exactly the changed rows and their pages
   const delta = publish();
 
   expect(delta.frame.renderables).toHaveLength(0);
-  expect(delta.operations).toHaveLength(2);
+  expect(delta.operations).toHaveLength(0);
   for (const operation of delta.operations) {
     expect(operation.kind).toBe('update');
     expect(operation).not.toHaveProperty('snapshot');
   }
   expect(delta.scene.delta?.updatedSlots).toHaveLength(2);
   expect(delta.scene.delta?.contentUpdatedSlots).toHaveLength(0);
-  const movedKeys = new Set(delta.operations.map((operation) => operation.entityKey));
+  const movedKeys = new Set(delta.scene.delta?.updatedSlots.map((row) => row.entityKey));
   for (const row of rows.capture()) {
     const prior = before.get(row.entityKey);
     expect(row.slot).toBe(prior?.slot);

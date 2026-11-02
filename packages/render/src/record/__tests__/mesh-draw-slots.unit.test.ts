@@ -5,6 +5,7 @@ import { buildDispatchPlan } from '../fold-buckets';
 import type { ValidatedRenderable } from '../frame-snapshot';
 import { MeshDrawSlots } from '../mesh-draw-slots';
 import type { FoldBucket } from '../mesh-ssbo';
+import { type NativeDrawEntry, NativeDrawRosterOwner } from '../native-draw-roster';
 
 function terrainSource(source: ValidatedRenderable['source'], _count: number) {
   return {
@@ -315,4 +316,177 @@ it('addresses only actual native children and reuses capacity while streaming ac
     { kind: 'update', worldId: root.worldId, entityKey: root.entityKey, snapshot: root },
   ]);
   expect(scene.meshDrawSlot(root)).toBe(0);
+});
+
+it('retains a quiet native roster without rebuilding per-draw hash membership', () => {
+  const owner = new MeshDrawSlots();
+  const draws = Array.from({ length: 512 }, (_, slot) => ({
+    record: { slot, generation: 0, worldId: 0, entityKey: slot },
+    key: `native:${slot % 3}`,
+  }));
+  const addresses = draws.map(({ record, key }) => owner.index(record, { key }));
+  owner.beginFrame(draws);
+  let tracking = false;
+  let writes = 0;
+  const original = Map.prototype.set;
+  const set = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
+    this: Map<unknown, unknown>,
+    key: unknown,
+    value: unknown,
+  ) {
+    if (tracking) writes++;
+    return original.call(this, key, value);
+  });
+  try {
+    tracking = true;
+    owner.beginFrame(draws);
+    tracking = false;
+  } finally {
+    tracking = false;
+    set.mockRestore();
+  }
+  expect(writes).toBe(0);
+  expect(draws.map(({ record, key }) => owner.index(record, { key }))).toEqual(addresses);
+});
+
+it('keeps source addresses intact when native-roster traversal fails before retirement', () => {
+  const owner = new MeshDrawSlots();
+  const record = { slot: 0, generation: 0, worldId: 0, entityKey: 0 };
+  const source = owner.index(record, 'source');
+  const native = owner.index(record, { key: 'native' });
+  function* failed() {
+    yield { record, key: 'native' };
+    throw new Error('interrupted roster');
+  }
+  expect(() => owner.beginFrame(failed())).toThrow('interrupted roster');
+  expect(owner.index(record, 'source')).toBe(source);
+  expect(owner.index(record, { key: 'native' })).toBe(native);
+  owner.beginFrame([{ record, key: 'native' }]);
+  expect(owner.index(record, { key: 'native' })).toBe(native);
+  const other = { ...record, slot: 1, entityKey: 1 };
+  expect(owner.index(other, 'source')).toBe(source);
+});
+
+it('applies native membership changes without enumerating a quiet admitted roster', () => {
+  const owner = new MeshDrawSlots();
+  const roster = new NativeDrawRosterOwner();
+  const draws = Array.from({ length: 512 }, (_, slot) => ({
+    record: { slot, generation: 0, worldId: 0, entityKey: slot },
+    key: `native:${slot % 3}`,
+  }));
+  const initial = roster.capture(draws);
+  owner.beginFrame(initial);
+  const addresses = draws.map(({ record, key }) => owner.index(record, { key }));
+  const before = { ...owner.work };
+  const repeated = roster.capture(draws.map(({ record, key }) => ({ record: { ...record }, key })));
+  expect(repeated).toBe(initial);
+  owner.beginFrame(repeated);
+  expect(owner.work).toEqual(before);
+  expect(draws.map(({ record, key }) => owner.index(record, { key }))).toEqual(addresses);
+  const changed = draws.map((draw, i) => (i < 8 ? { ...draw, key: 'replacement' } : draw));
+  owner.beginFrame(roster.capture(changed));
+  expect(owner.work.enumerated).toBe(before.enumerated);
+  expect(owner.work.changed - before.changed).toBe(16);
+  expect(changed.slice(8).map(({ record, key }) => owner.index(record, { key }))).toEqual(
+    addresses.slice(8),
+  );
+  owner.clear();
+  expect(owner.capacity).toBe(0);
+});
+
+it('does not publish partial native membership after a failed traversal', () => {
+  const roster = new NativeDrawRosterOwner();
+  const first = { record: { slot: 0, generation: 0, worldId: 0, entityKey: 0 }, key: 'first' };
+  const initial = roster.capture([first]);
+  function* failed() {
+    yield { ...first, key: 'second' };
+    throw new Error('interrupted');
+  }
+  expect(() => roster.capture(failed())).toThrow('interrupted');
+  expect(roster.capture([first])).toBe(initial);
+  expect(roster.capture([{ ...first, key: 'second' }])).not.toBe(initial);
+});
+
+it('retires independently allocated capture addresses while native membership stays unchanged', () => {
+  const owner = new MeshDrawSlots();
+  const roster = new NativeDrawRosterOwner();
+  const record = { slot: 0, generation: 0, worldId: 0, entityKey: 0 };
+  const frame = roster.capture([{ record, key: 'native' }]);
+  owner.beginFrame(frame);
+  const native = owner.index(record, { key: 'native' });
+  const source = owner.index(record, 'source');
+  const capture = owner.index(record, { key: 'capture' });
+  owner.beginFrame(frame);
+  expect(owner.index(record, { key: 'native' })).toBe(native);
+  const other = { ...record, slot: 1, entityKey: 1 };
+  const reused = [owner.index(other, { key: 'one' }), owner.index(other, { key: 'two' })].sort();
+  expect(reused).toEqual([source, capture].sort());
+});
+
+it('keeps duplicate outputs, reorder and held membership independent across repeated edits', () => {
+  const owner = new NativeDrawRosterOwner();
+  const a = { record: { slot: 0, generation: 0, worldId: 0, entityKey: 0 }, key: 'a' };
+  const b = { record: { slot: 1, generation: 0, worldId: 0, entityKey: 1 }, key: 'b' };
+  const held = owner.capture([a, b, a]);
+  expect(owner.capture([b, a])).toBe(held);
+  expect(owner.capture([a, b])).toBe(held);
+  for (let cycle = 0; cycle < 20; cycle++) {
+    const edited = { ...a, key: `edit:${cycle}` };
+    const next = owner.capture([edited, b]);
+    expect(next.has(edited)).toBe(true);
+    expect(next.has(a)).toBe(false);
+    expect(held.has(a)).toBe(true);
+    expect(owner.capture([edited, b])).toBe(next);
+    expect(owner.capture([a, b]).has(a)).toBe(true);
+  }
+  const final = owner.capture([]);
+  expect([...final]).toEqual([]);
+  const changes: string[] = [];
+  final.changesSince(held, (change) => changes.push(`${change.key}:${change.present}`));
+  expect(changes.sort()).toEqual(['a:false', 'b:false']);
+  owner.clear();
+  expect([...held]).toHaveLength(2);
+});
+
+it('bounds native ledgers through quiet spikes, shrink, failed candidates and clear', () => {
+  const owner = new NativeDrawRosterOwner();
+  const draws = Array.from({ length: 64 }, (_, slot) => ({
+    record: { slot, generation: 0, worldId: 0, entityKey: slot, snapshot: {} },
+    key: 'native',
+  }));
+  const held = owner.capture(draws);
+  const ledger = (key: 'entries' | 'scratch') => Reflect.get(owner, key) as NativeDrawEntry[];
+  for (let cycle = 0; cycle < 20; cycle++) {
+    const full = owner.capture(draws);
+    expect(owner.capture(draws)).toBe(full);
+    for (const key of ['entries', 'scratch'] as const) {
+      expect(ledger(key).length).toBeLessThanOrEqual(draws.length);
+      for (const entry of ledger(key)) {
+        expect(full.has(entry)).toBe(true);
+        expect('snapshot' in entry.record).toBe(false);
+      }
+    }
+    const first = draws[0];
+    assert(first);
+    const small = owner.capture([first]);
+    expect(ledger('scratch')).toHaveLength(0);
+    expect([...small]).toHaveLength(1);
+    const failed = function* () {
+      const second = draws[1];
+      assert(second);
+      yield second;
+      throw new Error('failed after staging a replacement');
+    };
+    expect(() => owner.capture(failed())).toThrow('failed after staging a replacement');
+    expect(ledger('scratch')).toHaveLength(0);
+    expect(owner.capture([first])).toBe(small);
+    expect([...owner.capture([])]).toHaveLength(0);
+    expect(ledger('entries')).toHaveLength(0);
+    expect(ledger('scratch')).toHaveLength(0);
+    expect([...held]).toHaveLength(64);
+  }
+  owner.clear();
+  expect(ledger('entries')).toHaveLength(0);
+  expect(ledger('scratch')).toHaveLength(0);
+  expect([...held]).toHaveLength(64);
 });

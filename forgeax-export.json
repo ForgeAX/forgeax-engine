@@ -3,9 +3,9 @@
   "policy": "engine-public-source/1",
   "producerSha256": "69df1b4c1ecb9bf3b92570ee7a8f1f47afcefce57643a7e9e1aa41bafea37a79",
   "release": {
-    "version": "0.6.0-dev.1.d486834081ba",
+    "version": "0.6.0-dev.2.d486834081ba",
     "channel": "next",
-    "candidateSha256": "1738423c362efea864944440d1544428a3dcaec332567bc7ca1e03a9faef8b23"
+    "candidateSha256": "d448b37493d307fe572223a6796d616f70d0b397191e874786c3eaa3af0e00d6"
   },
   "sources": [
     {

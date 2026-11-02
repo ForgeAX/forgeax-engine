@@ -21,7 +21,11 @@ import type {
   PreparedGraphicsResourceLease,
 } from '../prepare/prepared-graphics-resolver';
 import type { CameraSnapshot, FramePresentationPendingReason } from '../render-contract';
-import { isSceneDataTarget, type SceneDataTarget } from '../temporal/scene-data';
+import {
+  isSceneDataTarget,
+  type SceneDataTarget,
+  type StandardSceneSurfaceAdmission,
+} from '../temporal/scene-data';
 import { createSceneDataCatalog, type SceneDataCatalog } from '../temporal/scene-data-catalog';
 import {
   addRenderFeatureSystem,
@@ -30,6 +34,11 @@ import {
   removeRenderFeatureSystem,
 } from '../world/feature-systems';
 import { createRenderWorld } from '../world/render-world';
+import {
+  type FeatureGraphConformanceTraceState,
+  isFeatureGraphConformanceEnabled,
+  recordFeatureGraphConformanceEvent,
+} from './feature-graph-conformance-trace';
 import {
   type FeatureWorkResources,
   featureScopeKey,
@@ -190,6 +199,10 @@ export interface RenderFeatureFrameInput {
   readonly worlds: readonly import('@forgeax/engine-ecs').World[];
   readonly owner: number;
   readonly frameNumber: number;
+  /** @internal RenderSystem-local frame number for focused conformance traces. */
+  readonly recordFrameNumber?: number;
+  /** @internal Default-off trace state; only target-feature facts are retained. */
+  readonly featureGraphConformanceTrace?: FeatureGraphConformanceTraceState;
   /** Renderer-selected display camera forwarded to feature extraction. */
   readonly selectedCamera?: CameraSnapshot;
   readonly selectedView?: import('./types').RenderFeatureExtractView['selectedView'];
@@ -201,6 +214,9 @@ export interface RenderFeatureFrameInput {
   readonly targets?: readonly RenderFeatureTargetHandle[];
   /** Optional renderer-owned semantic catalog for the current plan generation. */
   readonly sceneData?: SceneDataCatalog;
+  /** Immutable Standard producer admission from the selected record view. */
+  readonly surfaceAdmission?: StandardSceneSurfaceAdmission;
+  readonly deviceGeneration?: number;
   readonly generation?: number;
   readonly caps: Readonly<RhiCaps>;
   /** Default-off Renderer profile experiment; native producer permission is still required. */
@@ -393,6 +409,11 @@ interface FeatureSlot {
   signatureInspection: SignatureInspection | undefined;
   /** Scene-data catalog of each view for the current prepared generation. */
   readonly sceneData: Map<string, SceneDataCatalog>;
+  /** Monotonic view cuts so a token cannot become current again after rollback. */
+  readonly sceneDataAdmissionRevisions: Map<
+    string,
+    { readonly identity: string | undefined; readonly revision: number }
+  >;
   readonly nativeRouting: NativeFeatureWorkRouting;
   /** Fixed event facts; replacement order never retargets an older frame. */
   readonly stageEvents: Partial<Record<RenderFeatureStageEvent['stage'], RenderFeatureStageEvent>>;
@@ -414,6 +435,7 @@ function createFeatureSlot(feature: RenderFeature<unknown>, order: number): Feat
     nativeSignatures: new Map(),
     signatureInspection: undefined,
     sceneData: new Map(),
+    sceneDataAdmissionRevisions: new Map(),
     nativeRouting: new NativeFeatureWorkRouting(),
     stageEvents: {},
   };
@@ -2290,6 +2312,24 @@ class FeatureFramePreparation {
     const declared = this.declarePlan(views);
     if (declared.ok) this.consumeNativePlan(declared.value, views);
     const declaredWork = this.nativeWork ?? (declared.ok ? declared.value.work : []);
+    if (isFeatureGraphConformanceEnabled(this.input.featureGraphConformanceTrace, this.identity)) {
+      this.recordConformanceEvent('host-plan-declared', {
+        planFrameNumber: this.input.frameNumber,
+        planSucceeded: declared.ok,
+        workCount: declaredWork.length,
+        workScopes: declaredWork.map((work) => featureScopeKey(work.scope)),
+        passNames: declaredWork.flatMap((work) => work.passes.map((pass) => pass.name)),
+        declaredDispatchCount: declaredWork.reduce(
+          (total, work) =>
+            total +
+            work.passes.reduce(
+              (count, pass) => count + (pass.kind === 'compute' ? pass.dispatches.length : 0),
+              0,
+            ),
+          0,
+        ),
+      });
+    }
     const nativeRequiresPreparation = this.verifyNativeAdmissions(declared, declaredWork);
     this.requiresPreparation =
       sourceRequiresPreparation ||
@@ -2344,24 +2384,57 @@ class FeatureFramePreparation {
       const view = views[index] as (typeof views)[number];
       planned.push({
         ...view,
-        sceneData: (inputs[index] as RenderFeatureFrameInput).sceneData ?? this.sceneData(view),
+        sceneData:
+          (inputs[index] as RenderFeatureFrameInput).sceneData ??
+          this.sceneData(
+            view,
+            (inputs[index] as RenderFeatureFrameInput).surfaceAdmission,
+            (inputs[index] as RenderFeatureFrameInput).deviceGeneration,
+          ),
       });
     }
     return planned;
   }
 
   /** The view's catalog is fixed for one prepared generation; recreate it only after a cut. */
-  private sceneData(view: { readonly identity: string }): SceneDataCatalog {
+  private sceneData(
+    view: { readonly identity: string },
+    surfaceAdmission: StandardSceneSurfaceAdmission | undefined,
+    deviceGeneration: number | undefined,
+  ): SceneDataCatalog {
     const generation = this.transaction.generation;
     const cache = this.slot.sceneData;
     const cached = cache.get(view.identity);
-    if (cached?.generation === generation) return cached;
+    if (
+      cached?.generation === generation &&
+      cached.surfaceAdmissionIdentity === surfaceAdmission?.identity &&
+      cached.deviceGeneration === (deviceGeneration ?? 0)
+    )
+      return cached;
     if (cache.size >= this.batch.inputs.length) cache.clear();
+    const previousAdmission = this.slot.sceneDataAdmissionRevisions.get(view.identity);
+    const admissionIdentity = surfaceAdmission?.identity;
+    const revision =
+      previousAdmission === undefined
+        ? admissionIdentity === undefined
+          ? 0
+          : 1
+        : previousAdmission.identity === admissionIdentity
+          ? previousAdmission.revision
+          : previousAdmission.revision + 1;
+    this.slot.sceneDataAdmissionRevisions.set(view.identity, {
+      identity: admissionIdentity,
+      revision,
+    });
     const created = createSceneDataCatalog({
       featureIdentity: this.identity,
+      viewIdentity: view.identity,
+      deviceGeneration: deviceGeneration ?? 0,
       generation,
       planIdentity: `${this.identity}:${view.identity}:${generation}`,
       rgba16floatRenderable: this.input.caps.rgba16floatRenderable === true,
+      ...(surfaceAdmission === undefined ? {} : { surfaceAdmission }),
+      ...(surfaceAdmission === undefined ? {} : { surfaceAdmissionRevision: revision }),
     });
     cache.set(view.identity, created);
     return created;
@@ -2418,6 +2491,16 @@ class FeatureFramePreparation {
       ? 'resource-preparation'
       : 'plan-projection',
   ): void {
+    const failure =
+      pendingError !== null && typeof pendingError === 'object'
+        ? (pendingError as { readonly code?: unknown; readonly message?: unknown })
+        : undefined;
+    this.recordConformanceEvent('host-plan-failed', {
+      planFrameNumber: this.input.frameNumber,
+      stage,
+      errorCode: typeof failure?.code === 'string' ? failure.code : null,
+      message: typeof failure?.message === 'string' ? failure.message : null,
+    });
     if (this.requiresPreparation)
       this.batch.markPreparationPending(this.identity, stage, pendingError);
     if (error !== undefined) recordFailure(this.slot, 'plan', error, this.batch.errors);
@@ -2659,6 +2742,12 @@ class FeatureFramePreparation {
       this.slot.order,
       missing,
     );
+    this.recordConformanceEvent('host-plan-failed', {
+      planFrameNumber: this.input.frameNumber,
+      reason: 'missing-capability',
+      errorCode: failure.code,
+      capability: missing,
+    });
     this.batch.errors.push(failure);
     this.cleanupPreparation([() => this.abortResources(), () => this.abortProducerFrame()], 'plan');
     this.batch.host.setStatus(this.identity, 'disabled', errorDescriptor(failure));
@@ -2731,7 +2820,11 @@ class FeatureFramePreparation {
     const planned = this.plannedFrame(row, projectionPlan, projected.value, scopeKey);
     this.projections.push({
       planned,
-      projected: { ...projected.value, scope: scopeKey },
+      projected: {
+        ...projected.value,
+        scope: scopeKey,
+        ...(this.feature.placement === undefined ? {} : { placement: this.feature.placement }),
+      },
       result,
       effects,
       requiresGraphRebuild: this.requiresGraphRebuild(
@@ -2917,6 +3010,22 @@ class FeatureFramePreparation {
       });
       if (isSubmissionSensitive(this.feature, planned)) submissionSensitivePlans.add(planned);
       (result.plans as RenderFeaturePlannedFrame[]).push(planned);
+      if (
+        isFeatureGraphConformanceEnabled(this.input.featureGraphConformanceTrace, this.identity)
+      ) {
+        this.recordConformanceEvent('host-plan-published', {
+          planFrameNumber: this.input.frameNumber,
+          scope: featureScopeKey(planned.scope),
+          generation: planned.generation,
+          placement: planned.placement ?? 'post',
+          signature: planned.signature,
+          passNames: projected.passes.map((pass) => pass.name),
+          resolvedDispatchCount: projected.passes.reduce(
+            (count, pass) => count + (pass.resolvedGpuCompute?.dispatches.length ?? 0),
+            0,
+          ),
+        });
+      }
       for (const [key, entry] of effects)
         (result.fullscreenEffects as Map<string, PostProcessShaderEntry>).set(key, entry);
       if (requiresGraphRebuild) {
@@ -2924,6 +3033,25 @@ class FeatureFramePreparation {
         Object.assign(result, { requiresPreparedResourceKey: true });
       }
     }
+  }
+
+  private recordConformanceEvent(
+    stage: 'host-plan-declared' | 'host-plan-published' | 'host-plan-failed',
+    details: Readonly<
+      Record<
+        string,
+        string | number | boolean | null | readonly (string | number | boolean | null)[]
+      >
+    >,
+  ): void {
+    const trace = this.input.featureGraphConformanceTrace;
+    if (trace === undefined || trace.featureIdentity !== this.identity) return;
+    recordFeatureGraphConformanceEvent(trace, {
+      recordFrameNumber: this.input.recordFrameNumber ?? this.input.frameNumber,
+      featureIdentity: this.identity,
+      stage,
+      details,
+    });
   }
 
   /** Seal this frame's prepared resources once; queue-retired leases wait for completion. */

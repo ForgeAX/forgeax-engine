@@ -1,7 +1,10 @@
 import { decodeDocumentText } from '@forgeax/engine-codec';
 import {
   isMaterialProgramAbi,
+  isShaderCompilerProfile,
   isShaderEntryPointReads,
+  isShaderProgramContract,
+  isShaderReflection,
   type MaterialProgramAbi,
   type ShaderEntryPointReads,
   ShaderSource,
@@ -1104,42 +1107,103 @@ function isValidManifestEntry(value: unknown): value is ManifestEntry {
   const v = value as Record<string, unknown>;
   if (typeof v.hash !== 'string') return false;
   if (!hasStringSource(v, 'wgsl')) return false;
-  // glsl allows string | undefined | null (manifest.json may serialize null as
-  // 'glsl: null').
-  if (v.glsl !== undefined && v.glsl !== null && typeof v.glsl !== 'string') return false;
-  if (typeof v.bindings !== 'string') return false;
-  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
-  return true;
+  return (
+    typeof v.bindings === 'string' &&
+    isValidManifestEntryOptions(v) &&
+    isValidOptionalShaderFacts(v)
+  );
 }
 
 function isValidMaterialShaderManifestEntry(value: unknown): value is MaterialShaderManifestEntry {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (typeof v.identifier !== 'string') return false;
-  if (typeof v.sourcePath !== 'string') return false;
-  if (!hasStringSource(v, 'composedWgsl')) return false;
-  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
-  if (typeof v.paramSchema !== 'string') return false;
+  if (!isValidMaterialManifestRoot(v)) return false;
+  if (!isValidOptionalNonEmptyHash(v.hash)) return false;
+  if (!isValidOptionalShaderFacts(v)) return false;
   if (!Array.isArray(v.variants)) return false;
-  if (!v.variants.every(isValidMaterialShaderManifestVariant)) return false;
-  return (
-    (v.receipt === undefined || isMaterialProgramAbi(v.receipt)) &&
-    (v.uvSetCount === undefined || typeof v.uvSetCount === 'number')
-  );
+  return v.variants.every(isValidMaterialShaderManifestVariant) && isValidOptionalMaterialFacts(v);
 }
 
 function isValidMaterialShaderManifestVariant(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (typeof v.definesKey !== 'string') return false;
-  if (!hasStringSource(v, 'composedWgsl')) return false;
-  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
-  if (typeof v.defines !== 'object' || v.defines === null || Array.isArray(v.defines)) {
-    return false;
-  }
   return (
-    Object.values(v.defines).every((define) => typeof define === 'boolean') &&
+    typeof v.definesKey === 'string' &&
+    hasStringSource(v, 'composedWgsl') &&
+    isValidOptionalNonEmptyHash(v.hash) &&
+    isValidOptionalShaderFacts(v) &&
+    isValidBooleanDefines(v.defines) &&
     (v.receipt === undefined || isMaterialProgramAbi(v.receipt))
+  );
+}
+
+function isValidManifestEntryOptions(v: Record<string, unknown>): boolean {
+  // glsl allows string | undefined | null (manifest.json may serialize null as
+  // 'glsl: null').
+  if (v.glsl !== undefined && v.glsl !== null && typeof v.glsl !== 'string') return false;
+  if (v.identifier !== undefined && (typeof v.identifier !== 'string' || v.identifier.length === 0))
+    return false;
+  return (
+    (v.defines === undefined || isValidBooleanDefines(v.defines)) &&
+    (v.programContract === undefined || isShaderProgramContract(v.programContract))
+  );
+}
+
+function isValidBooleanDefines(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.values(value).every((define) => typeof define === 'boolean');
+}
+
+function isValidOptionalShaderFacts(v: Record<string, unknown>): boolean {
+  return isValidOptionalEntryPoints(v.entryPoints) && isValidOptionalArtifactFacts(v);
+}
+
+function isValidOptionalEntryPoints(value: unknown): boolean {
+  return value === undefined || isShaderEntryPointReads(value);
+}
+
+function isValidOptionalArtifactFacts(v: Record<string, unknown>): boolean {
+  return (
+    isValidOptionalHash(v.hash) &&
+    isValidOptionalSourceDigest(v.sourceDigest) &&
+    isValidOptionalCompilerProfile(v.compilerProfile) &&
+    isValidOptionalReflection(v.reflection)
+  );
+}
+
+function isValidOptionalHash(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function isValidOptionalNonEmptyHash(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length > 0);
+}
+
+function isValidOptionalSourceDigest(value: unknown): boolean {
+  return value === undefined || /^[a-f0-9]{64}$/.test(String(value));
+}
+
+function isValidOptionalCompilerProfile(value: unknown): boolean {
+  return value === undefined || isShaderCompilerProfile(value);
+}
+
+function isValidOptionalReflection(value: unknown): boolean {
+  return value === undefined || isShaderReflection(value);
+}
+
+function isValidMaterialManifestRoot(v: Record<string, unknown>): boolean {
+  return (
+    typeof v.identifier === 'string' &&
+    typeof v.sourcePath === 'string' &&
+    hasStringSource(v, 'composedWgsl') &&
+    typeof v.paramSchema === 'string'
+  );
+}
+
+function isValidOptionalMaterialFacts(v: Record<string, unknown>): boolean {
+  return (
+    (v.receipt === undefined || isMaterialProgramAbi(v.receipt)) &&
+    (v.uvSetCount === undefined || typeof v.uvSetCount === 'number')
   );
 }
 

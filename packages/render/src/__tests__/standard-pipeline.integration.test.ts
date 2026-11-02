@@ -9,7 +9,6 @@ import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../er
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import {
@@ -26,6 +25,7 @@ import {
 } from '../standard-attachments';
 import { addTypedFullscreenPass } from '../typed-render-graph-primitives';
 import { type OpaquePassPlan, planOpaque } from '../world/pass-plan-systems';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 import type { SurfaceProfile } from './render-system-driver';
 
 const rawOnlyProfile: SurfaceProfile = {
@@ -152,6 +152,7 @@ async function build(
   lateOcclusion = false,
   cloudShadowResolution?: number,
   localLights = true,
+  postSceneWriter = false,
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const resolvedTopology = topology(profile, overrides);
@@ -255,7 +256,16 @@ async function build(
             cloudShadowResolution,
             hasFeatureRasterWork: (identity: string) => identity === CLOUD_LAYER_FEATURE_IDENTITY,
           }),
-      contributeFeatures: ({ namedTargets = {}, include, passNames }) => {
+      contributeFeatures: ({ targets, placement, namedTargets = {}, include, passNames }) => {
+        if (postSceneWriter && placement !== 'scene' && Object.keys(namedTargets).length === 0) {
+          const color = targets.find((target) => target.kind === 'scene-color');
+          if (color === undefined) throw new Error('post scene writer lost its color target');
+          return graph.addRasterPass('test-post-scene-writer', {
+            accesses: [{ resource: color.view, usage: 'color-attachment' }],
+            colorAttachments: [{ view: color.view, loadOp: 'load', storeOp: 'store' }],
+            encode: () => undefined,
+          });
+        }
         // Stand-in CloudLayer producers: the shadow before opaque receivers and
         // the composite into the lane's cloud scene target.
         const cloudOutput = passNames?.includes('cloud-layer-shadow')
@@ -459,6 +469,54 @@ async function buildTaa(profile: StandardProfile, overrides?: TopologyOverrides)
   if (!built.ok) return built;
   return graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
 }
+
+describe('scene observation writer ordering', () => {
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('captures the %s scene after generic feature writers and before output', async (renderPath) => {
+    const built = await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath },
+      { camera: { tonemap: 'none', antialias: 'none', bloom: 'off' } },
+      ['linear-hdr'],
+      false,
+      undefined,
+      false,
+      true,
+    );
+    expect(built.ok, built.ok ? '' : JSON.stringify(built.error)).toBe(true);
+    if (!built.ok) return;
+    try {
+      const passes = built.value.inspect().passes;
+      const names = passes.map((pass) => pass.name);
+      const writer = names.indexOf('test-post-scene-writer');
+      const observation = names.indexOf('linear-hdr-observation');
+      expect(writer).toBeGreaterThanOrEqual(0);
+      expect(
+        observation,
+        JSON.stringify(
+          passes.filter((pass) =>
+            ['test-post-scene-writer', 'linear-hdr-observation', 'output-transform'].includes(
+              pass.name,
+            ),
+          ),
+        ),
+      ).toBeGreaterThan(writer);
+      expect(passes[observation]?.dependencies).toContain('test-post-scene-writer');
+      expect(observation).toBeLessThan(names.indexOf('output-transform'));
+      const written = passes[writer]?.accesses.find(
+        (access) => access.usage === 'color-attachment',
+      );
+      expect(written).toBeDefined();
+      expect(passes[observation]?.accesses).toContainEqual({
+        resource: written?.resource,
+        usage: 'copy-src',
+      });
+    } finally {
+      (await built.value.retire()).unwrap();
+    }
+  });
+});
 
 describe('scene fullscreen temporal placement', () => {
   it.each([

@@ -1,19 +1,25 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { FixedTime, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry, createMeshBuilder } from '@forgeax/engine-geometry';
+import { equirectContribution } from '@forgeax/engine-image';
 import {
-  type RenderPipeline,
   type RenderPipelineDescriptor,
   type RhiDevice,
   RhiError,
+  type RenderPipeline as RhiRenderPipeline,
 } from '@forgeax/engine-rhi';
-import { RhiNullCanvasContext, RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
+import {
+  RhiNullCanvasContext,
+  type RhiNullQueue,
+  RhiNullRenderPassEncoder,
+  rhi,
+} from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import {
   createStandardPbrArtifactReceipt,
   STANDARD_PIPELINE_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
-import { ok } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import {
   createDynamicGeometrySourceHost,
@@ -28,17 +34,22 @@ import {
   MeshRenderer,
   PointLight,
   PointLightShadow,
+  Skylight,
   SpotLight,
   Visibility,
   VisibilityStateValue,
 } from '../components';
 import { ANTIALIAS_FXAA, ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import { GpuResidencyCache } from '../device/gpu-residency';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import type { RenderFeature } from '../features/types';
 import { Materials } from '../materials';
+import { standardPipeline } from '../pipeline/standard-pipeline';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { createRenderPublisher } from '../publication/publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
+import type { RenderPipeline as EngineRenderPipeline } from '../render-pipeline';
+import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 type HeldPass = 'color' | 'shadow' | 'transmission';
@@ -62,58 +73,18 @@ struct CandidateVertex { @location(0) position: vec3<f32> }
 @fragment fn fs_gbuffer() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 `;
 
-async function fixture(
-  pass: HeldPass,
-  published = false,
-  pointShadow = false,
-  unlit = false,
-  asyncModules = false,
-  features: readonly RenderFeature<unknown>[] = [],
-) {
-  const identity = { source: 'candidate-pipeline', epoch: 1 };
-  const device: RhiDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  let holdModules = false;
-  const moduleReleases: (() => void)[] = [];
-  const heldModules: string[] = [];
-  const releaseModules = () => {
-    holdModules = false;
-    for (const resolve of moduleReleases.splice(0)) resolve();
-  };
-  let hold = false;
-  let rejected = false;
-  const failure = new RhiError({
-    code: 'webgpu-runtime-error',
-    expected: 'candidate test native pipeline compilation completes',
-    hint: 'deliberate candidate pipeline rejection',
-  });
-  const releases: (() => void)[] = [];
-  const held: RenderPipelineDescriptor[] = [];
-  const created = new Map<RenderPipelineDescriptor, RenderPipeline>();
-  const create = device.createRenderPipeline.bind(device);
-  const compile = (descriptor: RenderPipelineDescriptor) => {
-    const result = create(descriptor);
-    if (result.ok) created.set(descriptor, result.value);
-    return result;
-  };
-  device.createRenderPipeline = compile;
-  // This controls completion of the real RHI-null PSO, not the renderer's
-  // readiness answer. Native WGSL validation has a separate browser gate.
-  const asyncPipelines = vi.fn(async (descriptor: RenderPipelineDescriptor) => {
-    const selected =
-      pass === 'color'
-        ? descriptor.fragment?.entryPoint === 'fs_gbuffer'
-        : pass === 'transmission'
-          ? ['fs_main', 'fs_opaque'].includes(descriptor.fragment?.entryPoint ?? '')
-          : descriptor.label?.includes('default-shadow-caster');
-    const result = compile(descriptor);
-    if (hold && newLayout(descriptor) && selected) {
-      held.push(descriptor);
-      await new Promise<void>((resolve) => releases.push(resolve));
-      if (rejected) throw failure;
-    }
-    return result;
-  });
-  device.createRenderPipelineAsync = asyncPipelines;
+const reflectedClusterAbi = {
+  ...STANDARD_CLUSTER_TEST_REFLECTION,
+  boundGlobals: STANDARD_CLUSTER_TEST_REFLECTION.boundGlobals.map((global) => ({
+    ...global,
+    ...(global.resourceKind === 'storage-buffer'
+      ? { span: global.elementStride ?? global.span }
+      : {}),
+    elementType: global.resourceKind === 'storage-buffer' ? 'LightData' : 'struct',
+  })),
+};
+
+function candidateShaderManifestUrl(): string {
   const source = renderLifecycleManifestUrl();
   const manifest = JSON.parse(decodeURIComponent(source.slice(source.indexOf(',') + 1)));
   for (const entry of manifest.materialShaders) {
@@ -126,11 +97,24 @@ async function fixture(
     }
     if (entry.identifier === 'forgeax::default-standard-pbr') {
       entry.receipt = createStandardPbrArtifactReceipt(false, false);
-      for (const variant of entry.variants)
+      entry.reflection = structuredClone(reflectedClusterAbi);
+      for (const variant of entry.variants) {
+        variant.hash = 'cafe1234';
+        variant.sourceDigest = 'a'.repeat(64);
+        variant.compilerProfile = {
+          id: 'forgeax-material-wgsl-v1',
+          language: 'wgsl',
+          profileVersion: '1',
+          adapterVersion: '1',
+          compilerVersion: '1',
+          nagaVersion: '30.0.1',
+        };
         variant.receipt = createStandardPbrArtifactReceipt(
           false,
           variant.defines.VERTEX_COLOR_AVAILABLE === true,
         );
+        variant.reflection = structuredClone(reflectedClusterAbi);
+      }
     }
     if (entry.identifier === 'forgeax::default-shadow-caster') {
       const standard = manifest.materialShaders.find(
@@ -159,16 +143,78 @@ async function fixture(
       );
     }
   }
+  return `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}`;
+}
+
+async function fixture(
+  pass: HeldPass,
+  published = false,
+  pointShadow = false,
+  unlit = false,
+  asyncModules = false,
+  features: readonly RenderFeature<unknown>[] = [],
+  pipeline?: EngineRenderPipeline,
+) {
+  const identity = { source: 'candidate-pipeline', epoch: 1 };
+  const device: RhiDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const queue = device.queue as RhiNullQueue;
+  let holdModules = false;
+  const moduleReleases: (() => void)[] = [];
+  const heldModules: string[] = [];
+  const releaseModules = () => {
+    holdModules = false;
+    for (const resolve of moduleReleases.splice(0)) resolve();
+  };
+  let hold = false;
+  let rejected = false;
+  const failure = new RhiError({
+    code: 'webgpu-runtime-error',
+    expected: 'candidate test native pipeline compilation completes',
+    hint: 'deliberate candidate pipeline rejection',
+  });
+  const releases: (() => void)[] = [];
+  const held: RenderPipelineDescriptor[] = [];
+  const created = new Map<RenderPipelineDescriptor, RhiRenderPipeline>();
+  const create = device.createRenderPipeline.bind(device);
+  const compile = (descriptor: RenderPipelineDescriptor) => {
+    const result = create(descriptor);
+    if (result.ok) created.set(descriptor, result.value);
+    return result;
+  };
+  device.createRenderPipeline = compile;
+  // This controls completion of the real RHI-null PSO, not the renderer's
+  // readiness answer. Native WGSL validation has a separate browser gate.
+  const asyncPipelines = vi.fn(async (descriptor: RenderPipelineDescriptor) => {
+    const selected =
+      pipeline !== undefined && pipeline !== standardPipeline
+        ? descriptor.fragment?.entryPoint === 'fs_main'
+        : pass === 'color'
+          ? descriptor.fragment?.entryPoint === 'fs_gbuffer'
+          : pass === 'transmission'
+            ? ['fs_main', 'fs_opaque'].includes(descriptor.fragment?.entryPoint ?? '')
+            : descriptor.label?.includes('default-shadow-caster');
+    const result = compile(descriptor);
+    if (hold && newLayout(descriptor) && selected) {
+      held.push(descriptor);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      if (rejected) throw failure;
+    }
+    return result;
+  });
+  device.createRenderPipelineAsync = asyncPipelines;
+  const shaderManifestUrl = candidateShaderManifestUrl();
+  const canvas = {
+    width: 64,
+    height: 64,
+    getContext: () => null,
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as HTMLCanvasElement;
   const host = await createRenderer(
-    {
-      width: 64,
-      height: 64,
-      getContext: () => null,
-      addEventListener() {},
-      removeEventListener() {},
-    } as unknown as HTMLCanvasElement,
+    canvas,
     {
       ...(published ? { publicationSource: identity } : {}),
+      ...(pipeline === undefined ? {} : { pipeline }),
       features,
       rhi: {
         ...rhi,
@@ -192,9 +238,13 @@ async function fixture(
           }),
       },
     },
-    { shaderManifestUrl: `data:application/json,${encodeURIComponent(JSON.stringify(manifest))}` },
+    { shaderManifestUrl },
   );
-  expect((await host.initialization).ok).toBe(true);
+  const initialized = await host.initialization;
+  if (!initialized.ok)
+    throw new Error(`renderer initialization failed: ${String(initialized.error)}`);
+  const errors: unknown[] = [];
+  host.onError((error) => errors.push(error));
   const renderer = exposeRenderer(host);
   expect(
     renderer.setProfile({ ...renderer.inspect().profile, renderPath: 'deferred', ssao: false }).ok,
@@ -276,7 +326,7 @@ async function fixture(
   const publisher = published
     ? createRenderPublisher(world, host.assetRegistry, identity, device.caps)
     : undefined;
-  const draw = async () => {
+  const submit = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     const candidate = publisher?.prepare(0).unwrap();
@@ -295,15 +345,26 @@ async function fixture(
           : { leases: [lease], camera: { lease }, environment: { lease } };
     if (request === undefined) throw new Error('missing frame owner');
     const drawn = renderer.draw(pointShadow ? { ...request, geometryLane: 'direct' } : request);
-    if (!drawn.ok) throw drawn.error;
+    if (!drawn.ok)
+      throw new Error(
+        `renderer draw failed: ${String(drawn.error)}; errors=${JSON.stringify(errors)}`,
+      );
     const receipt = drawn.value;
-    expect((await receipt.completed).ok).toBe(true);
+    return {
+      receipt,
+      recycle: () => {
+        if (packet === undefined) return;
+        const transfer = renderPublicationTransfers(encodeRenderPublication(packet));
+        publisher?.recycle(packet.revision, structuredClone(transfer, { transfer })).unwrap();
+      },
+    };
+  };
+  const draw = async () => {
+    const submitted = await submit();
+    expect((await submitted.receipt.completed).ok).toBe(true);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    if (packet !== undefined) {
-      const transfer = renderPublicationTransfers(encodeRenderPublication(packet));
-      publisher?.recycle(packet.revision, structuredClone(transfer, { transfer })).unwrap();
-    }
-    return receipt;
+    submitted.recycle();
+    return submitted.receipt;
   };
   let firstReady = false;
   for (let frame = 0; frame < 30; frame++) {
@@ -321,15 +382,20 @@ async function fixture(
   };
   return {
     renderer,
+    host,
+    errors,
+    canvas,
     assets: host.assetRegistry,
     world,
     entity,
     camera,
+    queue,
     material,
     previous,
     next,
     candidateMesh,
     lease,
+    submit,
     draw,
     held,
     created,
@@ -371,6 +437,371 @@ async function fixture(
     },
   };
 }
+
+it('keeps the accepted graph when a real custom scene pipeline waits for its PSO', async () => {
+  const f = await fixture('color', false, false, false, false, [], standardPipeline);
+  const renderer = f.renderer;
+  const draws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
+  const indirectDraws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexedIndirect');
+  const acquire = vi.spyOn(RhiNullCanvasContext.prototype, 'getCurrentTexture');
+  let releaseBarrierFence: (() => void) | undefined;
+  let releaseCandidateFence: (() => void) | undefined;
+  let restoreQueueSubmit: (() => void) | undefined;
+  const acceptedGraph = () => renderer.inspect().recoveryEvidence.graph;
+  const acceptedPublications = () => {
+    const inspection = renderer.inspect();
+    return {
+      temporal: inspection.temporal,
+      reflectionProbes: inspection.reflectionProbes,
+      output: {
+        graphPassNames: inspection.output.graphPassNames,
+        standardOutputColor: inspection.output.standardOutputColor,
+        surfaceStorage: inspection.output.surfaceStorage,
+        endpoint: inspection.output.endpoint,
+      },
+      observation: {
+        passNames: inspection.observation.passNames,
+        standardOutputColor: inspection.observation.standardOutputColor,
+        resourceStats: inspection.observation.resourceStats,
+      },
+    };
+  };
+  try {
+    const before = acceptedGraph();
+    if (!before.ready) throw new Error('custom scene graph has no active generation');
+    const graphGenerationBefore = before.generation;
+    const allocationsBefore = renderer.inspect().renderGraphGenerationAllocation;
+    const observationBefore = renderer.inspect().observation;
+    const publicationsBefore = acceptedPublications();
+    const frameCountersBefore = {
+      submissions: renderer.inspect().recoveryEvidence.submissions,
+      receipts: renderer.inspect().recoveryEvidence.receipts,
+    };
+    const encodedBefore = draws.mock.calls.length + indirectDraws.mock.calls.length;
+    const acquiredBefore = acquire.mock.calls.length;
+    const widthBefore = f.canvas.width;
+    f.canvas.width = widthBefore + 8;
+    f.canvas.height += 4;
+    f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+    const queueSubmit = vi.spyOn(f.queue, 'submit').mockImplementationOnce(() =>
+      err(
+        new RhiError({
+          code: 'queue-submit-failed',
+          expected: 'the actual RhiNull pipeline-barrier submission is accepted',
+          hint: 'retry after the one-shot queue submission failure is removed',
+        }),
+      ),
+    );
+    restoreQueueSubmit = () => queueSubmit.mockRestore();
+    let rejectedSubmission: unknown;
+    try {
+      await f.submit();
+    } catch (cause) {
+      rejectedSubmission = cause;
+    }
+    expect(queueSubmit).toHaveBeenCalledTimes(1);
+    restoreQueueSubmit();
+    restoreQueueSubmit = undefined;
+    expect(rejectedSubmission).toBeDefined();
+    expect(f.errors).toContainEqual(expect.objectContaining({ code: 'queue-submit-failed' }));
+    expect(acceptedGraph()).toEqual(before);
+    expect(acceptedPublications()).toEqual(publicationsBefore);
+    expect({
+      submissions: renderer.inspect().recoveryEvidence.submissions,
+      receipts: renderer.inspect().recoveryEvidence.receipts,
+    }).toEqual(frameCountersBefore);
+    expect(
+      renderer
+        .inspect()
+        .renderGraphGenerationAllocation?.entries.find(
+          (entry) => entry.generation === graphGenerationBefore,
+        ),
+    ).toEqual(
+      allocationsBefore?.entries.find((entry) => entry.generation === graphGenerationBefore),
+    );
+    expect(acquire).toHaveBeenCalledTimes(acquiredBefore);
+    expect(draws.mock.calls.length + indirectDraws.mock.calls.length).toBe(encodedBefore);
+
+    releaseBarrierFence = f.queue.holdCompletions();
+    const barrier = await f.submit();
+    const pending = barrier.receipt;
+    expect(pending.presentation).toBe('pending');
+    expect(pending.presentationPendingReason?.code).toBe('scene-pipeline-preparation');
+    expect(f.held.some((descriptor) => newLayout(descriptor))).toBe(true);
+    expect(acceptedGraph()).toEqual(before);
+    expect(
+      renderer
+        .inspect()
+        .renderGraphGenerationAllocation?.entries.find(
+          (entry) => entry.generation === graphGenerationBefore,
+        ),
+    ).toEqual(
+      allocationsBefore?.entries.find((entry) => entry.generation === graphGenerationBefore),
+    );
+    expect(renderer.inspect().observation.frameId).toBe(pending.frameId);
+    expect(renderer.inspect().observation.frameId).toBeGreaterThan(observationBefore.frameId);
+    expect(renderer.inspect().observation.passNames).toEqual(observationBefore.passNames);
+    expect(acceptedPublications()).toEqual(publicationsBefore);
+    expect(renderer.inspect().perFramePassNames).toEqual([]);
+    expect(acquire).toHaveBeenCalledTimes(acquiredBefore);
+    expect(draws.mock.calls.length + indirectDraws.mock.calls.length).toBe(encodedBefore);
+    expect(acceptedGraph()).toEqual(before);
+    let barrierCompleted = false;
+    void pending.completed.then(() => {
+      barrierCompleted = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(barrierCompleted).toBe(false);
+    releaseBarrierFence();
+    releaseBarrierFence = undefined;
+    expect((await pending.completed).ok).toBe(true);
+    barrier.recycle();
+
+    f.release();
+    releaseCandidateFence = f.queue.holdCompletions();
+    const recoverySubmissions: Awaited<ReturnType<typeof f.submit>>[] = [];
+    let ready: Awaited<ReturnType<typeof f.submit>> | undefined;
+    for (let frame = 0; frame < 60 && ready === undefined; frame++) {
+      const submitted = await f.submit();
+      recoverySubmissions.push(submitted);
+      if (submitted.receipt.presentation === 'ready') ready = submitted;
+      else
+        expect(submitted.receipt.presentationPendingReason?.code).toBe(
+          'scene-pipeline-preparation',
+        );
+    }
+    if (ready === undefined) throw new Error('candidate pipeline did not recover within 60 draws');
+    expect(draws.mock.calls.length + indirectDraws.mock.calls.length).toBeGreaterThan(
+      encodedBefore,
+    );
+    const replacement = acceptedGraph();
+    if (!replacement.ready || replacement.generation === graphGenerationBefore)
+      throw new Error('ready scene graph did not promote its candidate generation');
+    const retiring = renderer
+      .inspect()
+      .renderGraphGenerationAllocation?.entries.find(
+        (entry) => entry.roles.includes('retiring') && entry.generation === graphGenerationBefore,
+      );
+    expect(retiring?.retirement).toBe('pending');
+    let readyCompleted = false;
+    void ready.receipt.completed.then(() => {
+      readyCompleted = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(readyCompleted).toBe(false);
+    expect(
+      renderer
+        .inspect()
+        .renderGraphGenerationAllocation?.entries.some(
+          (entry) => entry.generation === graphGenerationBefore,
+        ),
+    ).toBe(true);
+    releaseCandidateFence();
+    releaseCandidateFence = undefined;
+    for (const submitted of recoverySubmissions) {
+      expect((await submitted.receipt.completed).ok).toBe(true);
+      submitted.recycle();
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      renderer
+        .inspect()
+        .renderGraphGenerationAllocation?.entries.some(
+          (entry) => entry.generation === graphGenerationBefore,
+        ),
+    ).toBe(false);
+  } finally {
+    restoreQueueSubmit?.();
+    releaseBarrierFence?.();
+    releaseCandidateFence?.();
+    acquire.mockRestore();
+    draws.mockRestore();
+    indirectDraws.mockRestore();
+    f.release();
+    await f.dispose();
+  }
+});
+
+it('retains the accepted picture while a real equirect producer is pending', async () => {
+  const f = await fixture('color');
+  const draws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
+  const indirectDraws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexedIndirect');
+  const acquire = vi.spyOn(RhiNullCanvasContext.prototype, 'getCurrentTexture');
+  const upload = vi.spyOn(GpuResidencyCache.prototype, '_uploadCubemapFromEquirect');
+  const status = vi.spyOn(GpuResidencyCache.prototype, 'getCubemapStatus');
+  let releaseFence: (() => void) | undefined;
+  const acceptedPublications = () => {
+    const inspection = f.renderer.inspect();
+    return {
+      temporal: inspection.temporal,
+      reflectionProbes: inspection.reflectionProbes,
+      output: {
+        graphPassNames: inspection.output.graphPassNames,
+        standardOutputColor: inspection.output.standardOutputColor,
+        surfaceStorage: inspection.output.surfaceStorage,
+        endpoint: inspection.output.endpoint,
+      },
+      observation: {
+        passNames: inspection.observation.passNames,
+        standardOutputColor: inspection.observation.standardOutputColor,
+        resourceStats: inspection.observation.resourceStats,
+      },
+    };
+  };
+  try {
+    const acceptedGraph = f.renderer.inspect().recoveryEvidence.graph;
+    const acceptedAllocations = f.renderer.inspect().renderGraphGenerationAllocation;
+    const previousObservation = f.renderer.inspect().observation;
+    const previousPublications = acceptedPublications();
+    const previousDrawCount = draws.mock.calls.length + indirectDraws.mock.calls.length;
+    const previousAcquisitions = acquire.mock.calls.length;
+    expect(acceptedGraph.ready).toBe(true);
+    expect(f.renderer.inspect().barrelDistortion.extent).toEqual({
+      width: f.canvas.width,
+      height: f.canvas.height,
+    });
+    f.assets.installDecoder(equirectContribution.kind, equirectContribution.decoder);
+    const source = f.assets
+      .create({
+        kind: 'equirect',
+        width: 4,
+        height: 2,
+        format: 'rgba16float',
+        colorSpace: 'linear',
+        data: new Uint8Array(64),
+      })
+      .unwrap();
+    f.world.spawn({ component: Skylight, data: { equirect: source } }).unwrap();
+    releaseFence = f.queue.holdCompletions();
+
+    const barrier = await f.submit();
+    const pending = barrier.receipt;
+    expect(pending.presentation).toBe('pending');
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(Number(upload.mock.calls[0]?.[1])).toBe(Number(source));
+    expect(status.mock.results.some((result) => result.value === 'pending')).toBe(true);
+    expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(acceptedGraph);
+    expect(acceptedPublications()).toEqual(previousPublications);
+    expect(
+      f.renderer
+        .inspect()
+        .renderGraphGenerationAllocation?.entries.find(
+          (entry) => entry.generation === acceptedGraph.generation,
+        ),
+    ).toEqual(
+      acceptedAllocations?.entries.find((entry) => entry.generation === acceptedGraph.generation),
+    );
+    expect(f.renderer.inspect().perFramePassNames).toEqual([]);
+    expect(f.renderer.inspect().observation.passNames).toEqual(previousObservation.passNames);
+    expect(acquire).toHaveBeenCalledTimes(previousAcquisitions);
+    expect(draws.mock.calls.length + indirectDraws.mock.calls.length).toBe(previousDrawCount);
+    let barrierCompleted = false;
+    void pending.completed.then(() => {
+      barrierCompleted = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(barrierCompleted).toBe(false);
+
+    const projection = upload.mock.results[0]?.value;
+    if (projection === undefined) throw new Error('equirect projection did not return its promise');
+    releaseFence();
+    releaseFence = undefined;
+    expect((await pending.completed).ok).toBe(true);
+    barrier.recycle();
+    expect((await projection).ok).toBe(true);
+    const resumed = await f.draw();
+    expect(resumed.presentation).toBe('ready');
+    expect(status.mock.results.some((result) => result.value === 'ready')).toBe(true);
+    expect(f.renderer.inspect().recoveryEvidence.graph.ready).toBe(true);
+    expect(f.renderer.inspect().perFramePassNames.length).toBeGreaterThan(0);
+    expect(draws.mock.calls.length + indirectDraws.mock.calls.length).toBeGreaterThan(
+      previousDrawCount,
+    );
+    expect(f.errors).toEqual([]);
+  } finally {
+    releaseFence?.();
+    status.mockRestore();
+    upload.mockRestore();
+    acquire.mockRestore();
+    draws.mockRestore();
+    indirectDraws.mockRestore();
+    await f.dispose();
+  }
+});
+
+it('keeps preparation-barrier production state identical with Cluster conformance off or on', async () => {
+  const run = async (conformanceEnabled: boolean) => {
+    const f = await fixture('color', false, false, false, false, [], standardPipeline);
+    let releaseFence: (() => void) | undefined;
+    try {
+      f.host.setClusterWorkObservationForConformance(conformanceEnabled);
+      const productionFacts = () => {
+        const inspection = f.renderer.inspect();
+        return {
+          graph: inspection.recoveryEvidence.graph,
+          temporal: inspection.temporal,
+          reflectionProbes: inspection.reflectionProbes,
+          output: {
+            graphPassNames: inspection.output.graphPassNames,
+            standardOutputColor: inspection.output.standardOutputColor,
+            surfaceStorage: inspection.output.surfaceStorage,
+            endpoint: inspection.output.endpoint,
+          },
+          observation: {
+            passNames: inspection.observation.passNames,
+            standardOutputColor: inspection.observation.standardOutputColor,
+            resourceStats: inspection.observation.resourceStats,
+          },
+        };
+      };
+      const before = productionFacts();
+      const previousGeneration = before.graph.generation;
+      f.canvas.width += 8;
+      f.canvas.height += 4;
+      f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+      releaseFence = f.queue.holdCompletions();
+      const barrier = await f.submit();
+      expect(barrier.receipt.presentation).toBe('pending');
+      expect(barrier.receipt.presentationPendingReason?.code).toBe('scene-pipeline-preparation');
+      expect(productionFacts()).toEqual(before);
+      releaseFence();
+      releaseFence = undefined;
+      expect((await barrier.receipt.completed).ok).toBe(true);
+      barrier.recycle();
+      f.release();
+
+      let ready: Awaited<ReturnType<typeof f.submit>> | undefined;
+      for (let frame = 0; frame < 60 && ready === undefined; frame++) {
+        const submitted = await f.submit();
+        expect((await submitted.receipt.completed).ok).toBe(true);
+        if (submitted.receipt.presentation === 'ready') ready = submitted;
+        else {
+          expect(submitted.receipt.presentationPendingReason?.code).toBe(
+            'scene-pipeline-preparation',
+          );
+          submitted.recycle();
+        }
+      }
+      if (ready === undefined) throw new Error('pipeline barrier did not recover within 60 draws');
+      expect(ready.receipt.presentation).toBe('ready');
+      const after = productionFacts();
+      expect(after.graph.ready).toBe(true);
+      expect(after.graph.generation).toBeGreaterThan(previousGeneration);
+      if (conformanceEnabled) expect(f.host.clusterWorkObservationForConformance()).toBeDefined();
+      else expect(f.host.clusterWorkObservationForConformance()).toBeUndefined();
+      ready.recycle();
+      return after;
+    } finally {
+      releaseFence?.();
+      f.release();
+      await f.dispose();
+    }
+  };
+
+  const withoutConformance = await run(false);
+  const withConformance = await run(true);
+  expect(withConformance).toEqual(withoutConformance);
+});
 
 async function drawUntil(f: Awaited<ReturnType<typeof fixture>>, condition: () => boolean) {
   for (let frame = 0; frame < 60 && !condition(); frame++)
@@ -1185,13 +1616,13 @@ it('keeps a published candidate pending while its validated shader module is com
     });
     const original = Materials.standard({ baseColor: [0.2, 0.6, 0.8, 1] });
     if (original.passes === undefined) throw Error('Missing Standard passes');
+    const passes = original.passes.map((pass) =>
+      pass.name === 'forward' ? { ...pass, program: { module: shader } } : pass,
+    );
+    const firstPass = passes[0];
+    if (firstPass === undefined) throw Error('Missing Standard passes');
     const material = f.assets
-      .create({
-        ...original,
-        passes: original.passes.map((pass) =>
-          pass.name === 'forward' ? { ...pass, program: { module: shader } } : pass,
-        ),
-      })
+      .create({ ...original, passes: [firstPass, ...passes.slice(1)] })
       .unwrap();
     const chunk = f.world
       .spawn(

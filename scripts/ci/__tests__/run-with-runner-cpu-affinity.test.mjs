@@ -221,7 +221,7 @@ test('selects the cgroup CPU budget from the process allowed set', () => {
   const result = resolveRunnerCpuAffinity({
     platform: 'linux',
     resources: { cpus: 8, containerized: true },
-    allowedCpus: parseCpuList('4-7,12-19'),
+    allowedCpus: parseCpuList('4-7,12-15'),
     read: () => {
       throw new Error('topology unavailable for logical-window test');
     },
@@ -232,7 +232,7 @@ test('selects the cgroup CPU budget from the process allowed set', () => {
 });
 
 test('uses distinct physical cores when the allowed mask contains SMT siblings', () => {
-  const allowedCpus = parseCpuList('0-15');
+  const allowedCpus = parseCpuList('0-7');
   const read = (path) => {
     const match = /cpu(\d+)\/topology\/thread_siblings_list$/.exec(path);
     if (!match) throw new Error(`unexpected topology read: ${path}`);
@@ -306,58 +306,36 @@ test('does not alter a direct host runner', () => {
   });
 });
 
-test('named shared runners spread bounded CPU windows and keep each binding stable', () => {
-  const allowedCpus = parseCpuList('0-95');
-  const selections = new Set();
-  for (let index = 1; index <= 32; index += 1) {
-    const options = {
+test('quota-only shared runners retain kernel placement instead of colliding on a hash window', () => {
+  for (const runnerName of ['quota-runner-a', 'quota-runner-b']) {
+    const result = resolveRunnerCpuAffinity({
       platform: 'linux',
       resources: { cpus: 8, containerized: true },
-      allowedCpus,
-      runnerName: `shared-runner-${index}`,
-      read: () => {
-        throw new Error('topology unavailable for logical-window test');
-      },
-    };
-    const first = resolveRunnerCpuAffinity(options);
-    assert.deepEqual(resolveRunnerCpuAffinity(options), first, 'the same runner remains stable');
-    const selected = parseCpuList(first.selectedCpuList);
-    assert.equal(first.selectedCpuCount, 8);
-    assert.equal(selected.length, 8);
-    assert.ok(
-      selected.every((cpu) => allowedCpus.includes(cpu)),
-      'never escapes the allowed set',
-    );
-    selections.add(first.selectedCpuList);
+      allowedCpus: parseCpuList('0-95'),
+      runnerName,
+      read: (path) => /cpu(\d+)\/topology/.exec(path)?.[1] ?? '',
+    });
+    assert.equal(result.mode, 'none');
+    assert.equal(result.reason, 'shared-cpu-set-with-quota');
+    assert.equal(result.runnerCpus, 8, 'the cgroup budget remains authoritative');
+    assert.equal(result.allowedCpuList, '0-95');
+    assert.equal(result.selectedCpuList, undefined);
   }
-  assert.ok(selections.size > 1, 'different runners must not all crowd the first CPU window');
 });
 
-test('identity spreading respects a sparse allowed CPU mask and an unnamed local process', () => {
+test('sparse shared masks retain scheduler placement when topology is unavailable', () => {
   const allowedCpus = parseCpuList('4-7,12-15,32-35,48-51');
-  const options = {
+  const result = resolveRunnerCpuAffinity({
     platform: 'linux',
     resources: { cpus: 4, containerized: true },
     allowedCpus,
-    read: (path) => {
-      const match = /cpu(\d+)\/topology\/thread_siblings_list$/.exec(path);
-      if (!match) throw new Error(`unexpected topology read: ${path}`);
-      const cpu = Number(match[1]);
-      const firstSibling = Math.floor(cpu / 2) * 2;
-      return `${firstSibling}-${firstSibling + 1}\n`;
+    read: () => {
+      throw new Error('topology unavailable');
     },
-  };
-  assert.equal(
-    resolveRunnerCpuAffinity({ ...options, runnerName: '' }).selectedCpuList,
-    '4,6,12,14',
-  );
-  for (const runnerName of ['runner-a', 'runner-b', 'runner-c']) {
-    const result = resolveRunnerCpuAffinity({ ...options, runnerName });
-    const selected = parseCpuList(result.selectedCpuList);
-    assert.equal(selected.length, 4);
-    assert.ok(selected.every((cpu) => allowedCpus.includes(cpu)));
-    assert.equal(result.selectedCpuTopology, 'distinct-physical-cores');
-  }
+  });
+  assert.equal(result.mode, 'none');
+  assert.equal(result.allowedCpuList, '4-7,12-15,32-35,48-51');
+  assert.equal(result.selectedCpuList, undefined);
 });
 
 test('kernel correlation is opaque, stable, and optional without changing admission', () => {

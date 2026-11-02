@@ -1,6 +1,12 @@
 import { World } from '@forgeax/engine-ecs';
 import { describe, expect, it } from 'vitest';
-import { AmbientOcclusion, ambientOcclusionParameters } from '../components/ambient-occlusion';
+import {
+  AMBIENT_OCCLUSION_QUALITY_HIGH,
+  AMBIENT_OCCLUSION_QUALITY_LOW,
+  AMBIENT_OCCLUSION_QUALITY_MEDIUM,
+  AmbientOcclusion,
+  ambientOcclusionParameters,
+} from '../components/ambient-occlusion';
 import {
   AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_GTAO,
@@ -125,5 +131,13 @@ describe('AmbientOcclusion public algorithm encodings', () => {
       const data = world.get(entity, AmbientOcclusion).unwrap();
       expect(ambientOcclusionParameters(data).unwrap().algorithm).toBe(algorithm);
     }
+  });
+
+  it('names each closed quality encoding used by the f32 component field', () => {
+    expect({
+      low: AMBIENT_OCCLUSION_QUALITY_LOW,
+      medium: AMBIENT_OCCLUSION_QUALITY_MEDIUM,
+      high: AMBIENT_OCCLUSION_QUALITY_HIGH,
+    }).toEqual({ low: 0, medium: 1, high: 2 });
   });
 });

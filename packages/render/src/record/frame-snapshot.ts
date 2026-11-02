@@ -190,7 +190,8 @@ export interface CurrentGraphTarget {
   /** Stable opaque identity for this RHI handle during the renderer lifetime. */
   readonly textureIdentity: number;
   readonly descriptor: ResolvedColorTargetDescriptor;
-  readonly frameId: number;
+  /** RenderSystem-local recording number for the last encoded target frame. */
+  readonly recordFrameNumber: number;
   /** Monotonic identity of the compiled graph that owns this texture. */
   readonly graphGeneration: number;
 }
@@ -319,7 +320,7 @@ export type GraphTargetCaptureRequest =
         /** Optional caller binding; when present it is checked at copy time. */
         readonly identity?: {
           readonly graphGeneration: number;
-          readonly frameId: number;
+          readonly recordFrameNumber: number;
           readonly textureIdentity: number;
         };
       };
@@ -513,6 +514,8 @@ export interface InstalledFrameGraph {
  * lifetime).
  */
 export interface RenderFrameState {
+  /** Graph-owned light-texture preparation queued by this view for its shared frame encoder. */
+  pendingLightTextureResamples?: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[];
   /** A required non-drawing pipeline request has not completed this record. */
   pipelinePreparationPending?: boolean;
   pipelinePreparationPendingReason?: FramePresentationPendingReason;
@@ -550,6 +553,22 @@ export interface RenderFrameState {
   stagedMotionBlurExecution?: { readonly receipt: MotionBlurExecutionReceipt | undefined };
   /** Final-submit Standard IBL binding-chain receipt for this frame. */
   iblBindingInspection?: IblBindingInspection;
+  /** Physical AO region requested inside the no-storage Cluster texture. */
+  standardClusterAoExtent?: { readonly width: number; readonly height: number } | undefined;
+  /** Renderer-internal conformance selection; never populated from authored pipeline data. */
+  gtaoExecutionOverride?: 'fragment' | 'compute' | undefined;
+  /** Current selected view's Standard surface producer admission for stock graph validation. */
+  standardSceneSurfaceAdmission?:
+    | import('../temporal/scene-data').StandardSceneSurfaceAdmission
+    | undefined;
+  /** One-shot internal candidate-preparation fault, scoped to the arming device generation. */
+  gtaoCandidatePreparationFailureGeneration?: number | undefined;
+  /** Default-off scalar Cluster write receipt for AO conformance measurements. */
+  standardClusterWorkConformance?:
+    | import('./cluster-work-conformance').ClusterWorkConformanceState
+    | undefined;
+  /** Demand for the frame-local Standard fallback MRT. */
+  reflectionFallbackDemand?: boolean;
   /** Whether the active camera explicitly requested SSR this frame. */
   ssrRequested?: boolean | undefined;
   /** The reflection-fallback projection generation SSR history last admitted. */

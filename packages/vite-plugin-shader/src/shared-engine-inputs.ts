@@ -4,11 +4,19 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import {
   expandShaderManifestPublication,
+  LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+  LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
   type ManifestEntry,
   type MaterialShaderManifestEntry,
   SHADER_MANIFEST_PUBLICATION_VERSION,
   shaderSourceDigestInput,
 } from '@forgeax/engine-shader';
+import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
+import {
+  isShaderCompilerProfile,
+  isShaderProgramContract,
+  isShaderReflection,
+} from '@forgeax/engine-types';
 import { SURFACE_SLOT_MODULE } from './engine-inputs/load-engine-shader-entries.js';
 import {
   decodePackagedProfiles,
@@ -69,15 +77,105 @@ function readNodePublication(value: unknown): {
  * that placeholder as a successful packaged input silently suppresses the
  * source compiler and leaves the renderer without its Standard entry.
  */
-function hasUsablePackagedEngineShaderInputs(input: {
+type PublishedArtifactFacts = {
+  readonly hash?: string;
+  readonly sourceDigest?: string;
+  readonly compilerProfile?: unknown;
+  readonly reflection?: unknown;
+};
+
+const REQUIRED_RESAMPLING_PROGRAMS = [
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_resample', stage: 'compute' },
+      { name: 'light_texture_reduce', stage: 'compute' },
+    ],
+  },
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_fullscreen', stage: 'vertex' },
+      { name: 'light_texture_resample_fragment', stage: 'fragment' },
+    ],
+  },
+] as const;
+
+function hasCurrentCompilerProfile(value: unknown): boolean {
+  return (
+    isShaderCompilerProfile(value) &&
+    value.id === MATERIAL_WGSL_PROFILE.id &&
+    value.language === MATERIAL_WGSL_PROFILE.language &&
+    value.profileVersion === MATERIAL_WGSL_PROFILE.profileVersion &&
+    value.adapterVersion === MATERIAL_WGSL_PROFILE.adapterVersion &&
+    value.compilerVersion === MATERIAL_WGSL_PROFILE.compilerVersion &&
+    value.nagaVersion === MATERIAL_WGSL_PROFILE.nagaVersion
+  );
+}
+
+function hasCurrentArtifactFacts(value: PublishedArtifactFacts): boolean {
+  return (
+    /^[a-f0-9]{8}$/.test(value.hash ?? '') &&
+    /^[a-f0-9]{64}$/.test(value.sourceDigest ?? '') &&
+    hasCurrentCompilerProfile(value.compilerProfile) &&
+    isShaderReflection(value.reflection)
+  );
+}
+
+function hasCurrentSourceReflection(value: PublishedArtifactFacts): boolean {
+  return (
+    /^[a-f0-9]{8}$/.test(value.hash ?? '') &&
+    /^[a-f0-9]{64}$/.test(value.sourceDigest ?? '') &&
+    isShaderReflection(value.reflection)
+  );
+}
+
+function hasRequiredEntryPoints(
+  value: { readonly entryPoints?: readonly { readonly name: string; readonly stage: string }[] },
+  required: readonly { readonly name: string; readonly stage: string }[],
+): boolean {
+  return required.every((expected) =>
+    value.entryPoints?.some(
+      (candidate) => candidate.name === expected.name && candidate.stage === expected.stage,
+    ),
+  );
+}
+
+/**
+ * Called only after publication expansion has validated pooled source, reflection,
+ * receipt and entry-read indices. Complete engine profiles are strict; custom
+ * runtime manifests remain registry-owned.
+ */
+export function hasCompleteEngineShaderProfile(input: {
   readonly entries: readonly ShaderManifestInput[];
   readonly materialShaders: readonly MaterialShaderManifestEntry[];
 }): boolean {
-  return (
-    input.entries.length > 0 &&
-    input.materialShaders.some((entry) => entry.identifier === 'forgeax::default-standard-pbr') &&
-    input.materialShaders.some((entry) => entry.identifier === 'forgeax::default-unlit')
-  );
+  if (
+    input.entries.length === 0 ||
+    !input.materialShaders.some((entry) => entry.identifier === 'forgeax::default-standard-pbr') ||
+    !input.materialShaders.some((entry) => entry.identifier === 'forgeax::default-unlit') ||
+    !input.entries.every(hasCurrentSourceReflection) ||
+    !input.materialShaders.every(
+      (entry) => hasCurrentArtifactFacts(entry) && entry.variants.every(hasCurrentArtifactFacts),
+    )
+  )
+    return false;
+
+  return REQUIRED_RESAMPLING_PROGRAMS.every((required) => {
+    const direct = input.entries.find((entry) => entry.identifier === required.identifier);
+    const material = input.materialShaders.find(
+      (entry) => entry.identifier === required.identifier,
+    );
+    return (
+      direct !== undefined &&
+      material !== undefined &&
+      hasCurrentSourceReflection(direct) &&
+      isShaderProgramContract(direct.programContract) &&
+      hasRequiredEntryPoints(direct, required.entryPoints) &&
+      hasRequiredEntryPoints(material, required.entryPoints) &&
+      material.variants.every((variant) => hasRequiredEntryPoints(variant, required.entryPoints))
+    );
+  });
 }
 
 const reportedStaleProfiles = new Set<string>();
@@ -191,7 +289,7 @@ export function loadPackagedEngineShaderInputs(
   }
   const manifest = readNodePublication(publication);
   const imports = container.imports;
-  if (!hasUsablePackagedEngineShaderInputs(manifest)) return null;
+  if (!hasCompleteEngineShaderProfile(manifest)) return null;
   if (typeof imports[SURFACE_SLOT_MODULE] !== 'string') {
     throw new Error(`packaged engine shader imports are missing ${SURFACE_SLOT_MODULE}: ${label}`);
   }

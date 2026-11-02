@@ -12,6 +12,7 @@ import { RAY_QUERY_BACKEND_UNSUPPORTED } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
 import { ok } from '../errors.js';
+import type { ResolvedColorTargetDescriptor } from '../graph.js';
 import type { RenderGraphFrame, RenderGraphPassInstrumentation } from '../types.js';
 
 interface Frame extends RenderGraphFrame {
@@ -200,7 +201,7 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     const texture = value(
       graph.importTexture(
         'surface',
-        { format: 'rgba8unorm', size: 'surface', usage: 0x10 },
+        { format: 'rgba8unorm', size: 'surface', usage: 0x15 },
         (frame) => frame.importedTexture as Texture,
       ),
     );
@@ -233,6 +234,17 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     ).toBe(true);
     expect(createViewCount).toBe(0);
     expect(executed).toEqual(['0:raster:present']);
+    const targetAccess = compiled as typeof compiled & {
+      getColorTargetTexture(name: string): Texture | undefined;
+      getColorTargetDescriptor(name: string): ResolvedColorTargetDescriptor | undefined;
+    };
+    expect(targetAccess.getColorTargetTexture('surface')).toBe(frame.importedTexture);
+    expect(targetAccess.getColorTargetDescriptor('surface')).toMatchObject({
+      format: 'rgba8unorm',
+      size: { width: 1, height: 1 },
+      usage: 0x15,
+      sample: 1,
+    });
   });
 
   it('resolves a frame-owned attachment clear value at execution time', () => {

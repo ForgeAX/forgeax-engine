@@ -728,7 +728,8 @@ export class SceneComposition {
     vertexColor: boolean,
     assets = this.options.assets,
   ): MaterialResource {
-    if (world?.world?.assets !== undefined) assets = runtimeAssetRegistry(world.world.assets);
+    if (assets === undefined && world?.world?.assets !== undefined)
+      assets = runtimeAssetRegistry(world.world.assets);
     if (world === undefined || assets === undefined)
       throw new Error(
         'Mesh material preparation requires an accepted resource scope and asset service',

@@ -1,7 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { ClusterBinScratch } from '../../cluster-binner';
 import { type RenderError, StandardLightBudgetExceededError } from '../../errors/render';
-import { MAX_LIGHTS } from '../standard-profile';
 import { createStandardClusterLayout, type StandardClusterLayout } from './layout';
 import type { StandardLightFrame } from './light-frame';
 import { deriveStandardMembership, type StandardClusterMembership } from './membership';
@@ -15,18 +14,20 @@ export interface PreparedStandardLighting extends StandardClusterMembership {
   readonly layout: StandardClusterLayout;
   readonly membershipLightCount: number;
   readonly renderPath: NonNullable<StandardLightFrame['renderPath']>;
-  readonly maxLights: StandardLightFrame['lightCount'];
+  readonly maxLights: number;
 }
 
 export function prepareStandardLighting(
   frame: StandardLightFrame,
+  directLightSlotCapacity: number = frame.lightCount,
   scratch?: ClusterBinScratch,
   owner?: StandardClusterMembershipOwner,
 ): Result<PreparedStandardLighting, RenderError> {
-  if (frame.local.length > frame.lightCount || frame.local.length > MAX_LIGHTS) {
-    return err(new StandardLightBudgetExceededError(frame.local.length, frame.lightCount));
+  const admittedBudget = Math.min(frame.lightCount, directLightSlotCapacity);
+  if (frame.local.length > admittedBudget) {
+    return err(new StandardLightBudgetExceededError(frame.local.length, admittedBudget));
   }
-  const layout = createStandardClusterLayout(frame.grid);
+  const layout = createStandardClusterLayout(directLightSlotCapacity, frame.grid);
   const membership =
     owner === undefined
       ? deriveStandardMembership(frame, layout, scratch)

@@ -28,6 +28,7 @@ type Graph = CompiledRenderGraph<RenderPipelineFrame>;
 export type GraphRejectCode =
   | 'feature-validation-failed'
   | 'topology-failed'
+  | 'ao-unavailable'
   | 'post-chain-pending'
   | 'graph-inputs-failed'
   | 'graph-build-failed'
@@ -94,6 +95,8 @@ export interface GraphEffects {
   /** GPU-driven view buffers the adopted graph now imports. */
   readonly gpuReplacement: PreparedGpuDrivenFrame | undefined;
   readonly error: GraphEffectError | undefined;
+  /** An allocated candidate rejected before adoption; report it while live, then retire it. */
+  readonly rejectedGraph?: Graph;
 }
 
 export type ViewGraphCompileOutcome =
@@ -276,7 +279,16 @@ export function adoptViewGraph(
   }
   if (effects.retireStash !== undefined) retire(frameState, effects.retireStash.graph);
   if (outcome.kind === 'retained' || outcome.kind === 'rejected') {
-    fireGraphEffectError(internals, effects.error);
+    const rejectedGraph = effects.rejectedGraph;
+    if (rejectedGraph !== undefined) {
+      trackGraphGeneration(frameState, rejectedGraph);
+      recordGraphDeviceGeneration(internals, rejectedGraph);
+    }
+    try {
+      fireGraphEffectError(internals, effects.error);
+    } finally {
+      if (rejectedGraph !== undefined) retire(frameState, rejectedGraph);
+    }
     if (GRAPH_BUILD_REJECT_CODES.has(outcome.kind === 'retained' ? outcome.reason : outcome.code)) {
       retirePendingStandardOutputGpu(frameState);
     }

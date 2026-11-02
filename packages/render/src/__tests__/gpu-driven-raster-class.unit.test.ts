@@ -6,11 +6,16 @@ import { type RhiNullDevice, RhiNullRenderPassEncoder, rhi } from '@forgeax/engi
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
+import { DeviceScope } from '../device/device-scope';
 import { GpuResidencyCache, type MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenMaterialResourceClass } from '../extract/gpu-driven';
 import { prepareBatchExecution } from '../gpu-driven/batch-execution';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
+import {
+  type ProjectedRasterClass,
+  selectRasterPipeline,
+} from '../gpu-driven/production-raster-classes';
 import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
 import { GpuBuffer } from '../gpu-resource';
 import { GpuScene } from '../gpu-scene';
@@ -46,6 +51,16 @@ function updateSnapshot(value: RenderableSnapshot) {
     snapshot: value,
   };
 }
+
+it('selects the typed AO input pipeline for material-normal rasterization', () => {
+  const pipelineFor = vi.fn();
+  const aoInputPipelineFor = vi.fn();
+  const batch = {
+    pipelines: { pipelineFor, aoInputPipelineFor },
+  } as unknown as ProjectedRasterClass;
+
+  expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
+});
 
 function mesh(device: RhiNullDevice, indexed = true, withLod = false): MeshGpuHandles {
   const vertex = device
@@ -424,7 +439,11 @@ it.each([
   const errors: unknown[] = [];
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
-  const internals = { device, errorRegistry } as unknown as RenderSystemInternals;
+  const internals = {
+    device,
+    errorRegistry,
+    deviceScope: DeviceScope.create(0, 'view-graph-test'),
+  } as unknown as RenderSystemInternals;
   const pipelineState = {
     format: 'rgba8unorm',
     colorAttachmentFormat: 'rgba8unorm',
@@ -788,7 +807,11 @@ it.each([
   errorRegistry.add((error) => errors.push(error));
   const compile = () => {
     const graph = compileAndAdoptViewGraph({
-      internals: { device, errorRegistry } as unknown as RenderSystemInternals,
+      internals: {
+        device,
+        errorRegistry,
+        deviceScope: DeviceScope.create(0, 'view-graph-test'),
+      } as unknown as RenderSystemInternals,
       frameState: state,
       pipelineState: { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
       camera: makeZeroCameraFallbackSnapshot(),
@@ -986,7 +1009,11 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
   const errors: unknown[] = [];
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
-  const internals = { device, errorRegistry } as unknown as RenderSystemInternals;
+  const internals = {
+    device,
+    errorRegistry,
+    deviceScope: DeviceScope.create(0, 'view-graph-test'),
+  } as unknown as RenderSystemInternals;
   const compile = () =>
     compileAndAdoptViewGraph({
       internals,

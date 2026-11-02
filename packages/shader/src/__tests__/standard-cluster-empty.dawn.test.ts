@@ -19,13 +19,28 @@ ${match}
   );
 }
 
+function directLightSlotDeclaration(text: string): string {
+  const signature = 'struct DirectLightSlot {';
+  const start = text.indexOf(signature);
+  const end = start < 0 ? -1 : text.indexOf('\n};', start);
+  if (start < 0 || end < 0 || end - start > 2048) {
+    throw new Error('Missing bounded production DirectLightSlot declaration in common.wgsl');
+  }
+  if (text.indexOf(signature, start + signature.length) >= 0) {
+    throw new Error('Expected one production DirectLightSlot declaration in common.wgsl');
+  }
+  return text.slice(start, end + '\n};'.length);
+}
+
+const productionCommon = source('common.wgsl');
 const common = `
 #define_import_path forgeax_view::common
 struct View { spotLightViewProj: array<mat4x4<f32>, 4> }
 const view = View();
 @group(0) @binding(0) var spotShadowMap: texture_depth_2d_array;
 @group(0) @binding(1) var shadowSampler: sampler_comparison;
-${source('common.wgsl').match(/fn lightingChannelsMatch\([^}]+\}/)?.[0] ?? ''}
+${directLightSlotDeclaration(productionCommon)}
+${productionCommon.match(/fn lightingChannelsMatch\([^}]+\}/)?.[0] ?? ''}
 `;
 
 it.each([
@@ -136,7 +151,8 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
       usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
     const readback = buffer(2048, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST);
-    const uniform = buffer(32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    // Match all six reflected vec4 rows in the 96-byte Standard Cluster uniform ABI.
+    const uniform = buffer(96, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     // Match the renderer's 96-byte DirectLightSlot and grid.w admitted-count ABI.
     const lightData = new ArrayBuffer(256 * 96);
     const lightFloats = new Float32Array(lightData);
@@ -175,9 +191,13 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
     const clusters = device.createBindGroup({ layout: pipeline.getBindGroupLayout(2), entries });
     const calls: number[][] = [];
     for (const lightCount of [0, 2, 0]) {
-      const payload = new ArrayBuffer(32);
-      new Uint32Array(payload).set([2, 1, 2, lightCount]);
+      const payload = new ArrayBuffer(96);
+      const u32 = new Uint32Array(payload);
+      u32.set([2, 1, 2, lightCount], 0);
       new Float32Array(payload).set([1, 16, Math.log(16), 0], 4);
+      // Six slot vec4s, grid at 256 slots, then the four-cell index list.
+      u32.set([6, 256 * 24, 256 * 24 + 8, 1024], 16);
+      u32.set([2, 1, 0, 0], 20);
       device.queue.writeBuffer(uniform, 0, payload);
       // Four cells: empty, first light, second light, both lights.
       const grid =

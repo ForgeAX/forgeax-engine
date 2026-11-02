@@ -59,7 +59,10 @@ describe('template smoke locked pointer delta', () => {
         slug: 'game-capability-lab',
         roots: ['/apps/game-capability-lab/assets/resonance-forge.pack.ts'],
       },
-      { slug: 'brotato-3d', roots: ['/apps/showcase/brotato-3d/assets/brotato-3d.pack.ts'] },
+      {
+        slug: 'brotato-3d',
+        roots: ['/apps/showcase/brotato-3d/assets/brotato-3d.pack.ts', '/preview/sky.hdr.meta.json'],
+      },
     ];
 
     expect(selectTemplateAssetRoots(rootsByTemplate, selected)).toEqual([
@@ -72,9 +75,24 @@ describe('template smoke locked pointer delta', () => {
         '/apps/showcase/brotato-3d/assets/brotato-3d.pack.ts',
       ]),
     );
+    expect(selectTemplateAssetRoots(rootsByTemplate, ['brotato-3d'])).toEqual([
+      '/apps/showcase/brotato-3d/assets/brotato-3d.pack.ts',
+      '/preview/sky.hdr.meta.json',
+    ]);
     expect(selectTemplateAssetRoots(rootsByTemplate, parseTemplateSmokeSlugs(undefined))).toEqual(
       rootsByTemplate.flatMap(({ roots }) => roots),
     );
+  });
+
+  it('selects a shared external declaration once for the full Preview', () => {
+    const sky = '/preview/sky.hdr.meta.json';
+    const groups = [
+      { slug: 'game-capability-lab', roots: ['/capability/game.pack.json', sky] },
+      { slug: 'brotato-3d', roots: ['/brotato/game.pack.json', sky] },
+    ];
+    expect(selectTemplateAssetRoots(groups, [])).toEqual([
+      '/capability/game.pack.json', sky, '/brotato/game.pack.json',
+    ]);
   });
 
   it('includes importer sidecars without promoting raw source files to roots', () => {
@@ -218,23 +236,22 @@ describe('template smoke server readiness', () => {
   });
 });
 
-describe('game-3d collision startup closure', () => {
-  it('does not scan unrelated Preview fixtures for the isolated game-3d lane', () => {
+describe('template startup asset ownership', () => {
+  it('selects external fixtures with their consuming template', () => {
     expect(viteConfigSource).toContain(
-      "const game3dOnlySmoke =\n  selectedTemplateSlugs.length === 1 && selectedTemplateSlugs[0] === 'game-3d';",
+      "roots: [...gameCapabilityPackRoots, ...externalAssetRoots.filter((root) => existsSync(root))]",
     );
-    expect(viteConfigSource).toContain(
-      "const materialPackages = selectedTemplateSlugs.length > 0 && !selectedTemplateSlugs.includes('game-capability-lab')\n  ? []\n  : [",
-    );
-    expect(viteConfigSource).toContain("...(game3dOnlySmoke || (selectedTemplateSlugs.length === 1 && selectedTemplateSlugs[0] === 'empty')\n        ? []");
-    expect(viteConfigSource).toContain('surfaceEvidencePackRoot');
-    expect(viteConfigSource).toContain('externalAssetRoots.filter((root) => existsSync(root))');
+    expect(viteConfigSource).toContain("slug: 'brotato-3d',\n      roots: [\n        skyMetaPath,");
+    expect(viteConfigSource).not.toContain('const game3dOnlySmoke');
+    expect(viteConfigSource.match(/externalAssetRoots\.filter/g)).toHaveLength(1);
   });
 
-  it('keeps all template roots and external resources while excluding independent evidence fixtures', () => {
-    expect(viteConfigSource).toContain("...(process.env.FORGEAX_TEMPLATE_SMOKE === '1'\n              ? []\n              : [surfaceEvidencePackRoot, previewUiAuthoringMetaPath])");
+  it('keeps the complete template roster and independent evidence fixtures', () => {
     expect(viteConfigSource).toContain('...templatePackRoots,');
-    expect(viteConfigSource).toContain('...externalAssetRoots.filter((root) => existsSync(root))');
+    expect(viteConfigSource).toContain(
+      "...(selectedTemplateSlugs.length > 0 || process.env.FORGEAX_TEMPLATE_SMOKE === '1'",
+    );
+    expect(viteConfigSource).toContain(': [surfaceEvidencePackRoot, previewUiAuthoringMetaPath])');
     expect(smokeSource).toContain('for (const template of templates)');
   });
 });

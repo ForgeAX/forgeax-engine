@@ -2372,6 +2372,7 @@ export function prepareMaterialSnapshot({
   handle: handleRaw,
   world,
   assets: assetsRef,
+  shaderRegistry = assetsRef.shaderRegistry,
   material: programOwner,
   programSelections,
   materialContext,
@@ -2382,6 +2383,7 @@ export function prepareMaterialSnapshot({
   readonly handle: number;
   readonly world: RenderResourceScope;
   readonly assets: AssetRegistry;
+  readonly shaderRegistry?: AssetRegistry['shaderRegistry'];
   readonly material: MaterialAsset;
   readonly programSelections: readonly MaterialProgramSelection[] | undefined;
   readonly materialContext?: MaterialCookRasterContext | undefined;
@@ -2509,8 +2511,7 @@ export function prepareMaterialSnapshot({
   for (const pass of allPasses) {
     const key =
       materialProgramKeys?.[pass.name] ?? runtimeMaterialShaderId(pass.program.module, pass.name);
-    const shader =
-      key === undefined ? undefined : assetsRef.shaderRegistry.findMaterialArtifact(key);
+    const shader = key === undefined ? undefined : shaderRegistry.findMaterialArtifact(key);
     if (
       shader?.ok !== true ||
       key === undefined ||
@@ -2591,6 +2592,8 @@ export function resolveMaterialSnapshot(
   vertexColorAvailable = false,
   geometry: MaterialCookRasterContext['geometry'] = materialContext?.geometry ?? 'mesh',
 ): MaterialSnapshot {
+  // Source assets own author values; recorded program facts come from the receiver.
+  const shaderRegistry = assetsRef.shaderRegistry;
   if (world.world?.assets !== undefined) assetsRef = runtimeAssetRegistry(world.world.assets);
   if (handleRaw === 0) return defaultMaterialSnapshot(handleRaw);
   const cached = materialSnapshotCache?.get(handleRaw);
@@ -2620,6 +2623,7 @@ export function resolveMaterialSnapshot(
     handle: handleRaw,
     world,
     assets: assetsRef,
+    shaderRegistry,
     material: asset,
     programSelections,
     materialContext,

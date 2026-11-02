@@ -104,9 +104,14 @@ const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
 const shadowQualityBrowserFiles = new Set([
   'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts',
+  'packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts',
   'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts',
 ]);
 const exclusiveRunnerBrowserFiles = new Set([
+  // Ordinary and publication IES owners retain all four cases and 19 devices.
+  // Each keeps the original process deadline without competing GPU groups.
+  'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
+  'packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts',
   // Run 41269699158 exhausted a mixed 300 s process. Keep the complete
   // shared-renderer contact matrix away from competing software GPU owners.
   ...shadowQualityBrowserFiles,
@@ -312,11 +317,19 @@ const measuredBrowserSeconds = JSON.parse(
 const measuredBrowserFileSeconds = new Map(Object.entries(measuredBrowserSeconds.files));
 const renderWorkerBrowserFile =
   /^packages\/app\/__tests__\/(?:render-worker[a-z-]*|worker-policy|engine-worker-asset-loss)\.browser\.test\.ts$/;
-function estimatedBrowserFileSeconds(file) {
+function estimatedShadowQualitySeconds(file) {
   // Scheduling estimate until a complete isolated CI receipt is available.
-  if (file === 'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts')
+  if (
+    file === 'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts' ||
+    file === 'packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts'
+  )
     return 120;
   if (file === 'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts') return 180;
+}
+
+function estimatedBrowserFileSeconds(file) {
+  const shadowQualitySeconds = estimatedShadowQualitySeconds(file);
+  if (shadowQualitySeconds !== undefined) return shadowQualitySeconds;
   // Full native/reference/replay journeys. These are scheduling estimates;
   // unknown-file weights grouped them into a 300 s timeout in run 39384469626.
   if (file === 'packages/three/src/__tests__/output.browser.test.ts') return 100;

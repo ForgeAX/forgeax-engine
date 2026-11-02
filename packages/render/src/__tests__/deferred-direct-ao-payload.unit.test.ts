@@ -50,11 +50,26 @@ function fixture(screenAo: boolean, strength: number | undefined) {
     runtime: { device: { queue: { writeBuffer } } },
   };
   const resources = { buffer: (ref: unknown) => ok(ref) };
-  copy.encodeDirect({ clearBuffer: vi.fn() } as never, frame as never, resources as never);
-  return { graph, writeBuffer, raster };
+  const encodeCopy = () =>
+    copy.encodeDirect({ clearBuffer: vi.fn() } as never, frame as never, resources as never);
+  encodeCopy();
+  return { graph, writeBuffer, raster, frame, encodeCopy };
 }
 
 describe('actual deferred direct AO uniform owners', () => {
+  it('uploads the dynamic direct AO strength sequence without changing the deferred payload ABI', () => {
+    const f = fixture(true, 0);
+    const strengths: number[] = [];
+    for (const strength of [0, 1, 0] as const) {
+      f.frame.frameState.installedPipelineConfig.ssao.directLightingStrength = strength;
+      f.encodeCopy();
+      const payload = f.writeBuffer.mock.calls.at(-1)?.[2] as Float32Array | undefined;
+      if (payload === undefined) throw new Error('Deferred lighting parameter upload is missing');
+      strengths.push(payload[4] ?? Number.NaN);
+    }
+    expect(strengths).toEqual([0, 1, 0]);
+  });
+
   it.each([
     undefined,
     0,

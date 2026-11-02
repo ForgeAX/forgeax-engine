@@ -250,14 +250,15 @@ describe('shader publication admission', () => {
   });
   it('restores exact WGSL into program and material rows', async () => {
     expect(await readShaderManifestPublication(publication())).toEqual({
-      entries: [{ hash: 'a', bindings: '[]', wgsl }],
+      entries: [{ hash: 'a', bindings: '[]', sourceDigest: digest, wgsl }],
       materialShaders: [
         {
           identifier: 'material',
           sourcePath: 'material.wgsl',
           paramSchema: '[]',
+          sourceDigest: digest,
           composedWgsl: wgsl,
-          variants: [{ definesKey: '', defines: {}, composedWgsl: wgsl }],
+          variants: [{ definesKey: '', defines: {}, sourceDigest: digest, composedWgsl: wgsl }],
         },
       ],
     });
@@ -287,7 +288,9 @@ describe('shader publication admission', () => {
       materialShaders: [],
     };
     expect(await readShaderManifestPublication(value)).toEqual({
-      entries: [{ hash: 'ordered', bindings: '[]', wgsl: fragments.join('') }],
+      entries: [
+        { hash: 'ordered', bindings: '[]', sourceDigest: digest, wgsl: fragments.join('') },
+      ],
       materialShaders: [],
     });
     await expect(
@@ -347,7 +350,12 @@ describe('shader publication admission', () => {
       materialShaders: [],
     };
     expect(await readShaderManifestPublication(value)).toEqual({
-      entries: fragments.map((source, i) => ({ hash: String(i), bindings: '[]', wgsl: source })),
+      entries: fragments.map((source, i) => ({
+        hash: String(i),
+        bindings: '[]',
+        sourceDigest: digests[i],
+        wgsl: source,
+      })),
       materialShaders: [],
     });
     for (const index of [0, 16, 34]) {
@@ -406,7 +414,7 @@ describe('shader publication admission', () => {
     value.fragments[0] = '// modified while awaiting\n';
     value.fragments[128] = '// modified last source while awaiting\n';
     expect(await pending).toEqual({
-      entries: complete.map((wgsl) => ({ wgsl })),
+      entries: complete.map((wgsl, index) => ({ sourceDigest: digests[index], wgsl })),
       materialShaders: [],
     });
     expect(submitted).toHaveLength(258);

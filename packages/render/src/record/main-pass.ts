@@ -654,7 +654,11 @@ function resolveStandardGroup2(
 ): BindGroup | null {
   const clusteredLighting = c.standardLighting?.kind === 'clustered';
   const hdrpBuffers = clusteredLighting
-    ? getOrCreateHdrpBuffers(c.runtime, c.frameState.installedPipelineConfig?.clusterGrid)
+    ? getOrCreateHdrpBuffers(
+        c.runtime,
+        c.frameState.installedPipelineConfig?.clusterGrid,
+        c.frameState.standardClusterAoExtent,
+      )
     : null;
   const meshGroup2 = clusteredLighting
     ? (resolveHdrpSsaoBindGroup(c, hdrpBuffers) ?? c.hdrpClusterBindGroup)

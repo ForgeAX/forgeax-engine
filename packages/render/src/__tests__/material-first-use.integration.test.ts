@@ -169,6 +169,7 @@ it.each([
           ? ''
           : sorted.map(([key, value]) => `${key}=${value}`).join('+');
         return {
+          ...variant,
           defines,
           definesKey,
           receipt: createStandardPbrArtifactReceipt(false, variant.defines.VERTEX_COLOR_AVAILABLE),

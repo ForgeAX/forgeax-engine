@@ -18,3 +18,10 @@ exposes `window.__captureLeft` / `window.__captureRight` for the
 
 The renderer profile and lane identity are the only configuration difference;
 no pipeline registry or install step is involved.
+
+The two independent hosts initialize concurrently, then their Worlds submit
+the initial scene frames concurrently. Startup logs identify host preparation,
+World preparation and completed-frame boundaries. Both
+ready completion receipts are required before either capture hook is published.
+The Browser startup deadline remains 30 seconds; both renderers, snapshots and
+pixel comparisons retain the ordinary scene path.

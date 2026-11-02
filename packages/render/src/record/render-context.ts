@@ -164,6 +164,10 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  /** Naga-derived Standard Cluster layouts published with the engine shader fleet. */
+  readonly standardClusterAbi?:
+    | import('../light-buffer-layout').StandardClusterReflectedAbi
+    | undefined;
   /** Shared Render World, including synchronous record-stage scratch. */
   readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
   /** Component-owned scope and binding facts for a composed or capture view. */
@@ -377,6 +381,10 @@ export interface PerPassResources {
   ssaoCalcPipeline: RhiRenderPipeline | null;
   ssaoBlurPipeline: RhiRenderPipeline | null;
   ssaoBgl: BindGroupLayout | null;
+  ssaoClusterPackPipeline: RhiRenderPipeline | null;
+  ssaoClusterPackBgl: BindGroupLayout | null;
+  gtaoComputePipeline?: ComputePipeline | null;
+  gtaoComputeBgl?: BindGroupLayout | null;
   ssaoFilteringSampler: Sampler | null;
   ssaoDepthSampler: Sampler | null;
   ssaoFallbackRawView: TextureView | null;
@@ -433,6 +441,10 @@ export interface PipelineState {
   readonly unlitPipeline: RhiRenderPipeline | null;
   /** Producer-resolved Standard PBR UV ABI count for geometry projection. */
   readonly standardPbrShaderUvSetCount: number;
+  /** Reflection-derived Cluster slot/uniform ABI selected during device preparation. */
+  readonly standardClusterAbi?:
+    | import('../light-buffer-layout').StandardClusterReflectedAbi
+    | undefined;
   readonly unlitPipelineMsaa: RhiRenderPipeline | null;
   readonly unlitPipelineHdrMsaa: RhiRenderPipeline | null;
   readonly pbrPipelineLayout: PipelineLayout | null;
@@ -501,6 +513,10 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   viewOwner?: import('../world/view-settlement').ViewSettlementOwner | undefined;
   /** Renderer-shared instance projections of published rows, prepared once at acceptance. */
   readonly instanceCollections?: import('../instances').InstanceProjectionStore | undefined;
+  /** @internal Opt-in bounded trace for one RenderFeature's graph projection. */
+  featureGraphConformanceTrace?: import('../features/feature-graph-conformance-trace').FeatureGraphConformanceTraceState;
+  /** Renderer-owned screen UI is encoded after all views, before the one submit. */
+  encodePresentation?: (encoder: RhiCommandEncoder) => void;
   /** Optional final display target; private camera selection remains with viewOutput. */
   readonly presentationOutput?: Texture | undefined;
   featureSceneInputs?: ReturnType<

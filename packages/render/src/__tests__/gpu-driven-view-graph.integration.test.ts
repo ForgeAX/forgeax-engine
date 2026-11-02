@@ -4,6 +4,7 @@ import type { RhiCommandEncoder } from '@forgeax/engine-rhi';
 import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { DeviceScope } from '../device/device-scope';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { EMPTY_GPU_DRAW_SELECTION } from '../gpu-driven/draw-selection';
 import type { PreparedGpuDrivenFrame } from '../gpu-driven/production-raster';
@@ -212,7 +213,11 @@ describe('GpuDrivenView graph projection', () => {
     const errors: unknown[] = [];
     const errorRegistry = new RhiErrorListenerRegistry();
     errorRegistry.add((error) => errors.push(error));
-    const internals = { device, errorRegistry } as unknown as RenderSystemInternals;
+    const internals = {
+      device,
+      errorRegistry,
+      deviceScope: DeviceScope.create(0, 'view-graph-test'),
+    } as unknown as RenderSystemInternals;
     const pipelineState = {
       format: 'rgba8unorm',
       colorAttachmentFormat: 'rgba8unorm',
@@ -458,7 +463,11 @@ describe('GpuDrivenView graph projection', () => {
     const errors: unknown[] = [];
     const errorRegistry = new RhiErrorListenerRegistry();
     errorRegistry.add((error) => errors.push(error));
-    const internals = { device, errorRegistry } as unknown as RenderSystemInternals;
+    const internals = {
+      device,
+      errorRegistry,
+      deviceScope: DeviceScope.create(0, 'view-graph-test'),
+    } as unknown as RenderSystemInternals;
     const pipelineState = {
       format: 'rgba8unorm',
       colorAttachmentFormat: 'rgba8unorm',

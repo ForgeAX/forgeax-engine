@@ -1,4 +1,10 @@
-import type { GraphResourceResolver } from '@forgeax/engine-render-graph';
+import type {
+  GraphResourceResolver,
+  GraphTexture,
+  GraphTextureView,
+  RenderGraphBuilder,
+  RenderGraphError,
+} from '@forgeax/engine-render-graph';
 import type {
   BindGroupLayout,
   Buffer,
@@ -6,7 +12,7 @@ import type {
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { ok } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   type AtmosphereViews,
   atmosphereBindings,
@@ -33,12 +39,47 @@ import type {
   RenderPipelineTarget,
 } from '../render-pipeline';
 import { getTemporalGpuState, stageTemporalGpuWrite } from '../temporal/gpu';
-import { isSceneDataTarget } from '../temporal/scene-data';
+import {
+  isSceneDataTarget,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_TEMPORAL_V1_SCHEMA,
+  sceneDataTargetOwner,
+} from '../temporal/scene-data';
 import { recordContext } from '../world/view-record-context';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import { extractEntryResourceHandle, getOrCreateFromChainResult } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
 import { translucentViewOffset, VIEW_UNIFORM_BYTES } from './view-ubo';
+
+/** Build semantic sampled views without changing the graph's attachment views. */
+export function projectSceneDataSampledViews(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  semanticTargets: readonly RenderPipelineTarget[],
+  depthViews: Map<GraphTexture, GraphTextureView>,
+): Result<readonly RenderPipelineTarget[], RenderGraphError> {
+  let projected: RenderPipelineTarget[] | undefined;
+  for (const [index, target] of semanticTargets.entries()) {
+    if (
+      !target.sceneDataBindings?.some(
+        (binding) => binding.schema === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+      )
+    ) {
+      projected?.push(target);
+      continue;
+    }
+
+    projected ??= semanticTargets.slice(0, index);
+    let view = depthViews.get(target.texture);
+    if (view === undefined) {
+      const created = builder.view(target.texture, { aspect: 'depth-only' });
+      if (!created.ok) return err(created.error);
+      view = created.value;
+      depthViews.set(target.texture, view);
+    }
+    projected.push({ ...target, view });
+  }
+  return ok(projected ?? semanticTargets);
+}
 
 export function targetResolver(
   targets: readonly RenderPipelineFeatureTarget[],
@@ -87,10 +128,30 @@ export function targetResolver(
       }
     }
     if (isSceneDataTarget(resource)) {
-      const semantic = semanticTargets.find(
-        (candidate) =>
-          candidate.format === resource.format && candidate.sampleCount === resource.sampleCount,
-      );
+      const owner = sceneDataTargetOwner(resource);
+      if (owner === undefined) return undefined;
+      const surfaceSchema = resource.schema !== SCENE_DATA_TEMPORAL_V1_SCHEMA;
+      const semantic = semanticTargets.find((candidate) => {
+        if (candidate.format !== resource.format || candidate.sampleCount !== resource.sampleCount)
+          return false;
+        return (
+          candidate.sceneDataBindings?.some(
+            (binding) =>
+              binding.schema === resource.schema &&
+              binding.owners.some(
+                (candidateOwner) =>
+                  candidateOwner.featureIdentity === owner.featureIdentity &&
+                  candidateOwner.viewIdentity === owner.viewIdentity &&
+                  candidateOwner.planIdentity === owner.planIdentity &&
+                  candidateOwner.generation === owner.generation &&
+                  candidateOwner.deviceGeneration === owner.deviceGeneration &&
+                  (!surfaceSchema ||
+                    (candidateOwner.surfaceAdmissionIdentity === owner.surfaceAdmissionIdentity &&
+                      candidateOwner.surfaceAdmissionRevision === owner.surfaceAdmissionRevision)),
+              ),
+          ) === true
+        );
+      });
       return semantic === undefined
         ? undefined
         : { texture: semantic.texture, view: semantic.view };

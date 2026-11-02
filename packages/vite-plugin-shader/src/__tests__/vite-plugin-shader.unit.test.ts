@@ -32,6 +32,7 @@ import {
   compileFailed,
   compileShader,
   generateParameterModule,
+  type CompileResult as ShaderCompileResult,
 } from '@forgeax/engine-shader-compiler';
 import {
   type MaterialProgramAbi,
@@ -1483,8 +1484,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 35 named engine shader entries',
-      ).toBe(35);
+        'materialShaders[] must contain exactly 37 named engine shader entries',
+      ).toBe(37);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1609,6 +1610,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::default-unlit',
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
+        'forgeax::engine-light-texture-resample-compute',
+        'forgeax::engine-light-texture-resample-fragment',
         'forgeax::engine-ray-path-tracer',
         'forgeax::engine-shadow-variance',
         'forgeax::engine-standard-deferred-lighting',
@@ -1762,6 +1765,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::default-unlit',
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
+          'forgeax::engine-light-texture-resample-compute',
+          'forgeax::engine-light-texture-resample-fragment',
           'forgeax::engine-ray-path-tracer',
           'forgeax::engine-shadow-variance',
           'forgeax::engine-standard-deferred-lighting',
@@ -2396,10 +2401,7 @@ ${MINIMAL_WGSL.trim()}
   interface NodeUrl {
     fileURLToPath: (u: string) => string;
   }
-  interface CompileResultValue {
-    wgsl: string;
-    bindings?: readonly { entries: readonly { binding: number }[] }[];
-  }
+  type CompileResultValue = ShaderCompileResult;
   interface CompileResultOk {
     ok: true;
     readonly value: CompileResultValue;
@@ -2551,7 +2553,45 @@ ${MINIMAL_WGSL.trim()}
         CLUSTER_FORWARD_AVAILABLE: true,
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);
-      if (r.ok) expect(r.value.wgsl.length).toBeGreaterThan(0);
+      if (!r.ok) return;
+      expect(r.value.wgsl.length).toBeGreaterThan(0);
+      const lightData = r.value.reflection.boundGlobals.find(
+        (global) => global.group === 2 && global.binding === 3,
+      );
+      expect(lightData).toMatchObject({
+        resourceKind: 'storage-buffer',
+        addressSpace: 'storage',
+        elementStride: 96,
+        span: 96,
+      });
+      expect(lightData?.members?.map(({ name, offset, type }) => ({ name, offset, type }))).toEqual(
+        [
+          { name: 'position', offset: 0, type: 'vec4<f32>' },
+          { name: 'colorTimesIntensity', offset: 16, type: 'vec4<f32>' },
+          { name: 'direction', offset: 32, type: 'vec4<f32>' },
+          { name: 'auxiliary', offset: 48, type: 'vec4<f32>' },
+          { name: 'metadata', offset: 64, type: 'vec4<u32>' },
+          { name: 'channels', offset: 80, type: 'vec4<u32>' },
+        ],
+      );
+      const clusterUniform = r.value.reflection.boundGlobals.find(
+        (global) => global.group === 2 && global.binding === 6,
+      );
+      expect(clusterUniform).toMatchObject({
+        resourceKind: 'buffer',
+        addressSpace: 'uniform',
+        span: 96,
+      });
+      expect(
+        clusterUniform?.members?.map(({ name, offset, type }) => ({ name, offset, type })),
+      ).toEqual([
+        { name: 'grid', offset: 0, type: 'vec4<u32>' },
+        { name: 'near_far_log', offset: 16, type: 'vec4<f32>' },
+        { name: 'ao', offset: 32, type: 'vec4<u32>' },
+        { name: 'direct_ao', offset: 48, type: 'vec4<f32>' },
+        { name: 'texture', offset: 64, type: 'vec4<u32>' },
+        { name: 'cluster_layout', offset: 80, type: 'vec4<u32>' },
+      ]);
     });
 
     it('(a.1) HDRP uniform downlevel publishes integer-texture clusters without storage', async () => {

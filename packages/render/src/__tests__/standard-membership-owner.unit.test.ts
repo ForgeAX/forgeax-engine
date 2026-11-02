@@ -26,14 +26,14 @@ describe('stock view Cluster membership owner', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     const firstFrame = frame();
-    const first = prepareStandardLighting(firstFrame, scratch, owner).unwrap();
+    const first = prepareStandardLighting(firstFrame, undefined, scratch, owner).unwrap();
     const nextFrame = {
       ...firstFrame,
       local: firstFrame.local.map((light) => ({ ...light, kind: 'spot' as const, shadowed: true })),
       renderPath: 'deferred' as const,
     };
     for (let index = 0; index < 20; index++) {
-      const next = prepareStandardLighting(nextFrame, scratch, owner).unwrap();
+      const next = prepareStandardLighting(nextFrame, undefined, scratch, owner).unwrap();
       expect(next.clusterGrid).toBe(first.clusterGrid);
       expect(next.lightIndexList).toBe(first.lightIndexList);
       expect(next.lightBounds).toBe(first.lightBounds);
@@ -49,12 +49,12 @@ describe('stock view Cluster membership owner', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     const input = frame();
-    let previous = prepareStandardLighting(input, scratch, owner).unwrap();
+    let previous = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
     for (const matrix of [input.view, input.projection]) {
       for (let index = 0; index < 16; index++) {
         const oldGrid = previous.clusterGrid.slice();
         matrix[index] = (matrix[index] ?? 0) + 0.001;
-        const next = prepareStandardLighting(input, scratch, owner).unwrap();
+        const next = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
         const fresh = prepareStandardLighting(input).unwrap();
         expect(next.clusterGrid).not.toBe(previous.clusterGrid);
         expect(next.clusterGrid).toEqual(fresh.clusterGrid);
@@ -70,7 +70,7 @@ describe('stock view Cluster membership owner', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     let input = frame();
-    let previous = prepareStandardLighting(input, scratch, owner).unwrap();
+    let previous = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
     const changes: ((input: StandardLightFrame) => StandardLightFrame)[] = [
       (value) => ({ ...value, near: 0.2 }),
       (value) => ({ ...value, far: 80 }),
@@ -99,7 +99,7 @@ describe('stock view Cluster membership owner', () => {
     ];
     for (const change of changes) {
       input = change(input);
-      const next = prepareStandardLighting(input, scratch, owner).unwrap();
+      const next = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
       const fresh = prepareStandardLighting(input).unwrap();
       expect(next.clusterGrid).not.toBe(previous.clusterGrid);
       expect(next.clusterGrid).toEqual(fresh.clusterGrid);
@@ -107,7 +107,12 @@ describe('stock view Cluster membership owner', () => {
       expect(next.lightBounds).toEqual(fresh.lightBounds);
       previous = next;
     }
-    const independent = prepareStandardLighting(input, createClusterBinScratch(), owner).unwrap();
+    const independent = prepareStandardLighting(
+      input,
+      undefined,
+      createClusterBinScratch(),
+      owner,
+    ).unwrap();
     expect(independent.clusterGrid).not.toBe(previous.clusterGrid);
     expect(independent.clusterGrid).toEqual(previous.clusterGrid);
   });
@@ -116,14 +121,15 @@ describe('stock view Cluster membership owner', () => {
     const owner = new StandardClusterMembershipOwner();
     const scratch = createClusterBinScratch();
     const input = frame();
-    const first = prepareStandardLighting(input, scratch, owner).unwrap();
+    const first = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
+    expect(prepareStandardLighting(input, 0, scratch, owner).ok).toBe(false);
     const tooMany = {
       ...input,
       local: Array.from({ length: 33 }, () => input.local[0]).filter(
         (value) => value !== undefined,
       ),
     };
-    expect(prepareStandardLighting(tooMany, scratch, owner).ok).toBe(false);
+    expect(prepareStandardLighting(tooMany, undefined, scratch, owner).ok).toBe(false);
     const overflowing = {
       ...input,
       grid: { x: 32, y: 32, z: 33 },
@@ -134,14 +140,14 @@ describe('stock view Cluster membership owner', () => {
         shadowed: false,
       })),
     };
-    const rejected = prepareStandardLighting(overflowing, scratch, owner);
+    const rejected = prepareStandardLighting(overflowing, undefined, scratch, owner);
     expect(rejected.ok).toBe(false);
     if (!rejected.ok) expect(rejected.error.code).toBe('standard-cluster-index-overflow');
-    const recovered = prepareStandardLighting(input, scratch, owner).unwrap();
+    const recovered = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
     expect(recovered.clusterGrid).toBe(first.clusterGrid);
     expect(recovered.lightBounds).toEqual(first.lightBounds);
     owner.clear();
-    const restarted = prepareStandardLighting(input, scratch, owner).unwrap();
+    const restarted = prepareStandardLighting(input, undefined, scratch, owner).unwrap();
     expect(restarted.clusterGrid).not.toBe(first.clusterGrid);
     expect(restarted.clusterGrid).toEqual(first.clusterGrid);
   });
@@ -150,13 +156,13 @@ describe('stock view Cluster membership owner', () => {
     const input = frame();
     const firstOwner = new StandardClusterMembershipOwner();
     const secondOwner = new StandardClusterMembershipOwner();
-    const first = prepareStandardLighting(input, undefined, firstOwner).unwrap();
-    expect(prepareStandardLighting(input, undefined, firstOwner).unwrap().clusterGrid).toBe(
-      first.clusterGrid,
-    );
-    expect(prepareStandardLighting(input, undefined, secondOwner).unwrap().clusterGrid).not.toBe(
-      first.clusterGrid,
-    );
+    const first = prepareStandardLighting(input, undefined, undefined, firstOwner).unwrap();
+    expect(
+      prepareStandardLighting(input, undefined, undefined, firstOwner).unwrap().clusterGrid,
+    ).toBe(first.clusterGrid);
+    expect(
+      prepareStandardLighting(input, undefined, undefined, secondOwner).unwrap().clusterGrid,
+    ).not.toBe(first.clusterGrid);
     expect(prepareStandardLighting(input).unwrap().clusterGrid).not.toBe(first.clusterGrid);
     expect(prepareStandardLighting(input).unwrap().clusterGrid).not.toBe(
       prepareStandardLighting(input).unwrap().clusterGrid,

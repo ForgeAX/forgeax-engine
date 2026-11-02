@@ -26,7 +26,11 @@
 
 use std::collections::HashMap;
 
+use crate::naga::write_checked_wgsl;
 use naga_oil::compose::{
+    comment_strip_iter::CommentReplaceExt,
+    preprocess::Preprocessor,
+    tokenizer::{Token, Tokenizer},
     ComposableModuleDescriptor, Composer, ComposerError, ComposerErrorInner, NagaModuleDescriptor,
     ShaderDefValue, ShaderLanguage,
 };
@@ -63,8 +67,10 @@ pub fn compose_shader(
     // progress, the remaining failures are genuine errors and we surface the
     // first one (which preserves the legacy shader-import-not-found contract
     // when an import target truly is absent from the map).
-    let mut pending: Vec<(String, String)> =
-        imports.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut pending: Vec<(String, String)> = imports
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     while !pending.is_empty() {
         let mut next_pending: Vec<(String, String)> = Vec::new();
         let mut last_err: Option<ComposerError> = None;
@@ -95,6 +101,8 @@ pub fn compose_shader(
         pending = next_pending;
     }
 
+    reject_imported_padding(&composer, entry_source, &shader_defs)?;
+
     let module = composer
         .make_naga_module(NagaModuleDescriptor {
             source: entry_source,
@@ -116,9 +124,110 @@ pub fn compose_shader(
         ))
     })?;
 
-    naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty()).map_err(
-        |e| JsError::new(&format!("shader-compile-failed: wgsl writeback failed: {e}")),
-    )
+    write_checked_wgsl(&module, &info)
+        .map_err(|error| JsError::new(&format!("shader-compile-failed: {error}")))
+}
+
+/// Naga Oil's imported-module writer currently drops explicit member padding
+/// attributes while converting imported WGSL through its generated header.
+/// Use the same public preprocessor that will select those imports/branches,
+/// then reject the active attribute tokens before that lossy writer runs.
+///
+/// This boundary intentionally does not parse attribute arguments or derive
+/// buffer layout. The checked WGSL writer below remains the sole layout guard
+/// for the final Naga module.
+fn reject_imported_padding(
+    composer: &Composer,
+    entry_source: &str,
+    option_defs: &HashMap<String, ShaderDefValue>,
+) -> Result<(), JsError> {
+    let preprocessor = Preprocessor::default();
+    let entry_metadata = preprocessor
+        .get_preprocessor_metadata(entry_source, true)
+        .map_err(|error| {
+            JsError::new(&format!(
+                "shader-compile-failed: naga-oil-import-layout-admission could not inspect entry defines: {error:?}"
+            ))
+        })?;
+
+    // make_naga_module extends option definitions with entry-source defines,
+    // then merges each selected imported module's definition map and rejects
+    // conflicts. Mirror those exact merge rules for the preflight token view.
+    let mut effective_defs = option_defs.clone();
+    effective_defs.extend(entry_metadata.defines);
+    let mut module_names: Vec<_> = composer.module_sets.keys().collect();
+    module_names.sort();
+    for module_name in &module_names {
+        let Some(module) = composer.module_sets.get(*module_name) else {
+            continue;
+        };
+        let mut definition_names: Vec<_> = module.shader_defs.keys().collect();
+        definition_names.sort();
+        for define_name in definition_names {
+            let Some(value) = module.shader_defs.get(define_name) else {
+                continue;
+            };
+            if effective_defs
+                .get(define_name)
+                .is_some_and(|previous| previous != value)
+            {
+                return Err(JsError::new(&format!(
+                    "shader-compile-failed: naga-oil-import-layout-admission found inconsistent shader definition '{define_name}' while merging imported module '{module_name}'"
+                )));
+            }
+            effective_defs.insert(define_name.clone(), *value);
+        }
+    }
+
+    for module_name in module_names {
+        let Some(module) = composer.module_sets.get(module_name) else {
+            continue;
+        };
+        // Directives can separate an attribute's @ from its name. Only skip
+        // preprocessing when no padding-name token exists at all; conditional
+        // selection cannot introduce one. Selected modules still validate axes.
+        if !may_contain_padding_attribute(&module.sanitized_source) {
+            continue;
+        }
+        let preprocessed = preprocessor
+            .preprocess(&module.sanitized_source, &effective_defs)
+            .map_err(|error| {
+                JsError::new(&format!(
+                    "shader-compile-failed: naga-oil-import-layout-admission could not preprocess imported module '{module_name}': {error:?}"
+                ))
+            })?;
+        if let Some(attribute) = imported_padding_attribute(&preprocessed.preprocessed_source) {
+            return Err(JsError::new(&format!(
+                "shader-compile-failed: naga-oil-import-layout-admission rejected active @{attribute} in imported module '{module_name}'; the Naga Oil imported-WGSL writer drops custom member-padding metadata, so this path cannot guarantee the buffer ABI. Use a naturally laid-out WGSL buffer whose host ABI matches Naga's reflected layout, or a writer that preserves the reflected padding. No shader artifact was emitted."
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn may_contain_padding_attribute(source: &str) -> bool {
+    let mut lines = source.lines();
+    let active_source = lines.replace_comments().collect::<Vec<_>>().join("\n");
+    Tokenizer::new(&active_source, false)
+        .any(|token| matches!(token, Token::Identifier("align" | "size", _)))
+}
+
+fn imported_padding_attribute(source: &str) -> Option<&'static str> {
+    let mut lines = source.lines();
+    let active_source = lines.replace_comments().collect::<Vec<_>>().join("\n");
+    let mut tokens = Tokenizer::new(&active_source, false).peekable();
+    while let Some(token) = tokens.next() {
+        if !matches!(token, Token::Other('@', _)) {
+            continue;
+        }
+        match tokens.next() {
+            Some(Token::Identifier("align", _)) => return Some("align"),
+            Some(Token::Identifier("size", _)) => return Some("size"),
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_imports_json(raw: &str) -> Result<HashMap<String, String>, JsError> {

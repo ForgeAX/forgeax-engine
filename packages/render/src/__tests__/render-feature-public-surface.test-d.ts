@@ -5,6 +5,14 @@ import type {
   RenderFeatureExtractContext,
   RenderFeaturePlan,
   RenderFeaturePlanContext,
+  SceneDataSchemaId,
+  SceneDataTarget,
+  SceneDataUnavailableDetail,
+} from '@forgeax/engine-render';
+import {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  SceneDataUnavailableError,
 } from '@forgeax/engine-render';
 import { ok } from '@forgeax/engine-types';
 
@@ -45,6 +53,40 @@ const errorDescriptor = (error: RenderError): RenderFeatureErrorDescriptor | und
 
 void errorDescriptor;
 void feature;
+
+const standardSurfaceSchemas: readonly SceneDataSchemaId[] = [
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+];
+
+function requireStandardSurfaceInputs(view: RenderFeaturePlanContext['views'][number]) {
+  const normal: SceneDataTarget<typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA> =
+    view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA);
+  const depth: SceneDataTarget<typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA> =
+    view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA);
+  return { normal, depth };
+}
+
+const missingSurfaceProducer: SceneDataUnavailableDetail = {
+  featureIdentity: 'surface-consumer',
+  schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  lane: 'direct',
+  reason: 'producer-missing',
+  missingContributorIds: [],
+  omittedMissingContributorCount: 0,
+  recovery: 'next-frame',
+};
+const incompleteSurfaceCoverage: SceneDataUnavailableDetail = {
+  ...missingSurfaceProducer,
+  reason: 'coverage-incomplete',
+  missingContributorIds: ['world:0/entity:42/material:custom'],
+};
+const missingSurfaceError = new SceneDataUnavailableError(missingSurfaceProducer);
+const incompleteSurfaceError = new SceneDataUnavailableError(incompleteSurfaceCoverage);
+void standardSurfaceSchemas;
+void requireStandardSurfaceInputs;
+void missingSurfaceError;
+void incompleteSurfaceError;
 
 // The renderer host and construction context are internal implementation seams.
 // @ts-expect-error host internals are not part of the render root surface

@@ -191,18 +191,37 @@ test('fixture encoding guard follows the current Browser roster and retains prot
 });
 
 test('IES shares only ordinary assembly and retains independent publication and replay devices', () => {
-  const file = 'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts';
-  const counts = { available: true, deviceRequests: 19 };
-  assert.doesNotThrow(() => checkBrowserWorkBudget(file, counts, budgets, 4));
-  assert.throws(
-    () => checkBrowserWorkBudget(file, { ...counts, deviceRequests: 20 }, budgets, 4),
-    /exceeded/,
-  );
-  assert.throws(
-    () => checkBrowserWorkBudget(file, { ...counts, deviceRequests: 18 }, budgets, 4),
-    /cold-device/,
-  );
-  assert.throws(() => checkBrowserWorkBudget(file, counts, budgets, 3), /case budget/);
+  const owners = [
+    ['ies-local-lights', 9],
+    ['ies-local-lights-publication', 10],
+  ];
+  let cases = 0;
+  let devices = 0;
+  for (const [name, expectedDevices] of owners) {
+    const file = `packages/runtime/src/__tests__/${name}.browser.test.ts`;
+    assert.equal(budgets[file]?.minimumCases, 2);
+    const counts = { available: true, deviceRequests: expectedDevices };
+    assert.doesNotThrow(() => checkBrowserWorkBudget(file, counts, budgets, 2));
+    for (const [delta, error] of [
+      [1, /exceeded/],
+      [-1, /cold-device/],
+    ])
+      assert.throws(
+        () =>
+          checkBrowserWorkBudget(
+            file,
+            { ...counts, deviceRequests: expectedDevices + delta },
+            budgets,
+            2,
+          ),
+        error,
+      );
+    assert.throws(() => checkBrowserWorkBudget(file, counts, budgets, 1), /case budget/);
+    cases += budgets[file].minimumCases;
+    devices += budgets[file].minimumDeviceRequests;
+  }
+  assert.equal(cases, 4);
+  assert.equal(devices, 19);
 });
 
 test('fixed replay workloads reject repeated native queue submissions', () => {

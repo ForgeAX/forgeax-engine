@@ -79,7 +79,7 @@ it('refreshes hot composition recency and evicts validation beyond its aggregate
   const baseline = (
     await compiler.compileShader('@compute @workgroup_size(1) fn main() {}')
   ).unwrap();
-  const padding = `/*${'x'.repeat(2 * 1024 * 1024)}*/`;
+  const padding = `/*${'x'.repeat(4 * 1024 * 1024)}*/`;
   const compose = vi
     .spyOn(naga, 'composeShader')
     .mockImplementation(async (source) => `${source}\n${padding}`);
@@ -440,7 +440,7 @@ it('retires cold compositions before discarding the current validation working s
   const baseline = (
     await compiler.compileShader('@compute @workgroup_size(1) fn main() {}')
   ).unwrap();
-  const padding = `/*${'x'.repeat(2 * 1024 * 1024)}*/`;
+  const padding = `/*${'x'.repeat(4 * 1024 * 1024)}*/`;
   const compose = vi
     .spyOn(naga, 'composeShader')
     .mockImplementation(async (source) => `${source}\n${padding}`);

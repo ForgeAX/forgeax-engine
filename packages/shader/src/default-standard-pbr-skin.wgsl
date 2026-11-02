@@ -6,6 +6,7 @@
 #import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment, evaluateStandardDirect}
 #import forgeax_pbr::gbuffer_output::{GBufferOutput, encodeStandardGBuffer}
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
 
 #import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData, surfaceGeometryNormal}
@@ -44,7 +45,7 @@
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactorAtPixel}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #ifdef CLUSTER_FORWARD_AVAILABLE
-#import forgeax_standard::cluster::{evaluateStandardClusterLights, sampleStandardAmbientOcclusion}
+#import forgeax_standard::cluster::{evaluateStandardClusterLights, get_ssao_direct_lighting_strength, sampleStandardAmbientOcclusion}
 #endif
 
 #define_import_path forgeax_material::pbr-skin
@@ -1175,12 +1176,15 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   var ambient = (environment.diffuse + environment.specular) * (vec3<f32>(1.0) - coatF) * ao;
   var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * ao;
 #ifdef CLUSTER_FORWARD_AVAILABLE
+  var screenAo = 1.0;
 #if STORAGE_BUFFER_AVAILABLE == true
-  let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
+  screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
     ssaoBlurredTexture, ssaoBlurredSampler);
+#else
+  screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
+#endif
   ambient *= screenAo;
   reflectionFallback *= screenAo;
-#endif
 #endif
   var color = ambient;
 #ifdef TRANSMISSION_AVAILABLE
@@ -1303,7 +1307,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
       in.clip.xy,
     );
   }
-  color += evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,
+  var directRadiance = evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,
     physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow,
     receiveShadows, in.surfaceData.z, false,
     useDirectDfgLut,
@@ -1311,6 +1315,10 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
     directDfgLut, irradianceSampler,
 #endif
   ).radiance;
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  directRadiance *= mix(1.0, screenAo, get_ssao_direct_lighting_strength());
+#endif
+  color += directRadiance;
 // CLUSTER_FORWARD_AVAILABLE
 #ifdef SHEEN_AVAILABLE
   var sheenColor = material.sheenColor;
@@ -1447,11 +1455,19 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   );
   let directionalClearcoat = select(vec3<f32>(0.0), view_apply_direct_solar(view, clearcoatDirect, in.worldPos),
     lightingChannelsMatch(view.lightingChannels, in.surfaceData.z));
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  let directionalClearcoatAo = directionalClearcoat *
+    mix(1.0, screenAo, get_ssao_direct_lighting_strength());
+#else
+  let directionalClearcoatAo = directionalClearcoat;
+#endif
   var clearcoatEnvironment = clearcoatIbl * specularEnvironmentScale * ao;
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #if STORAGE_BUFFER_AVAILABLE == true
   clearcoatEnvironment *= sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
     ssaoBlurredTexture, ssaoBlurredSampler);
+#else
+  clearcoatEnvironment *= sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
 #endif
 #endif
   let baseAttenuation=1.0-evaluateClearcoatFresnel(dot(clearcoatNormalValue,v),clearcoatFactor);
@@ -1461,7 +1477,7 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
 #endif
   color = evaluateClearcoatLayer(
     color,
-    clearcoatEnvironment + directionalClearcoat,
+    clearcoatEnvironment + directionalClearcoatAo,
     dot(clearcoatNormalValue, v),
     clearcoatFactor,
   );
@@ -1502,6 +1518,18 @@ fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardP
 @fragment
 fn fs_gbuffer(in : VsOut, @builtin(front_facing) frontFacing : bool) -> GBufferOutput {
   return skinGBuffer(standardParallaxInput(in), frontFacing);
+}
+
+// Forward AO sees the deformed, skinned and material-normal-mapped Surface.
+@fragment
+fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
+  let rawGeometry = surfaceGeometryNormal(dpdx(in.worldPos), dpdy(in.worldPos), vec3<f32>(0.0));
+  let receiverNormal = select(in.worldNormal * select(-1.0, 1.0, frontFacing), rawGeometry,
+    dot(rawGeometry, rawGeometry) > 0.0);
+  let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
+  let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+  alphaTestSurface(surface);
+  return encodeStandardNormalRoughness(surface.normalWS, 1.0);
 }
 
 // Deformed draws publish no visible-surface rows (their posed triangles have no

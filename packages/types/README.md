@@ -12,6 +12,15 @@ The Pack v2 wire envelope still requires its `refs` array. Catalog retains this
 producer fact so Scene binding can distinguish World handles from reference
 indexes using the destination World's component schema.
 
+`stripWgslComments` is the shared scanner for schema and compiler directive
+consumers. It blanks nested comments while preserving quoted import paths,
+UTF-16 offsets and CR/LF boundaries. Comment-free spans remain intact.
+
+Shared shader reflections retain validated facts by identity only after the
+complete plain JSON tree is frozen. Mutable descendants and accessors are always
+rechecked; cyclic metadata cannot establish immutable reuse. Weak identities do
+not extend the publication's lifetime or change reflection validation rules.
+
 `ShaderSource` retains immutable source text without runtime fragmentation.
 `matches(text)` compares exact UTF-16 content across supplied fragments without
 joining or hashing, but can scan the complete text. The device reuses its source
@@ -736,7 +745,9 @@ SHA-256. The synchronous browser/Worker-safe digest retains the `sha256-` prefix
 
 `stripWgslComments` blanks nested WGSL comments while preserving token separation,
 UTF-16 offsets and CR/LF boundaries. Material inspection, compiler admission, VFX
-and replay use this compiler-free lexical operation. It does not validate WGSL.
+and replay use this compiler-free lexical operation. Comment spans are blanked as
+whole runs between line boundaries, avoiding one replacement match per UTF-16
+code unit for large generated comments. It does not validate WGSL.
 
 `encodeBase64(bytes)` encodes exactly the selected `Uint8Array` view with the
 standard alphabet and padding. It uses an available native byte codec, otherwise

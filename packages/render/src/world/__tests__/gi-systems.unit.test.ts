@@ -103,7 +103,7 @@ function frame(
   const hooks = frameSubmissionHooks(
     internals,
     {} as never,
-    {} as never,
+    { lightTextureResamples: [] } as never,
     gi,
     undefined,
     undefined,

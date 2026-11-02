@@ -16,22 +16,22 @@ import type {
   TextureView,
 } from '@forgeax/engine-rhi';
 import { GPU_SHADER_STAGE_COMPUTE } from './gpu-stage';
+import { GPU_TEXTURE_USAGE_COPY_SRC } from './gpu-texture-usage';
 import {
   GPU_BUFFER_USAGE_COPY_DST,
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_UNIFORM,
 } from './gpu-usage';
-import { BYTES_PER_DIRECT_LIGHT_SLOT } from './light-buffer-layout';
+import type { StandardClusterReflectedAbi } from './light-buffer-layout';
 import { createPbrSkinMeshBindGroupEntries } from './pbr-pipeline';
 import { createStandardClusterLayout } from './pipeline/standard-lighting/layout';
-import { standardClusterTextureLayout } from './pipeline/standard-lighting/texture';
 import {
-  CLUSTER_GRID_STRIDE_U32,
-  DEFAULT_CLUSTER_GRID,
-  LIGHT_INDEX_LIST_CAPACITY,
-  MAX_LIGHTS,
-} from './pipeline/standard-profile';
+  type StandardClusterAoExtent,
+  standardClusterTextureLayout,
+} from './pipeline/standard-lighting/texture';
+import { DEFAULT_CLUSTER_GRID, LIGHT_INDEX_LIST_CAPACITY } from './pipeline/standard-profile';
 import { createHdrpBindGroupLayoutDescriptor } from './pipeline-spec';
+import { ClusterTextureTable } from './record/cluster-texture-table';
 import { MESH_PER_ENTITY_STRIDE, MESH_UBO_FULL_ARRAY_BYTES } from './record/mesh-ssbo';
 import type { RenderSystemRuntime } from './record/render-context';
 import { getOrCreateSsaoFallbackTexture } from './ssao-buffers';
@@ -69,17 +69,21 @@ export function createHdrpClusterMembershipBindGroupLayoutDescriptor(): BindGrou
 
 /** Shared per-renderer ownership for either physical cluster transport. */
 interface HdrpResourceBase {
+  /** Monotonic identity for a physical Cluster transport allocation bundle. */
+  readonly clusterTransportGeneration: number;
   /** Device identity that owns every handle in this bundle. */
   readonly device: RenderSystemRuntime['device'];
   readonly clusterUniformBuffer: Buffer;
   readonly clusterUniformBytes: number;
+  readonly directLightSlotBytes: number;
+  readonly directLightSlotCapacity: number;
   readonly grid: { readonly x: number; readonly y: number; readonly z: number };
   readonly unifiedBindGroupLayout: BindGroupLayout;
 }
 
 interface HdrpStorageBuffers extends HdrpResourceBase {
   readonly kind: 'storage';
-  /** The full 256 × 96 B DirectLightSlot budget. */
+  /** The full reflected DirectLightSlot array. */
   readonly lightDataBuffer: Buffer;
   readonly lightDataBytes: number;
   /** cluster_grid SSBO -- gridX*gridY*gridZ * 2 u32, BGL slot 4. */
@@ -98,12 +102,59 @@ interface HdrpTextureBuffers extends HdrpResourceBase {
   readonly texture: Texture;
   readonly view: TextureView;
   readonly layout: ReturnType<typeof standardClusterTextureLayout>;
-  readonly words: Uint32Array;
+  readonly table: ClusterTextureTable;
 }
 
 export type HdrpBuffers = HdrpStorageBuffers | HdrpTextureBuffers;
 
 const cache = new WeakMap<RenderSystemRuntime, HdrpBuffers>();
+let nextClusterTransportGeneration = 1;
+
+function allocateClusterTransportGeneration(): number {
+  const generation = nextClusterTransportGeneration;
+  nextClusterTransportGeneration += 1;
+  return generation;
+}
+
+function supportsHdrpResourceSurface(runtime: RenderSystemRuntime): boolean {
+  const surface = runtime.device as unknown as {
+    readonly createBuffer?: unknown;
+    readonly createBindGroupLayout?: unknown;
+    readonly destroyBuffer?: unknown;
+  };
+  return (
+    typeof surface.createBuffer === 'function' &&
+    typeof surface.createBindGroupLayout === 'function' &&
+    typeof surface.destroyBuffer === 'function'
+  );
+}
+
+function isReusableHdrpBundle(
+  cached: HdrpBuffers,
+  reflectedAbi: StandardClusterReflectedAbi,
+  grid: { readonly x: number; readonly y: number; readonly z: number },
+  aoExtent: StandardClusterAoExtent | undefined,
+): boolean {
+  const publicationMatches =
+    cached.clusterUniformBytes === reflectedAbi.clusterUniformBytes &&
+    cached.directLightSlotBytes === reflectedAbi.directLightSlot.byteSize &&
+    cached.directLightSlotCapacity === reflectedAbi.directLightSlot.capacity;
+  const requestedCells = grid.x * grid.y * grid.z;
+  const cachedCells = cached.grid.x * cached.grid.y * cached.grid.z;
+  const aoLayout = cached.kind === 'texture' ? cached.layout.ao : undefined;
+  const aoMatches =
+    (aoExtent === undefined && aoLayout === undefined) ||
+    (aoExtent !== undefined &&
+      aoLayout !== undefined &&
+      aoLayout.width === aoExtent.width &&
+      aoLayout.height === aoExtent.height);
+  return (
+    publicationMatches &&
+    (cached.kind === 'storage'
+      ? requestedCells <= cachedCells
+      : requestedCells === cachedCells && aoMatches)
+  );
+}
 
 /**
  * Lazily allocate the 4 persistent HDRP buffers for `runtime`. Returns the same
@@ -123,32 +174,24 @@ const cache = new WeakMap<RenderSystemRuntime, HdrpBuffers>();
 export function getOrCreateHdrpBuffers(
   runtime: RenderSystemRuntime,
   grid: { x: number; y: number; z: number } = DEFAULT_CLUSTER_GRID,
+  aoExtent?: StandardClusterAoExtent,
 ): HdrpBuffers | null {
+  const reflectedAbi = runtime.standardClusterAbi;
+  if (reflectedAbi === undefined) return null;
   // Contract tests and reduced host adapters may advertise storage buffers
   // without implementing the resource-creation surface. Treat that as a
   // capability miss rather than dereferencing an absent method; callers
   // already route `null` through the structured cluster-transport fallback.
-  const deviceSurface = runtime.device as unknown as {
-    readonly createBuffer?: unknown;
-    readonly createBindGroupLayout?: unknown;
-    readonly destroyBuffer?: unknown;
-  };
-  if (
-    typeof deviceSurface.createBuffer !== 'function' ||
-    typeof deviceSurface.createBindGroupLayout !== 'function' ||
-    typeof deviceSurface.destroyBuffer !== 'function'
-  ) {
-    return null;
-  }
+  if (!supportsHdrpResourceSurface(runtime)) return null;
   const cached = cache.get(runtime);
-  if (cached !== undefined && cached.device === runtime.device) {
-    const requestedCells = grid.x * grid.y * grid.z;
-    const cachedCells = cached.grid.x * cached.grid.y * cached.grid.z;
-    if (cached.kind === 'storage' ? requestedCells <= cachedCells : requestedCells === cachedCells)
-      return cached;
-  }
+  if (
+    cached !== undefined &&
+    cached.device === runtime.device &&
+    isReusableHdrpBundle(cached, reflectedAbi, grid, aoExtent)
+  )
+    return cached;
   if (!runtime.device.caps.storageBuffer) {
-    const textures = createHdrpTextureBuffers(runtime, grid);
+    const textures = createHdrpTextureBuffers(runtime, grid, reflectedAbi, aoExtent);
     if (textures !== null) {
       cache.set(runtime, textures);
       if (cached !== undefined) retireHdrpBuffers(runtime, cached);
@@ -156,12 +199,13 @@ export function getOrCreateHdrpBuffers(
     return textures;
   }
   const device = runtime.device;
-  const clusterUniformBytes = 32;
-  const lightDataBytes = MAX_LIGHTS * BYTES_PER_DIRECT_LIGHT_SLOT;
-  const clusterCells = grid.x * grid.y * grid.z;
-  const clusterGridBytes = clusterCells * CLUSTER_GRID_STRIDE_U32 * 4;
+  const clusterUniformBytes = reflectedAbi.clusterUniformBytes;
+  const directLightSlotBytes = reflectedAbi.directLightSlot.byteSize;
+  const clusterLayout = createStandardClusterLayout(reflectedAbi.directLightSlot.capacity, grid);
+  const lightDataBytes = clusterLayout.lightDataSlotCount * directLightSlotBytes;
+  const clusterGridBytes = clusterLayout.clusterGridU32Length * 4;
   const lightIndexListBytes = LIGHT_INDEX_LIST_CAPACITY * 4;
-  const lightBoundsBytes = MAX_LIGHTS * 6 * 4;
+  const lightBoundsBytes = clusterLayout.lightBoundsInt32Length * 4;
   const created: Buffer[] = [];
   const releaseCreated = (): void => {
     for (const buffer of created) {
@@ -237,6 +281,7 @@ export function getOrCreateHdrpBuffers(
   }
   const buffers: HdrpBuffers = {
     kind: 'storage',
+    clusterTransportGeneration: allocateClusterTransportGeneration(),
     device,
     lightDataBuffer: lightData.value,
     lightDataBytes,
@@ -246,6 +291,8 @@ export function getOrCreateHdrpBuffers(
     lightIndexListBytes,
     clusterUniformBuffer: clusterUniform.value,
     clusterUniformBytes,
+    directLightSlotBytes,
+    directLightSlotCapacity: reflectedAbi.directLightSlot.capacity,
     lightBoundsBuffer: lightBounds.value,
     lightBoundsBytes,
     grid: { x: grid.x, y: grid.y, z: grid.z },
@@ -261,15 +308,22 @@ export function getOrCreateHdrpBuffers(
 function createHdrpTextureBuffers(
   runtime: RenderSystemRuntime,
   grid: { readonly x: number; readonly y: number; readonly z: number },
+  reflectedAbi: StandardClusterReflectedAbi,
+  aoExtent?: StandardClusterAoExtent,
 ): HdrpTextureBuffers | null {
   const device = runtime.device;
-  const layout = standardClusterTextureLayout(createStandardClusterLayout(grid));
+  const clusterUniformBytes = reflectedAbi.clusterUniformBytes;
+  const layout = standardClusterTextureLayout(
+    createStandardClusterLayout(reflectedAbi.directLightSlot.capacity, grid),
+    reflectedAbi.directLightSlot.byteSize,
+    aoExtent,
+  );
   const texture = device.createTexture({
     label: 'standard-cluster-tables',
     size: { width: layout.width, height: layout.height, depthOrArrayLayers: 1 },
     format: 'rgba32uint',
     textureBindingViewDimension: '2d',
-    usage: 0x02 | 0x04,
+    usage: 0x02 | 0x04 | (aoExtent === undefined ? 0 : 0x10 | GPU_TEXTURE_USAGE_COPY_SRC),
   });
   if (!texture.ok) {
     runtime.errorRegistry.fire(texture.error);
@@ -283,7 +337,7 @@ function createHdrpTextureBuffers(
   }
   const uniform = device.createBuffer({
     label: 'hdrp-cluster-uniform',
-    size: 32,
+    size: clusterUniformBytes,
     usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
   });
   if (!uniform.ok) {
@@ -300,13 +354,20 @@ function createHdrpTextureBuffers(
   }
   return {
     kind: 'texture',
+    clusterTransportGeneration: allocateClusterTransportGeneration(),
     device,
     texture: texture.value,
     view: view.value,
     layout,
-    words: new Uint32Array(layout.width * layout.height * 4),
+    table: new ClusterTextureTable(
+      layout.width,
+      layout.height,
+      reflectedAbi.directLightSlot.capacity,
+    ),
     clusterUniformBuffer: uniform.value,
-    clusterUniformBytes: 32,
+    clusterUniformBytes,
+    directLightSlotBytes: reflectedAbi.directLightSlot.byteSize,
+    directLightSlotCapacity: reflectedAbi.directLightSlot.capacity,
     unifiedBindGroupLayout: bgl.value,
     grid: { ...grid },
   };
@@ -357,12 +418,12 @@ function retireHdrpBuffers(runtime: RenderSystemRuntime, buffers: HdrpBuffers): 
 }
 
 /**
- * Build the 8-float cluster_uniform std140 payload.
+ * Pack the Standard Cluster uniform using offsets and span from WGSL reflection.
  *
  *   [0] gridX  u32 (cast in shader)
  *   [1] gridY  u32
  *   [2] gridZ  u32
- *   [3] lightCount u32 (vec4 alignment; capped by MAX_LIGHTS)
+ *   [3] lightCount u32 (vec4 alignment; capped by the reflected slot array)
  *   [4] near   f32
  *   [5] far    f32
  *   [6] logFarOverNear  f32
@@ -370,34 +431,94 @@ function retireHdrpBuffers(runtime: RenderSystemRuntime, buffers: HdrpBuffers): 
  *                              dedicated @binding(9) UBO; lighting shader
  *                              reads `cluster_uniform.near_far_log.w`)
  *
- * Matches `__tests__/hdrp-bgl-slots.test.ts CLUSTER_UNIFORM_LAYOUT`.
+ * [8..11] AO base word, width, height and packed row words (u32)
+ * [12] direct AO strength (f32; zero unless the selected AO config enables it)
+ * [16..19] physical texture address facts
+ * [20] grid pair stride in u32 words; [21] count-word offset
+ * [22..23] reserved
  *
  * Note: u32 values written into a Float32Array view are bit-pattern correct
  * because writeBuffer copies raw bytes; the WGSL `var<uniform>` declares the
  * field as u32 / f32 per its position so the device reinterprets correctly.
  * Use a Uint32Array view for the integer slots to keep the bit pattern intact.
  */
-export function packClusterUniform(
-  grid: { x: number; y: number; z: number },
-  near: number,
-  far: number,
-  ssaoIntensity: number = 0,
-  lightCount: number = 0,
-): ArrayBuffer {
-  const buf = new ArrayBuffer(32);
-  const u32 = new Uint32Array(buf);
-  const f32 = new Float32Array(buf);
-  u32[0] = grid.x >>> 0;
-  u32[1] = grid.y >>> 0;
-  u32[2] = grid.z >>> 0;
-  u32[3] = Math.min(Math.max(lightCount, 0), MAX_LIGHTS) >>> 0;
-  f32[4] = near;
-  f32[5] = far;
+export function packClusterUniform(input: {
+  readonly grid: { readonly x: number; readonly y: number; readonly z: number };
+  readonly near: number;
+  readonly far: number;
+  readonly ssaoIntensity?: number;
+  readonly lightCount?: number;
+  readonly aoLayout?: {
+    readonly baseWord: number;
+    readonly width: number;
+    readonly height: number;
+    readonly rowWords: number;
+  };
+  readonly directLightingStrength?: number;
+  readonly reflectedAbi: Pick<
+    StandardClusterReflectedAbi,
+    'clusterUniformBytes' | 'clusterUniformOffsets'
+  > & {
+    readonly directLightSlot: Pick<
+      StandardClusterReflectedAbi['directLightSlot'],
+      'vec4Count' | 'capacity'
+    >;
+  };
+  readonly textureAddressing?: {
+    readonly width: number;
+    readonly gridOffset: number;
+    readonly indexOffset: number;
+  };
+  readonly clusterGridStrideU32: number;
+  readonly clusterGridCountWordOffsetU32: number;
+}): ArrayBuffer {
+  const {
+    grid,
+    near,
+    far,
+    ssaoIntensity = 0,
+    lightCount = 0,
+    aoLayout,
+    directLightingStrength = 0,
+    reflectedAbi,
+    textureAddressing,
+    clusterGridStrideU32,
+    clusterGridCountWordOffsetU32,
+  } = input;
+  const { clusterUniformBytes, clusterUniformOffsets: offsets } = reflectedAbi;
+  const buf = new ArrayBuffer(clusterUniformBytes);
+  const data = new DataView(buf);
+  const setU32 = (
+    row: 'grid' | 'ao' | 'texture' | 'cluster_layout',
+    component: number,
+    value: number,
+  ) => data.setUint32(offsets[row] + component * 4, value >>> 0, true);
+  const setF32 = (row: 'near_far_log' | 'direct_ao', component: number, value: number) =>
+    data.setFloat32(offsets[row] + component * 4, value, true);
+  setU32('grid', 0, grid.x);
+  setU32('grid', 1, grid.y);
+  setU32('grid', 2, grid.z);
+  setU32('grid', 3, Math.min(Math.max(lightCount, 0), reflectedAbi.directLightSlot.capacity));
+  setF32('near_far_log', 0, near);
+  setF32('near_far_log', 1, far);
   // logFarOverNear: log(far/near) used by the shader for log-z slice mapping.
   // Guard against near=0 / far<=near (returns 0; downstream uses fallback).
-  f32[6] = near > 0 && far > near ? Math.log(far / near) : 0;
+  setF32('near_far_log', 2, near > 0 && far > near ? Math.log(far / near) : 0);
   // f32[7] = SSAO intensity (default 0 = disabled-equivalent: mix(1.0, x, 0) = 1).
-  f32[7] = ssaoIntensity;
+  setF32('near_far_log', 3, ssaoIntensity);
+  if (aoLayout !== undefined) {
+    setU32('ao', 0, aoLayout.baseWord);
+    setU32('ao', 1, aoLayout.width);
+    setU32('ao', 2, aoLayout.height);
+    setU32('ao', 3, aoLayout.rowWords);
+  }
+  setF32('direct_ao', 0, directLightingStrength);
+  setU32('texture', 0, reflectedAbi.directLightSlot.vec4Count);
+  setU32('texture', 1, textureAddressing?.gridOffset ?? 0);
+  setU32('texture', 2, textureAddressing?.indexOffset ?? 0);
+  setU32('texture', 3, textureAddressing?.width ?? 0);
+  setU32('cluster_layout', 0, clusterGridStrideU32);
+  setU32('cluster_layout', 1, clusterGridCountWordOffsetU32);
   return buf;
 }
 

@@ -239,6 +239,7 @@
     "packages/runtime/src/__tests__/generated-lod.browser.test.ts": 54.657,
     "packages/runtime/src/__tests__/ies-local-lights-performance.browser.test.ts": 2.164,
     "packages/runtime/src/__tests__/ies-local-lights.browser.test.ts": 141.31,
+    "packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts": 141.31,
     "packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts": 59.572,
     "packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts": 21.997,
     "packages/runtime/src/__tests__/lighting-channels-lifecycle.browser.test.ts": 50.596,

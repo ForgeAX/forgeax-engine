@@ -6,15 +6,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createHdrpClusterMembershipBindGroupLayoutDescriptor,
   getOrCreateHdrpBuffers,
+  resetHdrpBuffers,
 } from '../hdrp-buffers';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import {
   COOKIE_MIP_LEVEL_COUNT,
   COOKIE_SLICE_MIP_CHAIN_BYTES,
 } from '../prepare/extended-lighting/resources';
 import {
   buildPerFrameBindGroups,
+  prepareFrameLighting,
   writeHdrpClusterAndSsaoBuffers,
   writeLightModifierTextures,
 } from '../record/frame-lighting';
@@ -28,6 +29,11 @@ import type {
 import type { CameraSnapshot } from '../render-contract';
 import { getOrCreateSsaoBuffers } from '../ssao-buffers';
 import { createTemporalView } from '../temporal/view';
+import type { ViewLights } from '../world/render-lights';
+import {
+  STANDARD_CLUSTER_TEST_ABI,
+  selectTestStandardClusterTransport as selectStandardClusterTransport,
+} from './cluster-test-abi';
 
 function camera(): CameraSnapshot {
   return {
@@ -92,11 +98,192 @@ function internalsWithFirstWriteFailure() {
       device,
       errorRegistry: { fire: (error: unknown) => errors.push(error) },
       standardProfile: undefined,
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     },
   };
 }
 
 describe('Standard Cluster upload ownership', () => {
+  it('keeps the published Cluster generation across failed creation and advances only on recovery', async () => {
+    const adapter = new RhiNullAdapter();
+    const requested = await adapter.requestDevice();
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) return;
+    const baseDevice = requested.value;
+    let failTextureCreation = true;
+    const errors: unknown[] = [];
+    const device = new Proxy(baseDevice, {
+      get(target, property) {
+        if (property === 'caps') return { ...target.caps, storageBuffer: false };
+        if (property === 'createTexture') {
+          const createTexture = Reflect.get(target, property, target) as (
+            ...args: unknown[]
+          ) => unknown;
+          return (...args: unknown[]) => {
+            if (failTextureCreation) {
+              return rhiErr(
+                new RhiError({
+                  code: 'device-lost',
+                  expected: 'Cluster texture creation succeeds',
+                  hint: 'recover the device and retry allocation',
+                }),
+              );
+            }
+            return createTexture.apply(target, args);
+          };
+        }
+        const member = Reflect.get(target, property, target) as unknown;
+        return typeof member === 'function' ? member.bind(target) : member;
+      },
+    }) as RhiDevice;
+    const runtime = {
+      device,
+      errorRegistry: { fire: (error: unknown) => errors.push(error) },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+    } as unknown as RenderSystemRuntime;
+
+    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 })).toBeNull();
+    expect(errors).toMatchObject([{ code: 'device-lost' }]);
+    failTextureCreation = false;
+    const original = getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 });
+    expect(original?.kind).toBe('texture');
+    if (original?.kind !== 'texture') throw new Error('Expected texture Cluster transport');
+    expect(original.clusterTransportGeneration).toBeGreaterThan(0);
+    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 })?.clusterTransportGeneration).toBe(
+      original.clusterTransportGeneration,
+    );
+
+    failTextureCreation = true;
+    expect(
+      getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { width: 23, height: 17 }),
+    ).toBeNull();
+    expect(errors).toMatchObject([{ code: 'device-lost' }, { code: 'device-lost' }]);
+    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 })).toBe(original);
+    expect(original.clusterTransportGeneration).toBeGreaterThan(0);
+
+    failTextureCreation = false;
+    const recovered = getOrCreateHdrpBuffers(
+      runtime,
+      { x: 4, y: 3, z: 4 },
+      { width: 23, height: 17 },
+    );
+    expect(recovered?.kind).toBe('texture');
+    if (recovered?.kind !== 'texture') throw new Error('Expected recovered AO texture transport');
+    expect(recovered.clusterTransportGeneration).toBe(original.clusterTransportGeneration + 1);
+    expect(getOrCreateHdrpBuffers(runtime, { x: 4, y: 3, z: 4 }, { width: 23, height: 17 })).toBe(
+      recovered,
+    );
+    resetHdrpBuffers(runtime);
+    await Promise.resolve();
+  });
+
+  it('keeps transport generation stable and advances it only when the AO texture layout replaces the bundle', async () => {
+    const adapter = new RhiNullAdapter();
+    const requested = await adapter.requestDevice();
+    expect(requested.ok).toBe(true);
+    if (!requested.ok) return;
+    const baseDevice = requested.value;
+    const device = new Proxy(baseDevice, {
+      get(target, property) {
+        if (property === 'caps') return { ...target.caps, storageBuffer: false };
+        const member = Reflect.get(target, property, target) as unknown;
+        return typeof member === 'function' ? member.bind(target) : member;
+      },
+    }) as RhiDevice;
+    const errors: unknown[] = [];
+    const runtime = {
+      device,
+      errorRegistry: { fire: (error: unknown) => errors.push(error) },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+    } as unknown as RenderSystemRuntime;
+    const grid = { x: 4, y: 3, z: 4 };
+    const noAo = getOrCreateHdrpBuffers(runtime, grid);
+    expect(noAo?.kind).toBe('texture');
+    if (noAo?.kind !== 'texture') throw new Error('Expected texture Cluster transport');
+    expect(getOrCreateHdrpBuffers(runtime, grid)).toBe(noAo);
+    expect(getOrCreateHdrpBuffers(runtime, grid)?.clusterTransportGeneration).toBe(
+      noAo.clusterTransportGeneration,
+    );
+
+    const ao = getOrCreateHdrpBuffers(runtime, grid, { width: 23, height: 17 });
+    expect(ao?.kind).toBe('texture');
+    if (ao?.kind !== 'texture') throw new Error('Expected AO texture Cluster transport');
+    expect(ao).not.toBe(noAo);
+    expect(ao.clusterTransportGeneration).toBeGreaterThan(noAo.clusterTransportGeneration);
+    expect(getOrCreateHdrpBuffers(runtime, grid, { width: 23, height: 17 })).toBe(ao);
+
+    const disabled = getOrCreateHdrpBuffers(runtime, grid);
+    expect(disabled?.kind).toBe('texture');
+    if (disabled?.kind !== 'texture') throw new Error('Expected non-AO texture Cluster transport');
+    expect(disabled).not.toBe(ao);
+    expect(disabled.clusterTransportGeneration).toBeGreaterThan(ao.clusterTransportGeneration);
+    expect(getOrCreateHdrpBuffers(runtime, grid)?.clusterTransportGeneration).toBe(
+      disabled.clusterTransportGeneration,
+    );
+    resetHdrpBuffers(runtime);
+    await Promise.resolve();
+    expect(errors).toEqual([]);
+  });
+
+  it.each([
+    false,
+    true,
+  ] as const)('retains no-storage Cluster topology when Forward AO is %s with no local lights', (aoEnabled) => {
+    const internals = {
+      device: {
+        caps: { storageBuffer: false, compute: false },
+        limits: { maxTextureDimension2D: 4096 },
+      },
+      standardProfile: undefined,
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+      errorRegistry: { fire: vi.fn() },
+    } as unknown as RenderSystemInternals;
+    const frameState = {
+      warnedMultiLightDirectional: false,
+      pointShadowSnapshots: [],
+      spotShadowSnapshots: [],
+      installedPipelineConfig: {
+        ssao: aoEnabled
+          ? {
+              enabled: true,
+              algorithm: 'gtao',
+              quality: 'low',
+              radius: 2,
+              bias: 0.1,
+              intensity: 1,
+            }
+          : undefined,
+      },
+    } as unknown as RenderFrameState;
+    const lights = {
+      directional: undefined,
+      directionalCount: 0,
+      point: [],
+      spot: [],
+      rect: [],
+      depthBias: undefined,
+      normalBias: undefined,
+      directionalShadowError: undefined,
+      pointShadow: [],
+      directionalCsmConfig: undefined,
+      directionalCsmDirection: undefined,
+      cascades: undefined,
+      shadowViews: [],
+    } as unknown as ViewLights;
+
+    const result = prepareFrameLighting(internals, frameState, lights, camera());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (!aoEnabled) {
+      expect(result.value.standard.kind).toBe('no-local-lights');
+      return;
+    }
+    expect(result.value.standard.kind).toBe('clustered');
+    if (result.value.standard.kind !== 'clustered') return;
+    expect(result.value.standard.transport.kind).toBe('cpu-texture');
+    expect(result.value.standard.prepared.local).toHaveLength(0);
+  });
+
   it.each([
     'perspective',
     'orthographic',
@@ -108,6 +295,7 @@ describe('Standard Cluster upload ownership', () => {
     const internals = {
       device,
       errorRegistry: { fire: (error: unknown) => errors.push(error) },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     } as unknown as RenderSystemInternals;
     const sampledCamera: CameraSnapshot = {
       ...camera(),
@@ -136,24 +324,28 @@ describe('Standard Cluster upload ownership', () => {
       { compute: false, storageBuffer: true, membershipPipelineReady: false },
       prepared,
     ).unwrap();
+    const cluster = getOrCreateHdrpBuffers(internals);
+    if (cluster?.kind !== 'storage') throw new Error('Cluster storage allocation failed');
     const ssao = getOrCreateSsaoBuffers(internals);
     if (ssao === null) throw new Error('SSAO allocation failed');
     const writes = vi.spyOn(device.queue, 'writeBuffer');
+    const frameState = {
+      hdrpClusterMembership: null,
+      installedPipelineConfig: {
+        ssao: {
+          enabled: true,
+          algorithm: 'gtao',
+          quality: 'low',
+          radius: 2,
+          bias: 0.1,
+          intensity: 0.75,
+          directLightingStrength: 0.625,
+        },
+      },
+    } as unknown as RenderFrameState;
     const result = writeHdrpClusterAndSsaoBuffers(
       internals,
-      {
-        hdrpClusterMembership: null,
-        installedPipelineConfig: {
-          ssao: {
-            enabled: true,
-            algorithm: 'gtao',
-            quality: 'low',
-            radius: 2,
-            bias: 0.1,
-            intensity: 0.75,
-          },
-        },
-      } as unknown as RenderFrameState,
+      frameState,
       sampledCamera,
       prepared,
       transport,
@@ -175,7 +367,45 @@ describe('Standard Cluster upload ownership', () => {
     expect(Array.from(payload.slice(48, 53))).toEqual([0.75, 2, Math.fround(0.1), 4, 1]);
     expect(Array.from(payload.slice(53, 56))).toEqual([1, 1, 1]);
     expect(payload.slice(56).every((value) => value === 0)).toBe(true);
+    const clusterUpload = writes.mock.calls.find(
+      ([buffer]) => buffer === cluster.clusterUniformBuffer,
+    )?.[2] as Uint8Array | undefined;
+    expect(clusterUpload?.byteLength).toBe(96);
+    if (clusterUpload === undefined) throw new Error('Cluster uniform upload missing');
+    const clusterFields = new Float32Array(clusterUpload.buffer, clusterUpload.byteOffset, 24);
+    const clusterWords = new Uint32Array(clusterUpload.buffer, clusterUpload.byteOffset, 24);
+    expect(clusterFields[12]).toBe(0.625);
+    expect(Array.from(clusterFields.subarray(13, 16))).toEqual([0, 0, 0]);
+    expect(Array.from(clusterWords.subarray(16, 20))).toEqual([6, 0, 0, 0]);
+    expect(Array.from(clusterWords.subarray(20, 24))).toEqual([2, 1, 0, 0]);
     expect(errors).toEqual([]);
+
+    const uploadedStrengths: number[] = [];
+    for (const strength of [0, 1, 0]) {
+      frameState.installedPipelineConfig = {
+        ssao: {
+          ...frameState.installedPipelineConfig?.ssao,
+          enabled: true,
+          directLightingStrength: strength,
+        },
+      };
+      const updated = writeHdrpClusterAndSsaoBuffers(
+        internals,
+        frameState,
+        sampledCamera,
+        prepared,
+        transport,
+      );
+      expect(updated.ok).toBe(true);
+      const payload = writes.mock.calls
+        .filter(([buffer]) => buffer === cluster.clusterUniformBuffer)
+        .at(-1)?.[2] as Uint8Array | undefined;
+      if (payload === undefined) throw new Error('Updated Cluster uniform upload is missing');
+      uploadedStrengths.push(
+        new Float32Array(payload.buffer, payload.byteOffset, 24)[12] ?? Number.NaN,
+      );
+    }
+    expect(uploadedStrengths).toEqual([0, 1, 0]);
     writes.mockRestore();
   });
 
@@ -402,6 +632,7 @@ describe('Standard Cluster upload ownership', () => {
     const runtime = {
       device,
       errorRegistry: { fire: (error: unknown) => errors.push(error) },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     } as unknown as RenderSystemRuntime;
 
     const small = getOrCreateHdrpBuffers(runtime, { x: 2, y: 2, z: 2 });
@@ -439,6 +670,7 @@ describe('Standard Cluster upload ownership', () => {
     const runtime = {
       device: first.value,
       errorRegistry: { fire: (error: unknown) => errors.push(error) },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     } as unknown as RenderSystemRuntime & { device: RhiDevice };
     const old = getOrCreateHdrpBuffers(runtime, { x: 2, y: 2, z: 2 });
     expect(old).not.toBeNull();
@@ -463,6 +695,7 @@ describe('Standard Cluster upload ownership', () => {
       const runtime = {
         device,
         errorRegistry: { fire: (error: unknown) => errors.push(error) },
+        standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
       } as unknown as RenderSystemRuntime;
       const layout = device
         .createBindGroupLayout(createHdrpClusterMembershipBindGroupLayoutDescriptor())
@@ -502,6 +735,7 @@ describe('Standard Cluster upload ownership', () => {
       const internals = {
         device,
         errorRegistry: runtime.errorRegistry,
+        standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
       } as unknown as RenderSystemInternals;
       const first = writeHdrpClusterAndSsaoBuffers(
         internals,
@@ -597,6 +831,7 @@ describe('Standard Cluster upload ownership', () => {
     const runtime = {
       device,
       errorRegistry: { fire: (error: unknown) => errors.push(error) },
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     } as unknown as RenderSystemRuntime;
     const small = getOrCreateHdrpBuffers(runtime, { x: 2, y: 2, z: 2 });
     expect(small).not.toBeNull();

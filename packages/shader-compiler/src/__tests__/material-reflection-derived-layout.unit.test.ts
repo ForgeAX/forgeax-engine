@@ -4,10 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { compileShader } from '../index.js';
 import { generateParameterModule } from '../material/cook.js';
 import { compareDerivedMaterialInterface, parseReflection } from '../reflection.js';
-import { DERIVED_REFLECTION_FACTS, DERIVED_REFLECTION_SCHEMA } from './reflection.fixtures.js';
+import {
+  DERIVED_REFLECTION_FACTS,
+  DERIVED_REFLECTION_SCHEMA,
+  DERIVED_REFLECTION_TYPE_DESCRIPTOR,
+} from './reflection.fixtures.js';
 
 const reflectionJson = JSON.stringify({
-  schemaVersion: 'shader-reflection/2',
+  schemaVersion: 'shader-reflection/3',
   boundGlobals: [
     {
       group: 1,
@@ -17,6 +21,8 @@ const reflectionJson = JSON.stringify({
       visibility: 2,
       members: DERIVED_REFLECTION_FACTS.members,
       span: 80,
+      elementType: 'struct',
+      typeDescriptor: DERIVED_REFLECTION_TYPE_DESCRIPTOR,
     },
     { group: 1, binding: 1, addressSpace: 'handle', resourceKind: 'sampler', visibility: 2 },
     { group: 1, binding: 2, addressSpace: 'handle', resourceKind: 'texture', visibility: 2 },
@@ -228,10 +234,16 @@ describe('derived material reflection equality', () => {
     if (!compiled.ok) return;
     const tampered = parseReflection(
       JSON.stringify({
-        schemaVersion: 'shader-reflection/2',
-        boundGlobals: compiled.value.reflection.boundGlobals.map((global) =>
-          global.group === 1 && global.binding === 0 ? { ...global, span: 8 } : global,
-        ),
+        schemaVersion: 'shader-reflection/3',
+        boundGlobals: compiled.value.reflection.boundGlobals.map((global) => {
+          if (global.group !== 1 || global.binding !== 0) return global;
+          if (global.typeDescriptor?.kind !== 'struct') throw new Error('Expected uniform struct');
+          return {
+            ...global,
+            span: 8,
+            typeDescriptor: { ...global.typeDescriptor, span: 8, byteSize: 8 },
+          };
+        }),
         uvSetCount: compiled.value.reflection.uvSetCount,
       }),
     );
@@ -240,11 +252,25 @@ describe('derived material reflection equality', () => {
 
   it.each([
     ['offset', { ...DERIVED_REFLECTION_FACTS.members[0], offset: 4 }],
-    ['type', { ...DERIVED_REFLECTION_FACTS.members[0], type: 'vec4<f32>' }],
+    [
+      'type',
+      {
+        ...DERIVED_REFLECTION_FACTS.members[0],
+        type: 'u32',
+        typeDescriptor: {
+          kind: 'scalar',
+          scalarKind: 'uint',
+          width: 4,
+          byteSize: 4,
+          alignment: 4,
+        },
+      },
+    ],
   ])('rejects an independent member %s mismatch', (_kind, member) => {
+    const members = [member, ...DERIVED_REFLECTION_FACTS.members.slice(1)];
     const parsed = parseReflection(
       JSON.stringify({
-        schemaVersion: 'shader-reflection/2',
+        schemaVersion: 'shader-reflection/3',
         boundGlobals: [
           {
             group: 1,
@@ -252,8 +278,10 @@ describe('derived material reflection equality', () => {
             addressSpace: 'uniform',
             resourceKind: 'buffer',
             visibility: 2,
-            members: [member, ...DERIVED_REFLECTION_FACTS.members.slice(1)],
+            members,
             span: 80,
+            elementType: 'struct',
+            typeDescriptor: { ...DERIVED_REFLECTION_TYPE_DESCRIPTOR, members },
           },
         ],
         uvSetCount: 0,
@@ -276,7 +304,7 @@ describe('derived material reflection equality', () => {
   it('rejects a resource binding mismatch while tolerating engine injection', () => {
     const parsed = parseReflection(
       JSON.stringify({
-        schemaVersion: 'shader-reflection/2',
+        schemaVersion: 'shader-reflection/3',
         boundGlobals: [
           {
             group: 1,
@@ -286,6 +314,8 @@ describe('derived material reflection equality', () => {
             visibility: 2,
             members: DERIVED_REFLECTION_FACTS.members,
             span: 80,
+            elementType: 'struct',
+            typeDescriptor: DERIVED_REFLECTION_TYPE_DESCRIPTOR,
           },
           { group: 1, binding: 1, addressSpace: 'handle', resourceKind: 'texture', visibility: 2 },
           { group: 1, binding: 2, addressSpace: 'handle', resourceKind: 'texture', visibility: 2 },

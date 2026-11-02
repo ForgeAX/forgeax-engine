@@ -12,7 +12,7 @@ import {
   type RenderResult,
 } from '@forgeax/engine-render';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import type { MeshAsset } from '@forgeax/engine-types';
+import type { AssetHandle } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -161,6 +161,19 @@ export async function createCubePlaneShadowContactFixture(
   );
   const renderer = host.renderer;
   const world = new World({ assets: host.assets });
+  const plane = host.assets.create(createPlaneGeometry(20, 20).unwrap()).unwrap();
+  const cube = host.assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+  const createMaterial = (doubleSided: boolean) =>
+    host.assets
+      .create(
+        Materials.standard({
+          baseColor: [0.7, 0.7, 0.7, 1],
+          roughness: 1,
+          ...(doubleSided ? { renderState: { cullMode: 'none' as const } } : {}),
+        }),
+      )
+      .unwrap();
+  const materials = [createMaterial(false), createMaterial(true)] as const;
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -168,18 +181,10 @@ export async function createCubePlaneShadowContactFixture(
   return {
     async verify(renderPath: 'forward' | 'deferred', scene: SceneCase) {
       value(renderer.setProfile({ ...renderer.inspect().profile, renderPath, ssao: false }));
-      const material = host.assets
-        .create(
-          Materials.standard({
-            baseColor: [0.7, 0.7, 0.7, 1],
-            roughness: 1,
-            ...(scene.doubleSided ? { renderState: { cullMode: 'none' } } : {}),
-          }),
-        )
-        .unwrap();
+      const material = materials[scene.doubleSided ? 1 : 0];
       // Scale geometry and camera coverage together to preserve shadow-texel density.
       const scale = scene.scale ?? 1;
-      const spawn = (mesh: MeshAsset, position: number[], rotation: number[]) =>
+      const spawn = (mesh: AssetHandle<'mesh'>, position: number[], rotation: number[]) =>
         world
           .spawn(
             {
@@ -190,7 +195,7 @@ export async function createCubePlaneShadowContactFixture(
                 scale: [scale, scale, scale],
               },
             },
-            { component: MeshFilter, data: { assetHandle: host.assets.create(mesh).unwrap() } },
+            { component: MeshFilter, data: { assetHandle: mesh } },
             { component: MeshRenderer, data: { materials: [material] } },
           )
           .unwrap();
@@ -208,13 +213,9 @@ export async function createCubePlaneShadowContactFixture(
         y * Math.sin(tilt) + z * Math.cos(tilt),
       ];
       const flatAngle = (-Math.PI / 2 + tilt) / 2;
+      spawn(plane, [0, 0, 0], [Math.sin(flatAngle), 0, 0, Math.cos(flatAngle)]);
       spawn(
-        createPlaneGeometry(20, 20).unwrap(),
-        [0, 0, 0],
-        [Math.sin(flatAngle), 0, 0, Math.cos(flatAngle)],
-      );
-      spawn(
-        createBoxGeometry(1, 1, 1).unwrap(),
+        cube,
         rotate(
           direction.map((v, axis) => (axis === 1 ? 0.5 : 0) - v * (scene.casterDistance ?? 0)),
         ),
@@ -305,6 +306,7 @@ export async function createCubePlaneShadowContactFixture(
     },
     async dispose() {
       world.despawnAll().unwrap();
+      for (const handle of [plane, cube, ...materials]) host.assets.release(handle).unwrap();
       unsubscribe();
       await renderer.dispose();
     },

@@ -277,6 +277,7 @@ export function frameSubmissionHooks(
 ) {
   if (
     attempt.preparedGpuDriven === undefined &&
+    attempt.lightTextureResamples.length === 0 &&
     !hasDiffuseGiWork(gi) &&
     shadowPublication === undefined &&
     nativeScene?.retained === undefined &&
@@ -305,6 +306,12 @@ export function frameSubmissionHooks(
     onSubmittedWork: (done: Promise<void>) => {
       attempt.preparedGpuDriven?._trackSubmittedWork(done);
       trackDiffuseGi(gi, done);
+      for (const pending of attempt.lightTextureResamples)
+        pending.work.submitted(done, (error) => internals.errorRegistry.fire(error));
+    },
+    onSubmitted: () => {
+      for (const pending of attempt.lightTextureResamples) pending.onSubmitted();
+      attempt.lightTextureResamples.length = 0;
     },
     ...(hasDiffuseGiWork(gi) ? { gi } : {}),
   };
@@ -329,6 +336,8 @@ export function encodeCaptureOnlyFrame(
         }),
     onSubmittedWork: (done: Promise<void>) => {
       attempt.preparedGpuDriven?._trackSubmittedWork(done);
+      for (const pending of attempt.lightTextureResamples)
+        pending.work.submitted(done, (error) => internals.errorRegistry.fire(error));
     },
     reportError: (error: RhiError) => internals.errorRegistry.fire(error),
   };
@@ -344,6 +353,8 @@ export function settleCaptureOnlyFrame(
   const captured = attempt.captureFrames.length > 0 || attempt.probeCaptureFrames.length > 0;
   frameState.frameOutputs.sceneSubmitted = attempt.submitted && captured;
   if (!attempt.submitted) return false;
+  for (const pending of attempt.lightTextureResamples) pending.onSubmitted();
+  attempt.lightTextureResamples.length = 0;
   for (const capture of attempt.captureFrames)
     internals.markRenderTargetSubmitted?.(capture.work.target, capture.work.physical);
   if (captured)

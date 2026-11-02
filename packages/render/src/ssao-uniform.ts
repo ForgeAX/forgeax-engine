@@ -11,7 +11,8 @@ import { GTAO_SAMPLE_COUNTS, getSsaoParameters, SSAO_SAMPLE_COUNTS } from './ssa
 //   bytes [128..191] inverseProjection mat4x4<f32>
 //   bytes [192..207] intensityPad      vec4<f32>  // x = intensity, y = radius, z = bias, w = sample budget
 //   bytes [208..223] algorithmPad      vec4<f32>  // algorithm, thickness, distance exponent, horizon falloff
-//   bytes [224..255] padding           // align to 256B WebGPU UBO offset
+//   bytes [224..239] clusterPack       // AO base origin, Cluster width, packed AO row width
+//   bytes [240..255] padding           // align to 256B WebGPU UBO offset
 //
 // The total is rounded to 256B so the same UBO can host an additional
 // shader-side scalar binding at the tail without re-allocation.
@@ -28,6 +29,12 @@ let buildingSsao = false;
 export function buildSsaoUniformPayload(
   camera: CameraSnapshot,
   config: NonNullable<RenderPipelineAsset['config']>['ssao'],
+  clusterPack?: {
+    readonly originX: number;
+    readonly originY: number;
+    readonly textureWidth: number;
+    readonly packedWidth: number;
+  },
 ): Float32Array {
   const wasBuilding = buildingSsao;
   buildingSsao = true;
@@ -51,6 +58,13 @@ export function buildSsaoUniformPayload(
     out[53] = parameters.thickness;
     out[54] = parameters.distanceExponent;
     out[55] = parameters.distanceFallOff;
+    if (clusterPack !== undefined) {
+      const integers = new Uint32Array(out.buffer);
+      integers[56] = clusterPack.originX >>> 0;
+      integers[57] = clusterPack.originY >>> 0;
+      integers[58] = clusterPack.textureWidth >>> 0;
+      integers[59] = clusterPack.packedWidth >>> 0;
+    }
     return out;
   } finally {
     buildingSsao = wasBuilding;

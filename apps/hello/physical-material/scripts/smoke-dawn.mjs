@@ -679,7 +679,7 @@ function prepareGraphTargetCapture(host) {
       usage: 0x01,
       identity: {
         graphGeneration: target.graphGeneration,
-        frameId: target.frameId + 1,
+        recordFrameNumber: target.recordFrameNumber + 1,
         textureIdentity: target.textureIdentity,
       },
     },
@@ -687,7 +687,7 @@ function prepareGraphTargetCapture(host) {
   return { target, buffer: bufferResult.value, bytesPerRow };
 }
 
-async function readGraphTargetCapture(host, capture) {
+async function readGraphTargetCapture(host, capture, publicReceiptFrameId) {
   if (capture === undefined) return undefined;
   await host.device.queue.onSubmittedWorkDone();
   const mapped = await capture.buffer.mapAsync(0x0001);
@@ -712,7 +712,8 @@ async function readGraphTargetCapture(host, capture) {
     );
   }
   const record = {
-    graphFrameId: capture.target.frameId + 1,
+    graphRecordFrameNumber: capture.target.recordFrameNumber + 1,
+    publicReceiptFrameId,
     graphGeneration: capture.target.graphGeneration,
     textureIdentity: capture.target.textureIdentity,
     descriptor: capture.target.descriptor,
@@ -1162,7 +1163,11 @@ if (hdrPod === undefined) {
       if (frame === FRAME_COUNT - 1) {
         iblObservation = await captureObservation(receipt);
         try {
-          iblGraphCapture = await readGraphTargetCapture(observationHost, iblGraphCapture);
+          iblGraphCapture = await readGraphTargetCapture(
+            observationHost,
+            iblGraphCapture,
+            receipt.frameId,
+          );
         } catch (cause) {
           iblGraphCaptureError = cause instanceof Error ? cause.message : String(cause);
         }
@@ -1216,7 +1221,8 @@ const iblGraphComparison = (() => {
   return {
     verdict: equal ? 'pass' : 'fail',
     graph: {
-      frameId: iblGraphCapture.graphFrameId,
+      recordFrameNumber: iblGraphCapture.graphRecordFrameNumber,
+      publicReceiptFrameId: iblGraphCapture.publicReceiptFrameId,
       graphGeneration: iblGraphCapture.graphGeneration,
       textureIdentity: iblGraphCapture.textureIdentity,
       descriptor: iblGraphCapture.descriptor,
@@ -1228,11 +1234,11 @@ const iblGraphComparison = (() => {
       backendId: iblObservation.metadata.backendId,
       rawHash: fnv1a(iblObservation.bytes),
     },
-    frameMatch: iblGraphCapture.graphFrameId === iblObservation.metadata.frameId,
+    receiptMatch: iblGraphCapture.publicReceiptFrameId === iblObservation.metadata.frameId,
     sameBytes: equal,
   };
 })();
-if (iblGraphComparison.frameMatch === false) errors.push('ibl-graph-observation-frame-mismatch');
+if (iblGraphComparison.receiptMatch === false) errors.push('ibl-graph-observation-receipt-mismatch');
 if (iblGraphComparison.verdict !== 'pass') errors.push('ibl-graph-observation-mismatch');
 console.error(`[physical-material] IBL graph/observation comparison: ${JSON.stringify(iblGraphComparison)}`);
 const iblRecords = iblObservation === undefined

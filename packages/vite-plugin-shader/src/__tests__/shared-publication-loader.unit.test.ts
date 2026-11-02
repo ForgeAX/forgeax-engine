@@ -1,6 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  expandShaderManifestPublication,
+  LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+  LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+} from '@forgeax/engine-shader';
+import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { publishShaderManifest } from '../manifest-publication.js';
 import { loadSharedEngineShaderManifest } from '../shared-engine-inputs.js';
@@ -8,8 +14,63 @@ import { loadSharedEngineShaderManifest } from '../shared-engine-inputs.js';
 let root: string;
 let manifestPath: string;
 const wgsl = '// source \u00e9\r\nfn main() {}\n// final bytes  ';
-const entries = [{ hash: 'primary', wgsl, bindings: '[]' }];
-const materialShaders = [{ identifier: 'material', composedWgsl: wgsl, variants: [] }];
+const reflection = { schemaVersion: 'shader-reflection/3', uvSetCount: 0, boundGlobals: [] };
+const resampling = [
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_resample', stage: 'compute', bindings: [] },
+      { name: 'light_texture_reduce', stage: 'compute', bindings: [] },
+    ],
+    programContract: { schemaVersion: 'shader-program-contract/1', colorTargets: [] },
+  },
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_fullscreen', stage: 'vertex', bindings: [] },
+      { name: 'light_texture_resample_fragment', stage: 'fragment', bindings: [] },
+    ],
+    programContract: {
+      schemaVersion: 'shader-program-contract/1',
+      colorTargets: [
+        { location: 0, format: 'rgba32float', numericType: 'float' },
+        { location: 1, format: 'rgba8unorm', numericType: 'float' },
+      ],
+    },
+  },
+] as const;
+const engineIdentifiers = [
+  'forgeax::default-standard-pbr',
+  'forgeax::pbr-skin',
+  'forgeax::default-shadow-caster',
+  'forgeax::default-unlit',
+  ...resampling.map(({ identifier }) => identifier),
+];
+const entries = engineIdentifiers.map((identifier, index) => {
+  const helper = resampling.find((entry) => entry.identifier === identifier);
+  return {
+    hash: (index + 1).toString(16).padStart(8, '0'),
+    identifier,
+    wgsl,
+    glsl: '',
+    bindings: '[]',
+    compilerProfile: MATERIAL_WGSL_PROFILE,
+    reflection,
+    entryPoints: helper?.entryPoints ?? [],
+    ...(helper === undefined ? {} : { programContract: helper.programContract }),
+  };
+});
+const materialShaders = entries.map((entry) => ({
+  identifier: entry.identifier,
+  sourcePath: `${entry.identifier}.wgsl`,
+  hash: entry.hash,
+  compilerProfile: entry.compilerProfile,
+  reflection: entry.reflection,
+  entryPoints: entry.entryPoints,
+  composedWgsl: wgsl,
+  paramSchema: '[]',
+  variants: [],
+}));
 
 function writePayload(value: unknown): void {
   writeFileSync(join(root, 'shared/shaders.json'), JSON.stringify(value));
@@ -39,12 +100,7 @@ afterEach(() => {
 });
 
 it('serializes admitted shared blocks without expanding and splitting every material again', async () => {
-  const materials = [
-    'forgeax::default-standard-pbr',
-    'forgeax::pbr-skin',
-    'forgeax::default-shadow-caster',
-  ].map((identifier) => ({ identifier, composedWgsl: wgsl, variants: [] }));
-  const publication = publishShaderManifest(entries, materials);
+  const publication = publishShaderManifest(entries, materialShaders);
   writePayload(publication);
   vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', manifestPath);
   const { buildEngineShaderManifest } = await import('../index.js');
@@ -76,6 +132,29 @@ it('serializes admitted shared blocks without expanding and splitting every mate
   }
 });
 
+it('rejects shared engine profiles whose variant artifacts lack their own reflection', async () => {
+  const materialShadersWithIncompleteVariant = materialShaders.map((entry) =>
+    entry.identifier === 'forgeax::default-standard-pbr'
+      ? {
+          ...entry,
+          variants: [
+            {
+              definesKey: 'STORAGE_BUFFER_AVAILABLE=false',
+              defines: { STORAGE_BUFFER_AVAILABLE: false },
+              hash: 'abcdef01',
+              compilerProfile: MATERIAL_WGSL_PROFILE,
+              composedWgsl: wgsl,
+            },
+          ],
+        }
+      : entry,
+  );
+  writePayload(publishShaderManifest(entries, materialShadersWithIncompleteVariant));
+  vi.stubEnv('FORGEAX_SHARED_APP_INPUTS_MANIFEST', manifestPath);
+  const { buildEngineShaderManifest } = await import('../index.js');
+  await expect(buildEngineShaderManifest()).rejects.toThrow('shared input is incomplete or stale');
+});
+
 it('loads exact shared shader bytes in Node without a browser Crypto global', async () => {
   vi.stubGlobal('crypto', undefined);
   const join = Array.prototype.join;
@@ -89,11 +168,13 @@ it('loads exact shared shader bytes in Node without a browser Crypto global', as
     return result;
   });
   const loaded = await loadSharedEngineShaderManifest(manifestPath);
+  const expected = expandShaderManifestPublication(publishShaderManifest(entries, materialShaders))
+    .manifest as { entries: unknown[]; materialShaders: unknown[] };
   expect(composed).toEqual([]);
   spy.mockRestore();
   expect({ entries: loaded.entries, materialShaders: loaded.materialShaders }).toEqual({
-    entries,
-    materialShaders,
+    entries: expected.entries,
+    materialShaders: expected.materialShaders,
   });
   expect(loaded.publication).toEqual(publishShaderManifest(entries, materialShaders));
 });

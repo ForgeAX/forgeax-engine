@@ -26,15 +26,16 @@
 // (naga_oil HashMap silent override); architecture principles #5 Fail Fast.
 
 import type { ShaderDefineConflictDetail } from '@forgeax/engine-types';
+import { shaderDirectiveLines } from './conditionals.js';
 
-const DEFINE_RE = /^\s*#define\s+(\w+)/;
+const DEFINE_RE = /^\s*#\s*define\s+(\w+)/;
 
 export function scanDefineConflicts(modules: Record<string, string>): ShaderDefineConflictDetail[] {
   // Per-define aggregate: set of moduleIds that declared it.
   const perDefine = new Map<string, Set<string>>();
 
   for (const [moduleId, source] of Object.entries(modules)) {
-    for (const line of source.split(/\r?\n/)) {
+    for (const line of shaderDirectiveLines(source)) {
       const match = DEFINE_RE.exec(line);
       if (!match) continue;
       const name = match[1];

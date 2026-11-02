@@ -20,10 +20,14 @@
 //   (hasDynamicOffset / minBindingSize defaults written out), and the visibility field
 //   is an integer bitmask (plan-strategy §S-9 / D-R9).
 
+use std::collections::BTreeSet;
+
+use naga::proc::Layouter;
 use naga::valid::{Capabilities, GlobalUse, ModuleInfo, ValidationFlags, Validator};
 use naga::{
-    AddressSpace, Binding, Expression, Handle, ImageClass, ImageDimension, Module, SampleLevel,
-    Scalar, ScalarKind, ShaderStage, StorageAccess, StorageFormat, TypeInner, VectorSize,
+    AddressSpace, ArraySize, Binding, Expression, Handle, ImageClass, ImageDimension, Module,
+    SampleLevel, Scalar, ScalarKind, ShaderStage, StorageAccess, StorageFormat, TypeInner,
+    VectorSize,
 };
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -57,14 +61,20 @@ struct ComputeEntrySource {
 
 // This is a build-time projection. Naga retains the selected entry's workgroup
 // size, overrides and reachable globals/functions, and remaps every IR handle.
-fn compute_entry_sources(source: &str, entries: &[String]) -> Result<Vec<ComputeEntrySource>, String> {
+fn compute_entry_sources(
+    source: &str,
+    entries: &[String],
+) -> Result<Vec<ComputeEntrySource>, String> {
     let parsed = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
     Validator::new(ValidationFlags::all(), Capabilities::all())
-        .validate(&parsed).map_err(|e| e.to_string())?;
+        .validate(&parsed)
+        .map_err(|e| e.to_string())?;
     let mut output = Vec::with_capacity(entries.len());
     for entry in entries {
         let mut module = parsed.clone();
-        module.entry_points.retain(|ep| ep.stage == ShaderStage::Compute && ep.name == *entry);
+        module
+            .entry_points
+            .retain(|ep| ep.stage == ShaderStage::Compute && ep.name == *entry);
         if module.entry_points.len() != 1 {
             return Err(format!("expected one compute entry named {entry}"));
         }
@@ -73,16 +83,22 @@ fn compute_entry_sources(source: &str, entries: &[String]) -> Result<Vec<Compute
         // writer cannot round-trip override-sized workgroups. Keep the exact
         // source for these modules rather than changing their public contract.
         if !parsed.overrides.is_empty() {
-            output.push(ComputeEntrySource { entry_point: entry.clone(), source: source.into() });
+            output.push(ComputeEntrySource {
+                entry_point: entry.clone(),
+                source: source.into(),
+            });
             continue;
         }
         naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
         let info = Validator::new(ValidationFlags::all(), Capabilities::all())
-            .validate(&module).map_err(|e| e.to_string())?;
-        let source = naga::back::wgsl::write_string(
-            &module, &info, naga::back::wgsl::WriterFlags::empty(),
-        ).map_err(|e| e.to_string())?;
-        output.push(ComputeEntrySource { entry_point: entry.clone(), source });
+            .validate(&module)
+            .map_err(|e| e.to_string())?;
+        let source = write_checked_wgsl(&module, &info)
+            .map_err(|error| format!("shader-compile-failed: {error}"))?;
+        output.push(ComputeEntrySource {
+            entry_point: entry.clone(),
+            source,
+        });
     }
     Ok(output)
 }
@@ -90,8 +106,8 @@ fn compute_entry_sources(source: &str, entries: &[String]) -> Result<Vec<Compute
 /// Produce portable WGSL for each selected compute entry; never driver binaries.
 #[wasm_bindgen]
 pub fn specialize_compute_entries(source: &str, entries_json: &str) -> Result<String, JsError> {
-    let entries: Vec<String> = serde_json::from_str(entries_json)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let entries: Vec<String> =
+        serde_json::from_str(entries_json).map_err(|e| JsError::new(&e.to_string()))?;
     let output = compute_entry_sources(source, &entries).map_err(|e| JsError::new(&e))?;
     serde_json::to_string(&output).map_err(|e| JsError::new(&e.to_string()))
 }
@@ -113,7 +129,9 @@ pub fn parse(source: &str) -> Result<ParsedModule, JsError> {
                 line_num: loc.as_ref().map(|l| l.line_number),
                 line_pos: loc.as_ref().map(|l| l.line_position),
             };
-            Err(JsError::new(&serde_json::to_string(&payload).unwrap_or_else(|_| "parse failed".into())))
+            Err(JsError::new(
+                &serde_json::to_string(&payload).unwrap_or_else(|_| "parse failed".into()),
+            ))
         }
     }
 }
@@ -153,11 +171,17 @@ pub fn validate_render_entries(
     color_formats: Option<String>,
 ) -> Result<(), JsError> {
     let module = &validated.module;
-    let vertex_entry = module.entry_points.iter()
+    let vertex_entry = module
+        .entry_points
+        .iter()
         .find(|entry| entry.name == vertex && entry.stage == ShaderStage::Vertex)
         .ok_or_else(|| JsError::new(&format!("vertex entry '{vertex}' does not exist")))?;
-    let Some(fragment) = fragment else { return Ok(()) };
-    let fragment_entry = module.entry_points.iter()
+    let Some(fragment) = fragment else {
+        return Ok(());
+    };
+    let fragment_entry = module
+        .entry_points
+        .iter()
         .find(|entry| entry.name == fragment && entry.stage == ShaderStage::Fragment)
         .ok_or_else(|| JsError::new(&format!("fragment entry '{fragment}' does not exist")))?;
     if let Some(formats_json) = color_formats {
@@ -168,20 +192,32 @@ pub fn validate_render_entries(
             collect_stage_locations(module, result.ty, result.binding.as_ref(), &mut colors);
         }
         if colors.len() != formats.len() {
-            return Err(JsError::new("material output count differs from selected fragment outputs"));
+            return Err(JsError::new(
+                "material output count differs from selected fragment outputs",
+            ));
         }
         for (index, format) in formats.iter().enumerate() {
-            let (_, ty, _) = colors.iter().find(|(location, _, _)| *location == index as u32)
-                .ok_or_else(|| JsError::new(&format!("missing fragment output @location({index})")))?;
+            let (_, ty, _) = colors
+                .iter()
+                .find(|(location, _, _)| *location == index as u32)
+                .ok_or_else(|| {
+                    JsError::new(&format!("missing fragment output @location({index})"))
+                })?;
             let scalar = match module.types[*ty].inner {
                 TypeInner::Scalar(scalar) | TypeInner::Vector { scalar, .. } => scalar,
                 _ => return Err(JsError::new("fragment output must be scalar or vector")),
             };
-            let expected = if format.ends_with("uint") { naga::ScalarKind::Uint }
-                else if format.ends_with("sint") { naga::ScalarKind::Sint }
-                else { naga::ScalarKind::Float };
+            let expected = if format.ends_with("uint") {
+                naga::ScalarKind::Uint
+            } else if format.ends_with("sint") {
+                naga::ScalarKind::Sint
+            } else {
+                naga::ScalarKind::Float
+            };
             if scalar.kind != expected {
-                return Err(JsError::new(&format!("fragment output @location({index}) is incompatible with {format}")));
+                return Err(JsError::new(&format!(
+                    "fragment output @location({index}) is incompatible with {format}"
+                )));
             }
         }
     }
@@ -194,11 +230,13 @@ pub fn validate_render_entries(
         collect_stage_locations(module, argument.ty, argument.binding.as_ref(), &mut inputs);
     }
     for (location, ty, binding) in inputs {
-        let compatible = outputs.iter().any(|(output_location, output_ty, output_binding)| {
-            *output_location == location
-                && module.types[*output_ty].inner == module.types[ty].inner
-                && *output_binding == binding
-        });
+        let compatible = outputs
+            .iter()
+            .any(|(output_location, output_ty, output_binding)| {
+                *output_location == location
+                    && module.types[*output_ty].inner == module.types[ty].inner
+                    && *output_binding == binding
+            });
         if !compatible {
             return Err(JsError::new(&format!(
                 "fragment entry '{fragment}' input @location({location}) has no compatible output from vertex entry '{vertex}'"
@@ -230,13 +268,20 @@ fn collect_stage_locations<'a>(
 /// footnote), so it is injected via JS-side options.
 #[wasm_bindgen]
 pub fn emit_reflection(validated: &ValidatedModule, options_json: &str) -> Result<String, JsError> {
-    let options: ReflectionOptions = serde_json::from_str(options_json)
-        .unwrap_or(ReflectionOptions { dynamic_offsets: Vec::new() });
+    let options: ReflectionOptions =
+        serde_json::from_str(options_json).unwrap_or(ReflectionOptions {
+            dynamic_offsets: Vec::new(),
+        });
     let bgls = derive_bgls(&validated.module, &validated.info, &options);
+    let mut layouter = Layouter::default();
+    layouter
+        .update(validated.module.to_ctx())
+        .map_err(|error| JsError::new(&format!("reflection layout failed: {error}")))?;
     let uv_set_count = derive_uv_set_count(&validated.module);
     let output = ReflectionOutput {
-        schema_version: "shader-reflection/2",
-        bound_globals: derive_bound_globals(&validated.module, &validated.info),
+        schema_version: "shader-reflection/3",
+        bound_globals: derive_bound_globals(&validated.module, &validated.info, &layouter)
+            .map_err(|error| JsError::new(&error))?,
         uv_set_count,
         entry_points: entry_reads::derive(&validated.module, &validated.info),
         bindings: bgls,
@@ -312,7 +357,7 @@ struct StorageTextureBinding {
     view_dimension: &'static str,
 }
 
-// === Generic shader-reflection/2 output ===========================================
+// === Generic shader-reflection/3 output ===========================================
 
 #[derive(Serialize)]
 struct BoundGlobal {
@@ -322,6 +367,20 @@ struct BoundGlobal {
     address_space: &'static str,
     #[serde(rename = "resourceKind")]
     resource_kind: &'static str,
+    #[serde(rename = "resourceAccess", skip_serializing_if = "Option::is_none")]
+    resource_access: Option<&'static str>,
+    #[serde(rename = "textureClass", skip_serializing_if = "Option::is_none")]
+    texture_class: Option<&'static str>,
+    #[serde(rename = "sampleType", skip_serializing_if = "Option::is_none")]
+    sample_type: Option<&'static str>,
+    #[serde(rename = "viewDimension", skip_serializing_if = "Option::is_none")]
+    view_dimension: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    multisampled: Option<bool>,
+    #[serde(rename = "storageFormat", skip_serializing_if = "Option::is_none")]
+    storage_format: Option<&'static str>,
+    #[serde(rename = "samplerType", skip_serializing_if = "Option::is_none")]
+    sampler_type: Option<&'static str>,
     visibility: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -332,6 +391,14 @@ struct BoundGlobal {
     /// Byte step used when indexing a runtime-sized storage array.
     #[serde(rename = "elementStride", skip_serializing_if = "Option::is_none")]
     element_stride: Option<u32>,
+    /// WGSL element/base type for an array or direct struct buffer binding.
+    #[serde(rename = "elementType", skip_serializing_if = "Option::is_none")]
+    element_type: Option<String>,
+    /// Number of elements when the bound resource is a fixed-size array.
+    #[serde(rename = "arrayLength", skip_serializing_if = "Option::is_none")]
+    array_length: Option<u32>,
+    #[serde(rename = "typeDescriptor", skip_serializing_if = "Option::is_none")]
+    type_descriptor: Option<ReflectionTypeDescriptor>,
 }
 
 #[derive(Serialize)]
@@ -342,6 +409,80 @@ struct ReflectionMember {
     offset: u32,
     size: u32,
     alignment: u32,
+    #[serde(rename = "typeDescriptor")]
+    type_descriptor: ReflectionTypeDescriptor,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ReflectionArraySize {
+    Constant {
+        count: u32,
+    },
+    Pending {
+        #[serde(rename = "overrideId")]
+        override_id: usize,
+    },
+    Dynamic,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ReflectionTypeDescriptor {
+    Scalar {
+        #[serde(rename = "scalarKind")]
+        scalar_kind: &'static str,
+        width: u8,
+        #[serde(rename = "byteSize")]
+        byte_size: u32,
+        alignment: u32,
+    },
+    Atomic {
+        #[serde(rename = "scalarKind")]
+        scalar_kind: &'static str,
+        width: u8,
+        #[serde(rename = "byteSize")]
+        byte_size: u32,
+        alignment: u32,
+    },
+    Vector {
+        #[serde(rename = "scalarKind")]
+        scalar_kind: &'static str,
+        width: u8,
+        components: u8,
+        #[serde(rename = "byteSize")]
+        byte_size: u32,
+        alignment: u32,
+    },
+    Matrix {
+        #[serde(rename = "scalarKind")]
+        scalar_kind: &'static str,
+        width: u8,
+        columns: u8,
+        rows: u8,
+        #[serde(rename = "columnStride")]
+        column_stride: u32,
+        #[serde(rename = "byteSize")]
+        byte_size: u32,
+        alignment: u32,
+    },
+    Array {
+        size: ReflectionArraySize,
+        stride: u32,
+        #[serde(rename = "byteSize")]
+        byte_size: u32,
+        alignment: u32,
+        element: Box<ReflectionTypeDescriptor>,
+    },
+    Struct {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        span: u32,
+        #[serde(rename = "byteSize")]
+        byte_size: u32,
+        alignment: u32,
+        members: Vec<ReflectionMember>,
+    },
 }
 
 #[derive(Serialize)]
@@ -360,86 +501,144 @@ struct ReflectionOutput {
     bindings: Vec<Bgl>,
 }
 
-fn derive_bound_globals(module: &Module, info: &ModuleInfo) -> Vec<BoundGlobal> {
+fn derive_bound_globals(
+    module: &Module,
+    info: &ModuleInfo,
+    layouter: &Layouter,
+) -> Result<Vec<BoundGlobal>, String> {
     let mut globals = Vec::new();
     for (handle, variable) in module.global_variables.iter() {
-        let Some(binding) = variable.binding else { continue };
+        let Some(binding) = variable.binding else {
+            continue;
+        };
         let visibility = compute_visibility(module, info, handle);
-        let (members, span, element_stride) = match variable.space {
+        let element_type = match &module.types[variable.ty].inner {
+            TypeInner::Array { base, .. } => Some(reflection_type_name(module, *base)),
+            TypeInner::Struct { .. } => Some("struct".to_string()),
+            _ => None,
+        };
+        let resource_facts = reflection_resource_facts(module, handle, variable);
+        let (members, span, element_stride, array_length) = match &variable.space {
             AddressSpace::Uniform => {
                 let ty = &module.types[variable.ty];
                 match &ty.inner {
-                    TypeInner::Struct { members, span } => (
-                        Some(reflection_members(module, members)),
-                        Some(*span),
+                    TypeInner::Struct { members, .. } => (
+                        Some(reflection_members(module, layouter, members)?),
+                        Some(layouter[variable.ty].size),
+                        None,
                         None,
                     ),
-                    TypeInner::Array { base, stride, .. } => {
-                        let (members, span) = match &module.types[*base].inner {
-                            TypeInner::Struct { members, span } => {
-                                (Some(reflection_members(module, members)), Some(*span))
-                            }
-                            _ => (Some(Vec::new()), Some(0)),
-                        };
-                        (members, span, Some(*stride))
+                    TypeInner::Array { base, stride, size } => {
+                        let (members, span) = reflected_struct_members(module, layouter, *base)?;
+                        (
+                            Some(members),
+                            Some(span),
+                            Some(*stride),
+                            match size {
+                                ArraySize::Constant(length) => Some(length.get()),
+                                ArraySize::Pending(_) | ArraySize::Dynamic => None,
+                            },
+                        )
                     }
-                    _ => (Some(Vec::new()), Some(0), None),
+                    _ => (Some(Vec::new()), Some(0), None, None),
                 }
             }
             AddressSpace::Storage { .. } => {
                 let ty = &module.types[variable.ty];
                 match &ty.inner {
-                    TypeInner::Array { base, stride, .. } => {
-                        let (members, span) = match &module.types[*base].inner {
-                            TypeInner::Struct { members, span } => {
-                                (Some(reflection_members(module, members)), Some(*span))
-                            }
-                            _ => (Some(Vec::new()), Some(0)),
-                        };
-                        (members, span, Some(*stride))
+                    TypeInner::Array { base, stride, size } => {
+                        let (members, span) = reflected_struct_members(module, layouter, *base)?;
+                        (
+                            Some(members),
+                            Some(span),
+                            Some(*stride),
+                            match size {
+                                ArraySize::Constant(length) => Some(length.get()),
+                                ArraySize::Pending(_) | ArraySize::Dynamic => None,
+                            },
+                        )
                     }
-                    TypeInner::Struct { members, span } => (
-                        Some(reflection_members(module, members)),
-                        Some(*span),
-                        Some(*span),
+                    TypeInner::Struct { members, .. } => (
+                        Some(reflection_members(module, layouter, members)?),
+                        Some(layouter[variable.ty].size),
+                        Some(layouter[variable.ty].size),
+                        None,
                     ),
                     _ => (
                         Some(Vec::new()),
                         Some(0),
-                        ty.inner.try_size(module.to_ctx()),
+                        Some(layouter[variable.ty].size),
+                        None,
                     ),
                 }
             }
-            _ => (None, None, None),
+            _ => (None, None, None, None),
+        };
+        let type_descriptor = match variable.space {
+            AddressSpace::Uniform | AddressSpace::Storage { .. } => {
+                Some(reflection_type_descriptor(module, layouter, variable.ty)?)
+            }
+            _ => None,
         };
         globals.push(BoundGlobal {
             group: binding.group,
             binding: binding.binding,
             address_space: reflection_address_space(&variable.space),
             resource_kind: reflection_resource_kind(module, variable),
+            resource_access: resource_facts.access,
+            texture_class: resource_facts.texture_class,
+            sample_type: resource_facts.sample_type,
+            view_dimension: resource_facts.view_dimension,
+            multisampled: resource_facts.multisampled,
+            storage_format: resource_facts.storage_format,
+            sampler_type: resource_facts.sampler_type,
             visibility,
             name: variable.name.clone(),
             members,
             span,
             element_stride,
+            element_type,
+            array_length,
+            type_descriptor,
         });
     }
     globals.sort_by_key(|global| (global.group, global.binding));
-    globals
+    Ok(globals)
 }
 
-fn reflection_members(module: &Module, members: &[naga::StructMember]) -> Vec<ReflectionMember> {
+fn reflected_struct_members(
+    module: &Module,
+    layouter: &Layouter,
+    handle: Handle<naga::Type>,
+) -> Result<(Vec<ReflectionMember>, u32), String> {
+    match &module.types[handle].inner {
+        TypeInner::Struct { members, .. } => Ok((
+            reflection_members(module, layouter, members)?,
+            layouter[handle].size,
+        )),
+        _ => Ok((Vec::new(), 0)),
+    }
+}
+
+fn reflection_members(
+    module: &Module,
+    layouter: &Layouter,
+    members: &[naga::StructMember],
+) -> Result<Vec<ReflectionMember>, String> {
     members
         .iter()
-        .filter_map(|member| {
-            let name = member.name.as_ref()?;
-            let member_ty = &module.types[member.ty];
-            Some(ReflectionMember {
-                name: name.clone(),
-                ty: reflection_type_name(member_ty),
+        .enumerate()
+        .map(|(index, member)| {
+            Ok(ReflectionMember {
+                name: member
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("member_{index}")),
+                ty: reflection_type_name(module, member.ty),
                 offset: member.offset,
-                size: member_ty.inner.try_size(module.to_ctx()).unwrap_or(0),
-                alignment: reflection_alignment(member_ty),
+                size: layouter[member.ty].size,
+                alignment: layouter[member.ty].alignment.round_up(1),
+                type_descriptor: reflection_type_descriptor(module, layouter, member.ty)?,
             })
         })
         .collect()
@@ -464,48 +663,380 @@ fn reflection_resource_kind(module: &Module, variable: &naga::GlobalVariable) ->
     }
 }
 
-fn reflection_type_name(ty: &naga::Type) -> String {
-    match ty.inner {
-        TypeInner::Scalar(scalar) => scalar_name(scalar).to_string(),
-        TypeInner::Vector { size, scalar } => {
-            format!("vec{}<{}>", u8::from(size), scalar_name(scalar))
-        }
-        TypeInner::Matrix { columns, rows, scalar } => format!(
-            "mat{}x{}<{}>",
-            u8::from(columns),
-            u8::from(rows),
-            scalar_name(scalar)
-        ),
-        _ => "struct".to_string(),
+struct ReflectedResourceFacts {
+    access: Option<&'static str>,
+    texture_class: Option<&'static str>,
+    sample_type: Option<&'static str>,
+    view_dimension: Option<&'static str>,
+    multisampled: Option<bool>,
+    storage_format: Option<&'static str>,
+    sampler_type: Option<&'static str>,
+}
+
+fn reflection_storage_access(access: StorageAccess) -> &'static str {
+    match (
+        access.contains(StorageAccess::LOAD),
+        access.contains(StorageAccess::STORE),
+    ) {
+        (true, true) => "read-write",
+        (true, false) => "read-only",
+        (false, true) => "write-only",
+        (false, false) => "read-only",
     }
 }
 
-fn scalar_name(scalar: Scalar) -> &'static str {
+fn reflection_sampler_type(
+    module: &Module,
+    handle: Handle<naga::GlobalVariable>,
+    comparison: bool,
+) -> &'static str {
+    if comparison {
+        "comparison"
+    } else if module_uses_filtered_sample_with_global(module, handle) {
+        "filtering"
+    } else {
+        "non-filtering"
+    }
+}
+
+fn reflection_sample_type(
+    module: &Module,
+    handle: Handle<naga::GlobalVariable>,
+    kind: ScalarKind,
+) -> &'static str {
+    match kind {
+        ScalarKind::Sint => "sint",
+        ScalarKind::Uint => "uint",
+        ScalarKind::Float if module_uses_filtered_sample_with_image(module, handle) => "float",
+        ScalarKind::Float => "unfilterable-float",
+        _ => "unfilterable-float",
+    }
+}
+
+fn reflection_resource_facts(
+    module: &Module,
+    handle: Handle<naga::GlobalVariable>,
+    variable: &naga::GlobalVariable,
+) -> ReflectedResourceFacts {
+    match (&variable.space, &module.types[variable.ty].inner) {
+        (AddressSpace::Uniform, _) => ReflectedResourceFacts {
+            access: Some("read-only"),
+            texture_class: None,
+            sample_type: None,
+            view_dimension: None,
+            multisampled: None,
+            storage_format: None,
+            sampler_type: None,
+        },
+        (AddressSpace::Storage { access }, _) => ReflectedResourceFacts {
+            access: Some(reflection_storage_access(*access)),
+            texture_class: None,
+            sample_type: None,
+            view_dimension: None,
+            multisampled: None,
+            storage_format: None,
+            sampler_type: None,
+        },
+        (AddressSpace::Handle, TypeInner::Sampler { comparison }) => ReflectedResourceFacts {
+            access: Some("read-only"),
+            texture_class: None,
+            sample_type: None,
+            view_dimension: None,
+            multisampled: None,
+            storage_format: None,
+            sampler_type: Some(reflection_sampler_type(module, handle, *comparison)),
+        },
+        (
+            AddressSpace::Handle,
+            TypeInner::Image {
+                dim,
+                arrayed,
+                class,
+            },
+        ) => {
+            let view_dimension = Some(image_dim_str(*dim, *arrayed));
+            match class {
+                ImageClass::Storage { format, access } => ReflectedResourceFacts {
+                    access: Some(reflection_storage_access(*access)),
+                    texture_class: Some("storage"),
+                    sample_type: None,
+                    view_dimension,
+                    multisampled: None,
+                    storage_format: Some(storage_format_str(*format)),
+                    sampler_type: None,
+                },
+                ImageClass::Sampled { kind, multi } => ReflectedResourceFacts {
+                    access: Some("read-only"),
+                    texture_class: Some("sampled"),
+                    sample_type: Some(reflection_sample_type(module, handle, *kind)),
+                    view_dimension,
+                    multisampled: Some(*multi),
+                    storage_format: None,
+                    sampler_type: None,
+                },
+                ImageClass::Depth { multi } => ReflectedResourceFacts {
+                    access: Some("read-only"),
+                    texture_class: Some("sampled"),
+                    sample_type: Some("depth"),
+                    view_dimension,
+                    multisampled: Some(*multi),
+                    storage_format: None,
+                    sampler_type: None,
+                },
+                ImageClass::External => ReflectedResourceFacts {
+                    access: Some("read-only"),
+                    texture_class: Some("external"),
+                    sample_type: None,
+                    view_dimension,
+                    multisampled: None,
+                    storage_format: None,
+                    sampler_type: None,
+                },
+            }
+        }
+        _ => ReflectedResourceFacts {
+            access: None,
+            texture_class: None,
+            sample_type: None,
+            view_dimension: None,
+            multisampled: None,
+            storage_format: None,
+            sampler_type: None,
+        },
+    }
+}
+
+fn reflection_type_name(module: &Module, handle: Handle<naga::Type>) -> String {
+    match &module.types[handle].inner {
+        TypeInner::Scalar(scalar) => scalar_name(*scalar),
+        TypeInner::Vector { size, scalar } => {
+            format!("vec{}<{}>", u8::from(*size), scalar_name(*scalar))
+        }
+        TypeInner::Matrix {
+            columns,
+            rows,
+            scalar,
+        } => format!(
+            "mat{}x{}<{}>",
+            u8::from(*columns),
+            u8::from(*rows),
+            scalar_name(*scalar)
+        ),
+        TypeInner::Array { .. } => "array".to_string(),
+        TypeInner::Atomic(scalar) => format!("atomic<{}>", scalar_name(*scalar)),
+        TypeInner::Struct { .. } => module.types[handle]
+            .name
+            .clone()
+            .unwrap_or_else(|| "struct".to_string()),
+        _ => "opaque".to_string(),
+    }
+}
+
+fn scalar_name(scalar: Scalar) -> String {
     match scalar.kind {
-        ScalarKind::Float => "f32",
-        ScalarKind::Sint => "i32",
-        ScalarKind::Uint => "u32",
+        ScalarKind::Float => format!("f{}", scalar.width * 8),
+        ScalarKind::Sint => format!("i{}", scalar.width * 8),
+        ScalarKind::Uint => format!("u{}", scalar.width * 8),
+        ScalarKind::Bool => "bool".to_string(),
+        ScalarKind::AbstractInt => "abstract-int".to_string(),
+        ScalarKind::AbstractFloat => "abstract-float".to_string(),
+    }
+}
+
+fn scalar_kind_name(scalar: Scalar) -> &'static str {
+    match scalar.kind {
+        ScalarKind::Float => "float",
+        ScalarKind::Sint => "sint",
+        ScalarKind::Uint => "uint",
         ScalarKind::Bool => "bool",
         ScalarKind::AbstractInt => "abstract-int",
         ScalarKind::AbstractFloat => "abstract-float",
     }
 }
 
-fn reflection_alignment(ty: &naga::Type) -> u32 {
-    match ty.inner {
-        TypeInner::Scalar(scalar) => scalar.width as u32,
-        TypeInner::Vector { size, scalar } => {
-            let components = u8::from(size) as u32;
-            if components >= 3 {
-                scalar.width as u32 * 4
-            } else {
-                scalar.width as u32 * components
+fn reflection_type_descriptor(
+    module: &Module,
+    layouter: &Layouter,
+    handle: Handle<naga::Type>,
+) -> Result<ReflectionTypeDescriptor, String> {
+    let ty = &module.types[handle];
+    let layout = layouter[handle];
+    let alignment = layout.alignment.round_up(1);
+    let byte_size = layout.size;
+    Ok(match &ty.inner {
+        TypeInner::Scalar(scalar) => ReflectionTypeDescriptor::Scalar {
+            scalar_kind: scalar_kind_name(*scalar),
+            width: scalar.width,
+            byte_size,
+            alignment,
+        },
+        TypeInner::Atomic(scalar) => ReflectionTypeDescriptor::Atomic {
+            scalar_kind: scalar_kind_name(*scalar),
+            width: scalar.width,
+            byte_size,
+            alignment,
+        },
+        TypeInner::Vector { size, scalar } => ReflectionTypeDescriptor::Vector {
+            scalar_kind: scalar_kind_name(*scalar),
+            width: scalar.width,
+            components: u8::from(*size),
+            byte_size,
+            alignment,
+        },
+        TypeInner::Matrix {
+            columns,
+            rows,
+            scalar,
+        } => {
+            let column_count = u8::from(*columns) as u32;
+            if column_count == 0 || byte_size % column_count != 0 {
+                return Err(format!(
+                    "Naga matrix layout has invalid column size for type {}",
+                    reflection_type_name(module, handle)
+                ));
+            }
+            ReflectionTypeDescriptor::Matrix {
+                scalar_kind: scalar_kind_name(*scalar),
+                width: scalar.width,
+                columns: u8::from(*columns),
+                rows: u8::from(*rows),
+                column_stride: byte_size / column_count,
+                byte_size,
+                alignment,
             }
         }
-        TypeInner::Matrix { rows, scalar, .. } => {
-            scalar.width as u32 * u8::from(rows) as u32
+        TypeInner::Array { base, size, stride } => {
+            let size = match size {
+                ArraySize::Constant(count) => ReflectionArraySize::Constant { count: count.get() },
+                ArraySize::Pending(override_handle) => ReflectionArraySize::Pending {
+                    override_id: override_handle.index(),
+                },
+                ArraySize::Dynamic => ReflectionArraySize::Dynamic,
+            };
+            ReflectionTypeDescriptor::Array {
+                size,
+                stride: *stride,
+                byte_size,
+                alignment,
+                element: Box::new(reflection_type_descriptor(module, layouter, *base)?),
+            }
         }
-        _ => 1,
+        TypeInner::Struct { members, span } => ReflectionTypeDescriptor::Struct {
+            name: ty.name.clone(),
+            span: *span,
+            byte_size,
+            alignment,
+            members: reflection_members(module, layouter, members)?,
+        },
+        other => {
+            return Err(format!(
+                "Naga reflection cannot describe bound data type {other:?}"
+            ));
+        }
+    })
+}
+
+/// Serialize WGSL only when Naga's writer preserves every bound buffer ABI.
+///
+/// The recursive reflection descriptor is the layout authority. This boundary
+/// compares its normalized projections before and after a parse/validate
+/// round-trip, ignoring compiler-generated names and Naga handle identities.
+pub(crate) fn write_checked_wgsl(module: &Module, info: &ModuleInfo) -> Result<String, String> {
+    let before = buffer_layout_projection(module)?;
+    let source =
+        naga::back::wgsl::write_string(module, info, naga::back::wgsl::WriterFlags::empty())
+            .map_err(|error| format!("WGSL writeback failed: {error}"))?;
+    let reparsed = naga::front::wgsl::parse_str(&source)
+        .map_err(|error| format!("WGSL writer output failed to parse: {error}"))?;
+    let _reparsed_info = Validator::new(ValidationFlags::all(), Capabilities::all())
+        .validate(&reparsed)
+        .map_err(|error| format!("WGSL writer output failed validation: {error}"))?;
+    let after = buffer_layout_projection(&reparsed)?;
+    let identities: BTreeSet<_> = before.keys().chain(after.keys()).copied().collect();
+    for (group, binding) in identities {
+        let original = before.get(&(group, binding));
+        let written = after.get(&(group, binding));
+        if original != written {
+            let before_json = original
+                .map(|value| serde_json::to_string(value).unwrap_or_default())
+                .unwrap_or_else(|| "<missing>".to_string());
+            let after_json = written
+                .map(|value| serde_json::to_string(value).unwrap_or_default())
+                .unwrap_or_else(|| "<missing>".to_string());
+            return Err(format!(
+                "WGSL writer changed buffer ABI at group={group} binding={binding}: before={before_json}; after={after_json}"
+            ));
+        }
+    }
+    Ok(source)
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+struct BufferLayoutProjection {
+    address_space: &'static str,
+    resource_kind: &'static str,
+    resource_access: Option<&'static str>,
+    type_descriptor: serde_json::Value,
+}
+
+fn buffer_layout_projection(
+    module: &Module,
+) -> Result<std::collections::BTreeMap<(u32, u32), BufferLayoutProjection>, String> {
+    let mut layouter = Layouter::default();
+    layouter
+        .update(module.to_ctx())
+        .map_err(|error| format!("buffer ABI layout projection failed: {error}"))?;
+    let mut buffers = std::collections::BTreeMap::new();
+    for (handle, variable) in module.global_variables.iter() {
+        let Some(binding) = variable.binding else {
+            continue;
+        };
+        if !matches!(
+            variable.space,
+            AddressSpace::Uniform | AddressSpace::Storage { .. }
+        ) {
+            continue;
+        }
+        let descriptor = reflection_type_descriptor(module, &layouter, variable.ty)?;
+        let mut descriptor = serde_json::to_value(descriptor)
+            .map_err(|error| format!("buffer ABI descriptor serialization failed: {error}"))?;
+        erase_generated_layout_names(&mut descriptor);
+        let facts = reflection_resource_facts(module, handle, variable);
+        let projection = BufferLayoutProjection {
+            address_space: reflection_address_space(&variable.space),
+            resource_kind: reflection_resource_kind(module, variable),
+            resource_access: facts.access,
+            type_descriptor: descriptor,
+        };
+        if buffers
+            .insert((binding.group, binding.binding), projection)
+            .is_some()
+        {
+            return Err(format!(
+                "multiple buffer resources share group={} binding={}",
+                binding.group, binding.binding
+            ));
+        }
+    }
+    Ok(buffers)
+}
+
+fn erase_generated_layout_names(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                erase_generated_layout_names(value);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            fields.remove("name");
+            fields.remove("type");
+            fields.remove("overrideId");
+            for value in fields.values_mut() {
+                erase_generated_layout_names(value);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -579,7 +1110,11 @@ fn visit_location(location: u32, ty: &naga::Type, max_uv_location: &mut i32) {
             ty.inner,
             TypeInner::Vector {
                 size: VectorSize::Bi,
-                scalar: Scalar { kind: ScalarKind::Float, width: 4, .. }
+                scalar: Scalar {
+                    kind: ScalarKind::Float,
+                    width: 4,
+                    ..
+                }
             }
         ) {
             if (location as i32) > *max_uv_location {
@@ -600,7 +1135,10 @@ fn derive_bgls(module: &Module, info: &ModuleInfo, options: &ReflectionOptions) 
         let Some(rb) = &var.binding else { continue };
         let visibility = compute_visibility(module, info, handle);
         let entry = derive_entry(module, info, handle, var, rb.binding, visibility, options);
-        groups.entry(rb.group).or_default().insert(rb.binding, entry);
+        groups
+            .entry(rb.group)
+            .or_default()
+            .insert(rb.binding, entry);
     }
 
     groups
@@ -630,7 +1168,9 @@ fn compute_visibility(
             ShaderStage::Compute => 0x4,
             _ => 0,
         };
-        let _ = usage.contains(GlobalUse::READ) || usage.contains(GlobalUse::WRITE) || usage.contains(GlobalUse::QUERY);
+        let _ = usage.contains(GlobalUse::READ)
+            || usage.contains(GlobalUse::WRITE)
+            || usage.contains(GlobalUse::QUERY);
     }
     bits
 }
@@ -664,7 +1204,7 @@ fn derive_entry(
             });
         }
         (AddressSpace::Storage { access }, _) => {
-            let ty_str: &'static str = if access.contains(StorageAccess::STORE) {
+            let ty_str: &'static str = if reflection_storage_access(*access) != "read-only" {
                 "storage"
             } else {
                 "read-only-storage"
@@ -677,45 +1217,27 @@ fn derive_entry(
             });
         }
         (AddressSpace::Handle, TypeInner::Sampler { comparison }) => {
-            let ty_str: &'static str = if *comparison {
-                "comparison"
-            } else if module_uses_filtered_sample_with_global(module, handle) {
-                "filtering"
-            } else {
-                "non-filtering"
-            };
+            let ty_str = reflection_sampler_type(module, handle, *comparison);
             entry.sampler = Some(SamplerBinding { ty: ty_str });
         }
-        (AddressSpace::Handle, TypeInner::Image { dim, arrayed, class }) => match class {
+        (
+            AddressSpace::Handle,
+            TypeInner::Image {
+                dim,
+                arrayed,
+                class,
+            },
+        ) => match class {
             ImageClass::Storage { format, access } => {
-                let access_str: &'static str = if access.contains(StorageAccess::LOAD) && access.contains(StorageAccess::STORE) {
-                    "read-write"
-                } else if access.contains(StorageAccess::STORE) {
-                    "write-only"
-                } else {
-                    "read-only"
-                };
                 entry.storage_texture = Some(StorageTextureBinding {
-                    access: access_str,
+                    access: reflection_storage_access(*access),
                     format: storage_format_str(*format),
                     view_dimension: image_dim_str(*dim, *arrayed),
                 });
             }
             ImageClass::Sampled { kind, multi } => {
-                let sample_type: &'static str = match kind {
-                    ScalarKind::Sint => "sint",
-                    ScalarKind::Uint => "uint",
-                    ScalarKind::Float => {
-                        if module_uses_filtered_sample_with_image(module, handle) {
-                            "float"
-                        } else {
-                            "unfilterable-float"
-                        }
-                    }
-                    _ => "unfilterable-float",
-                };
                 entry.texture = Some(TextureBinding {
-                    sample_type,
+                    sample_type: reflection_sample_type(module, handle, *kind),
                     view_dimension: image_dim_str(*dim, *arrayed),
                     multisampled: *multi,
                 });
@@ -796,7 +1318,13 @@ fn function_filtered_sample_with(
     is_sampler: bool,
 ) -> bool {
     for (_, expr) in func.expressions.iter() {
-        if let Expression::ImageSample { image, sampler, level, .. } = expr {
+        if let Expression::ImageSample {
+            image,
+            sampler,
+            level,
+            ..
+        } = expr
+        {
             if !matches!(level, SampleLevel::Auto) {
                 continue;
             }
@@ -817,7 +1345,9 @@ fn expression_resolves_to_global(
 ) -> bool {
     match func.expressions[expr] {
         Expression::GlobalVariable(handle) => handle == target,
-        Expression::Load { pointer } => expression_resolves_to_global(func, _module, pointer, target),
+        Expression::Load { pointer } => {
+            expression_resolves_to_global(func, _module, pointer, target)
+        }
         _ => false,
     }
 }

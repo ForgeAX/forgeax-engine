@@ -245,9 +245,9 @@ struct ProbeBlendRecord {
   shPreblend        : array<vec4<f32>, 9>,
 };
 
-// feat-20260519-light-casters-point-spot-pbr M4 / w21 (D-S1 + D-S2 +
-// AC-04 b/c + AC-05 binding declaration). Punctual-light std430 storage
-// types use the shared six-row host ABI in `light-buffer-layout.ts`:
+// Punctual-light storage uses this WGSL record as its type/layout authority.
+// Naga reflection on Standard PBR publishes the immutable offsets and stride
+// consumed by host packers and transport allocators.
 //
 //   Point/Spot/Rect direct slot (96 B / 24 u32-or-float lanes):
 //     [ 0..2 ] position vec3<f32>
@@ -279,8 +279,8 @@ struct ProbeBlendRecord {
 // prev.size, this.alignof) - for f32 alignof=4 the round-up is a
 // no-op, so position[3] / color[3] / direction[3] sit at byte
 // offsets 12 / 28 / 44 with zero internal padding). Point, Spot, and Rect all
-// use the unified 96 B host packer; this shared slot is the sole local-light
-// carrier.
+// share this record; its reflected layout is the host ABI and this type is the
+// sole local-light carrier.
 //
 struct DirectLightSlot {
   position            : vec4<f32>, // row0: position + inverse range

@@ -41,6 +41,7 @@ export type RasterPipelineFor = (
 
 export interface ProjectedRasterPipelines {
   readonly pipelineFor: RasterPipelineFor;
+  readonly aoInputPipelineFor: RasterPipelineFor;
   readonly temporalPipelineFor: RasterPipelineFor;
   readonly coveragePipelineFor: RasterPipelineFor;
   readonly gbufferPipelineFor: RasterPipelineFor;
@@ -202,6 +203,7 @@ function pipelineForFragment(
 export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRasterPipelines {
   const { artifact } = shape;
   const pipelineFor = pipelineForFragment(shape, undefined, false, true);
+  const aoInputPipelineFor = pipelineForFragment(shape, 'fs_ao_input');
   // Only the template forward entry has an fs_opaque twin; an authored
   // fragment entry keeps its own pipeline.
   const opaquePipelineFor =
@@ -220,6 +222,7 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
   const coveragePipelineFor = pipelineForFragment(shape, 'fs_temporal', true);
   const pipelines = {
     pipelineFor,
+    aoInputPipelineFor,
     opaquePipelineFor,
     gbufferPipelineFor,
     temporalPipelineFor,
@@ -244,6 +247,8 @@ export function selectRasterPipeline(
       return coverageOnly ? pipelines.coveragePipelineFor : pipelines.temporalPipelineFor;
     case 'fs_gbuffer':
       return pipelines.gbufferPipelineFor;
+    case 'fs_ao_input':
+      return pipelines.aoInputPipelineFor;
     case 'fs_nearest_layer':
       return pipelines.nearestPipelineFor ?? pipelines.pipelineFor;
     case 'fs_color':

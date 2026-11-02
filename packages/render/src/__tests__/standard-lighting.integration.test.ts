@@ -65,4 +65,14 @@ describe('Standard shared lighting derivation', () => {
     if (result.error.code !== 'standard-light-budget-exceeded') return;
     expect(result.error.detail).toEqual({ actual: 257, budget: 256 });
   });
+
+  it('caps preparation to the published fixed-array capacity', () => {
+    const result = prepareStandardLighting(makeFrame(256, 65), 64);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('standard-light-budget-exceeded');
+    if (result.error.code !== 'standard-light-budget-exceeded') return;
+    expect(result.error.detail).toEqual({ actual: 65, budget: 64 });
+  });
 });

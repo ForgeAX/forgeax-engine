@@ -12,6 +12,7 @@ import {
   assertNoRetiredPackageFiles,
   filesUnder,
   isPnpmSqliteStoreArtifact,
+  mapConcurrent,
   SDK_CAPABILITIES,
   SDK_MANIFEST_VERSION,
   SDK_SOURCE_EXCLUDED_PATHS,
@@ -85,11 +86,14 @@ if (!validate(manifest)) throw new Error(`sdk-manifest-schema: ${JSON.stringify(
 if (manifest.schemaVersion !== SDK_MANIFEST_VERSION) throw new Error('sdk-manifest-version');
 if (JSON.stringify(manifest.capabilities) !== JSON.stringify(SDK_CAPABILITIES))
   throw new Error('sdk-capability-closure');
-for (const expected of manifest.artifacts) {
-  const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
-  if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
-    throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
-}
+await sdkStage('verifySdkArtifactInventory', () =>
+  mapConcurrent(manifest.artifacts, async (expected) => {
+    const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
+    if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+      throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
+  }),
+);
+
 const files = await filesUnder(sdkRoot);
 if (files.length !== manifest.artifacts.length + 1) throw new Error('sdk-unmanifested-artifact');
 if ((await filesUnder(resolve(sdkRoot, 'packages'))).some((path) => path.endsWith('.tgz')))
@@ -1788,16 +1792,18 @@ if (selected('project') && process.platform === 'linux') {
   );
 }
 
-for (const expected of manifest.artifacts.filter((entry) => entry.path.startsWith('store/'))) {
-  // pnpm's SQLite index and journal sidecars are mutable runtime cache. A
-  // consumer install can checkpoint or remove the WAL while preserving the
-  // same package files and integrity records.
-  if (isPnpmSqliteStoreArtifact(expected.path)) continue;
-  const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
-  if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
-    throw new Error(`sdk-consumer-mutated-store: ${expected.path}`);
-  }
-}
+await sdkStage('verifyImmutableSdkStore', () =>
+  mapConcurrent(
+    manifest.artifacts.filter((entry) => entry.path.startsWith('store/')),
+    async (expected) => {
+      // SQLite index/journal sidecars remain the existing mutable-cache exclusion.
+      if (isPnpmSqliteStoreArtifact(expected.path)) return;
+      const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+        throw new Error(`sdk-consumer-mutated-store: ${expected.path}`);
+    },
+  ),
+);
 
 const result = {
   ok: true,

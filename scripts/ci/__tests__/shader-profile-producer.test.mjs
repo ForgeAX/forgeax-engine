@@ -212,6 +212,10 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
       `
       import { mkdirSync, writeFileSync } from 'node:fs';
       import { resolve } from 'node:path';
+      import { getHeapStatistics } from 'node:v8';
+      if (getHeapStatistics().heap_size_limit < 4096 * 1024 * 1024) {
+        throw new Error('Source shader publication requires its 4 GiB parent heap');
+      }
       const out = process.argv[process.argv.indexOf('--out') + 1];
       mkdirSync(resolve(out, 'shaders'), { recursive: true });
       writeFileSync(resolve(out, 'shaders/manifest.json'), ${JSON.stringify(publication('sourceBuild'))});
@@ -258,7 +262,12 @@ test('profile CLI reuses transferred bytes and rebuilds missing, stale or corrup
     const invoke = (env = {}) =>
       execFileSync(process.execPath, args, {
         cwd: root,
-        env: { ...process.env, FORGEAX_BUILD_NO_TASK_CACHE: '0', ...env },
+        env: {
+          ...process.env,
+          NODE_OPTIONS: '--max-old-space-size=2048',
+          FORGEAX_BUILD_NO_TASK_CACHE: '0',
+          ...env,
+        },
         encoding: 'utf8',
       });
     assert.match(invoke(), /verified shared point-ssao; compile count=0/);

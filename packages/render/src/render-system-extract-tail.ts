@@ -1501,6 +1501,7 @@ function resolveFreshMaterial(
     handle,
     world,
     assets,
+    shaderRegistry: scope.context.assets?.shaderRegistry ?? assets.shaderRegistry,
     material,
     programSelections,
     materialContext: lane.materialContext,
@@ -1793,7 +1794,7 @@ function resolveSubmeshMaterials(
         resolveMaterialSnapshot(
           handle,
           worldRenderResources(scope.world),
-          assets,
+          scope.context.assets ?? assets,
           lane.cache,
           lane.persistent,
           lane.materialContext,
@@ -2083,7 +2084,7 @@ function captureEntityMaterialOverrides(
         resolveMaterialSnapshot(
           handle,
           worldRenderResources(world),
-          assets,
+          scope.context.assets ?? assets,
           lane.cache,
           lane.persistent,
           lane.materialContext,

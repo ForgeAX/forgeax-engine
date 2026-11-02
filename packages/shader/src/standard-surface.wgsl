@@ -525,9 +525,11 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
 #if STORAGE_BUFFER_AVAILABLE == true
   let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
     ssaoBlurredTexture, ssaoBlurredSampler);
+#else
+  let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
+#endif
   ambient *= screenAo;
   reflectionFallback *= screenAo;
-#endif
 #endif
   var color = ambient;
   var transmittedContribution=vec3<f32>(0.0);

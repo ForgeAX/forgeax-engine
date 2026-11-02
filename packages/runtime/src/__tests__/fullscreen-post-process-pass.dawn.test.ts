@@ -213,7 +213,7 @@ async function readOutputTransformCapture(
   if (!validation.ok) throw new Error(`graph-target-capture:${validation.code}`);
   const centerOffset = (height >> 1) * bytesPerRow + (width >> 1) * 8;
   return {
-    graphFrameId: target.frameId,
+    graphFrameId: target.recordFrameNumber,
     graphGeneration: target.graphGeneration,
     targetName: target.name,
     textureIdentity: target.textureIdentity,

@@ -1,3 +1,12 @@
+import {
+  fnv1aUtf16,
+  type ShaderCompilerProfile,
+  type ShaderReflection,
+  sha256,
+} from '@forgeax/engine-types';
+import { STANDARD_CLUSTER_TEST_REFLECTION } from '../../../../render/src/__tests__/cluster-test-abi';
+import { MATERIAL_WGSL_PROFILE } from '../../../../shader-compiler/src/material/profile';
+
 export interface StandardMaterialShaderVariant {
   readonly definesKey: string;
   readonly defines: {
@@ -7,6 +16,10 @@ export interface StandardMaterialShaderVariant {
     readonly VERTEX_COLOR_AVAILABLE: boolean;
   };
   readonly composedWgsl: string;
+  readonly reflection: ShaderReflection;
+  readonly hash: string;
+  readonly sourceDigest: string;
+  readonly compilerProfile: ShaderCompilerProfile;
 }
 
 function variantKey(defines: StandardMaterialShaderVariant['defines']): string {
@@ -36,6 +49,10 @@ export function standardMaterialShaderVariants(
             definesKey: variantKey(defines),
             defines,
             composedWgsl,
+            reflection: STANDARD_CLUSTER_TEST_REFLECTION,
+            hash: fnv1aUtf16(composedWgsl).toString(16).padStart(8, '0'),
+            sourceDigest: sha256(composedWgsl),
+            compilerProfile: MATERIAL_WGSL_PROFILE,
           });
         }
       }

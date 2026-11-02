@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { drawReadyFrame, driveReadyAppFrames } from '../../test/ready-render-frame.mjs';
+import {
+  completeReadyFrame,
+  drawReadyFrame,
+  driveReadyAppFrames,
+} from '../../test/ready-render-frame.mjs';
 import * as smoke from '../run-dawn-smoke-roster.mjs';
 
 const head = '0123456789abcdef0123456789abcdef01234567';
@@ -655,4 +659,48 @@ test('ready observation retries distinguish empty barriers and partial pending c
   assert.deepEqual(reads, [2]);
   await renderer.observe(receipt, { include: requested });
   assert.deepEqual(reads, [2, 3]);
+});
+
+test('pending scene preparation yields at frame cadence instead of flooding the GPU queue', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let ready = false;
+  let draws = 0;
+  setTimeout(() => {
+    ready = true;
+  }, 32);
+  const completed = Promise.resolve({ ok: true });
+  const result = completeReadyFrame(async () => {
+    draws++;
+    return {
+      completed,
+      presentation: ready ? 'ready' : 'pending',
+      presentationPendingReason: { code: 'scene-pipeline-preparation' },
+    };
+  });
+  for (let elapsed = 0; elapsed < 48; elapsed++) {
+    t.mock.timers.tick(1);
+    await new Promise(setImmediate);
+  }
+  assert.equal((await result).presentation, 'ready');
+  assert.ok(draws <= 4, `pending preparation submitted ${draws} barriers in 32 ms`);
+});
+
+test('pending preparation retains its original fifteen-second deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const submittedAt = [];
+  const pending = completeReadyFrame(async () => {
+    submittedAt.push(Date.now());
+    return {
+      completed: Promise.resolve({ ok: true }),
+      presentation: 'pending',
+      presentationPendingReason: { code: 'scene-pipeline-preparation' },
+    };
+  });
+  const rejected = assert.rejects(pending, /Renderer scene presentation did not become ready/);
+  for (let elapsed = 0; elapsed < 15032; elapsed += 16) {
+    t.mock.timers.tick(16);
+    await new Promise(setImmediate);
+  }
+  await rejected;
+  assert.ok(submittedAt.every((time) => time < 15000));
 });

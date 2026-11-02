@@ -124,6 +124,7 @@ export {
   SSR_SHADER_MODULES,
 } from './ShaderRegistry.js';
 export {
+  type ExpandedShaderManifest,
   findVariantByKey,
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
@@ -143,7 +144,10 @@ export const BUILTIN_MATERIAL_MODULES = {
 export const DEFAULT_STANDARD_SURFACE_MODULE =
   'forgeax_material::default_standard_surface' as const;
 
-export { LIGHT_TEXTURE_RESAMPLE_WGSL } from './light-texture-resample.js';
+export {
+  LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+  LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+} from './light-texture-resample.js';
 /**
  * Full-resolution raw-depth producer used by the Standard single-layer
  * medium graph. This is a post-process source rather than a material module:

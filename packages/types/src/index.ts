@@ -78,6 +78,7 @@ export type {
   TerrainSection,
   TerrainSource,
 } from './terrain.js';
+export { type TextureFormatBlock, textureFormatBlock } from './texture/block.js';
 export type {
   UiGpuDataTexture,
   UiGpuFrame,

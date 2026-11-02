@@ -1,4 +1,4 @@
-import { fnv1aUtf16 } from '@forgeax/engine-types';
+import { fnv1aUtf16, stripWgslComments } from '@forgeax/engine-types';
 import { projectShaderConditionals } from './conditionals.js';
 // @forgeax/engine-shader-compiler — compileShader implementation.
 //
@@ -35,6 +35,7 @@ import {
   emit_reflection,
   parse,
   type ShaderReflection,
+  specializeComputeEntries,
   validate,
   validateRenderEntries,
 } from '@forgeax/engine-naga';
@@ -68,6 +69,8 @@ import { canonicalizePortableWgsl } from './wgsl-compat.js';
 
 /** Options accepted by `compileShader`. */
 export interface CompileOptions {
+  /** Selected compute entry; the published WGSL is projected to this entry's reachable closure. */
+  readonly computeEntry?: string;
   /** Graphics stages selected by the consumer; checked against the Naga IR. */
   readonly renderEntries?: {
     readonly vertex: string;
@@ -143,7 +146,7 @@ export interface CompileResult {
 // === Main API =======================================================================
 
 const PRAGMA_RE = /^\s*#pragma\s+\S.*$/gm;
-const DEFINE_WITH_VALUE_RE = /^\s*#define\s+\w+\s+(\S.*)$/;
+const DEFINE_WITH_VALUE_RE = /^\s*#\s*define\s+\w+\s+(\S.*)$/;
 const IMPORT_DIRECTIVE_RE = /^\s*#import\s+([A-Za-z0-9_.:-]+)/;
 const MODULE_ID_PREFIX_RE = /^([A-Za-z0-9_-]+(?:::[A-Za-z0-9_-]+)*)/;
 const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.:-]+)/;
@@ -161,14 +164,15 @@ function specializeConditionalDefines(
   defines: Readonly<Record<string, boolean>>,
 ): string {
   const output = projectShaderConditionals(source, defines, 'all').split('\n');
+  const directiveOutput = stripWgslComments(output.join('\n')).split('\n');
   // An inlined Surface and its template may import different symbols from
   // the same module. naga_oil treats repeated symbol lists as replacements.
   // Merge only active group imports after conditional projection; otherwise a
   // disabled branch could accidentally make its symbols mandatory.
   const groups = new Map<string, { index: number; symbols: Set<string> }>();
-  for (const [index, line] of output.entries()) {
-    if (!line.includes('#import')) continue;
-    const match = /^\s*#import\s+([A-Za-z0-9_.:-]+)::\{([^}]+)\}\s*$/.exec(line);
+  for (const [index] of output.entries()) {
+    const directive = directiveOutput[index] ?? '';
+    const match = /^\s*#import\s+([A-Za-z0-9_.:-]+)::\{([^}]+)\}\s*$/.exec(directive);
     if (match === null) continue;
     const moduleId = match[1] ?? '';
     const symbols = (match[2] ?? '')
@@ -189,32 +193,19 @@ function specializeConditionalDefines(
 export function reachableShaderImportIds(
   source: string,
   imports: Readonly<Record<string, string>>,
+  defines: Readonly<Record<string, boolean>> = {},
 ): Set<string> {
-  const resolve = (raw: string): string | undefined => {
-    let candidate = raw.replace(/::$/, '').split('::{')[0] ?? raw;
-    while (candidate.length > 0) {
-      if (imports[candidate] !== undefined) return candidate;
-      const separator = candidate.lastIndexOf('::');
-      if (separator < 0) break;
-      candidate = candidate.slice(0, separator);
-    }
-    return undefined;
-  };
+  const known = new Set(Object.keys(imports));
   const reachable = new Set<string>();
-  const pending = [...source.matchAll(/^\s*#import\s+([A-Za-z0-9_.:-]+)/gm)].map(
-    (match) => match[1] ?? '',
-  );
+  const pending = extractImports(source, known);
   while (pending.length > 0) {
-    const raw = pending.shift();
-    if (raw === undefined) continue;
-    const moduleId = resolve(raw);
+    const moduleId = pending.shift();
     if (moduleId === undefined || reachable.has(moduleId)) continue;
     reachable.add(moduleId);
     const moduleSource = imports[moduleId];
     if (moduleSource === undefined) continue;
-    for (const child of moduleSource.matchAll(/^\s*#import\s+([A-Za-z0-9_.:-]+)/gm)) {
-      pending.push(child[1] ?? '');
-    }
+    const specialized = specializeConditionalDefines(moduleSource, defines);
+    pending.push(...extractImports(specialized, known));
   }
   return reachable;
 }
@@ -376,25 +367,31 @@ export async function compileShaderWithComposition(
     entryImports = lowered.value.imports;
   }
   const defines = { ...(options.defines ?? {}) };
+  const entrySourceWithoutPragmas = stripPragmas(entrySource);
+  const entrySourceDefines = extractEntryBooleanDefines(entrySourceWithoutPragmas);
+  const sourceForProjection = preserveEntryDefineMetadata(
+    entrySourceWithoutPragmas,
+    resolveOmittedVertexColorBranch(entrySourceWithoutPragmas, requestedVertexColor),
+  );
+  const effectiveDefines = { ...defines, ...entrySourceDefines };
   const source = hoistWgslEnables(
-    specializeConditionalDefines(
-      resolveOmittedVertexColorBranch(stripPragmas(entrySource), requestedVertexColor),
-      defines,
-    ),
+    specializeConditionalDefines(sourceForProjection, effectiveDefines),
   );
   const imports = entryImports;
   delete defines.VERTEX_COLOR_AVAILABLE;
   if (requestedVertexColor) defines.VERTEX_COLOR_AVAILABLE = true;
-  const reachable = reachableShaderImportIds(source, imports);
+  const reachable = reachableShaderImportIds(source, imports, effectiveDefines);
   const specializedImports = Object.fromEntries(
     Object.entries(imports).map(([moduleId, moduleSource]) => [
       moduleId,
-      stripPragmas(
-        reachable.has(moduleId)
-          ? specializeConditionalDefines(moduleSource, defines)
-          : moduleSource,
-      ),
+      stripPragmas(specializeConditionalDefines(moduleSource, effectiveDefines)),
     ]),
+  );
+  const compositionImports = Object.fromEntries(
+    [...reachable].flatMap((moduleId) => {
+      const moduleSource = specializedImports[moduleId];
+      return moduleSource === undefined ? [] : [[moduleId, moduleSource] as const];
+    }),
   );
   const fromModuleId = options.id ?? `<anonymous-entry-${computeHash(source)}>`;
 
@@ -466,7 +463,7 @@ export async function compileShaderWithComposition(
   // the wasm boundary flow through mapWasmError as structured ShaderError data.
   let composed: string;
   try {
-    composed = canonicalizePortableWgsl(await compose(source, specializedImports, defines));
+    composed = canonicalizePortableWgsl(await compose(source, compositionImports, defines));
   } catch (e) {
     const mapped = mapWasmError(e, { fromModuleId });
     if (mapped.code === 'shader-compile-failed' && mapped.lineNum === undefined) {
@@ -490,11 +487,36 @@ export async function compileShaderWithComposition(
 /** Validate one actual WGSL program and its selected entry/reflection contract. */
 export async function compileShaderProgram(
   composed: string,
-  options: Pick<CompileOptions, 'renderEntries' | 'dynamicOffsets'>,
+  options: Pick<CompileOptions, 'computeEntry' | 'renderEntries' | 'dynamicOffsets'>,
   locateSyntaxError?: () => Promise<ShaderErrorType | undefined>,
 ): Promise<Result<CompileResult, ShaderErrorType>> {
+  if (options.computeEntry !== undefined && options.renderEntries !== undefined) {
+    return err(
+      compileFailed({
+        message: 'A shader program cannot select compute and graphics entries together',
+        hint: 'Compile one compute entry or one selected graphics interface per shader publication.',
+      }),
+    );
+  }
+
+  let selectedSource = composed;
+  if (options.computeEntry !== undefined) {
+    const projection = await specializeComputeEntries(composed, [options.computeEntry]);
+    if (!projection.ok) return projection;
+    const selected = projection.value[0];
+    if (selected === undefined || selected.entryPoint !== options.computeEntry) {
+      return err(
+        compileFailed({
+          message: `Naga did not publish selected compute entry '${options.computeEntry}'`,
+          hint: 'Select an existing WGSL compute entry point and rebuild the shader publication.',
+        }),
+      );
+    }
+    selectedSource = selected.source;
+  }
+
   // Stage 2: parse composed WGSL. Native handles remain invocation-owned.
-  const parsedResult = await parse(composed);
+  const parsedResult = await parse(selectedSource);
   if (!parsedResult.ok) {
     const located = await locateSyntaxError?.();
     return err(located ?? parsedResult.error);
@@ -556,16 +578,17 @@ export async function compileShaderProgram(
     // storing the wrapper string would also duplicate it (Derive violation).
     const bindingsJson = JSON.stringify(bindings);
 
-    const hash = computeHash(composed);
+    const hash = computeHash(selectedSource);
     const result: CompileResult = {
-      wgsl: composed,
+      wgsl: selectedSource,
       glsl: '',
       bindings,
       manifestEntry: {
         hash,
-        wgsl: composed,
+        wgsl: selectedSource,
         glsl: undefined,
         bindings: bindingsJson,
+        reflection: reflectionParsed.wire,
         ...(reflectionParsed.wire.entryPoints === undefined
           ? {}
           : { entryPoints: reflectionParsed.wire.entryPoints }),
@@ -584,13 +607,35 @@ export async function compileShaderProgram(
 
 /** Preserve directive lines exactly without allocating every ordinary WGSL body line. */
 function directiveLines(source: string): string[] {
-  return Array.from(source.matchAll(/(?:^|\n)([^\S\n]*#[^\n]*)/g), (match) => {
+  return Array.from(stripWgslComments(source).matchAll(/(?:^|\n)([^\S\n]*#[^\n]*)/g), (match) => {
     const line = match[1] ?? '';
     // Match split(/\r?\n/): remove one CR only when it precedes an actual LF.
     return line.endsWith('\r') && source[match.index + match[0].length] === '\n'
       ? line.slice(0, -1)
       : line;
   });
+}
+
+function extractEntryBooleanDefines(source: string): Record<string, boolean> {
+  const defines: Record<string, boolean> = {};
+  for (const line of directiveLines(source)) {
+    const match = /^\s*#\s*define\s+([A-Za-z_]\w*)\s*$/.exec(line);
+    if (match?.[1] !== undefined) defines[match[1]] = true;
+  }
+  return defines;
+}
+
+function preserveEntryDefineMetadata(original: string, projected: string): string {
+  const originalDefines = directiveLines(original).filter((line) =>
+    /^\s*#\s*define\s+\w+\b/.test(line),
+  );
+  const projectedDefines = new Set(
+    directiveLines(projected)
+      .filter((line) => /^\s*#\s*define\s+\w+\b/.test(line))
+      .map((line) => line.trim()),
+  );
+  const missing = originalDefines.filter((line) => !projectedDefines.has(line.trim()));
+  return missing.length === 0 ? projected : `${missing.join('\n')}\n${projected}`;
 }
 
 /**

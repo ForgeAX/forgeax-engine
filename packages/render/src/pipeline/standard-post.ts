@@ -35,10 +35,13 @@ import {
   type RenderPipelineTarget,
   resolveOutputDither,
 } from '../render-pipeline';
+import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
+import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
 import {
   addObservationCapturePass,
   addTypedBloomPasses,
   addTypedCompositePostEffects,
+  addTypedFrameObservationPass,
   addTypedFullscreenPass,
   addTypedOutputTransformPass,
   addTypedTemporalResolvePass,
@@ -381,6 +384,7 @@ export function contributeStandardSceneFeatures(
   },
   receiverAccesses: readonly GraphAccess[],
   atmosphere?: GraphAtmosphere,
+  semanticTargets: readonly RenderPipelineTarget[] = [],
 ): Result<void, RenderPipelineBuildError> {
   const { color, colorResolve, depth } = targets;
   return context.contributeFeatures({
@@ -402,9 +406,10 @@ export function contributeStandardSceneFeatures(
         sampleCount: depth.sampleCount,
       },
     ],
-    semanticTargets: [],
+    semanticTargets,
     namedTargets: {},
     standardSurfaceAccesses: receiverAccesses,
+    placement: 'scene',
     exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
     passNames: [],
     atmosphere: atmosphere,
@@ -772,6 +777,7 @@ function standardFeatureTargets(
  */
 function addSceneFeatureStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
   route: StandardPostRoute,
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
@@ -780,11 +786,15 @@ function addSceneFeatureStages(
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (route.clearOnly) return ok(postInput);
   if (route.motionBlur) {
-    return addMotionBlurStage(context, route, featureTargets, postInput, postTemporal);
+    return addMotionBlurStage(context, topology, route, featureTargets, postInput, postTemporal);
   }
+  const boundTemporal =
+    sceneTemporal === undefined
+      ? undefined
+      : bindStandardSceneDataTarget(sceneTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA);
   const features = context.contributeFeatures({
     targets: featureTargets,
-    semanticTargets: sceneTemporal === undefined ? [] : [sceneTemporal],
+    semanticTargets: boundTemporal === undefined ? [] : [boundTemporal],
     namedTargets: {},
     standardSurfaceAccesses: [],
     exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
@@ -795,6 +805,7 @@ function addSceneFeatureStages(
 
 function addMotionBlurStage(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
   route: StandardPostRoute,
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
@@ -813,7 +824,9 @@ function addMotionBlurStage(
   if (!blurred.ok) return blurred;
   const features = context.contributeFeatures({
     targets: featureTargets,
-    semanticTargets: [postTemporal],
+    semanticTargets: [
+      bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA),
+    ],
     namedTargets: {
       'motion-input': postInput,
       'motion-output': blurred.value,
@@ -827,6 +840,18 @@ function addMotionBlurStage(
     if (!fallback.ok) return fallback;
   }
   return ok(blurred.value);
+}
+
+/** Copy the original scene only after all generic scene-target writers. */
+function addSceneObservation(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  route: StandardPostRoute,
+  scene: RenderPipelineTarget,
+): Result<void, RenderPipelineBuildError> {
+  if (route.clearOnly) return ok(undefined);
+  // Indirect VFX can write this target in the generic feature stage. Keep the
+  // observation after those writers and before HDR lens/output processing.
+  return addTypedFrameObservationPass(context.graph, scene);
 }
 
 /** Depth of field, Bloom and the lens flare filter the linear HDR image in order. */
@@ -1340,6 +1365,7 @@ export function addStandardPost(
   const featureTargets = standardFeatureTargets(scene, depth);
   const featured = addSceneFeatureStages(
     context,
+    topology,
     route,
     featureTargets,
     postInput,
@@ -1347,6 +1373,8 @@ export function addStandardPost(
     sceneTemporal,
   );
   if (!featured.ok) return featured;
+  const observed = addSceneObservation(context, route, scene);
+  if (!observed.ok) return observed;
   const lensed = addHdrLensStages(context, topology, route, depth, featured.value, postTemporal);
   if (!lensed.ok) return lensed;
   const exposed = addExposureWhiteBalance(

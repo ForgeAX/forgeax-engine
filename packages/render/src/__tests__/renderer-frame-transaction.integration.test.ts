@@ -2,7 +2,6 @@ import { World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type Buffer, type RhiCommandEncoder, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullAdapter, rhi } from '@forgeax/engine-rhi-null';
-import { SHADER_MANIFEST_PUBLICATION_VERSION } from '@forgeax/engine-shader';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -38,7 +37,20 @@ import { createTemporalView } from '../temporal/view';
 import { addTypedTemporalResolvePass } from '../typed-render-graph-primitives';
 import { ViewRecorder, ViewSubmission } from '../world/render-views';
 import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
+import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 import { executeCompiledFrameGraph } from './frame-recording-driver';
+import { standardPbrManifestRow } from './shader-manifest-fixture';
+
+const transactionClusterReflection = {
+  ...STANDARD_CLUSTER_TEST_REFLECTION,
+  boundGlobals: STANDARD_CLUSTER_TEST_REFLECTION.boundGlobals.map((global) => ({
+    ...global,
+    ...(global.resourceKind === 'storage-buffer'
+      ? { span: global.elementStride ?? global.span }
+      : {}),
+    elementType: global.resourceKind === 'storage-buffer' ? 'LightData' : 'struct',
+  })),
+};
 
 function installedGraph(graph: unknown, topologyKey: string): InstalledFrameGraph {
   const noTarget = (): undefined => undefined;
@@ -65,6 +77,34 @@ function selectedEnvironment(sourceKey?: string) {
     fogs: [],
     suns: [],
   }).unwrap();
+}
+
+function transactionShaderManifestUrl(): string {
+  const standard = standardPbrManifestRow('// renderer transaction fixture');
+  const variants = standard.variants.map((variant) =>
+    variant.defines.CLUSTER_FORWARD_AVAILABLE && variant.defines.STORAGE_BUFFER_AVAILABLE
+      ? {
+          ...variant,
+          hash: 'cafe1234',
+          sourceDigest: 'a'.repeat(64),
+          compilerProfile: {
+            id: 'forgeax-material-wgsl-v1',
+            language: 'wgsl',
+            profileVersion: '1',
+            adapterVersion: '1',
+            compilerVersion: '1',
+            nagaVersion: '30.0.1',
+          },
+          reflection: transactionClusterReflection,
+        }
+      : variant,
+  );
+  return `data:application/json,${encodeURIComponent(
+    JSON.stringify({
+      entries: [],
+      materialShaders: [{ ...standard, variants }],
+    }),
+  )}`;
 }
 
 /** RenderRecord opens `encoder`, the one the frame's graph passes record into. */
@@ -419,20 +459,11 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({
-            schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
-            entries: [],
-            materialShaders: [],
-            fragments: [],
-            sources: {},
-            receipts: [],
-            entryPoints: [],
-          }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
-    expect((await host.initialization).ok).toBe(true);
+    const initialized = await host.initialization;
+    expect(initialized.ok, initialized.ok ? '' : JSON.stringify(initialized.error)).toBe(true);
     const renderer = exposeRenderer(host);
     const world = new World();
     const first = renderer.attach(world);
@@ -474,9 +505,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await rendererHost.initialization).ok).toBe(true);
@@ -533,9 +562,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await host.initialization).ok).toBe(true);
@@ -571,9 +598,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await renderer.initialization).ok).toBe(true);
@@ -626,9 +651,7 @@ describe('renderer successful-submit transaction', () => {
 
   it('rejects a receipt issued by another Renderer owner', async () => {
     const options = {
-      shaderManifestUrl: `data:application/json,${encodeURIComponent(
-        JSON.stringify({ entries: [] }),
-      )}`,
+      shaderManifestUrl: transactionShaderManifestUrl(),
     };
     const firstRenderer = await constructRenderer(
       { width: 64, height: 64, getContext: () => null },
@@ -739,9 +762,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await renderer.initialization).ok).toBe(true);

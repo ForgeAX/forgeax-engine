@@ -1,12 +1,13 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { RendererOperationError } from '../errors/render';
 import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-profile';
+import { STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import {
   prepareFrameLighting,
   warnZeroLightStandard,
   writeShadowParamsBuffer,
 } from '../record/frame-lighting';
-import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
+import type { RenderFrameState } from '../record/frame-snapshot';
 import { prepareViewSky } from '../record/helpers';
 import {
   type PipelineState,
@@ -16,6 +17,7 @@ import {
 } from '../record/render-context';
 import { resetRenderFeatureGraphState } from '../record/typed-frame-graph';
 import type { CameraSnapshot } from '../render-contract';
+import { ssaoStructuralIdentity } from '../ssao-config';
 import { RENDER_CASCADE_FIT_SYSTEM } from './light-systems';
 import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
@@ -186,7 +188,10 @@ function admitCameraConfiguration(
   if (!configuration.ok) return false;
   const signature = JSON.stringify([
     configuration.value.profile?.renderPath,
-    configuration.value.config?.ssao,
+    ssaoStructuralIdentity(
+      configuration.value.config?.ssao,
+      configuration.value.profile?.pipelineId === STANDARD_PIPELINE_ID,
+    ),
   ]);
   frameState.cameraStandardProfile = configuration.value.profile;
   frameState.installedPipelineConfig = configuration.value.config;
@@ -217,8 +222,7 @@ function prepareViewStandardLighting(
       return { kind: 'not-admitted' };
     const { internals, frameState } = owner;
     const pipelineState = recordContext(internals).getPipelineState();
-    // No Camera records the internal fallback snapshot, as recording does.
-    const camera = cameras[0] ?? makeZeroCameraFallbackSnapshot();
+    const camera = cameras[0];
     const lighting = runRecordProfilePhase(
       recordProfileRunner(internals.profiler?.activeSession()),
       'record/scene-state/lighting-prep',

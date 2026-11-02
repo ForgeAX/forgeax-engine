@@ -1,4 +1,5 @@
 import { prepareRenderFrame } from './render-frame';
+import { rendererConformanceHost } from './renderer-conformance';
 // @forgeax/engine-render — WebGPU renderer lifecycle/frame interpreter.
 // Runtime selects the backend; structured RHI errors and browser isolation stay intact.
 
@@ -182,7 +183,6 @@ import {
   viewAutoExposure,
   viewBarrelDistortion,
   viewGraphInfo,
-  viewGraphTarget,
   viewMeshMaterialBindings,
   viewRecoveryEvidence,
   viewRenderScene,
@@ -2250,6 +2250,9 @@ async function makeWebGPURenderer(
     // reads `camera.clearColor` straight from the Camera SoA column
     // (array<f32,4>, feat-20260709 M3).
     getPipelineState: () => pipelineState,
+    get standardClusterAbi() {
+      return pipelineState?.standardClusterAbi;
+    },
     assets,
     get gpuStore() {
       return gpuStore;
@@ -2807,6 +2810,13 @@ async function makeWebGPURenderer(
     terrainReceipts.register(receipt, uiOnlyFrame ? [] : cameraViews.terrainSections());
     if (!uiOnlyFrame)
       dynamicGeometryHost.publishDynamicGeometry(receipt, worlds, frameRequest?.fixedStep);
+    cameraViews.recordClusterWorkReceiptForConformance({
+      observationFrameId: receipt.frameId,
+      publicReceiptFrameId: receipt.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      presentation: receipt.presentation,
+      completed: receipt.completed,
+    });
     return ok(receipt);
   }
   const createVolumeTimingCapture = (timingRequested: boolean): GpuTimingCapture | undefined => {
@@ -3405,12 +3415,7 @@ async function makeWebGPURenderer(
       pendingObservationDomains = Object.freeze([...domains]);
       return ok(undefined);
     },
-    getCurrentGraphTarget(name: string) {
-      return viewGraphTarget(cameraViews.currentOwner, name);
-    },
-    requestGraphTargetCapture(request) {
-      cameraViews.currentOwner.frameState.graphTargetCapture = request;
-    },
+    ...rendererConformanceHost(cameraViews),
     get frustumStats() {
       return cameraViews.currentOwner.recorded.frustum;
     },

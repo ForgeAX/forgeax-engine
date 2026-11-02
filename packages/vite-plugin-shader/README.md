@@ -65,6 +65,25 @@ replacement and plugin close retire the prepared publication with its input
 generation. Source-byte validation, the variant roster and source-build fallback
 remain authoritative.
 
+### Complete engine profiles
+
+The packaged base/point profiles and shared engine input must carry the complete
+renderer publication. Each material primary and variant keeps facts from its own
+compiled artifact; publication pooling stores compact indices and expansion
+resolves them before profile admission.
+
+| Published row | Required facts |
+|:--|:--|
+| Material primary and each variant | Artifact hash, exact source digest, current compiler profile, `/3` reflection, entry reads, and its own receipt/defines |
+| Resampling compute and fragment programs | Stable engine identifier, exact entry stages, `/3` reflection, compiler/source identity, and output contract |
+| Direct engine entry | Exact source/reflection references and selected variant identity where the entry is material-backed |
+
+`buildStart()` submits both light-texture resampling programs independently of
+the optional SSAO entry. An incomplete or stale packaged profile falls back to
+source compilation; shared engine input with missing rows or artifact facts is
+rejected and must be regenerated with the normal engine build. Custom manifests
+remain optional and continue to use `ShaderRegistry`'s general admission rules.
+
 Standalone callers use `JSON.stringify(manifest)` on the builder result. Its
 serialization retains verified shared blocks and projects only entry metadata;
 source-built results use the same publication owner as Vite. Do not spread the

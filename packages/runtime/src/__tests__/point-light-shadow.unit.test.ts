@@ -16,13 +16,12 @@ import { componentDefinition, componentSchema } from '@forgeax/engine-ecs/intern
 import { vec3 } from '@forgeax/engine-math';
 import { PointLightShadow } from '@forgeax/engine-render';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  packTestDirectLightSlot as packDirectLightSlot,
+  STANDARD_CLUSTER_TEST_ABI,
+} from '../../../render/src/__tests__/cluster-test-abi';
 import { validatePointLightShadowData } from '../../../render/src/components/light-helpers';
 import { ShadowInvalidConfigError } from '../../../render/src/errors/render';
-import {
-  BYTES_PER_DIRECT_LIGHT_SLOT,
-  DIRECT_LIGHT_SLOT_LAYOUT,
-  packDirectLightSlot,
-} from '../../../render/src/light-buffer-layout';
 import { buildPointShadowMatrices } from '../../../render/src/render-system-extract';
 import {
   SHADOW_ATLAS_DEFAULT_FACE_SIZE,
@@ -623,10 +622,9 @@ function spawnValidatedPointShadow(
         expect(i32[17]).toBe(-1);
       });
 
-      it('AC-05: DIRECT_LIGHT_SLOT_LAYOUT keeps shadow offsets in the six-row ABI', () => {
-        expect(BYTES_PER_DIRECT_LIGHT_SLOT).toBe(96);
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.byteSize).toBe(96);
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.shadowByteOffset).toBe(68);
+      it('AC-05: reflected DirectLightSlot keeps shadow offsets in the six-row ABI', () => {
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize).toBe(96);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.shadowByteOffset).toBe(68);
       });
     });
 

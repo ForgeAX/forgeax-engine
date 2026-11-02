@@ -27,6 +27,10 @@ export const STANDARD_CLUSTER_MEMBERSHIP_WGSL = /* wgsl */ `
 struct ClusterUniform {
   grid : vec4<u32>,
   near_far_log : vec4<f32>,
+  ao : vec4<u32>,
+  direct_ao : vec4<f32>,
+  texture : vec4<u32>,
+  cluster_layout : vec4<u32>,
 };
 
 @group(0) @binding(0) var<storage, read> cluster_grid : array<u32>;
@@ -49,9 +53,9 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
   let cluster_yz = cluster_index / grid_x;
   let cluster_y = cluster_yz % grid_y;
   let cluster_z = cluster_yz / grid_y;
-  let grid_offset = cluster_index * 2u;
+  let grid_offset = cluster_index * cluster_uniform.cluster_layout.x;
   let output_offset = cluster_grid[grid_offset];
-  let output_count = cluster_grid[grid_offset + 1u];
+  let output_count = cluster_grid[grid_offset + cluster_uniform.cluster_layout.y];
   let cluster_x_i = i32(cluster_x);
   let cluster_y_i = i32(cluster_y);
   let cluster_z_i = i32(cluster_z);

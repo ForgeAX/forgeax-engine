@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { STANDARD_PIPELINE_ID } from '../../pipeline/standard-profile';
 import type { RenderPipelineTopology } from '../../render-pipeline';
 import { frameGraphChangedDependencies, frameGraphTopologyIdentity } from '../frame-graph-identity';
 
@@ -23,6 +24,57 @@ const key = (value: RenderPipelineTopology, stock = true) =>
   JSON.stringify(frameGraphTopologyIdentity(value, stock));
 
 describe('stock frame graph identity', () => {
+  it('keeps direct AO strength dynamic while retaining all other SSAO structure', () => {
+    const aoTopology = {
+      ...topology,
+      pipelineId: STANDARD_PIPELINE_ID,
+      config: {
+        ssao: {
+          enabled: true,
+          algorithm: 'gtao',
+          directLightingStrength: 0,
+          resolutionScale: 0.5,
+        },
+      },
+      standardProfile: {
+        pipelineId: STANDARD_PIPELINE_ID,
+        ssao: { algorithm: 'gtao', directLightingStrength: 0, resolutionScale: 0.5 },
+      },
+    } as RenderPipelineTopology;
+    const withStrength = {
+      ...aoTopology,
+      config: {
+        ...aoTopology.config,
+        ssao: { ...aoTopology.config?.ssao, directLightingStrength: 1 },
+      },
+      standardProfile: {
+        ...aoTopology.standardProfile,
+        ssao: { algorithm: 'gtao', directLightingStrength: 1, resolutionScale: 0.5 },
+      },
+    } as RenderPipelineTopology;
+
+    expect(key(withStrength)).toBe(key(aoTopology));
+    expect(key(withStrength, false)).not.toBe(key(aoTopology, false));
+    expect(
+      key({
+        ...withStrength,
+        config: {
+          ...withStrength.config,
+          ssao: { ...withStrength.config?.ssao, enabled: true, resolutionScale: 1 },
+        },
+      }),
+    ).not.toBe(key(withStrength));
+    expect(
+      key({
+        ...withStrength,
+        config: {
+          ...withStrength.config,
+          ssao: { ...withStrength.config?.ssao, enabled: true, algorithm: 'ssao' },
+        },
+      }),
+    ).not.toBe(key(withStrength));
+  });
+
   it('retains a backdrop when only the positive draw count changes', () => {
     const next = { ...topology, transmissionDemand: { activeCount: 17, needsRoughMips: false } };
     expect(key(next)).toBe(key(topology));

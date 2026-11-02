@@ -32,7 +32,7 @@ describe('Standard CPU membership allocation', () => {
   it('reuses caller-owned scratch while keeping prior membership outputs detached', () => {
     const scratch = createClusterBinScratch();
     const frame = makeFrame([coveringLight()]);
-    const first = prepareStandardLighting(frame, scratch).unwrap();
+    const first = prepareStandardLighting(frame, undefined, scratch).unwrap();
     expect(first.scratch).toBe(scratch);
     const previous = {
       grid: first.clusterGrid.slice(),
@@ -44,7 +44,7 @@ describe('Standard CPU membership allocation', () => {
     const deltas = scratch.clusterDeltas;
     for (const local of [[], [coveringLight('spot'), coveringLight('rect-area')], frame.local]) {
       const changed = { ...frame, local };
-      const shared = prepareStandardLighting(changed, scratch).unwrap();
+      const shared = prepareStandardLighting(changed, undefined, scratch).unwrap();
       const fresh = prepareStandardLighting(changed).unwrap();
       expect(shared.clusterGrid).toEqual(fresh.clusterGrid);
       expect(shared.lightIndexList).toEqual(fresh.lightIndexList);
@@ -57,7 +57,11 @@ describe('Standard CPU membership allocation', () => {
     expect(first.clusterGrid).toEqual(previous.grid);
     expect(first.lightIndexList).toEqual(previous.indices);
     expect(first.lightBounds).toEqual(previous.bounds);
-    const independent = prepareStandardLighting(frame, createClusterBinScratch()).unwrap();
+    const independent = prepareStandardLighting(
+      frame,
+      undefined,
+      createClusterBinScratch(),
+    ).unwrap();
     expect(independent.scratch).not.toBe(scratch);
     expect(independent.clusterGrid).toEqual(first.clusterGrid);
   });
@@ -65,7 +69,7 @@ describe('Standard CPU membership allocation', () => {
   it('grows scratch for a changed grid and recovers after a complete overflow failure', () => {
     const scratch = createClusterBinScratch();
     const frame = makeFrame([coveringLight()]);
-    const first = prepareStandardLighting(frame, scratch).unwrap();
+    const first = prepareStandardLighting(frame, undefined, scratch).unwrap();
     const previous = first.clusterGrid.slice();
     const overflow = prepareStandardLighting(
       {
@@ -73,11 +77,12 @@ describe('Standard CPU membership allocation', () => {
         local: Array.from({ length: 32 }, () => coveringLight()),
         grid: { x: 32, y: 32, z: 33 },
       },
+      undefined,
       scratch,
     );
     expect(overflow.ok).toBe(false);
     if (!overflow.ok) expect(overflow.error.code).toBe('standard-cluster-index-overflow');
-    const recovered = prepareStandardLighting(frame, scratch).unwrap();
+    const recovered = prepareStandardLighting(frame, undefined, scratch).unwrap();
     expect(recovered.clusterGrid).toEqual(first.clusterGrid);
     expect(recovered.lightIndexList).toEqual(first.lightIndexList);
     expect(first.clusterGrid).toEqual(previous);

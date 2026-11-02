@@ -10,6 +10,10 @@ repository source and package tests.
 > Worlds may have zero cameras. Renderer clears/composes UI normally without a
 > camera error, and scene rendering begins when a camera is authored. No default
 > camera is inserted into the World.
+> A clear/UI frame requires no Cluster shader reflection or AO transport; those
+> capabilities are admitted when an authored camera consumes the Standard scene.
+> A camera-only empty shader publication also consumes no Standard material
+> bindings. Local lights and AO retain their reflected transport requirements.
 
 ## Adaptive resolution
 

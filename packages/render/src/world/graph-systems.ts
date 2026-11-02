@@ -1,5 +1,6 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
+import { settleClusterWorkConformanceFrame } from '../record/cluster-work-conformance';
 import type { ViewGraphCompileOutcome } from '../record/graph-adoption';
 import {
   compileViewGraph,
@@ -163,12 +164,18 @@ function settleViewGraph(
   { frameState, internals }: ViewSettlementOwner,
   frame: number,
   accepted: boolean,
+  submitted: boolean,
 ): ViewGraphSettlement {
   try {
     const graph = accepted
       ? promoteGraphCandidate(frameState)
       : rollbackGraphCandidate(frameState, frameState.pipelinePreparationPending === true);
     settleFeatureGraphState(internals, accepted);
+    settleClusterWorkConformanceFrame(
+      frameState.standardClusterWorkConformance,
+      frameState.frameNumber,
+      accepted ? 'submitted' : submitted ? 'pending' : 'unsubmitted',
+    );
     return { frame, kind: 'settled', accepted, graph };
   } catch (cause) {
     internals.errorRegistry.fire(recordFailureError(cause));
@@ -204,6 +211,7 @@ export function registerGraphSystems(world: World): void {
             ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')),
             frame,
             viewAccepted(world, entity) && requireViewField(world, entity, ViewSubmission, 'scene'),
+            renderSubmission(world).completion !== undefined,
           );
           const stored = readViewField(world, entity, ViewGraphCandidate, 'state');
           if (stored !== undefined) {

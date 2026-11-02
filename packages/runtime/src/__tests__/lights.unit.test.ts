@@ -25,6 +25,10 @@ import { Camera, DirectionalLight, PointLight, Skylight, SpotLight } from '@forg
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import {
+  packTestDirectLightSlot as packDirectLightSlot,
+  STANDARD_CLUSTER_TEST_ABI,
+} from '../../../render/src/__tests__/cluster-test-abi';
+import {
   computeInvRangeSquared,
   degToCos,
   validateDirectionalLightData,
@@ -32,12 +36,7 @@ import {
   validateSpotLightData,
 } from '../../../render/src/components/light-helpers';
 import type { ShadowInvalidConfigError } from '../../../render/src/errors/render';
-import {
-  BYTES_PER_DIRECT_LIGHT_SLOT,
-  DIRECT_LIGHT_SLOT_LAYOUT,
-  DirectLightSlotKind,
-  packDirectLightSlot,
-} from '../../../render/src/light-buffer-layout';
+import { DirectLightSlotKind } from '../../../render/src/light-buffer-layout';
 import { buildPbrViewBglEntries } from '../../../render/src/pbr-pipeline';
 import type {
   PointLightSnapshot,
@@ -1571,54 +1570,54 @@ function spawnValidatedLight(
   describe('lightslot-layout.test.ts', () => {
     // ── test: unified direct-light slot byte-size lock ─────
 
-    describe('BYTES_PER_DIRECT_LIGHT_SLOT', () => {
+    describe('reflected DirectLightSlot byte size', () => {
       it('is exactly 96 (unified ABI lock)', () => {
-        expect(BYTES_PER_DIRECT_LIGHT_SLOT).toBe(96);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize).toBe(96);
       });
     });
 
     // ── test: DirectLightSlot layout byte-size lock ───────────────────────────────
 
-    describe('DIRECT_LIGHT_SLOT_LAYOUT byte-size', () => {
+    describe('reflected DirectLightSlot layout byte-size', () => {
       it('declares byteSize === 96', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.byteSize).toBe(96);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize).toBe(96);
       });
 
       it('declares floatCount === 24 (96 bytes / 4 bytes per f32)', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.floatCount).toBe(24);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.floatCount).toBe(24);
       });
 
       it('declares vec4Count === 6 (96 bytes / 16 bytes per vec4)', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.vec4Count).toBe(6);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.vec4Count).toBe(6);
       });
     });
 
     // ── test: DirectLightSlot field offsets match the WGSL struct ─────────────────
 
-    describe('DIRECT_LIGHT_SLOT_LAYOUT field offsets', () => {
+    describe('reflected DirectLightSlot field offsets', () => {
       it('position at byte 0', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.positionOffset).toBe(0);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.positionOffset).toBe(0);
       });
       it('invRangeSquared at byte 12 (lane .w of vec4[0])', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.rangeOffset).toBe(12);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.rangeOffset).toBe(12);
       });
       it('color at byte 16', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.colorOffset).toBe(16);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.colorOffset).toBe(16);
       });
       it('cosInner at byte 28 (lane .w of vec4[1])', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.firstAngleOffset).toBe(28);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.firstAngleOffset).toBe(28);
       });
       it('direction at byte 32', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.primaryAxisOffset).toBe(32);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.primaryAxisOffset).toBe(32);
       });
       it('cosOuter at byte 44 (lane .w of vec4[2])', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.secondAngleOffset).toBe(44);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.secondAngleOffset).toBe(44);
       });
       it('kind at byte 48', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.auxiliaryAxisOffset).toBe(48);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.auxiliaryAxisOffset).toBe(48);
       });
       it('pad at byte 52 (3 x u32 = 12 bytes of padding)', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.metadataByteOffset).toBe(64);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.metadataByteOffset).toBe(64);
       });
       it('metadata starts at byte 64 after four payload rows', () => {
         const buf = new Float32Array(24);

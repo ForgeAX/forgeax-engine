@@ -6,6 +6,7 @@ import {
   packDirectLightSlot,
   type SpotLightSnapshot,
 } from '../../../../../../packages/render/src/light-buffer-layout';
+import { STANDARD_CLUSTER_TEST_ABI } from '../../../../../../packages/render/src/__tests__/cluster-test-abi';
 import directionalCase from '../cases/directional-urp.json' with { type: 'json' };
 import pointCase from '../cases/point-urp.json' with { type: 'json' };
 import khrSpotCase from '../cases/khr-spot-urp.json' with { type: 'json' };
@@ -170,10 +171,11 @@ describe('direct-light URP browser producer evidence', () => {
   }, 120_000);
 
   it('keeps the 96B DirectLightSlot raw channel/kind/tile bits through the browser pack transport', () => {
-    const packed = packDirectLightSlot(browserSpotSnapshot);
+    const layout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;
+    const packed = packDirectLightSlot(browserSpotSnapshot, layout);
     const transported = structuredClone(packed);
-    const storageBytes = new Uint8Array(packDirectLightSlot(browserSpotSnapshot).buffer);
-    const uniformBytes = new Uint8Array(packDirectLightSlot(browserSpotSnapshot).buffer);
+    const storageBytes = new Uint8Array(packDirectLightSlot(browserSpotSnapshot, layout).buffer);
+    const uniformBytes = new Uint8Array(packDirectLightSlot(browserSpotSnapshot, layout).buffer);
     const rawU32 = new Uint32Array(transported.buffer);
 
     expect(transported).toBeInstanceOf(Float32Array);

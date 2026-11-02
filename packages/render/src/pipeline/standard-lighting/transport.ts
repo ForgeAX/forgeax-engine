@@ -1,6 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, StandardClusterTransportUnavailableError } from '../../errors/render';
-import { BYTES_PER_DIRECT_LIGHT_SLOT } from '../../light-buffer-layout';
+import type { StandardClusterReflectedAbi } from '../../light-buffer-layout';
 import type { PreparedStandardLighting } from './prepare';
 import { standardClusterTextureLayout } from './texture';
 
@@ -32,6 +32,8 @@ export interface StandardClusterTransport {
   readonly clusterGridBytes: number;
   readonly lightIndexListBytes: number;
   readonly lightDataBytes: number;
+  readonly lightDataSlotBytes: number;
+  readonly clusterUniformBytes: number;
   readonly lightBoundsBytes: number;
 }
 
@@ -50,9 +52,20 @@ function occupiedClusterCount(prepared: PreparedStandardLighting): number {
 export function selectStandardClusterTransport(
   capabilities: StandardClusterCapabilities,
   prepared: PreparedStandardLighting,
+  reflectedAbi?: StandardClusterReflectedAbi,
 ): Result<StandardClusterTransport, RenderError> {
   const requested = prepared.local.length;
-  const texture = standardClusterTextureLayout(prepared.layout);
+  if (reflectedAbi === undefined) {
+    return err(
+      new StandardClusterTransportUnavailableError(
+        requested,
+        'the published Standard PBR variant is missing compatible Cluster reflection',
+      ),
+    );
+  }
+  const lightDataSlotBytes = reflectedAbi.directLightSlot.byteSize;
+  const clusterUniformBytes = reflectedAbi.clusterUniformBytes;
+  const texture = standardClusterTextureLayout(prepared.layout, lightDataSlotBytes);
   if (
     !capabilities.storageBuffer &&
     (capabilities.maxTextureDimension2D ?? 0) < Math.max(texture.width, texture.height)
@@ -84,7 +97,9 @@ export function selectStandardClusterTransport(
     occupiedClusterCount: occupiedClusterCount(prepared),
     clusterGridBytes: prepared.layout.clusterGridU32Length * Uint32Array.BYTES_PER_ELEMENT,
     lightIndexListBytes: prepared.membershipEntryCount * Uint32Array.BYTES_PER_ELEMENT,
-    lightDataBytes: requested * BYTES_PER_DIRECT_LIGHT_SLOT,
+    lightDataBytes: requested * lightDataSlotBytes,
+    lightDataSlotBytes,
+    clusterUniformBytes,
     lightBoundsBytes: prepared.lightBounds.byteLength,
   });
 }

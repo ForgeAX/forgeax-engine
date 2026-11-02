@@ -20,11 +20,35 @@ Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
 
+For cube/plane contact-matrix timeouts, run the Forward and Deferred Browser
+owners separately; each retains all 36 cases, its cold renderer and original
+frame/pixel/deadline bounds. A buffered log ending at dependency scanning does
+not establish a scanner stall. Inspect completed case timings or capture live
+process/page evidence before assigning the cause; follow
+[Browser gates](../../scripts/ci/README.md#browser-gates).
+
+For IES Browser process deadlines, inspect retained case screenshots before
+assigning a startup stall. Ordinary and publication owners run separately with
+all four cases, 19 independent live/replay devices, original deadlines and
+exclusive admission. Follow the [Browser gates](../../scripts/ci/README.md#browser-gates).
+
+For a coverage lane stranded behind isolated source production, compare its
+ordinary project forecast with the actual excluded files. Charge the moved
+source work once, retain completed child evidence and keep all coverage owners
+and deadlines; follow [coverage execution](../../scripts/ci/README.md#coverage-execution).
+
 For live-daemon recovery or ordinary App Worker build timeouts under coverage,
 qualify the complete files in exclusive CPU children before changing deadlines.
 Preserve HTTP recovery, module identity and graphics falsifiers; nested native
 cases retain their own GPU admission. Follow the
 [coverage execution owners](../../scripts/ci/README.md#execution-owners).
+
+For Vite shader coverage stalled in full source production, retain the resampling,
+Surface ABI and direct DFG files in the existing exclusive source owner. Publication
+checks inherit the runner compiler budget; call-count and mock-bound checks retain
+their observing realm. See the execution-owner contract above. Three Browser
+readiness failures retain native tapes through the [failure artifact selector](../../scripts/ci/README.md#failure-recovery);
+verify uploaded bytes before claiming the failed frame is available.
 
 For Bevy completed-frame smoke failures, distinguish preparation receipts, the
 first ready GPU completion and later ready frames. Cold native pipeline work has
@@ -131,6 +155,32 @@ child, check whether a file-wide spy setting disabled the normal Node material
 Worker route. Only Naga call-count cases need the observing realm. Keep every
 authored material, real cook, publication assertion and original deadline; see
 the [coverage guide](../../scripts/ci/README.md#coverage-execution).
+
+For absolute Modeling tier failures, record the failed clock, case and runner
+class before changing execution placement. Use the nominal heavy CPU pool for
+that uninstrumented owner; keep every runtime/offline case, sample, attempt and
+budget. Cross-host timing is diagnostic, never an algorithm speedup or a reason
+to retry a failed measurement. See the [tier contract](../../scripts/ci/README.md#coverage-execution).
+
+For a first-picture preparation timeout, correlate the pending receipt with
+native pipeline requests and queue completion. A pending reason names that
+receipt's first blocker, not necessarily the longest later operation. Keep the
+shared ready-frame driver at frame cadence rather than flooding the GPU queue;
+retain its readiness bound and every required completed picture. Dense IES
+capture/replay uses the existing exclusive Browser admission route, with its
+complete file and original deadlines.
+
+For an SDK source job that finishes its consumers but expires in its integrity
+tail, inspect `verifySdkArtifactInventory` and `verifyImmutableSdkStore`. Reuse
+the SDK's bounded file-I/O owner, reread all current bytes, and preserve the
+SQLite-only mutable-store exception. See the [consumer contract](../../scripts/ci/README.md#sdk-consumers).
+
+For concurrent CI slowdowns, compare the affinity receipts' kernel fingerprints,
+CPU masks and execution intervals. Equal masks alone do not prove a shared host.
+Quota-only containers must retain kernel placement when their available physical
+core set exceeds their CPU budget; a runner-name hash cannot reserve host cores.
+Keep quota-derived worker caps and all original acceptance bounds. See the
+[runner resource contract](../../scripts/ci/README.md#failure-recovery).
 
 For Bun portability source-scan timeouts, compare visible CPUs with the admitted
 cgroup CPU/memory budget. The canary uses `resolve-vitest-workers.mjs` through the
@@ -252,6 +302,10 @@ For Bloom device-loss recovery with an empty pre-loss graph, inspect completed
 pixels do not establish a rendered scene. Follow the Bloom recovery gate in the
 [CI guide](../../scripts/ci/README.md); preserve its deadlines and pixel thresholds.
 Measure complete Runner minutes and the critical path without queue time.
+For a shared shader producer exiting 134 with V8 heap exhaustion, compare its
+parent heap with the shared `build-shaders` step's limit before changing shader
+variants or worker admission. Follow [shared shader budgets](../../scripts/ci/README.md#ci-code-ownership)
+and retain the cold-source failure and verified publication receipt.
 For compiler `sourceContentKey` mismatches during input restoration, compare the
 actual wgpu/Blitz checkouts with the Engine gitlinks before rebuilding. The shared
 input entry must synchronize existing public source checkouts too; `Cargo.toml`

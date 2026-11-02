@@ -24,9 +24,13 @@ function describeRenderFeatureError(error: RenderFeatureErrorDescriptor): string
           return `${error.detail.resourceKind}:${error.detail.missingResource}`;
         case 'foreign-feature':
           return `${error.detail.expectedFeatureIdentity}:${error.detail.actualFeatureIdentity}`;
+        case 'foreign-view':
+          return `${error.detail.expectedViewIdentity}:${error.detail.actualViewIdentity}`;
         case 'foreign-kind':
           return `${error.detail.expectedKind}:${error.detail.actualKind}`;
         case 'generation-mismatch':
+          return `${error.detail.expectedGeneration}:${error.detail.actualGeneration}`;
+        case 'device-generation-mismatch':
           return `${error.detail.expectedGeneration}:${error.detail.actualGeneration}`;
         case 'layout-mismatch':
           return `${error.detail.expectedLayout}:${error.detail.actualLayout}`;

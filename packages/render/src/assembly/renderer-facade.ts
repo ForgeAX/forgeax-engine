@@ -844,7 +844,6 @@ function validateSsaoProfile(profile: RenderProfile): string | undefined {
     const resolved = resolveSsaoParameters(profile.ssao);
     if (!resolved.ok) return resolved.error.hint;
   }
-  // Forward reconstructs normals from depth (pipeline/forward-ambient-occlusion.ts).
   return undefined;
 }
 

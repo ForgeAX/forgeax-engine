@@ -18,16 +18,18 @@ import { expect, it } from 'vitest';
 import { RenderMeshResidency } from '../execution/render-mesh-residency';
 import { SourceMeshResidency } from '../execution/source-mesh-residency';
 
+// Admit the shared test fixture before measuring transport work; keep it out of App declarations.
+const { renderLifecycleManifestUrl } = await import(
+  new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
+);
+const shaderManifestUrl = renderLifecycleManifestUrl();
+
 it('carries real Renderer mesh readiness and exact receipts beyond the transient request limit', async () => {
-  // Reuse Render's test-only fixture without adding it to App declarations.
-  const { renderLifecycleManifestUrl } = await import(
-    new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
-  );
   const identity = { source: 'app-mesh-transport', epoch: 1 };
   const constructed = await constructRuntimeRendererHost(
     { width: 64, height: 64, getContext: () => null },
     { rhi, publicationSource: identity },
-    { shaderManifestUrl: renderLifecycleManifestUrl() },
+    { shaderManifestUrl },
   );
   if (!constructed.ok) throw constructed.error;
   const { renderer, assets } = constructed.value;
@@ -186,14 +188,11 @@ it('carries real Renderer mesh readiness and exact receipts beyond the transient
 it.each([
   1, 2,
 ])('prepares %i competing 33-member rosters with a held standalone lease and atomic admission', async (batches) => {
-  const { renderLifecycleManifestUrl } = await import(
-    new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
-  );
   const identity = { source: 'app-mesh-batch', epoch: 1 };
   const constructed = await constructRuntimeRendererHost(
     { width: 64, height: 64, getContext: () => null },
     { rhi, publicationSource: identity },
-    { shaderManifestUrl: renderLifecycleManifestUrl() },
+    { shaderManifestUrl },
   );
   if (!constructed.ok) throw constructed.error;
   const { renderer, assets } = constructed.value;

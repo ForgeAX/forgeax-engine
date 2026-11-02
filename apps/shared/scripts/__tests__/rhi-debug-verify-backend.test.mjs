@@ -45,6 +45,15 @@ describe('RHI-debug owned browser cleanup', () => {
 });
 
 describe('RHI-debug browser backend selection', () => {
+  it('keeps software CI compilation inside the gate deadline without the native GPU watchdog', () => {
+    const software = resolveBrowserWebGpuLaunch({ platform: 'linux', backend: 'auto', ci: true });
+    const local = resolveBrowserWebGpuLaunch({ platform: 'linux', backend: 'auto', ci: false });
+    const metal = resolveBrowserWebGpuLaunch({ platform: 'darwin', backend: 'auto', ci: true });
+    expect(software.args).toContain('--disable-gpu-watchdog');
+    expect(local.args).not.toContain('--disable-gpu-watchdog');
+    expect(metal.args).not.toContain('--disable-gpu-watchdog');
+  });
+
   it('aligns the macOS default with the explicit Dawn Metal replay', () => {
     const launch = resolveBrowserWebGpuLaunch({ platform: 'darwin', backend: 'auto' });
 

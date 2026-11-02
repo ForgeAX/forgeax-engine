@@ -1,8 +1,12 @@
-import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { shaderSourceDigestInput } from '@forgeax/engine-shader';
+import {
+  LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+  LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+} from '@forgeax/engine-shader';
+import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { encodePackagedProfiles } from '../engine-inputs/packaged-profiles.js';
+import { publishShaderManifest } from '../manifest-publication.js';
 
 const files = vi.hoisted(() => ({
   manifest: '',
@@ -10,6 +14,84 @@ const files = vi.hoisted(() => ({
   sourceDigest: 'current',
   container: undefined as Buffer | undefined,
 }));
+
+const reflection = {
+  schemaVersion: 'shader-reflection/3',
+  uvSetCount: 0,
+  boundGlobals: [],
+} as const;
+const resampling = [
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_resample', stage: 'compute', bindings: [] },
+      { name: 'light_texture_reduce', stage: 'compute', bindings: [] },
+    ],
+    programContract: { schemaVersion: 'shader-program-contract/1', colorTargets: [] },
+  },
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_fullscreen', stage: 'vertex', bindings: [] },
+      { name: 'light_texture_resample_fragment', stage: 'fragment', bindings: [] },
+    ],
+    programContract: {
+      schemaVersion: 'shader-program-contract/1',
+      colorTargets: [
+        { location: 0, format: 'rgba32float', numericType: 'float' },
+        { location: 1, format: 'rgba8unorm', numericType: 'float' },
+      ],
+    },
+  },
+] as const;
+
+function createManifest(
+  options: { readonly includeResampling?: boolean; readonly incompleteVariant?: boolean } = {},
+) {
+  const source = 'fn main() {}';
+  const materials = [
+    { identifier: 'forgeax::default-standard-pbr', entryPoints: [] },
+    { identifier: 'forgeax::default-unlit', entryPoints: [] },
+    ...(options.includeResampling === false ? [] : resampling),
+  ];
+  const entries = materials.map((material, index) => ({
+    hash: (index + 1).toString(16).padStart(8, '0'),
+    identifier: material.identifier,
+    wgsl: source,
+    glsl: '',
+    bindings: '[]',
+    compilerProfile: MATERIAL_WGSL_PROFILE,
+    reflection,
+    entryPoints: material.entryPoints,
+    ...('programContract' in material ? { programContract: material.programContract } : {}),
+  }));
+  return publishShaderManifest(
+    entries,
+    materials.map((material, index) => ({
+      identifier: material.identifier,
+      sourcePath: `packages/shader/src/${index}.wgsl`,
+      hash: (index + 1).toString(16).padStart(8, '0'),
+      compilerProfile: MATERIAL_WGSL_PROFILE,
+      reflection,
+      entryPoints: material.entryPoints,
+      composedWgsl: source,
+      paramSchema: '[]',
+      variants:
+        options.incompleteVariant === true && index === 0
+          ? [
+              {
+                definesKey: 'STORAGE_BUFFER_AVAILABLE=false',
+                defines: { STORAGE_BUFFER_AVAILABLE: false },
+                hash: '00000009',
+                compilerProfile: MATERIAL_WGSL_PROFILE,
+                composedWgsl: source,
+              },
+            ]
+          : [],
+    })),
+  );
+}
+
 vi.mock('node:fs', async (original) => ({
   ...(await original<typeof import('node:fs')>()),
   existsSync: () => true,
@@ -32,21 +114,7 @@ beforeEach(() => {
   files.imports = JSON.stringify({
     'forgeax_material::slot::surface': 'surface source',
   });
-  const source = 'fn main() {}';
-  const digest = createHash('sha256')
-    .update(shaderSourceDigestInput([createHash('sha256').update(source).digest()]))
-    .digest('hex');
-  files.manifest = JSON.stringify({
-    schemaVersion: '5.0.0',
-    receipts: [],
-    entryPoints: [],
-    fragments: [source],
-    sources: { [digest]: [0] },
-    entries: [{ hash: 'engine', sourceDigest: digest, bindings: '[]' }],
-    materialShaders: ['forgeax::default-standard-pbr', 'forgeax::default-unlit'].map(
-      (identifier) => ({ identifier, sourceDigest: digest, variants: [] }),
-    ),
-  });
+  files.manifest = JSON.stringify(createManifest());
 });
 
 it('shares verified immutable shader rows across servers and SSAO projections', async () => {
@@ -63,16 +131,28 @@ it('replaces changed publication and import bytes instead of trusting the path',
   const { loadPackagedEngineShaderInputs } = await import('../shared-engine-inputs.js');
   const first = loadPackagedEngineShaderInputs(false, true);
   const manifest = JSON.parse(files.manifest);
-  manifest.entries[0].hash = 'updated';
+  manifest.entries[0].hash = 'f00dbabe';
   files.manifest = JSON.stringify(manifest);
   const changed = loadPackagedEngineShaderInputs(false, true);
-  expect(changed?.entries[0]?.hash).toBe('updated');
+  expect(changed?.entries[0]?.hash).toBe('f00dbabe');
   expect(changed?.materialShaders).not.toBe(first?.materialShaders);
   files.imports = JSON.stringify({
     'forgeax_material::slot::surface': 'updated surface source',
   });
   expect(loadPackagedEngineShaderInputs(false, true)?.imports).toEqual(JSON.parse(files.imports));
-  expect(first?.entries[0]?.hash).toBe('engine');
+  expect(first?.entries[0]?.hash).toBe('00000001');
+});
+
+it('rejects packaged engine profiles missing resampling rows or a variant reflection', async () => {
+  const { loadPackagedEngineShaderInputs } = await import('../shared-engine-inputs.js');
+  for (const manifest of [
+    createManifest({ includeResampling: false }),
+    createManifest({ incompleteVariant: true }),
+  ]) {
+    files.manifest = JSON.stringify(manifest);
+    files.container = undefined;
+    expect(loadPackagedEngineShaderInputs(false, true)).toBeNull();
+  }
 });
 
 it('still rejects changed corrupt source bytes and stale engine provenance after reuse', async () => {

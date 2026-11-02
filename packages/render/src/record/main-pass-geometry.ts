@@ -593,7 +593,11 @@ export function geometrySkinBindGroup(
   if (layout === null) return null;
   const hdrpBuffers =
     contract === 'skin-cluster'
-      ? getOrCreateHdrpBuffers(runtime, frameState.installedPipelineConfig?.clusterGrid)
+      ? getOrCreateHdrpBuffers(
+          runtime,
+          frameState.installedPipelineConfig?.clusterGrid,
+          frameState.standardClusterAoExtent,
+        )
       : null;
   if (contract === 'skin-cluster' && hdrpBuffers === null) return null;
   const meshBindSize = runtime.device.caps.storageBuffer

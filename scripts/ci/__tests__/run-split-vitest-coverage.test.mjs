@@ -116,7 +116,7 @@ test('real generated-game coverage drains compiler children before starting the 
   });
   assert.equal(
     browserRuns,
-    6,
+    7,
     'native, Vite build and live startup owners drain neighboring coverage work',
   );
   assert.equal(active.size, 0);
@@ -126,6 +126,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
   const groups = coverageGroups(
     [
       '@forgeax/engine-devkit',
+      '@forgeax/engine-modeling',
       '@forgeax/engine-vite-plugin-shader',
       '@forgeax/engine-vite-plugin-pack',
       '@forgeax/engine-pack',
@@ -135,6 +136,8 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
     8,
   );
   for (const file of [
+    'packages/modeling/src/__tests__/bake-cage.unit.test.ts',
+    'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
     'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
     'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
     'packages/vite-plugin-shader/src/__tests__/vite-plugin-shader.unit.test.ts',
@@ -173,7 +176,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 14);
+  assert.equal(exclusiveRuns, 17);
 });
 
 test('cold large-scene contracts execute once without competing coverage children', () => {
@@ -336,6 +339,10 @@ test('modeling tier budgets remain mandatory and uninstrumented outside coverage
   const workflow = parse(
     readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
   );
+  assert.ok(
+    workflow.jobs['coverage-perf']['runs-on'].includes('heavy'),
+    'absolute tier budgets require the admitted heavy runner class',
+  );
   const gate = workflow.jobs['coverage-perf'].steps.find((step) => step.run?.includes(file));
   assert.ok(gate, 'the required performance job must run the complete tier-budget file');
   assert.ok(gate.run.includes('--project=@forgeax/engine-modeling'));
@@ -417,6 +424,23 @@ test('heavy project partitions cannot recombine on the same coverage lane', () =
   }
 });
 
+test('ordinary Shader placement excludes the isolated source-production cost', () => {
+  const groups = coverageGroups(['@forgeax/engine-vite-plugin-shader'], 8);
+  const ordinary = groups.find((group) => group.files.length === 0);
+  const source = groups.find((group) =>
+    group.files.includes(
+      'packages/vite-plugin-shader/src/__tests__/production-resampling-vite.integration.test.ts',
+    ),
+  );
+  assert.ok(ordinary && source);
+  assert.ok(source.files.every((file) => ordinary.excludes.includes(file)));
+  assert.ok(
+    ordinary.weight < source.weight / 2,
+    'the ordinary child must not retain the full-project forecast after source production moves out',
+  );
+  assert.ok(source.weight >= 760, 'retain the complete measured source-production reservation');
+});
+
 test('actual DevKit and Render discovery conserves both native halves and exclusive owners', async () => {
   const require = createRequire(import.meta.url);
   const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
@@ -471,10 +495,10 @@ test('modeling partitions retain the complete native shard roster and bounded wo
   for (const isolateFiles of [true, false]) {
     const groups = coverageGroups(['@forgeax/engine-math', project], 4, { isolateFiles });
     const modeling = groups.filter((group) => group.projects.includes(project));
-    assert.equal(modeling.length, isolateFiles ? 17 : 16);
+    assert.equal(modeling.length, isolateFiles ? 18 : 16);
     const native = modeling.filter((group) => group.shard);
     const isolated = modeling.filter((group) => group.files.length > 0);
-    assert.equal(isolated.length, isolateFiles ? 1 : 0);
+    assert.equal(isolated.length, isolateFiles ? 2 : 0);
     for (const group of isolated) {
       assert.equal(group.shard, undefined, 'an explicit file is never partitioned again');
       assert.equal(isExclusiveCoverageGroup(group), true);
@@ -641,7 +665,10 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
     'packages/devkit/src/__tests__/worker-module-identity.integration.test.ts';
   const playFile = 'packages/devkit/src/__tests__/project-play.e2e.test.ts';
   const sceneFile = 'packages/scene/src/__tests__/flat-propagation.contract.test.ts';
+  const bootstrapFile =
+    'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts';
   const allFiles = [
+    bootstrapFile,
     sceneFile,
     ...nativeFiles,
     liveProcessFile,
@@ -662,6 +689,12 @@ test('isolates a heavy test file into its own child and excludes it elsewhere', 
       { projects: ['@forgeax/engine-scene'], files: [sceneFile], excludes: [], gpuLease: false },
       { projects: ['@forgeax/engine-devkit'], files: [], excludes: allFiles, gpuLease: false },
       { projects: ['@forgeax/engine-devkit'], files: [], excludes: allFiles, gpuLease: false },
+      {
+        projects: ['@forgeax/engine-devkit'],
+        files: [bootstrapFile],
+        excludes: [],
+        gpuLease: false,
+      },
       {
         projects: ['@forgeax/engine-devkit'],
         files: [nativeFiles[0]],

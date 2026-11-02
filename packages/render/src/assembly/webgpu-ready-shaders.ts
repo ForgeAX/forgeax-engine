@@ -63,6 +63,7 @@ export interface EngineShaderModules {
   readonly bloomVertical: ShaderModule | null;
   readonly bloomComposite: ShaderModule | null;
   readonly ssao: ShaderModule | null;
+  readonly gtaoCompute: ShaderModule | null;
   readonly gpuDrivenPbrPrograms: ReadonlyMap<string, GpuDrivenPbrProgram>;
 }
 
@@ -78,6 +79,7 @@ export function emptyEngineShaderModules(): EngineShaderModules {
     bloomVertical: null,
     bloomComposite: null,
     ssao: null,
+    gtaoCompute: null,
     gpuDrivenPbrPrograms: new Map(),
   };
 }
@@ -219,6 +221,7 @@ export interface EngineManifestEntries {
   bloomVertical?: ManifestEntry | undefined;
   bloomComposite?: ManifestEntry | undefined;
   ssao?: ManifestEntry | undefined;
+  gtaoCompute?: ManifestEntry | undefined;
 }
 
 /** The validated roster: the engine SSOT triple is always present. */
@@ -252,6 +255,7 @@ function markerRoleOf(wgsl: string): MarkerRole {
   if (wgsl.includes('BloomHorizontalParams')) return 'bloomHorizontal';
   if (wgsl.includes('BloomVerticalParams')) return 'bloomVertical';
   if (wgsl.includes('BloomCompositeParams')) return 'bloomComposite';
+  if (wgsl.includes('cs_gtao_calc')) return 'gtaoCompute';
   if (wgsl.includes('fs_ssao_calc')) return 'ssao';
   return 'unlit';
 }

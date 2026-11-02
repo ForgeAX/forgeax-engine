@@ -6,6 +6,7 @@ import {
   type MaterialShaderManifestEntry,
   readShaderManifestPublication,
 } from '@forgeax/engine-shader';
+import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { afterEach, expect, it, vi } from 'vitest';
 import { forgeaxShader } from '../index.js';
 
@@ -52,6 +53,19 @@ it('reuses Standard code across authored packages without accepting an invalid e
     const publication = emitted.find((asset) => asset.fileName === 'shaders/manifest.json');
     expect(publication).toBeDefined();
     if (publication === undefined) throw new Error('Authored manifest missing');
+    const wire = JSON.parse(publication.source) as {
+      readonly reflections: readonly unknown[];
+      readonly entryPoints: readonly unknown[];
+      readonly materialShaders: readonly {
+        readonly identifier: string;
+        readonly reflectionIndex?: number;
+        readonly entryPointsIndex?: number;
+        readonly variants: readonly {
+          readonly reflectionIndex?: number;
+          readonly entryPointsIndex?: number;
+        }[];
+      }[];
+    };
     const manifest = (await readShaderManifestPublication(JSON.parse(publication.source))) as {
       materialShaders: MaterialShaderManifestEntry[];
     };
@@ -60,6 +74,50 @@ it('reuses Standard code across authored packages without accepting an invalid e
       'test::second',
     ]);
     expect(manifest.materialShaders[0]?.variants).toEqual(manifest.materialShaders[1]?.variants);
+    for (const [index, entry] of manifest.materialShaders.entries()) {
+      expect(entry.hash).toMatch(/^[a-f0-9]{8}$/);
+      expect(entry.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(entry.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
+      expect(entry.reflection?.schemaVersion).toBe('shader-reflection/3');
+      expect(Number.isSafeInteger(wire.materialShaders[index]?.reflectionIndex)).toBe(true);
+      expect(wire.reflections[wire.materialShaders[index]?.reflectionIndex ?? -1]).toEqual(
+        entry.reflection,
+      );
+      expect(Number.isSafeInteger(wire.materialShaders[index]?.entryPointsIndex)).toBe(true);
+      expect(wire.entryPoints[wire.materialShaders[index]?.entryPointsIndex ?? -1]).toEqual(
+        entry.entryPoints,
+      );
+      const primary = entry.variants.find(
+        (variant) => variant.hash === entry.hash && variant.sourceDigest === entry.sourceDigest,
+      );
+      expect(primary).toBeDefined();
+      for (const [variantIndex, variant] of entry.variants.entries()) {
+        expect(variant.hash).toMatch(/^[a-f0-9]{8}$/);
+        expect(variant.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+        expect(variant.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
+        expect(variant.reflection?.schemaVersion).toBe('shader-reflection/3');
+        expect(
+          Number.isSafeInteger(
+            wire.materialShaders[index]?.variants[variantIndex]?.reflectionIndex,
+          ),
+        ).toBe(true);
+        expect(
+          wire.reflections[
+            wire.materialShaders[index]?.variants[variantIndex]?.reflectionIndex ?? -1
+          ],
+        ).toEqual(variant.reflection);
+        expect(
+          Number.isSafeInteger(
+            wire.materialShaders[index]?.variants[variantIndex]?.entryPointsIndex,
+          ),
+        ).toBe(true);
+        expect(
+          wire.entryPoints[
+            wire.materialShaders[index]?.variants[variantIndex]?.entryPointsIndex ?? -1
+          ],
+        ).toEqual(variant.entryPoints);
+      }
+    }
     active = packages;
     await expect(plugin.buildStart?.call(context as never)).rejects.toThrow(/missing/);
     await plugin.closeBundle();

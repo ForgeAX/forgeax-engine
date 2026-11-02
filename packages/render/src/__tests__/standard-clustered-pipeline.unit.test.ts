@@ -15,6 +15,10 @@ const forwardSource = readFileSync(
   'utf8',
 );
 const recordSource = readFileSync(new URL('../record/frame.ts', import.meta.url), 'utf8');
+const frameLightingSource = readFileSync(
+  new URL('../record/frame-lighting.ts', import.meta.url),
+  'utf8',
+);
 
 describe('Standard clustered post color-domain order', () => {
   it('retains the LUT stage before the single output encoder', async () => {
@@ -75,6 +79,9 @@ describe('Standard clustered post color-domain order', () => {
   });
 
   it('routes clustered direct-light recording through the Spot modifier uploader', () => {
-    expect(recordSource).toContain('writeLightModifierTextures(internals, pipelineState, lights);');
+    expect(frameLightingSource).toMatch(
+      /writeLightModifierTextures\(\s*internals,\s*pipelineState,\s*\{[\s\S]*?\},\s*frameState,?\s*\)/,
+    );
+    expect(recordSource).toContain('pending.work.execute(encoder)');
   });
 });

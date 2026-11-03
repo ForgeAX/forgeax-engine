@@ -110,38 +110,49 @@ export function comparePixels(actual: Uint8Array, expected: Uint8Array, epsilon 
 }
 
 export async function verifyReplay(capture: THREE.ThreeFrameCapture) {
-  // Replay the same lossless container saved as evidence, without materializing
-  // a second uncompressed artifact for this capture.
-  const decoded = decodeTape(compactTape(capture.tape).bytes).unwrap();
-  const model = buildFrameModel(decoded);
-  const draws = model.works.filter((work) => work.attachments?.colorViewHandleIds.length);
-  expect(draws.length).toBeGreaterThan(0);
-  const last = draws.at(-1);
-  const target =
-    last?.attachments?.colorResolveViewHandleIds[0] ?? last?.attachments?.colorViewHandleIds[0];
-  if (last === undefined || target === undefined) throw new Error('missing final output draw');
-  const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-  const device = (
-    await adapter.requestDevice(replayDeviceRequest(decoded, adapter.features, adapter.limits))
-  ).unwrap();
-  const nativeDevice = device.nativeDevice().unwrap();
-  nativeDevice.pushErrorScope('validation');
-  const replay = (
-    await openReplay(decoded, { device, createShaderModule: webgpu.createShaderModule })
-  ).unwrap();
+  const started = performance.now();
+  // biome-ignore lint/suspicious/noConsole: Preserve bounded native replay phase receipts.
+  console.info('[three-render-replay]', JSON.stringify({ state: 'start' }));
   try {
-    const read = (await replay.readResourceAtWork(target, last.workIndex)).unwrap();
-    const image = readbackImage(read).unwrap();
-    expect(image.width).toBe(SIZE);
-    expect(image.height).toBe(SIZE);
-    comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
-    const validation = await nativeDevice.popErrorScope();
-    expect(validation?.message ?? null).toBeNull();
+    // Replay the same lossless container saved as evidence, without materializing
+    // a second uncompressed artifact for this capture.
+    const decoded = decodeTape(compactTape(capture.tape).bytes).unwrap();
+    const model = buildFrameModel(decoded);
+    const draws = model.works.filter((work) => work.attachments?.colorViewHandleIds.length);
+    expect(draws.length).toBeGreaterThan(0);
+    const last = draws.at(-1);
+    const target =
+      last?.attachments?.colorResolveViewHandleIds[0] ?? last?.attachments?.colorViewHandleIds[0];
+    if (last === undefined || target === undefined) throw new Error('missing final output draw');
+    const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+    const device = (
+      await adapter.requestDevice(replayDeviceRequest(decoded, adapter.features, adapter.limits))
+    ).unwrap();
+    const nativeDevice = device.nativeDevice().unwrap();
+    nativeDevice.pushErrorScope('validation');
+    const replay = (
+      await openReplay(decoded, { device, createShaderModule: webgpu.createShaderModule })
+    ).unwrap();
+    try {
+      const read = (await replay.readResourceAtWork(target, last.workIndex)).unwrap();
+      const image = readbackImage(read).unwrap();
+      expect(image.width).toBe(SIZE);
+      expect(image.height).toBe(SIZE);
+      comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
+      const validation = await nativeDevice.popErrorScope();
+      expect(validation?.message ?? null).toBeNull();
+    } finally {
+      (await replay.dispose()).unwrap();
+      webgpu.disposeDevice(device);
+    }
+    return { workCount: model.works.length, resourceCount: model.resources.length };
   } finally {
-    (await replay.dispose()).unwrap();
-    webgpu.disposeDevice(device);
+    // biome-ignore lint/suspicious/noConsole: Preserve bounded native replay phase receipts.
+    console.info(
+      '[three-render-replay]',
+      JSON.stringify({ state: 'end', milliseconds: performance.now() - started }),
+    );
   }
-  return { workCount: model.works.length, resourceCount: model.resources.length };
 }
 
 export async function verifyRender(

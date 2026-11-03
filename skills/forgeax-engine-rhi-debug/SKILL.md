@@ -57,8 +57,10 @@ or the SDK's `source/engine/packages/rhi-debug/README.md`.
    and writable `@group(G)@binding(B)` the work produced. Read one with
    `{"output":"depth","workIndex":N,"image":{"depth":{"near":0.1,"far":100,"reverseZ":true},"range":"auto","png":"shadow.png"}}`;
    `depthImage` linearizes depth and a layer view reads its own array layer.
-   Depth readback returns one f32 per texel through an independent unfiltered
-   load shader, including on WebGL2. Select an explicit aspect for depth-stencil
+   Depth readback returns one f32 per texel. WebGPU/native wgpu copy explicit
+   `depth32float` + `COPY_SRC` directly; WebGL2/Null/other formats retain the
+   independent unfiltered load shader. Keep the cached-depth Dawn layer/mip
+   and fresh replay checks. Select an explicit aspect for depth-stencil
    textures. Validate a positive control and cleared zero, retain raw values,
    and use a shared display range for comparisons; an all-zero image or a
    comparison-sampling search alone does not establish exact depth contents.
@@ -72,10 +74,22 @@ or the SDK's `source/engine/packages/rhi-debug/README.md`.
    shader, render-pipeline, assets, or RHI skills as the evidence requires. Keep generic
    RHI Debug free of workload-specific lighting, shadow, or post-effect policy;
    repair capture/replay itself only when its contract is the demonstrated fault.
+   For cross-texture palette or alpha corruption after mip generation, run
+   `mipmap-upload-isolation.browser-no-webgpu.test.ts` in the WebGL2 fallback
+   roster; keep uploads consecutive because readback or queue drains can hide it.
 5. Run the regression gate, capture again after the fix, and verify the same
    scene/backend and original visible symptom.
    Keep before/after artifacts explicit; replay evidence supplements the required
    browser, Dawn, and smoke gates for the changed implementation.
+   Save the recorder's existing compressed container directly. Fixture transport
+   must not decode and recompress its mixed raw/gzip blobs merely to save evidence.
+   Texture snapshot mapping shares staging across mips/layers within the device
+   buffer limit. Retain every subresource copy and validate all face/mip bytes with
+   `texture-readback-staging.browser-no-webgpu.test.ts` in the WebGL2 fallback roster.
+   Three oracles may borrow their file-owned upstream GPUDevice, but each picture
+   keeps fresh Renderer/node state; Engine capture and fresh-device replay stay independent.
+   On a complete Three case timeout, inspect its `three-render-phase` and
+   `three-render-replay` receipts before selecting the next performance owner.
    For recorder fallback without a usable WebGPU adapter, use the
    [Browser without WebGPU route](../../scripts/ci/README.md#browser-without-webgpu).
    Keep its Worker, sixty-frame and decoded-tape checks in the Browser owner.

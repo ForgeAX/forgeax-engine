@@ -8,7 +8,7 @@ import type {
 import { textureReadbackLayout } from '@forgeax/engine-rhi';
 import { err, isCompressedFormat, mipDimension, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
-import { readbackDepthTexture } from '../readback-depth';
+import { isDepth32FloatCopySource, readbackDepthTexture } from '../readback-depth';
 import type { CreateShaderModuleFn } from '../recorder';
 import { projectTextureExtent } from '../texel-layout';
 import type { ResourceTable, ResourceTableEntry } from './resources';
@@ -295,6 +295,8 @@ async function readTexture(
       arrayLayer,
       createShaderModule,
       size.layerCount > 1 || stringField(descriptor, 'textureBindingViewDimension') === '2d-array',
+      undefined,
+      isDepth32FloatCopySource(format, numberField(descriptor, 'usage')),
     );
     if (!bytes.ok) return bytes;
     return ok({ resourceId, kind: 'texture', format, width, height, bytes: bytes.value });

@@ -22,6 +22,7 @@ import {
   shaderCompileWorkers,
 } from '../lib/runner-resources.mjs';
 import { withLocalGpuLease } from './local-gpu-lease.mjs';
+import modelingCoverageTimings from './modeling-coverage-file-seconds.json' with { type: 'json' };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '../..');
@@ -63,8 +64,17 @@ const isolatedChildProjects = new Set([
 // to five seconds per balanced partition), replacing the original 1,000 s estimate.
 // DevKit and Render reservations divide complete successful project receipts;
 // these new half-project owners remain estimates until complete CI qualifies them.
+const modelingPartitions = 16;
+const modelingPartitionWeight = Math.max(
+  810,
+  Math.ceil(
+    Object.values(modelingCoverageTimings.files).reduce((sum, seconds) => sum + seconds, 0) /
+      modelingPartitions /
+      5,
+  ) * 5,
+);
 const projectPartitions = new Map([
-  ['@forgeax/engine-modeling', { count: 16, weight: 810 }],
+  ['@forgeax/engine-modeling', { count: modelingPartitions, weight: modelingPartitionWeight }],
   ['@forgeax/engine-devkit', { count: 2, weight: 590, coverageOnly: true }],
   ['@forgeax/engine-render', { count: 2, weight: 550, coverageOnly: true }],
 ]);

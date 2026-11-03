@@ -449,6 +449,7 @@ test('the complete nine-light owner drains competing browser groups', () => {
 test('dense Renderer owners retain singleton groups with exclusive runner admission', () => {
   const groups = dryRunGroups();
   for (const file of [
+    'packages/runtime/src/__tests__/lighting-channels-views.browser.test.ts',
     'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
     'packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts',
     'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
@@ -1261,6 +1262,7 @@ test('the native PCM loop owner retains a fresh complete browser process', () =>
 // the environment/calibration neighbors passed their unchanged solo retries.
 test('exclusive renderer owners drain neighboring browser groups', async () => {
   const files = [
+    'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts',
     'packages/three/src/__tests__/render.browser.test.ts',
     'packages/three/src/__tests__/material-output-0.browser.test.ts',
     'packages/three/src/__tests__/material-output-1.browser.test.ts',

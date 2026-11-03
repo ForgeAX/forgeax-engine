@@ -45,6 +45,7 @@ function makeBlitDevice(renderPasses?: unknown[], log?: BlitLog): RhiDevice {
     finish: () => ok({ tag: `cmdbuf-${nextId++}` }),
   };
   return {
+    caps: { backendKind: 'webgpu' },
     createSampler: () => ok({ tag: `sampler-${nextId++}` }),
     createBindGroupLayout: () => ok({ tag: `bgl-${nextId++}` }),
     createPipelineLayout: () => ok({ tag: `pl-${nextId++}` }),
@@ -75,6 +76,25 @@ describe('numMipLevels', () => {
 });
 
 describe('getOrCreateMipmapPipeline + mipmapCacheSize', () => {
+  it.each([
+    'webgpu',
+    'wgpu-webgl2',
+  ] as const)('keeps LOD-zero clamping scoped to WebGL2 (%s)', async (backendKind) => {
+    const base = makeBlitDevice();
+    const device = { ...base, caps: { ...base.caps, backendKind } };
+    const descriptors: unknown[] = [];
+    device.createSampler = (desc) => {
+      descriptors.push(desc);
+      return base.createSampler(desc);
+    };
+    expect((await getOrCreateMipmapPipeline(device, 'rgba8unorm', stubShaderFactory)).ok).toBe(
+      true,
+    );
+    expect(descriptors).toHaveLength(1);
+    if (backendKind === 'wgpu-webgl2') expect(descriptors[0]).toHaveProperty('lodMaxClamp', 0);
+    else expect(descriptors[0]).not.toHaveProperty('lodMaxClamp');
+  });
+
   it('fresh device starts at cache size 0', () => {
     expect(mipmapCacheSize(makeBlitDevice())).toBe(0);
   });

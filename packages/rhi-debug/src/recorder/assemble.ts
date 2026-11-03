@@ -1,6 +1,12 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from '../errors';
-import { concatParts, digestParts, encodeTapeParts, sliceParts } from '../protocol/codec';
+import {
+  concatParts,
+  decodeTape,
+  digestParts,
+  encodeTapeParts,
+  sliceParts,
+} from '../protocol/codec';
 import { createdHandles, resourceKindForEvent } from '../protocol/event-semantics';
 import type { BootstrapResource, Tape as V7Tape } from '../protocol/types';
 import type { DebugRhiInstance } from '../recorder';
@@ -21,7 +27,7 @@ export interface TapeArtifact {
   chunks(chunkBytes: number): Iterable<{ readonly offset: number; readonly bytes: Uint8Array }>;
 }
 
-/** One captured container together with its decoded tape. */
+/** One captured container; decoding is lazy so ordinary uploads retain no raw blob pool. */
 export interface EncodedTape extends TapeArtifact {
   readonly tape: V7Tape;
 }
@@ -65,11 +71,20 @@ export function assembleTape(recorder: DebugRhiInstance): Result<EncodedTape, Rh
     hoistableCreates(legacy.events, recorder.bootstrapEvents()),
     recorder.omittedSeeds(),
   );
-  const encoded = encodeTapeParts(tape, { contentHashes: true });
+  const encoded = encodeTapeParts(tape, { contentHashes: true, compression: 'auto' });
   if (!encoded.ok) return err(encoded.error);
   const artifact = tapeArtifact(encoded.value.parts, encoded.value.byteLength);
-  return ok({
-    tape,
+  return ok(encodedCapture(artifact));
+}
+
+// This scope never closes over the recorder or its uncompressed tape.
+function encodedCapture(artifact: TapeArtifact): EncodedTape {
+  let decoded: V7Tape | undefined;
+  return {
+    get tape() {
+      decoded ??= decodeTape(artifact.bytes).unwrap();
+      return decoded;
+    },
     byteLength: artifact.byteLength,
     get digest() {
       return artifact.digest;
@@ -78,7 +93,7 @@ export function assembleTape(recorder: DebugRhiInstance): Result<EncodedTape, Rh
       return artifact.bytes;
     },
     chunks: (chunkBytes) => artifact.chunks(chunkBytes),
-  });
+  };
 }
 
 /**

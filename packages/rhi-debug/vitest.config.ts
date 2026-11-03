@@ -15,6 +15,7 @@ export default defineProject({
       '**/node_modules/**',
       '**/dist/**',
       '**/*.browser.test.ts',
+      '**/*.browser-no-webgpu.test.ts',
       '**/*.dawn.test.ts',
     ],
     typecheck: {

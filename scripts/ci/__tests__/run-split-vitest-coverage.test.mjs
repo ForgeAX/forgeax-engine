@@ -467,7 +467,7 @@ test('actual DevKit and Render discovery conserves both native halves and exclus
     const expected = discover(commonArgs);
     const covered = discover([
       ...commonArgs,
-      ...native[0].excludes.map((file) => `--exclude=${path.resolve(file)}`),
+      ...native[0].excludes.map((file) => `--exclude=${path.resolve(file).replaceAll('\\', '/')}`),
     ]);
     const specifications = covered.map((moduleId) => ({ moduleId, project: { name: project } }));
     const partitions = await Promise.all(
@@ -498,6 +498,15 @@ test('modeling partitions retain the complete native shard roster and bounded wo
     assert.equal(modeling.length, isolateFiles ? 18 : 16);
     const native = modeling.filter((group) => group.shard);
     const isolated = modeling.filter((group) => group.files.length > 0);
+    const timings = JSON.parse(
+      readFileSync(new URL('../modeling-coverage-file-seconds.json', import.meta.url), 'utf8'),
+    );
+    const averageForecast =
+      Object.values(timings.files).reduce((sum, seconds) => sum + seconds, 0) / native.length;
+    assert.ok(
+      native.every((group) => group.weight >= averageForecast),
+      'partition reservations must cover the retained file forecast used by the sequencer',
+    );
     assert.equal(isolated.length, isolateFiles ? 2 : 0);
     for (const group of isolated) {
       assert.equal(group.shard, undefined, 'an explicit file is never partitioned again');

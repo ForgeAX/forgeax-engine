@@ -917,7 +917,6 @@
     "packages/rhi-debug/src/frame-model.ts::buildResourceLifecycle": 21,
     "packages/rhi-debug/src/protocol/event-semantics.ts::handleAccess": 66,
     "packages/rhi-debug/src/protocol/validation.ts::validateTape": 21,
-    "packages/rhi-debug/src/readback-depth.ts::readbackDepthTexture": 22,
     "packages/rhi-debug/src/readback.ts::readbackBatch": 34,
     "packages/rhi-debug/src/recorder/lifecycle.ts::createRecorderLifecycle.runSnapshotAllLiveResources": 52,
     "packages/rhi-debug/src/recorder/lifecycle.ts::createRecorderLifecycle.snapshotResource": 28,

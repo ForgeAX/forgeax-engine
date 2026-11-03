@@ -192,6 +192,7 @@ function makeFakeRhiDevice(): Record<string, unknown> {
   // --- from mipmap-pipeline-cache.test.ts ---
   // Minimal in-memory device stub matching the RhiDevice surface required
   // by the cache tests. The implementation consumes only:
+  //   - device.caps.backendKind
   //   - device.createSampler(desc?)
   //   - device.createBindGroupLayout(desc)
   //   - device.createPipelineLayout(desc)
@@ -203,6 +204,7 @@ function makeFakeRhiDevice(): Record<string, unknown> {
   let nextResourceId = 0;
   function makeStubDevice(): RhiDevice {
     return {
+      caps: { backendKind: 'webgpu' },
       createSampler: (_desc?: unknown) => ({
         ok: true as const,
         value: { tag: `sampler-${nextResourceId++}` } as unknown as never,

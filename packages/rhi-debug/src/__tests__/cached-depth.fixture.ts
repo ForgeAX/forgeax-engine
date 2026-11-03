@@ -3,7 +3,14 @@ import { expect } from 'vitest';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '../index';
 
 export async function verifyCachedDepth() {
-  const recorder = attachRecorder(webgpu).unwrap();
+  let snapshotShaderCalls = 0;
+  const recorder = attachRecorder({
+    ...webgpu,
+    createShaderModule: async (...args: Parameters<typeof webgpu.createShaderModule>) => {
+      snapshotShaderCalls++;
+      return webgpu.createShaderModule(...args);
+    },
+  }).unwrap();
   const adapter = (await recorder.backend.rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
   const errors: string[] = [];
@@ -84,7 +91,9 @@ export async function verifyCachedDepth() {
     })
     .unwrap();
   const capture = recorder.captureFrame();
+  snapshotShaderCalls = 0;
   (await recorder.frameBoundary()).unwrap();
+  expect(snapshotShaderCalls).toBe(0);
   const commands = device.createCommandEncoder({}).unwrap();
   const pass = commands.beginRenderPass({
     colorAttachments: [

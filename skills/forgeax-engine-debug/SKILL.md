@@ -37,6 +37,11 @@ ordinary project forecast with the actual excluded files. Charge the moved
 source work once, retain completed child evidence and keep all coverage owners
 and deadlines; follow [coverage execution](../../scripts/ci/README.md#coverage-execution).
 
+For a coverage job deadline after uneven Modeling partitions, refresh file costs
+from complete successful child receipts, including skipped-file overhead, and
+derive partition reservations from the same retained table. Preserve every file,
+exclusive owner and deadline; a planning replay still requires final-head CI.
+
 For live-daemon recovery or ordinary App Worker build timeouts under coverage,
 qualify the complete files in exclusive CPU children before changing deadlines.
 Preserve HTTP recovery, module identity and graphics falsifiers; nested native

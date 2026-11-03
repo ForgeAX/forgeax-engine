@@ -107,7 +107,15 @@ const shadowQualityBrowserFiles = new Set([
   'packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts',
   'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts',
 ]);
+const pixelParityCaptureBrowserFile =
+  'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run 41546866475 crossed the independent-view Standard preparation bound
+  // beside another GPU owner. Preserve both World and publication journeys.
+  'packages/runtime/src/__tests__/lighting-channels-views.browser.test.ts',
+  // Run 41535701837 exhausted Standard's 15 s preparation bound in a mixed
+  // four-file process. Keep both native pictures, compositor and light controls.
+  pixelParityCaptureBrowserFile,
   // Ordinary and publication IES owners retain all four cases and 19 devices.
   // Each keeps the original process deadline without competing GPU groups.
   'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
@@ -143,6 +151,7 @@ const exclusiveRunnerBrowserFiles = new Set([
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
 ]);
 const browserProcessIsolatedFiles = new Set([
+  pixelParityCaptureBrowserFile,
   ...shadowQualityBrowserFiles,
   // Run 40671760654 exhausted one 300 s process with all three native owners.
   // Preserve each complete journey and its existing deadline in its own process.

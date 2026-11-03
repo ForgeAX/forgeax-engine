@@ -228,6 +228,20 @@ Identical payloads are stored once: recorder blobs are keyed by their SHA-256
 content hash, so repeated uploads and identical resources share one blob, and
 encoding reuses that hash as the blob digest instead of hashing again.
 
+Captured containers choose lossless compression per blob. GPU texture formats,
+including BC/ETC2/ASTC blocks, and uniform bytes remain exact. `EncodedTape.tape`
+decodes lazily; ordinary chunk uploads retain the encoded parts without keeping
+the original uncompressed recorder pool alive.
+
+| `TapeEncodeOptions.compression` | Storage policy |
+|:--|:--|
+| `auto` (recorder default) | Gzip only when it saves more than 32 bytes and 1%; otherwise borrow the raw bytes. |
+| `none` | Preserve uncompressed bytes. |
+| `gzip` | Explicit gzip for every blob. |
+
+Without an encoding override, re-encoding a decoded tape preserves each blob's
+chosen representation, including containers with mixed raw and gzip payloads.
+
 `CaptureFrameOptions.seed.maxResourceBytes` scopes initial contents. A resource
 whose snapshot exceeds the bound is not read back; its bootstrap entry keeps the
 descriptor with `seed: 'omitted'` and `FrameModel.unseededResources[]` reports
@@ -312,12 +326,14 @@ multisampled multi-target pass such as weighted blended OIT accumulation exposes
 every readable 1x target id for `readResourceAtWork`.
 Partial replay closes command and pass debug groups still open at the selected
 work, deriving the scopes from the recorded prefix without running later draws.
-For `2d` and `2d-array` sources, depth readback uses an unfiltered depth-to-color
-pass and returns one `f32` per texel for every supported depth format, including
-exact cleared zero. It binds the source range and selects the layer/mip explicitly
-in the load shader, preserving array and mip semantics on GLES; depth-stencil textures
-require an explicit aspect. The same path works on WebGPU and WebGL2 without
-changing recorded depth comparisons or writes. Stencil-only copies retain the
+For `2d` and `2d-array` sources, depth readback returns one `f32` per texel,
+including exact cleared zero. WebGPU and native wgpu copy `depth32float` with
+explicit `COPY_SRC` directly to staging, preserving its four bytes without a
+shader or RGBA32F intermediate. WebGL2, Null, other depth formats and descriptors
+without `COPY_SRC` retain the unfiltered depth-to-color pass. It binds the source
+range and selects the layer/mip explicitly in the load shader, preserving array
+and mip semantics on GLES; depth-stencil textures require an explicit aspect.
+Neither route changes recorded depth comparisons or writes. Stencil-only copies retain the
 backend's format restrictions and structured transfer failures.
 
 The remaining readback matrix is explicit: supported color/depth formats use
@@ -341,10 +357,12 @@ with `replay-capability-mismatch` before replay resource creation.
 
 The internal `wrap(rhi, createShaderModule)` assembly receives the backend pair;
 `attachRecorder(backend)` supplies both for host integrations. Capture and replay
-share the exact unfiltered depth-load kernel, including on WebGL2 where direct
-depth-to-buffer copies are unavailable. Depth snapshots run one resource at a time;
+share the same direct-copy admission and unfiltered depth-load fallback, including
+on WebGL2 where direct depth-to-buffer copies are unavailable. Depth snapshots run one resource at a time;
 color and buffer snapshots retain bounded copy batches. Depth staging is estimated
-from the largest RGBA32F slice; a matching temporary output texture is also live.
+conservatively from the largest RGBA32F slice; only the fallback also creates a
+matching temporary output texture. Direct copies need four staging bytes per
+texel before row alignment and retain the shared cancellation and cleanup path.
 
 Retained `depth32float` textures are snapshotted across every array layer and
 mip level. Replay restores the exact floats through a depth-only raster pass,
@@ -644,6 +662,14 @@ another copy; caller-owned queue uploads are copied, including the exact typed-a
 view. Uncompressed encoding borrows those immutable bytes as container parts; the
 recorder hands them to the captured artifact when it releases its pool, so the
 upload streams the seeds themselves (see [Streaming large captures](#streaming-large-captures)).
+
+Each color texture shares aligned staging across its mip/layer chain, splitting
+before `device.limits.maxBufferSize`. Every subresource still has its original
+copy and tight byte destination; each staging allocation maps and retires once.
+Textures retain independent allocations, the same total padded byte budget,
+resource progress, cancellation cleanup and canonical seed order. The shared
+Browser fixture checks every face/mip byte on the ordinary and WebGL2-only paths;
+unit cases also retain BC3 blocks and exercise a smaller device buffer limit.
 
 Snapshot blobs use asynchronous native SHA-256 with the same content keys as
 synchronous queue uploads. Hash completion rechecks capture generation before

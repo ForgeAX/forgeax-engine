@@ -15,7 +15,7 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 
 | Step | Command | Notes |
 |:--|:--|:--|
-| Validate setup | `project check` | Node/pnpm, manifest, dependencies |
+| Validate setup | `project check` | Node/pnpm, manifest, dependencies, declared UI sources |
 | Unit/type checks | `pnpm test`, `pnpm typecheck` | `project test` runs the project test gate |
 | Assets | `asset verify`, `asset list`, `asset inspect <guid>` | GUIDs, sidecars, Packs, closure |
 | Start live game | `dev start [--headless true] [--backend auto]` | Optional warm owner; headed by default |

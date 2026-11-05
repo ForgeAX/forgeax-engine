@@ -6,6 +6,7 @@ import { hasBlockingDiagnostics } from './diagnostics.js';
 import { parseHtmlAuthoring } from './html.js';
 import { pickAuthoringCategory, type UiAuthoringCategory } from './profile.js';
 
+export { isUiBrowserExtensions } from '../browser-extensions.js';
 export { type CssAuthoringOptions, parseCssAuthoring } from './css.js';
 export { serializeDiagnostics, type UiAuthoringParse } from './diagnostics.js';
 export { type HtmlAuthoringOptions, parseHtmlAuthoring } from './html.js';

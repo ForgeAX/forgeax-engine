@@ -865,6 +865,54 @@ describe('newCommand', () => {
 });
 
 describe('doctorCommand', () => {
+  async function uiFixture(css: string, importSettings: Record<string, unknown> = {}) {
+    const sdk = await sdkFixture(false);
+    const assets = resolve(sdk.template, 'assets', 'ui');
+    await mkdir(assets, { recursive: true });
+    await writeFile(resolve(assets, 'hud.ui.html'), '<div>HUD</div>');
+    await writeFile(resolve(assets, 'hud.ui.css'), css);
+    await writeFile(
+      resolve(assets, 'hud.ui.html.meta.json'),
+      JSON.stringify({ importer: 'ui', source: 'hud.ui.html', importSettings }),
+    );
+    return { root: sdk.template };
+  }
+
+  it('reports the UI CSS error that project build would reject', async () => {
+    const { root } = await uiFixture('* { -webkit-user-select: none; }');
+
+    expect(await doctorCommand({ root })).toMatchObject({
+      ok: false,
+      error: {
+        code: 'source-validation-failed',
+        detail: {
+          diagnostics: [
+            expect.objectContaining({
+              code: 'unsupported-css-property',
+              severity: 'error',
+              actual: '-webkit-user-select',
+              sourcePath: expect.stringMatching(/hud\.ui\.css$/),
+            }),
+          ],
+        },
+      },
+    });
+  });
+
+  it('accepts UI CSS inside the portable profile', async () => {
+    const { root } = await uiFixture('* { user-select: none; }');
+
+    expect(await doctorCommand({ root })).toMatchObject({ ok: true });
+  });
+
+  it('accepts browser-only UI CSS that the source declares', async () => {
+    const { root } = await uiFixture('.hud { -webkit-user-select: none; }', {
+      browserExtensions: ['css'],
+    });
+
+    expect((await doctorCommand({ root })).ok).toBe(true);
+  });
+
   it('keeps exact-version dependencies on the registry path without a local binding', async () => {
     const sdk = await sdkFixture(false);
     await writeFile(

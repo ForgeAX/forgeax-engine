@@ -11,7 +11,13 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, resolve } from 'node:path';
-import { UI_AUTHORING_PROFILE, type UiAuthoringProfile } from '@forgeax/engine-ui/authoring';
+import type { ImportDiagnostic } from '@forgeax/engine-types';
+import {
+  classifyUiAuthoring,
+  isUiBrowserExtensions,
+  UI_AUTHORING_PROFILE,
+  type UiAuthoringProfile,
+} from '@forgeax/engine-ui/authoring';
 import { parseDocument } from 'yaml';
 import { execFileCommand } from './child-process.js';
 import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
@@ -96,6 +102,71 @@ async function readPnpmVersion(
     }
   }
   return (await execFileCommand('pnpm', ['--version'], { cwd: root })).stdout.trim();
+}
+
+async function filesUnder(directory: string): Promise<readonly string[]> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) return filesUnder(path);
+      return entry.isFile() ? [path] : [];
+    }),
+  );
+  return nested.flat();
+}
+
+async function projectAssetRoots(root: string): Promise<readonly string[]> {
+  const manifest = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8')) as {
+    readonly assetRoots?: readonly string[];
+  };
+  return (manifest.assetRoots ?? ['assets']).map((assetRoot) => resolve(root, assetRoot));
+}
+
+/**
+ * Runs the UI importer's source classification over every declared UI source,
+ * so `project check` reports the same errors as `project build`. Missing or
+ * malformed companions stay with the importer, which owns those failures.
+ */
+async function inspectUiAuthoring(root: string): Promise<readonly ImportDiagnostic[]> {
+  const diagnostics: ImportDiagnostic[] = [];
+  for (const assetRoot of await projectAssetRoots(root)) {
+    for (const metaPath of await filesUnder(assetRoot)) {
+      if (!metaPath.endsWith('.ui.html.meta.json')) continue;
+      const htmlPath = metaPath.slice(0, -'.meta.json'.length);
+      let meta: {
+        readonly importer?: unknown;
+        readonly importSettings?: { readonly browserExtensions?: unknown };
+      };
+      let html: string;
+      let css: string;
+      try {
+        meta = JSON.parse(await readFile(metaPath, 'utf8'));
+        html = await readFile(htmlPath, 'utf8');
+        css = await readFile(htmlPath.replace(/\.ui\.html$/, '.ui.css'), 'utf8');
+      } catch {
+        continue;
+      }
+      const browserExtensions = meta.importSettings?.browserExtensions;
+      if (
+        meta.importer !== 'ui' ||
+        (browserExtensions !== undefined && !isUiBrowserExtensions(browserExtensions))
+      )
+        continue;
+      const classification = classifyUiAuthoring({
+        sourcePath: htmlPath,
+        html,
+        css,
+        browserExtensions: browserExtensions ?? [],
+      });
+      if (classification.blocking) {
+        diagnostics.push(
+          ...classification.diagnostics.filter((diagnostic) => diagnostic.severity === 'error'),
+        );
+      }
+    }
+  }
+  return diagnostics;
 }
 
 export async function doctorCommand(
@@ -187,6 +258,23 @@ export async function doctorCommand(
     } catch (cause) {
       return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
     }
+  }
+  let uiDiagnostics: readonly ImportDiagnostic[];
+  try {
+    uiDiagnostics = await inspectUiAuthoring(facts.value.root);
+  } catch (cause) {
+    return { ok: false, error: commandError(cause, 'project-ui-inspection-failed') };
+  }
+  if (uiDiagnostics.length > 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'source-validation-failed',
+        expected: 'HTML, CSS, and companions within the UiAuthoringProfile',
+        hint: 'Inspect err.detail.diagnostics and fix each source-located error.',
+        detail: { diagnostics: uiDiagnostics },
+      },
+    };
   }
   return {
     ok: true,

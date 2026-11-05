@@ -56,9 +56,11 @@ export class AutoExposureCapabilityUnavailableError extends Error {
 
 /** One admission rule for allocation, downlevel rendering and inspection. */
 export function autoExposureCapabilityFailure(
-  caps: Pick<RhiCaps, 'compute' | 'storageBuffer'>,
+  caps: Pick<RhiCaps, 'compute' | 'storageBuffer'> &
+    Partial<Pick<RhiCaps, 'rgba16floatRenderable'>>,
   generation: number,
 ): AutoExposureCapabilityUnavailableError | undefined {
+  if (caps.rgba16floatRenderable === true) return undefined;
   if (!caps.compute)
     return new AutoExposureCapabilityUnavailableError({ capability: 'compute', generation });
   if (!caps.storageBuffer)

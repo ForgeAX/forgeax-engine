@@ -17,7 +17,7 @@ import { worldRenderResources } from '../publication/resource-scope';
 import { type DirectDrawInput, DirectDrawPhase } from '../record/direct-draw-phase';
 import { prepareDirectionalShadowCache } from '../record/directional-shadow-cache';
 import { buildDispatchPlan } from '../record/fold-buckets';
-import type { RenderFrameState } from '../record/frame-snapshot';
+import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import { recordGeometryDraws } from '../record/main-pass-geometry';
 import { MaterialBgAssemblyCache } from '../record/material-bg-assembly-cache';
 import {
@@ -295,6 +295,7 @@ async function fixture(entryPoints?: readonly ShaderEntryPointReads[]) {
     topology.rebuild(scene.slotsSnapshot());
     const pipelineRequests: unknown[][] = [];
     const context = {
+      camera: makeZeroCameraFallbackSnapshot(),
       shadowCasterBounds: (
         source: RenderableSnapshot,
         out: import('@forgeax/engine-math').box3.Box3,

@@ -94,3 +94,23 @@ it.each([
     native.destroy();
   }
 });
+
+it.each([
+  'forward',
+  'shadow',
+] as const)('qualifies per-instance CPU LOD through 60 completed native %s frames', async (kind) => {
+  const { cpuInstanceLodShader, verifyCpuInstanceLodPixels } = await import(
+    './cpu-instance-lod.gpu-fixture'
+  );
+  const { device, native } = await nativeDeviceFixture();
+  native.pushErrorScope('validation');
+  try {
+    const module = (
+      await createShaderModule(device, { code: cpuInstanceLodShader(true) })
+    ).unwrap();
+    await verifyCpuInstanceLodPixels(device, module, kind);
+    expect(await native.popErrorScope()).toBeNull();
+  } finally {
+    native.destroy();
+  }
+});

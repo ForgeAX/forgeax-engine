@@ -10,6 +10,33 @@ import { runnerResources } from '../lib/runner-resources.mjs';
 
 const PROC_STATUS = '/proc/self/status';
 
+/** Raw kernel counters distinguish cgroup limits from shared-host CPU and memory pressure. */
+export function readCpuPressureDiagnostics({ read = (path) => readFileSync(path, 'utf8') } = {}) {
+  const diagnostics = {};
+  for (const [key, path] of [
+    ['cgroupV2Stat', '/sys/fs/cgroup/cpu.stat'],
+    ['cgroupV1Stat', '/sys/fs/cgroup/cpu/cpu.stat'],
+    ['cgroupPressure', '/sys/fs/cgroup/cpu.pressure'],
+    ['hostPressure', '/proc/pressure/cpu'],
+    ['hostMemoryPressure', '/proc/pressure/memory'],
+    ['cgroupMemoryPressure', '/sys/fs/cgroup/memory.pressure'],
+    ['cgroupV2MemoryCurrent', '/sys/fs/cgroup/memory.current'],
+    ['cgroupV2MemoryPeak', '/sys/fs/cgroup/memory.peak'],
+    ['cgroupV2MemoryEvents', '/sys/fs/cgroup/memory.events'],
+    ['cgroupV1MemoryUsage', '/sys/fs/cgroup/memory/memory.usage_in_bytes'],
+    ['cgroupV1MemoryPeak', '/sys/fs/cgroup/memory/memory.max_usage_in_bytes'],
+    ['cgroupV1MemoryOom', '/sys/fs/cgroup/memory/memory.oom_control'],
+  ]) {
+    try {
+      const value = read(path)?.trim();
+      if (value) diagnostics[key] = value;
+    } catch {
+      // These optional kernel interfaces may be absent or unreadable on a runner.
+    }
+  }
+  return Object.keys(diagnostics).length === 0 ? null : diagnostics;
+}
+
 /**
  * Expand Linux's Cpus_allowed_list representation without trusting the
  * machine label. The benchmark only binds to CPUs that the runner process is
@@ -354,6 +381,23 @@ function run(command, affinity) {
       ? ['--cpu-list', affinity.selectedCpuList, ...command]
       : command.slice(1);
   const child = spawn(childCommand, childArgs, { env, stdio: 'inherit' });
+  const started = performance.now();
+  const sampleCpuPressure = (state) => {
+    const counters = readCpuPressureDiagnostics();
+    if (counters === null) return;
+    process.stdout.write(
+      `[runner-cpu-pressure] ${JSON.stringify({
+        state,
+        elapsedMs: Math.round(performance.now() - started),
+        kernelFingerprint: affinity.kernelFingerprint,
+        ...counters,
+      })}\n`,
+    );
+  };
+  sampleCpuPressure('start');
+  const cpuObserver =
+    process.platform === 'linux' ? setInterval(() => sampleCpuPressure('periodic'), 30_000) : null;
+  cpuObserver?.unref();
   const recorded = new Map();
   let scopeStatus;
   let affinityFailed = false;
@@ -399,11 +443,14 @@ function run(command, affinity) {
       : null;
   observer?.unref();
   child.once('error', (error) => {
+    clearInterval(cpuObserver);
     clearInterval(observer);
     process.stderr.write(`[runner-affinity] failed to start ${childCommand}: ${error.message}\n`);
     process.exitCode = 1;
   });
   child.once('close', (status, signal) => {
+    clearInterval(cpuObserver);
+    sampleCpuPressure('complete');
     clearInterval(observer);
     if (status !== null) process.exitCode = status === 0 && affinityFailed ? 1 : status;
     else process.exitCode = 1;

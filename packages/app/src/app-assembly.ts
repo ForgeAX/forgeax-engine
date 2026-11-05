@@ -21,6 +21,7 @@ import {
   unavailableExecutionCapabilities,
 } from './execution';
 import { createLocalExecutionControl } from './execution/control';
+import { createLocalHdrFrameObserver } from './execution/hdr-frame-observation';
 import { assembledEngineProfile } from './internal/assembled-engine-profile';
 import { projectComponentIntrospection } from './internal/component-introspection';
 import { ErrorFanoutRegistry } from './internal/error-fanout';
@@ -346,7 +347,18 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     args.wireOnLockErrorDispatch(dispatch);
   }
 
-  const observation = createAppObservation(world, renderer, execution);
+  // Live HDR observation is one-shot: frames pay one undefined check until a
+  // luminance or pick request arms the next draw's linear-hdr copy.
+  const localHdr = createLocalHdrFrameObserver();
+  const observation = createAppObservation(
+    world,
+    renderer,
+    {
+      report: () => execution.report(),
+      observeNextHdrFrame: (options) => localHdr.request(options),
+    },
+    assets,
+  );
   const captureSubmittedListeners = new Set<(receipt: FrameReceipt) => void>();
   const loopOpts: Parameters<typeof createFrameLoop>[0] = {
     world,
@@ -355,33 +367,33 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onError: dispatch,
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
-    beforeDraw: observation.prepareFrame,
+    beforeDraw: () => {
+      observation.prepareFrame();
+      localHdr.beforeDraw(renderer);
+    },
     onFrameSkipped: () => args.debugDraw?.discard(),
     pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
-  if (args.onFrameSubmitted !== undefined || rhiCapture !== undefined) {
-    Object.assign(loopOpts, {
-      onSubmitted: (receipt: FrameReceipt) => {
-        for (const listener of captureSubmittedListeners) listener(receipt);
-        args.onFrameSubmitted?.({
-          frameId: receipt.frameId,
-          deviceGeneration: receipt.deviceGeneration,
-          ...(receipt.shadowWorkload === undefined
-            ? {}
-            : { shadowWorkload: receipt.shadowWorkload }),
-          ...(receipt.graphGeneration === undefined
-            ? {}
-            : { graphGeneration: receipt.graphGeneration }),
-          receipt,
-          ...(receipt.barrelDistortion === undefined
-            ? {}
-            : { barrelDistortion: receipt.barrelDistortion }),
-          worldIdentity: world.identity,
-        });
-      },
-    });
-  }
+  Object.assign(loopOpts, {
+    onSubmitted: (receipt: FrameReceipt) => {
+      localHdr.submitted(renderer, receipt);
+      for (const listener of captureSubmittedListeners) listener(receipt);
+      args.onFrameSubmitted?.({
+        frameId: receipt.frameId,
+        deviceGeneration: receipt.deviceGeneration,
+        ...(receipt.shadowWorkload === undefined ? {} : { shadowWorkload: receipt.shadowWorkload }),
+        ...(receipt.graphGeneration === undefined
+          ? {}
+          : { graphGeneration: receipt.graphGeneration }),
+        receipt,
+        ...(receipt.barrelDistortion === undefined
+          ? {}
+          : { barrelDistortion: receipt.barrelDistortion }),
+        worldIdentity: world.identity,
+      });
+    },
+  });
   if (args.onFrameCompleted !== undefined) {
     Object.assign(loopOpts, {
       onCompleted: (receipt: FrameReceipt) =>
@@ -594,6 +606,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       await loop.drainFrameReceipts();
       await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
       observation.release();
+      localHdr.close();
       unsubscribeRendererErrors();
       execution.setEngineHealth('stopped');
       return stopped;

@@ -17,7 +17,7 @@ describe('game-3d camera lifecycle', () => {
       get() { methodReads += 1; return readSize; },
     });
     try {
-      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' });
+      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
       const installedReads = methodReads;
       world.update(1 / 60).unwrap();
       width = 1024;
@@ -31,7 +31,7 @@ describe('game-3d camera lifecycle', () => {
     const { world, ctx, entity } = await pluginFixture();
     world.insertResource(INPUT_SNAPSHOT_RESOURCE_KEY, createInputSnapshot());
     try {
-      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' });
+      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
       await ctx.plugin(cameraPlugin);
       const camera = entity('camera');
       const set = vi.spyOn(world, 'set');
@@ -49,7 +49,7 @@ describe('game-3d camera lifecycle', () => {
     const { world, ctx } = await pluginFixture();
     world.insertResource(INPUT_SNAPSHOT_RESOURCE_KEY, createInputSnapshot());
     try {
-      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' });
+      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
       await ctx.plugin(cameraPlugin);
       let worldResolutions = 0;
       ctx.on('internal/get', (_context, name, _error, next) => {
@@ -66,7 +66,7 @@ describe('game-3d camera lifecycle', () => {
   it('releases pointer lock and its system while preserving the borrowed camera', async () => {
     const { world, ctx, entity, pointerLock } = await pluginFixture();
     try {
-      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' });
+      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
       for (let cycle = 0; cycle < 2; cycle += 1) {
         const fiber = await ctx.plugin(cameraPlugin);
         expect(pointerLock).toHaveBeenLastCalledWith(true);
@@ -85,7 +85,7 @@ describe('game-3d camera lifecycle', () => {
   it('releases pointer lock if system installation fails ', async () => {
     const { world, ctx, pointerLock } = await pluginFixture();
     try {
-      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' });
+      await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
       vi.spyOn(world, 'addSystem').mockImplementationOnce(() => {
         throw new Error('system unavailable');
       });

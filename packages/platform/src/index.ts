@@ -1,5 +1,6 @@
 import type { Result } from '@forgeax/engine-types';
 
+export { withCombinedSignal } from './abort.js';
 export { createPlatformClock } from './clock.js';
 export type { PlatformError, PlatformErrorCode } from './errors.js';
 export { platformError } from './errors.js';

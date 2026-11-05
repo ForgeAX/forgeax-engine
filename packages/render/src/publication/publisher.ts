@@ -55,6 +55,7 @@ import {
   type RenderPublicationTemplate,
 } from './contract';
 import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
+import { MAX_RENDER_FRAMES_IN_FLIGHT } from './frame-limits';
 import { EntityMaterialLists } from './material-lists';
 import { PublishedMaterialProjections } from './material-projections';
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
@@ -227,7 +228,7 @@ export function createRenderPublisher(
   const nextMaterialDependencies = new Map<number, readonly number[]>();
   const materialHolds = new Map<number, number>();
   let nextMaterialId = 1;
-  if (maxInFlight !== 2 && maxInFlight !== 3 && maxInFlight !== 4)
+  if (maxInFlight !== 2 && maxInFlight !== 3 && maxInFlight !== MAX_RENDER_FRAMES_IN_FLIGHT)
     throw new RenderPublicationError({ reason: 'shape', subject: 'publication capacity' });
   let activeObservation: SourcePreparationObservation | undefined;
   const publishedFullscreenFeatures = new Map<string, object>();

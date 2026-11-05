@@ -36,7 +36,7 @@ describe('auto exposure GPU pass contract', () => {
     expect(passes[0]?.descriptor.accesses).toEqual([
       { resource: {}, usage: 'sampled-read' },
       { resource: {}, usage: 'storage-write' },
-      { resource: {}, usage: 'storage-write' },
+      { resource: {}, usage: 'storage-read' },
       { resource: {}, usage: 'storage-write' },
       { resource: {}, usage: 'storage-read' },
     ]);

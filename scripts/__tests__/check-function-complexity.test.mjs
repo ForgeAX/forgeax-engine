@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,6 +25,8 @@ function branchyFunction(name, branches) {
 
 function withGitRepo(files, callback) {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-function-complexity-'));
+  const ownedRoot = realpathSync(root);
+  assert.ok(ownedRoot.startsWith(realpathSync(tmpdir()) + sep));
   try {
     assert.equal(spawnSync('git', ['init', '-q'], { cwd: root }).status, 0);
     for (const [path, contents] of files) {
@@ -34,7 +36,8 @@ function withGitRepo(files, callback) {
     assert.equal(spawnSync('git', ['add', '-A'], { cwd: root }).status, 0);
     callback(root);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    assert.equal(realpathSync(root), ownedRoot);
+    rmSync(ownedRoot, { recursive: true, force: true });
   }
 }
 
@@ -136,6 +139,12 @@ describe('baseline ratchet', () => {
 });
 
 describe('check-function-complexity CLI', () => {
+  it('executes CLI help on the current platform', () => {
+    const result = spawnSync(process.execPath, [gatePath, '--help'], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /^usage: node scripts\/check-function-complexity\.mjs/m);
+  });
+
   it('fails a new risk function and passes once it is under the threshold', () => {
     withGitRepo(
       [

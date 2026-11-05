@@ -1,6 +1,7 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { defineComponent } from '@forgeax/engine-ecs';
 import { buildCaptureFaces, type CaptureFace } from '../capture/faces';
+import { PlanarTargetLease } from '../capture/planar-target';
 import type { RendererCaptureOwner } from '../capture/renderer-captures';
 import type { CubeCaptureWork } from '../capture/scheduler';
 import { preparePlanarCapture } from '../record/frame';
@@ -129,9 +130,19 @@ function prepareViewCaptures(
   const view = stagedViewInputs(world, staged);
   // Publication carries planar authoring facts from the source realm.
   // Re-project them against this view's selected display camera.
+  // A targetless mirror writes the Renderer-owned lease sized from this view.
+  captures.planarTarget ??= new PlanarTargetLease();
   const auxiliaryCameras = dropAuxiliary
     ? []
-    : projectAuxiliaryCamerasForView(view.cameras[0], view.frame.auxiliaryCameras);
+    : projectAuxiliaryCamerasForView(
+        view.cameras[0],
+        captures.planarTarget.resolve(
+          internals.ownedRenderTargets,
+          view.cameras[0],
+          view.frame.auxiliaryCameras,
+          recordContext(internals).canvas,
+        ),
+      );
   // Only a recording that reaches its captures selects the planar mirror;
   // a held view without capture work keeps its last selection.
   const records = recordsViewWork(view.mode, { ...route, auxiliaryCameras });

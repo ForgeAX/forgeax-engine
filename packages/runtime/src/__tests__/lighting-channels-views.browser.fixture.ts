@@ -1,18 +1,12 @@
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { it } from 'vitest';
 import { commands } from 'vitest/browser';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { CHANNEL_SIZE } from './lighting-channels.fixture';
 import { verifyChannelViews } from './lighting-channels-views.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-it.each([
-  'world',
-  'publication',
-] as const)('preserves lighting channels across browser independent views through %s', {
-  timeout: 300_000,
-}, async (mode) => {
+export async function runLightingChannelViews(mode: 'world' | 'publication') {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = CHANNEL_SIZE;
   document.body.append(canvas);
@@ -46,4 +40,4 @@ it.each([
     canvas.remove();
     (await recorder.dispose()).unwrap();
   }
-});
+}

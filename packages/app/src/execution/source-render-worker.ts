@@ -40,6 +40,7 @@ import { rendererInspectionFailure } from './renderer-inspection';
 import { SourceMeshResidency } from './source-mesh-residency';
 import type {
   ExecutionGeometryObservationResult,
+  ExecutionHdrObservationResult,
   ExecutionRendererInspectionOptions,
   ExecutionRendererInspectionResult,
 } from './types';
@@ -47,6 +48,13 @@ import { workerError } from './worker-error';
 import { shutdownWorker } from './worker-shutdown';
 
 type CaptureResult = Awaited<ReturnType<RhiCapture['captureFrame']>>;
+interface OneShotRequest<R> {
+  readonly id: number;
+  finish(result: R): void;
+}
+type OneShotResult<K extends 'geometry' | 'hdr'> = K extends 'geometry'
+  ? ExecutionGeometryObservationResult
+  : ExecutionHdrObservationResult;
 type RenderReadyHostMessage = Extract<EngineToHostMessage, { readonly kind: 'render-ready' }>;
 
 function renderReadyLimits(
@@ -115,9 +123,11 @@ export class SourceRenderWorker {
       ): void;
     }
   >();
-  private geometryRequest:
-    | { id: number; finish(result: ExecutionGeometryObservationResult): void }
-    | undefined;
+  /** At most one in-flight one-shot diagnostic frame per kind. */
+  private readonly oneShotRequests: {
+    geometry?: OneShotRequest<ExecutionGeometryObservationResult>;
+    hdr?: OneShotRequest<ExecutionHdrObservationResult>;
+  } = {};
   private captureRequest: { id: number; finish(result: CaptureResult): void } | undefined;
   private latestGpuPassTiming:
     | { readonly frameId: number; readonly observation: GpuPassTimingObservation }
@@ -323,14 +333,11 @@ export class SourceRenderWorker {
           return;
         }
         if (!acceptsSceneMessages()) return;
-        if (message.kind === 'geometry-observation-result') {
-          if (
-            message.identity.source === this.source &&
-            message.identity.epoch === epoch &&
-            message.worldIdentity === this.world.identity &&
-            this.geometryRequest?.id === message.requestId
-          )
-            this.geometryRequest.finish(message.result);
+        if (
+          message.kind === 'geometry-observation-result' ||
+          message.kind === 'hdr-observation-result'
+        ) {
+          this.receiveOneShotResult(message, epoch);
           return;
         }
         if (message.kind === 'inspect-result') {
@@ -799,18 +806,34 @@ export class SourceRenderWorker {
   observeNextGeometry(
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<ExecutionGeometryObservationResult> {
+    return this.observeNextFrame('geometry', options);
+  }
+  /** Arm the next submitted frame for a `linear-hdr` copy and return its detached bytes. */
+  observeNextHdrFrame(
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<ExecutionHdrObservationResult> {
+    return this.observeNextFrame('hdr', options);
+  }
+  private observeNextFrame<K extends 'geometry' | 'hdr'>(
+    kind: K,
+    options: { readonly signal?: AbortSignal },
+  ): Promise<OneShotResult<K>> {
+    type R = OneShotResult<K>;
     const worker = this.worker,
       epoch = this.epoch;
+    const requests = this.oneShotRequests as { [P in K]?: OneShotRequest<R> };
     if (options.signal?.aborted) return Promise.resolve(rendererInspectionFailure('cancelled'));
     if (this.disposed || !this.inspectionReady || worker === undefined)
       return Promise.resolve(rendererInspectionFailure('not-ready'));
-    if (this.geometryRequest !== undefined)
+    if (requests[kind] !== undefined)
       return Promise.resolve(rendererInspectionFailure('request-limit'));
     const id = ++this.nextRequestId;
+    const cancelKind = kind === 'geometry' ? 'geometry-observe-cancel' : 'hdr-observe-cancel';
+    const nextKind = kind === 'geometry' ? 'geometry-observe-next' : 'hdr-observe-next';
     return new Promise((resolve) => {
-      const finish = (result: ExecutionGeometryObservationResult) => {
-        if (this.geometryRequest?.id !== id) return;
-        this.geometryRequest = undefined;
+      const finish = (result: R) => {
+        if (requests[kind]?.id !== id) return;
+        delete requests[kind];
         clearTimeout(timer);
         options.signal?.removeEventListener('abort', cancel);
         resolve(
@@ -819,31 +842,20 @@ export class SourceRenderWorker {
             : rendererInspectionFailure('stale-session'),
         );
       };
-      const cancel = () => {
+      const abandon = (reason: 'cancelled' | 'timeout') => {
         try {
-          worker.postMessage({
-            kind: 'geometry-observe-cancel',
-            requestId: id,
-          } satisfies RenderWorkerInput);
+          worker.postMessage({ kind: cancelKind, requestId: id } satisfies RenderWorkerInput);
         } finally {
-          finish(rendererInspectionFailure('cancelled'));
+          finish(rendererInspectionFailure(reason));
         }
       };
-      const timer = setTimeout(() => {
-        try {
-          worker.postMessage({
-            kind: 'geometry-observe-cancel',
-            requestId: id,
-          } satisfies RenderWorkerInput);
-        } finally {
-          finish(rendererInspectionFailure('timeout'));
-        }
-      }, 30000);
-      this.geometryRequest = { id, finish };
+      const cancel = () => abandon('cancelled');
+      const timer = setTimeout(() => abandon('timeout'), 30000);
+      requests[kind] = { id, finish };
       options.signal?.addEventListener('abort', cancel, { once: true });
       try {
         worker.postMessage({
-          kind: 'geometry-observe-next',
+          kind: nextKind,
           requestId: id,
           identity: { source: this.source, epoch },
           worldIdentity: this.world.identity,
@@ -852,6 +864,30 @@ export class SourceRenderWorker {
         finish(rendererInspectionFailure('transport', error));
       }
     });
+  }
+  /** Delivers a one-shot diagnostic result only to the matching session and request. */
+  private receiveOneShotResult(
+    message: Extract<
+      RenderWorkerOutput,
+      { kind: 'geometry-observation-result' | 'hdr-observation-result' }
+    >,
+    epoch: number,
+  ): void {
+    if (
+      message.identity.source !== this.source ||
+      message.identity.epoch !== epoch ||
+      message.worldIdentity !== this.world.identity
+    )
+      return;
+    if (message.kind === 'geometry-observation-result') {
+      if (this.oneShotRequests.geometry?.id === message.requestId)
+        this.oneShotRequests.geometry.finish(message.result);
+    } else if (this.oneShotRequests.hdr?.id === message.requestId)
+      this.oneShotRequests.hdr.finish(message.result);
+  }
+  private finishOneShotRequests(): void {
+    this.oneShotRequests.geometry?.finish(rendererInspectionFailure('session-ended'));
+    this.oneShotRequests.hdr?.finish(rendererInspectionFailure('session-ended'));
   }
   /** This read never consumes publication credit or starts another Renderer. */
   inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
@@ -985,7 +1021,7 @@ export class SourceRenderWorker {
     this.retirement = undefined;
     this.startupPipelineLibrary = undefined;
     this.startupBackgroundPipelineLibrary = undefined;
-    this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
+    this.finishOneShotRequests();
     this.inspectionReady = false;
     this.deviceGeneration = undefined;
     this.captureCandidatePipelines = undefined;
@@ -1031,7 +1067,7 @@ export class SourceRenderWorker {
     if (this.disposal !== undefined) return this.disposal;
     this.disposed = true;
     const retirement = this.retirement;
-    this.geometryRequest?.finish(rendererInspectionFailure('session-ended'));
+    this.finishOneShotRequests();
     this.inspectionReady = false;
     this.deviceGeneration = undefined;
     this.captureCandidatePipelines = undefined;

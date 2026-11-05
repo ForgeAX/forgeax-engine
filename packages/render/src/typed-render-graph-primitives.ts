@@ -18,7 +18,6 @@ import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
 import { atmosphereTextures } from './environment/luts';
 import type { PostProcessShaderEntry } from './fullscreen-post-process-pass';
-import { prepareHiddenGpuDrivenPipelines } from './gpu-driven/material-artifacts';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -26,20 +25,15 @@ import {
 } from './gpu-texture-usage';
 import { renderExtentSize } from './pipeline/render-extent';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
-import type { ValidatedRenderable } from './record/frame-snapshot';
-import {
-  encodeMainPass,
-  hasMainPassCpuWork,
-  hasMainPassPipelinePreparation,
-  type MainPassOptions,
-  prepareMainPassPipelines,
-} from './record/main-pass';
+import { geometryPipelineRequestContext } from './record/geometry-pipeline-requests';
+import { encodeMainPass, hasMainPassCpuWork, type MainPassOptions } from './record/main-pass';
 import { encodeFrameObservationCapture } from './record/observation-capture';
 import { retireSceneRenderBundleCache, sceneRenderBundleCache } from './record/render-bundle-cache';
 import type {
   _InternalRenderPipelineContext,
   RenderSystemInternals,
 } from './record/render-context';
+import { resolveScenePassSelection, type ScenePassSelection } from './record/scene-pass-selection';
 import {
   registerScenePass,
   type ScenePassRequest,
@@ -52,6 +46,7 @@ import {
   recordBloomCompositePass,
 } from './record/skybox-post-pass';
 import { selectForwardFragmentEntry } from './record/standard-opaque-entry';
+import { prepareTypedScenePipelineDemand } from './record/typed-scene-pipeline-demand';
 import { STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from './render-contract';
 import {
   encodeFullscreenPass,
@@ -68,7 +63,6 @@ import type {
   RenderPipelineSurfaceMediumPair,
 } from './render-pipeline';
 import { createRenderPipelineTarget, type RenderPipelineTarget } from './render-pipeline';
-import { markPipelinePreparationPending } from './render-system-presentation';
 import {
   getTemporalBindGroupResources,
   getTemporalGpuState,
@@ -216,6 +210,8 @@ export function addTypedSkyboxPass(
 }
 
 export interface TypedScenePassOptions {
+  /** A renderer-owned selection recipe, re-read for normal recording and candidate demand. */
+  readonly selection?: ScenePassSelection;
   /** The common borrowed frame and this exact pass's prepared draw-work identity. */
   readonly executeIf?:
     | ((frame: RenderPipelineFrame, request: ScenePassRequest) => boolean)
@@ -402,102 +398,66 @@ export function addTypedScenePass(
   const fragmentEntryPoint = scenePassFragmentEntryPoint(options);
   const formats = colorTargets.map((target) => target.format as GPUTextureFormat);
   const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
-  registerScenePipelinePreparation(graph, (context, artifacts) => {
-    const selection = options.selectEntities?.(context);
-    const entries =
-      options.selectEntities === undefined
-        ? context.pipelinePreparationEntries
-        : context.pipelinePreparationEntries?.filter(
-            (entry) =>
-              selection !== undefined &&
-              selection.worldId === entry.source.worldId &&
-              selection.entities.includes(entry.source.entityKey),
-          );
-    // A graph can declare this preparation lane while the current frame has
-    // no pending material pipelines. Do not copy its whole context in that case.
-    if (entries === undefined || entries.length === 0) return false;
-    const preparedContext = { ...context, pipelinePreparationEntries: entries };
-    if (
-      !hasMainPassPipelinePreparation(
-        preparedContext,
-        options.selector,
-        options.recordMode,
-        options.excludeSelector,
-      )
-    )
-      return false;
-    const gpuDraws = new Map<ValidatedRenderable, Set<number>>();
-    const factory = context.runtime.prepareMaterialShaderPipelineEntry;
-    if (
-      (options.gpuDriven !== undefined ||
-        (options.gpuDrivenFilter !== undefined &&
-          context.gpuDrivenGeometryLane === 'automatic' &&
-          context.pipelineState.gpuDrivenInstancesBindGroupLayout != null)) &&
-      factory !== undefined &&
-      !prepareHiddenGpuDrivenPipelines({
-        entries: entries ?? [],
-        materials: context.materialFrame,
-        resolve: (shader, request) =>
-          context.runtime.getMaterialShaderArtifact?.(shader, {
-            ...(typeof request === 'boolean' ? { vertexColorAvailable: request } : request),
-            clustered:
-              context.standardLighting?.kind === 'clustered' &&
-              (context.standardLighting.prepared.local.length > 0 ||
-                context.frameState.installedPipelineConfig?.ssao?.enabled === true),
-            probeBlend:
-              (context.frameState.probeBlendRecordProjection?.projection.records.length ?? 0) > 0,
-            reflectionFallback: context.reflectionFallbackDemand === true,
-          }),
-        artifacts,
-        factory,
-        formats,
-        sampleCount,
-        shaderUvSetCount: context.pipelineState.standardPbrShaderUvSetCount,
-        filter: options.gpuDrivenFilter,
-        fragmentEntry: selectForwardFragmentEntry({
-          passKind: options.passKind ?? 'forward',
-          fragmentEntry: fragmentEntryPoint,
-          oitAccumulate: options.recordMode === 'oit-accumulate',
-          viewOffset: 0,
-          atmosphereCapture: false,
-        }),
-        coverageOnly: options.coverageOnly ?? false,
-        visibleSurface: context.visibleSurface !== undefined,
-        // Prewarm the common no-clipping Standard variant; GPU-driven raster
-        // prepares a clipping view's own variant from its camera.
-        onSelected: (entry, index) => {
-          let draws = gpuDraws.get(entry);
-          if (draws === undefined) {
-            draws = new Set();
-            gpuDraws.set(entry, draws);
-          }
-          draws.add(index);
+  registerScenePipelinePreparation(
+    graph,
+    (context, artifacts) => {
+      const selection = options.selectEntities?.(context);
+      const entries =
+        options.selectEntities === undefined
+          ? context.pipelinePreparationEntries
+          : context.pipelinePreparationEntries?.filter(
+              (entry) =>
+                selection !== undefined &&
+                selection.worldId === entry.source.worldId &&
+                selection.entities.includes(entry.source.entityKey),
+            );
+      // A graph can declare this preparation lane while the current frame has
+      // no pending material pipelines. Do not copy its whole context in that case.
+      if (entries === undefined || entries.length === 0) return false;
+      return prepareTypedScenePipelineDemand(
+        {
+          ...geometryPipelineRequestContext(context),
+          ...(entries === undefined ? {} : { pipelinePreparationEntries: entries }),
+          ...(context.materialFrame === undefined ? {} : { materialFrame: context.materialFrame }),
+          frameState: context.frameState,
+          selectionCamera: context.camera,
+          tonemapActive: context.tonemapActive,
+          ...(context.viewBindGroupDynamicOffset === undefined
+            ? {}
+            : { viewBindGroupDynamicOffset: context.viewBindGroupDynamicOffset }),
+          gpuDrivenGeometryLane: context.gpuDrivenGeometryLane,
+          hasLocalLights: (context.standardLighting?.prepared.local.length ?? 0) > 0,
+          ssao: context.frameState.installedPipelineConfig?.ssao?.enabled === true,
+          reflectionFallbackDemand: context.reflectionFallbackDemand === true,
+          probeBlend:
+            (context.frameState.probeBlendRecordProjection?.projection.records.length ?? 0) > 0,
         },
-        onPending: (reason) => markPipelinePreparationPending(context.frameState, reason),
-      })
-    )
-      markPipelinePreparationPending(context.frameState, { code: 'scene-pipeline-preparation' });
-    prepareMainPassPipelines(
-      preparedContext,
-      options.selector,
-      {
-        ...(options.passKind === undefined ? {} : { passKind: options.passKind }),
-        ...(options.recordMode === undefined ? {} : { recordMode: options.recordMode }),
-        ...(options.excludeSelector === undefined
-          ? {}
-          : { excludeSelector: options.excludeSelector }),
-        ...(options.coverageOnly === undefined ? {} : { coverageOnly: options.coverageOnly }),
-        ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
-        ...(options.transparentDepthWrite === undefined
-          ? {}
-          : { transparentDepthWrite: options.transparentDepthWrite }),
-      },
-      sampleCount,
-      formats,
-      (entry, index) => gpuDraws.get(entry)?.has(index) === true,
-    );
-    return true;
-  });
+        artifacts,
+        {
+          pass: request,
+          formats,
+          sampleCount,
+          fragmentEntryPoint,
+          coverageOnly: options.coverageOnly ?? false,
+          transparentDepthWrite: options.transparentDepthWrite ?? false,
+          ...(options.selectEntities !== undefined || options.selection === undefined
+            ? {}
+            : { selection: options.selection }),
+        },
+      );
+    },
+    options.selectEntities === undefined
+      ? {
+          pass: request,
+          formats,
+          sampleCount,
+          fragmentEntryPoint,
+          coverageOnly: options.coverageOnly ?? false,
+          transparentDepthWrite: options.transparentDepthWrite ?? false,
+          ...(options.selection === undefined ? {} : { selection: options.selection }),
+        }
+      : undefined,
+  );
   options.gpuDriven?.registerPipelinePreparation?.(
     formats,
     options.gpuDrivenFilter,
@@ -528,6 +488,8 @@ export function addTypedScenePass(
       bundleDescriptor,
     };
     if (options.selectEntities !== undefined) result.selection = options.selectEntities(frame);
+    else if (options.selection !== undefined)
+      result.selection = resolveScenePassSelection(options.selection, frame.camera);
     result.colorFormats = formats;
     result.passKind = request.passKind;
     if (request.recordMode !== undefined) result.recordMode = request.recordMode;

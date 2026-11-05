@@ -41,6 +41,11 @@ import { FirstEntryMap } from './first-entry-map';
 import { materialSlotsByClass } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
+import {
+  type GeometryPipelinePreparationContext,
+  geometryPipelineRequestContext,
+  prepareGeometryPipelineRequests,
+} from './geometry-pipeline-requests';
 import { recordGeometryDraws } from './main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
@@ -212,33 +217,61 @@ export function prepareMainPassPipelines(
   colorFormats: readonly GPUTextureFormat[],
   skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
 ): void {
+  prepareMainPassPipelineDemand(
+    {
+      ...geometryPipelineRequestContext(c),
+      frameState: c.frameState,
+      ...(c.materialFrame === undefined ? {} : { materialFrame: c.materialFrame }),
+      ...(c.pipelinePreparationEntries === undefined
+        ? {}
+        : { pipelinePreparationEntries: c.pipelinePreparationEntries }),
+      tonemapActive: c.tonemapActive,
+      ...(c.viewBindGroupDynamicOffset === undefined
+        ? {}
+        : { viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset }),
+    },
+    selector,
+    options,
+    sampleCount,
+    colorFormats,
+    skipDraw,
+  );
+}
+
+export function prepareMainPassPipelineDemand(
+  c: GeometryPipelinePreparationContext &
+    Pick<_InternalRenderPipelineContext, 'tonemapActive' | 'viewBindGroupDynamicOffset'>,
+  selector: PassSelector,
+  options: MainPassOptions,
+  sampleCount: number,
+  colorFormats: readonly GPUTextureFormat[],
+  skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
+): void {
   if (!hasMainPassPipelinePreparation(c, selector, options.recordMode, options.excludeSelector))
     return;
   const mode = options.recordMode;
   const blended = mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual';
-  recordGeometryDraws(
+  prepareGeometryPipelineRequests(
     {
       ...c,
       ...(colorFormats[0] === undefined ? {} : { transparentColorFormat: colorFormats[0] }),
-      msaaActive: sampleCount === 4,
       translucentFog: blended && (c.viewBindGroupDynamicOffset ?? 0) === 0,
       splitLdrSprite: blended ? false : c.splitLdrSprite,
     },
-    undefined,
-    null,
-    [],
-    sampleCount,
-    null,
-    null,
-    undefined,
-    options.passKind ?? 'forward',
-    undefined,
-    colorFormats,
-    options.coverageOnly ?? false,
-    options.fragmentEntryPoint,
-    surfacePassForRecordMode(mode),
-    options.transparentDepthWrite ?? false,
-    oitPhaseForRecordMode(mode),
+    {
+      passKind: options.passKind ?? 'forward',
+      sampleCount,
+      colorFormats,
+      coverageOnly: options.coverageOnly ?? false,
+      tonemapActive: c.tonemapActive,
+      msaaActive: sampleCount === 4,
+      viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset ?? 0,
+      transparentDepthWrite: options.transparentDepthWrite ?? false,
+      oit: oitPhaseForRecordMode(mode),
+      ...(options.fragmentEntryPoint === undefined
+        ? {}
+        : { fragmentEntryPoint: options.fragmentEntryPoint }),
+    },
     (pass, material) =>
       matchPass(pass.tags, selector) && (mode === undefined || matchesRecordMode(material, mode)),
     (entry, index) =>

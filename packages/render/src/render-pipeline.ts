@@ -236,6 +236,8 @@ export interface RenderPipelineTopology {
   readonly clearOnly?: boolean | undefined;
   /** Selected atmosphere requires the graph-owned sky producer and background. */
   readonly atmosphere?: boolean | undefined;
+  /** Explicit background-only Atmosphere; materials and IBL do not consume it. */
+  readonly atmosphereBackgroundOnly?: boolean | undefined;
   /** Finite-depth distance / exponential-height fog; no volume history. */
   readonly analyticFog?: boolean | undefined;
   /** Whether Standard main draws carry the producer-owned fallback MRT. */
@@ -678,13 +680,7 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   readonly cloudShadowResolution?: number;
   /** Prepared typed graph resources owned by RenderSystem/RenderFrameState. */
   readonly standardOutput?: {
-    readonly autoExposure?: {
-      readonly histogram: GraphBuffer;
-      readonly state: GraphBuffer;
-      readonly candidate: GraphBuffer;
-      /** Authored camera/time parameters consumed by the GPU adapt stage. */
-      readonly parameters: GraphBuffer;
-    };
+    readonly autoExposure?: import('./pipeline/standard-output/auto-exposure/gpu').AutoExposureGraphResources;
     readonly colorLut?: import('./pipeline/standard-output/lut-gpu').StandardLutGraphProjection;
   };
   /**

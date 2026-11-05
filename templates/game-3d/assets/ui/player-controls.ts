@@ -91,6 +91,8 @@ export function installPlayerControls(root: ShadowRoot, port: MessagePort) {
   }) as EventListener);
   listen(document, 'visibilitychange', reset);
   // Native platform visibility/display loss already dispatches pointercancel.
+  const transform = root.querySelector<HTMLButtonElement>('[data-ui-part="transform"]');
+  if (transform) listen(transform, 'click', () => { if (enabled && !disposed) send({ kind: 'transform' }); });
   // A browser additionally reports window loss and viewport changes here.
   if (window) { listen(window, 'blur', reset); listen(window, 'resize', reset); }
   listen(root, 'focusin', ((event: Event) => {

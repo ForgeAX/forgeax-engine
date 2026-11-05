@@ -643,6 +643,10 @@ const RENDER_PROFILE_KEYS = new Set([
 ]);
 
 export function validateRenderProfile(profile: RenderProfile): string | undefined {
+  // Validate automatic author intent against the Deferred feature vocabulary;
+  // the owner also validates its concrete device selection before applying it.
+  if (profile?.renderPath === 'auto')
+    return validateRenderProfile({ ...profile, renderPath: 'deferred' });
   if (typeof profile !== 'object' || profile === null) return 'RenderProfile must be a POD object';
   const unknownKey = Object.keys(profile).find((key) => !RENDER_PROFILE_KEYS.has(key));
   if (unknownKey !== undefined) return `RenderProfile contains unsupported field '${unknownKey}'`;

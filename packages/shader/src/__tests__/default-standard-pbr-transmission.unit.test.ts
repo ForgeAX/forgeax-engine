@@ -132,6 +132,26 @@ describe('default Standard PBR transmission manifest contract', () => {
     );
   });
 
+  it('generates reflection response work only for an admitted reflection output', {
+    timeout: 60_000,
+  }, async () => {
+    const manifest = await engineManifest();
+    const standard = manifest.materialShaders.find(
+      (entry) => entry.identifier === 'forgeax::default-standard-pbr',
+    );
+    expect(standard).toBeDefined();
+    if (standard === undefined) return;
+    const selected = new Map<boolean, string>();
+    for (const variant of standard.variants) {
+      const enabled = variant.defines.REFLECTION_FALLBACK_AVAILABLE;
+      if (typeof enabled !== 'boolean' || selected.has(enabled)) continue;
+      selected.set(enabled, variant.composedWgsl);
+    }
+    expect(selected.size).toBe(2);
+    expect(selected.get(false)).not.toMatch(/\b(?:reflectionResponse|coatResponse)\w*\b/);
+    expect(selected.get(true)).toMatch(/\breflectionResponse\w*\b/);
+  });
+
   it('omits transmission and physical resources from the non-transmission fallback variant', {
     timeout: 60_000,
   }, async () => {

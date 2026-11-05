@@ -1058,3 +1058,12 @@ ScriptablePack output admission and native cooker serialization follow the
 [build-time admission contract](#scriptablepack-build-generation): complete custom
 outputs overlap within a four-output bound, while each native cooker retains
 its registry-owned serial or opted-in parallel policy.
+
+Build producers can opt into transport metadata reuse with a stable
+`ScriptablePackInput.transportIdentity` for a pure, sink-free finalization policy.
+The cache keys producer bytes, source identity, publication generation, location
+and policy identity; it validates current artifact digests and reuses the existing
+product binary payloads. Corrupt or mismatched metadata falls back to ordinary
+finalization. Policies without an identity remain live. Cached output/read GUIDs
+are scheduling hints only; the current dependency worklist still validates every
+reference and retries missing dependencies.

@@ -65,7 +65,7 @@ function commitPostReceipts({ frameState, internals }: PostCandidate): void {
   const owner = frameState.ssrHistoryOwner;
   const candidate = owner?.candidate;
   if (owner === undefined || candidate === undefined) return;
-  const committed = owner.commitFrame(candidate);
+  const committed = owner.submitFrame(candidate, internals.device.queue);
   if (committed.ok) return;
   owner.abortFrame(candidate, 'submit');
   reportSsrHistoryFailure(internals, 'submit', committed.error);

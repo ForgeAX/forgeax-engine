@@ -41,6 +41,7 @@ import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
 import { type PreparedExecutionBootstrap, prepareBootstrapEntry } from './bootstrap-entry';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { installCarriedGpuStub } from './gpu-stub';
+import { armLinearHdr, observeLinearHdr } from './hdr-frame-observation';
 import type { SerializedRenderError } from './protocol';
 import { drainRenderCompletion, joinRenderCompletion } from './render-completion';
 import { RenderDrawTiming } from './render-draw-timing';
@@ -54,7 +55,11 @@ import type {
 import { createRenderWorkerTaskTurns, yieldRenderWorkerTaskTurn } from './render-worker-task-turn';
 import { readRendererInspection, rendererInspectionFailure } from './renderer-inspection';
 import { applyRendererOrderDiagnostic } from './renderer-order-diagnostic';
-import type { ExecutionDiagnosticsOptions, ExecutionGeometryObservationResult } from './types';
+import type {
+  ExecutionDiagnosticsOptions,
+  ExecutionGeometryObservationResult,
+  ExecutionHdrObservationResult,
+} from './types';
 import { serializableDetail, workerError } from './worker-error';
 
 const scope = globalThis as unknown as {
@@ -118,6 +123,12 @@ let synchronizeFeatures: (features: RenderPublication['features']) => Promise<vo
 type DrawMessage = Extract<RenderWorkerInput, { kind: 'draw' }>;
 let geometryRequest:
   | (Extract<RenderWorkerInput, { kind: 'geometry-observe-next' }> & {
+      cancelled: boolean;
+      started: boolean;
+    })
+  | undefined;
+let hdrRequest:
+  | (Extract<RenderWorkerInput, { kind: 'hdr-observe-next' }> & {
       cancelled: boolean;
       started: boolean;
     })
@@ -422,6 +433,7 @@ interface InitFailureContext {
 type InspectMessage = Extract<RenderWorkerInput, { kind: 'inspect' }>;
 type CaptureMessage = Extract<RenderWorkerInput, { kind: 'capture' }>;
 type GeometryRequest = NonNullable<typeof geometryRequest>;
+type HdrRequest = NonNullable<typeof hdrRequest>;
 
 function createInitFailureContext(message: InitMessage): InitFailureContext {
   return { kind: 'init', identity: { ...message.identity } };
@@ -454,6 +466,33 @@ function receiveGeometryObserveNext(
       ),
     });
   } else geometryRequest = { ...message, cancelled: false, started: false };
+}
+
+function receiveHdrObserveCancel(requestId: number): void {
+  if (hdrRequest?.requestId === requestId) {
+    hdrRequest.cancelled = true;
+    if (!hdrRequest.started) hdrRequest = undefined;
+  }
+}
+
+function receiveHdrObserveNext(
+  message: Extract<RenderWorkerInput, { kind: 'hdr-observe-next' }>,
+): void {
+  if (
+    hdrRequest !== undefined ||
+    renderer === undefined ||
+    publicationIdentity?.source !== message.identity.source ||
+    publicationIdentity.epoch !== message.identity.epoch ||
+    inspectionWorldIdentity !== message.worldIdentity
+  ) {
+    scope.postMessage({
+      kind: 'hdr-observation-result',
+      requestId: message.requestId,
+      identity: message.identity,
+      worldIdentity: message.worldIdentity,
+      result: rendererInspectionFailure(hdrRequest === undefined ? 'not-ready' : 'request-limit'),
+    });
+  } else hdrRequest = { ...message, cancelled: false, started: false };
 }
 
 /** Disposes mesh residency, Renderer and recorder in order; returns the first cleanup failure. */
@@ -566,6 +605,14 @@ async function receive(message: RenderWorkerInput): Promise<void> {
   }
   if (message.kind === 'geometry-observe-next') {
     receiveGeometryObserveNext(message);
+    return;
+  }
+  if (message.kind === 'hdr-observe-cancel') {
+    receiveHdrObserveCancel(message.requestId);
+    return;
+  }
+  if (message.kind === 'hdr-observe-next') {
+    receiveHdrObserveNext(message);
     return;
   }
   if (message.kind === 'dispose') return receiveDispose();
@@ -987,6 +1034,54 @@ function claimGeometryRequest(): GeometryRequest | undefined {
   return geometry;
 }
 
+function claimHdrRequest(): HdrRequest | undefined {
+  const hdr = hdrRequest;
+  if (hdr?.cancelled) hdrRequest = undefined;
+  else if (hdr !== undefined) hdr.started = true;
+  return hdr?.cancelled ? undefined : hdr;
+}
+
+/** Arm the claimed linear-HDR copy before draw; a returned failure is delivered after submit. */
+function armHdrObservation(
+  frameRenderer: Renderer,
+  message: DrawMessage,
+  hdr: HdrRequest | undefined,
+): ExecutionHdrObservationResult | undefined {
+  if (hdr === undefined) return undefined;
+  if (!matchesGeometrySource(message, hdr)) return rendererInspectionFailure('stale-session');
+  return armLinearHdr(frameRenderer);
+}
+
+/** Like geometry observation, this one-shot read holds only its own diagnostic draw turn. */
+async function deliverHdrObservation(
+  frameRenderer: Renderer,
+  hdr: HdrRequest | undefined,
+  armFailure: ExecutionHdrObservationResult | undefined,
+  receipt: FrameReceipt,
+): Promise<void> {
+  if (hdr === undefined || hdr.cancelled) return;
+  let result: ExecutionHdrObservationResult;
+  try {
+    result = armFailure ?? (await observeLinearHdr(frameRenderer, receipt));
+    if (result.ok)
+      result = { ok: true, value: { ...result.value, bytes: transferable(result.value.bytes) } };
+  } catch (error) {
+    result = rendererInspectionFailure('inspection', error);
+  }
+  if (!hdr.cancelled)
+    scope.postMessage(
+      {
+        kind: 'hdr-observation-result',
+        requestId: hdr.requestId,
+        identity: hdr.identity,
+        worldIdentity: hdr.worldIdentity,
+        result,
+      },
+      result.ok ? [result.value.bytes.buffer as ArrayBuffer] : [],
+    );
+  if (hdrRequest === hdr) hdrRequest = undefined;
+}
+
 function publishedFrameInput(
   message: DrawMessage,
   features: { identity: string; feedback: unknown }[],
@@ -1026,7 +1121,7 @@ async function drawScheduledPublication(
 
 function matchesGeometrySource(
   message: DrawMessage,
-  geometry: GeometryRequest | undefined,
+  geometry: Pick<GeometryRequest, 'worldIdentity'> | undefined,
 ): boolean {
   return (
     geometry !== undefined &&
@@ -1146,6 +1241,8 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
     const features: { identity: string; feedback: unknown }[] = [];
     const geometry = claimGeometryRequest();
     const geometrySourceMatches = matchesGeometrySource(message, geometry);
+    const hdr = claimHdrRequest();
+    const hdrArmFailure = armHdrObservation(frameRenderer, message, hdr);
     const input = publishedFrameInput(
       message,
       features,
@@ -1192,6 +1289,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
     if (snapshotBoundary !== undefined) await snapshotBoundary;
     if (geometry !== undefined && !geometry.cancelled)
       await deliverGeometryObservation(frameRenderer, geometry, geometrySourceMatches, receipt);
+    await deliverHdrObservation(frameRenderer, hdr, hdrArmFailure, receipt);
   } catch (cause) {
     fail(message, cause);
   } finally {

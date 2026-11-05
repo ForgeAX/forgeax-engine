@@ -21,6 +21,8 @@ import {
   validateCameraExposure,
 } from '@forgeax/engine-render';
 import { Children, GlobalTransform, Name, Transform } from '@forgeax/engine-scene';
+import type { ExecutionHdrObservationResult } from './execution/types';
+import { observeLuminance, type PixelAssetNames, pickPixel } from './observation-pixels';
 
 export interface AppObservation {
   readonly worldIdentity: string;
@@ -32,6 +34,13 @@ export interface AppObservation {
   readonly prepareFrame: () => void;
   /** Return control to the game camera and remove the transient observation camera. */
   readonly release: () => void;
+  /**
+   * Classify the next presented frame's pre-tonemap scene luminance into EV
+   * codes and bloom high-pass classes (below / knee / above threshold).
+   */
+  readonly luminance: () => Promise<unknown>;
+  /** Report entity, mesh, material slot and HDR value visible at one display pixel. */
+  readonly pick: (value: unknown) => Promise<unknown>;
 }
 
 /** Apply the shared Engine pointer-look rotation to an observation transform. */
@@ -75,7 +84,13 @@ export function createAppObservation(
       entity: number,
     ): RenderSceneBounds | undefined | Promise<RenderSceneBounds | undefined>;
   },
-  execution: { readonly report: () => unknown },
+  execution: {
+    readonly report: () => unknown;
+    readonly observeNextHdrFrame?: (options?: {
+      readonly signal?: AbortSignal;
+    }) => Promise<ExecutionHdrObservationResult>;
+  },
+  assets?: PixelAssetNames,
 ): AppObservation {
   const observationSystem = 'app-observation-camera-ownership';
   const firstCameraEntity = (): EntityHandle | undefined => {
@@ -379,9 +394,22 @@ export function createAppObservation(
     }
     return cameraState();
   };
+  const pixels = {
+    world,
+    ...(execution.observeNextHdrFrame === undefined
+      ? {}
+      : { observeNextHdrFrame: execution.observeNextHdrFrame }),
+    ...(assets === undefined ? {} : { assets }),
+    camera: () => {
+      const active = resolveGameCameraEntity();
+      return active === undefined ? undefined : cameraValue(active);
+    },
+  };
   return {
     worldIdentity: world.identity,
     executionReport: () => execution.report(),
+    luminance: () => observeLuminance(pixels),
+    pick: (value) => pickPixel(pixels, value),
     camera: { get: cameraState, set: setCamera },
     find({ name, limit = 20 }) {
       const matches: { entity: number; name: string; position: number[] }[] = [];

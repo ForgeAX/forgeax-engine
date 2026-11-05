@@ -1,24 +1,7 @@
 import { definePack } from '@forgeax/engine/pack/source';
 import { Materials } from '@forgeax/engine/render';
-import type { MaterialAsset } from '@forgeax/engine/types';
 import { ok } from '@forgeax/engine/types';
 import { PACKAGE_IDS } from './shared/asset-refs.ts';
-
-function skinned(material: MaterialAsset): MaterialAsset {
-  if (material.passes === undefined) return material;
-  const [first, ...rest] = material.passes;
-  const withSkinProgram = (pass: (typeof material.passes)[number]) =>
-    pass.name === 'shadow-caster'
-      ? pass
-      : {
-          ...pass,
-          program: { ...pass.program, module: 'forgeax::pbr-skin' },
-        };
-  return {
-    ...material,
-    passes: [withSkinProgram(first), ...rest.map(withSkinProgram)],
-  };
-}
 
 export default definePack({
   schemaVersion: '2.0.0',
@@ -62,19 +45,6 @@ export default definePack({
         metallic: 0,
         roughness: 0.2,
       }),
-      'material/player-body': skinned(
-        Materials.standard({ baseColor: [0.72, 0.78, 0.73, 1], metallic: 0.22, roughness: 0.36 }),
-      ),
-      'material/player-accent': skinned(
-        Materials.standard({
-          baseColor: [0.018, 0.027, 0.033, 1],
-          metallic: 0.5,
-          roughness: 0.48,
-        }),
-      ),
-      'material/player-signal': skinned(
-        Materials.standard({ baseColor: [1, 0.36, 0.035, 1], metallic: 0.5, roughness: 0.27 }),
-      ),
       'material/fantasy-azure': Materials.standard({ staticSwitches: { clearcoat: true },
         baseColor: [0.025, 0.48, 0.82, 1],
         emissive: [0.01, 0.18, 0.42],
@@ -107,15 +77,6 @@ export default definePack({
         metallic: 0.04,
         roughness: 0.72,
       }),
-      'material/player-cloth': skinned(
-        Materials.standard({ staticSwitches: { clearcoat: true },
-          baseColor: [0.025, 0.145, 0.17, 1],
-          metallic: 0.4,
-          roughness: 0.38,
-          clearcoat: 0.04,
-          clearcoatRoughness: 0.48,
-        }),
-      ),
       'material/rusted-iron': Materials.standard({
         surfaceModule: 'game_3d::rusted_iron_surface',
         parameters: [

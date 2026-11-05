@@ -13,15 +13,25 @@ struct ComposeVertex {
 #import forgeax_view::common::View
 @group(0) @binding(5) var<uniform> view : View;
 
-@vertex
-fn vs_ssr_compose(@builtin(vertex_index) index : u32) -> ComposeVertex {
+fn ssrComposeVertex(index : u32) -> ComposeVertex {
   let x = select(-1.0, 3.0, index == 1u);
   let y = select(-1.0, 3.0, index == 2u);
   return ComposeVertex(vec4<f32>(x, y, 0.0, 1.0));
 }
 
+#if PORTABLE_FRAGMENT
+@group(0) @binding(6) var<uniform> reflectionMipCount : vec4<u32>;
+#endif
+fn ssrRadianceLevelCount() -> u32 {
+#if PORTABLE_FRAGMENT
+  return max(reflectionMipCount.x, 1u);
+#else
+  return textureNumLevels(radiance);
+#endif
+}
+
 fn ssrReflectionLod(roughness : f32) -> f32 {
-  return roughness * roughness * f32(textureNumLevels(radiance) - 1u);
+  return roughness * roughness * f32(ssrRadianceLevelCount() - 1u);
 }
 
 fn sampleRoughSsr(uv : vec2<f32>, roughness : f32) -> vec4<f32> {
@@ -32,8 +42,7 @@ fn sampleRoughSsr(uv : vec2<f32>, roughness : f32) -> vec4<f32> {
   return textureSampleLevel(radiance, radianceSampler, uv, lod);
 }
 
-@fragment
-fn fs_ssr_compose(in : ComposeVertex) -> @location(0) vec4<f32> {
+fn evaluateSsrCompose(in : ComposeVertex) -> vec4<f32> {
   let pixel = vec2<i32>(in.position.xy);
   // Fragment position already names the full-resolution pixel center.
   let uv = in.position.xy / vec2<f32>(textureDimensions(fallback, 0));
@@ -53,7 +62,7 @@ fn fs_ssr_compose(in : ComposeVertex) -> @location(0) vec4<f32> {
   if (lod < 1.0) {
     // Preserve the exact receiver sample at the sharp end and transition
     // continuously into the confidence-premultiplied roughness pyramid.
-    if (textureNumLevels(radiance) > 1u) {
+    if (ssrRadianceLevelCount() > 1u) {
       filtered = mix(base, textureSampleLevel(radiance, radianceSampler, uv, 1.0), lod);
     }
   } else {
@@ -69,3 +78,11 @@ fn fs_ssr_compose(in : ComposeVertex) -> @location(0) vec4<f32> {
   let confidence = clamp(min(receiverConfidence, sample.a), 0.0, 1.0) * environment.a;
   return vec4<f32>(confidence * (sample.rgb * materialResponse - environment.rgb), 0.0);
 }
+
+#if PORTABLE_FRAGMENT
+@vertex fn vs_ssr_compose_fragment(@builtin(vertex_index) index : u32) -> ComposeVertex { return ssrComposeVertex(index); }
+@fragment fn fs_ssr_compose_fragment(in : ComposeVertex) -> @location(0) vec4<f32> { return evaluateSsrCompose(in); }
+#else
+@vertex fn vs_ssr_compose(@builtin(vertex_index) index : u32) -> ComposeVertex { return ssrComposeVertex(index); }
+@fragment fn fs_ssr_compose(in : ComposeVertex) -> @location(0) vec4<f32> { return evaluateSsrCompose(in); }
+#endif

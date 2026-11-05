@@ -307,6 +307,19 @@ copy fallback and borrowed textures share the same layout and shader. rhi-null
 admits both methods structurally (`caps.textureImport` and `caps.externalTexture`
 are `true`) so renderer lifecycle is unit-testable; it produces no pixels.
 
+## r32float-mip-sampled-render receipt
+
+`probeR32FloatRenderCapability(device, createModule, generation)` qualifies the
+portable raster path through opaque RHI handles. It renders a nonzero R32F sample
+to a separate attachment, copies into a mip, awaits submission completion and
+checks the real readback. One memoized result belongs to each physical device;
+RhiNull is refused. Renderer owns when this initialization probe is requested.
+
+The closed receipt names `r32float-mip-sampled-render`, `sampled-render-bind-group`
+and `render-attachment` usage. It does not claim storage support. The existing
+storage profile remains unchanged. Both use `validateR32FloatReceipt`; consumers
+must also require real admitted stages and matching generation/identity.
+
 ## r32float-mip-sampled-storage receipt
 
 > [!WARNING]

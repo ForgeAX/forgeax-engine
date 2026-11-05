@@ -30,6 +30,7 @@ import { sameValue } from '../same-value';
 import { SHADOW_ATLAS_DEFAULT_LAYERS } from '../shadow-atlas';
 import { shadowPlanes } from '../shadow-frustum';
 import { renderWorldFor } from './render-world';
+import { requireViewField } from './view-field';
 
 /** Spot shadow tiles in the renderer-owned spot depth array. */
 export const SPOT_SHADOW_LAYERS = 4;
@@ -443,6 +444,34 @@ export class RenderLights {
    * roster while its lights hold still; an equal one compares in place and
    * writes nothing.
    */
+  /** Borrow the renderer-owned atlas roster only for the source this owner actually adopted. */
+  borrowAdoptedRoster(source: LightRoster): LightRoster | undefined {
+    return this.adopted === source ? this.roster : undefined;
+  }
+
+  /** Borrow an already fitted view, without refitting or retaining a new matrix set. */
+  borrowFittedViewLights(
+    source: LightRoster,
+    entity: EntityHandle,
+    camera: CsmCameraData,
+  ): ViewLights | undefined {
+    if (this.adopted !== source || !this.world.hasComponent(entity, ViewCascadeFit))
+      return undefined;
+    const record = this.world
+      .resolveUniqueRef<ViewRecord>(requireViewField(this.world, entity, ViewCascadeFit, 'fit'))
+      .unwrap();
+    if (
+      !record.fitted ||
+      record.roster !== this.roster ||
+      record.pointSpotViews !== this.shadowViews ||
+      record.config !== this.roster.directionalCsmConfig ||
+      record.direction !== this.roster.directionalCsmDirection ||
+      (record.config !== undefined && !sameCamera(record.camera, camera))
+    )
+      return undefined;
+    return record.lights;
+  }
+
   adopt(source: LightRoster): void {
     if (source === this.adopted) return;
     if (!this.matches(source)) this.apply(source);

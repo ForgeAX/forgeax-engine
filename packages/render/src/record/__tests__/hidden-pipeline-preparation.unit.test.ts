@@ -1,12 +1,26 @@
 import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import { rhi } from '@forgeax/engine-rhi-null';
-import { STANDARD_TEXTURE_MASK_OVERRIDE } from '@forgeax/engine-shader';
+import {
+  createMaterialShaderProgram,
+  type MaterialShaderArtifact,
+  STANDARD_SURFACE_DISCARDS_OVERRIDE,
+  STANDARD_TEXTURE_MASK_OVERRIDE,
+} from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import type { DispatchEntry } from '../../render-system-extract';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { prepareShadowMaterialPipelines } from '../shadow-pass';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
 
+const artifactFor = (program: MaterialShaderArtifact['program']): MaterialShaderArtifact => ({
+  material: 'test::prepared',
+  pass: 'Forward',
+  program,
+  layoutIdentity: 'test::prepared',
+  bindings: [],
+  deps: [],
+  vertexInputs: [],
+});
 const pass = (mode = 'Forward'): Omit<DispatchEntry, 'entityIndex' | 'renderableIndex'> => ({
   materialHandle: 7,
   passIndex: 0,
@@ -92,9 +106,16 @@ it('requires the authored PSO and emits no draw, binding or visibility mutation'
 it('uses the identical selection for preparation and visible direct drawing', async () => {
   const f = await setup();
   const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  Object.assign(f.c.runtime, {
+    getMaterialShaderArtifact: () =>
+      artifactFor(
+        createMaterialShaderProgram('@id(64001) override standardSurfaceDiscards: u32 = 3u;'),
+      ),
+  });
   try {
     f.encode();
     const hiddenRequest = lookup.mock.calls[0];
+    expect(hiddenRequest?.[21]).toEqual({ [STANDARD_SURFACE_DISCARDS_OVERRIDE]: 0 });
     Object.assign(f.c, { pipelinePreparationEntries: [], validatedOrdered: [f.entry] });
     const encoder = f.c.runtime.device
       .createCommandEncoder()
@@ -147,6 +168,37 @@ it('observes changed authored state, source program, mask and geometry layout', 
     });
     f.encode();
     expect(lookup.mock.calls[2]?.[13]).not.toEqual(before?.[13]);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('specializes unreachable direct Surface discards and observes clipping and program changes', async () => {
+  const f = await setup();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  let program = createMaterialShaderProgram(
+    `${CPU_SETUP_SHADER}\n@id(64001) override standardSurfaceDiscards: u32 = 3u;`,
+  );
+  Object.assign(f.c.runtime, { getMaterialShaderArtifact: () => artifactFor(program) });
+  f.entry.source.material.adopt({ ...f.entry.source.material.snapshot, standardTextureMask: 5 });
+  try {
+    f.encode();
+    expect(lookup.mock.calls[0]?.[21]).toEqual({
+      [STANDARD_TEXTURE_MASK_OVERRIDE]: 5,
+      [STANDARD_SURFACE_DISCARDS_OVERRIDE]: 0,
+    });
+    Object.assign(f.c.camera, { clipping: { planes: [{ normal: [1, 0, 0], constant: 0 }] } });
+    f.encode();
+    expect(lookup.mock.calls[1]?.[21]).toEqual({
+      [STANDARD_TEXTURE_MASK_OVERRIDE]: 5,
+      [STANDARD_SURFACE_DISCARDS_OVERRIDE]: 2,
+    });
+    Object.assign(f.c.camera, { clipping: undefined });
+    f.encode();
+    expect(lookup.mock.calls[2]?.[21]?.[STANDARD_SURFACE_DISCARDS_OVERRIDE]).toBe(0);
+    program = createMaterialShaderProgram(CPU_SETUP_SHADER);
+    f.encode();
+    expect(lookup.mock.calls[3]?.[21]).toEqual({ [STANDARD_TEXTURE_MASK_OVERRIDE]: 5 });
   } finally {
     f.dispose();
   }

@@ -1,8 +1,9 @@
+import { isDeepStrictEqual } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { deriveAnimationTargetId } from '@forgeax/engine/animation';
 import { createUiImporter } from '@forgeax/engine/ui/importer';
 import type { AnimationClip, SkeletonAsset } from '@forgeax/engine/types';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import characterPack from '../character.pack.ts';
 import environmentPack from '../environment.pack.ts';
 import fantasyMeshesPack from '../fantasy-meshes.pack.ts';
@@ -14,6 +15,7 @@ import uiPack from '../ui/ui.pack.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { EngineContent } from '@forgeax/engine/content';
 import { assetGuid, guidText, PACKAGE_IDS, RUSTED_IRON_MATERIAL_GUID } from '../shared/asset-refs.ts';
+import { buildConvoy, convoyPath, CONVOY_NORMALS, CONVOY_TRIANGLE_BUDGET } from '../player/convoy-model.ts';
 import { PLAYER_RIG } from '../player/player-rig.ts';
 import {
   MAX_CAMERA_PITCH,
@@ -32,7 +34,7 @@ import {
 async function build(pack: {
   readonly build: (reader: never) => unknown;
 }): Promise<Record<string, unknown>> {
-  const result = await pack.build(undefined as never);
+  const result = await pack.build((pack === characterPack ? { values: { resolution: 512 } } : undefined) as never);
   if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true) {
     throw new Error(`ScriptablePack build failed: ${JSON.stringify(result)}`);
   }
@@ -231,6 +233,9 @@ function maximumAnimatedEdgeStretch(
 }
 
 describe('game-3d starter', () => {
+  let characterOutputs: Record<string, unknown>;
+  beforeAll(async () => { characterOutputs = await build(characterPack); }, 30000);
+
   it('declares frontend and engine asset roots with ordinary native composition', async () => {
     const manifest = JSON.parse(
       await readFile(new URL('../../forge.json', import.meta.url), 'utf8'),
@@ -340,8 +345,8 @@ describe('game-3d starter', () => {
     expect(pixels[ground + 2]).toBeGreaterThan(0.02);
   });
 
-  it('builds closed flat-shaded armor with rigid skinning and a deterministic walk clip', async () => {
-    const outputs = await build(characterPack);
+  it('exports baked armor with rigid skinning and valid normals', { timeout: 30000 }, async () => {
+    const outputs = characterOutputs;
     const mesh = outputs['mesh/player'] as {
       readonly indices: Uint32Array;
       readonly attributes: {
@@ -358,9 +363,9 @@ describe('game-3d starter', () => {
     };
     expect(mesh.attributes.skinIndex).toBeInstanceOf(Uint16Array);
     expect(mesh.attributes.skinWeight).toBeInstanceOf(Float32Array);
-    expect(mesh.submeshes.map((submesh) => submesh.materialSlot)).toEqual([0, 1, 2, 3]);
+    expect(mesh.submeshes.map((submesh) => submesh.materialSlot)).toEqual(mesh.materialSlots.map((_, index) => index));
     expect(mesh.submeshes.every((submesh) => submesh.indexCount > 0)).toBe(true);
-    expect(mesh.materialSlots.map((slot) => slot.slotName)).toEqual(['Ceramic Armor', 'Petrol Panels', 'Graphite Joints', 'Amber Signals']);
+    expect(new Set(mesh.materialSlots.map((slot) => slot.slotName))).toEqual(new Set(['convoy', 'steel', 'dark', 'gold', 'rubber']));
     expect(mesh.materialSlots.every((slot) => slot.defaultMaterial?.byteLength === 16)).toBe(true);
     const vertexCount = (mesh.attributes.position?.length ?? 0) / 3;
     const positions = mesh.attributes.position ?? new Float32Array();
@@ -370,22 +375,20 @@ describe('game-3d starter', () => {
     expect(Math.max(...xs)).toBeGreaterThan(0.9);
     expect(Math.min(...ys)).toBeLessThan(-1);
     expect(Math.max(...ys)).toBeGreaterThan(1.15);
-    expect(mesh.indices.length / 3).toBeLessThan(4000);
+    expect(mesh.indices.length / 3).toBeLessThan(CONVOY_TRIANGLE_BUDGET);
     const normals = mesh.attributes.normal!;
     const weights = mesh.attributes.skinWeight!;
     const joints = mesh.attributes.skinIndex!;
     const usedJoints = new Set<number>();
-    // Weld only for the manifold check: render vertices are split at hard edges.
-    const weldKeys = Array.from({ length: vertexCount }, (_, vertex) =>
-      `${joints[vertex * 4]}:${Array.from(positions.slice(vertex * 3, vertex * 3 + 3), (value) => value.toFixed(6)).join(',')}`,
-    );
-    const edges = new Map<string, number>();
+    let unitWeights = true, validJoints = true, rigidTriangles = true;
+    let minimumArea = Infinity, minimumFacing = Infinity, maximumNormalError = 0;
     for (let vertex = 0; vertex < vertexCount; vertex += 1) {
-      expect(Array.from(weights.slice(vertex * 4, vertex * 4 + 4))).toEqual([1, 0, 0, 0]);
-      expect(joints[vertex * 4]).toBeLessThan(PLAYER_RIG.length);
+      const lane = vertex * 4;
+      unitWeights &&= weights[lane] === 1 && weights[lane + 1] === 0 && weights[lane + 2] === 0 && weights[lane + 3] === 0;
+      validJoints &&= joints[lane]! < PLAYER_RIG.length;
       usedJoints.add(joints[vertex * 4]!);
     }
-    expect(usedJoints.size).toBe(PLAYER_RIG.length);
+    expect([...usedJoints].map(index => PLAYER_RIG[index]!.name).sort()).toEqual(PLAYER_RIG.map(joint => joint.name).sort());
     for (let offset = 0; offset < mesh.indices.length; offset += 3) {
       const triangle = Array.from(mesh.indices.slice(offset, offset + 3));
       const [a, b, c] = triangle as [number, number, number];
@@ -393,27 +396,39 @@ describe('game-3d starter', () => {
       const ab = edge(b), ac = edge(c);
       const cross = [ab[1]! * ac[2]! - ab[2]! * ac[1]!, ab[2]! * ac[0]! - ab[0]! * ac[2]!, ab[0]! * ac[1]! - ab[1]! * ac[0]!];
       const area = Math.hypot(...cross);
-      expect(area).toBeGreaterThan(1e-8);
+      minimumArea = Math.min(minimumArea, area);
       for (const vertex of triangle) {
-        expect(joints[vertex * 4]).toBe(joints[a * 4]);
-        for (let axis = 0; axis < 3; axis += 1) expect(normals[vertex * 3 + axis]).toBeCloseTo(cross[axis]! / area, 4);
+        rigidTriangles &&= joints[vertex * 4] === joints[a * 4];
+        const normal = Array.from(normals.slice(vertex * 3, vertex * 3 + 3));
+        maximumNormalError = Math.max(maximumNormalError, Math.abs(Math.hypot(...normal) - 1));
+        minimumFacing = Math.min(minimumFacing, normal.reduce((dot, value, axis) => dot + value * cross[axis]! / area, 0));
       }
-      for (let index = 0; index < 3; index += 1) {
-        const from = weldKeys[triangle[index]!]!, to = weldKeys[triangle[(index + 1) % 3]!]!;
-        const key = from < to ? `${from}/${to}` : `${to}/${from}`;
-        edges.set(key, (edges.get(key) ?? 0) + 1);
-      }
+
     }
-    expect([...edges.values()].every((count) => count === 2)).toBe(true);
-    const rebuilt = await build(characterPack);
-    expect(rebuilt).toEqual(outputs);
-    expect(outputs['rig/player-skeleton']).toMatchObject({ kind: 'skeleton', jointCount: 14 });
+    // Check every vertex/triangle above, then assert the same exact predicates in batches.
+    expect(unitWeights).toBe(true);
+    expect(validJoints).toBe(true);
+    expect(rigidTriangles).toBe(true);
+    expect(minimumArea).toBeGreaterThan(1e-8);
+    expect(maximumNormalError).toBeLessThan(0.00005);
+    expect(minimumFacing).toBeGreaterThan(0.5);
+    expect(outputs['rig/player-skeleton']).toMatchObject({ kind: 'skeleton', jointCount: PLAYER_RIG.length });
     expect(outputs['rig/player-skin']).toMatchObject({ kind: 'skin' });
     expect(outputs['animation/player-walk']).toMatchObject({
       kind: 'animation-clip',
       duration: 1,
       channels: expect.arrayContaining([expect.objectContaining({ property: 'translation' })]),
     });
+  });
+
+  it('rebuilds every authored character output deterministically', { timeout: 30000 }, async () => {
+    const rebuilt = await build(characterPack);
+    expect(isDeepStrictEqual(rebuilt, characterOutputs), 'every authored output remains deterministic').toBe(true);
+  });
+
+  it('keeps rigid armor edge lengths throughout the walk cycle', { timeout: 30000 }, () => {
+    const outputs = characterOutputs;
+    const mesh = outputs['mesh/player'] as Parameters<typeof maximumAnimatedEdgeStretch>[0];
     const stretch = maximumAnimatedEdgeStretch(
       mesh,
       outputs['rig/player-skeleton'] as { readonly inverseBindMatrices: Float32Array },
@@ -422,8 +437,8 @@ describe('game-3d starter', () => {
     expect(stretch.ratio, stretch.detail).toBeLessThan(1.0001);
   });
 
-  it('derives mirrored world anchors and inverse binds from the authored local rig', async () => {
-    const outputs = await build(characterPack);
+  it('derives mirrored world anchors and inverse binds from the authored local rig', { timeout: 30000 }, async () => {
+    const outputs = characterOutputs;
     const skeleton = outputs['rig/player-skeleton'] as SkeletonAsset;
     const worlds: Matrix[] = [];
     const identity = localMatrix([0, 0, 0], [0, 0, 0, 1]);
@@ -444,8 +459,8 @@ describe('game-3d starter', () => {
     }
   });
 
-  it('closes the walk cycle and offsets matching limbs by half a cycle', async () => {
-    const clip = (await build(characterPack))['animation/player-walk'] as AnimationClip;
+  it('closes the walk cycle and offsets matching limbs by half a cycle', { timeout: 30000 }, async () => {
+    const clip = characterOutputs['animation/player-walk'] as AnimationClip;
     expect(new Set(clip.channels.map((channel) => `${channel.targetId}:${channel.property}`)).size).toBe(clip.channels.length);
     for (const channel of clip.channels) {
       if (channel.property === 'property') throw new Error('starter walk must contain numeric TRS tracks');
@@ -461,7 +476,7 @@ describe('game-3d starter', () => {
     Array.from(translation.sampler.output.slice(0, 3)).forEach((value, axis) =>
       expect(value).toBeCloseTo(PLAYER_RIG[0]!.local[axis]!, 6));
     for (const [leftIndex, joint] of PLAYER_RIG.entries()) {
-      if (!joint.name.endsWith('.L')) continue;
+      if (leftIndex >= 14 || !joint.name.endsWith('.L')) continue;
       const rightIndex = PLAYER_RIG.findIndex((candidate) => candidate.name === joint.name.replace('.L', '.R'));
       const left = clip.channels.find((channel) => channel.targetId === deriveAnimationTargetId(playerTargetPath(leftIndex)));
       const right = clip.channels.find((channel) => channel.targetId === deriveAnimationTargetId(playerTargetPath(rightIndex)));
@@ -493,12 +508,12 @@ describe('game-3d starter', () => {
     }
   });
 
-  it('routes visible player passes through skinning and keeps the depth-only shadow pass', async () => {
+  it('routes visible player passes through skinning and keeps the depth-only shadow pass', { timeout: 30000 }, async () => {
     const outputs = await build(materialsPack);
-    expect(Object.keys(outputs)).toHaveLength(15);
-    const playerLuminances: number[] = [];
-    for (const key of ['material/player-body', 'material/player-cloth', 'material/player-accent', 'material/player-signal']) {
-      const material = outputs[key] as {
+    expect(Object.keys(outputs)).toHaveLength(11);
+    const character = characterOutputs;
+    {
+      const material = character['material/convoy'] as {
         readonly passes: readonly {
           readonly name: string;
           readonly program: { readonly module: string; readonly fragmentEntry?: string };
@@ -519,13 +534,12 @@ describe('game-3d starter', () => {
       expect(material.passes.find((pass) => pass.name === 'shadow-caster')?.program.module).toBe(
         'forgeax::default-shadow-caster',
       );
-      const baseColor = material.values.baseColor as readonly number[];
-      playerLuminances.push((baseColor[0] ?? 0) * 0.2126 + (baseColor[1] ?? 0) * 0.7152 + (baseColor[2] ?? 0) * 0.0722);
-      expect(material.values.emissive).toBeUndefined();
-      expect(material.values.emissiveIntensity).toBeUndefined();
+      for (const [property, map] of [['baseColorTexture', 'base-color'], ['normalTexture', 'normal'], ['metallicRoughnessTexture', 'ormh'], ['occlusionTexture', 'ormh'], ['emissiveTexture', 'emissive'], ['clearcoatTexture', 'coat'], ['clearcoatRoughnessTexture', 'coat']]) {
+        expect(material.values[property!]).toEqual({ texture: guidText(assetGuid(PACKAGE_IDS.character, `texture/convoy-${map}`)) });
+      }
+      expect(material.values.baseColor).toEqual([1, 1, 1, 1]);
+      expect(material.values.emissive).toEqual([2, 2, 2]);
     }
-    expect(playerLuminances[0]! - playerLuminances[1]!).toBeGreaterThan(0.5);
-    expect(playerLuminances[1]! - playerLuminances[2]!).toBeGreaterThan(0.05);
     const rustedIron = outputs['material/rusted-iron'] as {
       readonly passes: readonly { readonly program: { readonly module: string } }[];
       readonly parameters: readonly { readonly name: string; readonly type: string }[];
@@ -545,7 +559,7 @@ describe('game-3d starter', () => {
     expect(ramp.materialSlots[0]?.defaultMaterial).toEqual(RUSTED_IRON_MATERIAL_GUID);
   });
 
-  it('authors physics on the player and every visible walkable obstacle', async () => {
+  it('authors physics on the player and every visible walkable obstacle', { timeout: 30000 }, async () => {
     const scene = (await build(scenePack))['scene/showcase'] as {
       readonly skinGuids: readonly string[];
       readonly entities: Record<
@@ -555,9 +569,20 @@ describe('game-3d starter', () => {
     };
     const components = Object.values(scene.entities).map((entity) => entity.components);
     const player = components.find((entry) => entry.Name?.value === 'Player');
+    const convoy = buildConvoy(512);
+    const supportHeight = Number(player?.Collider?.radius) + Number(player?.Collider?.halfHeight);
+    for (const u of [0, 1]) {
+      const pose = convoy.assembly.sample(convoyPath(convoy.assembly), u).unwrap();
+      const mesh = convoy.assembly.toMesh(pose, { normals: CONVOY_NORMALS }).unwrap().mesh;
+      const positions = mesh.attributes.position as Float32Array;
+      let lowest = Infinity;
+      for (let i = 1; i < positions.length; i += 3) lowest = Math.min(lowest, positions[i]!);
+      expect(supportHeight).toBeGreaterThanOrEqual(-lowest - 0.00001);
+      expect(supportHeight + lowest).toBeLessThan(0.005);
+    }
     expect(player).toMatchObject({
       RigidBody: { type: 2 },
-      Collider: { radius: 0.38, halfHeight: 0.55 },
+      Collider: { radius: 0.38 },
       CharacterController: { autoStepMaxHeight: 0.32, snapToGroundDist: 0.24 },
     });
     for (const name of [

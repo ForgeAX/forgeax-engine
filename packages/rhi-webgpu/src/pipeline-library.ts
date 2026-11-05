@@ -31,6 +31,7 @@ import {
   shaderSourceForDescriptor,
 } from '@forgeax/engine-types';
 import { type CompilationRecord, PipelineCompilationRecords } from './pipeline-compilation-records';
+import { compatiblePipelineRenderTargets } from './pipeline-library-render-targets';
 import { PipelineResourceIndex, pipelineResource } from './pipeline-resource-index';
 
 type Recipe = PipelineLibraryRender | PipelineLibraryCompute;
@@ -181,6 +182,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     sourceBytes: 0,
   };
   private readonly warmup = { requested: 0, completed: 0, failed: 0, elapsedMs: 0 };
+  private skippedRenderTargetRecipes = 0;
   private readonly backgroundWarmup = {
     requested: 0,
     completed: 0,
@@ -658,6 +660,9 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       renderPipelines: [...this.programs.values()].filter((p) => p.kind === 'render').length,
       computePipelines: [...this.programs.values()].filter((p) => p.kind === 'compute').length,
       ...this.counts,
+      ...(this.skippedRenderTargetRecipes === 0
+        ? {}
+        : { skippedRenderTargetRecipes: this.skippedRenderTargetRecipes }),
       sourceBytes: [...this.shaders.values()].reduce((sum, row) => sum + row.source.length * 2, 0),
       ...(options?.runtimeRequests === true
         ? {
@@ -919,6 +924,13 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         validateManifest(input, options.inputLimits),
         options.inputLimits,
       );
+      const renderPipelines =
+        options.renderTargetPolicy === 'device-compatible'
+          ? manifest.renderPipelines.filter((recipe) =>
+              compatiblePipelineRenderTargets(recipe, this.device.limits),
+            )
+          : manifest.renderPipelines;
+      this.skippedRenderTargetRecipes += manifest.renderPipelines.length - renderPipelines.length;
       const descriptors = this.prepareShaderDescriptors(manifest, options.sources);
       if (
         typeof this.device.createRenderPipelineAsync !== 'function' ||
@@ -949,7 +961,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       });
       const retained: object[] = [...shaders, ...groups, ...layouts];
       const requests = interleaveManifestOrder<WarmRequest>(
-        manifest.renderPipelines.map(({ fragment, ...d }) => ({
+        renderPipelines.map(({ fragment, ...d }) => ({
           label: d.label ?? 'render',
           run: this.indexWarmRequest(
             'render',

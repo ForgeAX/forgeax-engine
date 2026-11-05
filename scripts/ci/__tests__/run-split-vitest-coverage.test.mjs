@@ -79,6 +79,7 @@ test('coverage fills both slots before draining once for exclusive work', async 
 });
 
 import {
+  allProjectNames,
   assignCoverageShards,
   buildGroupArgs,
   buildTypecheckArgs,
@@ -137,6 +138,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
   );
   for (const file of [
     'packages/modeling/src/__tests__/bake-cage.unit.test.ts',
+    'packages/modeling/src/__tests__/subd-crease.unit.test.ts',
     'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts',
     'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
     'packages/vite-plugin-pack/src/__tests__/declared-standard-material.integration.test.ts',
@@ -176,7 +178,7 @@ test('cold compiler file sets keep one owner and drain all neighboring work', as
       return group.label;
     },
   });
-  assert.equal(exclusiveRuns, 17);
+  assert.equal(exclusiveRuns, 18);
 });
 
 test('cold large-scene contracts execute once without competing coverage children', () => {
@@ -351,6 +353,21 @@ test('modeling tier budgets remain mandatory and uninstrumented outside coverage
   assert.ok(!/testTimeout|testNamePattern|--exclude/.test(gate.run));
 });
 
+test('fractional-sharpness subdivision oracle has one exclusive coverage owner', () => {
+  const file = 'packages/modeling/src/__tests__/subd-crease.unit.test.ts';
+  const groups = coverageGroups(['@forgeax/engine-modeling'], 4);
+  const owner = groups.find((group) => group.files.includes(file));
+  assert.ok(owner, 'the complete V8-instrumented file keeps an explicit owner');
+  assert.deepEqual(owner.files, [file]);
+  assert.equal(owner.weight, 60);
+  const partitions = groups.filter((group) => group.shard);
+  assert.equal(partitions.length, 16);
+  assert.ok(
+    partitions.every((group) => group.excludes.includes(file)),
+    'the file cannot overlap any native Modeling coverage partition',
+  );
+});
+
 test('actual Vitest discovery and native partitions conserve the complete coverage roster', async () => {
   const file = path
     .resolve('packages/modeling/src/__tests__/perf-tiers.unit.test.ts')
@@ -409,6 +426,25 @@ test('actual Vitest discovery and native partitions conserve the complete covera
   );
 });
 
+test('broad project halves spread across jobs instead of stacking different projects', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const halves = groups
+    .map((group, index) => ({ group, index }))
+    .filter(({ group }) => group.shard?.endsWith('/2'));
+  assert.equal(halves.length, 4);
+  for (const typecheck of [true, false]) {
+    const assignment = assignCoverageShards(groups, 4, { typecheck });
+    assert.deepEqual(
+      Array.from(
+        { length: 4 },
+        (_value, lane) => halves.filter(({ index }) => assignment[index] === lane).length,
+      ),
+      [1, 1, 1, 1],
+      'each job owns one complete DevKit/Render half, retaining four jobs and every child',
+    );
+  }
+});
+
 test('heavy project partitions cannot recombine on the same coverage lane', () => {
   for (const project of ['@forgeax/engine-devkit', '@forgeax/engine-render']) {
     const groups = coverageGroups([project], 8);
@@ -422,6 +458,365 @@ test('heavy project partitions cannot recombine on the same coverage lane', () =
     );
     assert.ok(groups.filter((group) => group.files.length > 0).every((group) => !group.shard));
   }
+});
+
+test('fine partitions leave room for a whole exclusive source-production owner', () => {
+  const groups = Array.from({ length: 8 }, (_value, index) => ({
+    label: `modeling-${index}`,
+    projects: ['modeling'],
+    shard: `${index + 1}/8`,
+    weight: 100,
+    files: [],
+  }));
+  groups.push({ label: 'source', projects: ['shader'], weight: 250, files: ['source.test.ts'] });
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const lanes = Array.from({ length: 4 }, () => ({ slots: [0, 0], exclusive: 0 }));
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    const lane = lanes[assignment[index]];
+    if (group.files.length > 0) lane.exclusive += group.weight;
+    else lane.slots[lane.slots[0] <= lane.slots[1] ? 0 : 1] += group.weight;
+  }
+  assert.equal(Math.max(...lanes.map((lane) => Math.max(...lane.slots) + lane.exclusive)), 350);
+  assert.equal(assignment.length, groups.length, 'retain every complete child');
+  assert.equal(new Set(assignment.slice(0, 8)).size, 4, 'retain the cost-ranked four-job waves');
+});
+
+test('the complete roster leaves early admission headroom for its long exclusive compiler', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const compiler = groups.findIndex((group) =>
+    group.files.includes(
+      'packages/vite-plugin-shader/src/__tests__/production-resampling-vite.integration.test.ts',
+    ),
+  );
+  assert.ok(compiler >= 0 && groups[compiler].weight >= 900);
+  const assignment = assignCoverageShards(groups, 4);
+  const exclusiveNeighbors = groups.filter(
+    (group, index) =>
+      index !== compiler &&
+      isExclusiveCoverageGroup(group) &&
+      assignment[index] === assignment[compiler],
+  );
+  assert.equal(
+    exclusiveNeighbors.length,
+    0,
+    'the long compiler must leave room for its complete tail instead of stacking exclusive owners',
+  );
+  const criticalLane = assignment[compiler];
+  const lane = { slots: [criticalLane === 0 ? 185 : 0, criticalLane === 0 ? 185 : 0] };
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    if (assignment[index] !== criticalLane || isExclusiveCoverageGroup(group)) continue;
+    const weight = group.observedSeconds ?? group.weight;
+    lane.slots[lane.slots[0] <= lane.slots[1] ? 0 : 1] += weight;
+  }
+  const reservedFinish = Math.max(...lane.slots) + groups[compiler].weight;
+  assert.ok(
+    reservedFinish + 180 <= 45 * 60,
+    `the retained 15-minute compiler forecast must fit the 45-minute job with setup headroom (finish=${reservedFinish}s)`,
+  );
+  assert.equal(assignment.length, groups.length);
+  assert.ok(assignment.every((shard) => shard >= 0 && shard < 4));
+});
+
+test('complete partition receipts raise only their own inherited placement forecasts', () => {
+  const completed = {
+    latestRun: 1,
+    groups: {
+      '@forgeax/engine-render:shard-1-of-2': {
+        reservedSeconds: 1089,
+        latestSeconds: 673.96,
+        run: 1,
+      },
+      '@forgeax/engine-render:shard-2-of-2': {
+        reservedSeconds: 1188,
+        latestSeconds: 577.03,
+        run: 1,
+      },
+      '@forgeax/engine-devkit:shard-2-of-2': {
+        reservedSeconds: 717,
+        latestSeconds: 406.14,
+        run: 1,
+      },
+      '@forgeax/engine-modeling:shard-10-of-16': {
+        reservedSeconds: 1063,
+        latestSeconds: 841.82,
+        run: 1,
+      },
+      '@forgeax/engine-modeling:shard-16-of-16': {
+        reservedSeconds: 1006,
+        latestSeconds: 841.18,
+        run: 1,
+      },
+    },
+  };
+  const groups = coverageGroups(allProjectNames(), 8, { completed });
+  const weight = (project, shard) =>
+    groups.find((group) => group.projects[0] === project && group.shard === shard).weight;
+  assert.equal(weight('@forgeax/engine-render', '1/2'), 1090);
+  assert.equal(weight('@forgeax/engine-render', '2/2'), 1190);
+  assert.equal(weight('@forgeax/engine-devkit', '2/2'), 720);
+  assert.ok(weight('@forgeax/engine-modeling', '16/16') >= 1010);
+  const historicallyMeasuredModeling = groups.find(
+    (group) => group.projects[0] === '@forgeax/engine-modeling' && group.shard === '10/16',
+  );
+  assert.equal(historicallyMeasuredModeling.observedSeconds, 841.82);
+  assert.equal(historicallyMeasuredModeling.weight, 1065);
+  assert.ok(
+    groups
+      .filter((group) => group.projects[0] === '@forgeax/engine-modeling' && group.shard)
+      .every((group) => group.weight >= 945),
+  );
+});
+
+test('partial observations cannot optimize a current roster with stale samples', () => {
+  const key =
+    '@forgeax/engine-devkit:packages/devkit/src/__tests__/new-project-workers.e2e.test.ts';
+  const completed = {
+    latestRun: 2,
+    groups: { [key]: { reservedSeconds: 150, latestSeconds: 60, run: 1 } },
+  };
+  const worker = coverageGroups(['@forgeax/engine-devkit'], 8, { completed }).find((group) =>
+    group.files.includes('packages/devkit/src/__tests__/new-project-workers.e2e.test.ts'),
+  );
+  assert.ok(worker.weight >= 150);
+  assert.equal(worker.observedSeconds, undefined);
+});
+
+test('current and retained complete coverage receipts bound all four replay forecasts', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+
+  for (const typecheck of [true, false]) {
+    const assignment = assignCoverageShards(groups, 4, { typecheck });
+    assert.equal(assignment.length, groups.length, 'retain every complete child');
+    const lanes = Array.from({ length: 4 }, (_value, lane) => ({
+      parallel: Array(2).fill(lane === 0 && typecheck ? 185 : 0),
+      exclusive: 0,
+    }));
+    for (const index of coverageGroupOrder(groups)) {
+      const group = groups[index];
+      const weight = group.observedSeconds ?? group.weight;
+      const lane = lanes[assignment[index]];
+      if (group.files.length > 0) lane.exclusive += weight;
+      else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += weight;
+    }
+    const finish = Math.max(...lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive));
+    assert.ok(
+      finish <= 2300,
+      `the complete four-job replay must stay below 2300s before remaining setup; got ${finish}s`,
+    );
+  }
+  assert.equal(groups.length, 60, 'retain every reserved complete child');
+  assert.equal(
+    groups.filter((group) => group.observedSeconds !== undefined).length,
+    59,
+    'the interrupted Vite owner keeps its reservation without a current-run sample',
+  );
+});
+
+test('completed run 41828488495 leaves the interrupted compiler its full reserved window', () => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-41828488495.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  const groups = coverageGroups(allProjectNames(), 8);
+  assert.deepEqual(
+    groups.map((group) => group.label).sort(),
+    [...Object.keys(receipt.completedSeconds), receipt.interruptedGroup].sort(),
+    'retain all complete owners and the interrupted compiler without inventing a sample',
+  );
+  const assignment = assignCoverageShards(groups, 4);
+  const lanes = Array.from({ length: 4 }, (_value, index) => ({
+    parallel: [index === 0 ? 185 : 0, index === 0 ? 185 : 0],
+    exclusive: 0,
+  }));
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    const seconds = receipt.completedSeconds[group.label] ?? group.weight;
+    const lane = lanes[assignment[index]];
+    if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
+    else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
+  }
+  const finishes = lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive);
+  assert.ok(
+    Math.max(...finishes) <= 2300,
+    `completed work plus the unchanged compiler reservation must fit 2300s: ${finishes}`,
+  );
+});
+
+test('run 41840653604 stays bounded without discarding the preceding complete cohort', () => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-41840653604.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 48);
+  assert.ok(!Object.hasOwn(receipt.completedSeconds, '@forgeax/engine-modeling:shard-13-of-16'));
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  const lanes = Array.from({ length: 4 }, (_value, lane) => ({
+    parallel: [lane === 0 ? 185 : 0, lane === 0 ? 185 : 0],
+    exclusive: 0,
+  }));
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    // Unfinished children retain the previous complete cohort or their forecast.
+    // The source owner always keeps its full reserved production window.
+    const seconds =
+      isExclusiveCoverageGroup(group) && group.weight >= 900
+        ? group.weight
+        : (receipt.completedSeconds[group.label] ?? group.observedSeconds ?? group.weight);
+    const lane = lanes[assignment[index]];
+    if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
+    else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
+  }
+  const finishes = lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive);
+  assert.ok(
+    Math.max(...finishes) <= 2300,
+    `retain setup headroom in the partial-run replay: ${finishes}`,
+  );
+});
+
+test('complete children from a cancelled coverage parent rebalance the heavy lane', () => {
+  const receipts = new Map([
+    ['@forgeax/engine-modeling:shard-2-of-16', [465.84, 855]],
+    ['@forgeax/engine-modeling:shard-7-of-16', [316.62, 849]],
+    ['@forgeax/engine-modeling:shard-9-of-16', [563.9, 1095]],
+    ['@forgeax/engine-modeling:shard-16-of-16', [841.18, 1006]],
+    ['@forgeax/engine-render:shard-1-of-2', [673.96, 1089]],
+  ]);
+  // Exercise the partial refresh itself, independent of later complete runs.
+  const completed = {
+    latestRun: 1,
+    groups: Object.fromEntries(
+      [...receipts].map(([label, [latestSeconds, reservedSeconds]]) => [
+        label,
+        { latestSeconds, reservedSeconds, run: 1 },
+      ]),
+    ),
+  };
+  const groups = coverageGroups(allProjectNames(), 8, { completed });
+  const assignment = assignCoverageShards(groups, 4);
+  const placements = Array(4).fill(0);
+  for (const [label, [latest, reserved]] of receipts) {
+    const index = groups.findIndex((group) => group.label === label);
+    assert.notEqual(index, -1, `retain completed owner ${label}`);
+    assert.equal(groups[index].observedSeconds, latest);
+    assert.ok(groups[index].weight >= reserved, `retain reservation for ${label}`);
+    placements[assignment[index]] += 1;
+  }
+  assert.ok(
+    Math.max(...placements) <= 2,
+    `the five slow completed owners must span the four jobs; got ${placements.join('/')}`,
+  );
+});
+
+test('single-job coverage retains all children without cross-job placement constraints', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  assert.deepEqual(assignCoverageShards(groups, 1), Array(groups.length).fill(0));
+});
+
+test('broad DevKit and Render halves do not accumulate on one coverage lane', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  const broad = groups.filter((group) => group.shard?.endsWith('/2'));
+  assert.equal(broad.length, 4);
+  assert.equal(
+    new Set(broad.map((group) => assignment[groups.indexOf(group)])).size,
+    4,
+    'run 41539054992 stranded both broad projects behind four slow Modeling children',
+  );
+});
+
+test('each Modeling cost-ranked wave spans all four coverage jobs', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  const modeling = groups.filter(
+    (group) => group.shard && group.projects[0] === '@forgeax/engine-modeling',
+  );
+  for (let start = 0; start < modeling.length; start += 4) {
+    const wave = modeling.slice(start, start + 4);
+    assert.equal(
+      new Set(wave.map((group) => assignment[groups.indexOf(group)])).size,
+      wave.length,
+      'run 41548412739 clustered the first and third costly waves on two slow jobs',
+    );
+  }
+});
+
+test('each Modeling rank position also spans all four coverage jobs', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  for (let rank = 0; rank < 4; rank++) {
+    const cohort = groups.filter(
+      (group) =>
+        group.projects[0] === '@forgeax/engine-modeling' &&
+        group.shard &&
+        (Number(group.shard.split('/')[0]) - 1) % 4 === rank,
+    );
+    assert.equal(cohort.length, 4);
+    assert.equal(
+      new Set(cohort.map((group) => assignment[groups.indexOf(group)])).size,
+      4,
+      'run 41587190083 stacked Modeling 1/5/9/13 on one job and 4/7/12/15 on another',
+    );
+  }
+});
+
+test('complete fine waves admit unequal forecasts without a greedy placement dead end', () => {
+  const groups = [
+    500, 800, 610, 900, 720, 660, 400, 510, 650, 610, 490, 950, 750, 810, 920, 1000,
+  ].map((weight, index) => ({
+    label: `fine-${index + 1}`,
+    projects: ['fine'],
+    shard: `${index + 1}/16`,
+    weight,
+    files: [],
+  }));
+  for (const typecheck of [true, false]) {
+    const assignment = assignCoverageShards(groups, 4, { typecheck });
+    for (let offset = 0; offset < 4; offset++) {
+      assert.equal(new Set(assignment.slice(offset * 4, offset * 4 + 4)).size, 4);
+      assert.equal(new Set([0, 1, 2, 3].map((wave) => assignment[wave * 4 + offset])).size, 4);
+    }
+    assert.deepEqual(assignCoverageShards(groups, 4, { typecheck }), assignment);
+  }
+});
+
+test('runtime child CLI typecheck override retains the complete central typecheck owner', () => {
+  const require = createRequire(import.meta.url);
+  const cli = path.join(path.dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
+  const discover = (args) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [cli, 'list', '--project=@forgeax/engine-render', ...args, '--filesOnly', '--json'],
+        { encoding: 'utf8', timeout: 60000, stdio: ['ignore', 'pipe', 'pipe'] },
+      ),
+    ).map(({ file }) => file);
+  const all = discover([]);
+  const typeTests = all.filter((file) => file.includes('.test-d.'));
+  assert.ok(typeTests.length > 0, 'exercise the real package declaration, not a mock config');
+  const preflight = discover(['--typecheck.only']);
+  assert.deepEqual(
+    preflight.filter((file) => file.includes('.test-d.')).toSorted(),
+    typeTests.toSorted(),
+    'the central preflight retains every original type test',
+  );
+  const runtime = discover(['--typecheck.enabled=false']);
+  assert.deepEqual(
+    runtime.filter((file) => file.includes('.test-d.')),
+    [],
+    'explicit CLI false must override the package default in runtime children',
+  );
+  assert.deepEqual(
+    runtime.toSorted(),
+    all.filter((file) => !file.includes('.test-d.')).toSorted(),
+    'retain every ordinary runtime file',
+  );
 });
 
 test('ordinary Shader placement excludes the isolated source-production cost', () => {
@@ -455,7 +850,9 @@ test('actual DevKit and Render discovery conserves both native halves and exclus
       coverage: true,
       coverageDir: 'coverage',
       reportPath: 'report.json',
-    }).filter((argument) => argument.startsWith('--exclude='));
+    }).filter(
+      (argument) => argument.startsWith('--exclude=') || argument === '--typecheck.enabled=false',
+    );
     const discover = (args) =>
       JSON.parse(
         execFileSync(
@@ -490,24 +887,69 @@ test('actual DevKit and Render discovery conserves both native halves and exclus
   }
 });
 
+test('completed modeling children retain measured file and process work', () => {
+  const timings = JSON.parse(
+    readFileSync('scripts/ci/modeling-coverage-file-seconds.json', 'utf8'),
+  );
+  // All sixteen children completed in run 41526304488, even though later
+  // unrelated coverage work reached the enclosing job deadline.
+  for (const [file, seconds] of [
+    ['packages/modeling/examples/scifi-mech/__tests__/scifi-mech.watertight.unit.test.ts', 118.96],
+    ['packages/modeling/examples/joint-boot/__tests__/boot.pack.integration.test.ts', 133.492],
+    ['packages/modeling/src/__tests__/bake-parallel.integration.test.ts', 61.812],
+    ['packages/modeling/examples/hood-linkage/__tests__/hood.unit.test.ts', 832.166],
+    ['packages/modeling/examples/__tests__/scene-components.unit.test.ts', 756.707],
+  ]) {
+    assert.ok(timings.files[file] >= seconds, `retain completed file share: ${file}`);
+  }
+});
+
+test('modeling reservations charge separately owned source work once', () => {
+  const project = '@forgeax/engine-modeling';
+  const covered = coverageGroups([project], 4).filter((group) => group.shard);
+  const complete = coverageGroups([project], 4, { isolateFiles: false }).filter(
+    (group) => group.shard,
+  );
+  const unchanged = covered.filter((group) => !['9/16', '10/16'].includes(group.shard));
+  assert.ok(
+    new Set(unchanged.map((group) => group.weight)).size > 1,
+    'complete child receipts retain per-partition reservations',
+  );
+  assert.equal(covered.find((group) => group.shard === '10/16').weight, 1065);
+  assert.equal(covered.find((group) => group.shard === '9/16').weight, 1095);
+  assert.equal(new Set(complete.map((group) => group.weight)).size, 1);
+  const coveredFloor = Math.min(...unchanged.map((group) => group.weight));
+  assert.ok(
+    complete[0].weight > coveredFloor,
+    'separately owned source files must not be charged to ordinary coverage partitions',
+  );
+});
+
 test('modeling partitions retain the complete native shard roster and bounded workers', () => {
   const project = '@forgeax/engine-modeling';
   for (const isolateFiles of [true, false]) {
     const groups = coverageGroups(['@forgeax/engine-math', project], 4, { isolateFiles });
     const modeling = groups.filter((group) => group.projects.includes(project));
-    assert.equal(modeling.length, isolateFiles ? 18 : 16);
+    assert.equal(modeling.length, isolateFiles ? 19 : 16);
     const native = modeling.filter((group) => group.shard);
     const isolated = modeling.filter((group) => group.files.length > 0);
     const timings = JSON.parse(
       readFileSync(new URL('../modeling-coverage-file-seconds.json', import.meta.url), 'utf8'),
     );
+    const omitted = new Set([
+      ...native[0].excludes,
+      ...(isolateFiles ? ['packages/modeling/src/__tests__/perf-tiers.unit.test.ts'] : []),
+    ]);
     const averageForecast =
-      Object.values(timings.files).reduce((sum, seconds) => sum + seconds, 0) / native.length;
+      Object.entries(timings.files).reduce(
+        (sum, [file, seconds]) => sum + (omitted.has(file) ? 0 : seconds),
+        0,
+      ) / native.length;
     assert.ok(
       native.every((group) => group.weight >= averageForecast),
-      'partition reservations must cover the retained file forecast used by the sequencer',
+      'partition reservations cover their retained file forecast without charging separate owners',
     );
-    assert.equal(isolated.length, isolateFiles ? 2 : 0);
+    assert.equal(isolated.length, isolateFiles ? 3 : 0);
     for (const group of isolated) {
       assert.equal(group.shard, undefined, 'an explicit file is never partitioned again');
       assert.equal(isExclusiveCoverageGroup(group), true);
@@ -605,6 +1047,22 @@ test('isolates heavy projects while preserving bounded project order', () => {
 test('prioritizes long coverage groups and preserves canonical order for ties', () => {
   const groups = [10, 100, 100, 20].map((weight) => ({ weight }));
   assert.deepEqual(coverageGroupOrder(groups), [1, 2, 3, 0]);
+});
+
+test('each complete broad project half starts before fine-partition backfill', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  for (const typecheck of [true, false]) {
+    const assignment = assignCoverageShards(groups, 4, { typecheck });
+    for (let shard = 0; shard < 4; shard++) {
+      const children = groups.filter((_group, index) => assignment[index] === shard);
+      const order = scheduledGroupOrder(children, { coverage: true, localGpuLease: false });
+      assert.ok(
+        children[order[0]].shard?.endsWith('/2'),
+        'run 41579286478 started Render half two after 25 minutes of Modeling backfill',
+      );
+      assert.equal(new Set(order).size, children.length, 'retain every complete child');
+    }
+  }
 });
 
 test('whole-child refinement removes a stranded parallel tail before exclusive work', () => {
@@ -795,7 +1253,8 @@ test('isolates the live ECS repository scan once and excludes it elsewhere', () 
   const groups = coverageGroups(['@forgeax/engine-ecs', '@forgeax/engine-scene'], 8);
   const owners = groups.filter((group) => group.files.includes(scanFile));
   assert.equal(owners.length, 1);
-  const { weight: _weight, ...owner } = owners[0];
+  const { weight: _weight, observedSeconds, replaySeconds: _replaySeconds, ...owner } = owners[0];
+  assert.ok(Number.isFinite(observedSeconds) && observedSeconds > 0);
   assert.deepEqual(owner, {
     label: `@forgeax/engine-ecs:${scanFiles.join(',')}`,
     projects: ['@forgeax/engine-ecs'],

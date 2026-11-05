@@ -51,7 +51,7 @@ const threeShadowBrowserFiles = new Set(
     (kind) => `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`,
   ),
 );
-const threeMaterialOutputBrowserFiles = [0, 1].map(
+const threeMaterialOutputBrowserFiles = [0, 1, 2, 3].map(
   (partition) => `packages/three/src/__tests__/material-output-${partition}.browser.test.ts`,
 );
 const topologyBrowserFile = 'apps/hello/topology/src/__tests__/topology.browser.test.ts';
@@ -87,11 +87,15 @@ const lightingChannelBrowserFiles = new Set([
     (receiver) =>
       `packages/runtime/src/__tests__/lighting-channels-world-${receiver}.browser.test.ts`,
   ),
-  'packages/runtime/src/__tests__/lighting-channels-views.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
   'packages/runtime/src/__tests__/lighting-channels-lifecycle.browser.test.ts',
   'packages/app/__tests__/lighting-channels.browser.test.ts',
 ]);
 const shortRendererBootstrapBrowserFiles = new Set([
+  // The dual-host parity capture missed its unchanged 15 s ready-frame
+  // bound in mixed group 90 of run 41494219900. Keep its complete owner alone.
+  'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts',
   // Run38101911822: the unchanged 30 s textures bootstrap took 38.5 s
   // beside instancing. Preserve the case in one existing exclusive slot.
   'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
@@ -110,9 +114,15 @@ const shadowQualityBrowserFiles = new Set([
 const pixelParityCaptureBrowserFile =
   'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
-  // Run 41546866475 crossed the independent-view Standard preparation bound
-  // beside another GPU owner. Preserve both World and publication journeys.
-  'packages/runtime/src/__tests__/lighting-channels-views.browser.test.ts',
+  // Run41607916066: the 15 s direct-light capture overlapped the wave/Toon
+  // group. The native observer also needs its own complete GPU realm.
+  directLightBrowserFile,
+  'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
+  // Runs 41474743972 and 41546866475 exhausted unchanged native readiness
+  // bounds beside another GPU owner. Run each complete view journey alone.
+  'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
+  'packages/three/src/__tests__/texture.browser.test.ts',
   // Run 41535701837 exhausted Standard's 15 s preparation bound in a mixed
   // four-file process. Keep both native pictures, compositor and light controls.
   pixelParityCaptureBrowserFile,
@@ -126,11 +136,14 @@ const exclusiveRunnerBrowserFiles = new Set([
   // Run 40654473789 crossed the unchanged 120 s render/reference/replay case
   // beside a 111 s lighting-channel group on the same eight-CPU affinity set.
   'packages/three/src/__tests__/render.browser.test.ts',
+  // Run 41591466819 crossed the unchanged 240 s directional-shadow case
+  // beside mixed Browser work. Keep its full native/reference/replay journey.
+  'packages/three/src/__tests__/shadow-directional.browser.test.ts',
   // The complete capture passed alone on Linux after mixed group 86 stalled.
   'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
   // Run 39457755532 exceeded 300 s beside a 237 s GPU neighbor. The complete
   // 24-case owner later took 280.693 s alone (run 39554721730), so its cases are
-  // partitioned across two processes that keep the original deadlines.
+  // partitioned across four processes that keep the original deadlines.
   ...threeMaterialOutputBrowserFiles,
   'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
   'packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts',
@@ -151,6 +164,10 @@ const exclusiveRunnerBrowserFiles = new Set([
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
 ]);
 const browserProcessIsolatedFiles = new Set([
+  'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
+  // Each independent-view path owns its own 300 s case and process deadline.
+  'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
   pixelParityCaptureBrowserFile,
   ...shadowQualityBrowserFiles,
   // Run 40671760654 exhausted one 300 s process with all three native owners.
@@ -317,9 +334,10 @@ export function parseArgs(argv) {
   return options;
 }
 
-// Median complete successful child cost from the runs recorded in the table;
-// failed or truncated children are excluded. Allocate startup/cleanup equally, so there
-// is no second fixed startup surcharge that overwhelms short groups.
+// Complete successful child costs from the runs recorded in the table. Refresh
+// conservatively against historical forecasts; failed or truncated children are
+// excluded even when their parent run has completed. Allocate startup/cleanup
+// equally, without a second fixed surcharge that overwhelms short groups.
 const measuredBrowserSeconds = JSON.parse(
   readFileSync(path.join(scriptDir, 'browser-file-seconds.json'), 'utf8'),
 );
@@ -384,11 +402,10 @@ export function browserGroupRunOrder(groups, selectedIndexes, concurrency) {
     );
 }
 
-// Median executed smoke/runtime tails in runs 38316658619 and 38320931831,
-// rounded to 5 s. Mesh uses
-// a conservative 200 s estimate for sixteen cases and their offline analyzer
-// inputs; the failed twenty-case receipt is not a timing baseline.
-export const ciBrowserShardTailSeconds = Object.freeze([125, 230, 200, 0]);
+// Preserve the unobserved smoke tail's historical forecast. Run 41725978104
+// completed the Runtime Pack Worker and mesh tails in 347 s and 221 s;
+// reserve their rounded-up costs. Interrupted children never lower a forecast.
+export const ciBrowserShardTailSeconds = Object.freeze([125, 350, 225, 0]);
 
 export function assignBrowserGroupsToShards(
   groups,

@@ -4,7 +4,10 @@
 // harness clone; this guard prevents the retired root surface from returning.
 
 import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
 export function isRootDocsPath(value) {
   return typeof value === 'string' && (value === 'docs' || value.startsWith('docs/'));
@@ -72,4 +75,8 @@ function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (
+  process.argv[1] &&
+  realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
+)
+  main();

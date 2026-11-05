@@ -504,9 +504,10 @@ async function captureBothFromSinglePage(targetConfig) {
     ],
     chromiumSandbox: true,
   });
+  let page;
   try {
     const ctx = await browser.newContext({ viewport: { width: CANVAS_W, height: CANVAS_H } });
-    const page = await ctx.newPage();
+    page = await ctx.newPage();
     page.on('console', (msg) => {
       process.stderr.write(`[forgeax.console.${msg.type()}] ${msg.text()}\n`);
     });
@@ -531,6 +532,18 @@ async function captureBothFromSinglePage(targetConfig) {
     const leftArray = await page.evaluate(async () => Array.from(await window.__captureLeft()));
     const rightArray = await page.evaluate(async () => Array.from(await window.__captureRight()));
     return { left: new Uint8Array(leftArray), right: new Uint8Array(rightArray) };
+  } catch (error) {
+    try {
+      mkdirSync(REPORT_DIR, { recursive: true });
+      await page?.screenshot({
+        path: resolve(REPORT_DIR, targetConfig.reportFile.replace(/\.json$/, '-failure.png')),
+        timeout: 5000,
+      });
+    } catch (captureError) {
+      console.warn('[bench:pixel-parity] failure screenshot unavailable:', String(captureError));
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`pixel-readback: ${message}`, { cause: error });
   } finally {
     await browser.close();
   }
@@ -541,8 +554,10 @@ async function captureBothFromSinglePage(targetConfig) {
 // (pnpm build / wait-on preview / chromium.launch). Returns one of the
 // ParityCaptureDetail.stage literals so the catch path can route the
 // failure through the structured dispatchAndExit channel.
-function inferPreEvalStage(message) {
+export function inferPreEvalStage(message) {
   const m = String(message);
+  if (/^pixel-readback:|page\.waitForFunction|__captureLeft|__captureRight/.test(m))
+    return 'pixel-readback';
   if (/build\b|pnpm\s+--filter|rolldown|vite\s+build/i.test(m)) return 'vite-preview';
   if (/wait-on|tcp:|preview/i.test(m)) return 'vite-preview';
   if (/chromium|playwright|browser|launch/i.test(m)) return 'chromium-launch';

@@ -87,7 +87,7 @@ test('a consumer failure cannot remove a source root beneath an active source co
     ['clean-build-outputs'],
     ['build:engine'],
     ['build:tools'],
-    ['build:app', 'preview'],
+    ['build:app', 'preview', '--shared-input-manifest', 'shared-build-inputs/manifest.json'],
   ]);
 });
 

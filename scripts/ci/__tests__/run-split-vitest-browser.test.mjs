@@ -90,6 +90,25 @@ test('Three output, rendering and texture journeys do not share one process dead
   for (const file of files) assert.ok(browserGroupWeight([file]) > 5);
 });
 
+test('Three flat-shading materials retain independent Browser and Dawn deadlines', () => {
+  const browser = readFileSync('packages/three/src/__tests__/texture.browser.test.ts', 'utf8');
+  const dawn = readFileSync('packages/three/src/__tests__/texture.dawn.test.ts', 'utf8');
+  const fixture = readFileSync('packages/three/src/__tests__/flat-shading.fixture.ts', 'utf8');
+  assert.match(
+    fixture,
+    /flatShadingMaterialTypes\s*=\s*\[\s*'MeshLambertMaterial',\s*'MeshStandardMaterial',\s*'MeshPhysicalMaterial'/,
+  );
+  for (const source of [browser, dawn]) {
+    assert.match(source, /it\.each\(\s*flatShadingMaterialTypes/);
+    assert.match(source, /timeout:\s*120000/);
+  }
+  assert.match(
+    browser,
+    /verifyFlatShading\(rendererFor\(\),\s*renderReference,\s*saveBrowserEvidence,\s*materialType\)/,
+  );
+  assert.match(dawn, /verifyFlatShading\(renderer,\s*undefined,\s*undefined,\s*materialType\)/);
+});
+
 test('Three authored-light shadow journeys retain three complete independent processes', () => {
   const targets = ['directional', 'point', 'spot'].map(
     (kind) => `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`,
@@ -102,6 +121,16 @@ test('Three authored-light shadow journeys retain three complete independent pro
     );
   }
   assert.ok(targets.every((target) => browserGroupWeight([target]) > 5));
+  const directional = readFileSync(targets[0], 'utf8');
+  assert.match(directional, /describe\.sequential/);
+  assert.equal((directional.match(/\bit\(/g) ?? []).length, 3);
+  assert.equal((directional.match(/timeout:\s*240000/g) ?? []).length, 3);
+  assert.match(directional, /afterAll\(async \(\) => journey\.dispose\(\), 120000\)/);
+});
+
+test('the complete directional shadow journey drains competing browser groups', () => {
+  const file = 'packages/three/src/__tests__/shadow-directional.browser.test.ts';
+  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
 });
 
 test('complete shadow quality matrices own exclusive browser processes', () => {
@@ -411,7 +440,7 @@ test('the measured video benchmark keeps neighboring render groups outside its m
   assert.equal(
     browserGroupRequiresExclusiveRunner([
       'packages/runtime/src/__tests__/wave1-rendering-p0.browser.test.ts',
-      'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
+      'packages/runtime/src/__tests__/wave1-rendering-materials.browser.test.ts',
       'packages/ui/src/preview/__tests__/capture-determinism.browser.test.ts',
     ]),
     false,
@@ -449,7 +478,8 @@ test('the complete nine-light owner drains competing browser groups', () => {
 test('dense Renderer owners retain singleton groups with exclusive runner admission', () => {
   const groups = dryRunGroups();
   for (const file of [
-    'packages/runtime/src/__tests__/lighting-channels-views.browser.test.ts',
+    'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+    'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
     'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
     'packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts',
     'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
@@ -1181,7 +1211,7 @@ test('concurrent browser lanes launch the heaviest selected owners first', () =>
   ];
   const selected = [0, 1, 3];
   assert.equal(browserGroupRunOrder(groups, selected, 1), undefined);
-  assert.deepEqual(browserGroupRunOrder(groups, selected, 2), [1, 2, 0]);
+  assert.deepEqual(browserGroupRunOrder(groups, selected, 2), [2, 1, 0]);
 });
 
 test('exclusive browser owners do not fragment otherwise concurrent batches', async () => {
@@ -1318,5 +1348,68 @@ test('point-light and sprite journeys retain separate original process deadlines
         [[file]],
       );
     }
+  }
+});
+
+// Run41607916066: the twelfth material case exceeded the unchanged ready-frame
+// bound after eleven native/reference/replay journeys in the same process.
+test('four complete material-output owners bound native lifetimes without losing cases', () => {
+  const files = browserTestFiles();
+  const budgets = JSON.parse(
+    readFileSync(new URL('../browser-work-budgets.json', import.meta.url), 'utf8'),
+  );
+  for (let index = 0; index < 4; index++) {
+    const file = `packages/three/src/__tests__/material-output-${index}.browser.test.ts`;
+    assert.ok(files.includes(file), `native material-output owner missing: ${file}`);
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
+    assert.equal(budgets[file].minimumCases, 6);
+    assert.ok(budgets[file].deviceRequests <= 19);
+  }
+  const groups = JSON.parse(
+    readFileSync('packages/three/src/__tests__/material-output-partitions.json', 'utf8'),
+  );
+  const modes = [
+    'normal',
+    'opaque-map',
+    'alpha-map',
+    'hash',
+    'cutoff',
+    'coverage',
+    'normal-premultiplied',
+    'additive-premultiplied',
+    'subtractive',
+    'multiply',
+    'custom',
+    'double-sided',
+  ];
+  const expected = [
+    ...modes,
+    ...modes.filter((name) => name !== 'normal').map((name) => `standard-${name}`),
+    'physical-double-sided',
+  ];
+  const owners = files.filter((file) => /material-output-\d+\.browser\.test\.ts$/.test(file));
+  assert.equal(owners.length, groups.length, 'every material owner has one declared partition');
+  for (const [index, group] of groups.entries()) {
+    const file = `packages/three/src/__tests__/material-output-${index}.browser.test.ts`;
+    assert.equal(budgets[file].minimumCases, group.length, file);
+  }
+  assert.equal(groups.length, 4);
+  assert.ok(groups.every((group) => group.length === 6));
+  assert.equal(groups[2]?.[0], 'standard-double-sided');
+  assert.equal(new Set(groups.flat()).size, 24);
+  assert.deepEqual(groups.flat().toSorted(), expected.toSorted());
+});
+
+test('short direct-light bootstrap and native GPU observer own exclusive browser lifetimes', () => {
+  const groups = dryRunGroups();
+  for (const file of [
+    'apps/parity/color-lighting/cases/direct-light/__tests__/direct-light.browser.test.ts',
+    'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
+  ]) {
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
+    assert.deepEqual(
+      groups.filter((group) => group.includes(file)),
+      [[file]],
+    );
   }
 });

@@ -74,7 +74,9 @@ export function selectDawnShard(value) {
     );
   }
   const ids = new Set(DAWN_GATE_SHARDS[index - 1]);
-  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id));
+  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(
+    (left, right) => (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0),
+  );
 }
 
 export async function runDawnGate({ group: selectedGroup, shard } = {}) {

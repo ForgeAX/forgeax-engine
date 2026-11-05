@@ -190,7 +190,7 @@ export function viewSsr(owner: ViewSettlementOwner): SsrSpatialInspection {
   });
 }
 
-/** Auto-exposure state published after a successful submit; absent without an auto exposure camera. */
+/** Auto-exposure state published after a successful completed frame; absent without an auto exposure camera. */
 export function viewAutoExposure(owner: ViewSettlementOwner): AutoExposureInspection | undefined {
   const camera = owner.recorded.camera;
   const state = owner.frameState.autoExposureState;
@@ -199,6 +199,10 @@ export function viewAutoExposure(owner: ViewSettlementOwner): AutoExposureInspec
     owner.internals.device.caps,
     state.targetGeneration,
   );
+  const physicalPassCount = viewPassNames(owner).filter((name) =>
+    name.startsWith('auto-exposure-'),
+  ).length;
+  const fragment = owner.frameState.autoExposureGpuResources?.execution === 'fragment';
   const actual =
     unavailable !== undefined ? state.fallback : state.acceptedEv > 0 ? state.acceptedEv : null;
   return createAutoExposureInspection({
@@ -219,7 +223,11 @@ export function viewAutoExposure(owner: ViewSettlementOwner): AutoExposureInspec
     ...(unavailable === undefined ? {} : { recentFailure: unavailable }),
     cost:
       unavailable === undefined
-        ? { histogramBytes: AUTO_EXPOSURE_HISTOGRAM_BYTES, passCount: 3, physicalPassCount: 1 }
+        ? {
+            histogramBytes: AUTO_EXPOSURE_HISTOGRAM_BYTES,
+            passCount: fragment ? physicalPassCount : 3,
+            physicalPassCount,
+          }
         : { histogramBytes: 0, passCount: 0, physicalPassCount: 0 },
     receipt: state.receipt,
   });
@@ -493,7 +501,11 @@ export function viewStandardLut(owner: ViewSettlementOwner): StandardLutState {
 
 /** Feature signature, compile and lifetime counters of the view's runtime. */
 export function viewFeatureGraph(owner: ViewSettlementOwner): RenderFeatureGraphInspection {
-  return getRenderFeatureGraphInspection(owner.internals);
+  const graph = getRenderFeatureGraphInspection(owner.internals);
+  const preparation = owner.frameState.candidatePipelinePreparations;
+  return preparation === undefined
+    ? graph
+    : { ...graph, candidatePipelines: preparation.inspect() };
 }
 
 /** Live producer, RHI and temporal receipts projected through the view's SSR admission. */

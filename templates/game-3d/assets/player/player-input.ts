@@ -5,6 +5,7 @@ export type PlayerControl =
   | { readonly kind: 'move'; readonly horizontal: number; readonly vertical: number }
   | { readonly kind: 'look'; readonly x: number; readonly y: number }
   | { readonly kind: 'jump' }
+  | { readonly kind: 'transform' }
   | { readonly kind: 'run'; readonly held: boolean }
   | { readonly kind: 'reset' };
 
@@ -22,10 +23,11 @@ const bounded = (value: number, limit: number) => Math.max(-limit, Math.min(limi
 export function createPlayerInput() {
   let horizontal = 0, vertical = 0, lookX = 0, lookY = 0;
   let run = false, jumpQueued = false, jumpPending = false;
+  let transformQueued = false, transformPending = false;
   let previousWidth = 0, previousHeight = 0;
   const reset = () => {
     horizontal = vertical = lookX = lookY = 0;
-    run = jumpQueued = jumpPending = false;
+    run = jumpQueued = jumpPending = transformQueued = transformPending = false;
   };
   return {
     reset,
@@ -48,6 +50,7 @@ export function createPlayerInput() {
           lookY = bounded(lookY + bounded(message.y, 250), 250);
           break;
         case 'jump': jumpQueued = true; break;
+        case 'transform': transformQueued = true; break;
         case 'run': if (typeof message.held === 'boolean') run = message.held; break;
         case 'reset': reset(); break;
       }
@@ -58,6 +61,8 @@ export function createPlayerInput() {
       previousHeight = height;
       jumpPending ||= jumpQueued || input.keyboard.justPressedCode('Space');
       jumpQueued = false;
+      transformPending ||= transformQueued || input.keyboard.justPressedCode('KeyT');
+      transformQueued = false;
       const mouseLook = input.mouse.pointerLocked || input.mouse.button(2);
       const result = {
         horizontal: horizontal + Number(input.keyboard.downCode('KeyD') || input.keyboard.downCode('ArrowRight')) -
@@ -70,6 +75,9 @@ export function createPlayerInput() {
       };
       lookX = lookY = 0;
       return result;
+    },
+    takeTransform(): boolean {
+      const value = transformPending; transformPending = false; return value;
     },
     takeJump(): boolean {
       const jump = jumpPending;

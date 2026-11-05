@@ -74,6 +74,7 @@ import {
   prepareBootstrapEntry,
 } from './bootstrap-entry';
 import { installCarriedGpuStub } from './gpu-stub';
+import { createLocalHdrFrameObserver } from './hdr-frame-observation';
 import { createKernelPool, type KernelPool } from './kernel-pool';
 import type {
   EngineToHostMessage,
@@ -149,6 +150,8 @@ let realm: WorkerRealm | undefined;
 const rebuildQueue = new SerializedRebuildQueue();
 const inspectionQueue: ExecutionInspectMessage[] = [];
 let realmTransitions = 0;
+/** One-shot linear-HDR request when the Renderer shares this Worker. */
+const localHdr = createLocalHdrFrameObserver();
 let inspectionsClosed = false;
 /** Requests admitted against a stable World that may still run asynchronously. */
 const activeInspectionIds = new Set<number>();
@@ -208,6 +211,7 @@ function admitInspections(): void {
 
 async function withRealmTransition(action: () => Promise<void>): Promise<void> {
   ++realmTransitions;
+  localHdr.close();
   try {
     await action();
   } finally {
@@ -275,6 +279,19 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
             ? result
             : rendererInspectionFailure('stale-session');
         },
+        observeNextHdrFrame: async (options?: { readonly signal?: AbortSignal }) => {
+          if (realm !== target || realmTransitions > 0 || inspectionsClosed)
+            return rendererInspectionFailure('not-ready');
+          const result =
+            target.renderWorker === undefined
+              ? renderer === undefined
+                ? rendererInspectionFailure('not-ready')
+                : await localHdr.request(options)
+              : await target.renderWorker.observeNextHdrFrame(options);
+          return realm === target && realmTransitions === 0 && !inspectionsClosed
+            ? result
+            : rendererInspectionFailure('stale-session');
+        },
         inspectRenderer: async <K extends keyof RenderInspection = keyof RenderInspection>(
           options?: ExecutionRendererInspectionOptions<K>,
         ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>> => {
@@ -315,6 +332,7 @@ async function executeInspection(job: ExecutionInspectMessage, target: WorkerRea
         },
       },
       simulation.execution,
+      target.assetAssembly?.registry,
     );
     const observation = target.observation;
     const result = await module.executeScript(job.code, {
@@ -1268,6 +1286,7 @@ function drawFrame(
 ): ReturnType<Renderer['draw']> {
   const attached = activeRenderer.attach(activeRealm.world);
   if (!attached.ok) throw attached.error;
+  localHdr.beforeDraw(activeRenderer);
   const geometryLane = activeRealm.init.diagnostics?.geometryLane;
   return profilePhase(profileSession, 'renderer-draw', () =>
     activeRenderer.draw({
@@ -1375,6 +1394,7 @@ async function renderFrame(
     // next implicit timestamp unchanged.
     if (Number.isFinite(sampleTimeSeconds)) renderSampleTimeSeconds = sampleTimeSeconds;
     postFrameSubmitted(activeRealm.world, message.frameId, draw.value);
+    localHdr.submitted(activeRenderer, draw.value);
     const completed = await draw.value.completed;
     if (!completed.ok) {
       const failure = completed.error;

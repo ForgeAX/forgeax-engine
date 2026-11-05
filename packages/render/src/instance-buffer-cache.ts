@@ -30,6 +30,11 @@ import type { GpuBuffer } from './gpu-resource';
 export interface InstanceBufferCacheEntry {
   readonly buffer: GpuBuffer;
   readonly uploadedByteLength: number;
+  /**
+   * Allocated bytes when the buffer reserves room past the payload (dynamic
+   * collections); defaults to `uploadedByteLength`.
+   */
+  readonly capacityBytes?: number;
   readonly uploadedArchVersion: number;
   /** Accepted instance-projection revision uploaded into this buffer. */
   readonly uploadedRevision?: number;

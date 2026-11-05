@@ -425,13 +425,19 @@ struct StandardPlanarReflection {
 
 // A fragment on the reflection plane, facing along its normal, sees its mirror
 // image instead of the environment radiance; the split-sum response keeps the
-// material Fresnel, and the sharp image fades into the prefiltered environment
-// by roughness 0.5. The shading normal's tilt off the plane, times
-// distortion (y), shifts the lookup toward the tilt's mirrored screen direction.
+// material Fresnel. With a mip chain (levels in z > 1) roughness blurs the
+// mirror trilinearly at lod = roughness * (levels - 1); a single level fades
+// the sharp image into the prefiltered environment by roughness 0.5. Only
+// capture holes (alpha < 1) show the environment. The shading normal's tilt
+// off the plane, times distortion (y), shifts the lookup toward the tilt's
+// mirrored screen direction.
 fn standardPlanarSpecular(position : vec3<f32>, normal : vec3<f32>, shadingNormal : vec3<f32>,
   roughness : f32, environment : vec3<f32>, response : vec3<f32>) -> vec3<f32> {
   let planar = standardPlanarReflection;
-  let weight = clamp(1.0 - 2.0 * roughness, 0.0, 1.0);
+  let levels = planar.enabledAndPadding.z;
+  let mipped = levels > 1.0;
+  let weight = select(clamp(1.0 - 2.0 * roughness, 0.0, 1.0), 1.0, mipped);
+  let lod = select(0.0, clamp(roughness, 0.0, 1.0) * (levels - 1.0), mipped);
   if (planar.enabledAndPadding.x == 0.0 || weight == 0.0 ||
       abs(dot(planar.plane, vec4<f32>(position, 1.0))) > 0.001 ||
       dot(normal, planar.plane.xyz) < 0.999) { return environment; }
@@ -444,7 +450,7 @@ fn standardPlanarSpecular(position : vec3<f32>, normal : vec3<f32>, shadingNorma
   let to = probe.xy / probe.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5) - uv;
   var lookup = uv;
   if (probe.w > 0.0 && length(to) > 1e-6) { lookup += normalize(to) * length(tilt) * planar.enabledAndPadding.y; }
-  let reflected = textureSampleLevel(standardPlanarReflectionTexture, prefilterSampler, clamp(lookup, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
+  let reflected = textureSampleLevel(standardPlanarReflectionTexture, prefilterSampler, clamp(lookup, vec2<f32>(0.0), vec2<f32>(1.0)), lod);
   let mirrored = reflected.rgb * response + environment * (1.0 - clamp(reflected.a, 0.0, 1.0));
   return mix(environment, mirrored, weight);
 }
@@ -725,7 +731,7 @@ fn standardReceivesShadows(in : VsOut) -> bool {
 #if STORAGE_BUFFER_AVAILABLE == true
   return meshReceivesShadows(meshes[0].temporal.y);
 #else
-  return true;
+  return meshReceivesShadows(f32(meshes[0].surface.w));
 #endif
 #endif
 }
@@ -988,6 +994,7 @@ struct StandardPbrOutput {
   // Linear HDR environment contribution from this same Standard BRDF callsite.
   // The detached producer names this second target S_fallback.
   @location(1) reflectionFallback : vec4<f32>,
+  @location(2) reflectionResponse : vec4<f32>,
 #endif
 };
 
@@ -1007,6 +1014,7 @@ struct StandardForwardLit {
 #endif
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   reflectionFallback : vec4<f32>,
+  reflectionResponse : vec4<f32>,
 #endif
 };
 
@@ -1019,6 +1027,7 @@ fn standardForwardOutput(lit : StandardForwardLit, color : vec3<f32>) -> Standar
 #endif
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   output.reflectionFallback = lit.reflectionFallback;
+  output.reflectionResponse = lit.reflectionResponse;
 #endif
   return output;
 }
@@ -1374,6 +1383,9 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
     vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB), skylight.intensity);
   var ambient = (environment.diffuse + environment.specular) * (vec3<f32>(1.0) - coatF) * ao;
   var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * ao;
+#ifdef REFLECTION_FALLBACK_AVAILABLE
+  var reflectionResponse = environment.response.rgb * (vec3<f32>(1.0) - coatF) * ao;
+#endif
 #ifdef CLUSTER_FORWARD_AVAILABLE
   var screenAo = 1.0;
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -1384,6 +1396,9 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
 #endif
   ambient *= screenAo;
   reflectionFallback *= screenAo;
+#ifdef REFLECTION_FALLBACK_AVAILABLE
+  reflectionResponse *= screenAo;
+#endif
 #endif
   var color = ambient;
 #ifdef TRANSMISSION_AVAILABLE
@@ -1708,6 +1723,14 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
     clearcoatFactor,
   );
   reflectionFallback = reflectionFallback + clearcoatEnvironment * clearcoatFactor;
+#ifdef REFLECTION_FALLBACK_AVAILABLE
+  var coatResponse = projectSpecularRadiance(vec3<f32>(1.0), clearcoatNormalValue, v,
+    clearcoatRoughnessValue, vec3<f32>(0.04), brdfLut, irradianceSampler) * ao;
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  coatResponse *= screenAo;
+#endif
+  reflectionResponse += coatResponse * clearcoatFactor;
+#endif
 #endif
   var lit : StandardForwardLit;
 #ifdef MATERIAL_FRAGMENT_OUTPUT_AVAILABLE
@@ -1721,6 +1744,7 @@ fn standardForwardLitSurface(in : VsOut, frontFacing : bool) -> StandardForwardL
 #endif
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   lit.reflectionFallback = vec4<f32>(reflectionFallback, standardSsrCoverage());
+  lit.reflectionResponse = vec4<f32>(reflectionResponse, environment.response.a);
 #endif
   return lit;
 }
@@ -1866,7 +1890,7 @@ fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @locati
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
   alphaTestSurface(surface);
-  return encodeStandardNormalRoughness(surface.normalWS, 1.0);
+  return encodeStandardNormalRoughness(surface.normalWS, surface.roughness);
 }
 
 struct TemporalVsOut {

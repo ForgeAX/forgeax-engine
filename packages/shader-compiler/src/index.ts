@@ -76,10 +76,12 @@ export {
   materialCookPublication,
 } from './material/native-cooker.js';
 export {
+  captureMaterialSourceSnapshot,
   collectMaterialSources,
   createMaterialPackCooker,
   listMaterialSourcePaths,
   type MaterialPackCookProfile,
+  type MaterialSourceSnapshot,
   materialShaderSourceRoots,
 } from './material/pack-cooker.js';
 export {

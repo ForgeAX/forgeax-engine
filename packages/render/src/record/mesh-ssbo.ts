@@ -1,4 +1,4 @@
-import { type BindGroup, RhiError, type RhiQueue } from '@forgeax/engine-rhi';
+import type { BindGroup, RhiQueue } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import {
   type MeshSsboBufferWrapper,
@@ -8,8 +8,14 @@ import {
   writeMeshSsboBuffer,
 } from '../assembly/mesh-ssbo-grow';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
+import { uniqueInstanceIdentities } from '../instances';
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
-import type { DispatchEntry, DispatchList } from '../render-system-extract';
+import type {
+  DispatchEntry,
+  DispatchList,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../render-system-extract';
 import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
@@ -55,13 +61,11 @@ export const MAX_UNIFORM_INSTANCES = 128;
 export const INSTANCE_STORAGE_STRIDE_FLOATS = 32;
 
 function hasStableGenerationColumn(generations: Uint32Array | undefined, count: number): boolean {
-  if (generations === undefined || generations.length !== count) return false;
-  const seen = new Set<number>();
-  for (const generation of generations) {
-    if (generation === 0 || seen.has(generation)) return false;
-    seen.add(generation);
-  }
-  return true;
+  return (
+    generations !== undefined &&
+    generations.length === count &&
+    uniqueInstanceIdentities(generations)
+  );
 }
 
 /**
@@ -87,19 +91,27 @@ export function packInstanceStorageBuffer(
   const identityProof =
     hasStableGenerationColumn(generations, count) &&
     hasStableGenerationColumn(previousGenerations, previousCount);
-  const previousIndexByGeneration = identityProof
-    ? new Map(
-        Array.from(previousGenerations ?? [], (generation, index) => [generation, index] as const),
-      )
-    : undefined;
+  // An unchanged identity column pairs every ordinal with itself.
+  const sameColumn = identityProof && generations === previousGenerations;
+  const previousIndexByGeneration =
+    identityProof && !sameColumn
+      ? new Map(
+          Array.from(
+            previousGenerations ?? [],
+            (generation, index) => [generation, index] as const,
+          ),
+        )
+      : undefined;
   for (let i = 0; i < count; i++) {
     const sourceBase = i * 16;
     const targetBase = i * INSTANCE_STORAGE_STRIDE_FLOATS;
-    const previousIndex = identityProof
-      ? previousIndexByGeneration?.get(generations?.[i] ?? 0)
-      : !generationInput && previousCount === count
-        ? i
-        : undefined;
+    const previousIndex = sameColumn
+      ? i
+      : identityProof
+        ? previousIndexByGeneration?.get(generations?.[i] ?? 0)
+        : !generationInput && previousCount === count
+          ? i
+          : undefined;
     const sameIdentity = previousIndex !== undefined && previousIndex < previousCount;
     const previousBase = (previousIndex ?? i) * 16;
     for (let k = 0; k < 16; k++) {
@@ -657,18 +669,7 @@ function stageMeshDraw(
   )
     return;
   writeMeshSlotCandidate(entry, folded);
-  const surface = storageBuffer ? 36 : 16;
-  candidateBits[surface] = visibleSurfaceBases === undefined ? 0 : (surfaceBase ?? 0);
-  candidateBits[surface + 1] =
-    visibleSurfaceBases === undefined ? 0 : (entry.source.instances?.instanceCount ?? 1);
-  candidateBits[surface + 2] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
-  candidateBits[surface + 3] = 0;
-  const region = entry.source.spriteRegion;
-  if (region !== undefined) {
-    candidateBits[storageBuffer ? 39 : 19] = 1;
-    for (let index = 0; index < 4; index++)
-      candidate[(storageBuffer ? 40 : 20) + index] = region[index] ?? 0;
-  }
+  writeMeshSurfaceCandidate(entry, visibleSurfaceBases, surfaceBase, storageBuffer);
   if (stageMeshSlot(mirror, slot)) mirror.dirty.add(slot);
   mirror.sources.set(slot, {
     source: entry.source,
@@ -677,6 +678,27 @@ function stageMeshDraw(
     folded,
     hasSurface: visibleSurfaceBases !== undefined,
   });
+}
+
+/** Encode the shared surface tail without changing the Mesh binding layout. */
+function writeMeshSurfaceCandidate(
+  entry: MeshUpload,
+  visibleSurfaceBases: ReadonlyMap<number, number> | undefined,
+  surfaceBase: number | undefined,
+  storageBuffer: boolean,
+): void {
+  const surface = storageBuffer ? 36 : 16;
+  candidateBits[surface] = visibleSurfaceBases === undefined ? 0 : (surfaceBase ?? 0);
+  candidateBits[surface + 1] =
+    visibleSurfaceBases === undefined ? 0 : (entry.source.instances?.instanceCount ?? 1);
+  candidateBits[surface + 2] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  candidateBits[surface + 3] = storageBuffer ? 0 : meshSurfaceFlags(entry.source) & 2;
+  const region = entry.source.spriteRegion;
+  if (region !== undefined) {
+    candidateBits[surface + 3] = (candidateBits[surface + 3] ?? 0) | 1;
+    for (let index = 0; index < 4; index++)
+      candidate[(storageBuffer ? 40 : 20) + index] = region[index] ?? 0;
+  }
 }
 
 /** Stage only the row selected by a real draw. Recording never sweeps rows for updates. */
@@ -805,9 +827,25 @@ export interface FoldBucket {
  * remains direct so its geometry pass keeps one projection row per draw.
  */
 export interface FoldRenderableLike {
+  readonly instances?: unknown;
+  readonly spriteInstances?: unknown;
   readonly transform: { readonly world: Float32Array };
   readonly material: import('../render-system-extract').MaterialSnapshot;
   readonly spriteRegion?: import('../sprite-region').SpriteRegion | undefined;
+}
+
+/** Capture every fact used by folding at both retained and borrowed frame seams. */
+export function foldRenderableSnapshot(
+  source: Pick<RenderableSnapshot, 'transform' | 'spriteRegion' | 'instances' | 'spriteInstances'>,
+  material: MaterialSnapshot,
+): FoldRenderableLike {
+  return {
+    transform: source.transform,
+    material,
+    spriteRegion: source.spriteRegion,
+    instances: source.instances,
+    spriteInstances: source.spriteInstances,
+  };
 }
 
 type ParamSnapshot = MaterialResource['snapshot']['paramSnapshot'];
@@ -828,7 +866,9 @@ function sameParamSnapshot(a: ParamSnapshot, b: ParamSnapshot): boolean {
 }
 
 function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderableLike[]): boolean {
-  const material = renderables[entry.renderableIndex]?.material;
+  const source = renderables[entry.renderableIndex];
+  if (source?.instances !== undefined || source?.spriteInstances !== undefined) return false;
+  const material = source?.material;
   return material?.transparent === true && materialUsesSpriteGeometry(material);
 }
 
@@ -983,11 +1023,14 @@ export interface FoldDispatchPlan {
 export function buildFoldDispatchPlan(
   buckets: readonly FoldBucket[],
   renderableIndexToValidatedIndex: ReadonlyMap<number, number>,
+  maxBucketSize = Number.POSITIVE_INFINITY,
 ): FoldDispatchPlan {
+  if (maxBucketSize < 2 || Math.trunc(maxBucketSize) !== maxBucketSize)
+    throw new RangeError('Fold page capacity must be an integer of at least two');
   const headBuckets = new Map<number, FoldBucket>();
   const skipIndices = new Set<number>();
   let foldedBucketCount = 0;
-  for (const bucket of buckets) {
+  for (const bucket of foldPages(buckets, maxBucketSize)) {
     if (bucket.bucketSize <= 1) continue;
     const headEntry = bucket.entries.at(0);
     if (headEntry === undefined) continue;
@@ -1006,6 +1049,25 @@ export function buildFoldDispatchPlan(
   return { headBuckets, skipIndices, foldedBucketCount };
 }
 
+/** Keep contiguous sort order and detached transform ownership across physical pages. */
+function* foldPages(buckets: readonly FoldBucket[], capacity: number): Generator<FoldBucket> {
+  for (const bucket of buckets) {
+    if (bucket.bucketSize <= capacity) {
+      yield bucket;
+      continue;
+    }
+    for (let start = 0; start < bucket.bucketSize; start += capacity) {
+      const end = Math.min(start + capacity, bucket.bucketSize);
+      yield {
+        ...bucket,
+        entries: bucket.entries.slice(start, end),
+        bucketSize: end - start,
+        transforms: bucket.transforms.subarray(start * 16, end * 16),
+      };
+    }
+  }
+}
+
 /**
  * WebGL2 uniform-fallback per-bucket instance-count ceiling
  * (feat-20260622-chunk-gpu-instancing-sprite-tilemap M2 / D-2 +
@@ -1019,111 +1081,7 @@ export function buildFoldDispatchPlan(
  */
 export const FOLD_UNIFORM_INSTANCE_CAP = 128;
 
-/**
- * Minimal `RhiCapabilities` shape consumed by the cap-fallback helper.
- *
- * The real `RhiDevice.caps` carries many feature flags; the helper only
- * reads `storageBuffer` (the WebGL2 / WebGPU split signal — true on
- * WebGPU + dawn / wgpu native paths, false on the WebGL2 uniform-only
- * fallback path). Mirrors the field name on the production `RhiCaps`
- * type so the dispatch site can pass `runtime.device.caps` straight in.
- */
-export interface FoldCapsLike {
-  readonly storageBuffer: boolean;
-}
-
-/**
- * Decision POD returned by {@link evaluateFoldBucketUniformCap}.
- *
- * Fields:
- *   - `fallback` — `true` when the bucket must NOT fold and the dispatch
- *     site must route it through the per-entity drawIndexed exit (the
- *     same exit the mode-gate bypass uses, plan-strategy D-9 "shared
- *     fallback exit"). `false` when the bucket can fold normally.
- *   - `error` — the structured RhiError to fire alongside the fallback.
- *     Always populated when `fallback === true`; always `undefined` when
- *     `fallback === false` (charter proposition 4: explicit failure on
- *     the failure path; silent success on the success path).
- *
- * Caller contract: when `fallback === true`, fire the error via the
- * runtime error registry AND draw the bucket's entries individually
- * (each as a 1-instance drawIndexed). Skipping the fallback while still
- * firing the error would leave the frame visually wrong (uniform buffer
- * write would clip at 128 entries).
- */
-export interface FoldBucketCapDecision {
-  readonly fallback: boolean;
-  readonly error: RhiError | undefined;
-}
-
-/**
- * Decide whether a fold bucket fits the WebGL2 uniform-fallback per-bucket
- * instance-count ceiling, returning the structured RhiError + fallback
- * intent the dispatch site needs to act on
- * (feat-20260622-chunk-gpu-instancing-sprite-tilemap M2 / w11 +
- * plan-strategy D-2 + D-9 + AC-05).
- *
- * Decision matrix:
- *
- * | caps.storageBuffer | bucketSize  | fallback | error |
- * |:--|:--|:--|:--|
- * | `true`             | every       | `false`  | `undefined` (WebGPU has no per-binding instance cap inside the storage buffer's `maxStorageBufferBindingSize`; the byte-cap path emits `'limit-exceeded'` separately) |
- * | `false`            | `<= 128`    | `false`  | `undefined` (fits inside the WebGL2 minimum 16384 B UBO with headroom) |
- * | `false`            | `> 128`     | `true`   | `RhiError({ code: 'instancing-exceeds-uniform-cap', detail: { requested, limit: 128, scope } })` |
- *
- * Singleton buckets (`bucketSize === 1`) always pass — they are the
- * mode-gate bypass output and never need the cap check (the cap is
- * about *folded* bucket arity, not about per-entity per-frame work).
- *
- * @param bucket — the FoldBucket whose `bucketSize` is the sole input
- *   (instance count = bucketSize); other fields are not consulted.
- * @param caps — the runtime's RHI capability flags
- *   (`runtime.device.caps`); only `storageBuffer` is read.
- * @param scope — closed `'sprite' | 'tilemap-chunk'` discriminator the
- *   dispatch site picks based on the call site (sprite-pass primary
- *   sprite entry vs tilemap-chunk-derived entry). Surfaced verbatim on
- *   the error's `.detail.scope` so AI users can branch their recovery
- *   on which dispatch site overflowed.
- * @returns a {@link FoldBucketCapDecision} POD; never throws.
- */
-export function evaluateFoldBucketUniformCap(
-  bucket: FoldBucket,
-  caps: FoldCapsLike,
-  scope: 'sprite' | 'tilemap-chunk',
-): FoldBucketCapDecision {
-  if (caps.storageBuffer) return { fallback: false, error: undefined };
-  if (bucket.bucketSize <= FOLD_UNIFORM_INSTANCE_CAP) {
-    return { fallback: false, error: undefined };
-  }
-  const error = new RhiError({
-    code: 'instancing-exceeds-uniform-cap',
-    expected: `bucket instance count <= ${FOLD_UNIFORM_INSTANCE_CAP} (uniform fallback cap)`,
-    hint: `reduce the bucket size (smaller layer/material groupings), switch to a WebGPU-capable backend (storage buffers lift the cap), or accept the per-cell drawIndexed fallback for ${scope}`,
-    detail: {
-      requested: bucket.bucketSize,
-      limit: FOLD_UNIFORM_INSTANCE_CAP,
-      scope,
-    },
-  });
-  return { fallback: true, error };
-}
-
-/**
- * Closed metric key for the AC-06 fold counter
- * (feat-20260622-chunk-gpu-instancing-sprite-tilemap M3 / D-3).
- *
- * Semantics — count of instanced `drawIndexed` calls the fold operator
- * emits this frame; one increment per non-singleton head bucket retained
- * after the M2 / w11 cap-fallback filter. NOT entity count, NOT pre-
- * filter bucket count — cap-overrun buckets that the dispatch site
- * routed through the per-entity fallback exit do not count.
- *
- * Naming follows the EngineMetrics dot-namespace convention
- * (`<feature>.<event>`); `render.instancing.*` covers both sprite and
- * tilemap-chunk dispatch sites without scope ambiguity (research F-5,
- * plan-strategy §8.2). The owning host evidence reads
- * `ownerMetrics.snapshot()['render.instancing.foldedDraws']`.
- */
+/** Number of actual non-singleton folded page draws, excluding direct singleton tails. */
 export const FOLDED_DRAWS_METRIC_KEY = 'render.instancing.foldedDraws';
 
 /**

@@ -148,6 +148,13 @@ for (const state of ['absent', 'stale-source', 'corrupt-bytes', 'current']) {
       if (state === 'stale-source')
         writeFileSync(join(root, 'third_party/blitz/vendor/stylo/lib.rs'), 'changed');
       if (state === 'corrupt-bytes') writeFileSync(join(pkg, 'pkg/ui_blitz_bg.wasm'), 'damaged');
+      const current = run('bash', [
+        '-e',
+        '-c',
+        shellStep('Reuse verified UI bytes before optional cache'),
+      ]);
+      assert.equal(current.status, 0, current.stdout + current.stderr);
+      assert.match(readFileSync(output, 'utf8'), new RegExp(`ready=${state === 'current'}`));
       const hydrate = run('bash', ['-e', '-c', shellStep('Hydrate and verify UI bundle')]);
       assert.equal(hydrate.status, 0, hydrate.stdout + hydrate.stderr);
       assert.match(readFileSync(output, 'utf8'), new RegExp(`needs_build=${state !== 'current'}`));
@@ -164,3 +171,16 @@ for (const state of ['absent', 'stale-source', 'corrupt-bytes', 'current']) {
     }
   });
 }
+
+test('verified UI bytes bypass optional cache before Rust admission', () => {
+  const steps = parse(action).runs.steps;
+  const current = steps.findIndex((step) => step.id === 'current');
+  const cache = steps.findIndex((step) => step.name === 'Cache matched UI bundle');
+  const hydrate = steps.findIndex((step) => step.id === 'hydrate');
+  assert.ok(current >= 0 && current < cache && cache < hydrate);
+  assert.equal(steps[cache].if, "steps.current.outputs.ready != 'true'");
+  assert.match(steps[current].run, /ensure-wasm\.mjs/);
+  assert.match(steps[current].run, /verify-current\.mjs/);
+  assert.doesNotMatch(steps[hydrate].run, /ensure-wasm\.mjs/);
+  assert.equal(steps.at(-1).run.trim(), 'node packages/ui-blitz/scripts/verify-current.mjs');
+});

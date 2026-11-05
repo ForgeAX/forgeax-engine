@@ -1,7 +1,7 @@
 # ForgeAX Game 3D
 
 Compact third-person reference: pointer-locked camera, camera-relative movement, Rapier character
-collision, a fantasy PBR showcase, a procedural low-poly armored scout, and one UiAsset.
+collision, a fantasy PBR showcase, a transforming red-and-blue armored convoy robot, and one UiAsset.
 
 > [!IMPORTANT]
 > `game-3d` is a runnable, contentful reference—not an empty 3D scene. `forgeax project new` copies a
@@ -15,7 +15,7 @@ collision, a fantasy PBR showcase, a procedural low-poly armored scout, and one 
 
 > [!IMPORTANT]
 > Click the game to lock the camera. Move with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>,
-> look with the mouse (or hold the right mouse button and drag when unlocked), jump with <kbd>Space</kbd>, hold <kbd>Shift</kbd> to run, and release the pointer with <kbd>Esc</kbd>.
+> look with the mouse (or hold the right mouse button and drag when unlocked), jump with <kbd>Space</kbd>, hold <kbd>Shift</kbd> to run, and transform with <kbd>T</kbd>, and release the pointer with <kbd>Esc</kbd>.
 > On touch displays, use the visible left joystick to move and drag the right **Look** pad to turn.
 > Tap **Jump** and hold **Run** for 1.7× movement speed. Release the joystick or Run button to stop that action.
 > **Shape a vase** opens the initially collapsed editor and pauses touch controls; **Close vase** returns to play.
@@ -205,31 +205,106 @@ contract, see the [`Materials.standard` Surface example](../../packages/render/R
 
 ## Procedural character
 
-The scout is generated entirely by `assets/character.pack.ts`: chamfered polygon sections form
-the helmet, visor, chest, backpack, and articulated limb plates. Face-split normals preserve
-the hard edges; each closed plate belongs to one joint so walking cannot stretch the armor.
-No external model, texture, or encoded mesh payload is required.
+Convoy uses the native modeling toolchain at build time. Its twin-window chest is the truck cab;
+the head retracts, arms fold behind the cab, legs rotate into the chassis and six tires slide onto
+three axles. The same low-poly mesh and rigid skin appear throughout the reversible transformation.
+Press <kbd>T</kbd> to transform. In truck mode, <kbd>W</kbd>/<kbd>S</kbd> control forward/reverse throttle and <kbd>A</kbd>/<kbd>D</kbd> steer; releasing throttle brakes. Wheel rotation follows the driving speed. Touch users can
+close the vase panel and tap **Transform**. Jump is available in robot mode.
 
-| Edit | Author source |
+| Author source | Responsibility |
 |:--|:--|
-| Torso silhouette and attached details | Rig-derived torso dimensions and chest sections in `character.pack.ts`; breastplate, ribs, backpack rails and signals follow those dimensions |
-| Helmet silhouette and face details | Head proportions and shell landmarks in `character.pack.ts`; visor, brow and chin follow the shell |
-| Limb armor and boots | Bone frames in `character.pack.ts`; coverage, thickness and taper determine the plates between joint anchors |
-| Ceramic, petrol, graphite, amber palette | Four `material/player-*` entries in `materials.pack.ts` |
-| Rest pose | Local offsets in `player/player-rig.ts`; mirrored chains, world anchors and inverse binds are derived |
-| Walk motion | Named sway, swing and flexion amplitudes in `walkClip`; one closed cycle drives both sides with opposite phases |
+| `assets/player/convoy-layout.ts` | Physical dimensions, manufacturing clearances, solved hardpoints, panel spans, telescope engagement and vehicle destinations |
+| `assets/player/convoy-model.ts` | Shared low/high part recipe: boxes, bevels, tapered armor, panel lines, linear grilles, radial tire tread and rigid rig export |
+| `assets/player/convoy-frame.ts` | Load-bearing axles, nested bearings, sliding tracks, spine, abdomen carriage and measured fit bands |
+| `assets/player/player-rig.ts` | Named body/mechanism topology and rest anchors derived from the solved assembly |
+| `assets/character.pack.ts` | Stable mesh/skeleton/skin identities, walk clip and 512-2048 texel atlas resolution (default 1024) |
+| `assets/player/modeling-build.pack.ts` | Convoy NativeCooker registered through `forge.json.roots.build` |
+| `assets/player/convoy-finish.ts` | Cooked paint, roughness and clearcoat masks with delivery mips |
+| `assets/player/player.ts` | Reversible animation clock, separate body/wheel masks, movement and read projection |
+| `assets/player/player-input.ts` | Keyboard and touch transformation edges through the existing semantic control channel |
 
-The mesh, skeleton, skin and clip retain their stable source keys. The character tests check
-repeatable generation, closed surfaces, face normals, a 4,000-triangle budget and rigid
-plate lengths at both walk extremes, local/world bind consistency, cycle closure and left/right
-phase relationships. Preview browser smoke exercises the actual skinned character with movement,
-camera and collisions.
+### Assembly constraints
+
+`createConvoyLayout` authors wheel radius, cab width/depth/interior height and leg-guide
+length. Bone lengths, material thicknesses, bearing sizes and running clearances describe
+the construction. Joint anchors, armor boundaries, telescope strokes and contact heights
+are derived from those relationships. Edit the primitive dimensions or a fit requirement;
+the mesh, rig, motion and collision support consume the same solved layout.
+
+```mermaid
+flowchart LR
+    A["Dimensions and fit requirements"] --> B["Solved assembly layout"]
+    B --> C["Named joint hardpoints"]
+    B --> D["Armor and bearing geometry"]
+    B --> E["Transform strokes and wheel destinations"]
+    B --> F["Ground contact and collider support"]
+```
+
+| Physical relationship | Derived result |
+|:--|:--|
+| Tire diameter plus bridge clearance | Rear axle pitch, bridge length and both bearing bores |
+| Guide endpoints and minimum engagement | Leg extension stroke; the foot-shell clearance also determines ankle height and shin length |
+| Folded thigh, counter-rotating bogie and ground plane | Vehicle rear-axle destination, hip drop and two-stage track travel |
+| Shoulder hardpoint and counter-rotating gimbals | Front wheel rest anchors that fold onto the same vehicle track and contact plane |
+| Actual helmet envelope, packing clearance and cap underside | Roof aperture, head retraction and guide lengths that clear the stowed helmet |
+| Floor, roof and window-frame inner boundaries | Cab panels, roof rails, windshield spans and abdomen docking stroke |
+
+Plate roles explicitly select bearing bores and shoulder openings; dimensions do not
+identify a part. Surface ornament, colors and local styling offsets remain authored.
+Lightweight tests change all five primary dimensions independently. The default assembly
+owns one adaptive full-motion interference scan and continuous floor checks. Taller-cab
+and longer-guide regressions check actual geometry, connectivity, running fits and floor
+clearance at rest, mid-fold and stowed, plus final forward kinematics. Template tests admit
+at most two files concurrently, reuse models within a suite and bake a 128-pixel map fixture;
+the normal project build separately validates the delivered 1K textures.
+
+The automatic low-poly UV atlas covers the armor and wheels. Repeating mechanical hardware
+uses separate brushed-metal and rubber microfinish tiles, preserving atlas space for visible panels.
+The `bake-receiver` and `bake-detail` checkpoints expose the matching unique-atlas inputs. Each rigid part has a matching `bake:`
+group on the high model, preventing neighboring moving parts from contaminating the projection.
+The high model carries rounded chamfers, vent recesses, bolts and tread that are absent from the low.
+The cab back bevel and bearing radius also bound the shared projection cage; wheels
+keep their tighter group cages. Cold cooks use those known projection envelopes directly.
+Frame members merge in balanced batches before joining the body, avoiding a full-body
+rollback copy for every small rod and bearing while preserving the published asset bytes.
+The bake and skinned export share weighted normals with explicit sharp edges and matching UV cuts.
+The abdomen retracts on twin guides before the cab folds; the waist armor, belt and flexible guard
+keep a continuous body volume in robot mode. Physical shell connectivity and the complete swept
+path are checked separately from the final textured studio views. The leg-fold trajectory
+keeps the feet, bogies and folding guards above the floor; the capsule support height follows
+the wheel contact plane, with a 10 mm character-controller offset.
+
+| Map | Runtime use |
+|:--|:--|
+| Tangent normal | High surface detail on the low mesh |
+| Base color | Red/blue enamel, steel, rubber, glass and signal palette |
+| ORMH | Green roughness and blue metallic channels drive Standard PBR; red stores AO and alpha stores height |
+| AO | Occlusion reuses the identical ORMH red channel |
+| Emissive | Cyan eyes/headlights and amber roof markers |
+| Coat | Red clearcoat mask and green clearcoat roughness |
+| Height, curvature, edge wear, position, cavity | Bake inspection and finish inputs; these auxiliary maps are excluded from runtime publication |
+
+Only the low mesh, skeleton, clips and five skinned Standard material slots reach the renderer:
+unique baked armor plus shared dark steel, bright steel, brass and rubber finishes. The high
+geometry is a bake input. No runtime modeling import or external model/texture payload is needed.
+
+The build-only Convoy cooker caches its completed five-texture finish and delivery
+mips alongside the raw native bake. Native producer identity, source inputs and
+finish version own the cache key; metadata and pixel digests reject stale or
+damaged entries. Fresh disposable source copies reuse identical results while
+each restored texture retains its own backing buffer. GUIDs bind at publication.
+
+The template tests retain closed surfaces, unit normals, a 24,000-triangle budget, rigid plate
+lengths, bind consistency and the closed opposite-limb walk cycle. Additional tests sample the
+continuous native transformation, check clip targets and rest rotations, and bake actual normals,
+AO, height, material response and emission. `scripts/convoy-playthrough.mjs` exercises real keyboard
+transformation, an intermediate pose, driving, reverse transformation and reload.
 
 ## Coordinate contract
 
 ForgeAX uses a right-handed world with `+Y` up. This template sets yaw `0` to camera-forward `-Z`
 and camera-right `+X`. Mouse-right turns the view right; mouse-down looks down and mouse-up looks
-up. WASD is projected onto the camera's horizontal forward/right axes, then the character turns to
+up. In robot mode, WASD is projected onto the camera's horizontal forward/right axes, then the character turns to
 that resolved world-space movement. Pitch never adds vertical movement; Rapier remains the only
 owner of the final player position.
 
@@ -263,7 +338,7 @@ removes its listeners without closing it. Physics remains the position authority
 | `assets/ui/guide-controller.ts` | Host input-mode presentation, localized guide and touch vase disclosure |
 | `assets/camera/camera.pack.ts` + `assets/player/player.ts` | Pointer-lock policy, fixed-step movement, camera follow, animation binding, and UI state |
 | `assets/scene.pack.ts` | Kinematic player controller plus static colliders for every visible obstacle |
-| `assets/character.pack.ts` | Chamfered planar armor, four PBR material ranges, rigid 14-joint skin, and walk clip |
+| `assets/character.pack.ts` | Native low/high armor recipe, baked PBR atlas, rigid transforming skin, and walk/transform/wheel clips |
 | `assets/fantasy-meshes.pack.ts` | Klein bottle, trefoil knot, and astral bloom multi-material meshes |
 | `assets/guide.ui.html` + `assets/guide.ui.css` | Readable HTML/CSS authoring pair for the control/lock-state overlay |
 | `assets/guide.ui.html.meta.json` | UI importer declaration and stable public GUID |
@@ -302,3 +377,40 @@ control; the generated Pack and DDC output are build projections, not
 hand-edited sources.
 
 The Host provides the `#game-ui` overlay container. The frontend root plugin mounts the guide there; the engine root owns physics, the scene, player, and camera.
+
+The detailed convoy separates silhouette from surface cost. Layered shoulder and knee armor,
+finger silhouettes, bearing hubs and hydraulic rods stay in the runtime skin. Scale-aware
+louvers, hex bolts, engineering numbers, hub lug circles, tire sidewall rings and chevron
+tread exist only in the high bake source. The default 1K atlas carries them through tangent
+normals, AO and PBR maps. Object-space cavity grime, edge chips and enamel roughness variation
+are cooked once; a separate RG mask limits clearcoat to intact paint and glass. Normal mips
+renormalize, and ORMH mips use the normal variance to reduce distant specular sparkle.
+The five 1024-square RGBA8 maps with complete mip chains use about 26.7 MiB,
+one quarter of the former 2048-square default's 106.7 MiB. The Pack resolution
+parameter remains available for explicit authoring choices.
+
+The authored recipe reuses plate shells, one bolt and wheel variants within each build.
+Each appended instance receives its own bake group and rigid binding. Template test files
+run serially so offline baking and repeated mesh construction keep their declared case
+budgets on small SDK consumers. Every geometry, determinism and runtime test still runs.
+
+### Pack cooking and cache recovery
+
+`assets/character.pack.ts` declares the low/high model and deferred bake sources.
+The build plugin selected by `forge.json.roots.build` registers the Convoy surface
+cooker, which calls Modeling's `createBakeCooker` and applies the authored paint,
+roughness and clearcoat finish. Ordinary `forgeax project build` produces the
+five runtime textures and their complete 1K mip chains through the asset pipeline.
+
+The project ships source recipes, with no default atlas JSON or separate baking
+command. The producer uses the normal DDC for the raw bake and finished textures;
+matching concurrent outputs share one atlas job. Geometry, bake settings, producer
+identity and finish version determine reuse. Source changes or missing/corrupt
+cache entries return to the same producer during normal building. Changes to the
+finish algorithm increment `CONVOY_FINISH_VERSION`.
+
+To verify recovery, clear the project's derived cache and run `forgeax project build`
+again. No authored output needs restoring first. Each independent dimensional test
+constructs the native model, validates its closed surface and scans the complete
+motion within a 120-second case budget. This includes all 21 floor samples and
+independent endpoint checks; no construction work is moved outside the timer.

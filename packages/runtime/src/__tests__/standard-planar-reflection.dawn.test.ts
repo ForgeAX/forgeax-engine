@@ -26,8 +26,10 @@ const SIZE = 64;
  * An unlit red box stands on a polished metal floor whose cooked Standard
  * material opts into `planarReflection`. With the camera's PlanarReflection the
  * floor shows the box's mirror image; without it, or on a rough floor, the
- * unlit floor keeps the black environment. The floor renders forward on both
- * paths and both lanes.
+ * unlit floor keeps the black environment. With a Renderer-owned mirror that
+ * generates mipmaps, the rough floor keeps the reflection but samples a blurred
+ * mip: lower variance than the polished floor, more energy than the fade. The
+ * floor renders forward on both paths and both lanes.
  */
 it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
   timeout: 240_000,
@@ -169,7 +171,7 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
       }),
     );
     const lease = renderValue(renderer.attach(world));
-    const redPixels = async (): Promise<number> => {
+    const readFrame = async () => {
       if (device === undefined || target === undefined) throw new Error('no target');
       const bytesPerRow = 256;
       const buffer = device.createBuffer({ size: bytesPerRow * SIZE, usage: 0x0001 | 0x0008 });
@@ -182,6 +184,8 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
       buffer.destroy();
       const bgra = target.format.startsWith('bgra');
       let count = 0;
+      // Red channel statistics over the lower half, where the floor and its mirror image lie.
+      const floor: number[] = [];
       for (let y = 0; y < SIZE; y++)
         for (let x = 0; x < SIZE; x++) {
           const o = y * bytesPerRow + x * 4;
@@ -189,19 +193,28 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
           const g = bytes[o + 1] as number;
           const b = bytes[o + (bgra ? 0 : 2)] as number;
           if (r > 40 && r > 2 * g && r > 2 * b) count++;
+          if (y >= SIZE / 2) floor.push(r);
         }
-      return count;
+      const mean = floor.reduce((sum, r) => sum + r, 0) / floor.length;
+      const variance = floor.reduce((sum, r) => sum + (r - mean) ** 2, 0) / floor.length;
+      return { count, mean, variance };
     };
-    const frame = async (planar: boolean, material: typeof mirror, direct: boolean) => {
-      if (planar && !world.hasComponent(camera, PlanarReflection))
+    type Planar = 'none' | 'game' | 'owned-mips';
+    let current: Planar = 'none';
+    const frameStats = async (planar: Planar, material: typeof mirror, direct: boolean) => {
+      if (planar !== current && world.hasComponent(camera, PlanarReflection))
+        world.removeComponent(camera, PlanarReflection).unwrap();
+      if (planar !== current && planar !== 'none')
         world
           .addComponent(camera, {
             component: PlanarReflection,
-            data: { target: world.allocSharedRef('RenderTarget', reflection) },
+            data:
+              planar === 'game'
+                ? { target: world.allocSharedRef('RenderTarget', reflection) }
+                : { resolutionScale: 1, generateMipmaps: true },
           })
           .unwrap();
-      if (!planar && world.hasComponent(camera, PlanarReflection))
-        world.removeComponent(camera, PlanarReflection).unwrap();
+      current = planar;
       world.set(floor, MeshRenderer, { materials: [material] } as never).unwrap();
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
@@ -212,8 +225,10 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
           environment: { lease },
           ...(direct ? { geometryLane: 'direct' as const } : {}),
         });
-      return redPixels();
+      return readFrame();
     };
+    const frame = async (planar: boolean, material: typeof mirror, direct: boolean) =>
+      (await frameStats(planar ? 'game' : 'none', material, direct)).count;
     const profile = renderer.inspect().profile;
     for (const renderPath of ['forward', 'deferred'] as const) {
       renderValue(renderer.setProfile({ ...profile, renderPath, ssao: false }));
@@ -226,6 +241,18 @@ it('mirrors the PlanarReflection capture on an opted-in Standard floor', {
         // The mirror image below the box at least doubles the red coverage.
         expect(mirrored, `${label} the floor mirrors the box`).toBeGreaterThan(box * 1.6);
         expect(roughFloor, `${label} a rough floor keeps the environment`).toBeLessThan(box * 1.2);
+        const faded = await frameStats('game', rough, direct);
+        const smooth = await frameStats('owned-mips', mirror, direct);
+        const blurred = await frameStats('owned-mips', rough, direct);
+        expect(smooth.count, `${label} the owned mirror reflects the box`).toBeGreaterThan(
+          box * 1.6,
+        );
+        expect(blurred.mean, `${label} a mipped rough floor keeps the mirror`).toBeGreaterThan(
+          faded.mean + 1,
+        );
+        expect(blurred.variance, `${label} the rough mip is blurred`).toBeLessThan(
+          smooth.variance * 0.75,
+        );
       }
     }
     expect(errors).toEqual([]);

@@ -26,7 +26,10 @@ it('validates per-particle Standard color with direct and clustered lighting on 
             PROJECTOR_AVAILABLE: true,
           },
         });
-        if (!compiled.ok) throw new Error(compiled.error.message);
+        if (!compiled.ok)
+          throw new Error(`${name} (clustered=${clustered}) shader compilation failed`, {
+            cause: compiled.error,
+          });
         const module = device.createShaderModule({ code: compiled.value.wgsl });
         const info = await module.getCompilationInfo();
         expect(

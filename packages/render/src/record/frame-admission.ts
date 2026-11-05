@@ -37,6 +37,7 @@ import {
 import { ensureProbeBlendRecordBuffer } from './probe-blend-buffer';
 import type { PipelineState, RenderSystemInternals } from './render-context';
 import type { RenderFeatureGraphCandidate } from './typed-frame-graph';
+import { visibleSurfacePipelineDemand } from './view-pipeline-demand';
 
 /** Cube faces, auxiliary cameras or scene inputs recorded beside the display view. */
 export function hasCubeCaptureViews(cubeCapture: CubeCaptureFrameInput | undefined): boolean {
@@ -138,6 +139,8 @@ function assertAtmosphereAdmission(
 ): void {
   if (
     frameState.environmentFrame?.source.kind !== 'atmosphere' ||
+    (frameState.environmentFrame.source.atmosphere.backgroundOnly &&
+      internals.device.caps.rgba16floatRenderable) ||
     (pipelineState.atmosphereAvailable === true &&
       internals.device.caps.compute &&
       internals.device.caps.storageTexture &&
@@ -327,7 +330,7 @@ export function projectFrameVisibleSurface(
   scene: PersistentGpuDrivenState | undefined,
   renderables: FrameList<RenderableSnapshot>,
 ): VisibleSurfaceProjection | undefined {
-  if (internals.standardProfile?.visibleSurface !== true) return undefined;
+  if (!visibleSurfacePipelineDemand(internals.standardProfile)) return undefined;
   if (scene === undefined)
     throw new RhiError({
       code: 'rhi-not-available',

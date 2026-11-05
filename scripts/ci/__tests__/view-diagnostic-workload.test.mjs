@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -23,6 +24,45 @@ const prepare = runInNewContext(`${source.slice(start, end)}; prepareDiagnosticG
   resolve,
 });
 const template = resolve('templates/game-3d');
+const viewIntegration = resolve('scripts/ci/run-view-integration.mjs');
+const viewPlan = (...args) =>
+  JSON.parse(
+    execFileSync(process.execPath, [viewIntegration, '--candidate', ...args], {
+      encoding: 'utf8',
+    }),
+  );
+test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner', () => {
+  const shards = Array.from({ length: 4 }, (_value, index) =>
+    viewPlan('--shard', String(index), '--dry-run'),
+  );
+  const groupOwner = (file) =>
+    shards.flatMap((steps, shard) =>
+      steps.filter(([, , args]) => args[0] === file).map(([owner]) => ({ owner, shard })),
+    );
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-diagnostic-pages-integration.mjs'), [
+    { owner: 'diagnostics', shard: 3 },
+  ]);
+  assert.deepEqual(groupOwner('tools/view-plugins/integration/verify-modeling.mjs'), [
+    { owner: 'modeling', shard: 2 },
+  ]);
+  assert.equal(
+    shards[3].filter(([owner]) => owner === 'diagnostics')[0][2][0],
+    'tools/view/scripts/verify-diagnostic-pages-integration.mjs',
+    'the live RHI replay must start before the other GPU diagnostic owners',
+  );
+  const game3dFinished = Math.max(
+    ...shards[2].flatMap(([, , args], index) =>
+      args[0] === 'tools/forgeax-mcp/test/app-browser.mjs' ||
+      args[0] === 'tools/view/scripts/verify-game3d-workspace.mjs'
+        ? [index]
+        : [],
+    ),
+  );
+  const modelingStarts = shards[2].findIndex(([owner]) => owner === 'modeling');
+  assert.ok(modelingStarts > game3dFinished, 'keep Game 3D work contiguous before Modeling');
+  assert.ok(viewPlan('--list-groups').includes('modeling'));
+  assert.deepEqual(viewPlan('--list-shards'), [0, 1, 2, 3]);
+});
 for (const viewport of [
   { width: 860, height: 660 },
   { width: 1440, height: 900 },

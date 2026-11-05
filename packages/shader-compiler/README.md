@@ -352,8 +352,14 @@ schedules the same way every time, and routing never changes a draft.
 The existing material queue places uniform-only siblings on one warm lane while
 independent contracts use other idle lanes. Placement derives from roots, profile
 and the detached source contract without uniform values; it never admits cached
-output. Each cook still rereads source bytes, validates its actual values and
-publishes its own GUID, references and artifacts. Non-JSON input retains the
+output. Live/default cooks reread source bytes; every cook validates its actual values and
+publishes its own GUID, references and artifacts. A build host can explicitly pass
+`captureMaterialSourceSnapshot()` through `sourceSnapshot` after capturing its
+files and namespace with the build source fence. The cooker detaches and freezes
+that input, retains at most 16 prepared catalogs, and sends it once per Worker lane
+and source identity. A new generation must capture again; publication verifies
+the fence. Intrinsic 16-byte GUID values may share a validated material contract;
+unrelated typed arrays and accessor-bearing inputs keep the ordinary path. Non-JSON input retains the
 ordinary cooker path. Native parity tests require identical serial/parallel
 publication bytes, no simultaneous duplicate contract, and two active distinct
 contracts in the two-lane fixture.
@@ -378,8 +384,9 @@ Exact source and selected ABI facts validate on every cook. A bounded Surface
 lowering cache reuses only the pure string rewrite after validation: 128 entries,
 16 MiB retained UTF-16 payload, and at most 1 MiB per entry. Its key includes every
 lowering input, including generated parameters, ABI and inlined helpers. Source
-collection and diagnostic ownership are not cached. No World, material values or
-project source snapshot is retained between jobs. Shader plugins and VFX keep
+collection remains fresh for live/default cooks. Explicit fenced snapshots retain
+only detached source records and prepared catalogs; no World or material values
+are retained. Diagnostic ownership remains per invocation. Shader plugins and VFX keep
 their existing lifecycle-owned compiler instances.
 
 `createShaderProgramCompiler()` shares pending composition and validation and retains successful

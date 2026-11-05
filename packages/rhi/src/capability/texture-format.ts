@@ -3,13 +3,17 @@ import { err, ok, type Result, RhiError } from '../errors';
 /** The only format profile currently admitted by the reflection fallback path. */
 export const R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE = 'r32float-mip-sampled-storage' as const;
 
-export type RhiTextureFormatProfile = typeof R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE;
+export const R32FLOAT_MIP_SAMPLED_RENDER_PROFILE = 'r32float-mip-sampled-render' as const;
+export type RhiTextureFormatProfile =
+  | typeof R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE
+  | typeof R32FLOAT_MIP_SAMPLED_RENDER_PROFILE;
 export type RhiTextureFormatProbeVerdict = 'admitted' | 'unavailable' | 'structural-only';
 export type RhiTextureFormatProbeEvidence = 'real' | 'structural';
 export type RhiTextureFormatProbeStage =
   | 'texture-create'
   | 'mip-view'
   | 'sampled-storage-bind-group'
+  | 'sampled-render-bind-group'
   | 'pipeline-bind'
   | 'finish'
   | 'submit'
@@ -26,6 +30,10 @@ export const R32FLOAT_PROBE_STAGES: readonly RhiTextureFormatProbeStage[] = [
   'completion',
   'readback',
 ];
+
+export const R32FLOAT_RENDER_PROBE_STAGES = R32FLOAT_PROBE_STAGES.map((stage) =>
+  stage === 'sampled-storage-bind-group' ? 'sampled-render-bind-group' : stage,
+) satisfies readonly RhiTextureFormatProbeStage[];
 
 export interface RhiTextureFormatProbeStageReceipt {
   readonly stage: RhiTextureFormatProbeStage;
@@ -46,7 +54,11 @@ export interface RhiTextureFormatCapabilityReceipt {
   readonly deviceGeneration: number;
   readonly stages: readonly RhiTextureFormatProbeStageReceipt[];
   readonly sampleType: 'unfilterable-float';
-  readonly usages: readonly ['texture-binding', 'storage-binding', 'copy-src'];
+  readonly usages: readonly [
+    'texture-binding',
+    'storage-binding' | 'render-attachment',
+    'copy-src',
+  ];
   readonly readback?: RhiTextureFormatReadback | undefined;
   readonly probeExecutions: number;
 }
@@ -83,13 +95,13 @@ export function createUnavailableR32FloatReceipt(
 export function validateR32FloatReceipt(
   receipt: RhiTextureFormatCapabilityReceipt,
 ): Result<RhiTextureFormatCapabilityReceipt, RhiError> {
-  const missing = R32FLOAT_PROBE_STAGES.find(
-    (stage) => !receipt.stages.some((entry) => entry.stage === stage),
-  );
+  const render = receipt.profile === R32FLOAT_MIP_SAMPLED_RENDER_PROFILE;
+  const stages = render ? R32FLOAT_RENDER_PROBE_STAGES : R32FLOAT_PROBE_STAGES;
+  const missing = stages.find((stage) => !receipt.stages.some((entry) => entry.stage === stage));
   if (missing !== undefined) {
     return unavailable(receipt, missing, `required stage ${missing} is missing`);
   }
-  if (receipt.profile !== R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE) {
+  if (!render && receipt.profile !== R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE) {
     return unavailable(receipt, 'texture-create', 'profile is not the closed r32float profile');
   }
   if (receipt.sampleType !== 'unfilterable-float') {
@@ -102,7 +114,7 @@ export function validateR32FloatReceipt(
   if (
     receipt.usages.length !== 3 ||
     receipt.usages[0] !== 'texture-binding' ||
-    receipt.usages[1] !== 'storage-binding' ||
+    receipt.usages[1] !== (render ? 'render-attachment' : 'storage-binding') ||
     receipt.usages[2] !== 'copy-src'
   ) {
     return unavailable(

@@ -250,6 +250,26 @@ export type ExecutionGeometryObservationResult =
   | { readonly ok: true; readonly value: import('@forgeax/engine-render').GeometryObservation }
   | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
 
+/**
+ * Detached pre-exposure scene color of one submitted frame. `bytes` are the
+ * padded `rgba16float` rows of the `linear-hdr` observation domain (scene
+ * color before exposure, tonemap and anti-aliasing). `barrelDistortion` is the
+ * frame's display mapping; absent means the frame had no accepted camera.
+ */
+export interface ExecutionHdrFrameObservation {
+  readonly frameId: number;
+  readonly width: number;
+  readonly height: number;
+  readonly bytesPerRow: number;
+  readonly format: import('@forgeax/engine-rhi').TextureFormat;
+  readonly bytes: Uint8Array;
+  readonly barrelDistortion?: import('@forgeax/engine-render').BarrelDistortionMapping;
+}
+
+export type ExecutionHdrObservationResult =
+  | { readonly ok: true; readonly value: ExecutionHdrFrameObservation }
+  | Extract<ExecutionRendererInspectionResult, { readonly ok: false }>;
+
 export interface ExecutionRendererInspectionOptions<
   K extends keyof RenderInspection = keyof RenderInspection,
 > extends RenderInspectionOptions<K> {
@@ -262,6 +282,10 @@ export interface ExecutionRendererInspectionContext {
   observeNextGeometry(options?: {
     readonly signal?: AbortSignal;
   }): Promise<ExecutionGeometryObservationResult>;
+  /** One intrusive diagnostic frame that also copies its linear-HDR scene color. */
+  observeNextHdrFrame(options?: {
+    readonly signal?: AbortSignal;
+  }): Promise<ExecutionHdrObservationResult>;
   inspectRenderer<K extends keyof RenderInspection = keyof RenderInspection>(
     options?: ExecutionRendererInspectionOptions<K>,
   ): Promise<ExecutionRendererInspectionResult<Pick<RenderInspection, K>>>;

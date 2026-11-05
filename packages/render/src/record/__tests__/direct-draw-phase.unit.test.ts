@@ -12,8 +12,9 @@ import type { RenderableSnapshot } from '../../render-system-extract';
 import type { FrameList } from '../../scene/frame-list';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { RenderScene } from '../../scene/render-scene';
+import { selectCpuLodRows } from '../cpu-lod';
 import { type DirectDrawInput, DirectDrawPhase, type DirectDrawScene } from '../direct-draw-phase';
-import type { ValidatedRenderable } from '../frame-snapshot';
+import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../frame-snapshot';
 import { resolveGeometryInstanceBuffer } from '../main-pass-geometry';
 import { materialGeometry } from '../material-geometry';
 import type { _InternalRenderPipelineContext } from '../render-context';
@@ -447,4 +448,61 @@ it('records native view geometry without re-admitting its non-drawing source roo
   );
   expect(rows.map((row) => row.source)).toEqual([draw]);
   expect(prepare).toHaveBeenCalledWith([draw]);
+});
+
+it('reprojects retained instance LOD runs when the camera moves without changing geometry bins', () => {
+  const snapshot = source(7);
+  const transforms = new Float32Array(32);
+  transforms.set(mat4.identity(mat4.create()));
+  transforms.set(mat4.identity(mat4.create()), 16);
+  transforms[30] = -35;
+  Object.assign(snapshot, {
+    instances: { transforms, instanceCount: 2, cacheKey: 7, archVersion: 0 },
+    lods: [{ mesh: '00000000-0000-7000-8000-000000000001', screenCoverage: 0.5 }],
+    lodHysteresis: 0,
+  });
+  const f = setup([snapshot]);
+  const resident = {
+    ...mesh,
+    indexed: true,
+    lodRanges: [
+      mesh.submeshes.map(() => ({ first: 0, count: 3, baseVertex: 0 })),
+      mesh.submeshes.map(() => ({ first: 3, count: 3, baseVertex: 0 })),
+    ],
+  } as MeshGpuHandles;
+  for (const binding of f.meshes.keys()) f.meshes.set(binding, resident);
+  const phase = new DirectDrawPhase();
+  const state = {
+    plan: f.topology.query(f.topology.sourcePlan(), undefined),
+    slotAt: f.scene.slotAt,
+    drawSnapshotAt: f.scene.drawSnapshotAt,
+    unbatchedSlots: f.topology.unbatchedSlots,
+  };
+  const query = (z: number) =>
+    drawn(phase, {
+      scene: state,
+      selection: [],
+      select: f.select,
+      meshes: f.meshes,
+      worlds,
+      shadow: false,
+      materials: undefined,
+      prepareUnbatched: () => [],
+      viewDraws: [],
+      lodCamera: [z],
+      lod: (rows) =>
+        selectCpuLodRows(rows, {
+          ...makeZeroCameraFallbackSnapshot(),
+          position: vec3.create(0, 0, z),
+        }),
+    });
+  const near = query(5);
+  expect(near.rows[0]?.cpuInstanceLods).toEqual([
+    { first: 0, count: 1, level: 0 },
+    { first: 1, count: 1, level: 1 },
+  ]);
+  const far = query(40);
+  expect(far.rows[0]?.cpuInstanceLods).toEqual([{ first: 0, count: 2, level: 1 }]);
+  expect(far.rows[0]?.mesh).toBe(near.rows[0]?.mesh);
+  expect(query(5).rows[0]?.cpuInstanceLods).toEqual(near.rows[0]?.cpuInstanceLods);
 });

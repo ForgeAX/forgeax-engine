@@ -1,5 +1,5 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
-import { World } from '@forgeax/engine-ecs';
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
@@ -116,29 +116,35 @@ export async function verifyChannelViews(
       )
       .unwrap(),
   );
-  const auxiliaryCamera = world
-    .spawn(
-      { component: Transform, data: {} },
-      {
-        component: Camera,
-        data: { ...cameraData, target: world.allocSharedRef('RenderTarget', auxiliary) },
-      },
-    )
-    .unwrap();
-  const cubeCamera = world
-    .spawn(
-      { component: Transform, data: {} },
-      {
-        component: CubeCamera,
-        data: {
-          target: world.allocSharedRef('RenderTarget', cube),
-          updateIntent: 1,
-          requestVersion: 1,
-          faceBudget: 6,
-        },
-      },
-    )
-    .unwrap();
+  let auxiliaryCamera: EntityHandle | undefined;
+  let cubeCamera: EntityHandle | undefined;
+  const ensureCaptureCameras = () => {
+    if (auxiliaryCamera === undefined)
+      auxiliaryCamera = world
+        .spawn(
+          { component: Transform, data: {} },
+          {
+            component: Camera,
+            data: { ...cameraData, target: world.allocSharedRef('RenderTarget', auxiliary) },
+          },
+        )
+        .unwrap();
+    if (cubeCamera === undefined)
+      cubeCamera = world
+        .spawn(
+          { component: Transform, data: {} },
+          {
+            component: CubeCamera,
+            data: {
+              target: world.allocSharedRef('RenderTarget', cube),
+              updateIntent: 1,
+              requestVersion: 1,
+              faceBudget: 6,
+            },
+          },
+        )
+        .unwrap();
+  };
   const publisher =
     publication === undefined
       ? undefined
@@ -154,6 +160,7 @@ export async function verifyChannelViews(
   let time = 0;
   let lastTape: EncodedTape | undefined;
   let cubeVersion = 1;
+  let diagnosticCaptureArmed = true;
   const errors: unknown[] = [];
   const off = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
@@ -162,6 +169,13 @@ export async function verifyChannelViews(
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     time += 1 / 60;
+    // Seeding the diagnostic snapshot performs GPU readback. It must finish
+    // before measuring scene readiness, while these resources remain stable.
+    let diagnostic = !capture && diagnosticCaptureArmed ? recorder.captureFrame() : undefined;
+    if (diagnostic) {
+      diagnosticCaptureArmed = false;
+      (await recorder.frameBoundary()).unwrap();
+    }
     return completeReadyFrame(async () => {
       const candidate = publisher?.prepare(time).unwrap();
       const packet =
@@ -171,8 +185,9 @@ export async function verifyChannelViews(
               transfer: renderPublicationTransfers(candidate.message),
             });
       candidate?.accept();
-      const pending = capture ? recorder.captureFrame() : undefined;
-      if (pending) (await recorder.frameBoundary()).unwrap();
+      const pending = capture ? recorder.captureFrame() : diagnostic;
+      diagnostic = undefined;
+      if (capture && pending) (await recorder.frameBoundary()).unwrap();
       try {
         const receipt = renderValue(
           renderer.draw(
@@ -189,13 +204,34 @@ export async function verifyChannelViews(
         if (pending) {
           (await recorder.frameBoundary()).unwrap();
           const tape = compactTape((await pending).unwrap());
-          lastTape = tape;
-          expect(
-            decodeTape(tape.bytes)
-              .unwrap()
-              .events.filter((event) => event.kind === 'submit'),
-          ).toHaveLength(1);
-          await save(`view-${receipt.frameId}.rhitape`, tape.bytes);
+          if (capture) {
+            lastTape = tape;
+            await save(`view-${receipt.frameId}.rhitape`, tape.bytes);
+            expect(
+              decodeTape(tape.bytes)
+                .unwrap()
+                .events.filter((event) => event.kind === 'submit'),
+            ).toHaveLength(1);
+          } else if (receipt.presentation !== 'ready') {
+            await save(`pending-view-${receipt.frameId}.rhitape`, tape.bytes);
+            const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
+            const raster = model.works.filter((work) =>
+              model.passes.some(
+                (pass) => pass.passIndex === work.passIndex && pass.kind === 'render',
+              ),
+            );
+            // biome-ignore lint/suspicious/noConsole: Preserve native barrier conformance evidence.
+            console.info(
+              '[lighting-channel-preparation-barrier]',
+              JSON.stringify({
+                mode: publication === undefined ? 'world' : 'publication',
+                frameId: receipt.frameId,
+                rasterWorks: raster.length,
+                totalWorks: model.works.length,
+              }),
+            );
+            expect(raster).toHaveLength(0);
+          }
         }
         return receipt;
       } finally {
@@ -207,10 +243,13 @@ export async function verifyChannelViews(
   const read = async (
     outputs: readonly { target: RenderTarget; layer: number; name: string }[],
   ) => {
+    // Let both display views publish their cold ready frames before introducing
+    // independent capture graphs; every target and cube face is still rendered below.
     // The Renderer admits one cube face per submission, irrespective of the
     // camera's upper budget. Start a new explicit cycle and capture its sixth
     // face; an earlier read legitimately observes the previous active cube.
-    if (world.hasComponent(cubeCamera, CubeCamera)) {
+    ensureCaptureCameras();
+    if (cubeCamera !== undefined && world.hasComponent(cubeCamera, CubeCamera)) {
       world.set(cubeCamera, CubeCamera, { requestVersion: ++cubeVersion }).unwrap();
       for (let face = 0; face < 5; face++) await draw();
     }
@@ -362,8 +401,8 @@ export async function verifyChannelViews(
           .unwrap();
       await draw(true);
     }
-    world.despawn(auxiliaryCamera).unwrap();
-    world.despawn(cubeCamera).unwrap();
+    if (auxiliaryCamera !== undefined) world.despawn(auxiliaryCamera).unwrap();
+    if (cubeCamera !== undefined) world.despawn(cubeCamera).unwrap();
     // Same receiver facts now feed an ordinary planar capture through its retained half space.
     world.set(receiver, Transform, { pos: [0, 0, -1] }).unwrap();
     world.set(receiver, MeshRenderer, { lightingChannels: 0x80000000 }).unwrap();
@@ -396,6 +435,29 @@ export async function verifyChannelViews(
     same(nonmatch, required((await read(outputs))[0]));
     expect(center(lit) - center(nonmatch)).toBeGreaterThan(0.01);
     expect(errors).toEqual([]);
+  } catch (cause) {
+    const inspection = renderer.inspect({ runtimeRequests: true });
+    const pending = renderer.inspect().pipelineLibrary;
+    console.error(
+      '[views-readiness-failure]',
+      JSON.stringify({ time, inspection, pending, errors }),
+    );
+    await save(
+      'preparation-failure.json',
+      new TextEncoder().encode(
+        JSON.stringify(
+          {
+            time,
+            inspection,
+            pending,
+            errors,
+          },
+          null,
+          2,
+        ),
+      ),
+    );
+    throw cause;
   } finally {
     off();
     lease?.dispose();

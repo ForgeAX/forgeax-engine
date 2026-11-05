@@ -1,7 +1,8 @@
-import { ADVANCE_ANIMATION_PLAYER_SYSTEM, AnimatedBy, AnimationPlayer, AnimationTargetId, bindAnimationTargets } from '@forgeax/engine/animation';
+import { ADVANCE_ANIMATION_PLAYER_SYSTEM, AnimatedBy, AnimationPlayer, AnimationTargetId, bindAnimationTargets, defineAnimationMask, deriveAnimationTargetId } from '@forgeax/engine/animation';
 import {
   defineComponent,
   FixedTime,
+  Time,
   FixedUpdate,
   Update,
   type EntityHandle,
@@ -15,7 +16,7 @@ import { Transform } from '@forgeax/engine/scene';
 import { cameraRelativeMove, facingYaw } from '../camera/third-person.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { resolveGameEntity, type GameScene } from '../shared/scene-refs.ts';
-import { PLAYER_JOINT_NAMES } from './player-rig.ts';
+import { PLAYER_JOINT_NAMES, PLAYER_RIG, PLAYER_WALK_SECONDS, PLAYER_TRANSFORM_SECONDS, PLAYER_WHEEL_RADIUS, CONVOY_WHEELS, playerTargetPath } from './player-rig.ts';
 import { createPlayerInput, type PlayerInput } from './player-input.ts';
 
 const CAMERA_TARGET_HEIGHT = 0.5;
@@ -24,6 +25,7 @@ export const ThirdPersonRig = defineComponent(
   'Game3dThirdPersonRig',
   {
     verticalVelocity: { type: 'f32', default: 0 },
+    vehicleSpeed: { type: 'f32', default: 0 },
     yaw: { type: 'f32', default: 0 },
     pitch: { type: 'f32', default: (20 * Math.PI) / 180 },
     focusX: { type: 'f32', default: 0 },
@@ -67,6 +69,8 @@ interface PlayerConfig {
   readonly jumpSpeed: number;
   readonly gravity: number;
   readonly walk: string;
+  readonly transform: string;
+  readonly wheels: string;
 }
 const playerPlugin: Plugin.Object<PlayerConfig> = {
   name: 'game-3d/player',
@@ -119,7 +123,8 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           world.set(player, ThirdPersonRig, patch).unwrap();
         },
       };
-      yield* installWalkAnimation(world, host, ctx.gameScene, player, config.walk);
+      let vehicle = false, transformProgress = 0, wheelTime = 0;
+      yield* installCharacterAnimation(world, host, ctx.gameScene, player, [config.walk, config.transform, config.wheels]);
       world.addSystem(Update, {
         name: 'game-3d-player-input',
         after: [FRAME_START_SCAN_SYSTEM_NAME],
@@ -133,13 +138,23 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
           );
           // Visual playback consumes this frame's input even when no fixed
           // step runs. Physics alone consumes the fixed-step movement delta.
+          if (sampleInput.takeTransform()) vehicle = !vehicle;
+          const dt = world.getResource(Time).delta;
+          const previousProgress = transformProgress;
+          transformProgress = Math.max(0, Math.min(1, transformProgress + (vehicle ? 1 : -1) * dt / PLAYER_TRANSFORM_SECONDS));
+          const moving = Math.hypot(frameInput.horizontal, frameInput.vertical) > 0.001;
+          const walkWeight = moving && transformProgress === 0 && previousProgress === 0 ? 1 : 0;
+          const animation = world.get(player, AnimationPlayer).unwrap();
+          wheelTime = (wheelTime + dt * world.get(player, ThirdPersonRig).unwrap().vehicleSpeed / (2 * Math.PI * PLAYER_WHEEL_RADIUS)) % 1;
+          if (wheelTime < 0) wheelTime += 1;
           world.set(player, AnimationPlayer, {
-            weights: [Math.hypot(frameInput.horizontal, frameInput.vertical) > 0.001 ? 1 : 0],
+            weights: [walkWeight, 1 - walkWeight, 1],
+            times: [((animation.times[0] ?? 0) + dt) % PLAYER_WALK_SECONDS, transformProgress * PLAYER_TRANSFORM_SECONDS, wheelTime],
           }).unwrap();
         },
       }).unwrap();
       yield () => world.removeSystem(Update, 'game-3d-player-input').unwrap();
-      installMovement(world, player, config, playerService.readInput, sampleInput.takeJump);
+      installMovement(world, player, config, playerService.readInput, sampleInput.takeJump, () => transformProgress);
       yield () => world.removeSystem(FixedUpdate, 'game-3d-player-movement').unwrap();
       const unregisterRead = host.gameProjection?.registerRead({
         id: 'game-3d.player',
@@ -155,7 +170,13 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
             position: Array.from(transform.pos),
             facing: [rig.facingX, rig.facingZ],
             camera: { yaw: rig.yaw, pitch: rig.pitch, pointerLocked: input.mouse.pointerLocked },
-            grounded: controller.grounded,
+            grounded: controller.grounded, vehicleSpeed: rig.vehicleSpeed,
+            mode: transformProgress === 0 ? 'robot' : transformProgress === 1 ? 'truck' : 'transforming',
+            transformProgress, transformSeconds: PLAYER_TRANSFORM_SECONDS, vehicleRequested: vehicle, wheelTime,
+            pose: {
+              headRetraction: ['HeadSlideBase', 'HeadSlide'].reduce((sum, joint) => sum - world.get(resolveGameEntity(world, ctx.gameScene, `player/joint/${joint}`), Transform).unwrap().pos[1]!, 0),
+              thighRotationX: world.get(resolveGameEntity(world, ctx.gameScene, 'player/joint/Thigh.L'), Transform).unwrap().quat[0]!,
+            },
             controls: { horizontal: frameInput.horizontal, vertical: frameInput.vertical, run: frameInput.run },
             simulation: { fixedTick: world.getResource(FixedTime).tick },
             animation: { walkWeight: animation.weights[0] ?? 0, walkTime: animation.times[0] ?? 0 },
@@ -170,26 +191,34 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
 
 export default playerPlugin;
 
-async function* installWalkAnimation(
+async function* installCharacterAnimation(
   world: World,
   host: SceneHost,
   scene: GameScene,
   player: EntityHandle,
-  walk: string,
+  clips: readonly string[],
 ): AsyncGenerator<() => void, void, void> {
-  const parsedWalk = AssetGuid.parse(walk);
-  if (!parsedWalk.ok) throw parsedWalk.error;
-  const playerWalk = parsedWalk.value;
-  const loaded = await host.assets.load(playerWalk, 'animation-clip');
-  if (!loaded.ok) throw loaded.error;
-  const clip = loaded.value;
-  yield () => {
-    host.assets.release(clip).unwrap();
-  };
+  const loadedClips = [];
+  for (const guid of clips) {
+    const parsed = AssetGuid.parse(guid);
+    if (!parsed.ok) throw parsed.error;
+    const loaded = await host.assets.load(parsed.value, 'animation-clip');
+    if (!loaded.ok) throw loaded.error;
+    loadedClips.push(loaded.value);
+    yield () => { host.assets.release(loaded.value).unwrap(); };
+  }
+  const wheelNames = new Set(CONVOY_WHEELS.map(wheel => wheel.name));
+  const maskFor = (wheels: boolean) => world.allocSharedRef('AnimationMask', defineAnimationMask(
+    PLAYER_RIG.flatMap((joint, index) => wheelNames.has(joint.name) === wheels ? [{ targetId: deriveAnimationTargetId(playerTargetPath(index)), weight: 1 }] : []),
+  ).unwrap());
+  const bodyMask = maskFor(false);
+  yield () => { world.sharedRefs.release(bodyMask).unwrap(); };
+  const wheelMask = maskFor(true);
+  yield () => { world.sharedRefs.release(wheelMask).unwrap(); };
   world
     .addComponent(player, {
       component: AnimationPlayer,
-      data: { clips: [clip], times: [0], weights: [0], speeds: [1] },
+      data: { clips: loadedClips, times: [0, 0, 0], weights: [0, 1, 1], speeds: [0, 0, 0], looping: false, masks: [bodyMask, bodyMask, wheelMask] },
     })
     .unwrap();
   yield () => {
@@ -215,7 +244,17 @@ async function* installWalkAnimation(
   if (!bound.ok) throw bound.error;
 }
 
-function installMovement(world: World, player: EntityHandle, config: PlayerConfig, readInput: () => PlayerInput, takeJump: () => boolean): void {
+function vehicleMotion(dt: number, speed: number, horizontal: number, vertical: number,
+  rig: { readonly vehicleSpeed: number; readonly facingX: number; readonly facingZ: number }) {
+  const targetSpeed = vertical * speed * (vertical < 0 ? 0.45 : 1);
+  const acceleration = (vertical === 0 ? 12 : 8) * dt;
+  const vehicleSpeed = rig.vehicleSpeed + Math.max(-acceleration, Math.min(acceleration, targetSpeed - rig.vehicleSpeed));
+  const yaw = facingYaw(rig.facingX, rig.facingZ) - horizontal * dt * 1.5 * Math.min(1, Math.abs(vehicleSpeed) / 3) * Math.sign(vehicleSpeed);
+  const move = { x: -Math.sin(yaw), z: -Math.cos(yaw), length: Math.abs(vehicleSpeed) > 0.001 ? 1 : 0 };
+  return { move, vehicleSpeed, distance: vehicleSpeed * dt };
+}
+
+function installMovement(world: World, player: EntityHandle, config: PlayerConfig, readInput: () => PlayerInput, takeJump: () => boolean, readTransform: () => number): void {
   world
     .addSystem(FixedUpdate, {
       name: 'game-3d-player-movement',
@@ -229,19 +268,26 @@ function installMovement(world: World, player: EntityHandle, config: PlayerConfi
         const controller = world.get(player, CharacterController).unwrap();
         const { horizontal, vertical, run } = readInput();
         const jump = takeJump();
-        const speed = config.speed * (run ? 1.7 : 1);
-        const move = cameraRelativeMove(rig.yaw, horizontal, vertical);
+        const progress = readTransform();
+        const speed = config.speed * (run ? 1.7 : 1) * (1 + progress * 1.25);
+        let move = cameraRelativeMove(rig.yaw, horizontal, vertical);
+        let vehicleSpeed = 0;
+        let distance = speed * dt;
+        if (progress > 0 && progress < 1) { move = { x: 0, z: 0, length: 0 }; distance = 0; }
+        if (progress === 1) {
+          ({ move, vehicleSpeed, distance } = vehicleMotion(dt, speed, horizontal, vertical, rig));
+        }
         let verticalVelocity = rig.verticalVelocity;
-        if (controller.grounded && jump)
+        if (controller.grounded && jump && progress === 0)
           verticalVelocity = config.jumpSpeed;
         verticalVelocity -= config.gravity * dt;
         if (controller.grounded && verticalVelocity < 0) verticalVelocity = -config.gravity * dt;
         physics.moveAndSlide(
           player,
           vec3.create(
-            move.x * speed * dt,
+            move.x * distance,
             verticalVelocity * dt,
-            move.z * speed * dt,
+            move.z * distance,
           ),
         );
         if (world.get(player, CharacterController).unwrap().grounded && verticalVelocity < 0)
@@ -256,7 +302,7 @@ function installMovement(world: World, player: EntityHandle, config: PlayerConfi
         }
         world
           .set(player, ThirdPersonRig, {
-            verticalVelocity,
+            verticalVelocity, vehicleSpeed,
             ...(move.length > 0.001 ? { facingX: move.x, facingZ: move.z } : {}),
           })
           .unwrap();

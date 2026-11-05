@@ -171,7 +171,10 @@ any other non-boolean value fails as `package-manifest-invalid`.
 
 Live dev waits for source preparation within the same 30-minute default as its
 server Host, then uses the generated development App's 120-second first-frame
-budget. The project startup override also reaches these waits; `null` disables
+budget. While its own detached owner starts, each status probe waits at most one
+second and the remaining startup budget. A timed-out probe retains startup
+ownership only when the recorded PID and endpoint still belong to that live
+child. Ordinary `dev status` requests retain their five-second limit. The project startup override also reaches these waits; `null` disables
 them. A visible Engine fatal ends first-frame waiting immediately and reports
 failure even when page/console error lists are empty. It is never a waiting bridge.
 
@@ -1921,8 +1924,8 @@ sequenceDiagram
 | Operation | Input | Output | Owner |
 |:--|:--|:--|:--|
 | `rhi.capture` | Optional abort signal | One `ArtifactRef` plus capture bytes | Host and recorder attachment |
-| `rhi.summary` | One `ArtifactRef` | Strict v7 decode and compact work/initial-content summary | Protocol decoder and frame model |
-| `rhi.inspect` | One `ArtifactRef`, one `workIndex`, optional fields | Fresh-backend `WorkInspection` | Replay session and readback matrix |
+| `rhi.summary` | One `ArtifactRef`, optional `passes`, `label` | Strict v7 decode and compact work/initial-content summary, or per-pass rows (`passes`) plus label-matched resources (`label`); no replay device | Protocol decoder and frame model |
+| `rhi.inspect` | One `ArtifactRef`, one `workIndex`, optional fields | `WorkInspection`; `pipeline`/`bindings` (default) come from the tape without a device, `pixels`/`outputs`/`buffer` replay on a fresh backend | Replay session and readback matrix |
 | `rhi.read` | One `ArtifactRef`, 1-64 reads by resource or work binding | Per-read bytes digest, records, image stats and optional PNG | Replay session batch readback and image decode |
 | `rhi.timing` | One `ArtifactRef` | Replay GPU nanoseconds per render/compute pass and frame total | Replay session timestamp-query replay |
 
@@ -2813,3 +2816,8 @@ Direct JSON discovery uses Scene schemas for common transform, name, camera,
 light and mesh components. Scalar and short-vector fields can preview directly;
 asset references and unknown component fields remain generation inputs.
 Explicit TS bindings are checked against the preview World's actual vocabulary.
+
+Project cooker cache identities cross the build-process boundary as callbacks,
+executed in the original owner process on demand. Unversioned cookers remain
+uncacheable; identity failures propagate to the caller so DDC admission can fall
+back without inventing a producer version.

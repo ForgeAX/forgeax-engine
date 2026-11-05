@@ -69,7 +69,9 @@ it('measures RGB versus scalar extinction using the physical GPU transport and f
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   try {
-    const module = device.createShaderModule({ code: `${kernel}\n${source('atmosphere-luts')}` });
+    const module = device.createShaderModule({
+      code: `${kernel}\n${source('atmosphere-table-kernels')}\n${source('atmosphere-luts')}`,
+    });
     expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(
       [],
     );

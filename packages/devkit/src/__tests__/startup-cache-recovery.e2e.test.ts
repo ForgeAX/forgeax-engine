@@ -166,9 +166,16 @@ async function fixture(resetInvalidatesDocument = false, holdReset = false) {
   };
 }
 
-it('recovers a cached Engine-module failure in the default loading screen before any game code', async () => {
+it.each([
+  false,
+  true,
+])('recovers a cached Engine-module failure before any game code (AbortSignal.any unavailable: %s)', async (legacyAbort) => {
   const f = await fixture();
   try {
+    if (legacyAbort)
+      await f.context.addInitScript(() => {
+        Object.defineProperty(AbortSignal, 'any', { configurable: true, value: undefined });
+      });
     await f.seedWorker();
     await f.open();
     await f.page.waitForFunction(() => Reflect.get(globalThis, 'entryVersion') === 1);

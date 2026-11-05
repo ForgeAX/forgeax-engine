@@ -73,7 +73,7 @@ app.world.addSystem(Update, {
 app.start().unwrap();
 ```
 
-The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. CSS-sized drawing buffers scale with device pixel ratio and clamp both dimensions proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
+The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. CSS-sized drawing buffers default to one physical pixel per CSS pixel, matching Three.js `setPixelRatio(1)`. App does not select this scale from device pixel ratio or device performance; set `canvasPixelRatio` explicitly to request a different scale, for example `window.devicePixelRatio`. Render's authored `DynamicResolution` remains a separate opt-in. Dimensions clamp proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
 
 The browser form installs `canvasAspectPlugin` automatically. Native presentation
 hosts using the assemble form install `canvasAspectPlugin(() => canvas)` in
@@ -98,9 +98,10 @@ non-positive extents retain the existing buffer within the device limit.
 
 Worker Hosts with native resize observation consume Platform display notifications
 when sizing each admitted frame. They seed the current dimensions on subscription
-and reseed after canvas replacement. DPR and render budgets remain live; native
-resize/visibility notifications update logical dimensions. Browsers without native
-resize observation and direct sizing calls continue to measure current layout.
+and reseed after canvas replacement. The configured canvas pixel ratio and render
+budgets remain live; native resize/visibility notifications update logical
+dimensions. Browsers without native resize observation and direct sizing calls
+continue to measure current layout.
 
 ### Fixed animation assembly
 

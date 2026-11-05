@@ -158,7 +158,10 @@ invalidate that body; the request freshness barrier still runs before reuse.
 
 Development serializes watcher rebuilds and explicit imports through the
 same production session, so independent lazy publications retain each other's
-Catalog, Pack and artifact changes. Queued sibling GUID requests reuse a Meta
+Catalog, Pack and artifact changes. Filesystem revision snapshots inspect at most
+eight paths concurrently, retain every configured root and drain the complete
+batch before propagating a failure. The construction-time synchronous baseline
+and subsequent freshness fences remain authoritative. Queued sibling GUID requests reuse a Meta
 publication once all its declared outputs are imported and current in the live
 accepted Catalog. Watcher invalidation removes that eligibility; rebuilds always
 run the producer again. Close aborts active work and drains queued

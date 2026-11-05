@@ -53,6 +53,7 @@ import { type PublishedRenderFrameInput, RenderPublicationError } from '../publi
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { type PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
+import { candidateMaterialPipelineRequests } from '../record/candidate-pipeline-preparation';
 import {
   configureSurface,
   type MaterialShaderPipelineEntry,
@@ -74,7 +75,6 @@ import { installSurfaceUi, RenderSurfaceUiInput, type SurfaceUiInput } from '../
 import { createCameraViews } from './camera-views';
 import { inspectDeviceCapabilities } from './device-feature-admission';
 import { drainFramePreparation, type FramePreparation } from './frame-recording';
-import type { MaterialShaderArtifactRequest } from './material/assembly';
 import { createMaterialLayoutCache } from './material/layout-cache';
 import { materialPipelineRequestPending } from './material/pipeline-preparation-readiness';
 import {
@@ -114,6 +114,7 @@ import {
   postProcessShaderModuleLabel,
 } from '../fullscreen-post-process-pass';
 import { isCanonicalStandardPbrMaterialShader, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
+import { createRenderProfileSelection } from '../pipeline/render-profile-selection';
 import { registerSingleLayerMediumBuiltins } from '../pipeline/single-layer-medium-passes';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
@@ -218,6 +219,7 @@ import {
   findStandardPbrEntry,
   isEngineOwnedMaterialShader,
   isSharedLayoutMaterialShader,
+  materialPipelineArtifactRequest,
   resolveMaterialPipelineGroup2Contract,
   resolveMaterialPipelineShaderId,
   resolveMaterialPipelineVertexEntry,
@@ -265,11 +267,7 @@ import {
   withBuiltinRenderFeatures,
 } from './render-feature-post-processes';
 import { createRenderTargetHost } from './render-target-host';
-import {
-  freezeRenderProfile,
-  structuredRendererCause,
-  validateRenderProfile,
-} from './renderer-facade';
+import { freezeRenderProfile, structuredRendererCause } from './renderer-facade';
 import { projectRendererFeatureInspection } from './renderer-feature-inspection';
 import {
   type ContinuationTerminator,
@@ -324,7 +322,6 @@ import {
   type ObservationCaptureRead,
 } from './webgpu-renderer-observation-owner';
 import {
-  hasColorAttribute,
   isPreparedMaterialVertexLayout,
   materialPipelineVertexAttributes,
   particleMaterialInputVertexBuffers,
@@ -1935,6 +1932,7 @@ async function makeWebGPURenderer(
   // Array form: per-draw callers pass their argument list without re-spreading.
   const getMaterialShaderPipelineFor = (
     args: Parameters<typeof buildMaterialShaderPipeline>,
+    lookupOnly = false,
   ): RenderPipeline | null => {
     const registry = getShader();
     const shaderId = resolveMaterialPipelineShaderId(args[0], args[6] ?? 'forward');
@@ -1946,10 +1944,11 @@ async function makeWebGPURenderer(
     );
     const artifact = registry.findMaterialArtifact(artifactId);
     // Missing artifacts and pending pipelines remain retryable.
-    if (!artifact.ok) return buildMaterialShaderPipeline(...args);
+    if (!artifact.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
     const owner = currentPipelineCacheState();
     let requests = pipelineRequests.get(owner);
     if (requests === undefined) {
+      if (lookupOnly) return null;
       requests = new MaterialPipelineRequestCache(512, 6);
       pipelineRequests.set(owner, requests);
     }
@@ -1968,6 +1967,7 @@ async function makeWebGPURenderer(
     );
     const cached = requests.get(facts);
     if (cached !== undefined) return cached;
+    if (lookupOnly) return null;
     const stored = facts.slice();
     const pipeline = buildMaterialShaderPipeline(...args);
     if (pipeline !== null) requests.set(stored, pipeline);
@@ -1979,6 +1979,9 @@ async function makeWebGPURenderer(
   let activeProfile = freezeRenderProfile(
     internals.options?.standardProfile ?? DEFAULT_STANDARD_PROFILE,
   );
+  const selectProfile = createRenderProfileSelection();
+  const selectedProfile = (device = internals.device) =>
+    selectProfile.select(activeProfile, device);
   // Recovery prewarm and live draws must select the same material ABI.
   const getMaterialShaderArtifact: NonNullable<
     RenderSystemInternals['getMaterialShaderArtifact']
@@ -1994,34 +1997,21 @@ async function makeWebGPURenderer(
   const pipelineEntries = new WeakMap<object, MaterialShaderPipelineEntry[]>();
   const getMaterialShaderPipelineEntryFor = (
     args: Parameters<typeof buildMaterialShaderPipeline>,
+    lookupOnly = false,
   ) => {
-    const pipeline = getMaterialShaderPipelineFor(args);
+    const pipeline = getMaterialShaderPipelineFor(args, lookupOnly);
     if (pipeline === null) return null;
     const materialShaderId = args[0];
     const variantSet = args[5];
     const passKind = args[6] ?? 'forward';
     const vertexLayoutProjection = args[13];
     const layoutKind = args[15];
-    const sceneIndexAddress =
-      layoutKind === 'gpu-driven-pbr' ||
-      layoutKind === 'gpu-driven-skin' ||
-      layoutKind === 'gpu-driven-cluster-pbr' ||
-      layoutKind === 'gpu-driven-cluster-skin';
-    const options: {
-      -readonly [K in keyof MaterialShaderArtifactRequest]: MaterialShaderArtifactRequest[K];
-    } = {
-      address: sceneIndexAddress ? 'scene-index' : 'direct',
-      pass: passKind === 'shadow-caster' ? 'shadow' : 'forward',
-    };
-    if (vertexLayoutProjection !== undefined)
-      options.vertexColorAvailable = hasColorAttribute(vertexLayoutProjection);
-    if (
-      layoutKind === 'pbr-skin' ||
-      layoutKind === 'gpu-driven-skin' ||
-      layoutKind === 'gpu-driven-cluster-skin'
-    )
-      options.deformation = 'skin';
-    if (variantSet !== undefined) options.variantSet = variantSet;
+    const options = materialPipelineArtifactRequest(
+      variantSet,
+      passKind,
+      vertexLayoutProjection,
+      layoutKind,
+    );
     const artifact = getMaterialShaderArtifact(materialShaderId, options);
     const group2Contract =
       materialShaderPipelineGroup2Contracts.get(pipeline as object) ?? ('mesh' as const);
@@ -2052,22 +2042,15 @@ async function makeWebGPURenderer(
   };
   const getMaterialShaderPipelineEntry = (...args: Parameters<typeof getMaterialShaderPipeline>) =>
     getMaterialShaderPipelineEntryFor(args);
-  // The rest array is this call's own copy: mark it as a preparation request
-  // in place instead of copying and re-spreading it per call.
-  const prepareMaterialShaderPipeline = (
-    ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>
-  ) => {
-    const request = args as unknown as Parameters<typeof buildMaterialShaderPipeline>;
-    request[22] = true;
-    return getMaterialShaderPipelineFor(request);
-  };
-  const prepareMaterialShaderPipelineEntry = (
-    ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>>
-  ) => {
-    const request = args as unknown as Parameters<typeof buildMaterialShaderPipeline>;
-    request[22] = true;
-    return getMaterialShaderPipelineEntryFor(request);
-  };
+  const {
+    prepareMaterialShaderPipeline,
+    prepareMaterialShaderPipelineEntry,
+    lookupMaterialShaderPipeline,
+    lookupMaterialShaderPipelineEntry,
+  } = candidateMaterialPipelineRequests(
+    getMaterialShaderPipelineFor,
+    getMaterialShaderPipelineEntryFor,
+  );
   // Post-process modules share the async shader adapter: pending compilation
   // returns null; subsequent frames consume the cached pipeline. Group 0 is
   // reserved for View, group 1 holds inputs; vs_main/fs_main draw a fullscreen
@@ -2169,7 +2152,7 @@ async function makeWebGPURenderer(
     captureReflectionFallbackReadback: internals.options?.captureReflectionFallbackReadback,
     shadowWorkload: internals.options?.shadowWorkload,
     get standardProfile() {
-      return activeProfile;
+      return selectedProfile(currentBuildDevice());
     },
     standardPipeline: internals.options?.pipeline ?? standardPipeline,
     get featureHost() {
@@ -2274,6 +2257,8 @@ async function makeWebGPURenderer(
     getMaterialShaderPipelineEntry,
     prepareMaterialShaderPipeline,
     prepareMaterialShaderPipelineEntry,
+    lookupMaterialShaderPipeline,
+    lookupMaterialShaderPipelineEntry,
     withPipelinePreparationErrors,
     getMaterialShaderBindingContract: getMaterialShaderBindingContract,
     getFeatureShaderSource: (identifier) =>
@@ -2365,6 +2350,7 @@ async function makeWebGPURenderer(
       ).gpuPassTimingBeginReason = reason;
     },
     getRenderTargetPhysical: (target) => renderTargetHost.getPhysicalTarget(target),
+    ownedRenderTargets: renderTargetHost,
     markRenderTargetSubmitted: (target, physical) =>
       renderTargetHost.markTargetSubmitted(target, physical),
     resolveRenderTargetTextureSource: (source) =>
@@ -2395,7 +2381,11 @@ async function makeWebGPURenderer(
   const primaryOwner = viewOwnerOf(renderInternals);
   let uiOnlyFrame = false;
   if (ui !== undefined) renderInternals.deferFinalDisplayObservation = true;
-  const cameraViews = createCameraViews(renderInternals, internals.options?.maxRenderShortSide);
+  const cameraViews = createCameraViews(
+    renderInternals,
+    internals.options?.maxRenderShortSide,
+    () => publicationReceiver?.borrowAcceptedDemand(),
+  );
   internals.lossObserver.current = (detail) => {
     renderInternals.submittedPassNames = [];
     for (const continuation of frameContinuations.keys())
@@ -3135,7 +3125,7 @@ async function makeWebGPURenderer(
     importTexture: (input) => externalTextureHost.importTexture(input),
     nativeDevice: () => externalTextureHost.nativeDevice(),
     setProfile(profile: RenderProfile): RenderResult<void, RenderError> {
-      const invalid = validateRenderProfile(profile);
+      const invalid = selectProfile.validate(profile, internals.device);
       if (invalid !== undefined) {
         return err(
           new RendererOperationError('frame-input-invalid', {
@@ -3264,7 +3254,7 @@ async function makeWebGPURenderer(
           : { views: cameraViews.inspect() }),
         recovery: recoveryInspection,
         surface: surfaceReleased ? 'released' : 'available',
-        profile: activeProfile,
+        profile: selectedProfile(),
         ...inspectDeviceCapabilities(internals.device),
         frame: inspectFrameCompletionContinuations(
           frameId,

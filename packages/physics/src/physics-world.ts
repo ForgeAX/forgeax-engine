@@ -53,6 +53,18 @@ export interface RaycastHit {
   timeOfImpact: number;
 }
 
+/** Per-call policy for 3D character movement; the character itself still moves. */
+export interface MoveAndSlideOptions {
+  /** Apply native contact impulses to dynamic bodies. Defaults to true. */
+  readonly applyImpulsesToDynamicBodies?: boolean;
+}
+
+/** Synchronous 3D character handoff; gravity and stance decisions remain game-owned. */
+export interface CharacterSynchronization {
+  readonly position: Vec3;
+  readonly grounded: boolean;
+}
+
 /**
  * PhysicsWorld Resource interface — the engine-side API surface for physics
  * operations. Backend implementations (RapierPhysicsWorld3D/2D) satisfy this
@@ -165,6 +177,18 @@ export interface PhysicsWorld {
   teleport(entity: number, position: Vec3): void;
 
   /**
+   * Synchronize one existing kinematic CharacterController from its current
+   * authored Collider/tuning, then place its world-space center and seed the
+   * grounded output for an authoritative handoff. Resets native velocity like
+   * teleport; does not step, scan/synchronize other entities or apply impulses.
+   * Game-owned gravity velocity is not part of this state. The next
+   * moveAndSlide computes contact again from the actual synchronized shape.
+   * Requires registered physics systems and a ready body. Throws PhysicsError
+   * for a missing body/collider, non-kinematic character or invalid state.
+   */
+  synchronizeCharacter(entity: number, state: CharacterSynchronization): void;
+
+  /**
    * Move a kinematic character with collision response, slope handling,
    * auto-step, and ground-snap, then write the resolved position back to the
    * entity's `Transform` and `CharacterController.grounded`.
@@ -176,17 +200,20 @@ export interface PhysicsWorld {
    * `Collider`, and a `CharacterController` component.
    *
    * Tuning (offset / slope / auto-step / ground-snap) is read from the
-   * `CharacterController` component each call; there is no per-call options
-   * object and no `dt` parameter (the delta already encodes elapsed time).
+   * `CharacterController` component each call. The optional call policy can
+   * suppress impulses on other dynamic bodies; it does not suppress this
+   * character's pose/collider/grounded writes and is not a non-mutating query.
+   * There is no `dt` parameter (the delta already encodes elapsed time).
    *
    * @param entity       the character entity (kinematic RigidBody + Collider + CharacterController).
    * @param desiredDelta the requested world-space displacement for this step.
+   * @param options      optional per-call dynamic-body impulse policy; defaults to applying impulses.
    * @returns the actual displacement applied after collision resolution.
    * @throws PhysicsError `body-not-found` if the entity has no Rapier body,
    *   `collider-not-found` if the body has no collider,
    *   `controller-requires-kinematic` if the body is not kinematic.
    */
-  moveAndSlide(entity: number, desiredDelta: Vec3): Vec3;
+  moveAndSlide(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3;
 
   /** Advance the physics simulation by one timestep. */
   step(deltaTime: number): void;

@@ -48,7 +48,70 @@ function phases(stage?: TemporalFrameStage) {
 }
 
 describe('SSR temporal history owner', () => {
-  it('allocates two full-resolution color-depth and confidence history slots', async () => {
+  it('keeps submitted candidates private until completion and fences resets and in-flight reads', async () => {
+    const device = await createDevice();
+    const owner = createSsrHistoryOwner({
+      device,
+      scope: DeviceScope.create(47, 'completed-ssr'),
+      width: 5,
+      height: 3,
+    }).unwrap();
+    const firstQueue = new DeferredQueue();
+    const secondQueue = new DeferredQueue();
+    const first = owner.beginFrame().unwrap();
+    owner.submitFrame(first, firstQueue).unwrap();
+    expect(owner.inspect().historyValid).toBe(false);
+    const second = owner.beginFrame().unwrap();
+    expect(second.writeSlot).not.toBe(first.writeSlot);
+    expect(second.historyValid).toBe(false);
+    owner.submitFrame(second, secondQueue).unwrap();
+    firstQueue.complete();
+    await Promise.resolve();
+    expect(owner.inspect()).toMatchObject({ historyValid: true, readSlot: first.writeSlot });
+    const third = owner.beginFrame().unwrap();
+    expect(third.readSlot).toBe(first.writeSlot);
+    expect([first.writeSlot, second.writeSlot]).not.toContain(third.writeSlot);
+    owner.abortFrame(third, 'encode');
+    owner.reset('camera-cut');
+    secondQueue.complete();
+    await Promise.resolve();
+    expect(owner.inspect()).toMatchObject({ historyValid: false, resetReason: 'camera-cut' });
+    owner.dispose();
+  });
+
+  it('reuses only the completed view matching the shared motion source', async () => {
+    const device = await createDevice();
+    const owner = createSsrHistoryOwner({
+      device,
+      scope: DeviceScope.create(48, 'view-cohort'),
+      width: 5,
+      height: 3,
+    }).unwrap();
+    const a = {},
+      b = {},
+      c = {},
+      d = {};
+    const firstQueue = new DeferredQueue();
+    const secondQueue = new DeferredQueue();
+    const first = owner.beginFrame({ current: a, previous: undefined }).unwrap();
+    owner.submitFrame(first, firstQueue).unwrap();
+    const second = owner.beginFrame({ current: b, previous: a }).unwrap();
+    expect(second.historyValid).toBe(false);
+    owner.submitFrame(second, secondQueue).unwrap();
+    firstQueue.complete();
+    await Promise.resolve();
+    const mismatched = owner.beginFrame({ current: c, previous: b }).unwrap();
+    expect(mismatched).toMatchObject({ readSlot: null, historyValid: false });
+    expect(owner.inspect()).toMatchObject({ readSlot: null, historyValid: false });
+    owner.abortFrame(mismatched, 'encode');
+    secondQueue.complete();
+    await Promise.resolve();
+    const matching = owner.beginFrame({ current: d, previous: b }).unwrap();
+    expect(matching).toMatchObject({ readSlot: second.writeSlot, historyValid: true });
+    owner.dispose();
+  });
+
+  it('allocates an accepted state and four in-flight color-depth and confidence slots', async () => {
     const device = await createDevice();
     const scope = DeviceScope.create(41, 'renderer');
     const owner = createSsrHistoryOwner({ device, scope, width: 5, height: 3 }).unwrap();
@@ -58,17 +121,17 @@ describe('SSR temporal history owner', () => {
       height: 3,
       traceWidth: 5,
       traceHeight: 3,
-      bytes: 360,
+      bytes: 900,
       descriptor: { format: 'rgba16float', sampleCount: 1 },
     });
-    expect(owner.resources.slots).toHaveLength(2);
+    expect(owner.resources.slots).toHaveLength(5);
     expect(
       new Set(owner.resources.slots.flatMap((slot) => [slot.texture, slot.surfaceTexture])).size,
-    ).toBe(4);
+    ).toBe(10);
     expect(owner.inspect()).toMatchObject({
       state: 'first-frame',
-      historyCount: 2,
-      activeBytes: 360,
+      historyCount: 5,
+      activeBytes: 900,
       candidateBytes: 0,
       retiringBytes: 0,
       historyValid: false,
@@ -91,7 +154,7 @@ describe('SSR temporal history owner', () => {
     });
     expect(consumer.inspect()).toMatchObject({
       sharedEpoch: 1,
-      history: { state: 'stable', historyValid: true, activeBytes: 360, candidateBytes: 0 },
+      history: { state: 'stable', historyValid: true, activeBytes: 900, candidateBytes: 0 },
     });
 
     const second = consumer.run({ current: 'frame-2', antialias: 'none' }, phases());
@@ -194,11 +257,11 @@ describe('SSR temporal history owner', () => {
     expect(owner.inspect()).toMatchObject({
       width: 9,
       height: 5,
-      activeBytes: 1080,
-      retiringBytes: 360,
+      activeBytes: 2700,
+      retiringBytes: 900,
     });
     owner.retireAfterFence(queue, (cause) => failures.push(cause));
-    expect(owner.inspect().retiringBytes).toBe(360);
+    expect(owner.inspect().retiringBytes).toBe(900);
     queue.complete();
     await Promise.resolve();
     await Promise.resolve();
@@ -206,7 +269,7 @@ describe('SSR temporal history owner', () => {
     expect(owner.inspect().retiringBytes).toBe(0);
 
     owner.retireAfterFence(queue, (cause) => failures.push(cause));
-    expect(owner.inspect().activeBytes).toBe(1080);
+    expect(owner.inspect().activeBytes).toBe(2700);
     queue.complete();
     await Promise.resolve();
     await Promise.resolve();

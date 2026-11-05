@@ -412,7 +412,14 @@ if (selected('source')) {
     });
     await sourceBuildPnpm(['build:engine']);
     await sourceBuildPnpm(['build:tools']);
-    await sourceBuildPnpm(['build:app', 'preview']);
+    // This cold source build just produced and verified its own shared inputs.
+    // Preserve the Preview build without starting packages/producer a second time.
+    await sourceBuildPnpm([
+      'build:app',
+      'preview',
+      '--shared-input-manifest',
+      'shared-build-inputs/manifest.json',
+    ]);
   });
 }
 const initializedSdk = await execFileAsync(
@@ -1693,6 +1700,10 @@ if (selected('source')) {
           FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
           FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
           FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
+          FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(
+            sourceRoot,
+            'shared-build-inputs/manifest.json',
+          ),
           DEBUG: [sourceEnv.DEBUG, 'pw:browser'].filter(Boolean).join(','),
         },
         maxBuffer: 64 * 1024 * 1024,

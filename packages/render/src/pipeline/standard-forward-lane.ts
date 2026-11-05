@@ -10,6 +10,7 @@ import { err, ok, type Result } from '@forgeax/engine-types';
 import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
 import { addAtmosphereBackground } from '../environment/background';
 import type { GraphEnvironment } from '../environment/ibl';
+import { addAtmosphereSkyBackground } from '../environment/sky-background';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
@@ -53,6 +54,7 @@ import {
   standardTransmissionRoute,
 } from '../transmission/backdrop';
 import type { TransmissionDemand } from '../transmission/projection';
+import type { TemporalSecondaryReactivity } from '../typed-render-graph-primitives';
 import {
   addReflectionFallbackObservationPass,
   addTypedScenePass,
@@ -87,6 +89,7 @@ import {
   standardForwardReceiverFeatureAccesses,
   standardForwardReceiverInputs,
 } from './standard-forward-receiver';
+import { addForwardSsr } from './standard-forward-ssr';
 import {
   addStandardClusterAoPackPass,
   addStandardClusterMembershipPass,
@@ -334,7 +337,9 @@ function addForwardSsao(
         binding.schema === SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA ||
         binding.schema === SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
     ) === true;
-  if (!surfaceDemand && (!aoEnabled || clearOnly)) return ok({ ao: undefined, surface: undefined });
+  const ssr = topology.ssr?.status === 'admitted';
+  if (!surfaceDemand && !ssr && (!aoEnabled || clearOnly))
+    return ok({ ao: undefined, surface: undefined });
   const dimensions = renderInternalCopySize(topology);
   const surface = createStandardSceneSurfaceDataTargets(context.graph, dimensions);
   if (!surface.ok) return surface;
@@ -402,6 +407,10 @@ function addForwardBackground(
   topology: RenderPipelineTopology,
   color: RenderPipelineTarget,
 ): Result<GraphEnvironment | undefined, RenderGraphError> {
+  if (topology.atmosphere === true && topology.atmosphereBackgroundOnly === true) {
+    const sky = addAtmosphereSkyBackground(graph, color);
+    return sky.ok ? ok(undefined) : sky;
+  }
   if (topology.atmosphere === true) return addAtmosphereBackground(graph, color);
   const skybox = addTypedSkyboxPass(graph, color);
   if (!skybox.ok) return skybox;
@@ -413,6 +422,7 @@ function projectForwardGpuDriven(
   topology: RenderPipelineTopology,
   color: RenderPipelineTarget,
   reflectionFallback: RenderPipelineTarget | undefined,
+  reflectionResponse: RenderPipelineTarget | undefined,
 ): Result<RenderPipelineGpuDrivenProjection | undefined, RenderPipelineBuildError> {
   return context.projectGpuDriven({
     format: color.format,
@@ -420,7 +430,12 @@ function projectForwardGpuDriven(
     lateOcclusion: topology.opaque.lateOcclusion,
     ...(reflectionFallback === undefined
       ? {}
-      : { additionalColorFormats: [reflectionFallback.format] }),
+      : {
+          additionalColorFormats: [
+            reflectionFallback.format,
+            ...(reflectionResponse === undefined ? [] : [reflectionResponse.format]),
+          ],
+        }),
   });
 }
 
@@ -699,6 +714,7 @@ function forwardLaneRoute(topology: RenderPipelineTopology) {
     temporalDemand: aggregateTemporalDemand({
       taa: !clearOnly && camera.antialias === 'taa',
       motionBlur: !clearOnly && topology.temporal?.motionBlur === true,
+      ssr: !clearOnly && topology.ssr?.status === 'admitted',
     }),
   };
 }
@@ -807,6 +823,7 @@ function forwardMainPassOptions(
   receiver: StandardForwardReceiverInputs,
   reflectionFallback: RenderPipelineTarget | undefined,
   gpuDriven: RenderPipelineGpuDrivenProjection | undefined,
+  reflectionResponse: RenderPipelineTarget | undefined,
 ): TypedScenePassOptions {
   return {
     environment,
@@ -814,7 +831,13 @@ function forwardMainPassOptions(
     color: scene.color,
     ...(reflectionFallback === undefined
       ? {}
-      : { colorTargets: [scene.color, reflectionFallback] }),
+      : {
+          colorTargets: [
+            scene.color,
+            reflectionFallback,
+            ...(reflectionResponse === undefined ? [] : [reflectionResponse]),
+          ],
+        }),
     depth: scene.depth,
     ...(scene.msaa ? { resolve: scene.resolved } : {}),
     ...receiver,
@@ -836,6 +859,7 @@ interface ForwardScenePreparation {
   readonly scene: ForwardSceneTargets;
   readonly mediumTargets: SingleLayerMediumNearestTargets | undefined;
   readonly reflectionFallback: RenderPipelineTarget | undefined;
+  readonly reflectionResponse: RenderPipelineTarget | undefined;
 }
 
 function prepareForwardScene(
@@ -868,6 +892,23 @@ function prepareForwardScene(
     internalSize,
   );
   if (!reflectionFallback.ok) return reflectionFallback;
+  const response =
+    topology.ssr?.status === 'admitted'
+      ? target(context.graph, 'reflection-response-linear-hdr', {
+          format: 'rgba16float',
+          size: internalSize,
+          domain: 'linear-hdr',
+        })
+      : ok(undefined);
+  if (!response.ok) return response;
+  if (response.value !== undefined) {
+    const cleared = context.graph.addRasterPass('reflection-response-clear', {
+      accesses: [{ resource: response.value.view, usage: 'color-attachment' }],
+      colorAttachments: [{ view: response.value.view, loadOp: 'clear', storeOp: 'store' }],
+      encodeDirect: () => {},
+    });
+    if (!cleared.ok) return cleared;
+  }
   return ok({
     surface: surface.value,
     internalSize,
@@ -875,6 +916,7 @@ function prepareForwardScene(
     scene: scene.value,
     mediumTargets: mediumTargets.value,
     reflectionFallback: reflectionFallback.value,
+    reflectionResponse: response.value,
   });
 }
 
@@ -887,14 +929,28 @@ export function buildStandardForwardLane(
   const graph = context.graph;
   const prepared = prepareForwardScene(context, topology);
   if (!prepared.ok) return prepared;
-  const { surface, internalSize, route, scene, mediumTargets, reflectionFallback } = prepared.value;
+  const {
+    surface,
+    internalSize,
+    route,
+    scene,
+    mediumTargets,
+    reflectionFallback,
+    reflectionResponse,
+  } = prepared.value;
   const shadows = addForwardShadows(context, topology, reuseAdjacentShadow);
   if (!shadows.ok) return shadows;
   const clusterBuffers = addForwardClusters(graph, topology, lighting, route.clearOnly);
   if (!clusterBuffers.ok) return clusterBuffers;
   const atmosphere = addForwardBackground(graph, topology, scene.color);
   if (!atmosphere.ok) return atmosphere;
-  const gpuDriven = projectForwardGpuDriven(context, topology, scene.color, reflectionFallback);
+  const gpuDriven = projectForwardGpuDriven(
+    context,
+    topology,
+    scene.color,
+    reflectionFallback,
+    reflectionResponse,
+  );
   if (!gpuDriven.ok) return gpuDriven;
   const cloud = declareForwardCloudTargets(context, scene, route, internalSize);
   if (!cloud.ok) return cloud;
@@ -931,6 +987,7 @@ export function buildStandardForwardLane(
     receiver,
     reflectionFallback,
     gpuDriven.value,
+    reflectionResponse,
   );
   const unfoggedOpaque = forwardUnfoggedOpaqueOptions(
     topology,
@@ -955,6 +1012,14 @@ export function buildStandardForwardLane(
     gpuDriven.value,
   );
   if (!temporal.ok) return temporal;
+  const ssr = addForwardSsr(context, topology, {
+    scene: scene.resolved,
+    fallback: reflectionFallback,
+    response: reflectionResponse,
+    surface: ssao.value.surface,
+    temporal: temporal.value,
+  });
+  if (!ssr.ok) return ssr;
   const later = sceneAfterCloudComposite(scene, cloud.value.scene);
   const translucent = addForwardTranslucentStages(
     context,
@@ -992,7 +1057,7 @@ export function buildStandardForwardLane(
     ssao.value.surface,
   );
   if (!observed.ok) return observed;
-  return presentForwardLane(context, topology, later, surface, temporal.value);
+  return presentForwardLane(context, topology, later, surface, temporal.value, ssr.value);
 }
 
 /**
@@ -1042,6 +1107,7 @@ function presentForwardLane(
   scene: ForwardSceneTargets,
   surface: StandardPostSurface,
   temporal: RenderPipelineTarget | undefined,
+  ssr: TemporalSecondaryReactivity | undefined,
 ): ReturnType<RenderPipeline['build']> {
   if (context.forwardOutput !== undefined)
     return context.forwardOutput.build(context, topology, scene.resolved, scene.depth, surface);
@@ -1052,7 +1118,7 @@ function presentForwardLane(
     scene.depth,
     surface,
     temporal,
-    undefined,
+    ssr,
     context.targetCoverage?.coverage,
     context.targetCoverage?.depth,
   );

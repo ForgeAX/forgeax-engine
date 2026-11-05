@@ -86,6 +86,13 @@ app.start().unwrap();
 
 Import browser construction from `@forgeax/engine/app/browser`; the root `app` entry requires an explicit borrowed `platform`, `renderer`, and `world`. The browser entry creates its World, renderer, default plugins, browser input backend, and frame loop. `app.start()` only arms the browser loop after the factory Result is successful.
 
+CSS-sized drawing buffers use `canvasPixelRatio: 1` by default, matching
+Three.js `setPixelRatio(1)`. Set `canvasPixelRatio: window.devicePixelRatio` to
+request the browser's device scale explicitly. App does not follow device pixel
+ratio or adjust resolution automatically for device performance. Render's
+authored `DynamicResolution` remains a separate opt-in. Device texture limits
+still clamp the resulting physical extent proportionally.
+
 Choose `animation: { cadence: 'fixed' }` at App assembly when using skeletal
 motion. Ordinary DevKit projects forward that same option through
 `forgeax dev start --animation '{"cadence":"fixed"}'` and

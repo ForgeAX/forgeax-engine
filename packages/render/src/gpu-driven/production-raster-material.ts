@@ -9,13 +9,7 @@ import type {
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
-import {
-  type MaterialShaderArtifact,
-  STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
-  STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
-  STANDARD_SURFACE_DISCARDS_OVERRIDE,
-  STANDARD_TEXTURE_MASK_OVERRIDE,
-} from '@forgeax/engine-shader';
+import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type {
   MaterialDynamicInputLayout,
   MaterialRenderState,
@@ -32,7 +26,11 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { materialColorTarget, materialDepthStencil } from '../material-render-state';
-import { materialVertexConstants } from '../material-stage-constants';
+import {
+  effectiveStandardSurfaceDiscards,
+  materialAbiRasterConstants,
+  materialVertexConstants,
+} from '../material-stage-constants';
 import {
   createPbrSkinMeshBindGroupEntries,
   isCanonicalStandardPbrMaterialShader,
@@ -367,44 +365,6 @@ interface MaterialAbiRasterPipelineInput {
   /** Standard surface discard bits; applied only to modules declaring the override. */
   readonly standardSurfaceDiscards?: number | undefined;
   readonly forwardColorPass: boolean;
-}
-
-/** Surface discard bits a GPU-driven Standard draw can actually reach. */
-export function standardSurfaceDiscardMask(lodCoverage: boolean, viewClipping: boolean): number {
-  return (
-    (lodCoverage ? STANDARD_SURFACE_DISCARD_LOD_COVERAGE : 0) |
-    (viewClipping ? STANDARD_SURFACE_DISCARD_VIEW_CLIPPING : 0)
-  );
-}
-
-/**
- * The discard bits a selected program can consume. A module without the
- * override (authored roots, stale cooked programs) keeps its static discards,
- * and WebGPU rejects constants that name no override of the module.
- */
-export function effectiveStandardSurfaceDiscards(
-  artifact: MaterialShaderArtifact,
-  standardSurfaceDiscards: number | undefined,
-): number | undefined {
-  return standardSurfaceDiscards !== undefined &&
-    artifact.program.overrideIds.includes(STANDARD_SURFACE_DISCARDS_OVERRIDE)
-    ? standardSurfaceDiscards
-    : undefined;
-}
-
-function materialAbiRasterConstants(
-  standardTextureMask: number | undefined,
-  standardSurfaceDiscards: number | undefined,
-): Record<string, number> | undefined {
-  if (standardTextureMask === undefined && standardSurfaceDiscards === undefined) return undefined;
-  return {
-    ...(standardTextureMask === undefined
-      ? {}
-      : { [STANDARD_TEXTURE_MASK_OVERRIDE]: standardTextureMask }),
-    ...(standardSurfaceDiscards === undefined
-      ? {}
-      : { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscards }),
-  };
 }
 
 /** One request specification for real raster and hidden preparation. */

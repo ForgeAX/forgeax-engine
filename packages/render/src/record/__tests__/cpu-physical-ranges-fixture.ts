@@ -158,10 +158,11 @@ export function cpuPhysicalRangesFixture(device: RhiDevice, shader: ShaderModule
     skylightBindGroupResources(skylightFallback),
     transmissionBackdrop ? undefined : null,
   );
-  oracleMaterialEntries.push({
-    binding: 46,
-    resource: { kind: 'buffer', value: { buffer: f.meshUniformBuffer } },
-  });
+  if (device.caps.storageBuffer)
+    oracleMaterialEntries.push({
+      binding: 46,
+      resource: { kind: 'buffer', value: { buffer: f.meshUniformBuffer } },
+    });
   const oracleMaterialGroup = device
     .createBindGroup({ layout: shadowMaterialLayout, entries: oracleMaterialEntries })
     .unwrap();

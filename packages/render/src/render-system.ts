@@ -1,6 +1,6 @@
 import type { World } from '@forgeax/engine-ecs';
 import type { BindGroupLayout, RenderPipeline, RhiDevice } from '@forgeax/engine-rhi';
-import { err, type Result, RhiError } from '@forgeax/engine-rhi';
+import { err, probeR32FloatRenderCapability, type Result, RhiError } from '@forgeax/engine-rhi';
 import { createFeatureSceneInputs } from './assembly/feature-scene-inputs';
 import { createGpuDrivenOwner } from './assembly/gpu-driven-owner';
 import { createPostProcessParamsOwner } from './assembly/post-process-params';
@@ -279,8 +279,19 @@ function createRenderOwner(
     // receipt without publishing it: inspection selects only the active device.
     // A failed/late recovery therefore cannot overwrite the active generation.
     try {
-      const result = await device.probeTextureFormatCapability();
-      if (result.ok) ssrFormats.set(device, result.value);
+      const factory = internals.immediateShaderModuleFactory ?? internals.shaderModuleFactory;
+      const result =
+        device.caps.compute && device.caps.storageTexture
+          ? await device.probeTextureFormatCapability()
+          : factory === undefined
+            ? undefined
+            : await probeR32FloatRenderCapability(
+                device,
+                (descriptor) => factory.createShaderModule(descriptor),
+                0,
+              );
+
+      if (result?.ok) ssrFormats.set(device, result.value);
     } catch {
       // Missing capability remains an explicit fallback-only admission.
     }

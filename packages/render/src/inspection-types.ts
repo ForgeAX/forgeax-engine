@@ -257,6 +257,8 @@ export interface RenderFeatureHostInspection {
 }
 
 export interface RenderFeatureGraphInspection {
+  /** Initial candidate warm lookups only; final currentness rechecks do not inflate these totals. */
+  readonly candidatePipelines?: import('./record/candidate-pipeline-preparation').CandidatePipelinePreparationInspection;
   /** Monotonic revision of the last completely validated feature plan set. */
   readonly planRevision: number;
   readonly signatureValidationCalls: number;

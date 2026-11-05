@@ -28,12 +28,12 @@
     "minimumCases": 7
   },
   "packages/three/src/__tests__/material-output-0.browser.test.ts": {
-    "deviceRequests": 31,
-    "minimumCases": 12
+    "deviceRequests": 19,
+    "minimumCases": 6
   },
   "packages/three/src/__tests__/material-output-1.browser.test.ts": {
-    "deviceRequests": 31,
-    "minimumCases": 12
+    "deviceRequests": 19,
+    "minimumCases": 6
   },
   "packages/three/src/__tests__/shadow-updates.browser.test.ts": {
     "deviceRequests": 19,
@@ -64,6 +64,19 @@
   "packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts": {
     "deviceRequests": 10,
     "minimumDeviceRequests": 10,
+    "minimumCases": 2
+  },
+  "packages/three/src/__tests__/material-output-2.browser.test.ts": {
+    "deviceRequests": 19,
+    "minimumCases": 6
+  },
+  "packages/three/src/__tests__/material-output-3.browser.test.ts": {
+    "deviceRequests": 19,
+    "minimumCases": 6
+  },
+  "packages/three/src/__tests__/texture.browser.test.ts": {
+    "deviceRequests": 11,
+    "minimumDeviceRequests": 11,
     "minimumCases": 2
   }
 }

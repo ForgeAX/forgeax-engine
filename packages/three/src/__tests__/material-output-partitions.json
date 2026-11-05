@@ -1,0 +1,34 @@
+[
+  [
+    "normal",
+    "cutoff",
+    "subtractive",
+    "standard-opaque-map",
+    "standard-coverage",
+    "standard-multiply"
+  ],
+  [
+    "opaque-map",
+    "coverage",
+    "multiply",
+    "standard-alpha-map",
+    "standard-normal-premultiplied",
+    "standard-custom"
+  ],
+  [
+    "standard-double-sided",
+    "alpha-map",
+    "normal-premultiplied",
+    "custom",
+    "standard-hash",
+    "standard-additive-premultiplied"
+  ],
+  [
+    "hash",
+    "additive-premultiplied",
+    "double-sided",
+    "standard-cutoff",
+    "standard-subtractive",
+    "physical-double-sided"
+  ]
+]

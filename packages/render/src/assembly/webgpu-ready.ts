@@ -136,6 +136,7 @@ export async function prepareDevicePipelineLibrary(
     (descriptor) => shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]),
   );
   const prepared = await device.pipelineLibrary.prepare(manifest, {
+    renderTargetPolicy: 'device-compatible',
     ...(owner === undefined ? {} : { owner }),
     sources,
   });
@@ -204,6 +205,7 @@ export async function prepareBackgroundPipelineLibrary(
   await Promise.all([
     library
       .prepare(manifest, {
+        renderTargetPolicy: 'device-compatible',
         background: true,
         owner,
         sources: manifest.shaders.map(
@@ -534,11 +536,12 @@ export async function buildReadyWebGPU(
       );
       if (sources !== undefined) await setVolumetricFogShaderSources(sources);
     }
-    if (computeStorageTexture) {
+    if (rhiDevice.caps.rgba16floatRenderable) {
       const sources = await prewarmSsrWithDepthPyramid(
         manifestEntries,
         compileUtilityShader,
         seedShaderModule,
+        computeStorageTexture ? 'compute' : 'fragment',
       );
       if (sources !== undefined) setSsrShaderSources(sources.ssr, sources.pyramid);
     }

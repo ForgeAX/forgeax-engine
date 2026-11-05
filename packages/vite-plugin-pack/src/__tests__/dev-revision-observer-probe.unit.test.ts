@@ -9,6 +9,9 @@ const probeGate = vi.hoisted(() => ({
   entered: undefined as (() => void) | undefined,
   release: undefined as (() => void) | undefined,
   rootSnapshots: 0,
+  trackCalls: false,
+  inFlight: 0,
+  maximumInFlight: 0,
 }));
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -16,17 +19,26 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   return {
     ...actual,
     lstat: async (path: string) => {
-      if (path === probeGate.root) {
-        probeGate.rootSnapshots += 1;
-        if (probeGate.blockNext) {
-          probeGate.blockNext = false;
-          probeGate.entered?.();
-          await new Promise<void>((resolve) => {
-            probeGate.release = resolve;
-          });
-        }
+      const tracked = probeGate.trackCalls;
+      if (tracked) {
+        probeGate.inFlight += 1;
+        probeGate.maximumInFlight = Math.max(probeGate.maximumInFlight, probeGate.inFlight);
       }
-      return actual.lstat(path);
+      try {
+        if (path === probeGate.root) {
+          probeGate.rootSnapshots += 1;
+          if (probeGate.blockNext) {
+            probeGate.blockNext = false;
+            probeGate.entered?.();
+            await new Promise<void>((resolve) => {
+              probeGate.release = resolve;
+            });
+          }
+        }
+        return await actual.lstat(path);
+      } finally {
+        if (tracked) probeGate.inFlight -= 1;
+      }
     },
   };
 });
@@ -43,7 +55,38 @@ describe('revision observer probe scheduling', () => {
     probeGate.entered = undefined;
     probeGate.release = undefined;
     probeGate.rootSnapshots = 0;
+    probeGate.trackCalls = false;
+    probeGate.inFlight = 0;
+    probeGate.maximumInFlight = 0;
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it('bounds snapshot I/O while observing every file in a wide root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-revision-width-'));
+    roots.push(root);
+    const files = Array.from({ length: 32 }, (_, index) => join(root, `asset-${index}.png`));
+    await Promise.all(files.map((file) => writeFile(file, 'old')));
+    const observed = new Set<string>();
+    const watcher = { close: () => {}, on: () => watcher, unref: () => {} } as never;
+    probeGate.trackCalls = true;
+    const observer = createRevisionObserver({
+      roots: [root],
+      watchFactory: () => watcher,
+      onBatch: (batch) => {
+        for (const source of batch.sources) observed.add(source.filename);
+      },
+    });
+    try {
+      await observer.ready;
+      await Promise.all(files.map((file) => writeFile(file, 'updated')));
+      await observer.drain();
+      expect([...observed].sort()).toEqual([...files].sort());
+      expect(probeGate.maximumInFlight).toBeGreaterThan(1);
+      expect(probeGate.maximumInFlight).toBeLessThanOrEqual(8);
+      expect(probeGate.inFlight).toBe(0);
+    } finally {
+      await observer.close();
+    }
   });
 
   it.each([

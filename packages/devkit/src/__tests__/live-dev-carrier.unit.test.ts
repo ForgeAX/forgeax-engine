@@ -388,6 +388,7 @@ describe('live DevKit borrowed carrier boundary', () => {
     await mkdir(join(root, '.forgeax'), { recursive: true });
     const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
       carrier: {} as BrowserCarrierAdapter,
+      rhiCapture: true,
     });
     let bridge: WebSocket | undefined;
     let failure = createRhiDebugError('capture-unavailable', {
@@ -1175,7 +1176,10 @@ describe('live readiness waiting guards', () => {
     ready(): Promise<string>;
   }
 
-  async function withLiveOwner(body: (fixture: Fixture) => Promise<void>): Promise<void> {
+  async function withLiveOwner(
+    body: (fixture: Fixture) => Promise<void>,
+    rhiCapture = true,
+  ): Promise<void> {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-guard-'));
     const port = await freePort();
     await mkdir(join(root, '.forgeax'), { recursive: true });
@@ -1210,6 +1214,7 @@ describe('live readiness waiting guards', () => {
     };
     const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax', 'session.json'), {
       carrier: {} as BrowserCarrierAdapter,
+      rhiCapture,
     });
     const bridge = reconnectingBridge(port, async (message) => {
       if (message.type === 'status') {
@@ -1427,6 +1432,51 @@ describe('live readiness waiting guards', () => {
       expect(await request(fixture.port, '/status', 'GET')).toMatchObject({
         value: { unfinishedEval: false },
       });
+    });
+  });
+
+  it('reports rhiCapture in status and refuses capture with the restart command when the recorder is off', async () => {
+    await withLiveOwner(async (fixture) => {
+      await fixture.ready();
+      expect(await request(fixture.port, '/status', 'GET')).toMatchObject({
+        ok: true,
+        value: { rhiCapture: false },
+      });
+      const result = (await request(fixture.port, '/rhi/capture', 'POST')) as {
+        ok: boolean;
+        error: { code: string; hint: string };
+      };
+      expect(result.ok).toBe(false);
+      expect(result.error.code).toBe('capture-unavailable');
+      expect(result.error.hint).toContain('dev start --rhi-capture true');
+    }, false);
+  });
+
+  it('reports the frame the tape recorded, not the cached status frame', async () => {
+    await withLiveOwner(async (fixture) => {
+      await fixture.ready();
+      fixture.answer = (code) => {
+        if (!code.includes('rhiCapture.captureFrame')) return {};
+        return {
+          ok: true,
+          value: {
+            kind: 'rhi-tape',
+            digest: 'sha256:frame',
+            submittedFrame: { status: 'complete', frameId: 41, deviceGeneration: 1 },
+          },
+        };
+      };
+      const result = await request(fixture.port, '/rhi/capture', 'POST');
+      expect(result).toMatchObject({
+        ok: true,
+        value: {
+          digest: 'sha256:frame',
+          frameId: 41,
+          frameIdSource: 'capture-receipt',
+          capturedAt: expect.any(String),
+        },
+      });
+      expect((result as { value: Record<string, unknown> }).value.submittedFrame).toBeUndefined();
     });
   });
 

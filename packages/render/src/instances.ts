@@ -335,9 +335,7 @@ export class InstanceProjectionStore {
     // Ordinals are identities within the authored array. Pose edits retain them;
     // resizing seeds topology anew so new instances cannot inherit old motion.
     const generations =
-      previous?.count === count
-        ? previous.generations
-        : Uint32Array.from({ length: count }, () => this.nextGeneration++);
+      previous?.count === count ? previous.generations : this.seedGenerations(count);
     // A same-size whole rewrite reuses the collection's back buffer: `accept`
     // swaps it with the old front, so a collection rewritten every frame
     // ping-pongs two buffers instead of allocating a fresh column per frame
@@ -511,6 +509,16 @@ export class InstanceProjectionStore {
             sourceEpoch: current?.transforms === transforms ? current.sourceEpoch : undefined,
           },
     );
+  }
+
+  /** Fresh store-issued identities: distinct and non-zero by construction. */
+  private seedGenerations(count: number): Uint32Array {
+    const generations = new Uint32Array(count);
+    for (let ordinal = 0; ordinal < count; ordinal += 1) {
+      generations[ordinal] = this.nextGeneration++;
+    }
+    uniqueIdentities.set(generations, true);
+    return generations;
   }
 
   private own(buffer: Float32Array): Float32Array {

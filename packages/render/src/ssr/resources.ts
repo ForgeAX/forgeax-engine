@@ -8,12 +8,13 @@ import type {
 import { ok, type Result } from '@forgeax/engine-types';
 import { estimateDepthPyramidMemory, planViewDepthPyramid } from '../depth-pyramid/graph';
 import type { DepthPyramidExtent } from '../depth-pyramid/plan';
+import { SSR_HISTORY_SLOT_COUNT } from './history';
 
 export const SSR_TRACE_FORMAT = 'rgba16float' as const;
 export const SSR_R32FLOAT_BYTES_PER_PIXEL = 4 as const;
 export const SSR_RGBA16FLOAT_BYTES_PER_PIXEL = 8 as const;
 export const SSR_TEMPORAL_PARAMS_BYTES = 32 as const;
-export const SSR_SPATIAL_MEMORY_BUDGET_BYTES = 134_217_728 as const;
+export const SSR_SPATIAL_MEMORY_BUDGET_BYTES = 335_544_320 as const;
 
 export interface SsrSpatialTexture {
   readonly texture: GraphTexture;
@@ -31,6 +32,7 @@ export interface SsrSpatialResources {
   readonly resolved?: SsrSpatialTexture;
   /** Sampled view of all resolved reflection levels; mip 0 remains sharp. */
   readonly radiancePyramid?: GraphTextureView;
+  readonly mipLevelCount?: number;
 }
 
 export interface SsrSpatialMemoryEstimate {
@@ -40,6 +42,8 @@ export interface SsrSpatialMemoryEstimate {
   readonly traceHeight: number;
   /** The view's shared depth pyramid, counted in SSR admission while SSR is its only closest-depth reader. */
   readonly depthPyramidBytes: number;
+  readonly fragmentScratchBytes: number;
+  readonly forwardInputsBytes: number;
   readonly traceBytes: number;
   readonly hitReactivityBytes: number;
   readonly resolvedBytes: number;
@@ -71,7 +75,11 @@ function byteCount(width: number, height: number, bytesPerPixel: number): number
 /** Derive descriptor bytes for one admitted full-resolution SSR frame. */
 export function estimateSsrSpatialMemory(
   extent: DepthPyramidExtent,
-  options: { readonly temporal?: boolean } = {},
+  options: {
+    readonly temporal?: boolean;
+    readonly execution?: 'compute' | 'fragment';
+    readonly forward?: boolean;
+  } = {},
 ): SsrSpatialMemoryEstimate {
   const trace = traceExtentForView(extent);
   const plan = planViewDepthPyramid(extent);
@@ -85,14 +93,23 @@ export function estimateSsrSpatialMemory(
         0,
       )
     : 0;
-  const historyBytes = temporal ? trace.width * trace.height * 12 * 2 : 0;
+  const historyBytes = temporal ? trace.width * trace.height * 12 * SSR_HISTORY_SLOT_COUNT : 0;
   const temporalParamsBytes = temporal ? SSR_TEMPORAL_PARAMS_BYTES : 0;
   const fallbackInputBytes = byteCount(
     extent.width,
     extent.height,
     SSR_RGBA16FLOAT_BYTES_PER_PIXEL,
   );
+  const fragmentScratchBytes =
+    options.execution === 'fragment' ? depthPyramidBytes + resolvedBytes + 16 : 0;
+  // Conservative incremental Forward demand: depth32float-stencil8 (8),
+  // packed normal/roughness (4), temporal-v1 (8), exact BRDF response (8).
+  // Count all inputs even when another consumer already demanded them.
+  const forwardInputsBytes =
+    options.forward === true ? byteCount(extent.width, extent.height, 28) : 0;
   const ssrOwnedBytes =
+    fragmentScratchBytes +
+    forwardInputsBytes +
     depthPyramidBytes +
     traceBytes +
     hitReactivityBytes +
@@ -107,6 +124,8 @@ export function estimateSsrSpatialMemory(
     traceHeight: trace.height,
     depthPyramidBytes,
     traceBytes,
+    fragmentScratchBytes,
+    forwardInputsBytes,
     hitReactivityBytes,
     resolvedBytes,
     historyBytes,

@@ -1,3 +1,4 @@
+import { withCombinedSignal } from '@forgeax/engine-platform';
 import type { HostVersions } from './versions.js';
 
 export interface StartupCacheIdentity extends HostVersions {
@@ -41,7 +42,8 @@ export function startupCacheSource(identity?: StartupCacheIdentity): string {
     const cancellation = new AbortController();
     const retire = () => {complete = true; cancellation.abort(); globalThis.removeEventListener('pagehide', retire);};
     globalThis.addEventListener('pagehide', retire, {once: true});
-    const signal = () => AbortSignal.any([cancellation.signal, AbortSignal.timeout(10000)]);
+    const withCombinedSignal = (${withCombinedSignal.toString()});
+    const withSignal = operation => withCombinedSignal([cancellation.signal, AbortSignal.timeout(10000)], operation);
     const read = (storage, name) => { try { return globalThis[storage]?.getItem(name); } catch { return null; } };
     const write = (storage, name, value) => { try { globalThis[storage]?.setItem(name, value); } catch {} };
     const remove = (storage, name) => { try { globalThis[storage]?.removeItem(name); } catch {} };
@@ -64,12 +66,13 @@ export function startupCacheSource(identity?: StartupCacheIdentity): string {
         catch (error) { finish(error); }
       });
     };
-    const refreshHttp = async () => {
+    const refreshHttp = () => withSignal(async signal => {
       const target = new URL(original);
       target.searchParams.set('forgeax-startup-cache-reset', '1');
-      const response = await fetch(target, {cache: 'reload', signal: signal()});
+      const response = await fetch(target, {cache: 'reload', signal});
       if (!response.ok) throw Error('Startup HTTP cache refresh failed: ' + response.status);
-    };
+      await response.arrayBuffer();
+    });
     const updateController = async () => {
       const workers = globalThis.navigator?.serviceWorker;
       if (!workers?.controller) return;
@@ -120,11 +123,11 @@ export function startupCacheSource(identity?: StartupCacheIdentity): string {
             // These URLs belong to the failed generation. A scoped reset may
             // retire its document, and an update may remove an old hashed URL.
             // Best-effort HTTP revalidation must never prevent the one retry.
-            await Promise.allSettled(modules.slice(index, index + 4).map(async url => {
-              const response = await fetch(url, {cache: 'reload', signal: signal()});
+            await Promise.allSettled(modules.slice(index, index + 4).map(url => withSignal(async signal => {
+              const response = await fetch(url, {cache: 'reload', signal});
               if (!response.ok) throw Error('Startup module refresh failed: ' + response.status);
               await response.arrayBuffer();
-            }));
+            })));
           }
           if (complete) return {status: 'disabled'};
           const target = new URL(original); target.searchParams.set(retryKey, '1');

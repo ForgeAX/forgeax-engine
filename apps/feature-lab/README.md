@@ -111,3 +111,14 @@ covered by `packages/devkit/src/__tests__/workspace-pack-authoring.integration.t
 - The lab App starts rendering at the first `frames()` wait or when `setup` returns, so
   spawn the camera before the first wait. A feature that spawns no Camera gets a neutral
   lab camera, which keeps RHI, DOM and data probes free of `render-system-no-camera`.
+
+## Portable GPU regression evidence
+
+Start `pnpm --filter @forgeax/feature-lab dev`, then run
+`FEATURE_LAB_URL=http://127.0.0.1:5173 node apps/feature-lab/scripts/verify-portable-kernels.mjs`
+from the repository root. The script exercises Forward SSR and exact histogram
+exposure on native WebGPU and wgpu-WebGL2, requires sixty completed frames and
+production checks, and saves paired ON/OFF PNGs plus backend receipts under
+`apps/feature-lab/artifacts/portable-kernels/`. `FORGEAX_PORTABLE_EVIDENCE` overrides
+that generated directory. Inspect the actual images before drawing a visual
+conclusion; elapsed wall time is not GPU timing.

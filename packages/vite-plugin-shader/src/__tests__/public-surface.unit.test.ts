@@ -152,6 +152,17 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(entries.ssrTrace.source).toContain('#define_import_path forgeax_ssr::trace');
     expect(entries.ssrTemporal.source).toContain('#define_import_path forgeax_ssr::temporal');
     expect(entries.ssrCompose.source).toContain('fn fs_ssr_compose(');
+    for (const [native, fragment] of [
+      [entries.depthPyramidSeed, entries.depthPyramidSeedFragment],
+      [entries.depthPyramidReduce, entries.depthPyramidReduceFragment],
+      [entries.ssrTrace, entries.ssrTraceFragment],
+      [entries.ssrTemporal, entries.ssrTemporalFragment],
+      [entries.ssrCompose, entries.ssrComposeFragment],
+    ] as const) {
+      expect(fragment.id).not.toBe(native.id);
+      expect(fragment.source).toBe(native.source);
+      expect(fragment.defines).toEqual({ PORTABLE_FRAGMENT: true });
+    }
   });
 
   it('publishes the production GTAO compute adapter with its shared visibility function', async () => {
@@ -225,9 +236,14 @@ describe('vite-plugin-shader public engine input surface', () => {
       'depth_pyramid_reduce',
       'ssr_trace',
       'ssr_temporal',
+      'depth_pyramid_seed_fragment',
+      'depth_pyramid_reduce_fragment',
+      'ssr_trace_fragment',
+      'ssr_temporal_fragment',
+      'vs_ssr_compose_fragment',
     ]) {
       expect(
-        manifest.entries.filter((entry) => entry.wgsl.includes(marker)),
+        manifest.entries.filter((entry) => entry.wgsl.includes(`fn ${marker}(`)),
         `${marker} must be published in the engine manifest`,
       ).toHaveLength(1);
     }

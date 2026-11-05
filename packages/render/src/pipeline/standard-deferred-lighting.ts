@@ -61,6 +61,15 @@ interface DeferredLightingProgram {
   readonly probe: BindGroupLayout;
 }
 
+function deferredLightingSource(
+  sources: StandardDeferredShaderSources | undefined,
+  clustered: boolean,
+  usesLut: boolean,
+) {
+  if (clustered) return usesLut ? sources?.clusteredLut : sources?.clustered;
+  return usesLut ? sources?.unclusteredLut : sources?.unclustered;
+}
+
 // Graph targets and bind groups have graph lifetime. Immutable layouts/PSOs
 // survive graph replacement only inside their owning live device generation.
 const lightingPrograms = new WeakMap<
@@ -290,20 +299,26 @@ export function addStandardDeferredLighting(
     })),
     encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
+      const admission = internal.frameState?.standardSceneSurfaceAdmission;
+      // Keep attachment loads/clears, including reflection/SSS auxiliaries.
+      // Only a complete current-device proof can omit the fullscreen light
+      // program; Forward-only geometry is composed by the later opaque pass.
+      if (
+        admission?.deferredGBufferEmpty === true &&
+        admission.deviceGeneration === recordContext(internal.runtime).deviceScope.generation
+      )
+        return;
       const device = frame.runtime.device;
       const usesLut = (internal.validatedOrdered ?? []).some((entry) =>
         entry.source.materials.some((material) =>
           materialUsesDirectDfgLut(material.snapshot.materialParamSchema),
         ),
       );
-      const source =
-        input.cluster === null
-          ? usesLut
-            ? internal.runtime.standardDeferredShaders?.unclusteredLut
-            : internal.runtime.standardDeferredShaders?.unclustered
-          : usesLut
-            ? internal.runtime.standardDeferredShaders?.clusteredLut
-            : internal.runtime.standardDeferredShaders?.clustered;
+      const source = deferredLightingSource(
+        internal.runtime.standardDeferredShaders,
+        input.cluster !== null,
+        usesLut,
+      );
       if (source === undefined)
         throw new RhiError({
           code: 'shader-compile-failed',

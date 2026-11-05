@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -323,7 +323,12 @@ test('public source preparation completes before consumers start and is absent f
             ['scripts/clean-build-outputs.mjs'],
             ['build:engine'],
             ['build:tools'],
-            ['build:app', 'preview'],
+            [
+              'build:app',
+              'preview',
+              '--shared-input-manifest',
+              'shared-build-inputs/manifest.json',
+            ],
           ]
         : [],
     );
@@ -332,6 +337,37 @@ test('public source preparation completes before consumers start and is absent f
       group === 'source' ? ['buildSourceSnapshot', 'verify single-module source editing'] : [],
     );
   }
+});
+
+test('public source View consumes the independently rebuilt source manifest', async () => {
+  const source = readFileSync(resolve(import.meta.dirname, '../verify-sdk.mjs'), 'utf8');
+  const start = source.indexOf("await sdkGpuStage('verifyPublicSourceViewTool'");
+  const body = source.slice(start, source.indexOf("\n}\n\nif (selected('project'))", start));
+  const execute = new (Object.getPrototypeOf(async () => {}).constructor)(
+    'context',
+    `const { sdkGpuStage, execFileAsync, process, resolve, dirname, sourceRoot,
+      sourceEnv, archive } = context; ${body}`,
+  );
+  const commands = [];
+  await execute({
+    sdkGpuStage: async (_label, work) => work(),
+    execFileAsync: async (file, args, options) => commands.push({ file, args, options }),
+    process,
+    resolve,
+    dirname,
+    sourceRoot: '/fresh-source',
+    sourceEnv: { EXISTING_SOURCE_OPTION: 'retained' },
+    archive: '/sealed/sdk.zip',
+  });
+  assert.equal(commands.length, 1);
+  const { options } = commands[0];
+  assert.equal(options.cwd, '/fresh-source');
+  assert.equal(options.env.EXISTING_SOURCE_OPTION, 'retained');
+  assert.equal(options.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT, '/fresh-source');
+  assert.equal(
+    options.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST,
+    resolve('/fresh-source/shared-build-inputs/manifest.json'),
+  );
 });
 
 test('archive project owns independent runs and installed View while source keeps separate inputs', async () => {
@@ -480,7 +516,7 @@ test('the real installed View and npm schedulers conserve complete chains and fu
     'npm-all',
     ...Object.keys(SDK_NPM_PARTITIONS).map((partition) => `npm-${partition}`),
   ]) {
-    const root = mkdtempSync(resolve(tmpdir(), 'sdk-view-language-chain-'));
+    const root = realpathSync(mkdtempSync(resolve(tmpdir(), 'sdk-view-language-chain-')));
     try {
       const scripts = resolve(root, '.forgeax/cli-runtime/node_modules/@forgeax/view/scripts');
       const receipt = resolve(root, 'receipt.txt');

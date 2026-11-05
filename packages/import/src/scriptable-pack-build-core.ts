@@ -1015,6 +1015,14 @@ export type ScriptablePackDependencyResolver = (guid: string) => Promise<string 
 
 /** Optional producer cache; the worklist still owns current-generation reference validation. */
 export interface ScriptablePackBuildProductCache {
+  /** Advisory prior topology only; current production and reference validation remain authoritative. */
+  dependencies?(subject: ScriptablePackBuildWorkItem): Promise<
+    | {
+        readonly outputs: readonly string[];
+        readonly reads: readonly string[];
+      }
+    | undefined
+  >;
   read(
     subject: ScriptablePackBuildWorkItem,
     resolve?: ScriptablePackDependencyResolver,
@@ -1057,6 +1065,59 @@ function stagedSource(
   };
 }
 
+async function orderSubjectsByCachedDependencies(
+  subjects: readonly ScriptablePackBuildWorkItem[],
+  cache: ScriptablePackBuildProductCache | undefined,
+): Promise<ScriptablePackBuildWorkItem[]> {
+  let orderedSubjects = [...subjects].sort((left, right) =>
+    left.sourcePath.localeCompare(right.sourcePath),
+  );
+  const cachedDependencies = cache?.dependencies?.bind(cache);
+  if (cachedDependencies !== undefined) {
+    const metadata = await Promise.all(
+      orderedSubjects.map(async (subject) => {
+        try {
+          return await cachedDependencies(subject);
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    const owners = new Map<string, number>();
+    const ambiguous = new Set<string>();
+    for (const [index, row] of metadata.entries())
+      for (const guid of row?.outputs ?? []) {
+        if (owners.has(guid)) ambiguous.add(guid);
+        else owners.set(guid, index);
+      }
+    for (const guid of ambiguous) owners.delete(guid);
+    const remaining = new Set(orderedSubjects.map((_, index) => index));
+    const order: number[] = [];
+    while (remaining.size) {
+      const ready = [...remaining].filter((index) =>
+        (metadata[index]?.reads ?? []).every((guid) => {
+          const owner = owners.get(guid);
+          return owner === undefined || owner === index || !remaining.has(owner);
+        }),
+      );
+      // Stale or cyclic hints never block the ordinary bounded dependency worklist.
+      if (!ready.length) {
+        order.push(...remaining);
+        break;
+      }
+      for (const index of ready) {
+        remaining.delete(index);
+        order.push(index);
+      }
+    }
+    orderedSubjects = order.flatMap((index) => {
+      const subject = orderedSubjects[index];
+      return subject === undefined ? [] : [subject];
+    });
+  }
+  return orderedSubjects;
+}
+
 /** Build subjects in stable passes; content reads may wait for a later subject. */
 export async function buildScriptablePackWorklist(
   options: ScriptablePackBuildWorklistOptions,
@@ -1075,9 +1136,7 @@ export async function buildScriptablePackWorklist(
       }
   >
 > {
-  const orderedSubjects = [...options.subjects].sort((left, right) =>
-    left.sourcePath.localeCompare(right.sourcePath),
-  );
+  const orderedSubjects = await orderSubjectsByCachedDependencies(options.subjects, options.cache);
   const maxConcurrency = options.maxConcurrency ?? 1;
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 4)
     throw new RangeError('Pack build concurrency must be an integer between 1 and 4');

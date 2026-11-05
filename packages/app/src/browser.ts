@@ -45,7 +45,7 @@ export type { BrowserFrameProgress } from './browser-frame-signal';
 
 import { canvasAspectPlugin } from './canvas-policy';
 import {
-  measureCanvasDrawingBuffer,
+  measureCanvasDrawingBufferAtRatio,
   observeCanvasDeviceLimit,
   refreshCanvasDeviceLimit,
   resetCanvasDeviceLimit,
@@ -187,7 +187,7 @@ export async function createApp(
   // reader in this realm observes the same stub.
   installCarriedGpuStub(opts);
   resetCanvasDeviceLimit(canvas);
-  syncCanvasDrawingBuffer(canvas);
+  syncCanvasDrawingBuffer(canvas, undefined, opts?.canvasPixelRatio);
 
   let executionContext: BrowserExecutionContext | undefined;
   let preparedExecutionBootstrap: PreparedExecutionBootstrap | undefined;
@@ -279,9 +279,9 @@ export async function createApp(
       ...browserHostServicePlugins(opts),
       rhiDebugHostPlugin(cleanupRhiDebugHost),
       ...browserUserPlugins(canvas, renderer, opts, preparedExecutionBootstrap, inputBackend),
-      canvasDeviceLimitPlugin(canvas, renderer),
+      canvasDeviceLimitPlugin(canvas, renderer, opts?.canvasPixelRatio),
       canvasAspectPlugin(() => {
-        syncCanvasDrawingBuffer(canvas);
+        syncCanvasDrawingBuffer(canvas, undefined, opts?.canvasPixelRatio);
         return canvas;
       }),
     ],
@@ -480,9 +480,9 @@ async function startWorkerExecutionApp(
     canvas,
     appOptions: opts,
     syncCanvas: (currentCanvas, display) =>
-      measureCanvasDrawingBuffer(
+      measureCanvasDrawingBufferAtRatio(
         currentCanvas,
-        undefined,
+        opts.canvasPixelRatio,
         typeof currentCanvas.ownerDocument.defaultView?.ResizeObserver === 'function'
           ? display
           : undefined,
@@ -764,6 +764,7 @@ async function constructBrowserRendererHost(
   rendererOpts: import('@forgeax/engine-render').RendererOptions,
   bundler: BundlerOptions | undefined,
   preparedExecutionBootstrap: PreparedExecutionBootstrap | undefined,
+  canvasPixelRatio: number | undefined,
 ): Promise<Result<BrowserRendererHost, EngineEnvironmentError>> {
   try {
     markRendererBootstrapStage('renderer-host-start');
@@ -776,7 +777,7 @@ async function constructBrowserRendererHost(
     }
     const renderer = constructed.value.renderer;
     await preparedExecutionBootstrap?.configureRenderer?.(renderer);
-    refreshCanvasDeviceLimit(canvas, renderer);
+    refreshCanvasDeviceLimit(canvas, renderer, canvasPixelRatio);
     const host: BrowserRendererHost = {
       renderer,
       debugDrawHost: constructed.value.debugDrawHost,
@@ -837,6 +838,7 @@ async function constructBrowserRendering(
     rendererOpts,
     bundler,
     preparedExecutionBootstrap,
+    opts?.canvasPixelRatio,
   );
   if (!host.ok) {
     releaseRhiDebugHost(rhiDebug);
@@ -974,11 +976,18 @@ function browserUserPlugins(
   ];
 }
 
-function canvasDeviceLimitPlugin(canvas: HTMLCanvasElement, renderer: Renderer): Plugin {
+function canvasDeviceLimitPlugin(
+  canvas: HTMLCanvasElement,
+  renderer: Renderer,
+  pixelRatio: number | undefined,
+): Plugin {
   return {
     name: 'canvas-device-limit',
     apply(ctx: Context) {
-      ctx.effect(() => observeCanvasDeviceLimit(canvas, renderer), 'app/canvas-device-limit');
+      ctx.effect(
+        () => observeCanvasDeviceLimit(canvas, renderer, pixelRatio),
+        'app/canvas-device-limit',
+      );
     },
   };
 }

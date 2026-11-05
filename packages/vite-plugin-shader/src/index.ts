@@ -479,6 +479,7 @@ async function buildEngineShaderManifestUncached(
     eng.atmosphereBackground,
     eng.atmosphereIbl,
     eng.atmosphereLuts,
+    eng.atmosphereLutsFragment,
     eng.atmosphereCompose,
     ...eng.cloudAtmosphere,
     eng.volumeInject,
@@ -487,9 +488,14 @@ async function buildEngineShaderManifestUncached(
     eng.volumeComposite,
     eng.depthPyramidSeed,
     eng.depthPyramidReduce,
+    eng.depthPyramidSeedFragment,
+    eng.depthPyramidReduceFragment,
     eng.ssrTrace,
     eng.ssrTemporal,
+    eng.ssrTraceFragment,
+    eng.ssrTemporalFragment,
     eng.ssrCompose,
+    eng.ssrComposeFragment,
     eng.rayQuery,
     eng.rayPathTracer,
     eng.rayRasterSource,
@@ -2485,9 +2491,14 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       // enter the materialShaders channel or the runtime compiler package.
       await compileEngineEntry(state, eng.depthPyramidSeed, eng.imports);
       await compileEngineEntry(state, eng.depthPyramidReduce, eng.imports);
+      await compileEngineEntry(state, eng.depthPyramidSeedFragment, eng.imports);
+      await compileEngineEntry(state, eng.depthPyramidReduceFragment, eng.imports);
       await compileEngineEntry(state, eng.ssrTrace, eng.imports);
       await compileEngineEntry(state, eng.ssrTemporal, eng.imports);
+      await compileEngineEntry(state, eng.ssrTraceFragment, eng.imports);
+      await compileEngineEntry(state, eng.ssrTemporalFragment, eng.imports);
       await compileEngineEntry(state, eng.ssrCompose, eng.imports);
+      await compileEngineEntry(state, eng.ssrComposeFragment, eng.imports);
       await compileEngineEntry(state, eng.rayQuery, eng.imports);
       await compileEngineEntry(state, eng.rayPathTracer, eng.imports);
       await compileEngineEntry(state, eng.rayRasterSource, eng.imports);
@@ -2509,6 +2520,7 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
       await compileEngineEntry(state, eng.atmosphereBackground, eng.imports);
       await compileEngineEntry(state, eng.atmosphereIbl, eng.imports);
       await compileEngineEntry(state, eng.atmosphereLuts, eng.imports);
+      await compileEngineEntry(state, eng.atmosphereLutsFragment, eng.imports);
       await compileEngineEntry(state, eng.atmosphereCompose, eng.imports);
       for (const entry of eng.cloudAtmosphere) await compileEngineEntry(state, entry, eng.imports);
       for (const file of packageMaterialShaders) {

@@ -631,6 +631,7 @@ export function stageViewPassPlan(
       dependencies: scene.ssrDependencies,
       probeFallbackDemand: scene.reflectionProbes.fallbackDemand === true,
       capabilities: owner.internals.device.caps,
+      sampledTextureLimit: owner.internals.device.limits.maxSampledTexturesPerShaderStage,
     },
     subsurface: subsurfaceAdmissionInput(
       owner.internals,

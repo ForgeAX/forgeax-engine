@@ -117,7 +117,7 @@ fn resolveSpriteVertex(in : VsIn, vertex_index : u32, idx : u32) -> SpriteVertex
   // single-quad path byte-identical so sprite-lit demos that do not enable
   // slicing pay zero perf for the slicing branch.
   var selectedRegion = material.region;
-  if (meshes[0].surface.w != 0u) { selectedRegion = meshes[0].spriteRegion; }
+  if ((meshes[0].surface.w & 1u) != 0u) { selectedRegion = meshes[0].spriteRegion; }
 #if PER_INSTANCE_REGION == true
   selectedRegion = instances[idx].region;
 #endif

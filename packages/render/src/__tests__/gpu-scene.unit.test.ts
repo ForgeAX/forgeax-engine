@@ -2081,6 +2081,56 @@ describe('GpuScene', () => {
     expect(move(6, 42, 400, false)).toEqual({ rows: 64, bytes: stride });
   });
 
+  it('resizes a dynamic Instances count in place without rewriting retained rows', () => {
+    const queue = new RecordingQueue();
+    const created = GpuScene.create(createDevice(queue), 256).unwrap();
+    if (created.status !== 'available') throw new Error('RHI null must expose storage tables');
+    const projection = new RenderScene();
+    const range = (count: number) => Array.from({ length: count }, (_, index) => index);
+    const generations = (count: number) => range(count).map((index) => index + 1);
+    const apply = (count: number, initial = false) => {
+      const next = multiInstanceSnapshot(8, range(count), generations(count));
+      const delta = projection.apply([initial ? updateSnapshot(next) : updateInstances(next)]);
+      const revision = created.scene.allocationRevision;
+      const result = created.scene.sync(delta).unwrap();
+      return {
+        result,
+        reallocated: created.scene.allocationRevision !== revision,
+      };
+    };
+    const slot = () => {
+      const current = projection.slotsSnapshot().at(0);
+      if (current === undefined) throw new Error('expected one slot');
+      return current.slot;
+    };
+    const first = () => created.scene.instanceIndexForSlot(slot(), 0);
+    apply(64, true);
+    // The first count change moves the collection to a dynamic reservation.
+    apply(60);
+    const reserved = first();
+    expect(reserved).toBeDefined();
+    // Shrinking and growing within the reservation keeps every row address.
+    for (const count of [40, 80, 12]) {
+      queue.writes.length = 0;
+      apply(count);
+      expect(first()).toBe(reserved);
+      const transformIndex = gpuSceneFieldOffset(GPU_SCENE_LAYOUTS.instance, 'transformIndex');
+      const last = instanceView(queue, created.scene, (reserved ?? 0) + count - 1);
+      expect(last.getUint32(transformIndex, true)).toBeGreaterThan(0);
+      expect(created.scene.instanceIndexForSlot(slot(), count - 1)).toBe(
+        (reserved ?? 0) + count - 1,
+      );
+      expect(created.scene.instanceIndexForSlot(slot(), count)).toBeUndefined();
+    }
+    // Retained rows with unchanged bytes are not uploaded again.
+    queue.writes.length = 0;
+    const steady = apply(12).result;
+    expect(steady.bytes).toBe(0);
+    // Growing past the reservation reallocates and stays readable.
+    apply(200);
+    expect(created.scene.instanceIndexForSlot(slot(), 199)).toBeDefined();
+  });
+
   it('uploads changed rows when material, root and sparse instance edits share one update', () => {
     const queue = new RecordingQueue();
     const created = GpuScene.create(createDevice(queue), 128).unwrap();

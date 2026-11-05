@@ -21,8 +21,8 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
     resolve(process.cwd(), 'packages/shader/src/ssr-compose.wgsl'),
     'utf8',
   );
-  const start = source.indexOf('fn ssrReflectionLod(');
-  const end = source.indexOf('@fragment', start);
+  const start = source.indexOf('fn ssrRadianceLevelCount(');
+  const end = source.indexOf('fn evaluateSsrCompose(', start);
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   const temporalSource = readFileSync(
@@ -77,8 +77,7 @@ it('samples the production reflection pyramid at roughness squared LOD with conf
         )
         .unwrap();
     }
-    const module = createShaderModuleImmediate(device, {
-      code: `
+    const probeSource = `
 @group(0) @binding(0) var radiance: texture_2d<f32>;
 @group(0) @binding(1) var radianceSampler: sampler;
 @group(0) @binding(2) var<storage, read_write> result: array<vec4<f32>>;
@@ -113,8 +112,16 @@ ${temporalSource.slice(temporalStart, temporalEnd)}
   }
   result[9] = vec4<f32>(mass / 8.0);
 
-}`,
-    }).unwrap();
+}`;
+    const compiler = await import(
+      /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
+    );
+    const compiled = await compiler.compileShader(probeSource, {
+      id: 'forgeax_ssr::roughness-mip-probe',
+      defines: { PORTABLE_FRAGMENT: false },
+    });
+    if (!compiled.ok) throw compiled.error;
+    const module = createShaderModuleImmediate(device, { code: compiled.value.wgsl }).unwrap();
     const groupLayout = device
       .createBindGroupLayout({
         entries: [

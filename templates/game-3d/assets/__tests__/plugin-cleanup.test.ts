@@ -88,7 +88,7 @@ for (const outcome of ['dispose', 'failed', 'timeout'] as const) {
           children: [playerGuid, ...(outcome === 'dispose' ? [] : [failureGuid])],
         },
       ],
-      [playerGuid, player, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: clipGuid }],
+      [playerGuid, player, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: clipGuid, transform: clipGuid, wheels: clipGuid }],
       [failureGuid, failure, {}],
     ];
     for (const [guid, plugin, config] of entries) {

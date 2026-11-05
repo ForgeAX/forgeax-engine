@@ -31,6 +31,8 @@ export type {
   ExecutionFault,
   ExecutionFrameInspection,
   ExecutionGeometryObservationResult,
+  ExecutionHdrFrameObservation,
+  ExecutionHdrObservationResult,
   ExecutionMeasurement,
   ExecutionOptions,
   ExecutionRenderCapabilities,

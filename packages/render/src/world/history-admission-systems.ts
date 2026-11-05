@@ -6,6 +6,7 @@ import type { CameraSnapshot, VolumetricFogFrameContext } from '../render-contra
 import type { ExtractedVolumetricFog } from '../render-system-extract';
 import type { SsrSpatialAdmission } from '../ssr/admission';
 import { createSsrHistoryOwner, type SsrHistoryResetReason } from '../ssr/history';
+import { estimateSsrSpatialMemory } from '../ssr/resources';
 import { resolveVolumeTemporalReset, type VolumeTemporalSignature } from '../volume/temporal';
 import { viewDiffuseGiOf } from './gi-systems';
 import { type PassPlanInput, type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
@@ -576,6 +577,27 @@ function stageViewSsrHistory(
   const gi = viewDiffuseGiOf(world, entity);
   if (gi?.ok !== true) return { kind: 'unavailable', code: 'render-extent-unavailable' };
   const { width, height } = ssrHistoryExtent(internals, gi.value.renderExtent);
+  try {
+    const memory = estimateSsrSpatialMemory(
+      { width, height },
+      {
+        execution:
+          internals.device.caps.compute && internals.device.caps.storageTexture
+            ? 'compute'
+            : 'fragment',
+        forward: ssr.admission.lane === 'forward' || ssr.admission.lane === 'cpu-webgl2',
+      },
+    );
+    if (!memory.withinBudget) {
+      const cause = new RangeError(
+        `SSR descriptor bytes ${memory.ssrOwnedBytes} exceed ${memory.budgetBytes}; reduce the internal render extent`,
+      );
+      reportSsrHistoryFailure(internals, 'build', cause);
+      return { kind: 'failed', code: 'owner-create-failed', cause };
+    }
+  } catch (cause) {
+    return { kind: 'failed', code: 'owner-threw', cause };
+  }
   return stageSsrHistoryOwner(frameState, internals, history.ssrReset, width, height);
 }
 

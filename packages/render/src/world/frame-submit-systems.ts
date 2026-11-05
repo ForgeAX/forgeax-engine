@@ -38,7 +38,7 @@ export interface FrameSubmitState {
   readonly failures: unknown[];
   captureReady: boolean;
   rejectionCause?: RendererOperationCause;
-  composite: 'not-required' | 'encoded' | 'rejected';
+  composite: 'not-required' | 'pending' | 'encoded' | 'rejected';
 }
 const RenderFrameSubmit = Object.freeze({ name: 'RenderFrameSubmit' });
 export function frameSubmitOutcome(world: World): FrameSubmitState {
@@ -326,6 +326,7 @@ function frameOutputsReady(
   input: RenderRecordInputState,
   state: FrameSubmitState,
 ): boolean {
+  if (state.composite === 'pending') return true;
   if (input.composite === true && state.composite !== 'encoded') return false;
   const ui = surfaceUi(world);
   return ui === undefined || ui.encodedFrame === input.frameId;
@@ -337,12 +338,24 @@ export function registerFrameSubmitSystems(world: World): void {
       commands: 'none',
       name: RENDER_COMPOSITE_ENCODE_SYSTEM,
       after: [RENDER_VIEW_GRAPH_ENCODE_SYSTEM],
-      queries: [],
-      fn: (world) => {
+      queries: [{ read: [ViewGraphSeal] }],
+      fn: (world, [rows]) => {
         const state = frameSubmitOutcome(world);
         if (!world.hasResource(RenderRecordInput)) return;
         const input = world.getResource<RenderRecordInputState>(RenderRecordInput);
         if (input.composite !== true) return;
+        const frame = renderSubmission(world).frame;
+        for (const row of rows) {
+          const seal = world
+            .resolveUniqueRef<ViewGraphSealState>(
+              requireViewField(world, row.entity, ViewGraphSeal, 'state'),
+            )
+            .unwrap();
+          if (seal.frame === frame && seal.encoding?.kind === 'pending') {
+            state.composite = 'pending';
+            return;
+          }
+        }
         const encoder = renderFrameEncoder(world);
         if (encoder.kind !== 'open') {
           state.composite = 'rejected';
@@ -369,6 +382,7 @@ export function registerFrameSubmitSystems(world: World): void {
         const encoder = renderFrameEncoder(world);
         if (encoder.kind !== 'open') return;
         const state = frameSubmitOutcome(world);
+        if (state.composite === 'pending') return;
         try {
           encodeFramePresentation(world, input, encoder.encoder);
         } catch (cause) {

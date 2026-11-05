@@ -1239,6 +1239,7 @@ beforeAll(async () => {
 
   UNLIT_ENTRY_IMPORTS = {
     'forgeax_clipping::planes': readSrc('clipping.wgsl'),
+    'forgeax_pbr::gbuffer': readSrc('standard-gbuffer.wgsl'),
     'forgeax_material::fragment_output': readSrc('material/fragment-output.wgsl'),
     'forgeax_material::texture_coordinates': readSrc('texture-coordinates.wgsl'),
     'forgeax_view::tone_mapping': readSrc('tone-mapping.wgsl'),

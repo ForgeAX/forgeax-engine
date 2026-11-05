@@ -291,7 +291,7 @@ export function resolveViewSsrDependencies(
   return projectSsrDependencies({
     requested,
     identity: owner.internals.ssrIdentity,
-    reflectionFallback: owner.reflectionProbes.inspect().reflectionFallback,
+    reflectionFallback: owner.reflectionProbes.pipelineFallbackReceipt(),
     format: owner.ssrFormats.get(owner.internals.device),
     temporal:
       accepted === undefined

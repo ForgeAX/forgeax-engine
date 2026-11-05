@@ -42,6 +42,14 @@ vi.mock('../../pkg/wgpu_wasm.js', () => {
   };
 });
 
+// The package deliberately has no Node type dependency.
+function testProcess(): {
+  versions: { node?: string };
+  nextTick(callback: () => void): void;
+} {
+  return (globalThis as unknown as { process: ReturnType<typeof testProcess> }).process;
+}
+
 const MOCK_ARTIFACT = new Uint8Array([1, 2, 3]);
 const MOCK_GLUE = new TextEncoder().encode('mock glue');
 const MOCK_MANIFEST = new TextEncoder().encode(
@@ -192,8 +200,14 @@ describe('ensureReady singleton wrapper', () => {
     // Import while Vite's own Node transport still has process; the tested loader
     // detects the browser branch when ensureReady runs below.
     const mod = await import('../index.js');
-    vi.stubGlobal('process', undefined);
+    // Hide Node detection while retaining the test runner's asynchronous transport.
+    vi.stubGlobal('process', {
+      ...testProcess(),
+      versions: { ...testProcess().versions, node: undefined },
+    });
     const fetchMock = vi.fn(async (input: URL) => {
+      // Vitest RPC also schedules nextTick callbacks while browser loading awaits fetch.
+      await new Promise<void>((resolve) => testProcess().nextTick(resolve));
       const url = new URL(input.href);
       const response = (bytes: Uint8Array): Response =>
         ({
@@ -245,7 +259,11 @@ describe('ensureReady singleton wrapper', () => {
         }
       },
     );
-    vi.stubGlobal('process', undefined);
+    // Hide Node detection while retaining the test runner's asynchronous transport.
+    vi.stubGlobal('process', {
+      ...testProcess(),
+      versions: { ...testProcess().versions, node: undefined },
+    });
     const fetchMock = vi.fn(async (input: URL) => {
       if (input.protocol === 'data:') throw new TypeError('Failed to fetch');
       const bytes = input.pathname.endsWith('/wgpu_wasm_bg.wasm') ? MOCK_ARTIFACT : MOCK_GLUE;

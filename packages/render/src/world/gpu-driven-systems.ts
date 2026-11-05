@@ -11,6 +11,7 @@ import {
 import type { RenderSystemInternals } from '../record/render-context';
 import { runProfiledRenderPhase, runRecordProfilePhase } from '../record/render-context';
 import { querySceneExecution } from '../record/resident-meshes';
+import { gpuDrivenPipelineLane } from '../record/view-pipeline-demand';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
 import type { GpuDrivenRasterLane } from './gpu-driven-raster-systems';
 import { type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
@@ -220,9 +221,10 @@ function selectViewGpuDriven(
   const lighting = viewStandardLightingOf(world, entity);
   if (ssr?.kind !== 'resolved' || lighting?.kind !== 'prepared' || !lighting.lighting.ok)
     return { kind: 'unavailable', code: 'ssr-admission-unavailable' };
-  const fallbackLaneLimit =
-    ssr.reflectionFallbackCandidate &&
-    lighting.lighting.value.standard.prepared.renderPath !== 'deferred';
+  const fallbackLaneLimit = !gpuDrivenPipelineLane(
+    lighting.lighting.value.standard.prepared.renderPath === 'deferred' ? 'deferred' : 'forward',
+    ssr.reflectionFallbackCandidate,
+  );
   let scene: ViewGpuDrivenScene | undefined;
   try {
     // Native source plans expand their tasks only for an executed view.

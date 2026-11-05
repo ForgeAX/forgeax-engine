@@ -1,10 +1,11 @@
-import { PointLight } from '@forgeax/engine-render';
+import { PointLight, type StandardProfile } from '@forgeax/engine-render';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import type { RendererHostAssembly } from '../renderer-host';
 
-// Observe the actual fixture's hosts solely to retire their native resources.
-const hosts = vi.hoisted(() => [] as RendererHostAssembly[]);
+// Observe real host admission and retire the fixture's native resources.
+const hosts = vi.hoisted(() => [] as { host: RendererHostAssembly; profile: StandardProfile }[]);
+const submissions = vi.hoisted(() => ({ active: 0, peak: 0 }));
 vi.mock('@forgeax/engine-runtime/internal/renderer-host', async (original) => {
   const runtime = await original<typeof import('../renderer-host')>();
   return {
@@ -13,7 +14,21 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async (original) => {
       ...args: Parameters<typeof runtime.constructRuntimeRendererHost>
     ) {
       const result = await runtime.constructRuntimeRendererHost(...args);
-      if (result.ok) hosts.push(result.value);
+      if (result.ok) {
+        const profile = args[1]?.standardProfile;
+        if (profile === undefined) throw new Error('Standard parity profile is required');
+        hosts.push({ host: result.value, profile });
+        const draw = result.value.renderer.draw.bind(result.value.renderer);
+        vi.spyOn(result.value.renderer, 'draw').mockImplementation((request) => {
+          const submitted = draw(request);
+          if (submitted.ok) {
+            submissions.active++;
+            submissions.peak = Math.max(submissions.peak, submissions.active);
+            void submitted.value.completed.finally(() => submissions.active--);
+          }
+          return submitted;
+        });
+      }
       return result;
     },
   };
@@ -33,6 +48,9 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
     const { bootstrapReady } = await import('../../../../apps/parity/urp-vs-hdrp/src/main');
     // The fixture completes its initial submissions before capture or disposal.
     const fixture = await bootstrapReady;
+    expect(submissions.peak, 'independent cold hosts must not queue competing scene frames').toBe(
+      1,
+    );
     const captureLeft = window.__captureLeft;
     const captureRight = window.__captureRight;
     if (captureLeft === undefined || captureRight === undefined)
@@ -58,6 +76,20 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
       0,
     );
     expect(maximum / 255).toBeLessThanOrEqual(0.001);
+    // The lighting fixture skips optional HZB preparation. Prove that the
+    // default occlusion path produces the identical nonempty pictures too.
+    expect(hosts).toHaveLength(2);
+    for (const { host, profile } of hosts) {
+      expect(profile.gpuOcclusion).toBe(false);
+      const switched = host.renderer.setProfile({ ...profile, gpuOcclusion: true });
+      if (!switched.ok) throw switched.error;
+    }
+    expect(await captureLeft()).toEqual(a);
+    expect(await captureRight()).toEqual(b);
+    for (const { host, profile } of hosts) {
+      const restored = host.renderer.setProfile(profile);
+      if (!restored.ok) throw restored.error;
+    }
     // Equal empty pictures are not lighting parity. Change real light data,
     // require different completed pixels, then restore the original picture.
     const { world, lights } = fixture.clustered;
@@ -74,7 +106,7 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
     expect(restored).toEqual(b);
   } finally {
     const disposed = await Promise.allSettled(
-      hosts.map(async (host) => {
+      hosts.map(async ({ host }) => {
         const result = await host.renderer.dispose();
         host.assets.dispose();
         return result;

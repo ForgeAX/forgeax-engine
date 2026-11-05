@@ -170,7 +170,7 @@ fn resolveSpriteVertex(in : VsIn, idx : u32, vertex_index : u32) -> SpriteVertex
   // are byte-identical. We define uv_eff = (in.uv.x, 1 - in.uv.y) and consume
   // it in BOTH pos_local and uv_atlas below.
   var selectedRegion = material.region;
-  if (meshes[0].surface.w != 0u) { selectedRegion = meshes[0].spriteRegion; }
+  if ((meshes[0].surface.w & 1u) != 0u) { selectedRegion = meshes[0].spriteRegion; }
 #if PER_INSTANCE_REGION == true
   selectedRegion = instances[idx].region;
 #endif

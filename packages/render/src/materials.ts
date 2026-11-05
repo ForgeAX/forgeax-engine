@@ -553,8 +553,10 @@ interface StandardOpts {
   /** Direct-light multiscattering: mobile-friendly fit by default; LUT adds one sampled texture. */
   readonly directMultiscattering?: 'fit' | 'lut';
   /**
-   * Mirror the camera's PlanarReflection where this surface lies on its plane
-   * (roughness below 0.5). The material renders forward and adds one sampled texture.
+   * Mirror the camera's PlanarReflection where this surface lies on its plane.
+   * Roughness fades the mirror out by 0.5, or, when the capture has
+   * `generateMipmaps`, selects its mip (`roughness × (levels − 1)`). The
+   * material renders forward and adds one sampled texture.
    */
   readonly planarReflection?: boolean;
   /** RGB diffusion support radii in presentation pixels, each finite in [0,12]. */
@@ -692,7 +694,8 @@ export interface CustomStandardSurfaceOptions {
    * built-in `planarReflection` does: the material gains the real u32 field and
    * shades forward only. The Surface's per-pixel `normalWS` distorts the mirror
    * lookup by `PlanarReflection.distortion`, and its `roughness` fades the mirror
-   * into the prefiltered environment (wet-ground ripples and puddles).
+   * into the prefiltered environment, or blurs it through the mip chain when the
+   * capture has `generateMipmaps` (wet-ground ripples and puddles).
    */
   readonly planarReflection?: boolean;
   readonly subsurfaceRadius?: never;

@@ -137,6 +137,37 @@ describe('CPU-lane LOD selection', () => {
     expect(selectCpuLodRows(rows, cameraAt(40))[0]?.mesh).toBe(rewritten[0]?.mesh);
   });
 
+  it('selects each composed instance transform and preserves ordinal order', () => {
+    const transforms = new Float32Array(4 * 16);
+    for (let ordinal = 0; ordinal < 4; ordinal++) {
+      const offset = ordinal * 16;
+      transforms[offset] =
+        transforms[offset + 5] =
+        transforms[offset + 10] =
+        transforms[offset + 15] =
+          1;
+      transforms[offset + 14] = [0, -35, -35, 0][ordinal] ?? 0;
+    }
+    const snapshot = source({
+      instances: { transforms, instanceCount: 4, cacheKey: 1, archVersion: 0 },
+    });
+    const selected = selectCpuLodRows([row(snapshot, mesh())], cameraAt(5));
+    expect(selected[0]?.cpuInstanceLods).toEqual([
+      { first: 0, count: 1, level: 0 },
+      { first: 1, count: 2, level: 1 },
+      { first: 3, count: 1, level: 0 },
+    ]);
+    expect(selected[0]?.source).toBe(snapshot);
+    const unavailable = selectCpuLodRows([row(snapshot, mesh(false))], cameraAt(5));
+    expect(unavailable[0]?.cpuInstanceLods).toEqual([{ first: 0, count: 4, level: 0 }]);
+    transforms[16] = transforms[21] = transforms[26] = 10;
+    expect(selectCpuLodRows([row(snapshot, mesh())], cameraAt(5))[0]?.cpuInstanceLods).toEqual([
+      { first: 0, count: 2, level: 0 },
+      { first: 2, count: 1, level: 1 },
+      { first: 3, count: 1, level: 0 },
+    ]);
+  });
+
   it('reports the selected levels as an ascending histogram', () => {
     expect(lodLevelHistogram([1, 0, 1])).toEqual([
       { level: 0, count: 1 },

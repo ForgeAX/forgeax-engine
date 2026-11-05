@@ -16,6 +16,7 @@
 #import forgeax_material::texture_coordinates::{materialUvLinear}
 #import forgeax_view::fog::{translucent_fog}
 #import forgeax_material::oit::{OitOutput, oitAccumulate}
+#import forgeax_pbr::gbuffer::{encodeStandardNormalRoughness}
 
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #pragma variant_axis ATMOSPHERE_AVAILABLE
@@ -182,7 +183,7 @@ fn unlitSkinCandidate(idx : u32) -> u32 {
 }
 #endif
 
-fn unlitVertex(in : VsIn, idx : u32, forShadow : bool) -> VsOut {
+fn unlitVertex(in : VsIn, idx : u32) -> VsOut {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   let visible = visibleItems[idx];
   material = sceneMaterials[visible.y];
@@ -211,9 +212,7 @@ fn unlitVertex(in : VsIn, idx : u32, forShadow : bool) -> VsOut {
   out.uv = unlitUv(in, material.baseColorTextureCoordinatesMetadata.x, material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesRotation);
   out.alphaUv = unlitUv(in, material.alphaTextureCoordinatesMetadata.x, material.alphaTextureCoordinatesTransform, material.alphaTextureCoordinatesRotation);
   out.worldPos = world.xyz;
-  if (forShadow || material.shading > 0.5) {
-    out.worldNormal = transformNormal(localToWorld, in.normal);
-  }
+  out.worldNormal = transformNormal(localToWorld, in.normal);
 #ifdef VERTEX_COLOR_AVAILABLE
   out.color = in.color;
 #endif
@@ -222,12 +221,12 @@ fn unlitVertex(in : VsIn, idx : u32, forShadow : bool) -> VsOut {
 
 @vertex
 fn vs_main(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  return unlitVertex(in, idx, false);
+  return unlitVertex(in, idx);
 }
 
 @vertex
 fn vs_shadow(in : VsIn, @builtin(instance_index) idx : u32) -> VsOut {
-  var out = unlitVertex(in, idx, true);
+  var out = unlitVertex(in, idx);
   out.clip = projectShadowPosition(vec4<f32>(out.worldPos, 1.0), out.worldNormal);
   return out;
 }
@@ -278,13 +277,19 @@ fn materialVertexColor(in : VsOut) -> vec4<f32> {
 #endif
 }
 
+// Color, AO and temporal data share the same visible-surface predicate.
+fn unlitSurfaceCoverage(positionWS : vec3<f32>, positionOS : vec3<f32>, textureAlpha : f32, vertexAlpha : f32, mappedAlpha : f32) -> f32 {
+  applyViewClipping(positionWS, false);
+#ifdef MATERIAL_CLIPPING_AVAILABLE
+  applyLocalClipping(positionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
+#endif
+  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(textureAlpha) * vertexAlpha * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
+  applyAlphaHash(coverage, positionOS, material.alphaHash);
+  return coverage;
+}
+
 // Shaded, fogged straight-alpha color shared by the sorted and OIT entry points.
 fn unlitColor(in : VsOut, frontFacing : bool) -> vec4<f32> {
-  applyViewClipping(in.worldPos, false);
-#ifdef MATERIAL_CLIPPING_AVAILABLE
-  applyLocalClipping(in.worldPos, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
-#endif
-
   // Matcap reuses the base-color slot as its sphere image: one sample, one
   // binding layout, and only the lookup coordinate changes.
   var sampleUv = in.uv;
@@ -298,8 +303,7 @@ fn unlitColor(in : VsOut, frontFacing : bool) -> vec4<f32> {
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, sampleUv, sampleScale);
   let vertexColor = materialVertexColor(in);
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
-  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
-  applyAlphaHash(coverage, in.positionOS, material.alphaHash);
+  let coverage = unlitSurfaceCoverage(in.worldPos, in.positionOS, texSample.a, vertexColor.a, mappedAlpha);
   let alpha = materialOutputAlpha(coverage, material.alphaMode);
   // Normal visualization is an exact encoded readback (Three fog: false).
   if (abs(material.shading - UNLIT_SHADING_NORMAL) < 0.5 || material.shading > 2.5) {
@@ -329,6 +333,20 @@ fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0
   return color;
   #endif
 #endif
+}
+
+// Unlit does not receive AO lighting, but its opaque surface still supplies
+// depth and normals to the view's occlusion inputs. It shares color's vertex
+// transform; no normal texture or Standard PBR layout is required.
+@fragment
+fn fs_ao_input(in : VsOut, @builtin(front_facing) frontFacing : bool) -> @location(0) u32 {
+#ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+  selectSceneMaterial(in.materialAddress, in.clip.xy);
+#endif
+  let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
+  let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
+  unlitSurfaceCoverage(in.worldPos, in.positionOS, texSample.a, materialVertexColor(in).a, mappedAlpha);
+  return encodeStandardNormalRoughness(in.worldNormal * select(-1.0, 1.0, frontFacing), 1.0);
 }
 
 // Weighted blended OIT accumulation for straight-alpha blend states.
@@ -400,7 +418,7 @@ struct TemporalVsOut {
 
 @vertex
 fn vs_temporal(in : VsIn, @builtin(instance_index) idx : u32) -> TemporalVsOut {
-  let current = unlitVertex(in, idx, false);
+  let current = unlitVertex(in, idx);
 #if SKINNING_DISABLED == false
   let descriptor = skinTaskDescriptor(unlitSkinCandidate(idx));
   let currentSkin = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
@@ -458,16 +476,10 @@ fn fs_temporal(in : TemporalVsOut) -> @location(0) vec4<f32> {
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
   selectSceneMaterial(in.materialAddress, in.clip.xy);
 #endif
-  applyViewClipping(in.clippingPositionWS, false);
-#ifdef MATERIAL_CLIPPING_AVAILABLE
-  applyLocalClipping(in.clippingPositionWS, false, array<vec4<f32>, 6>(material.clippingPlaneA, material.clippingPlaneB, material.clippingPlaneC, material.clippingPlaneD, material.clippingPlaneE, material.clippingPlaneF), material.clippingControl);
-#endif
-
   let texSample = sampleMaterialTextureLinear(baseColorTexture, baseColorSampler, in.uv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = temporalVertexColor(in);
   let mappedAlpha = sampleMaterialTextureLinear(alphaTexture, alphaSampler, in.alphaUv, material.alphaTextureCoordinatesMetadata.zw)[u32(material.alphaChannel)];
-  let coverage = alphaCoverage(material.baseColor.a * unlitTextureAlpha(texSample.a) * vertexColor.a * mappedAlpha, material.alphaCutoff, material.alphaToCoverage);
-  applyAlphaHash(coverage, in.positionOS, material.alphaHash);
+  let coverage = unlitSurfaceCoverage(in.clippingPositionWS, in.positionOS, texSample.a, vertexColor.a, mappedAlpha);
   let alpha = materialOutputAlpha(coverage, material.alphaMode);
 #ifdef COVERAGE_ONLY
   return vec4<f32>(1.0);

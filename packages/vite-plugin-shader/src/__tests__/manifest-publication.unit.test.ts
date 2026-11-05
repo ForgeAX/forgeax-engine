@@ -38,6 +38,58 @@ function withPublishedSourceDigests(
 }
 
 describe('shared shader source publication', () => {
+  it.each([
+    'source',
+    'merge',
+  ] as const)('serializes each shared fact object once within a %s publication', (route) => {
+    const reflection = { boundGlobals: [{ group: 0, binding: 0, kind: 'uniform-buffer' }] };
+    const reads = [{ name: 'main', stage: 'fragment', bindings: [] }];
+    const receipt = { identity: 'fixture', reflection };
+    const entries = [
+      { hash: 'engine', glsl: '', wgsl: 'fn main() {}', entryPoints: reads, reflection },
+    ];
+    const materials = [
+      {
+        identifier: 'material',
+        composedWgsl: 'fn main() {}',
+        entryPoints: reads,
+        reflection,
+        receipt,
+        variants: Array.from({ length: 64 }, (_, index) => ({
+          definesKey: `MODE=${index}`,
+          composedWgsl: 'fn main() {}',
+          entryPoints: reads,
+          reflection,
+          receipt,
+        })),
+      },
+    ];
+    const baseline = publishShaderManifest(entries, materials);
+    const expectedBytes = JSON.stringify(baseline);
+    const authored = publishShaderManifest([], []);
+    const stringify = vi.spyOn(JSON, 'stringify');
+    let actual: ReturnType<typeof publishShaderManifest>;
+    let counts: number[];
+    try {
+      actual =
+        route === 'source'
+          ? publishShaderManifest(entries, materials)
+          : mergeShaderManifestPublications(baseline, authored, new Set(['engine']));
+      counts = [reflection, reads, receipt].map(
+        (value) => stringify.mock.calls.filter(([input]) => input === value).length,
+      );
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(counts).toEqual([1, 1, 1]);
+    expect(JSON.stringify(actual)).toBe(expectedBytes);
+
+    // A new publication owns its own interning. Changed caller facts are
+    // visible immediately instead of reusing a previous operation's identity.
+    receipt.identity = 'changed';
+    expect(publishShaderManifest(entries, materials).receipts).toEqual([receipt]);
+  });
+
   it('rejects invalid pooled references on direct entries, materials and every variant', () => {
     const engine = publishShaderManifest(
       [{ hash: 'engine', wgsl: 'fn main() {}', entryPoints: [] }],

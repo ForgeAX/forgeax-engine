@@ -58,6 +58,48 @@ interface MaterialSourceFile {
   readonly moduleId: string;
 }
 
+/** Detached build-generation inputs. The host must fence these files before publication. */
+export interface MaterialSourceSnapshot {
+  readonly roots: readonly string[];
+  readonly engine: readonly MaterialSourceFile[];
+  readonly project: readonly MaterialSourceFile[];
+  readonly identity: string;
+}
+
+function ownSourceSnapshot(
+  input: Omit<MaterialSourceSnapshot, 'identity'>,
+): MaterialSourceSnapshot {
+  const roots = Object.freeze([...input.roots]);
+  const copy = (rows: readonly MaterialSourceFile[]) =>
+    Object.freeze(
+      rows.map((row) =>
+        Object.freeze({ path: row.path, moduleId: row.moduleId, source: row.source }),
+      ),
+    );
+  const engine = copy(input.engine),
+    project = copy(input.project);
+  const identity = materialPackSourceIdentity([roots, engine, project]);
+  if (identity === undefined)
+    throw new Error('Material source snapshot must contain detached file records');
+  return Object.freeze({ roots, engine, project, identity });
+}
+
+/** Capture once for a fenced build, independently of live/default cooker behavior. */
+export async function captureMaterialSourceSnapshot(
+  roots: readonly string[],
+  reader: {
+    readonly readText?: (path: string) => Promise<string>;
+    readonly paths?: (roots: readonly string[]) => Promise<readonly string[]>;
+  } = {},
+): Promise<MaterialSourceSnapshot> {
+  const packagedRoots = materialShaderSourceRoots();
+  const allRoots = [...new Set([...roots, ...packagedRoots].map((root) => resolve(root)))];
+  return ownSourceSnapshot({
+    roots: allRoots,
+    ...(await collectMaterialSources(allRoots, packagedRoots, reader)),
+  });
+}
+
 const require = createRequire(import.meta.url);
 // Engine and package-owned shader identifiers may use dotted segments (the
 // VFX family is intentionally namespaced as `vfx-render.particles.*`). Keep
@@ -122,16 +164,23 @@ export async function listMaterialSourcePaths(
 export async function collectMaterialSources(
   roots: readonly string[],
   engineRoots: readonly string[] = [],
+  reader: {
+    readonly readText?: (path: string) => Promise<string>;
+    readonly paths?: (roots: readonly string[]) => Promise<readonly string[]>;
+  } = {},
 ): Promise<{
   readonly engine: readonly MaterialSourceFile[];
   readonly project: readonly MaterialSourceFile[];
 }> {
-  const files = await listMaterialSourcePaths(roots);
+  const files = await (reader.paths?.(roots) ?? listMaterialSourcePaths(roots));
   const shadowCasterPaths = new Set(engineRoots.map((root) => resolve(root, 'shadow_caster.wgsl')));
   const records = (
     await Promise.all(
       files.map(async (path): Promise<MaterialSourceFile[]> => {
-        const source = await readFile(path, 'utf8');
+        const source =
+          reader.readText === undefined
+            ? await readFile(path, 'utf8')
+            : await reader.readText(path);
         // shadow_caster is a reserved Engine entry. Older source snapshots omit
         // the import-path directive, while current snapshots already carry it;
         // keep the producer-owned identity without ever emitting two directives.
@@ -337,10 +386,73 @@ function materialSourceCachePath(path: string, roots: readonly string[]): string
   throw new Error(`material source is outside its collected roots: ${path}`);
 }
 
+function createMaterialSourcePreparation(snapshot: MaterialSourceSnapshot | undefined) {
+  const preparedSources = new Map<
+    string,
+    { catalog: ReturnType<typeof buildMaterialSourceCatalog>; identity: string | undefined }
+  >();
+  return (options: {
+    readonly sourceRoots: readonly string[];
+    readonly sources: Pick<MaterialSourceSnapshot, 'engine' | 'project'>;
+    readonly aliases: readonly MaterialSourceFile[];
+    readonly templateAliases: ReadonlyMap<string, string>;
+    readonly input: MaterialPackCookInput;
+  }) => {
+    const { sourceRoots, sources, aliases, templateAliases, input } = options;
+    const fingerprintField = Object.getOwnPropertyDescriptor(input, 'compilerFingerprint');
+    const wasm = Object.getOwnPropertyDescriptor(input, 'wasm');
+    const accessors = [fingerprintField, wasm].some(
+      (field) => field !== undefined && !('value' in field),
+    );
+    const preparationKey =
+      sources === snapshot && !accessors
+        ? materialPackSourceIdentity([sourceRoots, aliases, fingerprintField?.value, wasm?.value])
+        : undefined;
+    let prepared = preparationKey === undefined ? undefined : preparedSources.get(preparationKey);
+    if (prepared === undefined) {
+      const catalog = buildMaterialSourceCatalog({
+        roots: sourceRoots,
+        engine: sources.engine,
+        project: [
+          ...sources.project,
+          ...aliases.filter((alias) => !templateAliases.has(alias.moduleId)),
+        ],
+      });
+      if (!catalog.ok) throw catalog.error;
+      prepared = {
+        catalog,
+        identity: accessors
+          ? undefined
+          : materialPackSourceIdentity([
+              sourceRoots,
+              sources.engine,
+              sources.project,
+              aliases,
+              fingerprintField?.value,
+              wasm?.value,
+            ]),
+      };
+      if (preparationKey !== undefined) {
+        if (preparedSources.size >= 16) {
+          const oldest = preparedSources.keys().next().value;
+          if (oldest !== undefined) preparedSources.delete(oldest);
+        }
+        preparedSources.set(preparationKey, prepared);
+      }
+    }
+    const catalog = prepared.catalog;
+    if (!catalog.ok) throw catalog.error;
+    return { catalog, sourceIdentity: prepared.identity };
+  };
+}
+
 /** Build a Pack NativeCooker for authored WGSL material rows. */
 export function createMaterialPackCooker(
   roots: readonly string[] = [],
-  options: { readonly profile?: MaterialPackCookProfile } = {},
+  options: {
+    readonly profile?: MaterialPackCookProfile;
+    readonly sourceSnapshot?: MaterialSourceSnapshot;
+  } = {},
 ): NativeCooker {
   if (
     options.profile !== undefined &&
@@ -349,8 +461,27 @@ export function createMaterialPackCooker(
   )
     throw new Error('material profile must be webgpu-storage or webgpu-storage-ray when provided');
   const storageOnly = options.profile !== undefined;
+  const snapshot =
+    options.sourceSnapshot === undefined ? undefined : ownSourceSnapshot(options.sourceSnapshot);
+  const cookRoots = snapshot === undefined ? roots : [...roots];
+  const collectSources = (requestedRoots: readonly string[], packagedRoots: readonly string[]) => {
+    const captured =
+      snapshot !== undefined &&
+      requestedRoots.every((root) =>
+        snapshot.roots.some((parent) => {
+          const path = relative(parent, resolve(root));
+          return (
+            path === '' || (!isAbsolute(path) && path !== '..' && !path.startsWith(`..${sep}`))
+          );
+        }),
+      );
+    return captured
+      ? Promise.resolve(snapshot)
+      : collectMaterialSources(requestedRoots, packagedRoots);
+  };
   // The material Worker replaces this cooker when roots/profile change; its
   // bounded preparation roster never outlives that existing owner.
+  const prepareSources = createMaterialSourcePreparation(snapshot);
   const compilePackVariant = createMaterialPackVariantCompiler(compile);
   const cookVariant = async (request: MaterialCookRequest, sourceIdentity: string | undefined) => {
     const cooked = await compilePackVariant(request, sourceIdentity);
@@ -362,7 +493,7 @@ export function createMaterialPackCooker(
     concurrency: 'parallel',
     async cacheIdentity() {
       const packagedRoots = materialShaderSourceRoots();
-      const sources = await collectMaterialSources([...roots, ...packagedRoots], packagedRoots);
+      const sources = await collectSources([...cookRoots, ...packagedRoots], packagedRoots);
       const sourceRecords = [...sources.engine, ...sources.project];
       // Package slots stay fixed even when their install paths change. Empty
       // asset roots (for example the preview HDR kit or builtin Pack JSON) must
@@ -370,7 +501,7 @@ export function createMaterialPackCooker(
       // Nonempty roots retain distinct, discovery-order-independent slots.
       const identityRoots = [
         ...packagedRoots,
-        ...[...new Set(roots.map((root) => resolve(root)))]
+        ...[...new Set(cookRoots.map((root) => resolve(root)))]
           .filter((root) =>
             sourceRecords.some(
               (source) => materialSourceRelativePath(source.path, root) !== undefined,
@@ -421,11 +552,11 @@ export function createMaterialPackCooker(
       };
       const packagedRoots = materialShaderSourceRoots();
       const sourceRoots = [
-        ...roots,
+        ...cookRoots,
         ...(input.sourcePath === undefined ? [] : [dirname(resolve(input.sourcePath))]),
         ...packagedRoots,
       ];
-      const sources = await collectMaterialSources(sourceRoots, packagedRoots);
+      const sources = await collectSources(sourceRoots, packagedRoots);
       const aliases = materialModuleAliases(sources, normalizedInput);
       // An alias of an Engine-owned template retains that template's identity.
       // Project names and arbitrary Surface slots do not select Standard policy.
@@ -454,33 +585,13 @@ export function createMaterialPackCooker(
           },
         };
       }
-      const catalog = buildMaterialSourceCatalog({
-        roots: sourceRoots,
-        engine: sources.engine,
-        project: [
-          ...sources.project,
-          ...aliases.filter((alias) => !templateAliases.has(alias.moduleId)),
-        ],
+      const { catalog, sourceIdentity } = prepareSources({
+        sourceRoots,
+        sources,
+        aliases,
+        templateAliases,
+        input,
       });
-      if (!catalog.ok) {
-        throw catalog.error;
-      }
-      // All records have just been read from their authoritative files. Retain
-      // the complete namespace and paths, including aliases and transitive inputs.
-      const fingerprintField = Object.getOwnPropertyDescriptor(input, 'compilerFingerprint');
-      const wasm = Object.getOwnPropertyDescriptor(input, 'wasm');
-      const sourceIdentity = [fingerprintField, wasm].some(
-        (field) => field !== undefined && !('value' in field),
-      )
-        ? undefined
-        : materialPackSourceIdentity([
-            sourceRoots,
-            sources.engine,
-            sources.project,
-            aliases,
-            fingerprintField?.value,
-            wasm?.value,
-          ]);
       const cookRaster = (request: MaterialCookRequest) =>
         compilePackVariant(request, sourceIdentity);
       const table = { ...(input.table ?? {}), [normalizedInput.guid]: normalizedInput.source };
@@ -804,5 +915,5 @@ export function createMaterialPackCooker(
       };
     },
   };
-  return withNodeMaterialWorkers(cooker, roots, options.profile);
+  return withNodeMaterialWorkers(cooker, cookRoots, options.profile, snapshot);
 }

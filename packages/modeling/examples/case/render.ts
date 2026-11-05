@@ -38,8 +38,8 @@ import {
   buildEngineShaderManifest,
   publishShaderManifest,
 } from '@forgeax/engine-vite-plugin-shader';
-import { serializeCookedMaterialRecord, validateCookedMaterialRecord } from '@forgeax/engine-pack';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
+import { createRuntimePackPublication, encodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import { createMaterialPackCooker } from '@forgeax/engine-shader-compiler';
 import { PNG } from 'pngjs';
@@ -634,13 +634,16 @@ export async function createCaseRenderer(options: {
 }
 
 const CASE_PACKAGE = definePackageId('01900000-0000-7000-8000-00000000ca5e');
+// Native case renderers share the cooker's bounded program roster within this file.
+const caseMaterialCooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
 
 /**
  * Cook the slot materials and publish them with their generated textures through the
  * ordinary Pack publication and catalog, as a built Pack would: optional Standard layers
  * (clearcoat, anisotropy) only render from a cooked specialization.
+ * Keep typed artifacts until the source wire encoder can share complete programs.
  */
-async function publishMaterials(
+export async function publishMaterials(
   assets: AssetRegistry,
   recipes: Readonly<Record<string, (texture: TextureSink) => StandardMaterialOptions>>,
 ): Promise<Map<string, AssetHandle<'material'>>> {
@@ -658,14 +661,22 @@ async function publishMaterials(
     }
     return guid;
   };
-  const cooker = createMaterialPackCooker();
   const slots: [string, string][] = [];
   for (const [slot, recipe] of Object.entries(recipes)) {
     const guid = guidOf(`material/${slot}`);
-    const cooked = await cooker.cook({ guid, source: Materials.standard(recipe(texture)) });
+    const cooked = await caseMaterialCooker.cook({ guid, source: Materials.standard(recipe(texture)) });
     const record = validateCookedMaterialRecord(
       (cooked.payload as { readonly cooked: unknown }).cooked,
     ).unwrap();
+    if (
+      record.programs.some(({ selections }) =>
+        selections.some(({ context }) =>
+          context.backend !== 'webgpu' || context.capability === 'uniform-fallback',
+        ),
+      )
+    ) {
+      throw new Error('case renderer requires a storage WebGPU material publication');
+    }
     const ready = await createMaterialLoader({
       loadPublication: async () => ({
         guid,
@@ -689,7 +700,7 @@ async function publishMaterials(
       asset: {
         kind: 'material',
         ...r.resolved,
-        cooked: JSON.parse(serializeCookedMaterialRecord(r)),
+        cooked: r,
       } as unknown as MaterialAsset,
     });
     slots.push([slot, guid]);
@@ -712,7 +723,7 @@ async function publishMaterials(
       })),
     },
   });
-  const body = JSON.stringify(publication.pack, (_key, value) =>
+  const body = JSON.stringify(encodeMaterialProgramWire(publication.pack), (_key, value) =>
     ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
   );
   assets.setCatalogSource(

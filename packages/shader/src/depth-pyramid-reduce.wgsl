@@ -11,7 +11,9 @@
 }
 
 @group(0) @binding(0) var sourcePyramid : texture_2d<f32>;
+#if !PORTABLE_FRAGMENT
 @group(0) @binding(1) var pyramidOutput : texture_storage_2d<r32float, write>;
+#endif
 
 fn reduceDepthPyramidFootprint(
   destinationCoordinate : vec2<u32>,
@@ -31,6 +33,7 @@ fn reduceDepthPyramidFootprint(
   return reduced;
 }
 
+#if !PORTABLE_FRAGMENT
 @compute @workgroup_size(8, 8, 1)
 fn depth_pyramid_reduce(@builtin(global_invocation_id) globalId : vec3<u32>) {
   let sourceSize = textureDimensions(sourcePyramid, 0);
@@ -54,3 +57,16 @@ fn depth_pyramid_reduce_furthest(@builtin(global_invocation_id) globalId : vec3<
   let reduced = reduceDepthPyramidFootprint(globalId.xy, sourceSize, destinationSize, true);
   textureStore(pyramidOutput, vec2<i32>(globalId.xy), vec4<f32>(reduced, 0.0, 0.0, 1.0));
 }
+
+#else
+@vertex fn depth_pyramid_fullscreen(@builtin(vertex_index) index : u32) -> @builtin(position) vec4<f32> {
+  let positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(positions[index], 0.0, 1.0);
+}
+@fragment fn depth_pyramid_reduce_fragment(@builtin(position) position : vec4<f32>) -> @location(0) f32 {
+  return reduceDepthPyramidFootprint(vec2<u32>(position.xy), textureDimensions(sourcePyramid, 0), max(textureDimensions(sourcePyramid, 0) / vec2<u32>(2u), vec2<u32>(1u)), false);
+}
+@fragment fn depth_pyramid_reduce_furthest_fragment(@builtin(position) position : vec4<f32>) -> @location(0) f32 {
+  return reduceDepthPyramidFootprint(vec2<u32>(position.xy), textureDimensions(sourcePyramid, 0), max(textureDimensions(sourcePyramid, 0) / vec2<u32>(2u), vec2<u32>(1u)), true);
+}
+#endif

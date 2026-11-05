@@ -19,6 +19,8 @@ export interface TriangleHit {
   readonly entity: EntityHandle;
   /** Zero-based triangle index across supported triangle submeshes. */
   readonly triangleIndex: number;
+  /** Zero-based index into `MeshAsset.submeshes` of the hit triangle. */
+  readonly submeshIndex: number;
   /** Exact world-space intersection point. */
   readonly point: Vec3Like;
   /** Distance from the screen ray origin in world units. */
@@ -181,6 +183,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
       const worldC = vec3.create();
       const worldPoint = vec3.create();
       let triangleIndex = 0;
+      let submeshIndex = 0;
       const indices = mesh.indices;
       const maxVertex = Math.floor(positions.length / 3) - 1;
       const test = (i0: number, i1: number, i2: number, index: number): void => {
@@ -207,6 +210,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
           entity,
           ...(assetHandle === undefined ? {} : { assetHandle }),
           triangleIndex: index,
+          submeshIndex,
           point: [worldPoint[0], worldPoint[1], worldPoint[2]] as unknown as Vec3Like,
           distance,
           barycentric: [1 - hit.u - hit.v, hit.u, hit.v],
@@ -215,8 +219,9 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
         };
       };
 
-      for (const submesh of mesh.submeshes) {
+      for (const [index, submesh] of mesh.submeshes.entries()) {
         if (!isTriangleTopology(submesh.topology)) continue;
+        submeshIndex = index;
         triangleIndex = visitSubmeshTriangles(submesh, indices, triangleIndex, test);
       }
     }

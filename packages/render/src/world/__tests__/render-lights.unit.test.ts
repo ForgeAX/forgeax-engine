@@ -674,7 +674,7 @@ describe('render-capture-fit', () => {
         reflectionProbeProjection: () => ({ selected: new Map() }),
         reflectionCaptureRevision: () => '',
       },
-      reflectionProbes: { prepare: () => probes, inspect: () => ({}) },
+      reflectionProbes: { prepare: () => probes, pipelineFallbackReceipt: () => undefined },
     };
     world
       .addComponent(view, {

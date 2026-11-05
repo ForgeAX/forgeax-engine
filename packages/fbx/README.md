@@ -6,6 +6,11 @@ Autodesk FBX SDK, no native addon. Emits the engine FBX POD JSON schema
 (meshes, nodes, materials, skeletons, skins, clips), consumed by the shared
 `parse-*.ts` / `to-asset-pack.ts` bridge layer.
 
+`node packages/fbx/scripts/ensure-wasm.mjs --check` checks that both generated
+payload files are nonempty without fetching. CI then runs
+`node packages/fbx/scripts/test-wasm.mjs --verify` to parse a real FBX probe;
+ordinary installation keeps best-effort release hydration.
+
 ## Evidence and recovery
 
 The FBX producer writes source meta and a producer-owned `CookReceipt`; the catalog only supplies the GUID locator (`packageUrl` and optional `cookReceiptUrl`). `AssetEvidence` joins those records with Pack v2 package and artifact verification so browser/runtime code does not guess whether a cook completed.

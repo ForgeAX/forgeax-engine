@@ -1484,8 +1484,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 37 named engine shader entries',
-      ).toBe(37);
+        'materialShaders[] must contain exactly 42 named engine shader entries',
+      ).toBe(42);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1608,6 +1608,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::default-shadow-caster',
         'forgeax::default-standard-pbr',
         'forgeax::default-unlit',
+        'forgeax::depth-pyramid-reduce-fragment',
+        'forgeax::depth-pyramid-seed-fragment',
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
         'forgeax::engine-light-texture-resample-compute',
@@ -1621,6 +1623,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::points-lines',
         'forgeax::sprite',
         'forgeax::sprite-lit',
+        'forgeax::ssr-compose-fragment',
+        'forgeax::ssr-temporal-fragment',
+        'forgeax::ssr-trace-fragment',
         'forgeax::standard-terrain',
         'forgeax::standard-terrain-ids',
         'forgeax::standard-terrain-ids-shadow',
@@ -1763,6 +1768,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::default-shadow-caster',
           'forgeax::default-standard-pbr',
           'forgeax::default-unlit',
+          'forgeax::depth-pyramid-reduce-fragment',
+          'forgeax::depth-pyramid-seed-fragment',
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
           'forgeax::engine-light-texture-resample-compute',
@@ -1776,6 +1783,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::points-lines',
           'forgeax::sprite',
           'forgeax::sprite-lit',
+          'forgeax::ssr-compose-fragment',
+          'forgeax::ssr-temporal-fragment',
+          'forgeax::ssr-trace-fragment',
           'forgeax::standard-terrain',
           'forgeax::standard-terrain-ids',
           'forgeax::standard-terrain-ids-shadow',

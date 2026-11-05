@@ -60,6 +60,22 @@ Preserve structured failures across boundaries, including the original code, rel
 
 Improve the owning README or routed skill where discovery caused the failure. Put the general contract and shortest supported recovery there. Keep case history, raw traces and measurements in owner reports; do not expand every consumer's instructions with one game's details.
 
+## Compare against another engine
+
+Use a cross-engine game only as evidence for an owner change in this Engine; keep the comparison fair before attributing a gap.
+
+| Concern | Rule |
+| --- | --- |
+| Feature tier | Align every feature the reference uses that this Engine lacks or supports only at a lower tier (for example clustered versus per-object lighting); record the decision and the control run that justified it |
+| Idiomatic usage | Write each build with its documented public path (for example `world.set` for a changed instance count); load comes from overall scale, not from a misuse one engine happens to tolerate |
+| Shared simulation | Drive both builds from one deterministic simulation and publish a checksum at a fixed tick; same-tick screenshots plus the checksum prove the work and picture match |
+| Frozen workload | Freeze the default workload once fair; measure headroom with a separately named heavier variant instead of moving the default |
+| Capped measurement | Report vsync-capped FPS and p95 together with main-thread busy ms/frame and the heavier variant; a capped 60 alone does not show headroom |
+| Shared host | Gate runs on host load, interleave before/after builds, record load averages beside each result and repeat; never compare runs from different load regimes |
+| Timestamps | GPU timestamp intervals from overlapping submissions can overlap or be clamped; do not sum them into frame time, and confirm GPU-bound claims with a workload control |
+
+Measure each kept change on the real game against the frozen before build. A gain that only appears in a microbenchmark is not delivered.
+
 ## Close each candidate
 
 Prepare the declared asset, compiler and native-carrier inputs before runtime acceptance. Keep build outputs stable while their consumers are under verification; a changed owner requires the affected checks again.

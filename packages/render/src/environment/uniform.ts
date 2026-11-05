@@ -29,7 +29,7 @@ export function writeAtmosphereUniform(
       referenceSamples,
       p.sunAngularRadius,
       Math.max(0.001, Math.min(far * 0.001, 96)),
-      1,
+      p.backgroundOnly ? 0 : 1,
     ],
     offset,
   );

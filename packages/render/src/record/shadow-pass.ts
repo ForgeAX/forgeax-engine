@@ -57,9 +57,11 @@ import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../rend
 import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { MaterialDispatchPass } from '../scene/material-dispatch';
 import { matchPass } from '../systems/pass-selector';
+import { cpuInstanceLodDraws } from './cpu-lod';
 import { FirstEntryMap } from './first-entry-map';
 import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting';
 import type { MaterialBgAssemblyCacheEntry, ValidatedRenderable } from './frame-snapshot';
+import type { PipelineRequestRuntime } from './geometry-pipeline-requests';
 import {
   geometrySkinBindGroup,
   resolveGeometryInstanceBuffer,
@@ -344,7 +346,7 @@ function markStaticShadowRecorded(
 }
 
 function shadowMaterial(
-  c: _InternalRenderPipelineContext,
+  c: Pick<_InternalRenderPipelineContext, 'materialFrame'>,
   source: RenderableSnapshot,
   slot: number,
 ) {
@@ -520,7 +522,7 @@ function gpuDrivenShadowVertexEntry(
 
 /** The same native specification is used for explicit preparation and real shadow encoding. */
 function requestGpuDrivenShadowPipeline(
-  c: _InternalRenderPipelineContext,
+  c: { readonly runtime: PipelineRequestRuntime },
   factory: _InternalRenderPipelineContext['runtime']['getMaterialShaderPipeline'],
   projection: ShadowPipelineProjection,
   batch: Pick<GpuDrivenBatch, 'key'>,
@@ -1813,7 +1815,7 @@ export function buildMatchedMaterialHandlesByRenderable(
 
 /** The request is shared by hidden preparation and the real ShadowCaster draw. */
 function resolveShadowMaterialPipeline(
-  c: _InternalRenderPipelineContext,
+  c: { readonly runtime: PipelineRequestRuntime },
   entry: ValidatedRenderable,
   topology: import('@forgeax/engine-types').PrimitiveTopology,
   submeshMaterial: MaterialSnapshot,
@@ -2041,26 +2043,22 @@ function prepareGpuDrivenShadowViewPipelines(
 }
 
 /** Requests real PSOs only; it never encodes or changes visibility. */
-export function prepareShadowMaterialPipelines(
-  c: _InternalRenderPipelineContext,
-  rendererRecording = false,
-  requiredView?: (
-    frame: import('../render-pipeline').RenderPipelineFrame,
-    identity: ShadowViewIdentity,
-  ) => boolean,
+/** Candidate-only shadow demand shares normal requests without retaining visible GPU plans. */
+export type HiddenShadowPipelineContext = Pick<
+  _InternalRenderPipelineContext,
+  'materialFrame' | 'pipelinePreparationEntries' | 'gpuDrivenGeometryLane'
+> & {
+  readonly runtime: PipelineRequestRuntime;
+  readonly frameState: {
+    pipelinePreparationPending?: boolean;
+    pipelinePreparationPendingReason?: import('../render-contract').FramePresentationPendingReason;
+  };
+};
+export function prepareHiddenShadowMaterialPipelines(
+  c: HiddenShadowPipelineContext,
+  reflections: ReadonlySet<boolean>,
 ): void {
   let preparedHiddenDraws: Map<ValidatedRenderable, Set<number>> | undefined;
-  // Only actual declared shadow view kinds participate. Hidden rows stay outside
-  // the scene/culling lists, but their accepted receipt owns the future native PSO.
-  const views = c.gpuDrivenShadowViews?.activeIdentities() ?? [];
-  // The light projection roster exists before the first visible GPU batch.
-  // Hidden candidates must consume these exact planned views as well: using
-  // only submitted GPU views would miss a new caster's first shadow PSO.
-  const reflections =
-    c.shadowViewPlanesByView === undefined
-      ? new Set(views.map((view) => view.kind === 'point'))
-      : new Set([...c.shadowViewPlanesByView.keys()].map((key) => key.startsWith('point:')));
-  prepareGpuDrivenShadowViewPipelines(c, views, rendererRecording, requiredView);
   if (
     c.runtime.prepareMaterialShaderPipeline !== undefined &&
     c.runtime.device.caps.storageBuffer &&
@@ -2174,6 +2172,28 @@ export function prepareShadowMaterialPipelines(
   }
 }
 
+export function prepareShadowMaterialPipelines(
+  c: _InternalRenderPipelineContext,
+  rendererRecording = false,
+  requiredView?: (
+    frame: import('../render-pipeline').RenderPipelineFrame,
+    identity: ShadowViewIdentity,
+  ) => boolean,
+): void {
+  // Only actual declared shadow view kinds participate. Hidden rows stay outside
+  // the scene/culling lists, but their accepted receipt owns the future native PSO.
+  const views = c.gpuDrivenShadowViews?.activeIdentities() ?? [];
+  // The light projection roster exists before the first visible GPU batch.
+  // Hidden candidates must consume these exact planned views as well: using
+  // only submitted GPU views would miss a new caster's first shadow PSO.
+  const reflections =
+    c.shadowViewPlanesByView === undefined
+      ? new Set(views.map((view) => view.kind === 'point'))
+      : new Set([...c.shadowViewPlanesByView.keys()].map((key) => key.startsWith('point:')));
+  prepareGpuDrivenShadowViewPipelines(c, views, rendererRecording, requiredView);
+  prepareHiddenShadowMaterialPipelines(c, reflections);
+}
+
 export function recordShadowCasterDraws(
   c: _InternalRenderPipelineContext,
   shadowPass: RhiRenderPassEncoder,
@@ -2207,7 +2227,9 @@ export function recordShadowCasterDraws(
   // ShadowCaster PSO when a material supplies one.
   let shadowLastPipeline = shadowPipeline;
   let materialDeps: PerSubmeshMaterialBgDeps | undefined;
-  const identityInstanceDraws = [{ buffer: pipelineState.identityInstanceBuffer, count: 1 }];
+  const identityInstanceDraws = [
+    { buffer: pipelineState.identityInstanceBuffer, instanceCount: 1 },
+  ];
   const pipelines = new ShadowPipelineSelections();
 
   for (let i = 0; i < validatedOrdered.length; i++) {
@@ -2224,7 +2246,12 @@ export function recordShadowCasterDraws(
     const slot =
       entry.sceneSlot ?? c.shadowSlotForEntity?.(entry.source.worldId, entry.source.entityKey);
     let shadowInstanceDraws:
-      | readonly { readonly buffer: Buffer; readonly count: number }[]
+      | readonly {
+          readonly buffer: Buffer;
+          readonly instanceCount: number;
+          readonly firstInstanceOrdinal?: number;
+          readonly firstInstance?: number;
+        }[]
       | undefined;
     const indices = entry.submeshIndices ?? submeshes.keys();
     for (const submeshIndex of indices) {
@@ -2276,10 +2303,7 @@ export function recordShadowCasterDraws(
         if (entry.source.instances !== undefined) {
           const draws = resolveGeometryInstanceBuffer(c, entry, [], false);
           if (draws === null || draws.length === 0) break;
-          shadowInstanceDraws = draws.map((draw) => ({
-            buffer: draw.instanceBuffer,
-            count: draw.instanceCount,
-          }));
+          shadowInstanceDraws = draws.map(shadowInstanceDraw);
         }
       }
       const sm = submesh;
@@ -2412,21 +2436,14 @@ export function recordShadowCasterDraws(
             materialUniformSlot(c.runtime, submeshMaterial) * MATERIAL_PER_ENTITY_STRIDE,
           ).byteOffset,
         ]);
-        for (const instanceDraw of shadowInstanceDraws) {
-          const shadowInstancesBg = resolveGeometryInstancesBindGroup(c, instanceDraw.buffer);
-          shadowPass.setBindGroup(3, shadowInstancesBg);
-          if (entry.mesh.indexed) {
-            shadowPass.drawIndexed(
-              range.count,
-              instanceDraw.count,
-              range.first,
-              range.baseVertex,
-              0,
-            );
-          } else {
-            shadowPass.draw(range.count, instanceDraw.count, range.first, 0);
-          }
-        }
+        recordShadowInstanceLodDraws(
+          c,
+          shadowPass,
+          entry,
+          submeshIndex,
+          shadowInstanceDraws,
+          range,
+        );
       }
     }
   }
@@ -2672,4 +2689,50 @@ function ensureGpuDrivenCustomShadowMaterialBg(
     shaderId,
   );
   return bindGroup;
+}
+
+/** Preserve resident-page ordinals when the shadow owner selects CPU LOD runs. */
+function shadowInstanceDraw(
+  draw: NonNullable<ReturnType<typeof resolveGeometryInstanceBuffer>>[number],
+) {
+  return {
+    buffer: draw.instanceBuffer,
+    instanceCount: draw.instanceCount,
+    ...(draw.firstInstanceOrdinal === undefined
+      ? {}
+      : { firstInstanceOrdinal: draw.firstInstanceOrdinal }),
+    ...(draw.firstInstance === undefined ? {} : { firstInstance: draw.firstInstance }),
+  };
+}
+
+/** Main and every shadow view intersect the same original-order LOD/page domains. */
+function recordShadowInstanceLodDraws(
+  c: _InternalRenderPipelineContext,
+  shadowPass: import('@forgeax/engine-rhi').RhiRenderPassEncoder,
+  entry: ValidatedRenderable,
+  submeshIndex: number,
+  shadowInstanceDraws: readonly ReturnType<typeof shadowInstanceDraw>[],
+  range: import('../device/gpu-residency').MeshGpuRange,
+): void {
+  for (const instanceDraw of cpuInstanceLodDraws(entry, submeshIndex, shadowInstanceDraws)) {
+    const selectedRange = instanceDraw.range ?? range;
+    const shadowInstancesBg = resolveGeometryInstancesBindGroup(c, instanceDraw.buffer);
+    shadowPass.setBindGroup(3, shadowInstancesBg);
+    if (entry.mesh.indexed) {
+      shadowPass.drawIndexed(
+        selectedRange.count,
+        instanceDraw.instanceCount,
+        selectedRange.first,
+        selectedRange.baseVertex,
+        instanceDraw.firstInstance ?? 0,
+      );
+    } else {
+      shadowPass.draw(
+        selectedRange.count,
+        instanceDraw.instanceCount,
+        selectedRange.first,
+        instanceDraw.firstInstance ?? 0,
+      );
+    }
+  }
 }

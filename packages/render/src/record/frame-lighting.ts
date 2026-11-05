@@ -12,6 +12,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import { type FrameList, rasterRowsOf } from '../scene/frame-list';
 import { hasRasterDemand } from '../scene/raster-demand';
 import type { ViewLights } from '../world/render-lights';
+import { standardLightingPipelineDemand } from './view-pipeline-demand';
 // @forgeax/engine-runtime - RendererState record stage: per-frame lighting.
 // feat-20260704 M5/w31: further-split from frame.ts (AC-05 <=1500 lines/file).
 // Pure leaf helpers invoked once each from recordFrame; behavior verbatim.
@@ -802,10 +803,13 @@ function prepareStandardLightingTopology(
   const needsClusterAo = frameState.installedPipelineConfig?.ssao?.enabled === true;
   const reflectedAbi = pipelineState?.standardClusterAbi ?? internals.standardClusterAbi;
   const requiresCluster =
-    camera !== undefined &&
-    ((internals.device.caps.storageBuffer && pipelineState?.pbrPipelineLayout !== null) ||
-      local.length > 0 ||
-      needsClusterAo);
+    standardLightingPipelineDemand(
+      camera !== undefined,
+      lights,
+      needsClusterAo,
+      internals.device.caps.storageBuffer,
+      pipelineState?.pbrPipelineLayout,
+    ).lightingKind === 'clustered';
   if (requiresCluster && reflectedAbi === undefined) {
     return err(
       new StandardClusterTransportUnavailableError(

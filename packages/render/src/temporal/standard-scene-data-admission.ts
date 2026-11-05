@@ -1,4 +1,5 @@
 import { runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
+import { isStandardRootModule } from '@forgeax/engine-types';
 import { SceneDataUnavailableError } from '../errors/render';
 import {
   deriveRenderFeaturePassAccess,
@@ -7,7 +8,10 @@ import {
 } from '../features/plan';
 import type { MaterialResource } from '../material-resource';
 import { runtimeMaterialShaderIdForMaterial } from '../material-resource';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
+import {
+  isCanonicalStandardPbrMaterialShader,
+  isStandardPbrSkinMaterialShader,
+} from '../pbr-pipeline';
 import { matchesRecordMode } from '../record/material-pass-selection';
 import type { RenderPipelineTopology } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
@@ -118,6 +122,8 @@ export function sceneDataSurfaceBindings(
 }
 
 export interface StandardSceneDataContributor {
+  /** Proven by the same pass selectors as the later opaque Forward pass. */
+  readonly forwardOnly?: boolean;
   readonly id: string;
   readonly publication: string;
   readonly materialShaderId: string;
@@ -155,6 +161,13 @@ export interface StandardSceneDataAdmissionInput {
   readonly contributors: readonly StandardSceneDataContributor[];
 }
 
+function coversStockAo(admission: StandardSceneSurfaceAdmission): boolean {
+  return (
+    admission.status === 'available' ||
+    (admission.renderPath === 'deferred' && admission.deferredAoCompatible === true)
+  );
+}
+
 export function standardAoSceneDataUnavailable(input: {
   readonly admission: StandardSceneSurfaceAdmission | undefined;
   readonly viewIdentity: string;
@@ -170,7 +183,7 @@ export function standardAoSceneDataUnavailable(input: {
     admission.generation === input.generation &&
     admission.deviceGeneration === input.deviceGeneration &&
     admission.renderPath === input.renderPath;
-  if (sameOwner && admission.status === 'available') return undefined;
+  if (sameOwner && coversStockAo(admission)) return undefined;
   const unavailable = sameOwner && admission.status === 'unavailable' ? admission : undefined;
   const reason = unavailable?.reason ?? 'producer-missing';
   const missingContributorIds =
@@ -203,9 +216,19 @@ export function createStandardSceneSurfaceAdmission(
         ? undefined
         : surfaceContributorRejection(contributor, expectedEntry),
   }));
-  const rejected = decisions.flatMap(({ contributor, rejection }) =>
-    rejection === undefined ? [] : [surfaceContributorDiagnostic(contributor, rejection)],
-  );
+  let deferredAoCompatible = renderPath === 'deferred';
+  const rejected = decisions.flatMap(({ contributor, rejection }) => {
+    if (rejection === undefined) return [];
+    // These rows are composed after GBuffer lighting/AO, by the existing
+    // Forward-only pass. Do not turn their absent GBuffer into a frame error.
+    if (
+      contributor.forwardOnly !== true ||
+      contributor.facts?.selectedPassFound !== true ||
+      contributor.facts.materialSnapshotMissing !== false
+    )
+      deferredAoCompatible = false;
+    return [surfaceContributorDiagnostic(contributor, rejection)];
+  });
   rejected.sort((left, right) => left.id.localeCompare(right.id));
   const missingContributorIds = Object.freeze(rejected.slice(0, 32).map(({ id }) => id));
   const missingContributors = Object.freeze(rejected.slice(0, 32));
@@ -236,6 +259,7 @@ export function createStandardSceneSurfaceAdmission(
         row.deformation,
         row.entryPoint,
         row.selectedProgram,
+        row.forwardOnly === true,
         rejection?.reason,
       ])
       .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
@@ -243,6 +267,10 @@ export function createStandardSceneSurfaceAdmission(
   ]);
   const base = {
     identity,
+    deferredGBufferEmpty:
+      renderPath === 'deferred' &&
+      deferredAoCompatible &&
+      rejected.length === input.contributors.length,
     viewIdentity: input.viewIdentity,
     generation: input.generation,
     deviceGeneration: input.deviceGeneration,
@@ -262,6 +290,7 @@ export function createStandardSceneSurfaceAdmission(
     renderPath: input.renderPath,
     status: 'unavailable',
     reason: hasProducer ? 'coverage-incomplete' : 'producer-missing',
+    deferredAoCompatible,
     missingContributorIds: hasProducer ? missingContributorIds : Object.freeze([]),
     missingContributors: hasProducer ? missingContributors : Object.freeze([]),
     omittedMissingContributorCount: hasProducer ? omittedMissingContributorCount : 0,
@@ -279,11 +308,19 @@ function surfaceContributorRejection(
   | undefined {
   const facts = contributor.facts;
   const authoredShaderId = facts?.authoredShaderId ?? contributor.materialShaderId;
+  const unlitForward =
+    expectedEntry === 'fs_ao_input' &&
+    (authoredShaderId === 'forgeax::default-unlit' ||
+      authoredShaderId === 'forgeax_material::unlit');
   if (facts?.materialSnapshotMissing === true)
     return { reason: 'material-snapshot-missing', rejectedField: 'material-snapshot' };
   if (facts?.selectedPassFound === false)
     return { reason: 'selected-pass-missing', rejectedField: 'selected-pass' };
-  if (!isCanonicalStandardPbrMaterialShader(authoredShaderId))
+  if (
+    !isCanonicalStandardPbrMaterialShader(authoredShaderId) &&
+    (authoredShaderId === undefined || !isStandardRootModule(authoredShaderId)) &&
+    !unlitForward
+  )
     return { reason: 'authored-program-not-standard-pbr', rejectedField: 'authored-shader-id' };
   if (contributor.geometry !== 'mesh' && contributor.geometry !== 'skinned')
     return { reason: 'unsupported-geometry', rejectedField: 'geometry' };
@@ -291,9 +328,7 @@ function surfaceContributorRejection(
     return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
   if (
     contributor.geometry === 'skinned' &&
-    (contributor.deformation !== 'skin' ||
-      (authoredShaderId !== 'forgeax::pbr-skin' &&
-        authoredShaderId !== 'forgeax::default-standard-pbr-skin'))
+    (contributor.deformation !== 'skin' || !isStandardPbrSkinMaterialShader(authoredShaderId))
   )
     return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
   if (
@@ -535,11 +570,17 @@ function selectedPassContributor(
 ): StandardSceneDataContributor {
   const snapshot = material.snapshot;
   const selectedProgramFact = materialProgramFact(material, pass);
-  const entryPoint = (snapshot.materialEntryPoints?.[pass.name] ?? []).find(
-    (entry) => entry.stage === 'fragment' && entry.name === expectedFragmentEntry,
-  )?.name;
+  const forwardOnly = input.lane === 'deferred' && matchPass(input.tags, FORWARD_PASS_SELECTOR);
+  // Publishing fs_gbuffer in the same WGSL module does not select a GBuffer
+  // draw. The later Forward-only pass cannot certify that producer's coverage.
+  const entryPoint = forwardOnly
+    ? undefined
+    : (snapshot.materialEntryPoints?.[pass.name] ?? []).find(
+        (entry) => entry.stage === 'fragment' && entry.name === expectedFragmentEntry,
+      )?.name;
   const authoredShaderId = runtimeMaterialShaderId(pass.program.module, pass.name);
   return {
+    forwardOnly,
     id: input.id,
     publication: JSON.stringify([
       snapshot.materialPublication?.identity ?? null,

@@ -131,12 +131,9 @@ function setup({
       order.push('probes');
       return prepare(...args);
     },
-    inspect: () => {
+    pipelineFallbackReceipt: () => {
       const projectionGeneration = fallbackGeneration();
-      return {
-        reflectionFallback:
-          projectionGeneration === undefined ? undefined : { projectionGeneration },
-      };
+      return projectionGeneration === undefined ? undefined : { projectionGeneration };
     },
   };
   const staged = world.spawn().unwrap();

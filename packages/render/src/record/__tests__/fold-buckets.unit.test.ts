@@ -6,7 +6,7 @@ import {
   TRANSPARENT_SORT_MODE_LAYER_Z,
 } from '../../systems/transparent-sort-config';
 import { computeFoldBuckets } from '../fold-buckets';
-import { type FoldRenderableLike, foldDispatchBuckets } from '../mesh-ssbo';
+import { buildFoldDispatchPlan, type FoldRenderableLike, foldDispatchBuckets } from '../mesh-ssbo';
 
 function entry(renderableIndex: number, materialHandle = 1): DispatchEntry {
   return {
@@ -40,6 +40,57 @@ function row(sprite: boolean, z = 0): FoldRenderableLike {
 }
 
 describe('fold work follows actual multi-draw runs', () => {
+  it.each([
+    129, 256, 257, 10000,
+  ])('pages %i ordered sprites without dropping or reordering a member', (count) => {
+    const rows = Array.from({ length: count }, (_, index) => {
+      const source = row(true);
+      source.transform.world[12] = index;
+      return source;
+    });
+    const buckets = foldDispatchBuckets(
+      rows.map((_, index) => entry(index)),
+      TRANSPARENT_SORT_MODE_LAYER_Z,
+      rows,
+    );
+    const indices = new Map(rows.map((_, index) => [index, index]));
+    const plan = buildFoldDispatchPlan(buckets, indices, 128);
+    const consumed: number[] = [];
+    for (let index = 0; index < count; index++) {
+      if (plan.skipIndices.has(index)) continue;
+      const page = plan.headBuckets.get(index);
+      if (page === undefined) {
+        consumed.push(index);
+        continue;
+      }
+      expect(page.bucketSize).toBeLessThanOrEqual(128);
+      for (let member = 0; member < page.bucketSize; member++) {
+        const original = page.entries.at(member)?.renderableIndex;
+        consumed.push(original as number);
+        expect(page.transforms[member * 16 + 12]).toBe(original);
+      }
+    }
+    expect(consumed).toEqual(Array.from({ length: count }, (_, index) => index));
+    expect(plan.foldedBucketCount).toBe(Math.floor(count / 128) + Number(count % 128 > 1));
+    expect(
+      [...plan.headBuckets.values()].every((page) => page.entries.length === page.bucketSize),
+    ).toBe(true);
+  });
+
+  it.each([
+    'instances',
+    'spriteInstances',
+  ] as const)('keeps explicit %s collections outside automatic folding', (field) => {
+    const rows = [row(true), { ...row(true), [field]: {} }, row(true)];
+    expect(
+      foldDispatchBuckets(
+        rows.map((_, index) => entry(index)),
+        TRANSPARENT_SORT_MODE_LAYER_Z,
+        rows,
+      ),
+    ).toEqual([]);
+  });
+
   it('does not read any input in a mode without folding', () => {
     const entries = new Proxy([entry(0)], {
       get() {

@@ -20,6 +20,13 @@ async function fakeBuild(template) {
   await write(join(cache, 'scriptable-pack-products/entries/k1/payload.json'), '{"p":1}');
   await write(join(cache, 'scriptable-pack-products/staging/k2-tmp/payload.json'));
   await write(join(cache, 'scriptable-pack-product-kinds/entries/d1/payload.json'), '{"d":1}');
+  // URL projections depend on the consumer's publication policy, not cooking.
+  await write(join(cache, 'scriptable-pack-transports/entries/t1/payload.json'), '{"t":1}');
+  await write(
+    join(cache, 'native-cook', 'a'.repeat(64), 'bb', 'b'.repeat(64)),
+    new Uint8Array([1, 2, 3]),
+  );
+  await mkdir(join(cache, 'z-empty-store'), { recursive: true });
   await write(join(template, '.forgeax/ddc/v2/entries/a/payload.json'));
   await write(join(template, '.forgeax/generated/main.ts'));
   await write(join(template, 'dist/index.html'));
@@ -33,6 +40,10 @@ test('a seeded SDK template ships only its published Pack products', async () =>
     const entries = await seedTemplateBuildCache(template, () => fakeBuild(template));
     assert.deepEqual(entries, ['scriptable-pack-product-kinds/d1', 'scriptable-pack-products/k1']);
     assert.deepEqual(await buildCacheEntries(template), entries);
+    assert.deepEqual((await readdir(join(template, TEMPLATE_BUILD_CACHE))).sort(), [
+      'scriptable-pack-product-kinds',
+      'scriptable-pack-products',
+    ]);
     assert.deepEqual((await readdir(template)).sort(), [
       '.forgeax',
       'node_modules',
@@ -72,6 +83,18 @@ test('a project without a build cache lists no entries', async () => {
   const project = await mkdtemp(join(tmpdir(), 'sdk-template-cache-'));
   try {
     assert.deepEqual(await buildCacheEntries(project), []);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test('cooking receipts exclude consumer-specific transport projections', async () => {
+  const project = await mkdtemp(join(tmpdir(), 'sdk-template-transport-'));
+  try {
+    const cache = join(project, TEMPLATE_BUILD_CACHE);
+    await write(join(cache, 'scriptable-pack-products/entries/product/payload.json'));
+    await write(join(cache, 'scriptable-pack-transports/entries/new-base/payload.json'));
+    assert.deepEqual(await buildCacheEntries(project), ['scriptable-pack-products/product']);
   } finally {
     await rm(project, { recursive: true, force: true });
   }

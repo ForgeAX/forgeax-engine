@@ -24,6 +24,7 @@ game root as `pnpm exec forgeax <path> ... --json`. Exact flags come from
 | Scripted playthrough | `project play <script>` | Same gate on a real-input run in its own runtime |
 | Screenshot | `dev capture [--output <png>] [--checkpoint <name>]` | Open the PNG; a path is not evidence |
 | Look-dev loop | `dev look [--hide-ui true] [--viewports WxH,...] [--cameras '[…]']` | After each light/material/camera edit: waits for the edit, PNG + pixel report |
+| Bloom / HDR | `dev look --view luminance`, `dev pick --x <px> --y <py>` | Pre-tonemap luminance heat map in stops vs the bloom threshold; one pixel's HDR value + frontmost surface |
 | Inspect live state | `dev eval --revision <rev> --code '<js>'` | Revision required; `_import()` for tokens |
 | Observe | `dev find --name <n>`, `dev focus --name <n>`, `dev camera set/release` | Temporary camera, no scene edits |
 | Reload / stop | `dev reload`, `dev stop` | Reload invalidates revisions and refs |
@@ -146,6 +147,17 @@ deviation `contrast`, `clipped`/`crushed` shares, `centre` vs `surround`) and
 `findings`: renderer error, flat frame, dark/very bright, blown highlights, crushed
 shadows, low saturation, low contrast, weak subject separation. Findings are
 heuristics that tell you where to look; open the PNG, then edit and look again.
+
+`--view luminance` also writes `<view>-luminance.png` and `.json`: the Renderer's
+linear HDR frame before exposure and tonemapping (the values bloom thresholds),
+false-coloured in whole stops around the camera bloom threshold, the smoothstep knee
+hatched, plus min/max/mean and the shares below, in the knee and above. Use it to
+see which surfaces actually feed bloom. `dev pick --x --y` takes a pixel of those
+PNGs and returns its HDR `rgb`, `luminance`, `ev`, bloom class and weight, and the
+frontmost surface under it (entity, path, mesh, material slot with emissive values,
+world point). The HDR value is the composited pixel; the entity is only the
+nearest surface, so behind smoke or glass it names the transparent layer, not the
+light source.
 
 `dev capture` returns PNG and JSON report references with absolute paths and
 digests. Default artifacts live in the user's data directory and survive
@@ -630,7 +642,10 @@ eval does not intercept writes: spawn/set/despawn execute directly. inspector-wr
 ## rhiCapture single-frame capture
 
 Games should use forgeax dev start --rhi-capture true and forgeax rhi capture;
-the live owner invokes the recorder and persists its tape. Embedded hosts can capture through the eval root:
+the live owner invokes the recorder and persists its tape. `dev status` reports `rhiCapture`;
+the recorder cannot attach to a running session, so a session started without it answers
+`rhi capture` with `capture-unavailable` and the restart command. The reply carries the recorded
+`frameId` (`frameIdSource`) and `capturedAt`. Embedded hosts can capture through the eval root:
 
 ```js
 if (rhiCapture === undefined) return { ok: false, error: { code: 'capture-unavailable' } };
@@ -640,7 +655,7 @@ return { kind: capture.value.kind, digest: capture.value.digest };
 ```
 
 Embedded hosts must persist capture.value.bytes separately and retain the digest; the example returns a summary only.
-Offline rhi.summary/rhi.inspect consume local artifacts without WS and remain independent of eval. See [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md).
+Offline rhi.summary (per-pass `--passes`, `--label`) and default rhi.inspect consume local artifacts without WS, eval or a replay device. See [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md).
 
 ## Profiler artifact path
 

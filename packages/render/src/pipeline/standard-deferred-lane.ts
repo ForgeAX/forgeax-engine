@@ -11,6 +11,7 @@ import { addProjectedDecalPasses } from '../decals/graph';
 import { addDepthPyramidPasses, type DepthPyramidProjection } from '../depth-pyramid/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import type { GraphEnvironment } from '../environment/ibl';
+import { addAtmosphereSkyBackground } from '../environment/sky-background';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
@@ -423,6 +424,10 @@ function addDeferredBackground(
   directional: GraphTextureView | undefined,
   cloudShadow: RenderPipelineTarget | undefined,
 ): Result<GraphEnvironment | undefined, RenderGraphError> {
+  if (topology.atmosphere === true && topology.atmosphereBackgroundOnly === true) {
+    const sky = addAtmosphereSkyBackground(graph, scene);
+    return sky.ok ? ok(undefined) : sky;
+  }
   if (topology.atmosphere === true)
     return addAtmosphereBackground(graph, scene, { directional, cloud: cloudShadow?.view });
   const skybox = addTypedSkyboxPass(graph, scene);
@@ -743,6 +748,7 @@ function addDeferredSsr(
   const fallback = targets.reflection.fallback;
   const spatial = addSsrSpatialPasses(context.graph, {
     admission: ssr,
+    execution: topology.lane.compute ? 'compute' : 'fragment',
     width: copySize.width,
     height: copySize.height,
     depth: targets.depthSample,
@@ -765,7 +771,14 @@ function addDeferredSsr(
     ...(depthPyramid.value === undefined ? {} : { depthPyramid: depthPyramid.value.pyramid }),
   });
   if (!spatial.ok) return spatial;
-  return composeDeferredSsr(context.graph, targets, normal, spatial.value, ssrView.value);
+  return composeDeferredSsr(
+    context.graph,
+    targets,
+    normal,
+    spatial.value,
+    ssrView.value,
+    topology.lane.compute ? 'compute' : 'fragment',
+  );
 }
 
 /** Composite traced radiance over the reflection fallback once every input exists. */
@@ -775,6 +788,7 @@ function composeDeferredSsr(
   normal: RenderPipelineTarget,
   spatial: SsrSpatialGraphProjection,
   view: GraphBuffer | undefined,
+  execution: 'compute' | 'fragment',
 ): Result<TemporalSecondaryReactivity | undefined, RenderGraphError> {
   const { fallback, response } = targets.reflection;
   const resources = spatial.resources;
@@ -788,6 +802,8 @@ function composeDeferredSsr(
   const reactivity = spatial.reactivity;
   const surface = spatial.reactivitySurface;
   const composed = addSsrCompositionPass(graph, {
+    execution,
+    mipLevelCount: resources.mipLevelCount ?? 1,
     scene: targets.scene,
     radiance: resources.radiancePyramid ?? resources.trace.view,
     fallback: fallback.view,
@@ -829,6 +845,9 @@ function addDeferredOpaqueForward(
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   const graph = context.graph;
   const { color, depth, environment, receiver, gpuDriven } = forward;
+  // These surfaces are absent from the GBuffer; its AO describes the geometry
+  // behind them. Keep their own Forward lighting independent of that AO.
+  const { ssao, ...opaqueReceiver } = receiver;
   const pass = addTypedScenePass(graph, {
     environment,
     name: 'forward',
@@ -837,7 +856,8 @@ function addDeferredOpaqueForward(
     selector: FORWARD_PASS_SELECTOR,
     colorLoadOp: 'load',
     depthLoadOp: 'load',
-    ...receiver,
+    ...opaqueReceiver,
+    sampled: receiver.sampled.filter((target) => target !== ssao),
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     passKind: 'forward',
     excludeSelector: DEFERRED_PASS_SELECTOR,
@@ -1101,6 +1121,7 @@ function deferredDepthViews(
   graph: Graph,
   depthSample: GraphTextureView,
   copySize: CopySize,
+  execution: 'compute' | 'fragment',
 ): DeferredDepthViews {
   const sceneView = sceneViewImport(graph);
   // One closest-depth pyramid per view, built only when SSR or a diffuse GI
@@ -1114,6 +1135,7 @@ function deferredDepthViews(
       if (!view.ok) return view;
       closestPyramid = addDepthPyramidPasses(graph, {
         depth: depthSample,
+        execution,
         width: copySize.width,
         height: copySize.height,
         view: view.value,
@@ -1305,7 +1327,12 @@ export function buildStandardDeferredLane(
     clouds.value.cloudShadow,
   );
   if (!environment.ok) return environment;
-  const depthViews = deferredDepthViews(graph, targets.value.depthSample, internalCopySize);
+  const depthViews = deferredDepthViews(
+    graph,
+    targets.value.depthSample,
+    internalCopySize,
+    topology.lane.compute ? 'compute' : 'fragment',
+  );
   const cameraPyramid = addDeferredGBufferPasses(
     graph,
     targets.value,

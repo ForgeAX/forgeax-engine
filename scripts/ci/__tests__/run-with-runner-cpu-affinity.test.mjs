@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
 import {
@@ -9,11 +10,111 @@ import {
   formatCpuList,
   parseCpuList,
   readAllowedCpuList,
+  readCpuPressureDiagnostics,
   resolveRunnerCpuAffinity,
   runnerCpuSiblings,
   runnerGpuThreadAffinity,
   runnerKernelFingerprint,
 } from '../run-with-runner-cpu-affinity.mjs';
+
+test('CPU pressure keeps cgroup v2 counters separate from host contention', () => {
+  const files = {
+    '/sys/fs/cgroup/cpu.stat':
+      'usage_usec 12000\nnr_periods 8\nnr_throttled 3\nthrottled_usec 9000\n',
+    '/sys/fs/cgroup/cpu.pressure': 'some avg10=25.00 avg60=10.00 avg300=2.00 total=4000\n',
+    '/proc/pressure/cpu': 'some avg10=80.00 avg60=50.00 avg300=20.00 total=90000\n',
+  };
+  assert.deepEqual(readCpuPressureDiagnostics({ read: (path) => files[path] }), {
+    cgroupV2Stat: files['/sys/fs/cgroup/cpu.stat'].trim(),
+    cgroupPressure: files['/sys/fs/cgroup/cpu.pressure'].trim(),
+    hostPressure: files['/proc/pressure/cpu'].trim(),
+  });
+});
+
+test('CPU pressure preserves cgroup v1 nanosecond counters without mixing units', () => {
+  assert.deepEqual(
+    readCpuPressureDiagnostics({
+      read: (path) =>
+        path === '/sys/fs/cgroup/cpu/cpu.stat'
+          ? 'nr_periods 8\nnr_throttled 3\nthrottled_time 9000000\n'
+          : undefined,
+    }),
+    { cgroupV1Stat: 'nr_periods 8\nnr_throttled 3\nthrottled_time 9000000' },
+  );
+});
+
+test('memory pressure keeps shared-host stalls separate from raw cgroup v2 events', () => {
+  const files = {
+    '/proc/pressure/memory': 'some avg10=75.75 total=90000\nfull avg10=67.42 total=40000\n',
+    '/sys/fs/cgroup/memory.pressure': 'some avg10=0.00 total=100\nfull avg10=0.00 total=0\n',
+    '/sys/fs/cgroup/memory.current': '499355648\n',
+    '/sys/fs/cgroup/memory.peak': '15919607808\n',
+    '/sys/fs/cgroup/memory.events': 'low 0\nhigh 0\nmax 8\noom 3\noom_kill 2\n',
+  };
+  assert.deepEqual(readCpuPressureDiagnostics({ read: (path) => files[path] }), {
+    hostMemoryPressure: files['/proc/pressure/memory'].trim(),
+    cgroupMemoryPressure: files['/sys/fs/cgroup/memory.pressure'].trim(),
+    cgroupV2MemoryCurrent: '499355648',
+    cgroupV2MemoryPeak: '15919607808',
+    cgroupV2MemoryEvents: files['/sys/fs/cgroup/memory.events'].trim(),
+  });
+});
+
+test('memory pressure preserves cgroup v1 usage and historical OOM counts without inference', () => {
+  const files = {
+    '/sys/fs/cgroup/memory/memory.usage_in_bytes': '363806720\n',
+    '/sys/fs/cgroup/memory/memory.max_usage_in_bytes': '15919607808\n',
+    '/sys/fs/cgroup/memory/memory.oom_control': 'oom_kill_disable 0\nunder_oom 0\noom_kill 12\n',
+  };
+  assert.deepEqual(readCpuPressureDiagnostics({ read: (path) => files[path] }), {
+    cgroupV1MemoryUsage: '363806720',
+    cgroupV1MemoryPeak: '15919607808',
+    cgroupV1MemoryOom: files['/sys/fs/cgroup/memory/memory.oom_control'].trim(),
+  });
+});
+
+test('missing or unreadable CPU counters remain unavailable rather than zero', () => {
+  for (const read of [
+    () => undefined,
+    () => '',
+    () => {
+      throw new Error('not readable');
+    },
+  ]) {
+    assert.equal(readCpuPressureDiagnostics({ read }), null);
+  }
+});
+
+for (const status of [0, 7]) {
+  test(`CPU observation preserves a real child's exit status ${status}`, async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../run-with-runner-cpu-affinity.mjs', import.meta.url)),
+        '--',
+        process.execPath,
+        '-e',
+        `process.exitCode = ${status}`,
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 },
+    );
+    let output = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    const [code, signal] = await once(child, 'close');
+    assert.equal(code, status);
+    assert.equal(signal, null);
+    const samples = output
+      .split('\n')
+      .filter((line) => line.startsWith('[runner-cpu-pressure] '))
+      .map((line) => JSON.parse(line.slice('[runner-cpu-pressure] '.length)));
+    assert.deepEqual(
+      samples.map((sample) => sample.state),
+      readCpuPressureDiagnostics() === null ? [] : ['start', 'complete'],
+    );
+  });
+}
 
 test('GPU discovery follows children of every owned thread without requiring host ps', () => {
   const reads = [];

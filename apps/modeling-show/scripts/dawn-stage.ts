@@ -107,7 +107,12 @@ export async function createDawnStage(width: number, height: number): Promise<Da
     async frame(dt, count = 1) {
       for (let i = 0; i < count; i++) {
         world.update(dt).unwrap();
-        await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+        await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } }).catch((error: unknown) => {
+          // Keep the original readiness failure; diagnose only its bounded
+          // recent renderer errors, without collecting more successful frames.
+          console.error('show renderer errors at failure:', errors.slice(-8));
+          throw error;
+        });
       }
       if (device === undefined || target === undefined) throw new Error('device not captured');
       const buffer = device.createBuffer({ size: bytesPerRow * height, usage: 0x0001 | 0x0008 });

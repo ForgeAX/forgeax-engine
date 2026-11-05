@@ -53,6 +53,9 @@ const CANVAS_H = 512;
 const BASE_R = 0.6;
 const BASE_G = 0.6;
 const BASE_B = 0.65;
+// This single-cube lighting oracle has no occluders. Keep GPU visibility and
+// indirect draws, without compiling an unrelated hierarchical-depth pass chain.
+const PARITY_PROFILE = { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: false };
 
 // Four matched PointLight specs -- shared by Standard lanes. Range
 // is generous (8m) so the cluster-forward AABB intersection picks each
@@ -91,12 +94,12 @@ async function bootstrap() {
   const [directRendererResult, clusteredRendererResult] = await Promise.all([
     constructRuntimeRendererHost(
       directCanvas,
-      { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' } },
+      { standardProfile: { ...PARITY_PROFILE, renderPath: 'forward' } },
       forgeaxBundlerAdapter(),
     ),
     constructRuntimeRendererHost(
       clusteredCanvas,
-      { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' } },
+      { standardProfile: { ...PARITY_PROFILE, renderPath: 'deferred' } },
       forgeaxBundlerAdapter(),
     ),
   ]);
@@ -115,24 +118,68 @@ async function bootstrap() {
   const directLights = populateScene(directRenderer, directWorld);
   const clusteredLights = populateScene(clusteredRenderer, clusteredWorld);
 
-  // Independent initial submissions share the startup window. Publish capture
-  // hooks only after both real scene pictures have ready completion receipts.
+  // Hosts initialize concurrently, but each cold scene owns its GPU completion
+  // window. A peer's first real frame can otherwise hold a pending barrier
+  // behind native compilation. Both unchanged ready-frame bounds still apply.
   directWorld.update().unwrap();
   clusteredWorld.update().unwrap();
   console.info('[parity-standard-lanes:startup]', 'worlds-ready', performance.now() - started);
-  await Promise.all([
-    drawReadyFrame(directRenderer, {
+  const framePreparationStarted = performance.now();
+  try {
+    await drawReadyFrame(directRenderer, {
       leases: [worldAttachment1.value],
       camera: { lease: worldAttachment1.value },
       environment: { lease: worldAttachment1.value },
-    }),
-    drawReadyFrame(clusteredRenderer, {
+    });
+    console.info('[parity-standard-lanes:startup]', 'direct-frame-ready', performance.now() - started);
+    await drawReadyFrame(clusteredRenderer, {
       leases: [worldAttachment2.value],
       camera: { lease: worldAttachment2.value },
       environment: { lease: worldAttachment2.value },
-    }),
-  ]);
+    });
+  } catch (error) {
+    const inspectPipelinePreparation = (renderer: Renderer) => {
+      try {
+        const inspection = renderer.inspect();
+        const library = inspection.pipelineLibrary;
+        const pending = library?.pending?.pipelines ?? [];
+        return {
+          state: inspection.state,
+          backgroundState: inspection.backgroundPipelineLibraryState,
+          compilationPending: library?.compilationPending ?? null,
+          failures: library?.failures ?? null,
+          pendingCount: pending.length,
+          unidentifiedPending: library?.pending?.unidentified ?? null,
+          pending: pending.slice(0, 8).map(
+            ({ kind, origin, preload, stage, elapsedMs, shaders }) => ({
+              kind,
+              origin,
+              preload,
+              stage,
+              elapsedMs,
+              shaders: shaders.map(({ label }) => label),
+            }),
+          ),
+        };
+      } catch (inspectionError) {
+        return { inspectionError: String(inspectionError) };
+      }
+    };
+    console.error(
+      '[parity-standard-lanes:startup] pipeline preparation inspection',
+      JSON.stringify({
+        direct: inspectPipelinePreparation(directRenderer),
+        clustered: inspectPipelinePreparation(clusteredRenderer),
+      }),
+    );
+    throw error;
+  }
   console.info('[parity-standard-lanes:startup]', 'frames-ready', performance.now() - started);
+  console.info(
+    '[parity-standard-lanes:startup]',
+    'ready-frame-preparation-ms',
+    performance.now() - framePreparationStarted,
+  );
 
   declareCaptureHooks(
     directRenderer,

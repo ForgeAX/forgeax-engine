@@ -57,16 +57,15 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-dependency-identity.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']],
   [
     'diagnostics',
     'node',
     ['tools/view/scripts/verify-diagnostic-pages-integration.mjs'],
     ...(process.env.CI === 'true' ? [{ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' }] : []),
   ],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   ['engine-only', 'node', ['scripts/ci/verify-engine-without-view.mjs']],
 ];
 if (!candidate)
@@ -103,6 +102,7 @@ for (const probe of probes) {
       : []),
   ]);
 }
+steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 // Retain both language producers and cold reopening of each saved publication.
 for (const language of ['js', 'ts'])
   for (const cold of [false, true]) {
@@ -128,12 +128,12 @@ for (const language of ['js', 'ts'])
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
 // Keep complete owners and each language's live/cold chain on four processes.
 // Run 39969751546 measured 768 s + 310 s in Game 3D; its former contracts/TS
-// lane hit the 30-minute job bound. Keep Game 3D alone and combine the shorter
-// contracts/TS work with plugin, without changing any command or assertion.
+// lane hit the 30-minute job bound. Keep the two Game 3D steps contiguous, then
+// run the standalone Modeling browser owner on that lane's remaining capacity.
 const shards = [
   ['contracts', 'plugin', 'runtime-ts'],
   ['lifecycle', 'workspace', 'engine-only', 'runtime-js'],
-  ['game3d'],
+  ['game3d', 'modeling'],
   ['diagnostics'],
 ];
 if (process.argv.includes('--list-shards')) {

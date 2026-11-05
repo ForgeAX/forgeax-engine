@@ -41,21 +41,47 @@ import { collectCubeCameraSnapshots, resolveCameraTarget } from '../render-syste
 import type { RenderTarget } from '../targets/contracts';
 
 /**
+ * The capture camera of a PlanarReflection: the display camera's view without
+ * its display target. Target 0 leaves the target unset; the Renderer leases the
+ * capture target when it prepares the view.
+ */
+function planarCaptureSnapshot(
+  world: World,
+  snapshot: CameraSnapshot,
+  planar: { readonly target: number; readonly normal: Float32Array } & Record<string, unknown>,
+): CameraSnapshot {
+  const reflectionTarget =
+    planar.target === 0 ? undefined : resolveCameraTarget(world, planar.target);
+  if (planar.target !== 0 && reflectionTarget === undefined)
+    throw new PlanarReflectionInvalidError('target');
+  const { view: _view, target: _displayTarget, ...capture } = snapshot;
+  const { target: _target, ...reflection } = planar;
+  return {
+    ...capture,
+    ...(reflectionTarget === undefined ? {} : { target: reflectionTarget }),
+    planarReflection: { ...reflection, normal: new Float32Array(planar.normal) },
+  } as CameraSnapshot;
+}
+
+/**
  * PlanarReflection admission: a render-target camera needs an explicit view,
- * the mirror needs a target and a positive update interval, and the Surface
- * distortion scale is finite and non-negative.
+ * the mirror needs a positive update interval, the Surface distortion scale is
+ * finite and non-negative, and the engine-owned target scale is finite and
+ * positive. A zero target asks the Renderer to own the capture target.
  */
 function validatePlanarReflection(
   planar: {
     readonly target: number;
     readonly updateIntervalFrames: number;
     readonly distortion: number;
+    readonly resolutionScale: number;
   },
   camTarget: number,
   cameraView: unknown,
 ): void {
   if (camTarget !== 0 && cameraView === undefined) throw new PlanarReflectionInvalidError('camera');
-  if (planar.target === 0) throw new PlanarReflectionInvalidError('target');
+  if (!(Number.isFinite(planar.resolutionScale) && planar.resolutionScale > 0))
+    throw new PlanarReflectionInvalidError('resolutionScale');
   if (planar.updateIntervalFrames < 1)
     throw new PlanarReflectionInvalidError('updateIntervalFrames');
   if (!(Number.isFinite(planar.distortion) && planar.distortion >= 0))
@@ -124,6 +150,8 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
     const planarReflectionDistanceColumn = batch.read(PlanarReflection, 'distance');
     const planarReflectionClipBiasColumn = batch.read(PlanarReflection, 'clipBias');
     const planarReflectionDistortionColumn = batch.read(PlanarReflection, 'distortion');
+    const planarReflectionResolutionScaleColumn = batch.read(PlanarReflection, 'resolutionScale');
+    const planarReflectionGenerateMipmapsColumn = batch.read(PlanarReflection, 'generateMipmaps');
     const planarReflectionUpdateIntervalFramesColumn = batch.read(
       PlanarReflection,
       'updateIntervalFrames',
@@ -215,6 +243,9 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
             clipBias: planarReflectionClipBiasColumn?.[physicalRow] as number,
             distortion:
               (planarReflectionDistortionColumn?.[physicalRow] as number | undefined) ?? 0,
+            resolutionScale:
+              (planarReflectionResolutionScaleColumn?.[physicalRow] as number | undefined) ?? 1,
+            generateMipmaps: planarReflectionGenerateMipmapsColumn?.[physicalRow] === 1,
             updateIntervalFrames: planarReflectionUpdateIntervalFramesColumn?.[
               physicalRow
             ] as number,
@@ -513,17 +544,7 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
             }),
       };
       cameras.push(snapshot);
-      if (planar !== undefined) {
-        const reflectionTarget = resolveCameraTarget(world, planar.target);
-        if (reflectionTarget === undefined) throw new PlanarReflectionInvalidError('target');
-        const { view: _view, ...capture } = snapshot;
-        const { target: _target, ...reflection } = planar;
-        cameras.push({
-          ...capture,
-          target: reflectionTarget,
-          planarReflection: { ...reflection, normal: new Float32Array(planar.normal) },
-        });
-      }
+      if (planar !== undefined) cameras.push(planarCaptureSnapshot(world, snapshot, planar));
     }
   }
   const planarTargets = new Set<RenderTarget>();

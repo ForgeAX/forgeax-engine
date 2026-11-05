@@ -4,6 +4,7 @@ import { isTriangleTopology } from '@forgeax/engine-types';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
 import { transformRenderState } from '../material-render-state';
 import type { MaterialResource } from '../material-resource';
+import { standardSurfaceDiscardMask } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
 import { captureDispatchOverlays, type DispatchOverlays } from '../record/dispatch-overlays';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
@@ -22,10 +23,7 @@ import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-d
 import { MaterialFrame } from '../scene/material-dispatch';
 import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
 import { lodCoverageMayFade } from './production-raster-lod';
-import {
-  requestMaterialAbiRasterPipeline,
-  standardSurfaceDiscardMask,
-} from './production-raster-material';
+import { requestMaterialAbiRasterPipeline } from './production-raster-material';
 import { materialBatchClass } from './row-materials';
 
 type MaterialPrograms = {

@@ -49,6 +49,7 @@ import {
   parseLookRequest,
 } from './live-look.js';
 import { liveProjectReadyLogLine, readLiveProjectInputs } from './live-project-inputs.js';
+import type { LuminanceObservation } from './luminance-heatmap.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
 import { DEV_EXECUTION_TIMEOUT_MS, DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import type {
@@ -87,6 +88,12 @@ export interface LiveDevStatus {
   readonly carrierFallbackReason: string | undefined;
   readonly headless: boolean;
   readonly bridgeConnected: boolean;
+  /**
+   * Whether this owner attached the RHI recorder. The recorder wraps the device at
+   * creation, so it cannot be toggled on a running session: `rhi capture` needs
+   * `dev start --rhi-capture true`, which restarts the owner.
+   */
+  readonly rhiCapture: boolean;
   readonly error: string | undefined;
 }
 
@@ -143,6 +150,7 @@ type LiveOperation =
   | 'eval'
   | 'camera/get'
   | 'camera/set'
+  | 'pick'
   | 'camera/release'
   | 'find'
   | 'focus';
@@ -215,6 +223,7 @@ interface LiveDevDaemonState {
 // the bounded project-process build timeout below instead of failing exactly
 // when a cold, valid project becomes ready.
 const LIVE_DEV_POLL_INTERVAL_MS = 100;
+const LIVE_DEV_STARTUP_STATUS_TIMEOUT_MS = 1_000;
 const LIVE_DEV_REQUEST_TIMEOUT = 'live-request-timeout: the owner did not respond';
 // A runtime replacement after an edit rebuilds the project child and waits
 // for the first frame. Commands absorb that self-resolving window instead of
@@ -257,9 +266,33 @@ function observationValue(value: unknown, revision: string): Record<string, unkn
         }),
       ),
     };
+  // A pick nests its entity facts; give them the same revision-scoped ref `find` uses.
+  const entity = result.entity as { readonly id?: unknown } | undefined;
+  if (typeof entity === 'object' && entity !== null && typeof entity.id === 'number')
+    return { ...result, entity: { ...entity, ref: `${revision}/${entity.id}` } };
   const { entity: _entity, ...rest } = result;
   return rest;
 }
+
+/** The realm script of one observation route; `pick` and reads leave the World unchanged. */
+function observationScript(operation: string, args: Record<string, unknown>): string {
+  switch (operation) {
+    case 'camera/get':
+      return 'return simulation.observation?.camera.get();';
+    case 'camera/release':
+      return 'simulation.observation.release(); return simulation.observation.camera.get();';
+    case 'find':
+      return `return simulation.observation.find(${JSON.stringify(args)});`;
+    case 'pick':
+      return `return simulation.observation.pick(${JSON.stringify({ x: args.x, y: args.y })});`;
+    case 'camera/set':
+      return `return simulation.observation?.camera.set(${JSON.stringify(args)});`;
+    default:
+      return `return simulation.observation?.focus(${JSON.stringify(args)});`;
+  }
+}
+
+const READ_ONLY_OBSERVATIONS: ReadonlySet<string> = new Set(['camera/get', 'find', 'pick']);
 
 function jsonResponse(response: ServerResponse, status: number, value: unknown): void {
   response.statusCode = status;
@@ -441,6 +474,18 @@ async function waitForProfilerCompletion(
   );
 }
 
+/** The recorder cannot attach to a running device; the only path is an owner restart. */
+function rhiCaptureDisabledError() {
+  return {
+    ...commandError(
+      'capture-unavailable',
+      'This dev session was started without the RHI recorder (`dev status` shows rhiCapture:false), and the recorder cannot attach to a running session. Run `forgeax dev start --rhi-capture true` (it restarts the session; allow a few minutes for build and first frame), reproduce the failing state, then `forgeax rhi capture`.',
+      { rhiCapture: false, restart: 'forgeax dev start --rhi-capture true' },
+    ),
+    expected: 'a dev session started with --rhi-capture true',
+  };
+}
+
 function rhiCaptureScript(runId: string): string {
   return `return (async () => {
     if (rhiCapture === undefined) return { ok: false, error: { code: 'capture-unavailable', hint: 'Start dev with RHI diagnostics enabled.' } };
@@ -453,8 +498,37 @@ function rhiCaptureScript(runId: string): string {
     // Resumable chunked upload: renderer memory stays bounded to a few chunks.
     const uploaded = await rhiCapture.upload(captured.value, { runId: ${JSON.stringify(runId)} });
     if (!uploaded.ok) return { ok: false, error: uploaded.error };
-    return { ok: true, value: { ...uploaded.value, source: 'live', runId: ${JSON.stringify(runId)} } };
+    const submitted = captured.value.submittedFrame;
+    const submittedFrame = submitted?.status === 'complete' || submitted?.status === 'remote-complete'
+      ? { status: submitted.status, frameId: submitted.receipt.frameId, deviceGeneration: submitted.receipt.deviceGeneration }
+      : { status: submitted?.status ?? 'unavailable', reason: submitted?.reason ?? 'frame-unavailable' };
+    return { ok: true, value: { ...uploaded.value, source: 'live', runId: ${JSON.stringify(runId)}, submittedFrame } };
   })();`;
+}
+
+/**
+ * The frame this tape recorded. `frameId` is the host frame counter (the same
+ * counter as `dev status` frameId and `forgeaxFrameProgress`), taken from the
+ * submit receipt of the recorded frame; the status cache is never reused, since
+ * it is refreshed only on a status poll and would repeat across captures.
+ */
+async function capturedFrame(
+  state: LiveDevDaemonState,
+  submittedFrame: unknown,
+): Promise<{
+  readonly frameId: number | undefined;
+  readonly frameIdSource: 'capture-receipt' | 'live-progress';
+  readonly capturedAt: string;
+}> {
+  const receipt =
+    submittedFrame !== null && typeof submittedFrame === 'object'
+      ? Reflect.get(submittedFrame, 'frameId')
+      : undefined;
+  const capturedAt = new Date().toISOString();
+  if (typeof receipt === 'number')
+    return { frameId: receipt, frameIdSource: 'capture-receipt', capturedAt };
+  const live = state.session === undefined ? undefined : await submittedFrameId(state.session);
+  return { frameId: live, frameIdSource: 'live-progress', capturedAt };
 }
 
 function assertLiveIdentity(
@@ -810,6 +884,7 @@ const LIVE_OBSERVATIONS: ReadonlySet<string> = new Set([
   'profile/capture',
   'camera/get',
   'find',
+  'pick',
 ]);
 const LIVE_MUTATIONS: ReadonlySet<string> = new Set([
   'eval',
@@ -1898,6 +1973,10 @@ function lookDriver(
     releaseCamera: async () => {
       await camera('simulation.observation?.release();');
     },
+    // The HDR observation waits for the next presented frame (30 s realm bound).
+    luminance: async () =>
+      (await bridgeCall(state, 'return simulation.observation.luminance();', 35_000)
+        .promise) as LuminanceObservation,
   };
 }
 
@@ -1910,21 +1989,35 @@ function lookResponse(
   const report = session.report();
   return {
     ok: true,
-    artifacts: look.views.map((view) => ({
-      kind: 'png',
-      uri: view.screenshot,
-      mediaType: 'image/png',
-      digest: view.digest,
-    })),
+    artifacts: look.views.flatMap((view) => [
+      { kind: 'png', uri: view.screenshot, mediaType: 'image/png', digest: view.digest },
+      ...(view.luminance === undefined
+        ? []
+        : [
+            {
+              kind: 'png',
+              uri: view.luminance.heatmap,
+              mediaType: 'image/png',
+              digest: view.luminance.heatmapDigest,
+            },
+            {
+              kind: 'tool-result',
+              uri: view.luminance.summary,
+              mediaType: 'application/json',
+              digest: view.luminance.summaryDigest,
+            },
+          ]),
+    ]),
     value: {
       revision: status.revision,
       frameId: status.frameId,
       elapsedMs,
-      views: look.views.map(({ name, screenshot, metrics, findings }) => ({
+      views: look.views.map(({ name, screenshot, metrics, findings, luminance }) => ({
         name,
         screenshot,
         metrics,
         findings,
+        ...(luminance === undefined ? {} : { luminance }),
       })),
       ...(look.rendererError === null ? {} : { rendererError: look.rendererError }),
       errors: { console: report.consoleErrors.length, page: report.pageErrors.length },
@@ -1988,6 +2081,10 @@ async function routeLiveOperation(
       return;
     }
     const args = input;
+    if (!state.rhiCapture) {
+      reply(409, { ok: false, error: rhiCaptureDisabledError() });
+      return;
+    }
     if (!(await requireCurrentBridge(state, reply))) return;
     const before = state.status;
     const identityError = assertLiveIdentity(state, args);
@@ -2060,9 +2157,11 @@ async function routeLiveOperation(
         await writeFile(output, await readFile(artifact.path));
         artifact.path = output;
       }
+      const { submittedFrame, ...tape } = artifact;
+      const frame = await capturedFrame(state, submittedFrame);
       reply(200, {
         ok: true,
-        value: { revision: after.revision, frameId: after.frameId, ...artifact },
+        value: { revision: after.revision, ...frame, ...tape },
       });
       return;
     } finally {
@@ -2396,19 +2495,11 @@ async function routeLiveOperation(
     }
     const before = state.status;
     const operation = url.pathname.slice(1);
-    const script =
-      operation === 'camera/get'
-        ? 'return simulation.observation?.camera.get();'
-        : operation === 'camera/release'
-          ? 'simulation.observation.release(); return simulation.observation.camera.get();'
-          : operation === 'find'
-            ? `return simulation.observation.find(${JSON.stringify(args)});`
-            : operation === 'camera/set'
-              ? `return simulation.observation?.camera.set(${JSON.stringify(args)});`
-              : `return simulation.observation?.focus(${JSON.stringify(args)});`;
+    const script = observationScript(operation, args);
     if (!admit()) return;
-    const result = await bridgeEval(state, script);
-    if (operation !== 'camera/get' && operation !== 'find')
+    // A pick samples the next presented HDR frame, which the realm bounds at 30 s.
+    const result = await bridgeEval(state, script, operation === 'pick' ? 35_000 : undefined);
+    if (!READ_ONLY_OBSERVATIONS.has(operation))
       await waitForFrameAfter(state.session, before.frameId);
     if (!(await requireCurrentBridge(state, reply))) return;
     await refreshFrameStatus(state);
@@ -2753,6 +2844,7 @@ async function routeLiveOperation(
       url.pathname === '/camera/set' ||
       url.pathname === '/camera/release' ||
       url.pathname === '/find' ||
+      url.pathname === '/pick' ||
       url.pathname === '/focus'
     ) {
       await applyObservation();
@@ -2910,6 +3002,7 @@ export async function runLiveDevDaemon(
           serviceId: `live-dev-service-${randomUUID()}`,
           runId: `live-dev-run-${randomUUID()}`,
         });
+  const rhiCapture = options.rhiCapture ?? process.env.FORGEAX_DEV_RHI_CAPTURE === '1';
   const state: LiveDevDaemonState = {
     root,
     ownerClaimed: false,
@@ -2932,7 +3025,7 @@ export async function runLiveDevDaemon(
       options.animation === undefined
         ? environmentAnimationPlayback()
         : animationPlayback(options.animation),
-    rhiCapture: options.rhiCapture ?? process.env.FORGEAX_DEV_RHI_CAPTURE === '1',
+    rhiCapture,
     session: undefined,
     projectUrl: undefined,
     status: {
@@ -2963,6 +3056,7 @@ export async function runLiveDevDaemon(
       carrierFallbackReason: undefined,
       headless: options.headless ?? process.env.FORGEAX_DEV_HEADLESS === 'true',
       bridgeConnected: false,
+      rhiCapture,
       error: undefined,
     },
     evaluation: undefined,
@@ -3148,6 +3242,7 @@ function refused(error: unknown): boolean {
 export async function liveDevStatus(
   rootInput: string,
   options: { readonly snapshot?: boolean } = {},
+  requestTimeoutMs?: number,
 ): Promise<unknown> {
   const root = resolve(rootInput);
   const record = await readSessionRecord(root, options.snapshot);
@@ -3156,7 +3251,7 @@ export async function liveDevStatus(
     return { ok: true, value: { root, phase: 'unreachable', error: record.error } };
   const { session } = record;
   try {
-    return await requestJson(session, '/status', 'GET');
+    return await requestJson(session, '/status', 'GET', undefined, requestTimeoutMs);
   } catch (error) {
     // Nothing listens and the recorded process is gone: a crash or reboot leftover.
     if (refused(error) && !processAlive(session.pid)) {
@@ -3691,7 +3786,12 @@ async function startDetached(
   while (Date.now() < deadline) {
     try {
       await access(file);
-      const status = await liveDevStatus(root, options);
+      // A readiness probe shares the startup budget; it does not own a full CLI status wait.
+      const status = await liveDevStatus(
+        root,
+        options,
+        Math.max(1, Math.min(LIVE_DEV_STARTUP_STATUS_TIMEOUT_MS, deadline - Date.now())),
+      );
       if (
         settledPhase(status) &&
         !(await ownStartupTimeout(root, options, status, child.pid, port))

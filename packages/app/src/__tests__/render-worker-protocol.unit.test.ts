@@ -946,6 +946,7 @@ it("keeps mesh preparation behind the yielded frame's existing serial draw drain
       deviceGeneration: 7,
       isCurrent: () => true,
       recordStageLane: () => ({ ok: true, value: undefined }),
+      consumeRecordStage: () => undefined,
       release: () => Promise.resolve(),
     },
   });
@@ -1021,6 +1022,7 @@ it('starts a queued mesh control before later draw traffic without blocking cand
       deviceGeneration: 7,
       isCurrent: () => true,
       recordStageLane: () => ({ ok: true as const, value: undefined }),
+      consumeRecordStage: () => undefined,
       release: () => Promise.resolve(),
     },
   };
@@ -1118,6 +1120,7 @@ it('freezes mesh consumption on each real draw and delivers it only after ordere
       deviceGeneration: 7,
       isCurrent: () => true,
       recordStageLane: lane,
+      consumeRecordStage: (...args: Parameters<typeof lane>) => lane(...args).value,
       release: vi.fn(() => Promise.resolve()),
     },
   });

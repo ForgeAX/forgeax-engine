@@ -157,6 +157,29 @@ describe('native build root process', () => {
     expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
   }, 30_000);
 
+  it('preserves declared cache identity and its live closure across the build process', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      let revision = 1;
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'versioned', concurrency: 'parallel',
+        cacheIdentity() { return 'fixture/' + revision; },
+        cook(input) { revision++; return { guid: input.guid, payload: input.source, refs: [], artifacts: {}, inputFingerprint: 'fixture' }; }
+      }));
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'unversioned',
+        cook(input) { return { guid: input.guid, payload: input.source, refs: [], artifacts: {}, inputFingerprint: 'fixture' }; }
+      }));
+    } };`);
+    const session = await loadProjectCookers(facts, []);
+    sessions.push(session);
+    const cooker = session.cookers.find((cooker) => cooker.key === 'versioned');
+    expect(cooker?.concurrency).toBe('parallel');
+    expect(await cooker?.cacheIdentity?.()).toBe('fixture/1');
+    await cooker?.cook({ guid, source: { kind: 'fixture' } });
+    expect(await cooker?.cacheIdentity?.()).toBe('fixture/2');
+    expect(
+      session.cookers.find((cooker) => cooker.key === 'unversioned')?.cacheIdentity,
+    ).toBeUndefined();
+  }, 30_000);
+
   it('cold-starts an original Cooker in one process and preserves its closure across calls', async () => {
     const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
       let sequence = 0;

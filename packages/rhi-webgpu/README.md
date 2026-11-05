@@ -259,6 +259,16 @@ requests concurrently). Concurrent requests share completion. A synchronous crea
 usable but never counted as evidence that native compilation finished. Known asynchronous
 validation failure evicts an earlier unverified handle and remains retryable.
 
+Raw `prepare()` remains strict. Renderer-owned portable startup/background archives
+use `renderTargetPolicy: 'device-compatible'`: after validating the complete manifest,
+omit only render recipes exceeding the receiving device's color attachment count or
+per-sample byte budget. That budget uses WebGPU render-target pixel costs and ordered
+component alignment, rather than copy footprints or a multiplication by MSAA sample count.
+A stronger replacement device selects again from the original archive. `skippedRenderTargetRecipes` counts these omissions; they are not compilation
+failures or prepared recipes. Other native validation errors still fail preparation.
+This does not admit unsupported draws or guarantee compatibility with every feature
+and sampled-texture limit.
+
 `RendererOptions.pipelineLibrary` / `CreateAppOptions.pipelineLibrary` runs this preparation
 before renderer readiness, including a replacement device. `renderer.inspect()` exposes
 counts; `renderer.inspect({pipelineLibrary:true})` additionally exports the manifest.

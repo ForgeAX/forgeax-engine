@@ -31,7 +31,7 @@ async function fixture() {
   let sample = empty();
   world.insertResource(INPUT_BACKEND_KEY, { sample: () => sample, detach() {} });
   world.addSystem(Update, { ...InputFrameStartScan, before: [FixedUpdate] }).unwrap();
-  const player = await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' });
+  const player = await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
   await ctx.plugin(camera);
   const send = async (...messages: (PlayerControl | Record<string, unknown>)[]) => {
     const delivered = new Promise<void>((resolve) => {

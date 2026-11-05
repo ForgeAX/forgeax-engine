@@ -30,7 +30,7 @@ it('publishes skinned Standard diffusion through both real Worker layouts', asyn
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = 128;
       canvas.style.width = canvas.style.height = '128px';
-      // Bound App's CSS/DPR sizing too; width/height alone are only the initial buffer.
+      // Bound App's CSS-sized buffer too; width/height alone are only the initial buffer.
       canvas.setAttribute('data-forgeax-render-width-limit', String(canvas.width));
       canvas.setAttribute('data-forgeax-render-height-limit', String(canvas.height));
       document.body.append(canvas);

@@ -48,6 +48,8 @@ interface CachePayload {
 interface CookerDependencies {
   readonly kinds: readonly string[];
   readonly nativeFree: boolean;
+  readonly outputs?: readonly string[];
+  readonly reads?: readonly string[];
 }
 
 function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
@@ -76,7 +78,7 @@ function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
  * immutable POD and byte bodies before encoding the product. This changes
  * representation only; caller-owned publications and non-POD remain intact.
  */
-function shareImmutableProductData<T>(
+export function shareImmutableProductData<T>(
   product: T,
   mapString: (value: string) => string = (value) => value,
 ): T {
@@ -210,7 +212,7 @@ function escapeRegExp(text: string): string {
  * the bytes a fresh cook at that location would. Anything still naming a root
  * after tokenization is location-bound and stays out of the cache.
  */
-function createProductRelocation(roots: readonly string[]) {
+export function createProductRelocation(roots: readonly string[]) {
   const tokens = roots.map((root, index) => ({
     root,
     token: `${ROOT_TOKEN_PREFIX}${index}\u0000`,
@@ -286,7 +288,11 @@ export async function createScriptablePackProductCache(options: {
    * keep absolute paths and entries are private to one checkout location.
    */
   readonly identityRoot?: string;
-}): Promise<ScriptablePackBuildProductCache> {
+}): Promise<
+  ScriptablePackBuildProductCache & {
+    readonly canReuse: (product: ScriptablePackBuildProduct) => boolean;
+  }
+> {
   // Source closures hold canonical paths, other strings may use the
   // configured spelling. Keep both positions, even when equal: relocation
   // tokens are positional across the writing and reading checkouts.
@@ -475,7 +481,14 @@ export async function createScriptablePackProductCache(options: {
     const { key, guid } = identity(subject, KINDS_SCHEMA);
     const entry = await kindStore.read(key);
     const payload = entry?.payload as
-      | { schemaVersion?: unknown; sourcePath?: unknown; kinds?: unknown; nativeFree?: unknown }
+      | {
+          schemaVersion?: unknown;
+          sourcePath?: unknown;
+          kinds?: unknown;
+          nativeFree?: unknown;
+          outputs?: unknown;
+          reads?: unknown;
+        }
       | undefined;
     const kinds = payload?.kinds;
     return entry?.guid === guid &&
@@ -485,7 +498,18 @@ export async function createScriptablePackProductCache(options: {
       Array.isArray(kinds) &&
       kinds.every((kind) => typeof kind === 'string') &&
       JSON.stringify(kinds) === JSON.stringify([...new Set(kinds)].sort())
-      ? { kinds: kinds as readonly string[], nativeFree: payload.nativeFree }
+      ? {
+          kinds: kinds as readonly string[],
+          nativeFree: payload.nativeFree,
+          ...(Array.isArray(payload.outputs) &&
+          payload.outputs.every((guid) => typeof guid === 'string')
+            ? { outputs: payload.outputs as string[] }
+            : {}),
+          ...(Array.isArray(payload.reads) &&
+          payload.reads.every((guid) => typeof guid === 'string')
+            ? { reads: payload.reads as string[] }
+            : {}),
+        }
       : undefined;
   };
   const write: ScriptablePackBuildProductCache['write'] = async (subject, product) => {
@@ -514,7 +538,16 @@ export async function createScriptablePackProductCache(options: {
       const compressed = await compress(bytes, {
         params: { [constants.BROTLI_PARAM_QUALITY]: 4 },
       });
-      const dependencies = { kinds: productKinds(product), nativeFree: nativeFreeProduct(product) };
+      const dependencies = {
+        kinds: productKinds(product),
+        nativeFree: nativeFreeProduct(product),
+        outputs: product.product.assets.flatMap((asset) =>
+          typeof asset.guid === 'string' ? [asset.guid.toLowerCase()] : [],
+        ),
+        reads: product.externalEvidence.flatMap((row) =>
+          typeof row.guid === 'string' ? [row.guid.toLowerCase()] : [],
+        ),
+      };
       const { key, guid } = identity(subject, CACHE_SCHEMA, dependencies);
       const entry = {
         key,
@@ -570,6 +603,13 @@ export async function createScriptablePackProductCache(options: {
     }
   };
   return {
+    canReuse: cacheable,
+    async dependencies(subject) {
+      const metadata = await readDependencies(subject);
+      return metadata?.outputs === undefined || metadata.reads === undefined
+        ? undefined
+        : { outputs: metadata.outputs, reads: metadata.reads };
+    },
     async read(subject, resolve) {
       const startedAt = performance.now();
       if (!(await sourceClosureCurrent(subject))) {

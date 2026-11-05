@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { NativeCookDraft, NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { ShaderError } from '../errors.js';
-import type { MaterialPackCookProfile } from './pack-cooker.js';
+import type { MaterialPackCookProfile, MaterialSourceSnapshot } from './pack-cooker.js';
 
 const GiB = 1024 ** 3;
 
@@ -16,9 +16,7 @@ function workerCount(): number {
   const cpu = Math.max(1, Math.min(4, availableParallelism() - (limit === undefined ? 1 : 0)));
   const memory = Math.max(
     1,
-    Math.floor(
-      (Math.min(freemem(), process.availableMemory?.() ?? Infinity) - 2 * GiB) / (2 * GiB),
-    ),
+    Math.floor(((process.availableMemory?.() ?? freemem()) - 2 * GiB) / (2 * GiB)),
   );
   return Math.min(cpu, memory, limit ?? 4);
 }
@@ -28,6 +26,7 @@ interface Job {
   readonly program: string;
   readonly roots: readonly string[];
   readonly profile: MaterialPackCookProfile | undefined;
+  readonly sourceSnapshot: MaterialSourceSnapshot | undefined;
   readonly input: unknown;
   readonly resolve: (draft: NativeCookDraft) => void;
   readonly reject: (error: unknown) => void;
@@ -35,6 +34,7 @@ interface Job {
 interface Lane {
   readonly worker: Worker;
   job: Job | undefined;
+  sourceSnapshotIdentity?: string | undefined;
 }
 interface Failure {
   readonly shader: boolean;
@@ -47,13 +47,15 @@ const compilerModule = import.meta.resolve('@forgeax/engine-shader-compiler');
 const workerSource = `
 import('node:worker_threads').then(({ parentPort }) => {
 const api = import(${JSON.stringify(compilerModule)});
-let key, cooker;
-parentPort.on('message', async ({ roots, profile, input }) => {
+let key, cooker, capturedSnapshot;
+parentPort.on('message', async ({ roots, profile, input, sourceSnapshot, sourceSnapshotIdentity }) => {
   try {
     const { createMaterialPackCooker } = await api;
-    const nextKey = JSON.stringify([roots, profile]);
+    if (sourceSnapshot !== undefined) capturedSnapshot = sourceSnapshot;
+    if (sourceSnapshotIdentity === undefined) capturedSnapshot = undefined;
+    const nextKey = JSON.stringify([roots, profile, sourceSnapshotIdentity]);
     if (nextKey !== key) {
-      cooker = createMaterialPackCooker(roots, profile === undefined ? {} : { profile });
+      cooker = createMaterialPackCooker(roots, { ...(profile === undefined ? {} : { profile }), ...(capturedSnapshot === undefined ? {} : {sourceSnapshot: capturedSnapshot}) });
       key = nextKey;
     }
     const draft = await cooker.cook(input);
@@ -184,7 +186,16 @@ class MaterialCookPool {
     lane.job = job;
     lane.worker.ref();
     try {
-      lane.worker.postMessage({ roots: job.roots, profile: job.profile, input: job.input });
+      lane.worker.postMessage({
+        roots: job.roots,
+        profile: job.profile,
+        input: job.input,
+        sourceSnapshotIdentity: job.sourceSnapshot?.identity,
+        ...(lane.sourceSnapshotIdentity === job.sourceSnapshot?.identity
+          ? {}
+          : { sourceSnapshot: job.sourceSnapshot }),
+      });
+      lane.sourceSnapshotIdentity = job.sourceSnapshot?.identity;
     } catch (error) {
       lane.job = undefined;
       lane.worker.unref();
@@ -250,6 +261,7 @@ export function withNodeMaterialWorkers(
   cooker: NativeCooker,
   roots: readonly string[],
   profile?: MaterialPackCookProfile,
+  sourceSnapshot?: MaterialSourceSnapshot,
 ): NativeCooker {
   const count = workerCount();
   if (count === 1) return cooker;
@@ -265,9 +277,21 @@ export function withNodeMaterialWorkers(
       } catch {
         return cooker.cook(input);
       }
-      const program = programAffinityKey(capturedRoots, profile, captured);
+      const affinity = programAffinityKey(capturedRoots, profile, captured);
+      const program =
+        sourceSnapshot === undefined
+          ? affinity
+          : createHash('sha256').update(sourceSnapshot.identity).update(affinity).digest('hex');
       return new Promise((resolve, reject) => {
-        owner.run({ program, roots: capturedRoots, profile, input: captured, resolve, reject });
+        owner.run({
+          program,
+          roots: capturedRoots,
+          profile,
+          sourceSnapshot,
+          input: captured,
+          resolve,
+          reject,
+        });
       });
     },
   };

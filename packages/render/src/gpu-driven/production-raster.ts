@@ -38,6 +38,7 @@ import type {
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
 import { clippingCapRenderState, reflectedRenderState } from '../material-render-state';
+import { standardSurfaceDiscardMask } from '../material-stage-constants';
 import { isCanonicalStandardPbrMaterialShader, isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
@@ -142,7 +143,6 @@ import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
   SurfaceFrameProjectionOwner,
-  standardSurfaceDiscardMask,
 } from './production-raster-material';
 import {
   assemblePreparedPlan,

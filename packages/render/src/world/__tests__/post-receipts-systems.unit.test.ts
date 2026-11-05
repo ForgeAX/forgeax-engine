@@ -30,7 +30,7 @@ function scenario(accepted: boolean) {
   const candidate = { id: 'candidate' };
   const owner = {
     candidate,
-    commitFrame: vi.fn(() => ({ ok: true })),
+    submitFrame: vi.fn(() => ({ ok: true })),
     abortFrame: vi.fn(),
   };
   const frameState = {
@@ -76,13 +76,16 @@ describe('Render World post receipts', () => {
     expect(cleanup?.systems.map((system) => system.name)).toContain(RENDER_POST_CLEANUP_SYSTEM);
   });
 
-  it('publishes Motion Blur, bloom receipts and SSR history for an accepted view', () => {
+  it('publishes receipts and registers SSR history completion for an accepted view', () => {
     const { world, frameState, owner, candidate, commitBloomFrameReceipts } = scenario(true);
     endRenderFrame(world);
     expect(frameState.motionBlurExecution).toBe(RECEIPT);
     expect(frameState.stagedMotionBlurExecution).toBeUndefined();
     expect(commitBloomFrameReceipts).toHaveBeenCalledWith({ receipts: 1 });
-    expect(owner.commitFrame).toHaveBeenCalledWith(candidate);
+    expect(owner.submitFrame).toHaveBeenCalledWith(
+      candidate,
+      expect.objectContaining({ onSubmittedWorkDone: expect.any(Function) }),
+    );
     expect(owner.abortFrame).not.toHaveBeenCalled();
   });
 
@@ -93,7 +96,7 @@ describe('Render World post receipts', () => {
     expect(frameState.stagedMotionBlurExecution).toBeUndefined();
     expect(frameState.bloomFrameReceipts).toBeUndefined();
     expect(commitBloomFrameReceipts).not.toHaveBeenCalled();
-    expect(owner.commitFrame).not.toHaveBeenCalled();
+    expect(owner.submitFrame).not.toHaveBeenCalled();
     expect(owner.abortFrame).toHaveBeenCalledWith(candidate, 'submit');
   });
 
@@ -102,6 +105,6 @@ describe('Render World post receipts', () => {
     world.removeSystem(RenderCommit, RENDER_POST_COMMIT_SYSTEM).unwrap();
     endRenderFrame(world);
     expect(frameState.motionBlurExecution).toBeUndefined();
-    expect(owner.commitFrame).not.toHaveBeenCalled();
+    expect(owner.submitFrame).not.toHaveBeenCalled();
   });
 });

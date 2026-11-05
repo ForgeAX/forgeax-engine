@@ -39,7 +39,7 @@ import {
   buildFoldDispatchPlan,
   cleanPerEntityCache,
   ensureMeshSsboCapacity,
-  evaluateFoldBucketUniformCap,
+  FOLD_UNIFORM_INSTANCE_CAP,
   type FoldBucket,
   type FoldDispatchPlan,
   foldDispatchBuckets,
@@ -861,67 +861,11 @@ function buildUniformCappedFoldPlan(
     if (e === undefined) continue;
     renderableToValidatedIdx.set(e.renderableIndex, i);
   }
-  const plan = buildFoldDispatchPlan(foldBuckets, renderableToValidatedIdx);
-  if (plan.headBuckets.size === 0 || internals.device.caps.storageBuffer) return plan;
-  return withoutUniformCappedBuckets(internals, plan, renderableToValidatedIdx);
-}
-
-/**
- * feat-20260622 M2 / w11 (D-2 + D-9 + AC-05): WebGL2 uniform-fallback
- * per-bucket instance-count cap. When caps.storageBuffer===false AND a fold
- * bucket carries more than FOLD_UNIFORM_INSTANCE_CAP (128) instances, fire
- * RhiError({code:'instancing-exceeds-uniform-cap'}) AND remove the bucket from
- * the dispatch plan so its members fall through to the per-entity drawIndexed
- * exit (the same exit the mode-gate bypass uses — D-9 "shared fallback exit").
- * The frame stays visually correct while the cap event surfaces structurally.
- *
- * Scope discrimination: tilemap-chunk-extract-system encodes Layer.value =
- * (layerOrder<<20) | (chunkIndex & 0xfffff), so a bucket whose head entry
- * carries non-zero low-20-bits is definitively a tilemap-chunk dispatch site.
- * Plain sprite buckets use SPRITE_LAYER_VALUE = layerOrder<<20 (low-20 zero).
- * The chunkIndex===0 edge case maps to 'sprite'; scope only refines the
- * recovery hint.
- */
-function withoutUniformCappedBuckets(
-  internals: RenderSystemInternals,
-  plan: FoldDispatchPlan,
-  renderableToValidatedIdx: ReadonlyMap<number, number>,
-): FoldDispatchPlan {
-  const filteredHeads = new Map<number, FoldBucket>(plan.headBuckets);
-  const filteredSkips = new Set<number>(plan.skipIndices);
-  let filteredCount = plan.foldedBucketCount;
-  for (const [headIdx, bucket] of plan.headBuckets) {
-    const scope: 'sprite' | 'tilemap-chunk' =
-      (bucket.layer & 0xfffff) !== 0 ? 'tilemap-chunk' : 'sprite';
-    const decision = evaluateFoldBucketUniformCap(bucket, internals.device.caps, scope);
-    if (!decision.fallback || decision.error === undefined) continue;
-    internals.errorRegistry.fire(decision.error);
-    filteredHeads.delete(headIdx);
-    filteredCount -= 1;
-    unskipBucketMembers(bucket, renderableToValidatedIdx, filteredSkips);
-  }
-  if (filteredCount === plan.foldedBucketCount) return plan;
-  return {
-    headBuckets: filteredHeads,
-    skipIndices: filteredSkips,
-    foldedBucketCount: filteredCount,
-  };
-}
-
-/** Return a dropped bucket's non-head members to per-entity draws. */
-function unskipBucketMembers(
-  bucket: FoldBucket,
-  renderableToValidatedIdx: ReadonlyMap<number, number>,
-  skipIndices: Set<number>,
-): void {
-  for (let j = 1; j < bucket.entries.length; j++) {
-    const memberEntry = bucket.entries.at(j);
-    if (memberEntry === undefined) continue;
-    const memberValidatedIdx = renderableToValidatedIdx.get(memberEntry.renderableIndex);
-    if (memberValidatedIdx !== undefined) {
-      skipIndices.delete(memberValidatedIdx);
-    }
-  }
+  return buildFoldDispatchPlan(
+    foldBuckets,
+    renderableToValidatedIdx,
+    internals.device.caps.storageBuffer ? Number.POSITIVE_INFINITY : FOLD_UNIFORM_INSTANCE_CAP,
+  );
 }
 
 /**

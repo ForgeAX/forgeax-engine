@@ -18,7 +18,9 @@ const SSR_TRACE_MAX_REFINE_STEPS : u32 = 5u;
 @group(0) @binding(1) var sceneNormal : texture_2d<u32>;
 @group(0) @binding(2) var sceneColor : texture_2d<f32>;
 @group(0) @binding(3) var depthPyramid : texture_2d<f32>;
+#if !PORTABLE_FRAGMENT
 @group(0) @binding(4) var traceOutput : texture_storage_2d<rgba16float, write>;
+#endif
 
 // This is the existing Standard View UBO, not a second camera state source.
 // The shader only consumes world/inverse projection and the validated SSR
@@ -30,7 +32,26 @@ const SSR_TRACE_MAX_REFINE_STEPS : u32 = 5u;
 @group(0) @binding(7) var sceneTemporal : texture_2d<f32>;
 // Motion at a radiance source invalidates reflection history even when the
 // receiver is stationary. This scalar is reactivity, not reflected velocity.
+#if !PORTABLE_FRAGMENT
 @group(0) @binding(8) var hitReactivityOutput : texture_storage_2d<r32float, write>;
+#endif
+
+// The graph always publishes the complete floor-halved depth chain.
+fn ssrDepthPyramidLevelCount() -> u32 {
+#if PORTABLE_FRAGMENT
+  let size = textureDimensions(depthPyramid, 0);
+  var remaining = max(size.x, size.y);
+  var levels = 0u;
+  for (var bit = 0u; bit < 32u; bit++) {
+    if (remaining == 0u) { break; }
+    levels += 1u;
+    remaining >>= 1u;
+  }
+  return levels;
+#else
+  return textureNumLevels(depthPyramid);
+#endif
+}
 
 fn isFinite(value : f32) -> bool {
   return value == value && abs(value) < 3.402823e+38;
@@ -117,7 +138,7 @@ fn sampleSsrTraceDepth(uv : vec2<f32>, traceLevel : u32) -> f32 {
     if (depth <= 0.0 || depth > 1.0) { return DEPTH_PYRAMID_EMPTY_DEPTH; }
     return linearizeViewDepth(depth, view.temporalProjection);
   }
-  let level = min(traceLevel - 1u, textureNumLevels(depthPyramid) - 1u);
+  let level = min(traceLevel - 1u, ssrDepthPyramidLevelCount() - 1u);
   let cell = depthPyramidCell(uv, depthPyramidLevelSize(depthPyramid, level));
   return depthPyramidDepthOrEmpty(textureLoad(depthPyramid, vec2<i32>(cell), i32(level)).r);
 }
@@ -177,7 +198,7 @@ fn ssrRescueCandidateInRay(origin : vec3<f32>, direction : vec3<f32>,
 fn locateSsrPyramidCandidate(uv : vec2<f32>, coarseLevel : u32, fullSize : vec2<u32>,
   startUv : vec2<f32>, deltaUv : vec2<f32>, fallbackFraction : f32,
   endFraction : f32) -> SsrDepthCandidate {
-  if (coarseLevel == 0u || textureNumLevels(depthPyramid) == 0u) {
+  if (coarseLevel == 0u || ssrDepthPyramidLevelCount() == 0u) {
     return ssrInvalidDepthCandidate();
   }
   let level = coarseLevel - 1u;
@@ -712,16 +733,20 @@ fn sampleSsrHitSample(uv : vec2<f32>, rayDirection : vec3<f32>) -> SsrHitSample 
   return SsrHitSample(vec4<f32>(sum.rgb / max(sum.a, 1e-6), sum.a), reactivity);
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
+struct SsrTraceOutput {
+  @location(0) color : vec4<f32>,
+  @location(1) reactivity : f32,
+}
+fn evaluateSsrTrace(globalId : vec3<u32>) -> SsrTraceOutput {
+  var output = SsrTraceOutput(vec4<f32>(0.0), 0.0);
   let fullSize = textureDimensions(sceneColor, 0);
   let traceSize = fullSize;
   if (globalId.x >= traceSize.x || globalId.y >= traceSize.y) {
-    return;
+    return output;
   }
-  textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(0.0));
+  output.reactivity = 0.0;
   let fullPixel = globalId.xy;
-  let coarsestLevel = textureNumLevels(depthPyramid) - 1u;
+  let coarsestLevel = ssrDepthPyramidLevelCount() - 1u;
   let maxTraceLevel = min(maxSsrTraceLevel(fullSize), coarsestLevel + 1u);
   let coarsestSize = depthPyramidLevelSize(depthPyramid, coarsestLevel);
   let coarsestPixel = min(globalId.xy, coarsestSize - vec2<u32>(1u));
@@ -733,8 +758,8 @@ fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
       textureLoad(reflectionFallback, vec2<i32>(fullPixel), 0).a <= 0.5 ||
       !isFinite(view.ssrParams.w) || view.ssrParams.w <= 0.5 ||
       !isFinite(normalData.a) || normalData.a >= view.ssrParams.z) {
-    textureStore(traceOutput, vec2<i32>(globalId.xy), vec4<f32>(0.0));
-    return;
+    output.color = vec4<f32>(0.0);
+    return output;
   }
   let normal = select(
     vec3<f32>(0.0, 0.0, 1.0),
@@ -773,7 +798,7 @@ fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
     maxTraceLevel,
   );
   let edge = traceEdge(hitResult.uv);
-  textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(hitResult.reactivity));
+  output.reactivity = hitResult.reactivity;
   let roughness = finiteConfidence(
     select(
       0.0,
@@ -791,15 +816,33 @@ fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
     temporal,
   );
   if (confidence <= 0.0) {
-    textureStore(traceOutput, vec2<i32>(globalId.xy), vec4<f32>(0.0));
-    return;
+    output.color = vec4<f32>(0.0);
+    return output;
   }
   let hitSample = sampleSsrHitSample(hitResult.uv, reflectionDirection);
   let hitColor = hitSample.color;
   if (!all(vec3<bool>(isFinite(hitColor.r), isFinite(hitColor.g), isFinite(hitColor.b)))) {
-    textureStore(traceOutput, vec2<i32>(globalId.xy), vec4<f32>(0.0));
-    return;
+    output.color = vec4<f32>(0.0);
+    return output;
   }
-  textureStore(traceOutput, vec2<i32>(globalId.xy), vec4<f32>(hitColor.rgb, confidence * hitColor.a));
-  textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(max(hitResult.reactivity, hitSample.reactivity)));
+  output.color = vec4<f32>(hitColor.rgb, confidence * hitColor.a);
+  output.reactivity = max(hitResult.reactivity, hitSample.reactivity);
+  return output;
 }
+#if PORTABLE_FRAGMENT
+@vertex fn ssr_fullscreen(@builtin(vertex_index) index : u32) -> @builtin(position) vec4<f32> {
+  let positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(positions[index], 0.0, 1.0);
+}
+@fragment fn ssr_trace_fragment(@builtin(position) position : vec4<f32>) -> SsrTraceOutput {
+  return evaluateSsrTrace(vec3<u32>(vec2<u32>(position.xy), 0u));
+}
+#else
+@compute @workgroup_size(8, 8, 1)
+fn ssr_trace(@builtin(global_invocation_id) globalId : vec3<u32>) {
+  if (any(globalId.xy >= textureDimensions(sceneColor, 0))) { return; }
+  let output = evaluateSsrTrace(globalId);
+  textureStore(traceOutput, vec2<i32>(globalId.xy), output.color);
+  textureStore(hitReactivityOutput, vec2<i32>(globalId.xy), vec4<f32>(output.reactivity));
+}
+#endif

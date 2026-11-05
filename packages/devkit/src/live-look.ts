@@ -6,6 +6,11 @@ import {
   RENDERER_ERROR_RECENT_FRAMES,
 } from './capture-render-failure.js';
 import { type LookMetrics, lookFindings, summarizeLook } from './look-report.js';
+import {
+  type LuminanceObservation,
+  legendLines,
+  renderLuminanceHeatmap,
+} from './luminance-heatmap.js';
 import { parsePlayViewports } from './play-layout.js';
 import type { BrowserExecutionTarget } from './tools/display-carrier.js';
 
@@ -30,6 +35,27 @@ export interface LookRequest {
   readonly viewports?: readonly LookViewport[];
   /** Hide the game's DOM UI (`#game-ui`) so the image and metrics show the scene alone. */
   readonly hideUi?: boolean;
+  /**
+   * `luminance` also writes a pre-tonemap HDR luminance heat map per view,
+   * banded in whole stops around the camera bloom threshold. Default `final`.
+   */
+  readonly view?: LookViewMode;
+}
+
+export type LookViewMode = 'final' | 'luminance';
+
+/** The heat-map artifacts of one `--view luminance` capture. */
+export interface LookLuminance {
+  readonly heatmap: string;
+  readonly heatmapDigest: string;
+  readonly summary: string;
+  readonly summaryDigest: string;
+  readonly frameId: number;
+  readonly width: number;
+  readonly height: number;
+  readonly bloom: LuminanceObservation['bloom'];
+  readonly stats: LuminanceObservation['stats'];
+  readonly legend: readonly string[];
 }
 
 export interface LookView {
@@ -38,6 +64,7 @@ export interface LookView {
   readonly digest: string;
   readonly metrics: LookMetrics;
   readonly findings: readonly string[];
+  readonly luminance?: LookLuminance;
 }
 
 export interface LookResult {
@@ -55,6 +82,8 @@ export interface LookDriver {
   cameraControl(): Promise<'game' | 'observer'>;
   setCamera(camera: LookCamera): Promise<void>;
   releaseCamera(): Promise<void>;
+  /** Classify the next presented frame's HDR luminance (`simulation.observation.luminance()`). */
+  luminance?(): Promise<LuminanceObservation>;
 }
 
 export class LookRequestError extends Error {
@@ -111,10 +140,13 @@ export function parseLookRequest(input: Readonly<Record<string, unknown>>): Look
     );
   if (input.hideUi !== undefined && typeof input.hideUi !== 'boolean')
     throw new LookRequestError('live-look-invalid-hide-ui', '--hide-ui expects true or false.');
+  if (input.view !== undefined && input.view !== 'final' && input.view !== 'luminance')
+    throw new LookRequestError('live-look-invalid-view', "--view expects 'final' or 'luminance'.");
   return {
     ...(cameras ? { cameras } : {}),
     ...(viewports ? { viewports } : {}),
     ...(input.hideUi === true ? { hideUi: true } : {}),
+    ...(input.view === 'luminance' ? { view: 'luminance' as const } : {}),
   };
 }
 
@@ -186,6 +218,7 @@ async function captureView(
   extent: LookViewport,
   deadline: number,
   hideUi: boolean,
+  mode: LookViewMode = 'final',
 ): Promise<{ readonly view: LookView; readonly rendererError: CaptureRendererError | null }> {
   // Two submissions: the first may predate a resize or camera change. A
   // stalled frame loop still yields the image, flagged as possibly stale.
@@ -215,6 +248,7 @@ async function captureView(
   ];
   const screenshot = resolve(driver.outputDir, `${name}.png`);
   await writeFile(screenshot, png);
+  const luminance = mode === 'luminance' ? await captureLuminance(driver, name) : undefined;
   return {
     view: {
       name,
@@ -222,8 +256,43 @@ async function captureView(
       digest: `sha256:${createHash('sha256').update(png).digest('hex')}`,
       metrics,
       findings: [...blockers, ...lookFindings(metrics, rendererError)],
+      ...(luminance === undefined ? {} : { luminance }),
     },
     rendererError,
+  };
+}
+
+/** Write the heat map and a plane-free JSON summary beside the final-frame PNG. */
+async function captureLuminance(driver: LookDriver, name: string): Promise<LookLuminance> {
+  if (driver.luminance === undefined)
+    throw new LookRequestError(
+      'live-look-luminance-unavailable',
+      'This live owner cannot observe HDR luminance; update the engine or omit --view.',
+    );
+  const observation = await driver.luminance();
+  const { encodePng } = await import('@forgeax/engine-image/png');
+  const image = renderLuminanceHeatmap(observation);
+  const heatmap = resolve(driver.outputDir, `${name}-luminance.png`);
+  const summary = resolve(driver.outputDir, `${name}-luminance.json`);
+  const { planes: _planes, ...facts } = observation;
+  const legend = legendLines(observation);
+  const png = encodePng(image.width, image.height, image.rgba);
+  const json = `${JSON.stringify({ ...facts, legend }, null, 2)}\n`;
+  await writeFile(heatmap, png);
+  await writeFile(summary, json);
+  const sha256 = (bytes: Uint8Array | string) =>
+    `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  return {
+    heatmap,
+    heatmapDigest: sha256(png),
+    summary,
+    summaryDigest: sha256(json),
+    frameId: observation.frameId,
+    width: observation.width,
+    height: observation.height,
+    bloom: observation.bloom,
+    stats: observation.stats,
+    legend,
   };
 }
 
@@ -291,7 +360,14 @@ export async function lookAtLive(
         if (camera !== undefined) await driver.setCamera(camera);
         const name = viewName(views.length + 1, viewport, camera, cameraIndex);
         const extent = viewport ?? original;
-        const captured = await captureView(driver, name, extent, deadline, request.hideUi === true);
+        const captured = await captureView(
+          driver,
+          name,
+          extent,
+          deadline,
+          request.hideUi === true,
+          request.view,
+        );
         views.push(captured.view);
         rendererError ??= captured.rendererError;
       }

@@ -1,5 +1,14 @@
 # @forgeax/engine-shader
 
+## Physical atmosphere tables
+
+`atmosphere-table-kernels.wgsl` owns transmittance, multiple-scattering and Sky
+View texel arithmetic. Compute and fragment entry points wrap those same functions;
+only invocation addressing and storage/render-target I/O differ. The shader plugin
+publishes both bundles. Runtime selects the explicit background-only raster plan
+without compiling or rewriting shader source. Full Atmosphere retains its compute
+AP and distant-light producers. See the [render contract](../render/README.md#atmosphere-and-aerial-perspective).
+
 ## Public shader input boundary
 
 Directional PCSS uses one bounded loop with ordered blocker and comparison
@@ -392,6 +401,12 @@ Forward and Deferred differ only in graph topology. Unlit and fog consumers do
 not import this accessor. The canonical source is `src/standard-cluster.wgsl`;
 all Standard lit variants compose this one module, so there is no second
 implementation to maintain.
+
+Object-level shadow receiving uses the shared Mesh flag encoding. Storage variants
+read temporal flags; uniform fallback reads the no-receive bit in `Mesh.surface.w`.
+The same word's bit 0 independently selects a draw-local Sprite atlas rectangle;
+Sprite consumers mask that bit explicitly. Both rigid and skinned Standard
+receivers honor the flag; shadow casting remains a separate source decision.
 
 When storage buffers are unavailable, the same 96-byte light records, grid
 offset/count pairs and complete membership list use one `rgba32uint` texture at
@@ -1027,3 +1042,20 @@ to two layers. This preserves the current/next samples and blend weight while
 avoiding duplicated native filter code that crashes Metal compilation in
 composed single-layer medium shaders. The Surface Browser and isolated Dawn
 runtime tests retain their original pixel oracles for this path.
+
+## Portable multi-stage utility programs
+
+Hi-Z and SSR share package-owned WGSL evaluation functions between finite compute
+and `PORTABLE_FRAGMENT` variants. Native barriers/storage declarations never enter
+the fragment module. Fragment variants have distinct publication IDs even when
+they originate in the same source file. Their selected entry bindings and MRT
+outputs remain reflected facts of that exact composed variant.
+Standard Forward generates the additional unit-radiance reflection response only
+when `REFLECTION_FALLBACK_AVAILABLE` admits the SSR outputs, including clearcoat
+response sampling. Ordinary material variants omit that response work.
+
+Auto exposure keeps its public native source export and adds the fragment source.
+Both embed `auto-exposure-common.wgsl` at build time; native and fragment entry
+files own only transport and execution. Shared classification and adaptation retain
+the V1 histogram semantics. Raw WGSL files are embedded by the package build;
+runtime imports neither a file loader nor the build-time compiler.

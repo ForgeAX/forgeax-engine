@@ -1,5 +1,6 @@
 import type { Mat4Like } from '@forgeax/engine-math';
 import { isFiniteBounds3 } from '@forgeax/engine-types';
+import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
 
 // `fingerprintNumericArray` runs on every bounds-cache lookup. Keep the bit
 // reinterpretation scratch outside the hot path so a cache hit does not
@@ -333,11 +334,18 @@ class InstanceRowBoundsHierarchy {
   private invalidRows = 0;
   private readonly levels: { readonly coefficients: Float32Array; readonly filled: Uint8Array }[] =
     [];
+  /** Rows in use; storage is sized for `capacity` so a resized collection keeps it. */
+  private rowCount: number;
 
-  constructor(readonly rows: number) {
-    this.coefficients = new Float32Array(rows * 12);
-    this.rowValid = new Uint8Array(rows);
-    let width = rows;
+  constructor(
+    rows: number,
+    readonly capacity: number = rows,
+  ) {
+    if (rows > capacity) throw new RangeError('instance bounds rows exceed the hierarchy capacity');
+    this.rowCount = rows;
+    this.coefficients = new Float32Array(capacity * 12);
+    this.rowValid = new Uint8Array(capacity);
+    let width = capacity;
     do {
       width = Math.ceil(width / HIERARCHY_FANOUT);
       this.levels.push({
@@ -347,20 +355,39 @@ class InstanceRowBoundsHierarchy {
     } while (width > 1);
   }
 
+  get rows(): number {
+    return this.rowCount;
+  }
+
+  /** Re-scope the hierarchy to `rows`; callers then rewrite every row. */
+  resize(rows: number): void {
+    if (rows > this.capacity)
+      throw new RangeError('instance bounds rows exceed the hierarchy capacity');
+    this.rowCount = rows;
+  }
+
   writeRow(row: number, transforms: ArrayLike<number>): void {
     const offset = row * 16;
-    const valid =
-      finiteMatrixAt(transforms, offset) &&
+    let valid =
+      transforms.length - offset >= 16 &&
       transforms[offset + 3] === 0 &&
       transforms[offset + 7] === 0 &&
       transforms[offset + 11] === 0 &&
       transforms[offset + 15] === 1;
     if (valid) {
+      for (let column = 0; column < 4 && valid; column++)
+        for (let axis = 0; axis < 3; axis++)
+          if (!Number.isFinite(transforms[offset + column * 4 + axis] as number)) {
+            valid = false;
+            break;
+          }
+    }
+    if (valid) {
+      const coefficients = this.coefficients;
+      const base = row * 12;
       for (let column = 0; column < 4; column++)
         for (let axis = 0; axis < 3; axis++)
-          this.coefficients[row * 12 + column * 3 + axis] = transforms[
-            offset + column * 4 + axis
-          ] as number;
+          coefficients[base + column * 3 + axis] = transforms[offset + column * 4 + axis] as number;
     }
     const was = this.rowValid[row] === 1;
     if (was !== valid) this.invalidRows += valid ? -1 : 1;
@@ -368,44 +395,103 @@ class InstanceRowBoundsHierarchy {
   }
 
   markAllRowsUnset(): void {
-    this.invalidRows = this.rows;
+    this.invalidRows = this.rowCount;
     this.rowValid.fill(0);
   }
 
-  private refreshNode(level: number, node: number): number {
+  /** Children of `level`'s nodes that hold data for the current row count. */
+  private childCount(level: number): number {
+    let width = this.rowCount;
+    for (let index = 0; index < level; index += 1) width = Math.ceil(width / HIERARCHY_FANOUT);
+    return width;
+  }
+
+  private refreshNode(level: number, node: number, children: number): number {
     const target = this.levels[level] as (typeof this.levels)[number];
     const previous = this.levels[level - 1] as (typeof this.levels)[number];
-    const source = level === 0 ? this.coefficients : previous.coefficients;
-    const filled = level === 0 ? this.rowValid : previous.filled;
-    const stride = level === 0 ? 12 : 24;
+    const leaf = level === 0;
+    const source = leaf ? this.coefficients : previous.coefficients;
+    const filled = leaf ? this.rowValid : previous.filled;
+    const stride = leaf ? 12 : 24;
+    const span = leaf ? 0 : 12;
+    const out = target.coefficients;
+    const base = node * 24;
     const first = node * HIERARCHY_FANOUT;
-    const last = Math.min(first + HIERARCHY_FANOUT, filled.length);
+    const last = Math.min(first + HIERARCHY_FANOUT, children);
     let initialized = false;
     for (let child = first; child < last; child++) {
       if (filled[child] !== 1) continue;
-      for (let field = 0; field < 12; field++) {
-        const lo = source[child * stride + field] as number;
-        const hi = level === 0 ? lo : (source[child * stride + field + 12] as number);
-        const offset = node * 24 + field;
-        target.coefficients[offset] = initialized
-          ? Math.min(target.coefficients[offset] as number, lo)
-          : lo;
-        target.coefficients[offset + 12] = initialized
-          ? Math.max(target.coefficients[offset + 12] as number, hi)
-          : hi;
+      const at = child * stride;
+      if (!initialized) {
+        for (let field = 0; field < 12; field++) {
+          out[base + field] = source[at + field] as number;
+          out[base + field + 12] = source[at + field + span] as number;
+        }
+        initialized = true;
+        continue;
       }
-      initialized = true;
+      for (let field = 0; field < 12; field++) {
+        const lo = source[at + field] as number;
+        const hi = source[at + field + span] as number;
+        // Branch-free min/max: scattered rows mispredict a compare-and-store.
+        out[base + field] = Math.min(out[base + field] as number, lo);
+        out[base + field + 12] = Math.max(out[base + field + 12] as number, hi);
+      }
     }
     target.filled[node] = initialized ? 1 : 0;
     return last - first;
   }
 
-  /** Rebuild every node bottom-up; returns node visits. */
-  refreshAll(): number {
+  /**
+   * Rewrite every row from `transforms` and rebuild the hierarchy. Each leaf
+   * node folds its rows while they are written, so a full re-derive reads the
+   * row coefficients once; returns node visits like `refreshAll`.
+   */
+  rebuild(transforms: ArrayLike<number>): number {
+    this.markAllRowsUnset();
+    const rows = this.rowCount;
+    const leaf = this.levels[0] as (typeof this.levels)[number];
+    const out = leaf.coefficients;
+    const coefficients = this.coefficients;
+    const valid = this.rowValid;
+    const width = this.levels.length === 1 ? 1 : Math.ceil(rows / HIERARCHY_FANOUT);
+    for (let node = 0; node < width; node += 1) {
+      const base = node * 24;
+      const first = node * HIERARCHY_FANOUT;
+      const last = Math.min(first + HIERARCHY_FANOUT, rows);
+      let initialized = false;
+      for (let row = first; row < last; row++) {
+        this.writeRow(row, transforms);
+        if (valid[row] !== 1) continue;
+        const at = row * 12;
+        if (!initialized) {
+          for (let field = 0; field < 12; field++) {
+            const value = coefficients[at + field] as number;
+            out[base + field] = value;
+            out[base + field + 12] = value;
+          }
+          initialized = true;
+          continue;
+        }
+        for (let field = 0; field < 12; field++) {
+          const value = coefficients[at + field] as number;
+          out[base + field] = Math.min(out[base + field] as number, value);
+          out[base + field + 12] = Math.max(out[base + field + 12] as number, value);
+        }
+      }
+      leaf.filled[node] = initialized ? 1 : 0;
+    }
+    return rows + this.refreshLevels(1, width);
+  }
+
+  private refreshLevels(from: number, rows: number): number {
     let visits = 0;
-    for (let level = 0; level < this.levels.length; level += 1) {
-      const width = this.levels[level]?.filled.length ?? 0;
-      for (let node = 0; node < width; node += 1) visits += this.refreshNode(level, node);
+    let children = rows;
+    for (let level = from; level < this.levels.length; level += 1) {
+      // The top level is always one root node, whatever the current row count.
+      const width = level === this.levels.length - 1 ? 1 : Math.ceil(children / HIERARCHY_FANOUT);
+      for (let node = 0; node < width; node += 1) visits += this.refreshNode(level, node, children);
+      children = width;
     }
     return visits;
   }
@@ -423,9 +509,10 @@ class InstanceRowBoundsHierarchy {
         if (tail !== undefined && start <= tail.end) tail.end = Math.max(tail.end, end);
         else parents.push({ start, end });
       }
+      const children = this.childCount(level);
       for (const span of parents) {
         for (let node = span.start; node < span.end; node += 1) {
-          visits += this.refreshNode(level, node);
+          visits += this.refreshNode(level, node, children);
         }
       }
       spans = parents;
@@ -600,19 +687,21 @@ export class InstanceBoundsCache {
     if (transforms === undefined || transforms.length === 0 || transforms.length % 16 !== 0) {
       return { ...base, bounds: undefined };
     }
-    // A full re-derive of a same-size collection (a moving collection without
-    // dirty-row proof) rewrites the previous hierarchy in place: every row and
-    // node is recomputed below, and the replaced entry is dropped from the map.
+    // A full re-derive (a moving collection without dirty-row proof) rewrites
+    // the previous hierarchy in place: every row and node is recomputed below,
+    // and the replaced entry is dropped from the map. A collection whose count
+    // changes moves to a reserved capacity so spawn/retire frames reuse it.
+    const rows = transforms.length / 16;
     const reusable = this.entries.get(this.key(input))?.hierarchy;
+    const resized = reusable !== undefined && reusable.rows !== rows;
     const hierarchy =
-      reusable !== undefined && reusable.rows === transforms.length / 16
+      reusable !== undefined &&
+      rows <= reusable.capacity &&
+      !(resized && shouldShrinkCapacity(rows, reusable.capacity))
         ? reusable
-        : new InstanceRowBoundsHierarchy(transforms.length / 16);
-    hierarchy.markAllRowsUnset();
-    for (let row = 0; row < hierarchy.rows; row += 1) {
-      hierarchy.writeRow(row, transforms);
-    }
-    this.nodeVisits += hierarchy.rows + hierarchy.refreshAll();
+        : new InstanceRowBoundsHierarchy(rows, resized ? dynamicCapacity(rows) : rows);
+    hierarchy.resize(rows);
+    this.nodeVisits += hierarchy.rows + hierarchy.rebuild(transforms);
     return {
       ...base,
       bounds: hierarchy.union(meshAabb, entityWorld),

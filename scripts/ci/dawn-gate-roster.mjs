@@ -41,13 +41,17 @@ export const DAWN_ISOLATED_GROUPS = [
     // The complete S6 capture journey owns a fresh native parent process;
     // keep both case tests and their original budgets outside ordinary backfill.
     id: 'modeling-s6',
-    // Reserve placement headroom for this long build/bake/capture journey.
-    // This is a forecast reserve, not a completed timing sample or a deadline.
-    placementReserveSeconds: 1_200,
+    // The complete owner has a 394-second retained maximum. Reserve ten
+    // minutes so it still starts before ordinary backfill with time for drift.
+    placementReserveSeconds: 600,
     files: ['packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts'],
   },
   {
     id: 'modeling-show',
+    // Run 41597394498 reached this full capture journey at minute 36. The
+    // retained complete-owner maximum is 187 seconds; preserve ten minutes of
+    // startup/capture headroom without starving ordinary work on other lanes.
+    placementReserveSeconds: 600,
     // Run 41306958512 missed the original sky-preparation deadline inside
     // ordinary-3. Keep all cues, pixel controls and sixty completed frames
     // in one fresh native lifetime; the scene and readiness budget stay fixed.
@@ -151,43 +155,38 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Complete native owners share four lanes; ordinary files fill the remaining
 // time using the latest measured costs. Each process keeps its native lifetime.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze(['ordinary-1', 'modeling-s6']),
+  Object.freeze(['ordinary-1', 'compact-2', 'gi-2', 'gi-3', 'gi-6', 'rect-source', 'renderer']),
   Object.freeze([
     'ordinary-2',
-    'gi-2',
-    'gi-4',
-    'compact-2',
-    'feature-depth',
-    'heavy-2',
-    'modeling-show',
-    'surface-pipelines',
-    'timing-lifecycle',
-    'vfx-depth',
+    'gi-1',
+    'gi-5',
+    'gpu-timing',
+    'heavy-3',
+    'heavy-4',
+    'shadow-quality',
+    'specular-aa',
   ]),
   Object.freeze([
     'ordinary-3',
-    'gi-1',
-    'compact-3',
-    'gi-5',
-    'gi-6',
-    'heavy-3',
-    'screen-probe',
-    'transmission',
+    'compact-1',
+    'direct-light',
+    'gi-4',
+    'heavy-1',
+    'heavy-2',
+    'nested-discard',
+    'surface-pipelines',
+    'vfx-depth',
   ]),
   Object.freeze([
     'ordinary-4',
-    'renderer',
-    'gpu-timing',
-    'compact-1',
-    'direct-light',
-    'gi-3',
-    'heavy-1',
-    'heavy-4',
-    'nested-discard',
-    'rect-source',
+    'modeling-s6',
+    'modeling-show',
+    'compact-3',
+    'feature-depth',
+    'screen-probe',
     'shadow-fields',
-    'shadow-quality',
-    'specular-aa',
+    'timing-lifecycle',
+    'transmission',
   ]),
 ]);
 

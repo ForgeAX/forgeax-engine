@@ -161,7 +161,8 @@ function admitCameraConfiguration(
   const install = frameState.standardInstall;
   const lane = {
     storageBuffer: internals.device.caps.storageBuffer,
-    maxColorAttachments: internals.device.limits.maxColorAttachments,
+    maxColorAttachments: internals.device.caps.maxColorAttachments,
+    maxColorAttachmentBytesPerSample: internals.device.limits.maxColorAttachmentBytesPerSample,
   };
   let configuration = deriveCameraStandardConfiguration(
     internals.standardProfile,

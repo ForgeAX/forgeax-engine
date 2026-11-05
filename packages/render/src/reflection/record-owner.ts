@@ -123,8 +123,13 @@ type PendingFallback = {
 };
 
 function hasNonNeutralFallback(tickets: ReadonlyMap<string, PendingFallback>): boolean {
-  for (const ticket of tickets.values()) if (ticket.projection.source !== 'neutral') return true;
+  for (const ticket of tickets.values())
+    if (nonNeutralFallbackSource(ticket.projection.source)) return true;
   return false;
+}
+
+function nonNeutralFallbackSource(source: ReflectionFallbackProjection['source']): boolean {
+  return source !== 'neutral';
 }
 
 const NEUTRAL_FRAME_PROJECTION: ReflectionFallbackProjection = Object.freeze({
@@ -401,6 +406,61 @@ export class ReflectionProbeRecordOwner {
         );
       });
     this.pipelineWarmup = warmup;
+  }
+
+  /** The current producer receipt, without building the diagnostic resource census. */
+  pipelineFallbackReceipt(): ReflectionFallbackReceipt {
+    return this.fallbackReceipt;
+  }
+
+  /** Read the same fallback source demand without advancing capture/filter work or tickets. */
+  pipelineFallbackDemand(
+    facts: readonly ReflectionProbeFact[],
+    selections: ReadonlyMap<string, ReflectionProbeSelectionResult>,
+    skylight: SkylightSnapshot | undefined,
+  ): boolean {
+    if (!this.internals.device.caps.rgba16floatRenderable) return false;
+    if (facts.length === 0 && skylight === undefined) return false;
+    let acceptedCount = 0;
+    let acceptedBytes = 0;
+    const accepted = new Map<
+      string,
+      { readonly fact: ReflectionProbeFact; readonly ready: boolean }
+    >();
+    for (const fact of facts
+      .slice()
+      .sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey)) {
+      const admission = admitReflectionProbe(
+        fact,
+        { acceptedCount, acceptedBytes },
+        DEFAULT_REFLECTION_PROBE_LIMITS,
+      );
+      if (!admission.ok) continue;
+      const key = `${fact.worldId}:${fact.entityKey}`;
+      const resource = this.resources.get(key);
+      if (resource === undefined) continue;
+      acceptedCount += 1;
+      acceptedBytes = admission.acceptedBytes;
+      accepted.set(key, {
+        fact,
+        ready:
+          resource.active !== undefined &&
+          resource.activeFact?.center.every((v, i) => v === fact.center[i]) === true,
+      });
+    }
+    for (const selection of selections.values()) {
+      const probe =
+        selection.kind === 'probe'
+          ? accepted.get(`${selection.worldId}:${selection.entityKey}`)
+          : undefined;
+      if (
+        nonNeutralFallbackSource(
+          resolveReflectionFallbackSource(selection, probe?.ready === true, skylight !== undefined),
+        )
+      )
+        return true;
+    }
+    return false;
   }
 
   prepare(

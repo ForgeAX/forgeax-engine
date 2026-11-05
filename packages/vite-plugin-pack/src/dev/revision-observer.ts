@@ -56,6 +56,7 @@ interface StatFact {
 type Snapshot = Map<string, StatFact>;
 
 const MAX_RECONCILE_ROUNDS = 4;
+const SNAPSHOT_IO_CONCURRENCY = 8;
 
 export function classifyWatchedPath(filename: string): DevWatchClassification {
   const isSidecar =
@@ -77,27 +78,40 @@ function snapshotEqual(left: StatFact | undefined, right: StatFact | undefined):
 
 async function collectSnapshot(roots: readonly string[]): Promise<Snapshot> {
   const snapshot: Snapshot = new Map();
-  const visit = async (path: string, root: string): Promise<void> => {
-    const entry = await lstat(path);
-    if (entry.isDirectory()) {
-      const children = await readdir(path, { withFileTypes: true });
-      for (const child of children) await visit(resolve(path, child.name), root);
-      return;
-    }
-    if (entry.isFile()) {
-      snapshot.set(resolve(root, path), {
-        dev: entry.dev,
-        ino: entry.ino,
-        mode: entry.mode,
-        mtimeMs: entry.mtimeMs,
-        size: entry.size,
-      });
-    }
-  };
   for (const root of roots) {
     const absoluteRoot = resolve(root);
+    const pending = [absoluteRoot];
     try {
-      await visit(absoluteRoot, absoluteRoot);
+      for (let offset = 0; offset < pending.length; ) {
+        const batch = pending.slice(offset, offset + SNAPSHOT_IO_CONCURRENCY);
+        offset += batch.length;
+        // Drain the whole bounded batch before propagating a failed stat. No
+        // filesystem work may mutate this snapshot after it has been rejected.
+        const inspected = await Promise.allSettled(
+          batch.map(async (path) => {
+            const entry = await lstat(path);
+            const children = entry.isDirectory()
+              ? await readdir(path, { withFileTypes: true })
+              : undefined;
+            return { path, entry, children };
+          }),
+        );
+        for (const result of inspected) {
+          if (result.status === 'rejected') throw result.reason;
+          const { path, entry, children } = result.value;
+          if (children !== undefined) {
+            for (const child of children) pending.push(resolve(path, child.name));
+          } else if (entry.isFile()) {
+            snapshot.set(resolve(absoluteRoot, path), {
+              dev: entry.dev,
+              ino: entry.ino,
+              mode: entry.mode,
+              mtimeMs: entry.mtimeMs,
+              size: entry.size,
+            });
+          }
+        }
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw Object.assign(error instanceof Error ? error : new Error(String(error)), {

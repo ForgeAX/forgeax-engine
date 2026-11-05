@@ -5,14 +5,33 @@ import {
   AnimationTargets,
 } from '@forgeax/engine/animation';
 import { Transform } from '@forgeax/engine/scene';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { pluginFixture } from '../../shared/__tests__/plugin-fixture.ts';
 import playerPlugin, { ThirdPersonRig } from '../player.ts';
 import { PLAYER_JOINT_NAMES } from '../player-rig.ts';
 
-const config = { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001' };
+const config = { speed: 5.5, jumpSpeed: 6, gravity: 18, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' };
 
 describe('game-3d player lifecycle', () => {
+  it('releases the body mask when allocating the wheel mask fails', async () => {
+    const { world, ctx, entity } = await pluginFixture();
+    const before = world.sharedRefs._liveCount();
+    const allocate = world.allocSharedRef.bind(world);
+    let calls = 0;
+    const spy = vi.spyOn(world, 'allocSharedRef').mockImplementation((...args) => {
+      if (++calls === 2) throw new Error('wheel mask unavailable');
+      return allocate(...args);
+    });
+    try {
+      await expect(ctx.plugin(playerPlugin, config)).rejects.toThrow('wheel mask unavailable');
+      expect(world.sharedRefs._liveCount()).toBe(before);
+      expect(world.get(entity('player'), AnimationPlayer).ok).toBe(false);
+    } finally {
+      spy.mockRestore();
+      await ctx.fiber.dispose();
+    }
+  });
+
   it('cleans contributions when animation loading fails', async () => {
     const { world, ctx, entity, load } = await pluginFixture();
     load.mockRejectedValueOnce(new Error('animation unavailable'));

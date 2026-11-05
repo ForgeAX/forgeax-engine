@@ -15,7 +15,7 @@ import {
   runShard,
   selectSmokeEntries,
 } from './run-dawn-smoke-roster.mjs';
-import { allProjectNames } from './run-split-vitest-coverage.mjs';
+import { allProjectNames, buildGroupArgs, coverageGroups } from './run-split-vitest-coverage.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const vitest = 'scripts/ci/run-vitest-projects.mjs';
@@ -67,6 +67,27 @@ function unitFocusPlan(kind, selector) {
 export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCount = 1 } = {}) {
   if (typeof selector !== 'string' || !selector || selector.startsWith('-'))
     throw new Error('an exact selector is required');
+  if (kind === 'coverage') {
+    const groups = coverageGroups(allProjectNames(), 8, { isolateFiles: true });
+    const selected = groups.filter(
+      (group) => group.label === selector || group.files.includes(selector),
+    );
+    if (selected.length !== 1) throw new Error(`unknown or ambiguous coverage child: ${selector}`);
+    return {
+      gpuLease: selected[0].gpuLease,
+      args: [
+        ...buildGroupArgs({
+          cliPath: vitest,
+          group: selected[0],
+          maxWorkers: 1,
+          coverage: true,
+          coverageDir: 'artifacts/ci-focus/coverage',
+          reportPath: 'artifacts/ci-focus/vitest.json',
+        }),
+        '--passWithNoTests=false',
+      ],
+    };
+  }
   if (kind === 'allocation') {
     if (!['all', 'math', 'ecs'].includes(selector))
       throw new Error(`unknown foundation allocation selector: ${selector}`);
@@ -141,7 +162,7 @@ export async function main(argv = process.argv.slice(2)) {
       options[arg.slice(2)] = argv[++i];
     else
       throw new Error(
-        'usage: run-ci-focus.mjs --kind unit|type|browser|dawn|smoke|view|allocation --select EXACT_SELECTOR [--dry-run]',
+        'usage: run-ci-focus.mjs --kind unit|coverage|type|browser|dawn|smoke|view|allocation --select EXACT_SELECTOR [--dry-run]',
       );
   }
   const frames = parseSmokeFrameBudget(options.frames ?? process.env.SMOKE_MIN_FRAMES);
@@ -166,11 +187,12 @@ export async function main(argv = process.argv.slice(2)) {
   rmSync(dirname(output), { recursive: true, force: true });
   mkdirSync(logs, { recursive: true });
   let commandIndex = 0;
-  const run = async (args, { nativeCoordinator = false } = {}) => {
+  const run = async (args, { nativeCoordinator = false, gpuLease = false } = {}) => {
     const result = await runBrowserCommand([process.execPath, ...args], {
       cwd: root,
       env,
       label: 'ci-focus',
+      gpuLease,
       timeoutMs: 30 * 60_000,
       excludeGpuLeaseQueue: nativeCoordinator && env.FORGEAX_LOCAL_GPU_LEASE === '1',
     });
@@ -230,6 +252,7 @@ export async function main(argv = process.argv.slice(2)) {
     } else
       await run(plan.args, {
         nativeCoordinator: ['browser', 'dawn', 'view'].includes(options.kind),
+        gpuLease: plan.gpuLease === true,
       });
     status = 'passed';
     return 0;

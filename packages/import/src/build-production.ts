@@ -181,7 +181,7 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
   const maxConcurrency = packBuildConcurrency(
     {
       parallelism: availableParallelism(),
-      freeBytes: Math.min(freemem(), process.availableMemory?.() ?? Infinity),
+      freeBytes: process.availableMemory?.() ?? freemem(),
       heapHeadroomBytes: getHeapStatistics().heap_size_limit - process.memoryUsage().heapUsed,
       concurrentCookers:
         context.cookers?.every((cooker) => cooker.concurrency === 'parallel') ?? true,
@@ -204,15 +204,21 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
       executors,
     });
   try {
+    const artifactPaths = new WeakMap<Uint8Array, string>();
+    const artifactPath = (bytes: Uint8Array): string => {
+      let path = artifactPaths.get(bytes);
+      if (path === undefined) {
+        path = `shared/${createHash('sha256').update(bytes).digest('hex')}.bin`;
+        artifactPaths.set(bytes, path);
+      }
+      return path;
+    };
     const policy = (packageId: PackageId) => (product: ScriptablePackBuildProduct) => {
       const paths = new Map(
         product.product.assets.flatMap((asset) =>
           Object.entries(asset.artifacts).map(
             ([key, artifact]) =>
-              [
-                `${asset.guid.toLowerCase()}/${key}`,
-                `shared/${createHash('sha256').update(artifact.bytes).digest('hex')}.bin`,
-              ] as const,
+              [`${asset.guid.toLowerCase()}/${key}`, artifactPath(artifact.bytes)] as const,
           ),
         ),
       );
@@ -235,6 +241,11 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         sourceClosure: source.sourceClosure,
         publicationGeneration: context.generation,
         policy: policy(source.definition.packageId),
+        transportIdentity: JSON.stringify([
+          'shared-binary/1',
+          context.basePrefix || '/',
+          PackageId.format(source.definition.packageId),
+        ]),
       });
     }
     for (const instance of subjects.value.instances) {
@@ -247,6 +258,11 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         values: instance.values,
         publicationGeneration: context.generation,
         policy: policy(instance.packageId),
+        transportIdentity: JSON.stringify([
+          'shared-binary/1',
+          context.basePrefix || '/',
+          PackageId.format(instance.packageId),
+        ]),
       });
     }
     if (inputs.length === 0) return [];

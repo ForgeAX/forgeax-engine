@@ -131,3 +131,29 @@ it.each([
   expect(Array.from(bits.subarray(surface, surface + 4))).toEqual([0, 0, 0xffffffff, 1]);
   expect(Array.from(floats.subarray(surface + 4, surface + 8))).toEqual(spriteRegion);
 });
+
+it.each([
+  false,
+  true,
+])('keeps uniform shadow flags independent of Sprite region presence (%s)', (hasRegion) => {
+  const source = receiptRow().source;
+  const region = [0.125, 0.25, 0.5, 0.75] as const;
+  const buffer = {} as Buffer;
+  const writeBuffer = vi.fn().mockReturnValue(ok(undefined));
+  const queue = { writeBuffer } as unknown as RhiQueue;
+  for (const receive of [false, true, false]) {
+    const row = {
+      meshSlot: 0,
+      source: {
+        ...source,
+        ...(receive ? {} : { shadowReceiver: false as const }),
+        ...(hasRegion ? { spriteRegion: region } : {}),
+      },
+    };
+    uploadMeshSsboBatch(queue, { buffer }, [row], null, [], undefined, false);
+    const bytes = writeBuffer.mock.lastCall?.[2] as Uint8Array;
+    const bits = new Uint32Array(bytes.buffer, bytes.byteOffset);
+    expect(bits[19]).toBe(Number(hasRegion) | (receive ? 0 : 2));
+    expect((bits[19] ?? 0) & 1).toBe(Number(hasRegion));
+  }
+});

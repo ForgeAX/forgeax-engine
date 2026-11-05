@@ -52,6 +52,8 @@ export function disposeTargetCaptures(owner: CubeCaptureGraphState): void {
   disposeTargetCaptureLighting(owner);
   owner.planar?.dispose();
   delete owner.planar;
+  owner.planarTarget?.release();
+  delete owner.planarTarget;
   owner.work = [];
 }
 

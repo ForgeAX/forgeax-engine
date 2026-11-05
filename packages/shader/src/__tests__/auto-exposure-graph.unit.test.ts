@@ -3,10 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { AUTO_EXPOSURE_METER_WGSL } from '../index';
 
-const standaloneMeterSource = readFileSync(
-  fileURLToPath(new URL('../auto-exposure-meter.wgsl', import.meta.url)),
-  'utf8',
-);
+const standaloneMeterSource =
+  readFileSync(new URL('../auto-exposure-common.wgsl', import.meta.url), 'utf8') +
+  readFileSync(fileURLToPath(new URL('../auto-exposure-meter.wgsl', import.meta.url)), 'utf8');
 
 describe('auto exposure shader graph', () => {
   it('exposes one fixed-cohort WGSL module without compiler or Naga imports', () => {
@@ -35,7 +34,7 @@ describe('auto exposure shader graph', () => {
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('parameters.deltaTime');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('validParameters');
     expect(AUTO_EXPOSURE_METER_WGSL).toContain('previous.x');
-    expect(AUTO_EXPOSURE_METER_WGSL).toContain('state[0] = candidate[0]');
+    expect(AUTO_EXPOSURE_METER_WGSL).not.toContain('state[0] = candidate[0]');
     expect(AUTO_EXPOSURE_METER_WGSL).not.toContain('fn auto_exposure_meter');
     expect(AUTO_EXPOSURE_METER_WGSL).not.toContain('sampleBins');
     expect(AUTO_EXPOSURE_METER_WGSL).not.toContain('shader-compiler');

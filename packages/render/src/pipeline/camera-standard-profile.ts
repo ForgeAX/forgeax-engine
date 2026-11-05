@@ -3,8 +3,8 @@ import {
   type AmbientOcclusionData,
   ambientOcclusionParameters,
 } from '../components/ambient-occlusion';
-import { DEFERRED_COLOR_FORMATS } from '../pipeline-spec';
 import type { PostProcessError } from '../post-process-errors';
+import { supportsStandardDeferred } from './standard-deferred-capability';
 import type { StandardProfile } from './standard-profile';
 
 interface CameraStandardDemand {
@@ -17,7 +17,11 @@ export function deriveCameraStandardConfiguration(
   profile: StandardProfile | undefined,
   config: RenderPipelineAsset['config'],
   camera: CameraStandardDemand | undefined,
-  lane: { readonly storageBuffer: boolean; readonly maxColorAttachments: number },
+  lane: {
+    readonly storageBuffer: boolean;
+    readonly maxColorAttachments: number;
+    readonly maxColorAttachmentBytesPerSample?: number | undefined;
+  },
 ): Result<
   {
     readonly profile: StandardProfile | undefined;
@@ -27,8 +31,7 @@ export function deriveCameraStandardConfiguration(
 > {
   if (profile === undefined || camera === undefined) return ok({ profile, config });
   const aoRequested = camera.ambientOcclusion !== undefined;
-  const deferredEligible =
-    lane.storageBuffer && lane.maxColorAttachments >= DEFERRED_COLOR_FORMATS.length;
+  const deferredEligible = supportsStandardDeferred(lane, lane.maxColorAttachmentBytesPerSample);
   if (!aoRequested && camera.screenSpaceReflection === undefined) return ok({ profile, config });
 
   let selectedProfile = profile;

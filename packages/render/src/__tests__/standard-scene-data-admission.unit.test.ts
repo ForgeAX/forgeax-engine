@@ -252,6 +252,82 @@ it('retains Deferred forward-only opaque rows in required producer coverage', ()
     ],
   });
 
+  // Stock Deferred AO consumes only GBuffer surfaces. The existing later
+  // Forward pass owns this opaque material; full SceneData stays unavailable.
+  expect(
+    standardAoSceneDataUnavailable({
+      admission,
+      viewIdentity: 'deferred-view',
+      generation: 5,
+      deviceGeneration: 1,
+      renderPath: 'deferred',
+      fallbackLane: 'clustered',
+    }),
+  ).toBeUndefined();
+
+  if (contributor === undefined) throw Error('Missing valid Forward dispatch');
+  const base = {
+    viewIdentity: 'deferred-view',
+    generation: 5,
+    deviceGeneration: 1,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered' as const,
+    renderPath: 'deferred' as const,
+  };
+  const rows = Array.from({ length: 40 }, (_, i) => ({ ...contributor, id: `forward-${i}` }));
+  // A module may publish both entry points while only its Forward pass is
+  // selected. Presence in WGSL is not proof of a GBuffer draw.
+  const forwardWithGBufferEntry = new MaterialResource({
+    ...snapshot,
+    materialEntryPoints: {
+      forward: [
+        { name: 'fs_opaque', stage: 'fragment', bindings: [] },
+        { name: 'fs_gbuffer', stage: 'fragment', bindings: [] },
+      ],
+    },
+  } as unknown as MaterialSnapshot);
+  const inactiveGBuffer = standardSceneDataContributorForDispatch({
+    row: {
+      material: forwardWithGBufferEntry,
+      materials: [forwardWithGBufferEntry],
+    } as unknown as RenderableSnapshot,
+    sourceTuple: [0, 9, 52, 0],
+    materialHandle: 52,
+    materialShaderId: 'cooked:standard-forward',
+    tags: { LightMode: 'Forward' },
+    lane: 'deferred',
+    id: 'inactive-gbuffer',
+  });
+  expect(inactiveGBuffer?.entryPoint).toBeUndefined();
+  expect(
+    createStandardSceneSurfaceAdmission({
+      ...base,
+      contributors: inactiveGBuffer === undefined ? [] : [inactiveGBuffer],
+    }),
+  ).toMatchObject({ status: 'unavailable', deferredGBufferEmpty: true });
+  const many = createStandardSceneSurfaceAdmission({ ...base, contributors: rows });
+  expect(many).toMatchObject({
+    status: 'unavailable',
+    deferredAoCompatible: true,
+    deferredGBufferEmpty: true,
+    omittedMissingContributorCount: 8,
+  });
+  // A non-Forward rejection outside the retained diagnostic window still blocks AO.
+  const mixed = createStandardSceneSurfaceAdmission({
+    ...base,
+    contributors: [...rows, { ...contributor, id: 'zz-invalid-gbuffer', forwardOnly: false }],
+  });
+  expect(mixed).toMatchObject({
+    status: 'unavailable',
+    deferredAoCompatible: false,
+    deferredGBufferEmpty: false,
+    omittedMissingContributorCount: 9,
+  });
+  expect(
+    standardAoSceneDataUnavailable({ ...base, admission: mixed, fallbackLane: 'clustered' }),
+  ).toBeInstanceOf(SceneDataUnavailableError);
+
   const deferredVariant = {
     ...snapshot,
     passes: [
@@ -322,4 +398,104 @@ it('bounds rejected contributor facts and preserves the exact omitted count', ()
     });
     expect(admission.omittedMissingContributorCount).toBe(3);
   }
+});
+
+it.each([
+  ['forgeax::default-unlit', 'mesh', 'rigid', 'available'],
+  ['forgeax_material::unlit', 'mesh', 'rigid', 'available'],
+  ['forgeax_material::unlit', 'skinned', 'skin', 'unavailable'],
+  ['forgeax_material::unlit', 'mesh', 'morph', 'unavailable'],
+  ['custom::unlit', 'mesh', 'rigid', 'unavailable'],
+] as const)('admits Forward AO for the published Unlit root %s (%s/%s): %s', (module, geometry, deformation, status) => {
+  const snapshot = {
+    materialHandle: 17,
+    passes: [
+      { name: 'forward', program: { module }, renderState: { tags: { LightMode: 'Forward' } } },
+    ],
+    materialProgramKeys: { forward: 'cooked:unlit-forward' },
+    materialEntryPoints: { forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }] },
+    materialContext: { geometry, vertexColor: false },
+  } as unknown as MaterialSnapshot;
+  const material = new MaterialResource(snapshot);
+  const contributor = standardSceneDataContributorForDispatch({
+    row: {
+      material,
+      materials: [material],
+      ...(deformation === 'skin' ? { skinBinding: {} } : {}),
+      ...(deformation === 'morph' ? { morph: {} } : {}),
+    } as unknown as RenderableSnapshot,
+    sourceTuple: [0, 251, 17, 1],
+    materialHandle: 17,
+    materialShaderId: 'cooked:unlit-forward',
+    tags: { LightMode: 'Forward' },
+    lane: 'forward',
+    id: 'unlit',
+  });
+  expect(contributor).toBeDefined();
+  const input = {
+    viewIdentity: 'unlit-view',
+    generation: 1,
+    deviceGeneration: 0,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered' as const,
+    renderPath: 'forward' as const,
+    contributors: contributor === undefined ? [] : [contributor],
+  };
+  expect(createStandardSceneSurfaceAdmission(input).status).toBe(status);
+  if (contributor !== undefined) {
+    const missingEntry = createStandardSceneSurfaceAdmission({
+      ...input,
+      contributors: [{ ...contributor, entryPoint: undefined }],
+    });
+    expect(missingEntry.status).toBe('unavailable');
+    if (status === 'available' && missingEntry.status === 'unavailable')
+      expect(missingEntry.missingContributors?.[0]?.reason).toBe('missing-fragment-entry');
+  }
+});
+
+it.each([
+  ['forgeax::pbr-skin', 'forward', 'fs_ao_input', 'available'],
+  ['forgeax_material::pbr-skin', 'forward', 'fs_ao_input', 'available'],
+  ['custom::pbr-skin', 'forward', 'fs_ao_input', 'unavailable'],
+  ['forgeax::pbr-skin', 'deferred', 'fs_gbuffer', 'available'],
+  ['forgeax_material::pbr-skin', 'deferred', 'fs_gbuffer', 'available'],
+  ['custom::pbr-skin', 'deferred', 'fs_gbuffer', 'unavailable'],
+] as const)('admits the exact supported cooked Skin root %s (%s/%s) as %s', (module, lane, entry, status) => {
+  const snapshot = {
+    materialHandle: 17,
+    passes: [
+      {
+        name: lane,
+        program: { module },
+        renderState: { tags: { LightMode: lane === 'deferred' ? 'Deferred' : 'Forward' } },
+      },
+    ],
+    materialProgramKeys: { [lane]: 'cooked:skin-program' },
+    materialEntryPoints: { [lane]: [{ name: entry, stage: 'fragment', bindings: [] }] },
+    materialContext: { geometry: 'skinned', vertexColor: false },
+  } as unknown as MaterialSnapshot;
+  const material = new MaterialResource(snapshot);
+  const contributor = standardSceneDataContributorForDispatch({
+    row: { material, materials: [material], skinBinding: {} } as unknown as RenderableSnapshot,
+    sourceTuple: [0, 251, 17, 1],
+    materialHandle: 17,
+    materialShaderId: 'cooked:skin-program',
+    tags: { LightMode: lane === 'deferred' ? 'Deferred' : 'Forward' },
+    lane,
+    id: 'skin',
+  });
+  expect(contributor).toBeDefined();
+  const admission = createStandardSceneSurfaceAdmission({
+    viewIdentity: 'skin-view',
+    generation: 1,
+    deviceGeneration: 0,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered',
+    renderPath: lane,
+    contributors: contributor === undefined ? [] : [contributor],
+  });
+  expect(admission.status).toBe(status);
+  if (status === 'available') expect(admission.deferredGBufferEmpty).toBe(false);
 });

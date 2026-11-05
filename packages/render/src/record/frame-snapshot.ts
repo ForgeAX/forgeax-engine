@@ -1010,6 +1010,8 @@ export interface BloomFrameReceipts {
  * without a dynamic type escape (was a recordFrame-local interface before F-4).
  */
 export interface ValidatedRenderable {
+  /** Per-camera hard LOD ranges in original instance order; residency remains source-owned. */
+  readonly cpuInstanceLods?: readonly import('./cpu-lod').CpuInstanceLodRun[];
   /** Physical source-transform slot, independent of this pass's row index. */
   readonly meshSlot: number;
   /** A fold head writes identity here; captures continue to use meshSlot. */

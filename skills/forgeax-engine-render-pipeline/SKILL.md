@@ -15,6 +15,12 @@ coverage gap. The frame reason is only its first producer blocker. Preparation
 barriers must not acquire an unwritten canvas texture. A pending receipt does
 not establish that gameplay rendering continues.
 
+A multi-view preparation barrier belongs to the complete physical frame. One
+pending view holds capture, scene, compositor and Surface UI encoding; ready
+siblings cannot publish a partial picture. Inspect the pending receipt and
+actual tape before changing pipeline/shader work. See
+[preparation semantics](../../packages/render/README.md#preparing-hidden-loadout-pipelines).
+
 ## Quick contract
 
 Covers making a game scene visible; stop here unless a task needs a section below.
@@ -43,8 +49,16 @@ Import components from `@forgeax/engine/render` and `Transform` from
 - Shadows: set `castShadow: true` on the light, then choose
   `shadowFilter: DirectionalShadowFilterValue.<label>`; opt entities out with
   `ShadowParticipation`. See [Directional shadow entry](#directional-shadow-entry).
-- The Standard profile's `renderPath` defaults to `'forward'`; contact shadows,
-  `CapsuleShadow` and diffuse GI need `'deferred'`.
+- The Standard profile's `renderPath` defaults to `'forward'`. Set `'auto'` for
+  a device-based default: storage buffers, six MRTs and the base Deferred
+  attachment byte budget select Deferred; otherwise Forward. Camera/effect
+  changes do not choose this default. Recovery reselects on the new device;
+  `renderer.inspect().profile.renderPath` reports the concrete choice. Explicit
+  `'forward'`/`'deferred'` retain existing admission. Contact shadows,
+  `CapsuleShadow` and diffuse GI need Deferred capabilities. Deferred retains
+  its later pass for Forward-only opaque materials. Stock Deferred AO uses the
+  GBuffer before those writers; full-scene SceneData consumers still require
+  complete producer coverage.
 - Fog, atmosphere, volumetrics and custom passes are optional sections below. A black or
   wrong frame you cannot explain goes to `forgeax-engine-rhi-debug` first.
 
@@ -53,7 +67,14 @@ Import components from `@forgeax/engine/render` and `Transform` from
 
 ## Sky atmosphere and aerial perspective
 
-Use one `Atmosphere` and one `DirectionalLight` for outdoor air. Author distance
+For a portable physical display sky, explicitly set `Atmosphere.backgroundOnly:
+true`. It reuses the shared optics through raster LUTs on WebGPU and WebGL2, but
+supplies no aerial perspective, surface solar attenuation or automatic sky IBL.
+Cube, planar and environment captures require full Atmosphere. Verify both real
+Browser backends with `atmosphere-background.browser.test.ts` and every LUT channel
+with `atmosphere-tables.browser.test.ts`; retain native optical quality gates.
+
+Use one default `Atmosphere` and one `DirectionalLight` for full outdoor air. Author distance
 in metres, coefficients in inverse metres, and solar intensity as outer-space
 lux. Atmosphere Transform defines the ground reference; Skylight Transform
 selects its independent capture position. Ordinary haze comes from Rayleigh/Mie
@@ -66,6 +87,10 @@ view; medium tables and pinned capture generations belong to Renderer. Verify
 fixed-exposure AP on/off, sun sweeps and colour ROIs against high-sample transport,
 then inspect real RHI Debug work/resources and GPU timings. Single-sample depth
 and the declared device texture budget are required; unavailable is explicit.
+Full `Atmosphere` (`backgroundOnly: false`) is not available on WebGL2: its compute, storage-texture,
+3D and full Standard texture-budget requirements still apply. A portable
+post-processing path does not establish full atmosphere support. The explicit
+background-only mode above has its own raster and real-GPU gates.
 
 ## Local volumetric fog
 
@@ -211,7 +236,7 @@ Per-entity opt-out is `ShadowParticipation { cast, receive }` (Bevy
 `NotShadowCaster` / `NotShadowReceiver`; absent means both true, except that a
 mesh whose every material blends casts nothing unless the component is authored). `cast: false`
 leaves every shadow map, and `receive: false` skips all shadow sampling on that
-surface. The WebGL2 fallback always receives. `PointLightShadow` bias uses
+surface, including the WebGL2 uniform fallback. `PointLightShadow` bias uses
 Bevy units: `depthBias` in world meters (default 0.08), `normalBias` in cube
 texels (default 0.6). Point sampling is hardware 2x2 and needs
 `forgeaxShader({ engineEntries: { pointShadows: true } })`; a DevKit game project
@@ -854,7 +879,7 @@ BloomNode uses threshold 0 and intensity 1, which blooms the whole frame). Use
 `bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
 The five Gaussian levels and their weighted composite share one Renderer graph.
 SSR is opt-in, full internal resolution, maxDistance 1, thickness 0.1 and
-maxRoughness 1; 1080p temporal admission needs about 111 MiB. TAA motion uses
+maxRoughness 1; 1080p temporal descriptors need about 182 MiB in Deferred compute or 261 MiB in portable Forward, within the 320 MiB per-view cap. TAA motion uses
 input pixels / 128, with default current weights 0.05 (TAA) and 0.025 (TAAU).
 Point/Spot shadow near/far defaults are 0.5/500; a positive finite light range
 replaces far. RectAreaLight defaults to 10x10 with unlimited range.
@@ -863,3 +888,25 @@ the game template does. Mesh participation stays on unless ShadowParticipation
 opts out; Point lights require PointLightShadow. No renderer-wide gate is needed.
 The game-3d template inherits projection/CSM defaults while retaining its
 explicit artistic ACES/FXAA, light color and intensity choices.
+
+## Portable Hi-Z, SSR and exposure
+
+Use the Standard pipeline's admitted execution plan; do not select backends in
+game shaders. Compute retains native workgroup algorithms. Fragment Hi-Z uses
+independent attachments and legal mip publication; SSR uses its shared SceneData,
+material response MRT and completion-fenced history. Forward SSR requires built-in
+Standard materials and single sampling; Deferred keeps its own admission contract.
+Auto exposure preserves the weighted 256-bin histogram with integer reductions,
+never mean luminance. Read the [portable contract](../../packages/render/README.md#portable-hi-z-ssr-and-histogram-exposure)
+for capacity, format receipts, physical pass inspection and real GPU gates.
+The public WebGL2 World/Camera owner is
+`packages/runtime/src/__tests__/standard-effects-webgl2.browser.test.ts`: exposure,
+SSR and their GTAO combination retain 60 completed frames, actual fragment work,
+paired pixels and disable-to-baseline recovery. AO admits opaque/masked Unlit
+surface inputs; Forward SSR still requires built-in Standard receivers. GPU VFX
+retains its independent compute/indirect capability gate; route CPU-updated
+particle sprites through `Points` rather than treating them as GPU VFX fallback.
+
+Render benchmark evidence contracts under `bench/*/__tests__/*.test.mjs` use
+`node:test`; run them with the CI guide's bounded Node command. Keep them out of
+the package Vitest collector without dropping their CI owner.

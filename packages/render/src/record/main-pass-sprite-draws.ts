@@ -6,14 +6,12 @@ import { clusteredMeshSlotBindGroup, meshSlotBindGroup } from './frame-lighting'
 import { detectNineSliceScaleTooSmall } from './main-pass-material';
 import { drawMaterial } from './material-pass-selection';
 import { materialUniformSlot } from './material-uniforms';
-import { resolveSpriteInstancesBuffer, uploadSpriteInstanceBuffer } from './sprite-instance-buffer';
 // @forgeax/engine-runtime - RendererState record stage: main-pass sprite draws.
 // feat-20260704 M5/w31: further-split from main-pass.ts (AC-05 <=1500 lines/file).
 // recordSpritePass + sprite entity/transparent/instance-buffer helpers, moved verbatim.
 
 import {
   type BindGroup,
-  type Buffer,
   type RenderPipeline,
   RhiError,
   type RhiRenderPassEncoder,
@@ -21,24 +19,18 @@ import {
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import type { GpuBuffer } from '../gpu-resource';
-import {
-  GPU_BUFFER_USAGE_COPY_DST,
-  GPU_BUFFER_USAGE_STORAGE,
-  GPU_BUFFER_USAGE_UNIFORM,
-} from '../gpu-usage';
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
 import { SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET } from '../pbr-pipeline';
 import { standardTopologyVariantSet } from '../pipeline-spec';
 import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
 import { renderWorldFor } from '../world/render-world';
 import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
-import { recordGeometryDraws, resolveGeometryInstancesBindGroup } from './main-pass-geometry';
 import {
-  MAX_UNIFORM_INSTANCES,
-  MESH_PER_ENTITY_STRIDE,
-  packInstanceStorageBuffer,
-  prepareMeshDraw,
-} from './mesh-ssbo';
+  recordGeometryDraws,
+  resolveGeometryInstanceBuffer,
+  resolveGeometryInstancesBindGroup,
+} from './main-pass-geometry';
+import { MESH_PER_ENTITY_STRIDE, prepareMeshDraw } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE } from './render-context';
 
@@ -488,109 +480,9 @@ function recordSpriteEntityDraws(
       lastSpriteIndexBuffer = indexBuffer;
     }
 
-    // Instance buffer resolution: sprites with Instances (e.g.
-    // hello-sprite-atlas 100-instance walk-cycle) require a per-entity
-    // buffer upload through the same sprite-path owner as SpriteInstances
-    // (uploadSpriteInstanceBuffer: cap-gate → cache-lookup → createBuffer →
-    // writeBuffer).
-    //
-    // feat-20260622-chunk-gpu-instancing-sprite-tilemap M1 / w4-record-swap
-    // (D-1): when `foldHeadBucket !== undefined` AND the sprite entity has
-    // no explicit Instances component, assemble the bucket transforms into
-    // a transient instance buffer + override `spriteInstanceCount =
-    // bucket.bucketSize`. The mesh slot at `i*MESH_PER_ENTITY_STRIDE` was
-    // already overwritten to identity in the mesh SSBO upload loop above,
-    // so the shader computes `world = identity * bucket.transforms[idx] *
-    // pos`, per-instance correct. Entities with explicit Instances bypass
-    // fold (their per-entity Instances semantic wins); bucket key forces
-    // such an entity to be a singleton bucket in practice because its
-    // material is distinct or unfolded, but defensively check here as a
-    // belt-and-suspenders guard.
-    let spriteInstanceBuffer: Buffer = pipelineState.identityInstanceBuffer;
-    let spriteInstanceCount = 1;
     const spriteInst = spriteEntry.source.instances;
-    if (foldHeadBucket !== undefined && spriteInst === undefined) {
-      const buffer = resolveFoldInstanceBuffer(c, foldHeadBucket, spriteEntry.renderableIndex);
-      if (buffer === null) continue;
-      spriteInstanceBuffer = buffer;
-      spriteInstanceCount = foldHeadBucket.bucketSize;
-    } else if (spriteInst !== undefined) {
-      const uniformFallback = runtime.device.caps.storageBuffer === false;
-      let spriteBufUsage = GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST;
-
-      if (uniformFallback) {
-        if (spriteInst.instanceCount > MAX_UNIFORM_INSTANCES) {
-          runtime.errorRegistry.fire(
-            new RhiError({
-              code: 'limit-exceeded',
-              expected: `instance count <= ${MAX_UNIFORM_INSTANCES} (uniform fallback cap)`,
-              hint: `reduce instance count to ${MAX_UNIFORM_INSTANCES} or use a WebGPU-capable backend`,
-              detail: {
-                maxStorageBufferBindingSize: MAX_UNIFORM_INSTANCES * 64,
-                requestedBytes: spriteInst.instanceCount * 64,
-              },
-            }),
-          );
-          spriteInstanceCount = spriteInst.instanceCount;
-          spriteInstanceBuffer = pipelineState.identityInstanceBuffer;
-          // Sprite shaders do not declare the Standard PBR Probe ABI. A
-          // retained scene record must therefore not change their group(3)
-          // bind-group shape.
-          const spriteInstBg = resolveGeometryInstancesBindGroup(
-            c,
-            spriteInstanceBuffer,
-            undefined,
-          );
-          pass.setBindGroup(3, spriteInstBg);
-          pass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
-          c.onRenderableDraw?.(spriteEntry, 0);
-          continue;
-        }
-        spriteBufUsage = GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST;
-      }
-
-      const instancePayload = uniformFallback
-        ? spriteInst.transforms
-        : packInstanceStorageBuffer(
-            renderWorldFor(runtime)
-              .frameArena.alloc(Float32Array, spriteInst.transforms.length * 2)
-              .unwrap(),
-            spriteInst.transforms,
-            spriteEntry.source.temporal?.previousInstances?.transforms,
-            spriteInst.generations,
-            spriteEntry.source.temporal?.previousInstances?.generations,
-          );
-      const uploaded = uploadSpriteInstanceBuffer(
-        c,
-        spriteEntry.source.worldId,
-        spriteInst,
-        instancePayload,
-        spriteBufUsage,
-        'reduce the sprite batch to fit within device.limits.maxStorageBufferBindingSize or use a storage-capable backend',
-      );
-      if (uploaded !== null) {
-        spriteInstanceBuffer = uploaded;
-        spriteInstanceCount = Math.max(1, spriteInst.instanceCount);
-      }
-    }
-
-    // feat-20260625-sprite-instances-and-tilemap-terrain-static-batch
-    // M3 / w11: SpriteInstances 80B-per-instance interleaved upload path.
-    // SSOT for the per-entity 2D mat4 + per-instance UV region buffer
-    // (plan-strategy D-1 interleaved single buffer + single binding slot;
-    // D-9 cacheKey = entity packed u32). The extract-stage validator
-    // (M3 / w10) enforces the XOR contract `Instances XOR SpriteInstances`
-    // (sprite-instances-mutually-exclusive-with-instances), so the
-    // legacy `spriteInst` block above and this block are never both
-    // active for the same entity.
-    const _si = resolveSpriteInstancesBuffer(
-      c,
-      spriteEntry,
-      spriteInstanceBuffer,
-      spriteInstanceCount,
-    );
-    spriteInstanceBuffer = _si.buffer;
-    spriteInstanceCount = _si.count;
+    const instanceDraws = spriteEntityInstanceDraws(c, spriteEntry, foldHeadBucket);
+    if (instanceDraws === null || instanceDraws.length === 0) continue;
 
     // sprite-lit's clustered variant declares the unified Standard group(2)
     // contract, while the regular sprite variants keep the direct mesh
@@ -610,11 +502,6 @@ function recordSpriteEntityDraws(
               c.bindGroupCounts,
               meshSlot * MESH_PER_ENTITY_STRIDE,
             );
-
-    // M3 / w12: LDR sprite split pass per-entity instances BG cache. Sprite
-    // shaders do not declare the Standard PBR Probe ABI, so retained probe
-    // records stay out of this bind-group path.
-    const spriteInstancesBg = resolveGeometryInstancesBindGroup(c, spriteInstanceBuffer, undefined);
 
     pass.setBindGroup(2, spriteGroup2 as BindGroup, [
       meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshSlot * MESH_PER_ENTITY_STRIDE)
@@ -638,8 +525,16 @@ function recordSpriteEntityDraws(
         materialUniformSlot(c.runtime, drawMaterial(c, i)) * MATERIAL_PER_ENTITY_STRIDE,
       ).byteOffset,
     ]);
-    pass.setBindGroup(3, spriteInstancesBg);
-    pass.drawIndexed(spriteEntry.mesh.indexCount, spriteInstanceCount, 0, 0, 0);
+    for (const draw of instanceDraws) {
+      pass.setBindGroup(3, draw.instanceBindGroup);
+      pass.drawIndexed(
+        spriteEntry.mesh.indexCount,
+        draw.instanceCount,
+        0,
+        0,
+        draw.firstInstance ?? 0,
+      );
+    }
     recordPresented(
       spriteEntry,
       0,
@@ -647,6 +542,42 @@ function recordSpriteEntityDraws(
       spriteInst === undefined ? foldHeadBucket : undefined,
     );
   }
+}
+
+/** Sprite and Tilemap use the same instance residency and paging as geometry. */
+function spriteEntityInstanceDraws(
+  c: _InternalRenderPipelineContext,
+  spriteEntry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  foldHeadBucket: import('./mesh-ssbo').FoldBucket | undefined,
+): ReturnType<typeof resolveGeometryInstanceBuffer> {
+  const { pipelineState } = c;
+  const spriteInst = spriteEntry.source.instances;
+  const identity = pipelineState.identityInstanceBuffer;
+  const identityDraws = [
+    {
+      instanceBuffer: identity,
+      instanceBindGroup: resolveGeometryInstancesBindGroup(c, identity, undefined),
+      probeOffset: -1,
+      instanceCount: 1,
+    },
+  ];
+  const folded = foldHeadBucket !== undefined && spriteInst === undefined;
+  const foldBuffer = folded
+    ? resolveFoldInstanceBuffer(c, foldHeadBucket, spriteEntry.renderableIndex)
+    : undefined;
+  if (folded && foldBuffer === null) return null;
+  const instanceDraws: ReturnType<typeof resolveGeometryInstanceBuffer> =
+    foldBuffer === undefined || foldBuffer === null
+      ? resolveGeometryInstanceBuffer(c, spriteEntry, identityDraws, false)
+      : [
+          {
+            instanceBuffer: foldBuffer,
+            instanceBindGroup: resolveGeometryInstancesBindGroup(c, foldBuffer, undefined),
+            probeOffset: -1,
+            instanceCount: foldHeadBucket?.bucketSize ?? 0,
+          },
+        ];
+  return instanceDraws;
 }
 
 function transparentPassColorFormat(

@@ -1,4 +1,5 @@
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
+import { withCombinedSignal } from '@forgeax/engine-platform';
 import type {
   AssetEnvelopeV2,
   AssetLoadError,
@@ -107,7 +108,9 @@ export class PackReader {
       this.pending.set(key, current);
       request = current;
     }
-    return waitForAsset(request, AbortSignal.any([signal, this.lifetime.signal]), packageUrl);
+    return withCombinedSignal([signal, this.lifetime.signal], (combined) =>
+      waitForAsset(request, combined, packageUrl),
+    );
   }
 
   dispose(): void {

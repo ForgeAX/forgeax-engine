@@ -204,3 +204,32 @@ test('allocation focus selects bounded Math/ECS owners and preserves raw evidenc
   assert.match(workflow, /path: artifacts\/ci-focus\/foundation-allocation\//);
   assert.match(workflow, /inputs.kind != 'type' && inputs.kind != 'allocation'/);
 });
+
+test('coverage focus retains the original complete instrumented bootstrap child', () => {
+  const selector = 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts';
+  const plan = focusPlan('coverage', selector);
+  assert.equal(plan.args[0], 'scripts/ci/run-vitest-projects.mjs');
+  assert.equal(plan.gpuLease, false);
+  assert.equal(
+    focusPlan('coverage', 'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts').gpuLease,
+    true,
+  );
+  assert.ok(plan.args.includes('--coverage'));
+  assert.ok(plan.args.includes('--passWithNoTests=false'));
+  assert.ok(plan.args.includes('--maxWorkers=1'));
+  assert.ok(plan.args.includes('--typecheck.enabled=false'));
+  assert.ok(plan.args.includes(selector));
+  assert.equal(plan.args.filter((argument) => argument === selector).length, 1);
+  assert.ok(plan.args.includes('--coverage.reporter=json'));
+  assert.ok(plan.args.includes('--coverage.reportsDirectory=artifacts/ci-focus/coverage'));
+  assert.ok(plan.args.includes('--project'));
+  assert.ok(plan.args.includes('@forgeax/engine-devkit'));
+  assert.throws(() => focusPlan('coverage', '../outside.test.ts'), /coverage/);
+  assert.throws(() => focusPlan('coverage', 'unknown-coverage-child'), /coverage/);
+  const workflow = readFileSync('.github/workflows/ci-focus.yml', 'utf8');
+  assert.match(
+    workflow,
+    /options: \[unit, coverage, type, browser, dawn, smoke, view, allocation\]/,
+  );
+  assert.match(workflow, /inputs.kind == 'coverage'/);
+});

@@ -176,7 +176,7 @@ overrides:
 patchedDependencies:
   '@actions/glob@0.7.0': bb6263d5126b843bbc29659e35bb23974911eeb1db465c0d1858fd0d75fbcfc0
   '@deepseek-ai/cordis@4.0.4': 0ef3836d6875c7c3820c77f759aa19a5036710120ae4f9a4aa5399c0fb4ade9e
-  vitest@4.1.12: bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5
+  vitest@4.1.12: 496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2
 
 importers:
 
@@ -323,7 +323,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
       wait-on:
         specifier: ^9.5.1
         version: 9.5.1(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)
@@ -5434,7 +5434,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   apps/game-capability-lab:
     dependencies:
@@ -6102,7 +6102,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   apps/hello/compressed-texture:
     dependencies:
@@ -11400,7 +11400,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -11751,7 +11751,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   apps/perf/path-follow:
     dependencies:
@@ -11867,7 +11867,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   apps/preview:
     dependencies:
@@ -12284,7 +12284,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: ^4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   apps/showcase/brotato-3d:
     dependencies:
@@ -12588,6 +12588,9 @@ importers:
       '@forgeax/engine-pack':
         specifier: workspace:*
         version: link:../pack
+      '@forgeax/engine-platform':
+        specifier: workspace:*
+        version: link:../platform
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../plugin
@@ -12728,7 +12731,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   packages/dawn-node:
     dependencies:
@@ -12757,7 +12760,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   packages/debug-draw:
     dependencies:
@@ -12846,6 +12849,9 @@ importers:
       '@forgeax/engine-physics':
         specifier: workspace:*
         version: link:../physics
+      '@forgeax/engine-platform':
+        specifier: workspace:*
+        version: link:../platform
       '@forgeax/engine-plugin':
         specifier: workspace:*
         version: link:../plugin
@@ -12935,7 +12941,7 @@ importers:
         version: 8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -13419,7 +13425,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -13815,7 +13821,7 @@ importers:
         version: 9.0.0(jiti@1.21.7)(postcss@8.5.31)(typescript@6.0.3)(yaml@2.9.1)
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   packages/path:
     dependencies:
@@ -14104,7 +14110,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   packages/profiler:
     dependencies:
@@ -14136,7 +14142,7 @@ importers:
         version: 5.8.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   packages/remote:
     dependencies:
@@ -14936,7 +14942,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   templates/game-3d:
     dependencies:
@@ -14952,7 +14958,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: 4.1.12
-        version: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+        version: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   tools/forgeax-mcp:
     dependencies:
@@ -20513,7 +20519,7 @@ snapshots:
   '@fast-check/vitest@0.3.0(vitest@4.1.12)':
     dependencies:
       fast-check: 4.7.0
-      vitest: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+      vitest: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
 
   '@fontsource-variable/noto-sans-sc@5.3.0': {}
 
@@ -21410,7 +21416,33 @@ snapshots:
       '@vitest/mocker': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
       playwright: 1.56.1
       tinyrainbow: 3.1.0
-      vitest: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+      vitest: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+    transitivePeerDependencies:
+      - bufferutil
+      - msw
+      - utf-8-validate
+      - vite
+
+  '@vitest/browser-playwright@4.1.12(playwright@1.60.0)(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.12)':
+    dependencies:
+      '@vitest/browser': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.12)
+      '@vitest/mocker': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+      playwright: 1.60.0
+      tinyrainbow: 3.1.0
+      vitest: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+    transitivePeerDependencies:
+      - bufferutil
+      - msw
+      - utf-8-validate
+      - vite
+
+  '@vitest/browser-playwright@4.1.12(playwright@1.63.0)(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.12)':
+    dependencies:
+      '@vitest/browser': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.12)
+      '@vitest/mocker': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+      playwright: 1.63.0
+      tinyrainbow: 3.1.0
+      vitest: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -21426,7 +21458,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.0
-      vitest: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+      vitest: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
       ws: 8.22.0
     transitivePeerDependencies:
       - bufferutil
@@ -21446,7 +21478,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
+      vitest: 4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))
     optionalDependencies:
       '@vitest/browser': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))(vitest@4.1.12)
 
@@ -23841,7 +23873,7 @@ snapshots:
       jiti: 1.21.7
       yaml: 2.9.1
 
-  vitest@4.1.12(patch_hash=bbd211a20c4b47bc7ff841395312c79c28602fdc2596f01f992532281f97aff5)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)):
+  vitest@4.1.12(patch_hash=496c76f1a8b4ec26f15bbb22059308e3036d6a15d89e123b0ced97dd45534cf2)(@types/node@20.19.40)(@vitest/browser-playwright@4.1.12)(@vitest/coverage-v8@4.1.12)(jsdom@26.1.0(supports-color@7.2.0))(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1)):
     dependencies:
       '@vitest/expect': 4.1.12
       '@vitest/mocker': 4.1.12(vite@8.3.5(@types/node@20.19.40)(esbuild@0.28.2)(jiti@1.21.7)(yaml@2.9.1))

@@ -313,7 +313,10 @@ function admitTargetTokens(
   return ok(targetTokens);
 }
 
-/** Every camera target is published, and each planar reflection target has one writer. */
+/**
+ * Every camera target is published, and each game planar reflection target has
+ * one writer. A planar camera without a target uses an engine-owned lease.
+ */
 function cameraTargetsError(
   metadata: RenderPublicationMetadata,
   targetTokens: ReadonlySet<object>,
@@ -339,10 +342,8 @@ function cameraTargetsError(
       .map((camera) => camera.target),
   );
   for (const target of planarTargets) {
-    if (
-      target === undefined ||
-      cameraWriters.filter((camera) => camera.target === target).length !== 1
-    )
+    if (target === undefined) continue;
+    if (cameraWriters.filter((camera) => camera.target === target).length !== 1)
       return shapeError('duplicate planar target writer');
   }
   return undefined;
@@ -1962,5 +1963,30 @@ export class RenderPublicationReceiver {
 
   get acceptedRevision(): number {
     return this.disposed || this.failed ? -1 : this.revision;
+  }
+
+  /** Borrow only the current accepted source facts for synchronous demand projection. */
+  borrowAcceptedDemand():
+    | {
+        readonly metadata: RenderPublicationMetadata;
+        readonly resources: RenderResourceScope;
+        readonly revision: number;
+        isCurrent(): boolean;
+      }
+    | undefined {
+    const metadata = this.acceptedMetadata;
+    if (this.accepting || this.disposed || this.failed || metadata === undefined) return undefined;
+    const revision = this.revision;
+    return {
+      metadata,
+      resources: this.resources,
+      revision,
+      isCurrent: () =>
+        !this.accepting &&
+        !this.disposed &&
+        !this.failed &&
+        this.acceptedMetadata === metadata &&
+        this.revision === revision,
+    };
   }
 }

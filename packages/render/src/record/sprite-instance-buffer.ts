@@ -10,7 +10,7 @@ import type { InstanceBufferCacheEntry } from '../instance-buffer-cache';
 import type { SpriteInstancesSnapshot } from '../render-system-extract';
 import { renderWorldFor } from '../world/render-world';
 import { worldEntityKey } from './frame-snapshot';
-import { INSTANCE_UBO_FULL_ARRAY_BYTES } from './mesh-ssbo';
+import { INSTANCE_UBO_FULL_ARRAY_BYTES, MAX_UNIFORM_INSTANCES } from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 export type { SpriteInstancesSnapshot } from '../render-system-extract';
@@ -64,62 +64,68 @@ export function spriteInstancesCacheHit(
   );
 }
 
-/**
- * feat-20260704 M3/w19: resolve the interleaved SpriteInstances (@group(3))
- * buffer + instanceCount for a sprite entity in the LDR blend sub-pass,
- * extracted verbatim from recordSpriteEntityDraws. Uploads the interleaved
- * mat4 + per-instance UV region transforms (cache-keyed on the snapshot); on
- * over-cap fires the structured limit-exceeded error and leaves the passed-in
- * fallback buffer/count. Returns the resolved (or unchanged) buffer + count.
- *
- * @internal
- */
-export function resolveSpriteInstancesBuffer(
+export interface SpriteInstanceDraw {
+  readonly buffer: Buffer;
+  readonly count: number;
+  readonly firstInstanceOrdinal: number;
+}
+
+/** Native storage keeps one draw; uniform sprites retain contiguous atlas-correct pages. */
+export function resolveSpriteInstanceDraws(
   c: Pick<_InternalRenderPipelineContext, 'runtime' | 'frameState'>,
   spriteEntry: _InternalRenderPipelineContext['validatedOrdered'][number],
-  fallbackBuffer: Buffer,
-  fallbackCount: number,
-): { buffer: Buffer; count: number } {
+): readonly SpriteInstanceDraw[] {
   const { runtime } = c;
   const world = renderWorldFor(runtime);
   if (!world.frameArena.isActive)
-    return world
-      .withFrameArena(() =>
-        ok(resolveSpriteInstancesBuffer(c, spriteEntry, fallbackBuffer, fallbackCount)),
-      )
-      .unwrap();
-  let buffer = fallbackBuffer;
-  let count = fallbackCount;
-  const spriteInstancesSnap: SpriteInstancesSnapshot | undefined =
-    spriteEntry.source.spriteInstances;
-  if (spriteInstancesSnap !== undefined) {
-    if (spriteInstancesSnap.instanceCount === 0) return { buffer, count: 0 };
-    const uniformFallback = runtime.device.caps.storageBuffer === false;
-    const interleaved = interleaveSpriteInstanceBuffer(
-      world.frameArena
-        .alloc(Float32Array, spriteInstancesSnap.instanceCount * (uniformFallback ? 20 : 36))
-        .unwrap(),
-      spriteInstancesSnap.transforms,
-      spriteInstancesSnap.regions,
-      !uniformFallback,
+    return world.withFrameArena(() => ok(resolveSpriteInstanceDraws(c, spriteEntry))).unwrap();
+  const snapshot = spriteEntry.source.spriteInstances;
+  if (snapshot === undefined) return [];
+  if (snapshot.instanceCount === 0) {
+    retireSpritePages(c, spriteEntry.source.worldId, snapshot);
+    return [];
+  }
+  const uniform = !runtime.device.caps.storageBuffer;
+  const capacity = uniform ? MAX_UNIFORM_INSTANCES : snapshot.instanceCount;
+  const draws: SpriteInstanceDraw[] = [];
+  for (let start = 0; start < snapshot.instanceCount; start += capacity) {
+    const count = Math.min(capacity, snapshot.instanceCount - start);
+    const payload = interleaveSpriteInstanceBuffer(
+      world.frameArena.alloc(Float32Array, count * (uniform ? 20 : 36)).unwrap(),
+      snapshot.transforms.subarray(start * 16, (start + count) * 16),
+      snapshot.regions.subarray(start * 4, (start + count) * 4),
+      !uniform,
     );
-    const uploaded = uploadSpriteInstanceBuffer(
+    const buffer = uploadSpriteInstanceBuffer(
       c,
       spriteEntry.source.worldId,
-      spriteInstancesSnap,
-      interleaved,
-      (uniformFallback ? GPU_BUFFER_USAGE_UNIFORM : GPU_BUFFER_USAGE_STORAGE) |
-        GPU_BUFFER_USAGE_COPY_DST,
-      uniformFallback
-        ? 'reduce SpriteInstances instance count to 128 (uniform fallback array, 80 bytes per instance: mat4 64B + region 16B) or use a storage-capable backend'
-        : 'reduce SpriteInstances instance count to fit within device.limits.maxStorageBufferBindingSize (144 bytes per instance: current mat4 64B + previous mat4 64B + region 16B)',
+      snapshot,
+      payload,
+      (uniform ? GPU_BUFFER_USAGE_UNIFORM : GPU_BUFFER_USAGE_STORAGE) | GPU_BUFFER_USAGE_COPY_DST,
+      'reduce the sprite collection to fit the device storage binding limit',
+      uniform ? start : undefined,
     );
-    if (uploaded !== null) {
-      buffer = uploaded;
-      count = spriteInstancesSnap.instanceCount;
-    }
+    if (buffer === null) return [];
+    draws.push({ buffer, count, firstInstanceOrdinal: start });
   }
-  return { buffer, count };
+  retireSpritePages(c, spriteEntry.source.worldId, snapshot);
+  return draws;
+}
+
+/** Source shrink and backend recovery release only this collection's obsolete pages. */
+function retireSpritePages(
+  c: Pick<_InternalRenderPipelineContext, 'runtime' | 'frameState'>,
+  worldId: number,
+  snapshot: SpriteInstancesSnapshot,
+): void {
+  const pages = c.frameState.instanceBufferChunks?.get(worldEntityKey(worldId, snapshot.cacheKey));
+  if (pages === undefined) return;
+  for (const [start, resident] of pages) {
+    if (!c.runtime.device.caps.storageBuffer && start < snapshot.instanceCount) continue;
+    const destroyed = resident.buffer.destroy();
+    if (!destroyed.ok) c.runtime.errorRegistry.fire(destroyed.error);
+    pages.delete(start);
+  }
 }
 
 /**
@@ -138,6 +144,7 @@ export function uploadSpriteInstanceBuffer(
   payload: Float32Array,
   usage: number,
   limitHint: string,
+  pageStart?: number,
 ): Buffer | null {
   const { runtime, frameState } = c;
   const requestedBytes = payload.byteLength;
@@ -164,7 +171,9 @@ export function uploadSpriteInstanceBuffer(
     return null;
   }
   const key = worldEntityKey(worldId, snapshot.cacheKey);
-  const cached = frameState.instanceBuffers.get(key);
+  const cache = spritePageCache(frameState, key, pageStart);
+  const address = pageStart ?? key;
+  const cached = cache.get(address);
   let active: InstanceBufferCacheEntry | null = null;
   if (spriteInstancesCacheHit(cached, snapshot, requestedBytes)) {
     active = cached ?? null;
@@ -190,7 +199,9 @@ export function uploadSpriteInstanceBuffer(
       uploadedArchVersion: snapshot.archVersion,
       uploadedByteLength: requestedBytes,
     };
-    frameState.instanceBuffers.set(key, active);
+    cache.set(address, active);
+    if (pageStart !== undefined && frameState.instanceBufferChunks === undefined)
+      frameState.transientInstanceBuffers.push(active);
   }
   if (active === null || requestedBytes === 0) return null;
   const writeRes = runtime.device.queue.writeBuffer(active.buffer.handle, 0, payload);
@@ -199,4 +210,18 @@ export function uploadSpriteInstanceBuffer(
     return null;
   }
   return active.buffer.handle;
+}
+
+/** Keep sprite pages in the existing collection-owned chunk cache. */
+function spritePageCache(
+  frameState: _InternalRenderPipelineContext['frameState'],
+  key: number,
+  pageStart: number | undefined,
+): Map<number, InstanceBufferCacheEntry> {
+  let cache = frameState.instanceBuffers;
+  if (pageStart !== undefined) {
+    cache = frameState.instanceBufferChunks?.get(key) ?? new Map();
+    frameState.instanceBufferChunks?.set(key, cache);
+  }
+  return cache;
 }

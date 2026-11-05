@@ -67,6 +67,11 @@ integrity checks; it does not infer an executing compiler identity from disk
 metadata alone. Build consumers use the Naga wrapper's Result form. A failed
 verification or initialization exposes no identity and remains retryable.
 
+Node-hosted loader tests select the browser branch by hiding only
+`process.versions.node`. They retain the Node process and its `nextTick` transport
+while asynchronous fetch and Vitest RPC callbacks are pending; the same tests
+still verify raw glue, both embedded manifest encodings and tamper rejection.
+
 Browser bundles may inline the provenance manifest as a data URL. The loader
 decodes its embedded bytes directly, including base64 and percent encoding,
 without requiring `connect-src data:`. External manifests still use fetch, and

@@ -124,3 +124,11 @@ describe('parseLookRequest', () => {
     }
   });
 });
+
+describe('dev look --view', () => {
+  it('accepts final and luminance and rejects other views', () => {
+    expect(parseLookRequest({ view: 'final' })).toEqual({});
+    expect(parseLookRequest({ view: 'luminance' })).toEqual({ view: 'luminance' });
+    expect(() => parseLookRequest({ view: 'depth' })).toThrow(LookRequestError);
+  });
+});

@@ -39,7 +39,7 @@ describe('device-safe browser drawing buffer', () => {
     [3840, 2160, 2],
     [1905, 2442, 1],
     [1080, 1920, 3],
-  ])('fits %sx%s at DPR %s before the renderer is ready', (width, height, dpr) => {
+  ])('fits %sx%s regardless of device DPR %s before the renderer is ready', (width, height, dpr) => {
     vi.stubGlobal('devicePixelRatio', dpr);
     const canvas = surface(width, height);
     const measured = measureCanvasDrawingBuffer(canvas);
@@ -54,12 +54,14 @@ describe('device-safe browser drawing buffer', () => {
     expect(canvas.clientHeight).toBe(height);
   });
 
-  it('preserves native resolution below the limit and honors an explicit ratio cap', () => {
+  it('defaults to one pixel per CSS pixel and honors an explicit canvas pixel ratio', () => {
     vi.stubGlobal('devicePixelRatio', 1.5);
     const canvas = surface(1200, 700);
     syncCanvasDrawingBuffer(canvas);
+    expect([canvas.width, canvas.height]).toEqual([1200, 700]);
+    expect(measureCanvasDrawingBuffer(canvas, 1.5)).toEqual({ width: 1800, height: 1050 });
+    syncCanvasDrawingBuffer(canvas, undefined, 1.5);
     expect([canvas.width, canvas.height]).toEqual([1800, 1050]);
-    expect(measureCanvasDrawingBuffer(canvas, 1)).toEqual({ width: 1200, height: 700 });
   });
 
   it('honors per-canvas render budgets in landscape and portrait layouts', () => {
@@ -77,7 +79,7 @@ describe('device-safe browser drawing buffer', () => {
     expect([portrait.clientWidth, portrait.clientHeight]).toEqual([1080, 1920]);
   });
 
-  it('does not reallocate an unchanged drawing buffer or accumulate DPR scaling', () => {
+  it('does not reallocate an unchanged drawing buffer when device DPR changes', () => {
     vi.stubGlobal('devicePixelRatio', 1.5);
     const canvas = surface(2442, 1905);
     syncCanvasDrawingBuffer(canvas);
@@ -110,13 +112,13 @@ describe('device-safe browser drawing buffer', () => {
       style: { width: '', height: '' },
     };
     syncCanvasDrawingBuffer(canvas);
-    expect([canvas.width, canvas.height]).toEqual([1600, 1200]);
+    expect([canvas.width, canvas.height]).toEqual([800, 600]);
     expect(readWidth).toHaveBeenCalledTimes(1);
     expect(readHeight).toHaveBeenCalledTimes(1);
     for (const [nextWidth, nextHeight, expectedWidth, expectedHeight] of [
-      [800, 600, 1600, 1200],
-      [0, 0, 1600, 1200],
-      [600, 400, 1200, 800],
+      [800, 600, 800, 600],
+      [0, 0, 800, 600],
+      [600, 400, 600, 400],
     ] as const) {
       width = nextWidth;
       height = nextHeight;
@@ -131,7 +133,7 @@ describe('device-safe browser drawing buffer', () => {
     }
   });
 
-  it('uses delivered logical dimensions without forcing layout while observing DPR, budgets and hidden buffers', () => {
+  it('uses delivered logical dimensions without forcing layout and allows explicit scaling', () => {
     vi.stubGlobal('devicePixelRatio', 1);
     const canvas = budgetedSurface(1920, 1080, 1920, 1080);
     const width = vi.fn(() => 1920),
@@ -145,13 +147,13 @@ describe('device-safe browser drawing buffer', () => {
       });
     vi.stubGlobal('devicePixelRatio', 2);
     expect(measureCanvasDrawingBuffer(canvas, undefined, display)).toEqual({
-      width: 1440,
-      height: 1080,
+      width: 800,
+      height: 600,
     });
-    expect(measureCanvasDrawingBuffer(canvas, 1, display)).toEqual({ width: 800, height: 600 });
+    expect(measureCanvasDrawingBuffer(canvas, 2, display)).toEqual({ width: 1440, height: 1080 });
     expect(measureCanvasDrawingBuffer(canvas, undefined, { width: 600, height: 800 })).toEqual({
-      width: 1080,
-      height: 1440,
+      width: 600,
+      height: 800,
     });
     expect(measureCanvasDrawingBuffer(canvas, undefined, { width: 0, height: 0 })).toEqual({
       width: 300,
@@ -164,7 +166,7 @@ describe('device-safe browser drawing buffer', () => {
     expect(height).toHaveBeenCalledOnce();
   });
 
-  it('recomputes on window and DPI changes, including returning to a small window', () => {
+  it('recomputes on window changes and returns to a small window', () => {
     vi.stubGlobal('devicePixelRatio', 1);
     const canvas = surface(1200, 700);
     syncCanvasDrawingBuffer(canvas);
@@ -180,7 +182,7 @@ describe('device-safe browser drawing buffer', () => {
     expect([canvas.width, canvas.height]).toEqual([800, 600]);
   });
 
-  it('retains stylesheet sizing across DPR 1 to 2 and back', () => {
+  it('retains stylesheet sizing across device DPR changes', () => {
     vi.stubGlobal('devicePixelRatio', 1);
     const canvas = {
       clientWidth: 800,
@@ -192,9 +194,9 @@ describe('device-safe browser drawing buffer', () => {
     syncCanvasDrawingBuffer(canvas);
     expect([canvas.width, canvas.height]).toEqual([800, 600]);
     vi.stubGlobal('devicePixelRatio', 2);
-    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 1600, height: 1200 });
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 800, height: 600 });
     for (let frame = 0; frame < 30; frame++) syncCanvasDrawingBuffer(canvas);
-    expect([canvas.width, canvas.height]).toEqual([1600, 1200]);
+    expect([canvas.width, canvas.height]).toEqual([800, 600]);
     vi.stubGlobal('devicePixelRatio', 1);
     for (let frame = 0; frame < 30; frame++) syncCanvasDrawingBuffer(canvas);
     expect([canvas.width, canvas.height]).toEqual([800, 600]);
@@ -213,9 +215,9 @@ describe('device-safe browser drawing buffer', () => {
     canvas.clientWidth = 400;
     canvas.clientHeight = 200;
     vi.stubGlobal('devicePixelRatio', 2);
-    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 800, height: 400 });
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: 400, height: 200 });
     for (let frame = 0; frame < 60; frame++) syncCanvasDrawingBuffer(canvas);
-    expect([canvas.width, canvas.height]).toEqual([800, 400]);
+    expect([canvas.width, canvas.height]).toEqual([400, 200]);
   });
 
   it('retains the last buffer when a tab or container is hidden', () => {
@@ -310,7 +312,7 @@ describe('canvas device generations', () => {
     const d = device();
     refreshCanvasDeviceLimit(canvas, d.renderer);
     const release = observeCanvasDeviceLimit(canvas, d.renderer);
-    expect([canvas.width, canvas.height]).toEqual([4096, 2304]);
+    expect([canvas.width, canvas.height]).toEqual([3840, 2160]);
     for (let frame = 0; frame < 60; frame++) syncCanvasDrawingBuffer(canvas);
     expect(d.renderer.inspect).toHaveBeenCalledTimes(1);
     d.state('device-lost');

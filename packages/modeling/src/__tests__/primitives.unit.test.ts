@@ -1,10 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import { meshVolume } from '../geom';
 import { type Model, model } from '../model';
+import { type Point2, segmentsCross } from '../primitives';
 import { sel } from '../selectors';
 import { bounds, expectContract, faceSizes, sharpEdges } from './contract';
 
 describe('primitives', () => {
+  it('rejects separated segment bounds before reading exact orientation inputs', () => {
+    let reads = 0;
+    const watch = (point: Point2): Point2 =>
+      new Proxy(point, {
+        get(target, property, receiver) {
+          if (property === '0' || property === '1') reads++;
+          return Reflect.get(target, property, receiver);
+        },
+      });
+    expect(segmentsCross(watch([0, 0]), watch([1, 1]), watch([2, 0]), watch([3, 1]))).toBe(false);
+    expect(reads).toBeLessThanOrEqual(8);
+  });
+
+  it('keeps exact crossings, shared endpoints and collinear overlap at segment bounds', () => {
+    expect(segmentsCross([0, 0], [2, 2], [0, 2], [2, 0])).toBe(true);
+    expect(segmentsCross([0, 0], [1, 0], [1, 0], [2, 1])).toBe(true);
+    expect(segmentsCross([0, 0], [2, 0], [1, 0], [3, 0])).toBe(true);
+    expect(segmentsCross([0, 0], [0, 2], [0, 1], [0, 3])).toBe(true);
+    expect(segmentsCross([1, 1], [1, 1], [1, 1], [1, 1])).toBe(true);
+    expect(segmentsCross([0, 0], [1, 0], [1 + Number.EPSILON, 0], [2, 0])).toBe(false);
+    expect(segmentsCross([0, 0], [0, 1], [0, 1 + Number.EPSILON], [0, 2])).toBe(false);
+    expect(
+      segmentsCross([1e16, 1e16], [1e16 + 4, 1e16 + 4], [1e16, 1e16 + 4], [1e16 + 4, 1e16]),
+    ).toBe(true);
+  });
+
   it('box is a closed, outward-oriented quad mesh', () => {
     const m = model();
     expect(m.box({ size: [2, 3, 4] }).status).toBe('ok');

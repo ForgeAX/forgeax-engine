@@ -1,3 +1,4 @@
+import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { BindGroupLayout, RhiDevice } from '@forgeax/engine-rhi';
 import type {
   MaterialShaderArtifact,
@@ -5,11 +6,13 @@ import type {
   ShaderCatalog,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
+import type { PassKind } from '@forgeax/engine-types';
 import { type GpuDrivenPbrProgram, resolveStandardPbrProgram } from '../../gpu-driven/pbr-program';
 import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../../pbr-pipeline';
 import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
 import { type LayoutKind, selectNoColorPbrVariant } from '../material-shader-policy';
 import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from '../shader-prewarm-policy';
+import { hasColorAttribute } from '../webgpu-vertex-layouts';
 import { type MaterialShaderArtifactRequest, resolveMaterialShaderArtifact } from './assembly';
 
 type MaterialArtifactRegistry = Pick<
@@ -33,6 +36,36 @@ export function resolveRendererMaterialShaderArtifact(
   return Object.keys(options).length === 0
     ? resolveStandardPbrProgram(programs, materialShaderId, false)?.artifact
     : undefined;
+}
+
+/** One cooked-program selection for pipeline receipts and stage constants. */
+export function materialPipelineArtifactRequest(
+  variantSet: string | undefined,
+  passKind: PassKind,
+  vertexLayoutProjection: VertexLayoutProjection | undefined,
+  layoutKind: LayoutKind | undefined,
+): MaterialShaderArtifactRequest {
+  const sceneIndexAddress =
+    layoutKind === 'gpu-driven-pbr' ||
+    layoutKind === 'gpu-driven-skin' ||
+    layoutKind === 'gpu-driven-cluster-pbr' ||
+    layoutKind === 'gpu-driven-cluster-skin';
+  const options: {
+    -readonly [K in keyof MaterialShaderArtifactRequest]: MaterialShaderArtifactRequest[K];
+  } = {
+    address: sceneIndexAddress ? 'scene-index' : 'direct',
+    pass: passKind === 'shadow-caster' ? 'shadow' : 'forward',
+  };
+  if (vertexLayoutProjection !== undefined)
+    options.vertexColorAvailable = hasColorAttribute(vertexLayoutProjection);
+  if (
+    layoutKind === 'pbr-skin' ||
+    layoutKind === 'gpu-driven-skin' ||
+    layoutKind === 'gpu-driven-cluster-skin'
+  )
+    options.deformation = 'skin';
+  if (variantSet !== undefined) options.variantSet = variantSet;
+  return options;
 }
 
 export function resolveMaterialPipelineShaderId(

@@ -7,6 +7,7 @@ import {
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
+import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
 import { GpuDirtyRanges } from './gpu-dirty-ranges';
 import type { GpuInputArena } from './gpu-input-arena';
 import {
@@ -326,6 +327,19 @@ function writeChangedMat4(
     changed = true;
   }
   return changed;
+}
+
+/** Zero `count` rows from `start` and mark them for upload. */
+function clearRows(
+  bytes: Uint8Array,
+  stride: number,
+  start: number,
+  count: number,
+  writes: number[],
+): void {
+  if (count <= 0) return;
+  bytes.fill(0, start * stride, (start + count) * stride);
+  for (let row = start; row < start + count; row += 1) writes.push(row);
 }
 
 function writeChangedU32(view: DataView, byteOffset: number, value: number): boolean {
@@ -931,7 +945,7 @@ export class GpuScene {
       if (!this.identityUploaded && !writesByTable.transform.includes(0)) {
         writesByTable.transform.push(0);
       }
-      const allocationResets = this.allocateDeltaSlots(delta, writesByTable);
+      const { resets: allocationResets, resized } = this.allocateDeltaSlots(delta, writesByTable);
       const requiredCapacity = Math.max(
         this.records.requiredCapacity(),
         this.instances.requiredCapacity(),
@@ -955,6 +969,7 @@ export class GpuScene {
       this.writeSlotPublications(
         delta,
         allocationResets,
+        resized,
         writesByTable,
         materialRows,
         temporalResolver,
@@ -1076,12 +1091,17 @@ export class GpuScene {
     );
   }
 
-  /** Clear removed rows, then ensure every published slot's allocation; returns reset slots. */
+  /**
+   * Clear removed rows, then ensure every published slot's allocation. Returns
+   * the slots whose allocation was replaced (`resets`) and those whose
+   * instance count changed within their reserved rows (`resized`).
+   */
   private allocateDeltaSlots(
     delta: RenderSceneApplyResult,
     writesByTable: Record<GpuSceneTableName, number[]>,
-  ): Set<number> {
+  ): { readonly resets: Set<number>; readonly resized: Set<number> } {
     const allocationResets = new Set<number>();
+    const resized = new Set<number>();
     if (delta.resynced > 0) {
       for (const slot of [...this.allocations.keys()]) this.clearSlot(slot, writesByTable);
     }
@@ -1100,7 +1120,7 @@ export class GpuScene {
     ]) {
       for (const record of records) {
         const previous = this.allocations.stamp(record.slot);
-        this.ensureAllocation(record, writesByTable);
+        if (this.ensureAllocation(record, writesByTable)) resized.add(record.slot);
         if (previous !== this.allocations.stamp(record.slot)) allocationResets.add(record.slot);
       }
     }
@@ -1108,7 +1128,7 @@ export class GpuScene {
       const range = this.sharedMaterials.get(resource);
       if (range !== undefined) this.adoptMaterial(range, writesByTable);
     }
-    return allocationResets;
+    return { resets: allocationResets, resized };
   }
 
   /** Write one shared mesh descriptor header and its Skin envelope into the input arena. */
@@ -1177,10 +1197,14 @@ export class GpuScene {
     return materialRows;
   }
 
-  /** Full rows for new/reset/content slots; transform-only rows for the rest. */
+  /**
+   * Full rows for new/reset/content/resized slots; transform-only rows for the
+   * rest. A resized slot kept its rows, so it compares against them (no reset).
+   */
   private writeSlotPublications(
     delta: RenderSceneApplyResult,
     allocationResets: ReadonlySet<number>,
+    resized: ReadonlySet<number>,
     writesByTable: Record<GpuSceneTableName, number[]>,
     materialRows: Map<MaterialSnapshot, Uint8Array>,
     temporalResolver: GpuSceneTemporalResolver | undefined,
@@ -1198,7 +1222,7 @@ export class GpuScene {
         group === 0 ? delta.createdSlots : group === 1 ? delta.updatedSlots : delta.recreatedSlots;
       for (const record of publications) {
         const reset = newSlots.has(record.slot) || allocationResets.has(record.slot);
-        if (reset || contentUpdatedSlotIds.has(record.slot)) {
+        if (reset || contentUpdatedSlotIds.has(record.slot) || resized.has(record.slot)) {
           this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
           continue;
         }
@@ -1940,10 +1964,14 @@ export class GpuScene {
     return ok({ ranges: rangeCount, bytes });
   }
 
+  /**
+   * Bind `record` to rows; returns true when only its instance count changed
+   * and the rows were resized in place (same addresses, same stamp).
+   */
   private ensureAllocation(
     record: RenderSceneSlot,
     writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  ): boolean {
     // A present Instances component is authoritative even when its array is
     // empty: preserve zero so neither the GPU Scene nor the indirect topology
     // turns it into a synthetic identity instance. Entities without the
@@ -1973,19 +2001,29 @@ export class GpuScene {
     const geometryKey =
       geometry === undefined ? undefined : `${geometry.worldId}:${geometry.handle}`;
     const existing = this.allocations.get(record.slot);
-    if (
-      existing?.mesh?.key === geometryKey &&
-      existing?.instanceCount === instanceCount &&
-      existing.instanceTransformCount === instanceTransformCount &&
-      existing.materialRanges.length === materialUnits.length &&
-      existing.materialRanges.every(
-        (range, index) =>
-          range.resource === (record.snapshot.materials[index] ?? record.snapshot.material),
-      )
-    ) {
-      for (const range of existing.materialRanges) this.adoptMaterial(range, writes);
-      return;
-    }
+    const reuse =
+      existing === undefined
+        ? undefined
+        : this.reuseAllocation(
+            record,
+            existing,
+            {
+              geometryKey,
+              materialCount: materialUnits.length,
+              instanceCount,
+              instanceTransformCount,
+            },
+            writes,
+          );
+    if (reuse !== undefined) return reuse;
+    // A slot whose count changed is a dynamic collection: reserve headroom so
+    // its next changes resize in place. First allocations stay exact.
+    const instanceCapacity =
+      existing !== undefined &&
+      explicitInstances !== undefined &&
+      existing.instanceCount !== instanceCount
+        ? dynamicCapacity(instanceCount)
+        : instanceCount;
     const mesh = geometry === undefined ? undefined : this.acquireMesh(geometry);
     const recordIndex = existing?.recordIndex ?? this.records.allocate(1);
     // Hold reused identities before releasing this binding, but let retired
@@ -2016,16 +2054,66 @@ export class GpuScene {
       // Member nodes name this live slot's physical record. Resizing its
       // variable inputs must not invalidate every retained member root.
       recordIndex,
-      instanceStart: this.instances.allocate(instanceCount),
+      instanceStart: this.instances.allocate(instanceCapacity),
       instanceCount,
       transformStart: this.transforms.allocate(1),
       instanceTransformStart:
-        instanceTransformCount === 0 ? 0 : this.transforms.allocate(instanceTransformCount),
+        explicitInstances === undefined || instanceCapacity === 0
+          ? 0
+          : this.transforms.allocate(instanceCapacity),
       instanceTransformCount,
+      instanceCapacity,
       materialRanges,
     };
     this.allocations.set(record.slot, allocation);
     this.allocationRevisionValue += 1;
+    return false;
+  }
+
+  /**
+   * Keep `existing` when `record` still binds the same mesh and materials:
+   * false when nothing changed, true when only an explicit instance count
+   * changed within the reservation (rows resized in place), undefined when
+   * the slot needs new rows.
+   */
+  private reuseAllocation(
+    record: RenderSceneSlot,
+    existing: PrimitiveAllocation,
+    binding: {
+      readonly geometryKey: string | undefined;
+      readonly materialCount: number;
+      readonly instanceCount: number;
+      readonly instanceTransformCount: number;
+    },
+    writes: Record<GpuSceneTableName, number[]>,
+  ): boolean | undefined {
+    const { materials, material, instances } = record.snapshot;
+    const { geometryKey, materialCount, instanceCount, instanceTransformCount } = binding;
+    if (
+      existing.mesh?.key !== geometryKey ||
+      existing.materialRanges.length !== materialCount ||
+      !existing.materialRanges.every(
+        (range, index) => range.resource === (materials[index] ?? material),
+      )
+    )
+      return undefined;
+    const unchanged =
+      existing.instanceCount === instanceCount &&
+      existing.instanceTransformCount === instanceTransformCount;
+    // An explicit collection that only changed its count keeps its rows when
+    // the new count fits the reserved capacity: no clear, no new addresses, no
+    // full reset. Rows past the count become unreferenced and keep their bytes.
+    const resizable =
+      instances !== undefined &&
+      existing.instanceTransformCount === existing.instanceCount &&
+      instanceCount <= existing.instanceCapacity &&
+      !shouldShrinkCapacity(instanceCount, existing.instanceCapacity);
+    if (!unchanged && !resizable) return undefined;
+    for (const range of existing.materialRanges) this.adoptMaterial(range, writes);
+    if (unchanged) return false;
+    this.allocations.resizeInstances(record.slot, instanceCount, instanceTransformCount);
+    this.allocationRevisionValue += 1;
+    return true;
   }
 
   private internRanges(ranges: readonly MaterialAllocation[]): readonly MaterialAllocation[] {
@@ -2249,34 +2337,39 @@ export class GpuScene {
       this.inputs.releaseResource(mesh.logicalSlot);
       this.releaseMeshVersion(mesh.version);
     }
-    for (let ordinal = 0; ordinal < allocation.instanceCount; ordinal += 1) {
-      const instanceIndex = allocation.instanceStart + ordinal;
-      this.tableBytes.instance.fill(
-        0,
-        instanceIndex * INSTANCE.stride,
-        (instanceIndex + 1) * INSTANCE.stride,
-      );
-      writes.instance.push(instanceIndex);
-    }
-    this.transformBytes.fill(
-      0,
-      allocation.transformStart * TRANSFORM.stride,
-      (allocation.transformStart + 1) * TRANSFORM.stride,
+    // Clear every reserved row, including unreferenced capacity past the count:
+    // a later owner of these addresses must start from zeroed rows.
+    const instanceRows = allocation.instanceCapacity;
+    // Explicit collections own one transform row per reserved instance row.
+    const transformRows =
+      allocation.instanceTransformCount === allocation.instanceCount
+        ? allocation.instanceCapacity
+        : 0;
+    clearRows(
+      this.tableBytes.instance,
+      INSTANCE.stride,
+      allocation.instanceStart,
+      instanceRows,
+      writes.instance,
     );
-    writes.transform.push(allocation.transformStart);
-    for (let ordinal = 0; ordinal < allocation.instanceTransformCount; ordinal += 1) {
-      const transformIndex = allocation.instanceTransformStart + ordinal;
-      this.transformBytes.fill(
-        0,
-        transformIndex * TRANSFORM.stride,
-        (transformIndex + 1) * TRANSFORM.stride,
-      );
-      writes.transform.push(transformIndex);
-    }
+    clearRows(
+      this.transformBytes,
+      TRANSFORM.stride,
+      allocation.transformStart,
+      1,
+      writes.transform,
+    );
+    clearRows(
+      this.transformBytes,
+      TRANSFORM.stride,
+      allocation.instanceTransformStart,
+      transformRows,
+      writes.transform,
+    );
     for (const range of allocation.materialRanges) this.releaseMaterial(range, writes);
-    this.instances.release(allocation.instanceStart, allocation.instanceCount);
+    this.instances.release(allocation.instanceStart, instanceRows);
     this.transforms.release(allocation.transformStart, 1);
-    this.transforms.release(allocation.instanceTransformStart, allocation.instanceTransformCount);
+    this.transforms.release(allocation.instanceTransformStart, transformRows);
   }
 
   private retireBuffer(buffer: Buffer): void {

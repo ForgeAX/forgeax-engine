@@ -4,6 +4,7 @@ import {
   CharacterController,
   Collider,
   ColliderShapeValue,
+  type PhysicsWorld,
   RigidBody,
   RigidBodyTypeValue,
   registerPhysicsComponents,
@@ -77,6 +78,67 @@ it.each([
     expect(world.get(character, Transform).unwrap().pos[0]).toBeGreaterThan(0);
   } finally {
     world.removeSystem(FixedUpdate, 'test-push').unwrap();
+    releasePhysics();
+    releaseScene();
+    physics.dispose();
+  }
+});
+
+it('suppresses only one movement call impulse and restores default pushing on the cached controller', async () => {
+  const rapier = await loadRapier3D();
+  if ('code' in rapier) throw rapier;
+  const world = new World();
+  world.components.register(Transform).unwrap();
+  world.components.register(GlobalTransform).unwrap();
+  registerPhysicsComponents(world);
+  const physics = createRapier3DPhysicsWorld(rapier),
+    movement: PhysicsWorld = physics;
+  world.insertResource('PhysicsWorld', physics);
+  const releaseScene = registerPropagateTransforms(world);
+  const releasePhysics = registerPhysicsSystems(world);
+  const character = world
+    .spawn(
+      { component: Transform, data: { pos: [-1, 0, 0] } },
+      { component: RigidBody, data: { type: RigidBodyTypeValue.kinematic } },
+      {
+        component: Collider,
+        data: { shape: ColliderShapeValue.capsule, radius: 0.3, halfHeight: 0.5 },
+      },
+      { component: CharacterController, data: { autoStepMaxHeight: 0, snapToGroundDist: 0 } },
+    )
+    .unwrap();
+  const crate = world
+    .spawn(
+      { component: Transform, data: {} },
+      {
+        component: RigidBody,
+        data: { type: RigidBodyTypeValue.dynamic, mass: 1, gravityScale: 0 },
+      },
+      {
+        component: Collider,
+        data: {
+          shape: ColliderShapeValue.cuboid,
+          halfExtents: [0.4, 0.4, 0.4],
+          friction: 0,
+          restitution: 0,
+        },
+      },
+    )
+    .unwrap();
+  try {
+    world.update(1 / 60).unwrap();
+    const before = physics.getBodyMotion(crate).unwrap();
+    const first = movement.moveAndSlide(character, vec3.create(1, 0, 0), {
+      applyImpulsesToDynamicBodies: false,
+    });
+    expect(first[0]).toBeGreaterThan(0);
+    expect(first[0]).toBeLessThan(0.5);
+    expect(world.get(character, Transform).unwrap().pos[0]).toBeGreaterThan(-1);
+    expect(physics.getBodyMotion(crate).unwrap()).toEqual(before);
+    // No simulation step: any crate velocity here comes from the KCC call.
+    movement.moveAndSlide(character, vec3.create(1, 0, 0));
+    expect(physics.getBodyMotion(crate).unwrap().linearVelocity[0]).toBeGreaterThan(0);
+  } finally {
     releasePhysics();
     releaseScene();
     physics.dispose();

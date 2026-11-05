@@ -440,7 +440,10 @@ async function createForgeaxCaptureContext(
       : `position:fixed;left:-10000px;top:-10000px;width:${cssSize};height:${canvas.height}px`;
     document.body.append(canvas);
   }
-  const constructed = await constructRuntimeRendererHost(canvas, {}, forgeaxBundlerAdapter() as never);
+  const options = rendererKind === 'webgpu' && isSingleDirectLightReceiver(initialSceneCase)
+    ? { standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: false } }
+    : {};
+  const constructed = await constructRuntimeRendererHost(canvas, options, forgeaxBundlerAdapter() as never);
   if (!constructed.ok) {
     const error = constructed.error;
     const code = 'code' in error ? error.code : 'engine-environment-error';
@@ -702,13 +705,27 @@ function isIblCaptureCase(sceneCase: SceneCase): boolean {
   return sceneCase.caseId === constantEnvironment.caseId;
 }
 
-function ensureCaptureRenderPath(
+function isSingleDirectLightReceiver(sceneCase: SceneCase): boolean {
+  return m4DirectLightCasesById.has(sceneCase.caseId)
+    && spotShadowSceneFor(sceneCase.caseId) === undefined;
+}
+
+function ensureCaptureProfile(
   renderer: Renderer,
   sceneCase: SceneCase,
   expectedRenderPath: Parameters<Renderer['setProfile']>[0]['renderPath'],
+  rendererKind: 'webgpu' | 'webgl',
 ): void {
-  if (renderer.inspect().profile.renderPath === expectedRenderPath) return;
-  const profileResult = renderer.setProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: expectedRenderPath });
+  // Single-plane lighting receivers have no occluders. Keep GPU visibility and
+  // indirect draws without a depth pyramid; shadow fixtures retain occlusion.
+  const gpuOcclusion = !isSingleDirectLightReceiver(sceneCase);
+  const current = renderer.inspect().profile;
+  if (current.renderPath === expectedRenderPath && (rendererKind === 'webgl' || (current.gpuOcclusion !== false) === gpuOcclusion)) return;
+  const profileResult = renderer.setProfile({
+    ...DEFAULT_STANDARD_PROFILE,
+    renderPath: expectedRenderPath,
+    ...(rendererKind === 'webgpu' ? { gpuOcclusion } : {}),
+  });
   if (!profileResult.ok) throw new Error(`ForgeAX ${sceneCase.caseId} profile failed: ${profileResult.error.code}`);
 }
 
@@ -940,7 +957,7 @@ async function captureForgeaxInContext(
   canvas.height = sceneCase.scene.height;
   const directCase = m4DirectLightCasesById.get(sceneCase.caseId);
   const expectedRenderPath = directCase?.pipeline?.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
-  ensureCaptureRenderPath(renderer, sceneCase, expectedRenderPath);
+  ensureCaptureProfile(renderer, sceneCase, expectedRenderPath, rendererKind);
   const renderErrors: string[] = [];
   const events: Array<Record<string, unknown>> = [];
   const removeRenderErrorListener = renderer.subscribe((event) => {

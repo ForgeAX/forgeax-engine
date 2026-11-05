@@ -25,7 +25,6 @@ import {
   type ReplayReadbackResult,
   type RhiDebugError,
   readbackImage,
-  summarizeFrame,
   tapeDigest,
   toRgba8,
   type V7Tape,
@@ -36,6 +35,12 @@ import {
 import type { ToolJsonSchema } from '@forgeax/engine-tool-runtime';
 import { ok, type Result } from '@forgeax/engine-types';
 import type { CommandError, CommandResult } from '../types.js';
+import {
+  inspectStructure,
+  isStructuralInspect,
+  projectSummary,
+  type RhiPassesSummary,
+} from './offline-views.js';
 
 export const RHI_TAPE_ARTIFACT_KIND = 'rhi-tape' as const;
 
@@ -64,6 +69,10 @@ export interface RhiCaptureInput {
 
 export interface RhiSummaryInput {
   readonly artifact: ArtifactRef;
+  /** Per-pass view (labels, targets, work and pipeline counts) instead of the work list. */
+  readonly passes?: boolean;
+  /** Regular expression; keeps passes whose pass, pipeline or target label matches. Implies `passes`. */
+  readonly label?: string;
 }
 
 export interface RhiInspectInput {
@@ -154,7 +163,7 @@ export type RhiDebugOperationInput =
 
 export interface RhiSummaryOutput {
   readonly artifact: ArtifactRef;
-  readonly summary: FrameSummary;
+  readonly summary: FrameSummary | RhiPassesSummary;
 }
 
 /** One `outputs` entry of `rhi.inspect`: what the work wrote, summarized by digest. */
@@ -434,10 +443,14 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
     {
       name: 'rhi.summary',
       summary:
-        'List work indices, pipeline entry points, and missing initial contents from one tape.',
+        'List passes (labels, targets, work and pipeline counts), work indices, pipeline entry points, and missing initial contents from one tape. No GPU or replay needed.',
       inputSchema: {
         type: 'object',
-        properties: { artifact: artifactRefSchema },
+        properties: {
+          artifact: artifactRefSchema,
+          passes: { type: 'boolean' },
+          label: { type: 'string' },
+        },
         required: ['artifact'],
         additionalProperties: false,
       },
@@ -447,7 +460,7 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
     {
       name: 'rhi.inspect',
       summary:
-        'Replay one ArtifactRef and inspect a workIndex: pipeline, bindings with access, pixels, and every color/depth/storage output it wrote; optionally decode bounded buffer records.',
+        'Inspect a workIndex: pipeline and bindings with access read from the tape alone; pixels, every color/depth/storage output it wrote and buffer records replay the ArtifactRef first.',
       inputSchema: RHI_INSPECT_INPUT_SCHEMA,
       outputSchema: inspectOutputSchema,
       recoveryCodes: [
@@ -525,13 +538,16 @@ export function renderRhiDebugHelp(): string {
     'forgeax rhi <capture|summary|inspect|read|timing>',
     ...discoverRhiDebugOperations().map((operation) => `  ${operation.name}: ${operation.summary}`),
     'Usage:',
-    '  forgeax rhi summary --artifact PATH --json',
+    '  forgeax rhi summary --artifact PATH --passes --json   (one row per pass: label, targets, work and pipeline counts; no replay)',
+    '  forgeax rhi summary --artifact PATH --label "planar|reflection" --json   (passes and resources whose label matches)',
+    '  forgeax rhi summary --artifact PATH --json   (work list)',
     `  forgeax rhi inspect --artifact PATH --work-index N --fields '["pipeline","bindings","outputs"]' --json`,
     `  forgeax rhi read --artifact PATH --reads '[{"binding":{"group":0,"binding":2},"workIndex":N,"image":{"format":"rgba16float","width":W,"height":H,"tile":{"tileWidth":8,"tileHeight":8,"index":0},"png":"probe.png"}}]' --json`,
     `  forgeax rhi read --artifact PATH --reads '[{"output":"depth","workIndex":N,"image":{"depth":{"near":0.1,"far":100,"reverseZ":true},"range":"auto","png":"shadow.png"}}]' --json`,
     `  forgeax rhi read --artifact PATH --reads '[{"binding":{"group":0,"binding":3},"workIndex":N,"records":{"layout":{"stride":16,"fields":[{"name":"radiance","offset":0,"type":"f32","components":4}]},"first":0,"count":64}}]' --json`,
     '  forgeax rhi timing --artifact PATH --json',
     'Records decode rows [first, first+count) of stride bytes inside the selected buffer window (binding range or subresource {offset,size}); a mappable staging buffer returns readback-unsupported, so read the buffer it was copied from.',
+    'summary, and inspect with fields pipeline/bindings only, read the tape and need no replay; pixels, outputs, read and timing replay on Dawn, which macOS and Windows build from source (no prebuilt ships).',
     'Replay uses Dawn; a tape that builds acceleration structures needs FORGEAX_WEBGPU_NODE=wgpu-native from a contributor checkout with @forgeax/engine-rhi-wgpu-native built (otherwise replay-backend-unavailable).',
     'Read requests: one of resourceId, binding or output (binding/output need workIndex); records {layout,first,count}; image {format,width,height,offset,bytesPerRow,tile,depth,exposure,range,tonemap,png}.',
     'Optional --digest verifies the file against an expected sha256 digest.',
@@ -701,76 +717,12 @@ export async function runRhiDebugOperation(
       if (!decoded.ok) return { ok: false, error: coreError(decoded.error) };
       const artifact = validateArtifactRef(summaryInput.artifact);
       if (!artifact.ok) return artifact;
-      return {
-        ok: true,
-        value: {
-          artifact: artifact.value,
-          summary: summarizeFrame(buildFrameModel(decoded.value)),
-        },
-      };
+      const summary = projectSummary(buildFrameModel(decoded.value), summaryInput);
+      if (!summary.ok) return summary;
+      return { ok: true, value: { artifact: artifact.value, summary: summary.value } };
     }
-    case 'rhi.inspect': {
-      const inspectInput = input as RhiInspectInput;
-      if (!Number.isInteger(inspectInput.workIndex) || inspectInput.workIndex < 0) {
-        return operationError(
-          'work-index-invalid',
-          'workIndex to be a non-negative integer',
-          'Choose workIndex from the work inventory returned by rhi.summary.',
-          { workIndex: inspectInput.workIndex },
-        );
-      }
-      const opened = await openTapeReplay(inspectInput.artifact, context, name);
-      if (!opened.ok) return opened;
-      try {
-        const inspection = await opened.value.session.inspectWork(
-          inspectInput.workIndex,
-          inspectInput.fields ?? ['pipeline', 'bindings'],
-        );
-        if (!inspection.ok) return { ok: false, error: coreError(inspection.error) };
-        const artifact = validateArtifactRef(inspectInput.artifact);
-        if (!artifact.ok) return artifact;
-        const buffer = inspectInput.buffer;
-        const records =
-          buffer === undefined
-            ? undefined
-            : await inspectBufferRecords(
-                opened.value.session,
-                buffer.resourceId,
-                inspectInput.workIndex,
-                buffer.layout,
-                { first: buffer.first, count: buffer.count },
-              );
-        if (records !== undefined && !records.ok)
-          return { ok: false, error: coreError(records.error) };
-        const { outputs, ...rest } = inspection.value;
-        const projected =
-          outputs === undefined
-            ? rest
-            : {
-                ...rest,
-                outputs: await Promise.all(
-                  outputs.map(
-                    async ({ result, ...output }): Promise<RhiInspectOutputRead> => ({
-                      ...output,
-                      read: result.ok
-                        ? await projectRead(result.value, {}, context)
-                        : { ok: false, error: coreError(result.error) },
-                    }),
-                  ),
-                ),
-              };
-        return {
-          ok: true,
-          value: {
-            artifact: artifact.value,
-            inspection: projected,
-            ...(records?.ok === true ? { bufferRecords: records.value } : {}),
-          },
-        };
-      } finally {
-        await opened.value.close();
-      }
-    }
+    case 'rhi.inspect':
+      return runInspect(input as RhiInspectInput, context, name);
     case 'rhi.read':
       return runRead(input as RhiReadInput, context);
     case 'rhi.timing': {
@@ -787,6 +739,94 @@ export async function runRhiDebugOperation(
         await opened.value.close();
       }
     }
+  }
+}
+
+/** `pipeline`/`bindings` come from the recorded frame model: no replay device is needed. */
+async function inspectOffline(
+  input: RhiInspectInput,
+  context: RhiDebugOperationContext,
+): Promise<CommandResult<RhiInspectOutput>> {
+  const bytes = await readTape(input.artifact, context);
+  if (!bytes.ok) return bytes;
+  const decoded = decodeTape(bytes.value);
+  if (!decoded.ok) return { ok: false, error: coreError(decoded.error) };
+  const artifact = validateArtifactRef(input.artifact);
+  if (!artifact.ok) return artifact;
+  const inspection = inspectStructure(
+    buildFrameModel(decoded.value),
+    input.workIndex,
+    input.fields,
+  );
+  if (!inspection.ok) return inspection;
+  const { outputs: _outputs, ...structural } = inspection.value;
+  return { ok: true, value: { artifact: artifact.value, inspection: structural } };
+}
+
+async function runInspect(
+  inspectInput: RhiInspectInput,
+  context: RhiDebugOperationContext,
+  name: RhiDebugOperationName,
+): Promise<CommandResult<RhiInspectOutput>> {
+  if (!Number.isInteger(inspectInput.workIndex) || inspectInput.workIndex < 0) {
+    return operationError(
+      'work-index-invalid',
+      'workIndex to be a non-negative integer',
+      'Choose workIndex from the work inventory returned by rhi.summary.',
+      { workIndex: inspectInput.workIndex },
+    );
+  }
+  if (inspectInput.buffer === undefined && isStructuralInspect(inspectInput.fields))
+    return inspectOffline(inspectInput, context);
+  const opened = await openTapeReplay(inspectInput.artifact, context, name);
+  if (!opened.ok) return opened;
+  try {
+    const inspection = await opened.value.session.inspectWork(
+      inspectInput.workIndex,
+      inspectInput.fields ?? ['pipeline', 'bindings'],
+    );
+    if (!inspection.ok) return { ok: false, error: coreError(inspection.error) };
+    const artifact = validateArtifactRef(inspectInput.artifact);
+    if (!artifact.ok) return artifact;
+    const buffer = inspectInput.buffer;
+    const records =
+      buffer === undefined
+        ? undefined
+        : await inspectBufferRecords(
+            opened.value.session,
+            buffer.resourceId,
+            inspectInput.workIndex,
+            buffer.layout,
+            { first: buffer.first, count: buffer.count },
+          );
+    if (records !== undefined && !records.ok) return { ok: false, error: coreError(records.error) };
+    const { outputs, ...rest } = inspection.value;
+    const projected =
+      outputs === undefined
+        ? rest
+        : {
+            ...rest,
+            outputs: await Promise.all(
+              outputs.map(
+                async ({ result, ...output }): Promise<RhiInspectOutputRead> => ({
+                  ...output,
+                  read: result.ok
+                    ? await projectRead(result.value, {}, context)
+                    : { ok: false, error: coreError(result.error) },
+                }),
+              ),
+            ),
+          };
+    return {
+      ok: true,
+      value: {
+        artifact: artifact.value,
+        inspection: projected,
+        ...(records?.ok === true ? { bufferRecords: records.value } : {}),
+      },
+    };
+  } finally {
+    await opened.value.close();
   }
 }
 

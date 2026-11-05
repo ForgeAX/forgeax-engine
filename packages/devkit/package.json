@@ -56,6 +56,7 @@
     "@forgeax/engine-profiler": "workspace:*",
     "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-platform": "workspace:*",
     "@forgeax/engine-preview": "workspace:*",
     "@forgeax/engine-project": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",

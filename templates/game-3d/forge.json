@@ -6,6 +6,7 @@
   "assetLibraries": ["@forgeax/engine/content"],
   "roots": {
     "engine": "acd36c75-755b-577d-9c5a-e6deebb0ed40",
-    "frontend": "62f18971-a9ff-584c-aa55-f695fefadba6"
+    "frontend": "62f18971-a9ff-584c-aa55-f695fefadba6",
+    "build": "e9f91bcd-a2e6-555a-b402-ce75500e15a2"
   }
 }

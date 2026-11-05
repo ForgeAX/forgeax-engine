@@ -54,7 +54,7 @@ async function program(extra = ''): Promise<string> {
   input.normal = vec3(0.6, 0.0, 0.8);
   input.uv = vec2(0.125, 0.125);
   input.color = vec4(0.5, 0.75, 1.0, 0.5);
-  return unlitVertex(input, 0u, false);
+  return unlitVertex(input, 0u);
 }
 struct TestOutput { @location(0) color: vec4<f32>, @location(1) calls: vec4<f32> }
 @fragment fn testFragment(input: VsOut) -> TestOutput {

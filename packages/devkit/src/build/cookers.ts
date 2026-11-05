@@ -229,22 +229,33 @@ export async function loadProjectCookers(
       options.startupTimeoutMs ?? 60_000,
     );
     const keys = new Set(builtins.map((cooker) => cooker.key));
-    const remote = started.cookers.map(({ key, timeoutMs, concurrency }): NativeCooker => {
-      if (keys.has(key)) throw new TypeError(`duplicate builtin/project cooker ${key}`);
-      keys.add(key);
-      // A cooker-declared bound replaces the session's default cook deadline.
-      return {
-        key,
-        ...(timeoutMs === undefined ? {} : { timeoutMs }),
-        // The build child admits overlapping requests to a parallel cooker at once.
-        ...(concurrency === 'parallel' ? { concurrency } : {}),
-        cook: (input) =>
-          request<NativeCookDraft>(
-            { operation: 'cook', key, input },
-            timeoutMs ?? options.operationTimeoutMs ?? 60_000,
-          ),
-      };
-    });
+    const remote = started.cookers.map(
+      ({ key, timeoutMs, concurrency, cacheIdentity }): NativeCooker => {
+        if (keys.has(key)) throw new TypeError(`duplicate builtin/project cooker ${key}`);
+        keys.add(key);
+        // A cooker-declared bound replaces the session's default cook deadline.
+        return {
+          key,
+          ...(timeoutMs === undefined ? {} : { timeoutMs }),
+          // The build child admits overlapping requests to a parallel cooker at once.
+          ...(concurrency === 'parallel' ? { concurrency } : {}),
+          ...(cacheIdentity === true
+            ? {
+                cacheIdentity: () =>
+                  request<string>(
+                    { operation: 'cacheIdentity', key },
+                    options.operationTimeoutMs ?? 60_000,
+                  ),
+              }
+            : {}),
+          cook: (input) =>
+            request<NativeCookDraft>(
+              { operation: 'cook', key, input },
+              timeoutMs ?? options.operationTimeoutMs ?? 60_000,
+            ),
+        };
+      },
+    );
     const importers = started.importers.map(
       (descriptor): Importer => ({
         key: descriptor.key,

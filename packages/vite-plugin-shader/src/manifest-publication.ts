@@ -21,9 +21,16 @@ type MaterialEntry = MaterialVariant & { readonly variants: readonly MaterialVar
 function createFactTable() {
   const values: unknown[] = [];
   const indices = new Map<string, number>();
+  // Expanded publications share immutable fact objects across their variants.
+  // Reuse that identity only inside this synchronous publication operation;
+  // distinct objects still pass the canonical serialized-value interning below.
+  const objectIndices = new WeakMap<object, number>();
   return {
     values,
     index(value: unknown): number {
+      const object = value !== null && typeof value === 'object' ? value : undefined;
+      const previous = object === undefined ? undefined : objectIndices.get(object);
+      if (previous !== undefined) return previous;
       const key = JSON.stringify(value);
       let index = indices.get(key);
       if (index === undefined) {
@@ -31,6 +38,7 @@ function createFactTable() {
         values.push(value);
         indices.set(key, index);
       }
+      if (object !== undefined) objectIndices.set(object, index);
       return index;
     },
   };

@@ -3,7 +3,7 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
 import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../errors/render';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
@@ -169,7 +169,11 @@ async function build(
     throw new Error('standard output test resources could not be declared');
   if (overrides?.output?.autoExposure === true) {
     const parametersInit = graph.addComputePass('standard-auto-exposure-parameters-init', {
-      accesses: [{ resource: parameters.value, usage: 'storage-write' }],
+      // Production imports initialized previous state and authored parameters.
+      accesses: [
+        { resource: parameters.value, usage: 'storage-write' },
+        { resource: state.value, usage: 'storage-write' },
+      ],
       encode: () => undefined,
     });
     if (!parametersInit.ok) throw parametersInit.error;
@@ -932,6 +936,39 @@ describe('forgeax::standard graph', () => {
       ).toMatchObject({ descriptor: { size: { width: size, height: size } } });
     }
     (await result.value.retire()).unwrap();
+  });
+
+  it('samples Forward SSR depth through a depth-only view of the shared stencil attachment', async () => {
+    const views = vi.spyOn(RenderGraphBuilder.prototype, 'view');
+    try {
+      const result = await build(DEFAULT_STANDARD_PROFILE, {
+        reflectionFallback: { enabled: true },
+        ssr: {
+          status: 'admitted',
+          lane: 'forward',
+          config: { maxDistance: 1, thickness: 0.1, maxRoughness: 1 },
+          viewRange: 100,
+          work: {
+            attachmentCount: 3,
+            passCount: 4,
+            bindingCount: 4,
+            resourceCount: 3,
+            historyCount: 0,
+            temporalDemand: 0,
+          },
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(
+        views.mock.calls.some(
+          ([, descriptor]) =>
+            descriptor?.label === 'ssr-forward-depth' && descriptor.aspect === 'depth-only',
+        ),
+      ).toBe(true);
+      if (result.ok) (await result.value.retire()).unwrap();
+    } finally {
+      views.mockRestore();
+    }
   });
 
   it('resolves deferred lighting from sampled depth without replaying geometry', async () => {

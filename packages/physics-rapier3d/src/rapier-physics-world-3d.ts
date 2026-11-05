@@ -35,6 +35,7 @@ import {
   type BodyMotion,
   CharacterController,
   type CharacterControllerData,
+  type CharacterSynchronization,
   Collider,
   ColliderShapeValue,
   type ColliderSnapshot,
@@ -59,6 +60,7 @@ import {
   type ManagedJointInput,
   ManagedPhysicsError,
   type ManagedPhysicsFailure,
+  type MoveAndSlideOptions,
   PairIsolationError,
   type PairIsolationInput,
   type PairIsolationLease,
@@ -88,6 +90,7 @@ import { err, ok, type Result, type RigidBodyType } from '@forgeax/engine-types'
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
 import { rapierBodyTypeFromString, rapierBodyTypeToString } from './body-type.js';
 import { applyKccTuning } from './character-controller-tuning.js';
+import { characterSynchronizationSource, requireCharacterBody } from './character-motion.js';
 import {
   currentContactOwner,
   queryContactManifolds,
@@ -600,6 +603,23 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     translateAttachedColliders3D(body, delta);
     if (ctx && local) ctx.world.set(entity as EntityHandle, ctx.transform, { pos: local }).unwrap();
     if (body.isDynamic()) this.poseWritebackEntities.add(entity);
+  }
+
+  synchronizeCharacter(entity: number, character: CharacterSynchronization): void {
+    this.assertActive('synchronizeCharacter');
+    const { state, handle, index, previous } = characterSynchronizationSource(
+      entity,
+      character,
+      this.bodyForEntity(entity),
+      this.syncState,
+      this.rapierModule,
+    );
+    // Reuse the same single-entity owner as PhysicsSyncBackend. Do not accept
+    // its global projection: other pending bodies still belong to normal sync.
+    const descriptor = this.reconcilePhysicsEntity(state, handle, previous);
+    if (descriptor) state.accepted.set(index, descriptor);
+    this.teleport(entity, character.position);
+    state.world.set(handle, CharacterController, { grounded: character.grounded }).unwrap();
   }
 
   step(deltaTime: number): void {
@@ -3085,7 +3105,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (this.worldIdentity === world) this.worldIdentity = undefined;
   }
 
-  moveAndSlide(entity: number, desiredDelta: Vec3): Vec3 {
+  moveAndSlide(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3 {
     this.assertActive('moveAndSlide');
     this.contactDeltaTime = 0;
     if (this.recoveryBlocked())
@@ -3098,7 +3118,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.preparePairIsolation(false);
     this.nativeExecuting = true;
     try {
-      return this.computeMove(entity, desiredDelta);
+      return this.computeMove(entity, desiredDelta, options);
     } finally {
       this.nativeExecuting = false;
     }
@@ -3127,63 +3147,24 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
    * structured PhysicsError before the World is read, so error-path tests can
    * call this without registered systems.
    */
-  private computeMove(entity: number, desiredDelta: Vec3): Vec3 {
-    // ── Fail-Fast entry checks (charter P3) ──
-    const record = this.entityMap.get(entity);
-    if (!record) {
-      throw new PhysicsError({
-        code: 'body-not-found',
-        expected: 'a registered Rapier body for this entity',
-        hint: PHYSICS_ERROR_HINTS['body-not-found'],
-        detail: { code: 'body-not-found', entity },
-      });
-    }
-    // biome-ignore lint/suspicious/noExplicitAny: Rapier bodies API needs any-cast
-    const body = (this.raw as any).bodies.get(record.bodyHandle) as RapierRigidBody | null;
-    if (!body) {
-      throw new PhysicsError({
-        code: 'body-not-found',
-        expected: 'a registered Rapier body for this entity',
-        hint: PHYSICS_ERROR_HINTS['body-not-found'],
-        detail: { code: 'body-not-found', entity },
-      });
-    }
-    if (body.numColliders() === 0) {
-      // D-2: body exists but carries no collider — more precise than body-not-found.
-      throw new PhysicsError({
-        code: 'collider-not-found',
-        expected: 'a Collider attached to this entity body',
-        hint: PHYSICS_ERROR_HINTS['collider-not-found'],
-        detail: { code: 'collider-not-found', entity },
-      });
-    }
+  private computeMove(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3 {
     const RAPIER = this.rapierModule;
-    if (body.bodyType() !== RAPIER.RigidBodyType.KinematicPositionBased) {
-      throw new PhysicsError({
-        code: 'controller-requires-kinematic',
-        expected: "RigidBody.type === 'kinematic'",
-        hint: PHYSICS_ERROR_HINTS['controller-requires-kinematic'],
-        detail: {
-          code: 'controller-requires-kinematic',
-          entity,
-          bodyType: rapierBodyTypeToString(RAPIER, body.bodyType()),
-        },
-      });
-    }
-
+    const body = requireCharacterBody(entity, this.bodyForEntity(entity), RAPIER);
     const collider = body.collider(0); // D-4: zero-schema reverse lookup
 
     // ── Read CharacterController tuning + lazily build/configure the KCC ──
     const cc = this.readCharacterController(entity);
     const ctrl = this.ensureKcc(entity, cc.offset);
     applyKccTuning(ctrl, cc);
+    if (options?.applyImpulsesToDynamicBodies === false)
+      ctrl.setApplyImpulsesToDynamicBodies(false);
 
     const delta = { x: desiredDelta[0] ?? 0, y: desiredDelta[1] ?? 0, z: desiredDelta[2] ?? 0 };
     ctrl.computeColliderMovement(
       collider,
       delta,
       RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      undefined,
+      collider.collisionGroups(),
       // biome-ignore lint/suspicious/noExplicitAny: Rapier Collider in filter predicate
       (other: any) =>
         this.isolationColliderOwners.get(other.handle) !== entity &&

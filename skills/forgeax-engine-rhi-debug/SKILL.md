@@ -20,20 +20,45 @@ description: >-
 > native replay on the host), keep the tape and `rhi summary` structure, then continue
 > with live evidence (`dev capture` screenshots, `dev eval` state, debug draw) on the
 > real backend. Do not retry replay or block delivery on it.
+>
+> macOS and Windows hosts have no prebuilt `dawn.node` by design (it is built from an
+> Engine source checkout with `pnpm --filter @forgeax/engine-dawn-node build:native`),
+> so replay is normally absent there. Everything structural still works without it:
+> `rhi summary` (including `--passes` and `--label`) and `rhi inspect` with the default
+> `pipeline`/`bindings` fields read the tape only. Only `pixels`, `outputs`, `rhi read`
+> and `rhi timing` replay.
 
 | Symptom | First check |
 |:--|:--|
+| An object or effect is missing from one render target | `rhi summary --passes --json` lists every pass with its label, targets (label, size, format), draw/dispatch counts and pipeline labels: find the pass that renders into that target and check that the object's pipeline label and a draw appear there. `--label <regex>` finds the texture or buffer by name. Needs no replay device. |
 | White/transparent canvas, HUD fine | `rendererError` in `dev capture --json` or the `project play` report (also `__forgeaxGameInspection.renderer().rendererError`): a GPU validation/submit error rejects every frame's submit, so capture the frame and inspect the resource the message names. |
 
 The package contract is [`packages/rhi-debug/README.md`](../../packages/rhi-debug/README.md).
 In an installed game, read `node_modules/@forgeax/engine-rhi-debug/README.md`
 or the SDK's `source/engine/packages/rhi-debug/README.md`.
 
+For a pending multi-view receipt, inspect whether its tape contains sibling
+scene/compositor draws. Composed views share the frame's preparation barrier;
+a ready sibling cannot write a partial picture while another native PSO is
+pending. Route that violation to Render graph seal and physical frame submit,
+retaining the actual tape and the original Browser readiness bound.
+
 ## Diagnose and prove the repair
 
 1. Reproduce the symptom in its actual browser/backend and scene state. Preserve
    the screenshot, errors, and reproduction command; browser-only failures need
    the browser path even when Dawn smokes pass.
+   For cross-device pipeline misses, retain the actual selected render path,
+   attachment count/byte budget, sampled-texture/storage limits and complete
+   recipe. A passing default-device route cannot qualify another device's path.
+   Renderer archive warmup omits provably incompatible color-target recipes;
+   `skippedRenderTargetRecipes` is not a completed-preparation count. Other
+   descriptor failures stay failures. A real limited-device request preserves
+   native compilation evidence; mocked limits cannot qualify it.
+   For parity-bench failures, retain the per-target pixel-parity report and
+   failure screenshot. A `pixel-readback` hook timeout after host/World startup
+   is not a pixel mismatch or a Chromium-launch failure; no completed frame
+   may exist yet. Preserve those startup facts before choosing a shader owner.
    On Windows, record the process session for a black compositor capture. A
    Session 0 service can render offscreen while DXGI rejects its swapchain with
    `0x887A0022`; reproduce from the signed-in desktop before treating that as an
@@ -111,7 +136,12 @@ pnpm exec forgeax dev start --rhi-capture true --json
 pnpm exec forgeax rhi capture --json
 ```
 
-If a live owner already exists, stop it before changing its capture options.
+`dev status` reports `rhiCapture`. The recorder attaches when the device is created,
+so it cannot be switched on in a running session: if `rhiCapture` is `false`,
+`rhi capture` fails with `capture-unavailable` and the exact restart command
+(`dev start --rhi-capture true` retires the old owner and starts a new one).
+`rhi capture` returns `frameId` (the host frame the tape recorded, with
+`frameIdSource`) and `capturedAt`; two captures taken apart report different frames.
 Preserve the failing backend and execution tier, reproduce the target state, then
 capture. The CLI calls the live host's recorder and persists one `.rhitape`;
 retain its returned path and digest. Capture requires a ready recorder-enabled
@@ -122,6 +152,8 @@ App; it does not start one automatically. For an embedded host, use the
 Use the returned path and select `summary.works[].workIndex`:
 
 ```bash
+pnpm exec forgeax rhi summary --artifact <path> --passes --json
+pnpm exec forgeax rhi summary --artifact <path> --passes --label particle --json
 pnpm exec forgeax rhi summary --artifact <path> --json
 pnpm exec forgeax rhi inspect --artifact <path> --work-index <workIndex> --json
 pnpm exec forgeax rhi read --artifact <path> --reads '[{"binding":{"group":0,"binding":2},"workIndex":<workIndex>,"image":{"format":"rgba16float","width":256,"height":256,"tile":{"tileWidth":8,"tileHeight":8,"index":0,"border":1},"png":"probe0.png"}}]' --json

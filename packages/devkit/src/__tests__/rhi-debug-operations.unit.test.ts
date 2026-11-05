@@ -244,7 +244,11 @@ describe('DevKit RHI debug operations', () => {
     const { context, artifact } = makeContext(encoded.value);
     const leased = { ...context, createReplayBackend };
     const before = { ...leases };
-    await runRhiDebugOperation('rhi.inspect', { artifact, workIndex: 0 }, leased);
+    await runRhiDebugOperation(
+      'rhi.inspect',
+      { artifact, workIndex: 0, fields: ['pipeline', 'outputs'] },
+      leased,
+    );
     await runRhiDebugOperation(
       'rhi.read',
       { artifact, reads: [{ resourceId: 'buffer:probes' }] },
@@ -253,5 +257,28 @@ describe('DevKit RHI debug operations', () => {
     await runRhiDebugOperation('rhi.timing', { artifact }, leased);
     expect(leases.opened - before.opened).toBe(3);
     expect(leases.released - before.released).toBe(3);
+  });
+
+  it('answers pipeline and bindings inspection and the per-pass summary without a replay device', async () => {
+    const encoded = encodeTape(workTape);
+    if (!encoded.ok) throw new Error(encoded.error.hint);
+    const { context, artifact } = makeContext(encoded.value);
+    const leased = { ...context, createReplayBackend };
+    const before = { ...leases };
+    const inspect = await runRhiDebugOperation('rhi.inspect', { artifact, workIndex: 0 }, leased);
+    expect(inspect.ok).toBe(true);
+    const passes = await runRhiDebugOperation('rhi.summary', { artifact, passes: true }, leased);
+    expect(passes.ok).toBe(true);
+    if (passes.ok) {
+      expect(passes.value.summary.passes.length).toBeGreaterThan(0);
+      expect(passes.value.summary.works).toBeUndefined();
+    }
+    const badLabel = await runRhiDebugOperation(
+      'rhi.summary',
+      { artifact, passes: true, label: '(' },
+      leased,
+    );
+    expect(badLabel.ok).toBe(false);
+    expect(leases.opened - before.opened).toBe(0);
   });
 });

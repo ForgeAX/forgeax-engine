@@ -75,6 +75,7 @@ export type BuildProcessRequest =
       readonly options: Omit<ToolRunOptions, 'signal' | 'capabilityResolver' | 'owner' | 'caller'>;
     }
   | { readonly id: number; readonly operation: 'cancelTool'; readonly run: number }
+  | { readonly id: number; readonly operation: 'cacheIdentity'; readonly key: string }
   | { readonly id: number; readonly operation: 'dispose' };
 
 export interface BuildCookerDescriptor {
@@ -82,6 +83,8 @@ export interface BuildCookerDescriptor {
   readonly timeoutMs?: number;
   /** The project cooker's own declaration: reentrant, input-isolated cooking. */
   readonly concurrency?: 'parallel';
+  /** Invoke the original callback in its owning process; never invent an identity. */
+  readonly cacheIdentity?: true;
 }
 export interface BuildImporterDescriptor {
   readonly key: string;
@@ -271,6 +274,10 @@ function projectDelivery(value: unknown): DevKitDeliveryOptions {
   return { bundles: bundles as NonNullable<DevKitDeliveryOptions['bundles']> };
 }
 
+function requireActiveBuildRoot(): void {
+  if (!root || root.state !== 2) throw new Error('build root is not active');
+}
+
 async function execute(request: BuildProcessRequest): Promise<unknown> {
   switch (request.operation) {
     case 'start': {
@@ -325,6 +332,7 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
             key,
             ...(cooker?.timeoutMs === undefined ? {} : { timeoutMs: cooker.timeoutMs }),
             ...(cooker?.concurrency === 'parallel' ? { concurrency: 'parallel' as const } : {}),
+            ...(cooker?.cacheIdentity === undefined ? {} : { cacheIdentity: true as const }),
           };
         }),
         importers: importers.registeredImporters().map((key): BuildImporterDescriptor => {
@@ -339,8 +347,15 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
         }),
       };
     }
+    case 'cacheIdentity': {
+      requireActiveBuildRoot();
+      const cooker = cookers.get(request.key);
+      if (cooker?.cacheIdentity === undefined)
+        throw new Error(`cooker has no cache identity: ${request.key}`);
+      return cooker.cacheIdentity();
+    }
     case 'cook': {
-      if (!root || root.state !== 2) throw new Error('build root is not active');
+      requireActiveBuildRoot();
       const result = await cookers.runDraft(request.key, request.input);
       if (!result.ok) throw result.error;
       return result.value;

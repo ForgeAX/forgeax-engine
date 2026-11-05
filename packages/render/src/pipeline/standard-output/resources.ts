@@ -6,6 +6,9 @@ import type { RenderSystemInternals } from '../../record/render-context';
 import type { CameraSnapshot } from '../../render-contract';
 import { recordContext } from '../../world/view-record-context';
 import {
+  abortAutoExposureGpuFrame,
+  beginAutoExposureGpuFrame,
+  completeAutoExposureGpuFrame,
   createAutoExposureGpuResources,
   retireAutoExposureGpuResources,
   writeAutoExposureParameters,
@@ -149,6 +152,81 @@ export function resetStandardOutputForDeviceLoss(
  * only after the single finish/submit transaction succeeds; no side registry or
  * compile callback can publish a value early.
  */
+function autoExposureHistoryIdentity(
+  frameState: RenderFrameState,
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot | undefined,
+): string {
+  return `${camera?.entityKey ?? 0}:${camera?.historyVersion ?? 0}:${recordContext(internals).canvas?.width ?? 0}x${recordContext(internals).canvas?.height ?? 0}:${frameState.compiledFrameGraphGeneration}`;
+}
+
+function stageAutoExposureState(
+  frameState: RenderFrameState,
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot | undefined,
+  exposure: Extract<NonNullable<CameraSnapshot['output']>['exposure'], { kind: 'auto' }>,
+  deltaTime: number,
+  targetGeneration: number,
+  deviceEpoch: number,
+  publicFrameId: number,
+): boolean {
+  let state = frameState.autoExposureState;
+  if (state === undefined || state.fallback !== exposure.fallback) {
+    const created = createAutoExposureState({
+      fallback: exposure.fallback,
+      targetGeneration,
+      deviceEpoch,
+      frameId: publicFrameId,
+    });
+    if (!created.ok) {
+      internals.errorRegistry.fire(created.error);
+      return false;
+    }
+    state = created.value;
+  } else if (state.targetGeneration !== targetGeneration || state.deviceEpoch !== deviceEpoch) {
+    state = resetAutoExposureState(state, 'camera-change', {
+      targetGeneration,
+      deviceEpoch,
+    });
+  }
+  const resources =
+    frameState.pendingAutoExposureGpuResources ?? frameState.autoExposureGpuResources;
+  if (resources !== undefined) {
+    const begun = beginAutoExposureGpuFrame(resources);
+    if (!begun.ok)
+      throw new RhiError({
+        code: 'rhi-not-available',
+        expected: 'an available exposure candidate for this frame',
+        hint: 'await the oldest frame completion before drawing again',
+        detail: { error: { code: 'auto-exposure-history-busy', message: String(begun.error) } },
+      });
+    const parameterWrite = writeAutoExposureParameters(resources, {
+      compensationEv: exposure.compensationEv,
+      rangeMinEv: exposure.rangeEv[0],
+      rangeMaxEv: exposure.rangeEv[1],
+      upRate: exposure.rates[0],
+      downRate: exposure.rates[1],
+      deltaTime,
+      fallback: exposure.fallback,
+      generation: state.targetGeneration,
+      historyIdentity: autoExposureHistoryIdentity(frameState, internals, camera),
+    });
+    if (!parameterWrite.ok) {
+      internals.errorRegistry.fire(parameterWrite.error as RhiError);
+      return false;
+    }
+  }
+  // The GPU adapt pass owns the numeric candidate. CPU staging carries
+  // only the generation/transaction facts needed for submit publication.
+  frameState.pendingAutoExposureState = Object.freeze({
+    state,
+    generation: state.targetGeneration,
+    deviceEpoch: state.deviceEpoch,
+    frameId: publicFrameId,
+  });
+  return true;
+}
+
 export function stageStandardOutputStates(
   frameState: RenderFrameState,
   internals: RenderSystemInternals,
@@ -165,53 +243,20 @@ export function stageStandardOutputStates(
   const targetGeneration = Math.max(1, camera?.historyVersion ?? 0);
   const deviceEpoch = recordContext(internals).deviceScope.generation;
 
-  if (output.exposure.kind === 'auto') {
-    let state = frameState.autoExposureState;
-    if (state === undefined || state.fallback !== output.exposure.fallback) {
-      const created = createAutoExposureState({
-        fallback: output.exposure.fallback,
-        targetGeneration,
-        deviceEpoch,
-        frameId: publicFrameId,
-      });
-      if (!created.ok) {
-        internals.errorRegistry.fire(created.error);
-        return;
-      }
-      state = created.value;
-    } else if (state.targetGeneration !== targetGeneration || state.deviceEpoch !== deviceEpoch) {
-      state = resetAutoExposureState(state, 'camera-change', {
-        targetGeneration,
-        deviceEpoch,
-      });
-    }
-    const resources =
-      frameState.pendingAutoExposureGpuResources ?? frameState.autoExposureGpuResources;
-    if (resources !== undefined) {
-      const parameterWrite = writeAutoExposureParameters(resources, {
-        compensationEv: output.exposure.compensationEv,
-        rangeMinEv: output.exposure.rangeEv[0],
-        rangeMaxEv: output.exposure.rangeEv[1],
-        upRate: output.exposure.rates[0],
-        downRate: output.exposure.rates[1],
-        deltaTime,
-        fallback: output.exposure.fallback,
-        generation: state.targetGeneration,
-      });
-      if (!parameterWrite.ok) {
-        internals.errorRegistry.fire(parameterWrite.error as RhiError);
-        return;
-      }
-    }
-    // The GPU adapt pass owns the numeric candidate. CPU staging carries
-    // only the generation/transaction facts needed for submit publication.
-    frameState.pendingAutoExposureState = Object.freeze({
-      state,
-      generation: state.targetGeneration,
-      deviceEpoch: state.deviceEpoch,
-      frameId: publicFrameId,
-    });
-  }
+  if (
+    output.exposure.kind === 'auto' &&
+    !stageAutoExposureState(
+      frameState,
+      internals,
+      camera,
+      output.exposure,
+      deltaTime,
+      targetGeneration,
+      deviceEpoch,
+      publicFrameId,
+    )
+  )
+    return;
 
   let lutState = frameState.standardLutState;
   if (lutState.targetGeneration !== targetGeneration || lutState.deviceEpoch !== deviceEpoch) {
@@ -268,13 +313,19 @@ export function commitStandardOutputSubmission(state: RenderFrameState, queue: R
     }
   }
   const pendingAutoState = state.pendingAutoExposureState;
+  const acceptedGpu = state.autoExposureGpuResources;
   if (pendingAutoState !== undefined) {
-    state.autoExposureState =
-      state.autoExposureGpuResources === undefined
-        ? pendingAutoState.state
-        : commitAutoExposureSubmission(pendingAutoState.state, pendingAutoState);
+    if (acceptedGpu === undefined) state.autoExposureState = pendingAutoState.state;
+    else
+      completeAutoExposureGpuFrame(acceptedGpu, () => {
+        if (state.autoExposureGpuResources === acceptedGpu)
+          state.autoExposureState = commitAutoExposureSubmission(
+            pendingAutoState.state,
+            pendingAutoState,
+          );
+      });
     state.pendingAutoExposureState = undefined;
-  }
+  } else if (acceptedGpu !== undefined) completeAutoExposureGpuFrame(acceptedGpu, () => {});
   const pendingLut = state.pendingStandardLutGpuResources;
   if (pendingLut !== undefined) {
     const previousLut = state.standardLutGpuResources;
@@ -299,6 +350,8 @@ export function commitStandardOutputSubmission(state: RenderFrameState, queue: R
 
 /** Drop the staged CPU inspection candidates; accepted state is untouched. */
 export function discardStandardOutputStates(state: RenderFrameState): void {
+  const gpu = state.pendingAutoExposureGpuResources ?? state.autoExposureGpuResources;
+  if (gpu !== undefined) abortAutoExposureGpuFrame(gpu);
   state.pendingAutoExposureState = undefined;
   state.pendingStandardLutState = undefined;
 }

@@ -143,6 +143,8 @@ during replay.
 
 ```sh
 forgeax rhi capture --json
+forgeax rhi summary --artifact frame.rhitape --passes --json
+forgeax rhi summary --artifact frame.rhitape --passes --label particle --json
 forgeax rhi summary --artifact frame.rhitape --json
 forgeax rhi inspect --artifact frame.rhitape --work-index 22 --fields '["pipeline","bindings","pixels"]' --json
 forgeax rhi read --artifact frame.rhitape --reads '[{"binding":{"group":1,"binding":3},"workIndex":22,"image":{"format":"rgba16float","width":512,"height":512,"tile":{"tileWidth":8,"tileHeight":8,"index":40,"border":1},"tonemap":"reinhard","png":"probe40.png"}}]' --json
@@ -159,6 +161,17 @@ kind, debug groups, pipeline identity, entry points and attachments. Shader
 source stays in `rhi.inspect`; the summary does not repeat it per draw.
 `summarizeFrame(buildFrameModel(tape))` exposes the same projection to library
 callers without requiring a GPU.
+
+`rhi summary --passes` returns one row per pass instead of the per-work list:
+`summary.passes[]` (pass index, label, color and depth targets with texture label,
+size and format, draw/dispatch/drawIndirect counts, pipeline labels with counts) and a
+one-line-per-pass `summary.passLines`. `--label <regex>` adds `summary.resources[]`,
+the textures, buffers and views whose own or viewed-texture label matches. The summary
+and `rhi inspect` with the default `pipeline`/`bindings` fields read the tape only;
+`pixels`, `outputs`, `rhi read` and `rhi timing` need a replay device. macOS and
+Windows ship no prebuilt `dawn.node` by design (source build, `build:native`), so
+replay-backend-unavailable there is the expected state, not a platform-key bug.
+`summarizePasses`, `summarizeResources` and `passLine` are the library forms.
 
 > [!WARNING]
 > `FrameModel.unseededResources` and `summary.unseededResources` list retained

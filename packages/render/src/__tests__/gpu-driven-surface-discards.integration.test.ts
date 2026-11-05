@@ -11,12 +11,12 @@ import type { GpuDrivenBatch } from '../gpu-driven/batch-topology';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { lodCoverageMayFade } from '../gpu-driven/production-raster-lod';
+import { requestMaterialAbiRasterPipeline } from '../gpu-driven/production-raster-material';
+import { GpuScene } from '../gpu-scene';
 import {
   effectiveStandardSurfaceDiscards,
-  requestMaterialAbiRasterPipeline,
   standardSurfaceDiscardMask,
-} from '../gpu-driven/production-raster-material';
-import { GpuScene } from '../gpu-scene';
+} from '../material-stage-constants';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import type { RenderPipelineFrame } from '../render-pipeline';

@@ -178,7 +178,8 @@ an API description is not a measured quality, performance or complete-CI receipt
 | Texture without usable UVs (rocks, terrain, kitbash) | `Materials.standard({ ..., triplanar: { space: 'world' \| 'object', scale, sharpness } })` |
 | Baked object-space normal map | `Materials.standard({ normalTexture, normalMapSpace: 'object' })` |
 | Height relief on a flat polygon (trim bakes, grout, panel lines) | `Materials.standard({ normalTexture, displacementTexture, displacementScale, displacementBias, displacementMode: 'parallax' })`; geometry, shadows and bounds stay at the base mesh. Parallax constraints: needs `normalTexture` (`bumpTexture` ignored); no independent `metallicTexture` (use `metallicRoughnessTexture`); with transmission below the dedicated budget it falls back to normal mapping, reported in the material sampled-texture budget |
-| Mirror/polished floor reflecting the scene | Pack-cooked `Materials.standard({ ..., planarReflection: true })` plus Camera `PlanarReflection` on the same plane (render README §Planar reflection capture) |
+| Mirror/polished floor reflecting the scene | Pack-cooked `Materials.standard({ ..., planarReflection: true })` plus Camera `PlanarReflection` on the same plane; leave `target` unset for a Renderer-owned mirror sized by `resolutionScale` (render README §Planar reflection capture) |
+| Glossy / brushed floor with a blurred reflection | Same, with `PlanarReflection.generateMipmaps: true`: roughness picks the mirror mip (`roughness × (levels − 1)`) instead of fading it out |
 | Wet ground / rain puddles (ripple-distorted reflection) | Custom Standard Surface with `planarReflection: true`: ripple `normalWS` from `frameTime`, per-pixel `roughness` for wetness; set `PlanarReflection.distortion` on the camera |
 | Diffuse only, no highlight | `Materials.lambert({ baseColor, ... })` |
 | Lit look without lights (sculpt, preview) | `Materials.matcap({ texture, sampler })` |

@@ -288,6 +288,31 @@ evicts the membership producer's binding merely because a prewarm call omits
 the lighting topology. Its writer still validates device, layout and buffer
 identity before reuse. Failed creations publish no reusable handle.
 
+### Device-based Standard path
+
+`RendererOptions.standardProfile` and `renderer.setProfile()` accept
+`renderPath: 'auto'`. The renderer selects Deferred when the admitted device
+supports storage buffers, six color attachments and the base Deferred attachment
+byte budget; otherwise it selects Forward. This default is independent of the
+selected camera and AO. Recovery resolves the retained author request against
+the replacement device before candidate preparation. Inspection exposes the
+resolved `forward` or `deferred` path. Portable startup/background archives select only recipes
+whose color attachments fit the actual device; this selection repeats on recovery
+without changing the original archive or any runtime draw descriptor. Other native
+validation failures remain errors, and inspection counts omitted render-target recipes.
+Explicit paths retain validation and feature admission; unsupported Deferred-only features remain structured
+failures. Valid Forward-only opaque materials use the existing later Forward
+pass. Stock Deferred AO consumes the GBuffer before those writers; their lack
+of GBuffer output does not reject the frame. Full-scene SceneData normal/depth
+requests still require complete coverage and report unsupported contributors.
+Admission follows the selected pass: an unused `fs_gbuffer` published in a
+Forward module is not GBuffer coverage. The complete current-device contributor
+proof can certify an empty GBuffer. Its lighting pass retains attachment loads
+and auxiliary clears but creates no fullscreen lighting pipeline or draw;
+mixed, unsupported and stale-device inputs retain ordinary lighting admission.
+Cooked Skin aliases retain their artifact layouts; surface admission checks
+their supported authored Standard root independently from layout identity. `DEFAULT_STANDARD_PROFILE` keeps its existing Forward default.
+
 ## Preparing hidden loadout pipelines
 
 > [!IMPORTANT]
@@ -296,6 +321,12 @@ identity before reuse. Failed creations publish no reusable handle.
 > values and participates in pipeline cache identity. Standard material assembly
 > removes its fragment-only Surface discard gate from that vertex projection,
 > including the fixed GPU Scene path, while retaining the complete fragment map.
+
+Ordinary direct draws derive the same Surface discard mask as GPU Scene draws.
+Their direct ABI cannot read GPU LOD coverage; the view-clipping bit follows the
+current camera's plane count. Only the selected material program declaring the
+existing override receives it. Pipeline receipt and constant selection share one
+cooked-program request. Preparation and visible recording select identical constants; authored alpha/material clipping and temporal entries keep their rules.
 
 Set `MeshRenderer.preparePipelines: true` on the finite mesh roster that this
 session can select, including meshes with hidden `Visibility`. The renderer
@@ -324,9 +355,17 @@ does not bypass physical residency, pipeline readiness or device recovery.
 Candidate preparation retries only the current shader-module or native PSO owner's live pending signal. Module completion, invalidation and device retirement end
 that signal; compile and descriptor failures still reject the candidate.
 
+Published candidates can reuse the installed graph's exact typed demand without another Record when every ordinary PSO lookup is already ready; current accepted view facts are rechecked at lease admission, and upload completion still waits for its GPU fence. Unknown/custom demand retains the Record route.
+
+`Renderer.inspect().featureGraph.candidatePipelines` reports initial warm attempts, ready results, queued fallbacks, unavailable accepted demand and unsupported graphs; final currentness checks do not increment these counters.
+
 A preparation barrier leaves the canvas surface untouched and does not publish
 a partially rendered scene or update shadow/temporal history. The receipt stays
 `pending`; this is not evidence that gameplay rendering continues.
+Composed display and auxiliary views share that barrier: one pending view holds
+all capture/scene encoding and the surface compositor, including Surface UI,
+until every required view pipeline is ready. The frame still submits its
+preparation fence; a ready sibling cannot publish a partial picture.
 
 For a specific pending variant, inspect `pipelineLibrary.pending` through the
 existing Renderer inspection (or `execution.inspectRenderer` across Workers).
@@ -614,7 +653,7 @@ new band directly; they do not enqueue intermediate levels.
 | Cached camera-only frame | Grouping, candidates and the filtered plan are retained across every band and threshold; the GPU cull recomputes height, level and coverage from the view camera. |
 | Missing lower mesh or invalid projection | Resident fallback remains visible; a missing level never fades to an empty draw. |
 | Skinned, transparent, or arbitrary custom shader | Existing single-level behavior; no uncontracted opacity or extra draw is injected. |
-| CPU lane (no compute, storage or indirect, e.g. WebGL2) | Rigid, non-instanced indexed meshes hard-select the same level per camera from the same projected height, without crossfade; other shapes keep LOD0. Main and shadow recording consume the selected resident `first/count/baseVertex` range against the bound buffers. Source submeshes retain local geometry and material/claim identity. Meshes without resident ranges keep their source index range and zero base vertex. |
+| CPU lane (no compute, storage or indirect, e.g. WebGL2) | Rigid indexed meshes hard-select resident levels per camera from the same projected height, without crossfade. Explicit `Instances` select each composed entity/instance transform independently; consecutive equal-level ordinals share a draw, intersected with existing resident pages. Original order, ordinal identity and current/previous transform pairing stay intact; alternating levels can require one draw per instance. Skinned and morphed instances keep LOD0. Main and shadow recording consume the selected resident `first/count/baseVertex` range against the bound buffers. Source submeshes retain local geometry and material/claim identity. Meshes without resident ranges keep their source index range and zero base vertex. |
 
 The GPU cull owns selection. Each candidate derives its projected height from
 the GpuScene root transform and local bounds plus the view's
@@ -3136,8 +3175,42 @@ versions retire after GPU completion and the last capture lease; disabling the
 source releases its owner lease. Each camera owns its Sky/AP resources while
 medium tables are shared by the Renderer. All work uses its outer submission.
 
-Atmosphere requires compute, filterable/storage RGBA16F, 3D sampling and a
-31-sampled-texture device budget for the complete Standard material layout.
+`Atmosphere.backgroundOnly: true` explicitly selects a physical **display
+background** on WebGPU and WebGL2. It uses the same optical parameters, sun,
+transmittance, multiple scattering and Sky View kernels through raster LUT passes.
+It requires renderable/filterable RGBA16F, without compute, storage textures, 3D
+sampling or the full material binding extension. Background precedes geometry;
+surface and translucent material lighting stays independent of the atmosphere.
+
+| Mode | Sky and solar disc | Aerial perspective / surface solar attenuation | Automatic sky IBL and environment captures |
+|:--|:--|:--|:--|
+| Default (`backgroundOnly: false`) | Physical sky | Enabled | Enabled on capable devices |
+| `backgroundOnly: true` | Physical display sky, dynamic sun and observer | Disabled explicitly | Not supplied; cube, planar and environment captures return structured unavailable |
+
+```ts
+world.spawn({ component: DirectionalLight,
+  data: { direction: [0, -0.6, 0.8], intensity: 100000 } }).unwrap();
+world.spawn({ component: Atmosphere, data: { backgroundOnly: true } }).unwrap();
+// Camera: exposure 1 / 5000, ACES Filmic; one unit is one metre.
+```
+
+The background mode is opt-in on every backend; full Atmosphere never silently
+downgrades to it. It shares the Renderer medium-generation and completion-fenced
+retirement owner. Sun and camera updates rebuild the dependent Sky View, while
+unchanged medium tables are reused. Resize and host-injected device-loss recovery
+retain real completed-frame and pixel controls. The injected signal exercises
+recovery on replacement GPU devices; it does not claim an operating-system or
+driver reset.
+
+`atmosphere-background.browser.test.ts` covers both actual backends, an unchanged
+Unlit foreground, sixty completed frames, sun/observer changes, resize, recovery
+and disable/restore. `atmosphere-tables.browser.test.ts` compares every LUT channel
+across WebGPU compute, WebGPU raster and actual WebGL2 raster, including an
+independent vertical Beer-law integral. Native Atmosphere optics, ray, transport
+and 512-step quality tests retain their original assertions.
+
+Full Atmosphere requires compute, filterable/storage RGBA16F, 3D sampling and a
+32-sampled-texture device budget for the complete Standard material layout.
 Missing capabilities return structured unavailable; there is no silent old-sky
 fallback. The first delivery accepts single-sample scene depth; choose TAA,
 FXAA or no AA. GPU observations name the `atmosphere-*` passes and report
@@ -4042,8 +4115,9 @@ until the paired Browser/Dawn 60-frame carrier, readback, falsifiers, and
 performance gates are present.
 
 SSR defaults are maxDistance `1`, thickness `0.1`, maxRoughness `1`, and full
-internal resolution. Descriptor admission allows 128 MiB; default 1080p with
-temporal history costs 116,119,892 bytes. Trace validation, confidence, roughness
+internal resolution. Descriptor admission allows 320 MiB. The native 1080p estimate with five
+completion-fenced history slots is 190,769,492 bytes. Portable raster scratch
+and Forward SceneData/response allocations are additional graph resources. Trace validation, confidence, roughness
 filtering and temporal rejection retain their own contracts.
 
 SSR temporal feedback and presentation use distinct coordinates without another
@@ -4145,8 +4219,12 @@ only consumer.
 Enable AO through the same public Standard profile used at creation or by
 `renderer.setProfile()`. AO can run through Forward or Deferred on an eligible
 device. Forward input uses the selected Standard material's evaluated normal,
-coverage and supported geometry route; AO demand alone does not switch the
-profile to Deferred. An incompatible material input, format, or complete
+or rigid built-in Unlit's transformed mesh normal, with the same coverage as
+color. Standard Skin uses its posed surface normal. Unlit surfaces occlude
+their surroundings while their own color remains unlit. No normal texture is
+required; Standard's flat tangent-space default preserves its mesh normal.
+AO demand alone does not switch the profile to Deferred. An incompatible
+material input, format, or complete
 resource budget returns a structured error.
 
 For a camera-specific request, add the public component to that camera. The
@@ -6922,7 +7000,7 @@ beams, glows and glass cast nothing by default, as with Three.js
 from every directional, spot and point shadow map while it stays visible.
 `receive: false` stops its own surface from sampling directional, contact,
 capsule, spot and point shadows, and it keeps casting. Deferred carries the
-receive flag in the GBuffer. The WebGL2 fallback always receives. Toggles are
+receive flag in the GBuffer. WebGL2 carries the same no-receive bit in the existing uniform Mesh surface tail; rigid and skinned Forward use it without enlarging the binding. Toggles are
 ordinary `world.set` writes and apply on the next extracted frame.
 
 After a successful `draw`, inspect the same renderer projection:
@@ -7732,9 +7810,24 @@ publish no member evidence.
 
 Eligible sprite buckets share one fold instance buffer across the typed transparent
 geometry pass and the legacy sprite pass. Both consume the same head/skip plan;
-10,000 equal-depth sprites remain one instanced draw rather than 10,000 submissions.
-The sprite-atlas Dawn smoke checks this for 60 frames, and its browser probe
-checks the instance count, typed upload payload and WebGPU validation.
+Storage-capable backends keep 10,000 equal-depth sprites in one instanced draw.
+Uniform-only backends split each compatible run into consecutive pages of at most
+128 instances: 10,000 sprites use 79 draws. A final singleton stays direct.
+Material, layer, sort, parameter and atlas-region boundaries preserve their order;
+explicit `Instances` and `SpriteInstances` collections never enter automatic folding.
+Region changes rebuild the actual compatible runs instead of applying a head's
+region to unrelated members. Every page retains its own physical Mesh and instance
+binding, shared across typed geometry and linear-LDR recording.
+
+Explicit Sprite `Instances` reuse geometry's renderer-owned uniform pages.
+`SpriteInstances` pages interleave each original transform with its atlas rectangle
+(80 bytes per uniform instance); native storage retains its current/previous lane.
+Empty collections draw nothing, failed uploads remain unpresented, and shrinking or
+retiring a collection releases its obsolete pages. Native `Tilemap` keeps its
+chunk/atlas geometry batching; it does not lower to Sprite instance collections.
+The 512-element Browser regression checks every cell through 60 completed WebGL2
+frames, atlas edits, deletion and collection shrink. The sprite-atlas Dawn smoke
+retains its 60-frame storage draw and payload checks.
 
 The root barrel does not expose frame stores or extract/plan/record owners.
 Applications contribute work through `RenderFeature` plans; the Standard
@@ -7934,6 +8027,91 @@ frame as `generation-mismatch`, and device replacement as
 call for device recovery. For other SceneData reasons such as
 `capability-missing`, follow that error's own `hint` and `recovery`.
 Temporal-only consumers remain independent of these surface inputs.
+
+## Portable Hi-Z, SSR and histogram exposure
+
+### WebGL2 effect boundaries
+
+Physical display sky is available with explicit `Atmosphere.backgroundOnly: true`;
+see [Atmosphere and aerial perspective](#atmosphere-and-aerial-perspective) for
+the preserved full-mode limits and background-only scope.
+
+| Feature | WebGL2 execution | Required input or boundary |
+|:--|:--|:--|
+| Auto exposure | GPU fragment classification, integer histogram reductions and adaptation | HDR/integer render attachments and the bounded fragment exposure extent; no CPU metering |
+| SSR | GPU fragment depth pyramid, trace, temporal resolve and composition | Single-sampled Forward with complete built-in Standard material inputs and admitted format/texture budgets |
+| SSAO / GTAO | GPU fragment surface input, AO, bilateral filter and Cluster packing | Opaque/Alpha Mask Standard and Unlit input coverage; Unlit contributes geometry without receiving lighting attenuation |
+| Physical sky background | GPU raster medium/Sky View tables and background | Explicit `backgroundOnly: true`; display sky only, no AP, solar attenuation, sky IBL or captures |
+| Full `Atmosphere` (`backgroundOnly: false`) | Unavailable | Its compute, storage texture, 3D and full material binding requirements remain mandatory |
+| Cooked GPU VFX | Unavailable | The VFX owner still requires compute and indirect drawing; `Points` is the separate CPU-updated raster route |
+
+The public World/Camera Browser gate `standard-effects-webgl2.browser.test.ts`
+checks auto exposure, SSR and their GTAO combination through 60 completed frames,
+records the actual fragment entry points and pixels, then disables the effects
+and requires the original output to return. Kernel qualification additionally
+compares every histogram bin and depth level with independent references. The
+`unlit-ao.browser.test.ts` gate checks real rigid/masked Unlit and posed PBR-Skin
+normal inputs on both Browser WebGPU and WebGL2. These are correctness gates;
+they do not establish large-scene performance or device-wide support.
+
+The Standard pipeline selects compute when its required capabilities are admitted;
+otherwise the package-owned fragment plan uses the same numerical WGSL functions.
+There is no CPU metering path, runtime Kernel DSL or second renderer. Utility
+programs are cooked into distinct manifest entries, including their execution
+identity; publishing one plan must never replace another plan's entry.
+
+| Consumer | Compute plan | Fragment plan | Admission boundary |
+|:--|:--|:--|:--|
+| Depth pyramid | Existing seed and ordered mip dispatches | Independent R32F attachments and copies into the complete sampled mip chain | Real raster/sample/copy/readback profile; single-sampled input |
+| SSR | Trace, temporal and reflection mip dispatches | Two-output trace, three-output temporal MRT and separate reflection mip attachments | Standard inputs, HDR/MRT/texture limits and the actual depth format receipt |
+| Auto exposure V1 | Fixed atomic histogram cohort and adaptation | One classification, 16x16 integer tile counts, bounded reductions and adaptation | Integer/float attachment and copy support; dimensions <=4096 and <=8,847,360 pixels |
+
+Nearest and furthest Hi-Z preserve positive view-distance units, normalized odd
+footprints and the EMPTY sentinel. The conservative multisampled occlusion seed
+remains compute-only. A portable pyramid does not enable indirect GPU culling.
+Fragment code never requires `textureNumLevels`: the full depth chain derives its
+level count from level-zero extent; composition receives its actual reflection
+mip count, including the one-mip spatial-only case, through graph-owned metadata.
+
+Forward SSR uses the existing Standard surface producer with actual roughness,
+and writes fallback plus unit-radiance response at the same material callsite.
+The selected main MRT, GPU-driven projection and downstream composition share
+those exact attachments. Forward SSR currently requires single sampling and
+built-in Standard materials; Deferred retains its existing producer contract.
+Missing inputs remain an explicit admission failure. No material texture is
+removed to admit an effect.
+
+SSR reserves one accepted history plus four in-flight candidates. History reuse
+also requires the exact shared previous TemporalView identity; backlog uses
+current-only resolve instead of reprojecting an older view with one-step motion.
+Exposure leases
+up to nine buffer slots in its existing per-view GPU owner, covering previous
+reads and writes of four in-flight frames. Camera, graph extent/topology and
+device identities fence completion; scalar parameter updates preserve history. Accepted submission does
+not publish either history: queue completion promotes the exact candidate, while
+reset, failed submission and a retired device generation fence older candidates.
+Buffers/textures are never read and attached for writing in the same raster pass.
+The native exposure meter also treats previous state as read-only.
+
+The SSR budget counts all five history slots, shared depth levels, reflection
+mips, fragment scratch and conservative Forward surface/response inputs before
+aliasing. The portable Forward 1080p sum is 273,711,768 bytes (261 MiB); 4K
+exceeds the 320 MiB cap and is rejected before history allocation.
+
+The portable exposure plan preserves V1's 4x4 block-center sampling, center weights,
+256 log bins, 5/95 percentiles, EV bounds and adaptation. Counts use `u32` attachments
+and exact additions. Boundary-sensitive floating classification is tested separately
+from integer accumulation; average luminance is not a substitute. At 1080p the
+fragment plan performs one HDR classification per block, followed by repeated
+integer gathers. Its temporary bytes derive from `planFragmentExposure`; its cost
+is not claimed equal to native atomics. `inspect().output.autoExposure.cost` reports
+the actual physical pass count, including publication copies.
+
+The portable-kernel-expansion Browser/Dawn fixtures compare every depth level and
+all histogram bins to independent references. SSR runs 60 completed frames and
+checks the analytic mirror/wall coordinates plus compute/raster equivalence. A
+RhiNull result proves lifecycle/graph structure only; target-device pixel and
+performance evidence remain separate.
 
 ## AI-readable SSR fallback route
 
@@ -8542,7 +8720,18 @@ material schemas to their admitted program owner. The optional third argument
 `{ signal }` cancels outstanding preparation while still awaiting submitted upload
 fences before releasing physical ownership. It resolves only after physical queue completion and
 returns a device-generation lease with `isCurrent()`, fence-aware `release()`,
-and `recordStageLane(frame, entity)`. Preparation does not admit a scene row or
+`recordStageLane(frame, entity)`, and `consumeRecordStage(frame, entity)`.
+The explicit consumption operation releases the preparation-only pipeline proof
+only when an actual current draw used that exact entity and mesh. Subsequent
+draws retain physical, source and device validity checks and ordinary per-frame
+pipeline admission. Asset namespace adoption or a hidden mesh alone does not
+transfer this proof. The read-only lane query never transfers ownership.
+Typed scene passes may declare the renderer-owned `selection: 'camera-outline'`
+recipe. Ordinary recording and candidate pipeline demand read the same current
+camera selection; preparation rechecks it before accepting its lease. An opaque
+`selectEntities` callback takes precedence and keeps the ordinary Record route,
+as do unsupported capture graphs. The declaration does not bypass upload fences.
+Preparation does not admit a scene row or
 make an unpublished asset a valid dependency. The next packet must publish the
 same Mesh content under the same source handle; a conflict rejects the entire
 packet before accepted state changes. Receiver-owned bytes include copies of
@@ -9038,8 +9227,9 @@ pnpm exec vitest run --project dawn packages/render/src/__tests__/material-raste
 ```
 ## Planar reflection capture
 
-`PlanarReflection` belongs to a display `Camera` and names its distinct sampled
-2D reflection `target`. The owning camera supplies perspective/orthographic optics;
+`PlanarReflection` belongs to a display `Camera` and captures into a sampled 2D
+reflection target: the game's distinct `target`, or, when `target` is left unset,
+one the Renderer owns. The owning camera supplies perspective/orthographic optics;
 the renderer reflects its eye, forward and up, then applies an oblique near plane
 in the RHI zero-to-one depth convention. Capture and water sampling share the
 ordinary frame graph, encoder and submission.
@@ -9051,9 +9241,20 @@ ordinary frame graph, encoder and submission.
 | `distortion` | Screen-UV warp of the mirror lookup per unit tilt of the receiving shading normal (normal map or Surface ripples); `0` is an undistorted mirror. Finite and nonnegative. | `0` |
 | `updateIntervalFrames` | Minimum renderer frame interval between captures | `1` |
 | `requestVersion` | Increment to refresh before the next scheduled interval | `0` |
-| `PlanarReflection.target` | Distinct sampled 2D reflection output (`3d`/`2d-array` targets are rejected); width/height control capture resolution | Required |
+| `PlanarReflection.target` | Distinct sampled 2D reflection output (`3d`/`2d-array` targets are rejected); width/height control capture resolution. Unset (`0`): the Renderer owns the target | Renderer-owned |
+| `resolutionScale` | Renderer-owned target size: `round(display drawing-buffer size × scale)`, at least 1×1, `rgba16float`; recreated on display resize or scale change and released with the component. Ignored with a game `target`. Finite and > 0 | `1` |
+| `generateMipmaps` | Build the mirror's GPU mip chain after each capture (frame-graph passes before any receiver samples it); receivers then sample trilinearly at `lod = roughness × (levels − 1)`. Renderer-owned target: full chain; game target: its own `mipLevels`, only when > 1 | `false` |
 
 ```ts
+// Renderer-owned: drawing-buffer resolution (resolutionScale 1), roughness-blurred mirror.
+world.addComponent(displayCamera, {
+  component: PlanarReflection,
+  data: { generateMipmaps: true },
+}).unwrap();
+```
+
+```ts
+// Game-owned target: full control of size and format; resolutionScale is ignored.
 const descriptor = {
   shape: '2d', width: 512, height: 512, format: 'rgba16float',
   mipLevels: 1, sampleCount: 1, sampled: true, readback: true,
@@ -9092,8 +9293,15 @@ group 1 bindings 73/74, which counts one more sampled texture. Where a fragment
 lies on the plane (within 1 mm) and faces along its normal, the capture
 replaces the environment specular radiance under the same split-sum response
 (Fresnel, metalness, SSR composition). Capture coverage (alpha) blends with the
-environment, and roughness fades the sharp image into the prefiltered
-environment by 0.5. The material renders forward in both paths; GPU Scene rows
+environment only where it has holes (alpha below 1). Without mips the
+roughness fades the sharp image into the prefiltered environment by 0.5; with
+`generateMipmaps` the receiver keeps the mirror at every roughness and blurs it
+by sampling `lod = roughness × (levels − 1)` with a trilinear sampler, as
+Three.js `reflector({ generateMipmaps })` + `textureBicubic(reflection, roughness)`.
+The level count rides in the projection's spare lanes. Mip generation reuses the
+transmission backdrop's scratch-and-copy chain and the renderer-prewarmed mipmap
+pipeline; a renderer readied without a material manifest has no prewarmed pipeline,
+warns once and samples mip 0. The material renders forward in both paths; GPU Scene rows
 carry no extra value. Captures and passes without a current capture bind a
 never-written (disabled) projection, so no draw samples its own target. A
 code-created material cannot carry the capability: `assets.create` returns
@@ -9104,8 +9312,8 @@ A custom Standard Surface opts in the same way:
 adds the engine-owned field (do not declare it yourself) and keeps the Surface
 forward-only. The Surface drives the wet look per pixel: `normalWS` ripples
 from `SurfaceInput.frameTime` distort the lookup by `PlanarReflection.distortion`,
-and `roughness` fades the mirror into the prefiltered environment, so dry
-patches stay matte while puddles reflect. Three.js reference:
+and `roughness` fades the mirror into the prefiltered environment (or, with
+`generateMipmaps`, blurs it), so dry patches stay matte while puddles reflect. Three.js reference:
 `screenUV.add(normal.xy.mul(warp))` into a `ReflectorNode`, roughness-blended
 (Threejs-Punk wet ground). Plane membership still uses the geometric normal,
 and the distorted lookup is clamped to the capture.

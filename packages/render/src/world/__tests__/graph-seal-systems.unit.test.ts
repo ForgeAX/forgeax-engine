@@ -31,7 +31,7 @@ async function fixture() {
       data: {
         state: world.allocUniqueRef('ViewGraphSeal', {
           frame: 1,
-          prepared: { internals },
+          prepared: { internals, frameState: { pipelinePreparationPending: false } },
           outcome: undefined,
         }),
       },
@@ -132,7 +132,7 @@ it('encodes in capture then view order and contains a capture failure without po
       )
       .unwrap();
     state.frame = 2;
-    state.prepared = { internals: {} };
+    state.prepared = { internals: {}, frameState: { pipelinePreparationPending: false } };
     captures.mockImplementationOnce(() => {
       throw new Error('capture encode rejected');
     });

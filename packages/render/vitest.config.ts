@@ -13,6 +13,8 @@ export default defineProject({
       '**/*.browser.test.ts',
       '**/*.dawn.test.ts',
       '**/*.perf.test.ts',
+      // Benchmark evidence contracts use node:test and retain their Node hooks.
+      'bench/**/*.test.mjs',
     ],
     typecheck: {
       enabled: true,

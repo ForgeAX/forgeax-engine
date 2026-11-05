@@ -205,6 +205,11 @@ export default defineConfig(async ({ command }) => {
     throw Object.assign(new Error(`${readiness.error.code}: ${readiness.error.hint}`), readiness.error);
   }
   const runtimeBinding = createStandaloneRuntimeAssetBinding('preview');
+  const convoyCookers = [];
+  if (packRoots.includes(resolve(game3dRoot, 'assets', 'character.pack.ts'))) {
+    const { createConvoyCooker } = await import('../../templates/game-3d/assets/player/convoy-finish.ts');
+    convoyCookers.push(createConvoyCooker());
+  }
   const pack = pluginPack({
       runtimeBinding,
       producerReadiness: readiness.value,
@@ -224,6 +229,7 @@ export default defineConfig(async ({ command }) => {
         targetProfileImporter(),
       ],
       cookers: [
+        ...convoyCookers,
         createMaterialPackCooker([
           resolve(game3dRoot, 'assets', 'shaders'),
           resolve(here, 'assets', 'shaders'),

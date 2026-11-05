@@ -251,6 +251,9 @@ export interface RenderSystemRuntime {
     readonly keyCharacters: number;
   };
   /** Candidate-only failure boundary; native PSO errors cannot poison the live frame. */
+  /** Exact ordinary preparation request lookup; misses must not compile or allocate a PSO. */
+  readonly lookupMaterialShaderPipeline?: RenderSystemInternals['getMaterialShaderPipeline'];
+  readonly lookupMaterialShaderPipelineEntry?: RenderSystemInternals['getMaterialShaderPipelineEntry'];
   readonly withPipelinePreparationErrors?: (action: () => void) => void;
   readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
   readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
@@ -590,6 +593,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
   gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
   readonly getRenderTargetPhysical?: (target: RenderTarget) => RenderTargetPhysical | undefined;
+  /** Lifecycle for Renderer-owned targets, such as a targetless PlanarReflection's mirror. */
+  readonly ownedRenderTargets?: import('../capture/planar-target').PlanarTargetHost | undefined;
   readonly markRenderTargetSubmitted?: (
     target: RenderTarget,
     physical: RenderTargetPhysical,

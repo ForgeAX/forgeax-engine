@@ -3,6 +3,7 @@ import type { DynamicGeometryError } from './dynamic-geometry';
 import { validateClusterGrid } from './pipeline/standard-pipeline';
 import { DEFAULT_CLUSTER_GRID, STANDARD_PIPELINE_ID } from './pipeline/standard-profile';
 import {
+  type CandidatePipelineDemandReader,
   type CandidatePipelineInput,
   CandidatePipelinePreparationOwner,
   type PreparedCandidatePipelines,
@@ -77,10 +78,12 @@ export function prepareViewCandidatePipelines(
   owner: ViewSettlementOwner,
   input: CandidatePipelineInput,
   signal?: AbortSignal,
+  readDemand?: CandidatePipelineDemandReader,
 ): Promise<Result<PreparedCandidatePipelines, DynamicGeometryError>> {
   const { frameState } = owner;
   frameState.candidatePipelinePreparations ??= new CandidatePipelinePreparationOwner(
     () => frameState.compiledFrameGraph,
+    readDemand,
   );
   return frameState.candidatePipelinePreparations.prepare(input, signal);
 }

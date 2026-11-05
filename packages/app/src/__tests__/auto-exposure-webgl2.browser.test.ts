@@ -13,7 +13,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { expect, it } from 'vitest';
 import { createApp } from '../browser';
 
-it('presents 60 real WebGL2 frames with authored auto exposure using its fallback', {
+it('presents 60 real WebGL2 frames with the portable histogram exposure plan', {
   timeout: 120_000,
 }, async () => {
   const canvas = document.createElement('canvas');
@@ -81,16 +81,16 @@ it('presents 60 real WebGL2 frames with authored auto exposure using its fallbac
     const output = app.renderer.inspect().output;
     expect(output.autoExposure).toMatchObject({
       requested: { kind: 'auto', fallback: expect.closeTo(0.6, 5) },
-      actual: expect.closeTo(0.6, 5),
-      actualState: 'fallback',
-      cost: { histogramBytes: 0, passCount: 0, physicalPassCount: 0 },
-      receipt: { committed: false },
-      recentFailure: {
-        code: 'auto-exposure-capability-unavailable',
-        detail: { capability: 'compute' },
-      },
+      // Numeric exposure stays on the GPU; inspection never invents a CPU estimate.
+      actual: null,
+      actualState: 'gpu-resident',
+      cost: { histogramBytes: 1024, passCount: 5, physicalPassCount: 5 },
+      receipt: { committed: true },
     });
-    expect(output.graphPassNames.some((name) => name.startsWith('auto-exposure-'))).toBe(false);
+    expect(output.autoExposure?.recentFailure).toBeUndefined();
+    expect(output.graphPassNames.filter((name) => name.startsWith('auto-exposure-'))).toHaveLength(
+      5,
+    );
     expect(app.lastError).toBeUndefined();
   } finally {
     canvas.removeEventListener('forgeax:frame-completed', observe);

@@ -433,7 +433,14 @@ export function nearest(part: PartGeometry, p: P): number {
         if (d < best) best = d;
       }
     } else {
-      stack.push(part.bvh.start[node] as number, node + 1);
+      const right = part.bvh.start[node] as number;
+      const left = node + 1;
+      // A near leaf tightens the bound before a farther sibling is examined.
+      if (boxDistance(part.bvh, right, p) < boxDistance(part.bvh, left, p)) {
+        stack.push(left, right);
+      } else {
+        stack.push(right, left);
+      }
     }
   }
   return best;

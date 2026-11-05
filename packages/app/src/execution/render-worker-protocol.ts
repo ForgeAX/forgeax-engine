@@ -75,6 +75,13 @@ export type RenderWorkerInput =
       readonly worldIdentity: string;
     }
   | { readonly kind: 'geometry-observe-cancel'; readonly requestId: number }
+  | {
+      readonly kind: 'hdr-observe-next';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly worldIdentity: string;
+    }
+  | { readonly kind: 'hdr-observe-cancel'; readonly requestId: number }
   | MeshResidencyRequest
   | (Pick<
       ExecutionInitMessage,
@@ -155,6 +162,13 @@ export type RenderWorkerOutput =
       readonly identity: RenderPublicationIdentity;
       readonly worldIdentity: string;
       readonly result: import('./types').ExecutionGeometryObservationResult;
+    }
+  | {
+      readonly kind: 'hdr-observation-result';
+      readonly requestId: number;
+      readonly identity: RenderPublicationIdentity;
+      readonly worldIdentity: string;
+      readonly result: import('./types').ExecutionHdrObservationResult;
     }
   | MeshResidencyResponse
   | {

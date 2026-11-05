@@ -21,6 +21,9 @@ Publication shares source fragments and ABI receipts. Registry admission verifie
 every source and variant before atomic adoption, but retains composed WGSL only
 when consumed. Rebuild obsolete prepared/shared profiles with the source producer;
 do not skip digest checks or prune capability variants to make a manifest smaller.
+For repeated prepared-build publication cost, inspect pooled-fact serialization.
+Intern immutable object identity only inside one publication; retain canonical
+value deduplication, every variant, exact output bytes and fresh later-build facts.
 
 ## Color-lighting parity handoff
 

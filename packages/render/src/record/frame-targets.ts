@@ -12,6 +12,7 @@ import {
   type PipelineState,
   type RenderSystemInternals,
 } from './render-context';
+import { hasShadowPipelineDemand } from './view-pipeline-demand';
 
 export function graphExecutionPhase(passName: string): RenderGraphExecutionPhase {
   if (passName.startsWith('shadowCascade')) return 'record/graph-execute/shadow';
@@ -210,11 +211,7 @@ export function requireFrameTarget(target: ReturnType<typeof acquireSwapChainTar
 
 /** The exact light projections consumed by GPU and raster shadow views. */
 export function hasShadowViewDemand(lights: ViewLights): boolean {
-  return (
-    (lights.cascades?.lightViewProj?.length ?? 0) > 0 ||
-    lights.pointShadow.length > 0 ||
-    lights.spot.some((spot) => spot.lightViewProj !== undefined)
-  );
+  return hasShadowPipelineDemand(lights, lights.cascades?.lightViewProj?.length ?? 0);
 }
 
 export function resolveShadowMapSize(

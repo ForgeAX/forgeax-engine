@@ -52,6 +52,20 @@ not duplicate per-case status values.
 > Raw byte differences remain diagnostic; finite analytic/ROI fallback budgets
 > are still enforced, with no empirical gamma, multiplier, or blend correction.
 
+## Direct-light capture workload
+
+The native WebGPU single-receiver fixtures disable optional GPU occlusion: one
+64-pixel receiver does not need a depth pyramid or late occlusion pass. Shadow
+and clearcoat fixtures restore the default profile, including occlusion. WebGL2
+keeps its original capability-selected profile. Browser still captures 24
+completed frames and Dawn 60; HDR, light-slot, Three reference and shadow
+falsifiers retain their original deadlines and assertions.
+
+A complete 24-frame RHI capture before and after the profile change contained
+336 and 120 works respectively, with byte-identical raw HDR and display outputs.
+This is workload evidence, not a CI timing guarantee; complete final-head
+Browser and Dawn runs remain required.
+
 ## Three.js r184 common-stage contract
 
 The auto-exposure case pins `three@0.184.0`, commit

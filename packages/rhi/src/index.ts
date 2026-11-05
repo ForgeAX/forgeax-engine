@@ -2365,8 +2365,10 @@ export interface RhiComputePipelineOps {
 export {
   type CreateUnavailableR32FloatReceiptOptions,
   createUnavailableR32FloatReceipt,
+  R32FLOAT_MIP_SAMPLED_RENDER_PROFILE,
   R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE,
   R32FLOAT_PROBE_STAGES,
+  R32FLOAT_RENDER_PROBE_STAGES,
   type RhiTextureFormatCapabilityReceipt,
   type RhiTextureFormatProbeEvidence,
   type RhiTextureFormatProbeStage,
@@ -2526,6 +2528,7 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
+export { probeR32FloatRenderCapability } from './capability/r32float-render-probe';
 export { PIPELINE_LIBRARY_LIMITS } from './pipeline-library';
 export {
   checkPipelineLibraryAllocation,

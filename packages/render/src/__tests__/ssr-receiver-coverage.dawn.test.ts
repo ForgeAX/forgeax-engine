@@ -36,20 +36,25 @@ async function composePixels(
   const height = options.height ?? 2;
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const common = readFileSync(resolve(process.cwd(), 'packages/shader/src/common.wgsl'), 'utf8');
-  const viewDeclarations = common.match(/struct (?:AtmosphereMedium|View)\s*\{[\s\S]*?\};/g);
-  expect(viewDeclarations).toHaveLength(2);
-  if (viewDeclarations?.length !== 2) throw new Error('Shared View declarations missing');
-  const viewStruct = viewDeclarations.join('\n');
-  const source = (
+  const compiler = await import(
+    /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
+  );
+  // Production sources contain execution-plan macros; compile the native
+  // publication instead of passing unexpanded directives to a GPU module.
+  const compiled = await compiler.compileShader(
     options.source ??
-    readFileSync(resolve(process.cwd(), 'packages/shader/src/ssr-compose.wgsl'), 'utf8')
-  )
-    .replace(/^#define_import_path.*$/gm, '')
-    .replace('#import forgeax_view::common::View', viewStruct)
-    .replace(
-      /^#import forgeax_pbr::gbuffer.*$/gm,
-      gbufferSource.replace(/^#define_import_path.*$/gm, ''),
-    );
+      readFileSync(resolve(process.cwd(), 'packages/shader/src/ssr-compose.wgsl'), 'utf8'),
+    {
+      id: 'forgeax_ssr::receiver-coverage',
+      defines: { PORTABLE_FRAGMENT: false },
+      imports: {
+        'forgeax_view::common': common,
+        'forgeax_pbr::gbuffer': gbufferSource,
+      },
+    },
+  );
+  if (!compiled.ok) throw compiled.error;
+  const source = compiled.value.wgsl;
   const textures: Texture[] = [];
   const upload = (width: number, height: number, values: number[], mips: number[][] = []) => {
     const texture = device

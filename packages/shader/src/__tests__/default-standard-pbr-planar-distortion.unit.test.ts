@@ -35,4 +35,21 @@ describe('Standard planar reflection normal distortion', () => {
       'standardPlanarSpecular(in.worldPos, geometricNormal, physicalNormal, iblRoughness',
     );
   });
+
+  it('blurs a mipped capture by roughness and keeps the single-level fade', () => {
+    const specular = body('standardPlanarSpecular');
+    expect(specular).toContain('let levels = planar.enabledAndPadding.z;');
+    // A mip chain keeps the mirror at every roughness; one level keeps the 0.5 fade.
+    expect(specular).toContain(
+      'let weight = select(clamp(1.0 - 2.0 * roughness, 0.0, 1.0), 1.0, mipped);',
+    );
+    expect(specular).toContain(
+      'let lod = select(0.0, clamp(roughness, 0.0, 1.0) * (levels - 1.0), mipped);',
+    );
+    expect(specular).toMatch(
+      /textureSampleLevel\(standardPlanarReflectionTexture, prefilterSampler, .*, lod\)/,
+    );
+    // Only capture holes (alpha below 1) fall back to the environment.
+    expect(specular).toContain('environment * (1.0 - clamp(reflected.a, 0.0, 1.0))');
+  });
 });

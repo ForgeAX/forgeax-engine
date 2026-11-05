@@ -20,7 +20,7 @@ const { Hash } = (
   globalThis as unknown as { process: { getBuiltinModule(id: string): unknown } }
 ).process.getBuiltinModule('node:crypto') as { Hash: { prototype: NativeHash } };
 
-async function fixture() {
+async function fixture(colorAttachmentBytes?: number) {
   const gpu = createMockGpu(),
     adapter = await gpu.requestAdapter();
   const raw = (await adapter?.requestDevice()) as unknown as GPUDevice;
@@ -31,6 +31,8 @@ async function fixture() {
     createComputePipelineAsync: compute,
     destroy: vi.fn(),
   });
+  if (colorAttachmentBytes !== undefined)
+    Object.assign(raw.limits, { maxColorAttachmentBytesPerSample: colorAttachmentBytes });
   const sync = vi.spyOn(raw, 'createRenderPipeline');
   const device = makeRhiDevice(raw).device;
   const module = (code = 'shader source', label = 'module') =>
@@ -937,4 +939,108 @@ it('selects the same ready or pending record without snapshot, serialization or 
     ok: true,
     value: undefined,
   });
+});
+
+it('selects portable render-target recipes against the receiving device before native warmup', async () => {
+  const source = await fixture();
+  const base = source.descriptor();
+  await source.device.createRenderPipelineAsync(base);
+  const manifest = source.device.pipelineLibrary.export().unwrap();
+  const first = manifest.renderPipelines[0];
+  if (first?.fragment === undefined) throw new Error('Missing portable graphics recipe');
+  const surface = ['rgba16float', 'r32uint', 'rg32uint', 'r32uint', 'r32uint', 'rg32uint'] as const;
+  const input = {
+    ...manifest,
+    renderPipelines: [
+      first,
+      {
+        ...first,
+        label: 'surface-36',
+        fragment: { ...first.fragment, targets: surface.map((format) => ({ format })) },
+      },
+      {
+        ...first,
+        label: 'temporal-44',
+        fragment: {
+          ...first.fragment,
+          targets: [...surface, 'rgba16float' as const].map((format) => ({ format })),
+        },
+      },
+    ],
+  };
+  const target = await fixture();
+  const prepared = await target.device.pipelineLibrary.prepare(input, {
+    renderTargetPolicy: 'device-compatible',
+  });
+  expect(prepared.ok).toBe(true);
+  expect(target.render).toHaveBeenCalledTimes(1);
+  expect(target.device.pipelineLibrary.inspect()).toMatchObject({
+    skippedRenderTargetRecipes: 2,
+    warmup: { requested: 1, completed: 1, failed: 0 },
+  });
+  expect(input.renderPipelines).toHaveLength(3);
+  // A stronger replacement device receives the original portable roster again.
+  const recovered = await fixture(44);
+  await recovered.device.pipelineLibrary.prepare(input, {
+    renderTargetPolicy: 'device-compatible',
+  });
+  expect(recovered.render).toHaveBeenCalledTimes(3);
+});
+
+it('uses render-target pixel cost and ordered component alignment instead of copy footprint', async () => {
+  const source = await fixture();
+  await source.device.createRenderPipelineAsync(source.descriptor());
+  const manifest = source.device.pipelineLibrary.export().unwrap();
+  const first = manifest.renderPipelines[0];
+  if (first?.fragment === undefined) throw new Error('Missing graphics recipe');
+  const fragment = first.fragment;
+  const make = (label: string, formats: GPUTextureFormat[], count = 1) => ({
+    ...first,
+    label,
+    multisample: { count },
+    fragment: { ...fragment, targets: formats.map((format) => ({ format })) },
+  });
+  const expanded: GPUTextureFormat[] = [
+    'rgba8unorm',
+    'rgba8unorm-srgb',
+    'rgba8snorm',
+    'bgra8unorm',
+    'bgra8unorm-srgb',
+    'rgb10a2uint',
+    'rgb10a2unorm',
+    'rg11b10ufloat',
+  ];
+  const input = {
+    ...manifest,
+    renderPipelines: [
+      ...expanded.map((format) =>
+        make(
+          format,
+          Array.from({ length: 5 }, () => format),
+        ),
+      ),
+      make('unaligned-33', ['r8unorm', 'r32float', 'rgba8unorm', 'rgba32float', 'r8unorm']),
+      make('aligned-30', ['r32float', 'rgba8unorm', 'rgba32float', 'r8unorm', 'r8unorm']),
+      make(
+        'integer-32',
+        Array.from({ length: 8 }, () => 'rgba8uint' as const),
+      ),
+      make(
+        'multisampled-32',
+        Array.from({ length: 4 }, () => 'rgba16float' as const),
+        4,
+      ),
+    ],
+  };
+  const target = await fixture(32);
+  const prepared = await target.device.pipelineLibrary.prepare(input, {
+    renderTargetPolicy: 'device-compatible',
+  });
+  expect(prepared.ok).toBe(true);
+  expect(target.render.mock.calls.map(([recipe]) => recipe.label)).toEqual([
+    'aligned-30',
+    'integer-32',
+    'multisampled-32',
+  ]);
+  expect(target.device.pipelineLibrary.inspect().skippedRenderTargetRecipes).toBe(9);
 });

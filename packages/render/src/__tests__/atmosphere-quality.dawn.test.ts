@@ -102,7 +102,9 @@ it('bounds production sky and RGB AP against 512-step transport across altitude,
   });
   device.queue.writeBuffer(uniform, 0, data);
   try {
-    const module = device.createShaderModule({ code: `${kernel}\n${source('atmosphere-luts')}` });
+    const module = device.createShaderModule({
+      code: `${kernel}\n${source('atmosphere-table-kernels')}\n${source('atmosphere-luts')}`,
+    });
     expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(
       [],
     );

@@ -81,7 +81,10 @@ export function beginSsrHistoryFrame(
     if (resetReason !== undefined) owner.reset(resetReason);
   }
 
-  const started = owner.beginFrame();
+  const started = owner.beginFrame({
+    current: temporalView,
+    previous: frameState.temporalView.accepted,
+  });
   if (!started.ok) {
     reportSsrHistoryFailure(internals, 'build', started.error);
     return false;

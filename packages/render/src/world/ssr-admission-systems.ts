@@ -1,8 +1,10 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
+import type { RenderResourceScope } from '../publication/resource-scope';
 import { hasSsrSceneInputs } from '../record/main-pass';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
+import { sameValue } from '../same-value';
 import {
   admitSsrSpatial,
   notRequestedSsrAdmission,
@@ -11,9 +13,11 @@ import {
 } from '../ssr/admission';
 import { type PassPlanInput, type ViewPassPlanQueue, ViewPassPlans } from './pass-plan-systems';
 import { RENDER_PHASE_SORT_SYSTEM, type ViewPhaseQueue, ViewPhases } from './queue-systems';
+import { ViewRecorder } from './render-views';
 import { RenderQueue, renderSubmission, renderWorldFor } from './render-world';
 import { ViewStandardLighting, viewStandardLightingOf } from './standard-lighting-systems';
 import { readViewField, requireViewField } from './view-field';
+import { ownerOf } from './view-settlement';
 
 /** RenderQueue: the view's deferred or forward SSR admission and reflection-fallback demand. */
 export const RENDER_SSR_ADMISSION_SYSTEM = 'render-ssr-admission';
@@ -25,7 +29,9 @@ export interface SsrAdmissionInput {
   readonly dependencies: SsrDependenciesInspection;
   /** Whether this view's reflection probes demand the fallback lane. */
   readonly probeFallbackDemand: boolean;
-  readonly capabilities: Pick<RhiCaps, 'compute' | 'storageTexture' | 'rgba16floatRenderable'>;
+  readonly capabilities: Pick<RhiCaps, 'compute' | 'storageTexture' | 'rgba16floatRenderable'> &
+    Partial<Pick<RhiCaps, 'maxColorAttachments'>>;
+  readonly sampledTextureLimit?: number;
 }
 
 /** Closed reasons a view has no SSR admission. */
@@ -50,6 +56,85 @@ export type ViewSsrAdmissionOutcome =
 interface ViewSsrAdmissionState {
   frame: number;
   outcome: ViewSsrAdmissionOutcome;
+  demand?: SsrSceneInputDemand;
+}
+
+interface SsrSceneInputDemand {
+  readonly camera: CameraSnapshot;
+  readonly renderPath: 'forward' | 'deferred';
+  readonly sceneInputs: boolean;
+  readonly requested: boolean;
+  readonly sources: readonly {
+    readonly resource: RenderResourceScope;
+    readonly revision: RenderResourceScope['revision'];
+  }[];
+}
+
+/** Borrow the normal Queue producer's scalar corpus proof, never its pass plan. */
+export function readSsrSceneInputDemand(
+  world: World,
+  entity: EntityHandle,
+  camera: CameraSnapshot,
+  renderPath: 'forward' | 'deferred',
+  resources: RenderResourceScope,
+  requested: boolean,
+): boolean | undefined {
+  const ref = readViewField(world, entity, ViewSsrAdmission, 'state');
+  if (ref === undefined) return undefined;
+  const demand = world.resolveUniqueRef<ViewSsrAdmissionState>(ref).unwrap().demand;
+  if (
+    demand === undefined ||
+    demand.renderPath !== renderPath ||
+    demand.requested !== requested ||
+    !sameValue(demand.camera, camera) ||
+    !demand.sources.some((source) => source.resource === resources) ||
+    demand.sources.some((source) => source.resource.revision !== source.revision)
+  )
+    return undefined;
+  return demand.sceneInputs;
+}
+
+/** Normal recording and detached candidate demand share the same spatial admission. */
+export function admitSsrPipelineDemand(
+  input: SsrAdmissionInput,
+  renderPath: 'forward' | 'deferred',
+  sceneInputs: boolean,
+): Extract<ViewSsrAdmissionOutcome, { kind: 'resolved' }> {
+  const { camera, dependencies, probeFallbackDemand, capabilities } = input;
+  const reflectionFallbackCandidate =
+    probeFallbackDemand ||
+    (dependencies.requested === true && dependencies.reflectionFallback !== undefined);
+  const admission = admitSsrSpatial({
+    camera,
+    environment: {
+      lane: renderPath,
+      m0: dependencies.admission,
+      sceneInputs,
+      temporal: sceneInputs,
+      reflectionFallback: dependencies.reflectionFallback !== undefined,
+      capabilities: {
+        compute: capabilities.compute,
+        storageTexture: capabilities.storageTexture,
+        rgba16floatRenderable: capabilities.rgba16floatRenderable,
+        r32floatSampledStorage:
+          dependencies.format?.verdict === 'admitted' &&
+          dependencies.format.profile === 'r32float-mip-sampled-storage',
+        r32floatSampledRender:
+          dependencies.format?.verdict === 'admitted' &&
+          dependencies.format.profile === 'r32float-mip-sampled-render',
+        maxColorAttachments: capabilities.maxColorAttachments ?? 0,
+        maxSampledTexturesPerShaderStage: input.sampledTextureLimit ?? 0,
+      },
+      recovery: true,
+    },
+  });
+  return {
+    kind: 'resolved',
+    admission,
+    reflectionFallbackCandidate,
+    reflectionFallbackDemand:
+      (reflectionFallbackCandidate || admission.status === 'admitted') && sceneInputs,
+  };
 }
 
 /** A recording view's SSR admission; written only by `render-ssr-admission`. */
@@ -108,51 +193,45 @@ function admitViewSsr(
   entity: EntityHandle,
   input: PassPlanInput,
   dispatch: PassPlanInput['dispatch'],
-): ViewSsrAdmissionOutcome {
+): { outcome: ViewSsrAdmissionOutcome; demand?: SsrSceneInputDemand } {
   const lighting = viewStandardLightingOf(world, entity);
   if (lighting?.kind !== 'prepared' || !lighting.lighting.ok)
-    return { kind: 'unavailable', code: 'standard-lighting-unavailable' };
-  const { camera, dependencies, probeFallbackDemand, capabilities } = input.ssr;
+    return { outcome: { kind: 'unavailable', code: 'standard-lighting-unavailable' } };
+  const { camera, dependencies, probeFallbackDemand } = input.ssr;
   const reportedPath = lighting.lighting.value.standard.prepared.renderPath;
-  const renderPath = reportedPath === 'deferred' ? 'deferred' : 'forward';
+  const renderPath: 'forward' | 'deferred' = reportedPath === 'deferred' ? 'deferred' : 'forward';
   const reflectionFallbackCandidate =
     probeFallbackDemand ||
     (dependencies.requested === true && dependencies.reflectionFallback !== undefined);
   try {
     const sceneInputs =
       (reflectionFallbackCandidate || camera.screenSpaceReflection !== undefined) &&
+      (renderPath !== 'forward' || camera.antialias !== 'msaa') &&
       hasSsrSceneInputs(
         { renderables: input.renderables, dispatch, materialFrame: input.materials },
         reportedPath,
       );
-    const admission = admitSsrSpatial({
-      camera,
-      environment: {
-        lane: renderPath,
-        m0: dependencies.admission,
-        sceneInputs,
-        // Standard geometry produces current motion/coverage in this graph,
-        // including its first frame. Prior history is optional.
-        temporal: sceneInputs,
-        reflectionFallback: dependencies.reflectionFallback !== undefined,
-        capabilities: {
-          compute: capabilities.compute,
-          storageTexture: capabilities.storageTexture,
-          rgba16floatRenderable: capabilities.rgba16floatRenderable,
-          r32floatSampledStorage: dependencies.format?.verdict === 'admitted',
-        },
-        recovery: true,
-      },
-    });
+    const recorder = readViewField(world, entity, ViewRecorder, 'state');
+    const retained =
+      recorder === undefined
+        ? undefined
+        : ownerOf(world, recorder).scene?.compositionRetainedScene?.();
+    const demand: SsrSceneInputDemand | undefined =
+      retained?.isSourceCurrent() === true
+        ? {
+            camera,
+            renderPath,
+            sceneInputs,
+            requested: reflectionFallbackCandidate || camera.screenSpaceReflection !== undefined,
+            sources: retained.worlds.map((resource) => ({ resource, revision: resource.revision })),
+          }
+        : undefined;
     return {
-      kind: 'resolved',
-      admission,
-      reflectionFallbackCandidate,
-      reflectionFallbackDemand:
-        (reflectionFallbackCandidate || admission.status === 'admitted') && sceneInputs,
+      outcome: admitSsrPipelineDemand(input.ssr, renderPath, sceneInputs),
+      ...(demand === undefined ? {} : { demand }),
     };
   } catch (cause) {
-    return { kind: 'failed', code: 'scene-input-rejected', cause };
+    return { outcome: { kind: 'failed', code: 'scene-input-rejected', cause } };
   }
 }
 
@@ -200,13 +279,18 @@ export function registerSsrAdmissionSystem(world: World): void {
             phases === undefined
               ? undefined
               : world.resolveUniqueRef<ViewPhaseQueue>(phases).unwrap().ordered;
-          const outcome = admitViewSsr(world, entity, input, ordered ?? input.dispatch);
+          const { outcome, demand } = admitViewSsr(world, entity, input, ordered ?? input.dispatch);
           if (previous === undefined) {
-            first.push({ entity: entity, state: { frame, outcome } });
+            first.push({
+              entity: entity,
+              state: { frame, outcome, ...(demand === undefined ? {} : { demand }) },
+            });
             return;
           }
           previous.frame = frame;
           previous.outcome = outcome;
+          if (demand === undefined) delete previous.demand;
+          else previous.demand = demand;
         });
         // A view's first admission attaches its component after the iteration.
         for (const { entity, state } of first)

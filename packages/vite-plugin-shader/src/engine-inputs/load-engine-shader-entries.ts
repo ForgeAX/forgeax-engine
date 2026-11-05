@@ -98,6 +98,11 @@ export async function loadEngineShaderEntries() {
       ...(defines === undefined ? {} : { defines }),
       ...(reservedIdentifier === undefined ? {} : { reservedIdentifier }),
     }));
+  const readFragmentEntry = (fileName: string, identifier: string): Promise<EngineShaderFile> =>
+    readEntry(fileName, identifier, { PORTABLE_FRAGMENT: true }).then((file) => ({
+      ...file,
+      id: `${file.id}?portable-fragment`,
+    }));
   const terrainEntries = Promise.all(
     [false, true].flatMap((ids) =>
       [false, true].map(async (shadow) => {
@@ -158,6 +163,9 @@ export async function loadEngineShaderEntries() {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
     atmosphereIbl: readEntry('atmosphere-ibl.wgsl'),
+    atmosphereLutsFragment: readEntry('atmosphere-luts-fragment.wgsl', undefined, {
+      ATMOSPHERE_UTILITY_SHADOWS: true,
+    }),
     atmosphereLuts: readEntry('atmosphere-luts.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
@@ -182,9 +190,20 @@ export async function loadEngineShaderEntries() {
     })),
     depthPyramidSeed: readEntry('depth-pyramid-seed.wgsl'),
     depthPyramidReduce: readEntry('depth-pyramid-reduce.wgsl'),
+    depthPyramidSeedFragment: readFragmentEntry(
+      'depth-pyramid-seed.wgsl',
+      'forgeax::depth-pyramid-seed-fragment',
+    ),
+    depthPyramidReduceFragment: readFragmentEntry(
+      'depth-pyramid-reduce.wgsl',
+      'forgeax::depth-pyramid-reduce-fragment',
+    ),
     ssrTrace: readEntry('ssr-trace.wgsl'),
     ssrTemporal: readEntry('ssr-temporal.wgsl'),
+    ssrTraceFragment: readFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
+    ssrTemporalFragment: readFragmentEntry('ssr-temporal.wgsl', 'forgeax::ssr-temporal-fragment'),
     ssrCompose: readEntry('ssr-compose.wgsl'),
+    ssrComposeFragment: readFragmentEntry('ssr-compose.wgsl', 'forgeax::ssr-compose-fragment'),
     rayQuery: readEntry('ray-query.wgsl'),
     rayPathTracer: readEntry('ray-path-tracer.wgsl', 'forgeax::engine-ray-path-tracer'),
     rayRasterSource: readEntry('ray-raster-source.wgsl'),
@@ -268,6 +287,7 @@ export async function loadEngineShaderEntries() {
     'forgeax_atmosphere::sampling': readSource('atmosphere-sampling.wgsl'),
     'forgeax_atmosphere::optics': readSource('atmosphere-optics.wgsl'),
     'forgeax_atmosphere::coordinates': readSource('atmosphere-coordinates.wgsl'),
+    'forgeax_atmosphere::table_kernels': readSource('atmosphere-table-kernels.wgsl'),
     'forgeax_hdrp::ssao': readSource('hdrp-ssao.wgsl'),
     'forgeax_pbr::standard_lighting': readSource('standard-lighting.wgsl'),
     'forgeax_pbr::gbuffer': readSource('standard-gbuffer.wgsl'),

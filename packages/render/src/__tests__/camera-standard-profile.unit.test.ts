@@ -4,7 +4,7 @@ import { deriveCameraStandardConfiguration } from '../pipeline/camera-standard-p
 import { resolveStandardGtaoExecution } from '../pipeline/standard-build-context';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
 
-const lane = { storageBuffer: true, maxColorAttachments: 8 };
+const lane = { storageBuffer: true, maxColorAttachments: 8, maxColorAttachmentBytesPerSample: 64 };
 const ao = {
   algorithm: AMBIENT_OCCLUSION_GTAO,
   radius: 0.8,

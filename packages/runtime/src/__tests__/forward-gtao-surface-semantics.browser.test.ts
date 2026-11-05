@@ -43,7 +43,10 @@ import {
   ForwardGtaoCaptureNotReadyError,
   sha256Hex,
 } from './helpers/forward-gtao-capture';
-import { writeForwardGtaoFailureReport } from './helpers/forward-gtao-failure';
+import {
+  throwForForwardGtaoRendererErrors,
+  writeForwardGtaoFailureReport,
+} from './helpers/forward-gtao-failure';
 import { resolveForwardGtaoMaterialLineage } from './helpers/forward-gtao-material-lineage';
 import {
   createForwardGtaoAlphaMaskReferenceField,
@@ -425,6 +428,7 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
       frameId: receipt.frameId,
       deviceGeneration: receipt.deviceGeneration,
       presentation: receipt.presentation,
+      presentationPendingReason: receipt.presentationPendingReason ?? null,
     };
     const plan = surfaceConsumer.latestPlan();
     failureOperation = 'receipt.completed';
@@ -432,6 +436,13 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     failureFrameTrace = debugHost.clusterWorkFrameTraceForConformance() ?? {
       status: 'not-obtained',
     };
+    failureOperation = 'renderer.errors';
+    throwForForwardGtaoRendererErrors({
+      errors: events,
+      output: renderer.inspect().output,
+      receipt: failureReceipt,
+      frameTrace: failureFrameTrace,
+    });
     failureFrameSummary = {
       frameId: receipt.frameId,
       featureFrameNumber: plan?.frameNumber,
@@ -448,8 +459,27 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
     return receipt;
   };
   const settleSurfaceConsumer = async () => {
-    for (let attempt = 0; attempt < 120; attempt += 1) {
+    const startedAt = Date.now();
+    const deadline = startedAt + 30_000;
+    const presentations = new Map<string, number>();
+    let attempts = 0;
+    let lastReceipt:
+      | {
+          readonly frameId: number;
+          readonly presentation: string;
+          readonly pendingReason: unknown;
+        }
+      | undefined;
+    while (Date.now() < deadline) {
+      attempts += 1;
       const receipt = await draw();
+      const presentation = String(receipt.presentation);
+      presentations.set(presentation, (presentations.get(presentation) ?? 0) + 1);
+      lastReceipt = {
+        frameId: receipt.frameId,
+        presentation,
+        pendingReason: receipt.presentationPendingReason ?? null,
+      };
       if (receipt.presentation !== 'ready') {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
         continue;
@@ -525,7 +555,28 @@ it('samples the admitted SceneData tokens for Alpha Mask holes and posed Skin AO
         },
       });
     }
-    throw new Error('SceneData consumer did not reach a completed ready settlement frame');
+    const inspection = renderer.inspect();
+    const trace = debugHost.clusterWorkFrameTraceForConformance();
+    throw new Error(
+      `SceneData consumer did not reach a completed ready settlement frame: ${JSON.stringify({
+        attempts,
+        elapsedMs: Date.now() - startedAt,
+        presentations: [...presentations.entries()],
+        lastReceipt,
+        latestPlanFrameNumber: surfaceConsumer.latestPlan()?.frameNumber ?? null,
+        latestSubmittedWork: surfaceConsumer.submittedWorkSnapshots().at(-1) ?? null,
+        backend: inspection.capabilities.backendKind,
+        graphPassNames: inspection.output.graphPassNames,
+        frameTrace:
+          trace === undefined
+            ? null
+            : {
+                recordStatus: trace.recordStatus,
+                recordFrameNumber: trace.recordFrameNumber,
+                observationFrameId: trace.observationFrameId,
+              },
+      })}`,
+    );
   };
   const captureTarget = async (name: 'standard-scene-surface-normal' | 'ssao-raw') => {
     failureOperation = `capture-target:${name}`;

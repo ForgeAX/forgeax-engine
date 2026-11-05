@@ -16,7 +16,11 @@ import type { RenderPublicationIdentity } from '../publication/contract';
 import type { PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { DiffuseGiBudget } from '../raytracing/diffuse-gi-budget';
-import type { CandidatePipelineInput } from '../record/candidate-pipeline-preparation';
+import type {
+  CandidatePipelineDemandReader,
+  CandidatePipelineInput,
+} from '../record/candidate-pipeline-preparation';
+import { readCandidateViewDemand } from '../record/candidate-view-demand';
 import {
   readClusterWorkFrameTrace,
   readClusterWorkObservation,
@@ -171,7 +175,11 @@ function captureCameras(
  * submission. Each view is a Render World entity ({@link RenderView}); its
  * private recording state is the entity's {@link ViewRecorder}.
  */
-export function createCameraViews(internals: RenderSystemInternals, maxRenderShortSide = 0) {
+export function createCameraViews(
+  internals: RenderSystemInternals,
+  maxRenderShortSide = 0,
+  borrowAcceptedDemand?: RenderPublicationReceiver['borrowAcceptedDemand'],
+) {
   const renderWorld = internals.renderWorld ?? createRenderWorld();
   const views = new RenderViews(renderWorld);
   registerViewDrawSystems(renderWorld);
@@ -257,6 +265,29 @@ export function createCameraViews(internals: RenderSystemInternals, maxRenderSho
     active()
       ? recorders().map((view) => view.owner)
       : [primaryOwner, ...captureRecorders().map((view) => view.owner)];
+  const demandReader =
+    (owner: ViewSettlementOwner): CandidatePipelineDemandReader =>
+    (input, materials) => {
+      const accepted = borrowAcceptedDemand?.();
+      if (accepted === undefined) return undefined;
+      const view =
+        !active() && owner === primaryOwner
+          ? views.primary
+          : recorders().find(
+              (entry) => entry.owner === owner && (active() || entry.capture !== undefined),
+            )?.entity;
+      if (view === undefined) return undefined;
+      const pipeline = owner.internals.lookupMaterialShaderPipeline;
+      const entry = owner.internals.lookupMaterialShaderPipelineEntry;
+      if (pipeline === undefined || entry === undefined) return undefined;
+      const demand = readCandidateViewDemand(owner, accepted, {
+        materials,
+        preparation: input.preparation,
+        view,
+        ...(input.world === undefined ? {} : { world: input.world }),
+      });
+      return demand === undefined ? undefined : { ...demand, lookup: { pipeline, entry } };
+    };
   /** The draw receipts dynamic geometry reads: every recorder's, or the primary view's. */
   const drawReceipts = () =>
     active()
@@ -303,7 +334,9 @@ export function createCameraViews(internals: RenderSystemInternals, maxRenderSho
   return {
     async prepareCandidatePipelines(input: CandidatePipelineInput, signal?: AbortSignal) {
       const results = await Promise.all(
-        owners().map((owner) => prepareViewCandidatePipelines(owner, input, signal)),
+        owners().map((owner) =>
+          prepareViewCandidatePipelines(owner, input, signal, demandReader(owner)),
+        ),
       );
       const failed = results.find((result) => !result.ok);
       const release = () => {

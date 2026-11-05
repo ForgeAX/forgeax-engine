@@ -55,6 +55,15 @@ export {
   toRgba8,
 } from './image';
 export type { UnseededResource } from './initial-contents';
+export {
+  type PassPipelineCount,
+  type PassSummary,
+  type PassTargetSummary,
+  passLine,
+  type ResourceSummary,
+  summarizePasses,
+  summarizeResources,
+} from './pass-summary';
 export type { TapeBlobEntry, TapeContainerIndex } from './protocol/codec';
 export {
   decodeTape,

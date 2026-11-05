@@ -97,7 +97,7 @@ describe('create-app.test.ts', () => {
   });
 
   describe('syncCanvasDrawingBuffer host boundary', () => {
-    it('matches the physical drawing buffer to CSS size at the device pixel ratio', () => {
+    it('defaults the physical drawing buffer to CSS size at device DPR 2', () => {
       const canvas = {
         clientWidth: 800,
         clientHeight: 400,
@@ -109,8 +109,8 @@ describe('create-app.test.ts', () => {
       Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value: 2 });
       try {
         syncCanvasDrawingBuffer(canvas);
-        expect(canvas.width).toBe(1600);
-        expect(canvas.height).toBe(800);
+        expect(canvas.width).toBe(800);
+        expect(canvas.height).toBe(400);
       } finally {
         Object.defineProperty(globalThis, 'devicePixelRatio', {
           configurable: true,
@@ -131,8 +131,8 @@ describe('create-app.test.ts', () => {
       Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value: 3.5 });
       try {
         syncCanvasDrawingBuffer(canvas);
-        expect(canvas.width).toBe(988);
-        expect(canvas.height).toBe(2048);
+        expect(canvas.width).toBe(363);
+        expect(canvas.height).toBe(752);
       } finally {
         Object.defineProperty(globalThis, 'devicePixelRatio', {
           configurable: true,
@@ -181,8 +181,8 @@ describe('create-app.test.ts', () => {
       const before = globalThis.devicePixelRatio;
       Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, value: 2 });
       try {
-        syncCanvasDrawingBuffer(canvas);
-        syncCanvasDrawingBuffer(canvas);
+        syncCanvasDrawingBuffer(canvas, undefined, 2);
+        syncCanvasDrawingBuffer(canvas, undefined, 2);
         expect(width).toBe(256);
         expect(height).toBe(256);
       } finally {
@@ -220,8 +220,8 @@ describe('create-app.test.ts', () => {
       try {
         syncCanvasDrawingBuffer(canvas);
         syncCanvasDrawingBuffer(canvas);
-        expect(width).toBe(512);
-        expect(height).toBe(512);
+        expect(width).toBe(256);
+        expect(height).toBe(256);
       } finally {
         Object.defineProperty(globalThis, 'devicePixelRatio', {
           configurable: true,

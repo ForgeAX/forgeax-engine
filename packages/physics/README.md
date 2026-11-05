@@ -304,7 +304,7 @@ component is used by 2D and 3D (every field is dimension-agnostic).
 | `autoStepMaxHeight` | `f32` | `0.3` | Max auto-step height (`0` = off) |
 | `autoStepMinWidth` | `f32` | `0.2` | Min step width to be steppable |
 | `snapToGroundDist` | `f32` | `0.2` | Downhill ground-snap distance (`0` = off) |
-| `grounded` | `bool` | `false` | **Engine-written** — true after the last `moveAndSlide` resolved a ground contact. Read-only for game code. |
+| `grounded` | `bool` | `false` | **Engine-written** — true after the last `moveAndSlide` resolved a ground contact, or the explicit `synchronizeCharacter` handoff seed. Read-only for game code. |
 
 > [!NOTE]
 > `grounded` is a `bool` schema field; `world.get(e, CharacterController).value.grounded`
@@ -336,6 +336,19 @@ if (pw.hasBody(character)) {
 
 ## Character Movement: `moveAndSlide`
 
+For a 3D authoritative handoff, first author the character's `Collider` height,
+then call `pw.synchronizeCharacter(entity, {position: worldCenter, grounded})`.
+The existing kinematic body must have `CharacterController` and registered
+physics systems. This synchronizes only that entity's current authored collider
+and tuning, places its body/colliders/Transform and next-step target, clears native
+velocity, and seeds the Engine-owned grounded output. It neither advances the
+World nor synchronizes other pending bodies. Game gravity velocity remains
+game-owned. The next sweep computes fresh contact from the synchronized shape;
+there is no hidden previous-grounded input to restore in Rapier. Reconciliation
+sweeps may use `applyImpulsesToDynamicBodies: false` to avoid repeatedly pushing
+dynamic neighbors. This remains a mutating character operation, not a pure query
+or a general physics rollback. The 2D contract is unchanged.
+
 `PhysicsWorld.moveAndSlide(entity, desiredDelta): Vec3` (and the symmetric
 `PhysicsWorld2D.moveAndSlide(entity, desiredDelta: Vec2): Vec2`) is the engine's
 unopinionated kinematic character primitive (modeled on Unity
@@ -365,9 +378,14 @@ const actual = pw.moveAndSlide(character, vec3.create(dx, dy, dz)); // Vec3; Tra
 ```
 
 Requirements: the entity must carry a kinematic `RigidBody`, a `Collider`, and a
-`CharacterController`. There is no per-call options object and no `dt` parameter —
-tuning is read from the component each call, and the delta already encodes elapsed
-time. Spawn the collider at its resting height (capsule center = ground top +
+`CharacterController`. The 3D call optionally accepts
+`{ applyImpulsesToDynamicBodies: false }` to suppress native impulses on other
+dynamic bodies for that call. Omitting the option restores normal pushing, even
+on a reused controller. This still updates the character's pose, next kinematic
+target, attached colliders, `Transform`, and `grounded`; it is not a read-only
+query or a rollback transaction. Sensors and collision/pair filters are unchanged.
+There is no `dt` parameter: tuning is read from the component each call, and the
+delta already encodes elapsed time. Spawn the collider at its resting height (capsule center = ground top +
 radius + halfHeight); a capsule penetrating the floor has a degenerate contact and
 will not auto-step or report grounded correctly.
 

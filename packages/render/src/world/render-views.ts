@@ -186,7 +186,7 @@ export interface ViewHistory {
 const NO_TARGET = toShared<'RenderTarget'>(0);
 
 /** Explicit targets own their extent; display budgets combine using the stricter positive limit. */
-function displayShortSideLimit(
+export function displayShortSideLimit(
   authored: number,
   cap: number,
   target: RenderTarget | undefined,
@@ -362,7 +362,7 @@ function setExtent(state: ViewCameraState, width: number, height: number, eye: n
 }
 
 /** Resolve one view's extent, rectangle and final camera from the frame's source. */
-function resolveViewCamera(
+export function resolveViewCamera(
   world: World,
   view: Readonly<
     Pick<

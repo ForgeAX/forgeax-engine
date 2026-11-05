@@ -46,8 +46,11 @@ This applies to both Vite and the standalone source builder.
 Production and development publish the same `5.0.0` manifest: each WGSL source
 is identified by a domain-separated SHA-256 digest of its ordered fragment
 digests, while repeated source blocks are stored once in a shared fragment table.
-Material variants and direct entries refer to those identities. Identical ABI
-receipts and entry-read arrays are stored once; each row retains the exact
+Material variants and direct entries refer to those identities. A synchronous
+publication interns each immutable fact object once before canonical value
+deduplication; distinct equal objects still share the same table index. This
+identity reuse ends with that publication, so a later source or fact edit is
+read afresh. Identical ABI receipts and entry-read arrays are stored once; each row retains the exact
 receipt and entry-read references, including the distinction between missing and
 empty facts. Every pooled fragment, source sequence, receipt and entry-read
 reference is still validated;

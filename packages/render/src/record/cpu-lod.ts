@@ -1,4 +1,5 @@
-import type { MeshGpuHandles } from '../device/gpu-residency';
+import { mat4 } from '@forgeax/engine-math';
+import type { MeshGpuHandles, MeshGpuRange } from '../device/gpu-residency';
 import { type LodHeightCamera, projectedHeightForSnapshot } from '../gpu-driven/batch-topology';
 import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import type { RenderableSnapshot } from '../render-system-extract';
@@ -34,9 +35,93 @@ export function cpuLodLevel(
     projectedHeight: projectedHeightForSnapshot(source, camera),
     previousLevel: 0,
     hysteresis: source.lodHysteresis ?? DEFAULT_LOD_HYSTERESIS,
-    ready: [true, ...lods.map((_, index) => (ranges[index + 1]?.length ?? 0) > 0)],
+    ready: [true, ...lods.map((_, index) => ranges[index + 1]?.length === mesh.submeshes.length)],
     historyValid: false,
   }).level;
+}
+
+/** Consecutive original ordinals sharing a hard-selected resident level. */
+export interface CpuInstanceLodRun {
+  readonly first: number;
+  readonly count: number;
+  readonly level: number;
+}
+
+/** Instance transforms stay in their collection; only this camera's draw ranges change. */
+export function cpuInstanceLodRuns(
+  source: RenderableSnapshot,
+  mesh: MeshGpuHandles | undefined,
+  camera: LodHeightCamera,
+): readonly CpuInstanceLodRun[] | undefined {
+  const instances = source.instances;
+  if (
+    instances === undefined ||
+    (source.lods?.length ?? 0) === 0 ||
+    mesh === undefined ||
+    !mesh.indexed ||
+    mesh.lodRanges === undefined ||
+    source.skinBinding !== undefined ||
+    source.morph !== undefined
+  )
+    return undefined;
+  const { instances: _instances, ...rigid } = source;
+  const world = mat4.create();
+  const projectedSource = { ...rigid, transform: { world } };
+  const runs: CpuInstanceLodRun[] = [];
+  let first = 0;
+  let previous: number | undefined;
+  for (let ordinal = 0; ordinal < instances.instanceCount; ordinal++) {
+    mat4.multiply(world, source.transform.world, mat4.view(instances.transforms, ordinal));
+    const level = cpuLodLevel(projectedSource, mesh, camera);
+    if (previous !== undefined && previous !== level) {
+      runs.push({ first, count: ordinal - first, level: previous });
+      first = ordinal;
+    }
+    previous = level;
+  }
+  if (previous !== undefined)
+    runs.push({ first, count: instances.instanceCount - first, level: previous });
+  return runs;
+}
+
+type InstanceDrawWindow = {
+  readonly instanceCount: number;
+  readonly firstInstanceOrdinal?: number;
+  readonly firstInstance?: number;
+};
+
+/** Intersect existing resident pages with LOD runs, without moving matrices or identities. */
+export function cpuInstanceLodDraws<T extends InstanceDrawWindow>(
+  row: ValidatedRenderable,
+  submesh: number,
+  draws: readonly T[],
+): readonly (T & { readonly range?: MeshGpuRange })[] {
+  const runs = row.cpuInstanceLods;
+  if (runs === undefined) return draws;
+  const selected: (T & { readonly range?: MeshGpuRange })[] = [];
+  let cursor = 0;
+  for (const draw of draws) {
+    const first = draw.firstInstanceOrdinal ?? 0;
+    const end = first + draw.instanceCount;
+    while (cursor < runs.length && (runs[cursor]?.first ?? 0) + (runs[cursor]?.count ?? 0) <= first)
+      cursor++;
+    for (let index = cursor; index < runs.length; index++) {
+      const run = runs[index];
+      if (run === undefined || run.first >= end) break;
+      const start = Math.max(first, run.first);
+      const stop = Math.min(end, run.first + run.count);
+      const range = row.mesh.lodRanges?.[run.level]?.[submesh];
+      if (stop <= start || range === undefined) continue;
+      selected.push({
+        ...draw,
+        instanceCount: stop - start,
+        firstInstanceOrdinal: start,
+        firstInstance: (draw.firstInstance ?? 0) + start - first,
+        range,
+      });
+    }
+  }
+  return selected;
 }
 
 /** Per-mesh level views, retired with their resident handles. */
@@ -84,22 +169,31 @@ export function selectCpuLodRows(
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     if (row === undefined) continue;
+    const runs = cpuInstanceLodRuns(row.source, row.mesh, camera);
     const level = cpuLodLevel(row.source, row.mesh, camera);
     if (selection !== undefined && (row.source.lods?.length ?? 0) > 0) {
       const world = row.source.worldId;
       const entity = row.source.entityKey;
       if (!Number.isSafeInteger(world) || world < 0 || !Number.isSafeInteger(entity) || entity < 0)
         throw new RangeError('CPU LOD query requires exact nonnegative source identities');
-      const previous = selection.values;
-      if (
-        next === undefined &&
-        (previous[cursor] !== world ||
-          previous[cursor + 1] !== entity ||
-          previous[cursor + 2] !== level)
-      )
-        next = previous.slice(0, cursor);
-      next?.push(world, entity, level);
-      cursor += 3;
+      const record = (selected: number): void => {
+        const previous = selection.values;
+        if (
+          next === undefined &&
+          (previous[cursor] !== world ||
+            previous[cursor + 1] !== entity ||
+            previous[cursor + 2] !== selected)
+        )
+          next = previous.slice(0, cursor);
+        next?.push(world, entity, selected);
+        cursor += 3;
+      };
+      recordCpuLodLevels(level, runs, record);
+    }
+    if (runs !== undefined) {
+      projected ??= rows.slice();
+      projected[index] = { ...row, cpuInstanceLods: runs };
+      continue;
     }
     if (level === 0) continue;
     projected ??= rows.slice();
@@ -144,4 +238,17 @@ export function lodLevelHistogram(
   return [...counts]
     .sort((left, right) => left[0] - right[0])
     .map(([level, count]) => ({ level, count }));
+}
+
+/** Shadow cache witnesses include every original instance ordinal. */
+function recordCpuLodLevels(
+  level: number,
+  runs: readonly CpuInstanceLodRun[] | undefined,
+  record: (level: number) => void,
+): void {
+  if (runs === undefined) {
+    record(level);
+    return;
+  }
+  for (const run of runs) for (let ordinal = 0; ordinal < run.count; ordinal++) record(run.level);
 }

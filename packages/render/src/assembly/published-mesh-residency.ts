@@ -92,6 +92,10 @@ export function createPublishedMeshResidencyHost(options: {
       physical.commit();
     let released = false;
     let preparedPipelines: PreparedCandidatePipelines | undefined;
+    const releasePreparation = () => {
+      preparedPipelines?.release();
+      preparedPipelines = undefined;
+    };
     const pipelineAbort = new AbortController();
     const signal = preparationOptions?.signal;
     const abortPipelines = () => pipelineAbort.abort();
@@ -121,7 +125,7 @@ export function createPublishedMeshResidencyHost(options: {
         return completion;
       }
       pipelineAbort.abort();
-      preparedPipelines?.release();
+      releasePreparation();
       physicalReleased = true;
       const fence = lease.release(!published);
       // Keep the handle's payload identity reserved while an old allocation
@@ -216,12 +220,24 @@ export function createPublishedMeshResidencyHost(options: {
         ),
       );
     }
+    const currentFrame = (frame: FrameReceipt) =>
+      isCurrent() && frame.deviceGeneration === generation && options.isCurrentFrame(frame);
+    const laneFor = (entity: number) =>
+      options.recordStageLane(source.resources, entity, meshHandle);
     return ok({
       deviceGeneration: generation,
       isCurrent: () => isCurrent() && preparedPipelines?.isCurrent() !== false,
       release,
+      consumeRecordStage: (frame, entity) => {
+        // A real current draw proves its own complete raster demand. Hidden or
+        // unused assets retain their preparation proof until actual consumption.
+        if (!currentFrame(frame) || !Number.isSafeInteger(entity)) return undefined;
+        const lane = laneFor(entity);
+        if (lane !== undefined) releasePreparation();
+        return lane;
+      },
       recordStageLane: (frame, entity) => {
-        if (!isCurrent() || frame.deviceGeneration !== generation || !options.isCurrentFrame(frame))
+        if (!currentFrame(frame))
           return err(
             new RenderPublicationError({
               reason: 'revision',
@@ -232,7 +248,7 @@ export function createPublishedMeshResidencyHost(options: {
           return err(
             new RenderPublicationError({ reason: 'shape', subject: 'mesh evidence entity' }),
           );
-        return ok(options.recordStageLane(source.resources, entity, meshHandle));
+        return ok(laneFor(entity));
       },
     });
   };

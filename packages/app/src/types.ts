@@ -202,6 +202,8 @@ export interface CanvasDrawingBufferSize {
 export interface CreateAppOptions extends InputAttachOptions {
   /** Host facts and scheduling for local execution. */
   readonly platform?: Platform;
+  /** Canvas drawing-buffer pixels per CSS pixel (default 1); set explicitly for higher-resolution output. */
+  readonly canvasPixelRatio?: number;
   /** Opt into realm-local engine execution. Omission preserves the existing local assembly path. */
   readonly execution?: ExecutionOptions;
   /**

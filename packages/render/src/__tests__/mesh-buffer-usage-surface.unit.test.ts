@@ -27,6 +27,10 @@ const consumerSources = [
     names: ['GPU_BUFFER_USAGE_VERTEX', 'GPU_BUFFER_USAGE_COPY_DST'],
   },
 ];
+const spriteDrawSource = readFileSync(
+  new URL('../record/main-pass-sprite-draws.ts', import.meta.url),
+  'utf8',
+);
 const featureBufferSources = [
   {
     source: readFileSync(new URL('../record/target-capture-lighting.ts', import.meta.url), 'utf8'),
@@ -53,7 +57,7 @@ const featureBufferSources = [
     names: ['GPU_BUFFER_USAGE_STORAGE', 'GPU_BUFFER_USAGE_UNIFORM', 'GPU_BUFFER_USAGE_COPY_DST'],
   },
   {
-    source: readFileSync(new URL('../record/main-pass-sprite-draws.ts', import.meta.url), 'utf8'),
+    source: readFileSync(new URL('../record/sprite-instance-buffer.ts', import.meta.url), 'utf8'),
     names: ['GPU_BUFFER_USAGE_STORAGE', 'GPU_BUFFER_USAGE_UNIFORM', 'GPU_BUFFER_USAGE_COPY_DST'],
   },
   {
@@ -94,6 +98,12 @@ describe('render buffer usage owner', () => {
         expect(source).not.toMatch(new RegExp(`const ${name}\\s*=`));
       }
     }
+  });
+
+  it('delegates Sprite collections to the geometry instance owner without private allocation', () => {
+    expect(spriteDrawSource).toContain('resolveGeometryInstanceBuffer(');
+    expect(spriteDrawSource).not.toContain('createBuffer(');
+    expect(spriteDrawSource).not.toContain('uploadSpriteInstanceBuffer(');
   });
 
   it('keeps shadow-depth readback out of the renderer factory', () => {

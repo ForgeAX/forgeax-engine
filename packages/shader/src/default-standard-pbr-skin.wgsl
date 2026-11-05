@@ -590,7 +590,7 @@ fn standardReceivesShadows(in : VsOut) -> bool {
 #if STORAGE_BUFFER_AVAILABLE == true
   return meshReceivesShadows(meshes[0].temporal.y);
 #else
-  return true;
+  return meshReceivesShadows(f32(meshes[0].surface.w));
 #endif
 #endif
 }

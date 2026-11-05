@@ -46,6 +46,8 @@ export class PlanarCaptureState {
         previous.target !== camera.target ||
         previous.camera.planarReflection?.requestVersion !==
           camera.planarReflection.requestVersion ||
+        previous.camera.planarReflection?.generateMipmaps !==
+          camera.planarReflection.generateMipmaps ||
         frame - previous.frame >= camera.planarReflection.updateIntervalFrames);
     // The next submission is ordered after the pending capture on the same
     // queue. Its texture already belongs to that camera, even before the CPU

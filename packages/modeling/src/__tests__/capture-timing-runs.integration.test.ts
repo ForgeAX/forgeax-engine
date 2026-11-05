@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCapture } from '@forgeax/engine-modeling/tools';
@@ -9,13 +9,18 @@ import { distDigest } from '../tools/build-identity';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 let directory = '';
 
-const PACK = `import { definePack, definePackageId } from '@forgeax/engine-pack/source';
+const PACK = (tracePath: string) => `import { appendFile } from 'node:fs/promises';
+import { definePack, definePackageId } from '@forgeax/engine-pack/source';
 import { model, sel } from '@forgeax/engine-modeling';
+let builds = 0;
 export default definePack({
   schemaVersion: '2.0.0',
   packageId: definePackageId('01900000-0000-7000-8000-00000000a5e1'),
   parameters: [{ name: 'height', type: 'f32', default: 1, minimum: 0.1, maximum: 4 }],
-  build({ values }) {
+  async build({ values }) {
+    await appendFile(${JSON.stringify(tracePath)}, JSON.stringify(values.height) + '\\n');
+    // A warm rebuild can wait longer while producing the same geometry.
+    if (++builds === 2) await new Promise((resolve) => setTimeout(resolve, 250));
     const m = model();
     m.box({ size: [1, values.height, 1], tag: 'shell' });
     m.subdivide(sel.all(), { levels: 3 });
@@ -27,7 +32,7 @@ export default definePack({
 
 beforeAll(async () => {
   directory = await mkdtemp(join(root, '.isolation-timing-'));
-  await writeFile(join(directory, 'crate.pack.ts'), PACK);
+  await writeFile(join(directory, 'crate.pack.ts'), PACK(join(directory, 'runs.jsonl')));
 });
 
 afterAll(async () => {
@@ -43,10 +48,13 @@ describe('capture timing runs', () => {
     if (!result.ok) throw new Error(result.error.code);
     const { timing } = result.value;
     for (const field of ['cold', 'hot', 'local', 'final'] as const) {
+      expect(Number.isFinite(timing[field]), field).toBe(true);
       expect(timing[field], field).toBeGreaterThan(0);
     }
     expect(timing.cold).toBe(timing.buildMs);
-    expect(timing.hot as number).toBeLessThan(timing.cold as number);
+    expect(timing.hot).toBeGreaterThanOrEqual(200);
+    const trace = await readFile(join(directory, 'runs.jsonl'), 'utf8');
+    expect(trace.trim().split('\n').map(Number)).toEqual([1, 1, 2, 1]);
     expect(timing.env).toEqual({
       distDigest: distDigest(fileURLToPath(new URL('../../dist/', import.meta.url))),
       kernelSha: TS_KERNEL_DIGEST,

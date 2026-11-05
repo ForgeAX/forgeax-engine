@@ -499,12 +499,17 @@ export interface VolumetricFogShaderSources {
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface DepthPyramidShaderSources {
+  readonly seedFragment?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly reduceFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly seed: string | import('@forgeax/engine-types').ShaderSource;
   readonly reduce: string | import('@forgeax/engine-types').ShaderSource;
 }
 
 /** Stable utility entry-point sources emitted by the shader manifest. */
 export interface SsrShaderSources {
+  readonly composeFragment?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly traceFragment?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly temporalFragment?: string | import('@forgeax/engine-types').ShaderSource;
   readonly trace: string | import('@forgeax/engine-types').ShaderSource;
   readonly temporal: string | import('@forgeax/engine-types').ShaderSource;
   readonly compose: string | import('@forgeax/engine-types').ShaderSource;
@@ -512,6 +517,7 @@ export interface SsrShaderSources {
 
 /** Stable analytic-atmosphere entry-point sources emitted by the shader manifest. */
 export interface AtmosphereShaderSources {
+  readonly lutsFragment: string | import('@forgeax/engine-types').ShaderSource;
   readonly luts: string | import('@forgeax/engine-types').ShaderSource;
   readonly compose: string | import('@forgeax/engine-types').ShaderSource;
   readonly ibl: string | import('@forgeax/engine-types').ShaderSource;
@@ -751,8 +757,11 @@ export interface Renderer {
  */
 export type RendererState = 'alive' | 'device-lost' | 'recovering' | 'faulted' | 'disposed';
 
-/** Immutable, inspectable quality and budget policy for the Standard pipeline. */
-export type RenderProfile = StandardProfile;
+/** Immutable Standard quality and budget policy. `auto` prefers Deferred on an
+ * admitted capable device, otherwise Forward; inspection reports the resolved path. */
+export type RenderProfile = Omit<StandardProfile, 'renderPath'> & {
+  readonly renderPath: StandardProfile['renderPath'] | 'auto';
+};
 
 /** Ordered events projected from renderer state and expected-operation failures. */
 export type RendererEvent =
@@ -1156,7 +1165,7 @@ export interface RenderInspection {
     readonly staleLossEvents: number;
   };
   readonly surface: 'available' | 'released';
-  readonly profile: RenderProfile;
+  readonly profile: StandardProfile;
   readonly capabilities: Readonly<RhiCaps>;
   readonly limits?: Readonly<Record<string, number>>;
   readonly frame: {

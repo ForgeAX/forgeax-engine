@@ -31,7 +31,12 @@ import {
 } from '@forgeax/engine-pack/source-node';
 import { validateCanonicalKitReceipt } from '@forgeax/engine-preview';
 import type { SsrAdmissionIdentity } from '@forgeax/engine-render';
-import { createMaterialPackCooker, listMaterialSourcePaths } from '@forgeax/engine-shader-compiler';
+import {
+  captureMaterialSourceSnapshot,
+  createMaterialPackCooker,
+  listMaterialSourcePaths,
+  type MaterialSourceSnapshot,
+} from '@forgeax/engine-shader-compiler';
 import {
   createStandaloneRuntimeAssetBinding,
   DEFAULT_LOAD_PROGRESS_LABELS,
@@ -2615,15 +2620,32 @@ function projectSourceIgnorePath(
   return (path: string) => ignoreSource(path) || failedSources.has(path);
 }
 
+async function captureBuildMaterialSources(
+  command: string,
+  roots: readonly string[],
+  sourceSnapshot: PluginSourceInventory['sourceSnapshot'],
+  projectRoot: string,
+): Promise<MaterialSourceSnapshot | undefined> {
+  if (command !== 'build') return undefined;
+  return captureMaterialSourceSnapshot(roots, {
+    readText: (path) => sourceSnapshot.readText(path),
+    paths: (sourceRoots) =>
+      sourceSnapshot.observePaths(resolve(projectRoot, '.forgeax/material-source-snapshot'), () =>
+        listMaterialSourcePaths(sourceRoots),
+      ),
+  });
+}
+
 function createBuiltinCookers(
   roots: readonly string[],
   materialProfile: BuildOptions['materialProfile'] | undefined,
+  sourceSnapshot?: MaterialSourceSnapshot,
 ) {
   return [
-    createMaterialPackCooker(
-      roots,
-      materialProfile === undefined ? {} : { profile: materialProfile },
-    ),
+    createMaterialPackCooker(roots, {
+      ...(materialProfile === undefined ? {} : { profile: materialProfile }),
+      ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
+    }),
     createParticleCodeNativeCookerFromRoots(roots),
   ];
 }
@@ -3073,7 +3095,13 @@ export async function createViteConfig(
     ];
     timing('material-packages');
     const roots = packRoots(sourceRoots, canonicalKit);
-    const builtinCookers = createBuiltinCookers(roots, options.materialProfile);
+    const materialSources = await captureBuildMaterialSources(
+      command,
+      roots,
+      sourceSnapshot,
+      facts.root,
+    );
+    const builtinCookers = createBuiltinCookers(roots, options.materialProfile, materialSources);
     const outputVersions = createStandardAssetOutputProducerRegistry(
       [...scanned.value.declarations.values()].flatMap((declaration) =>
         declaration.format === 'pack.ts'

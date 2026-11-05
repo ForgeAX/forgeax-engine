@@ -4,6 +4,7 @@ import { capsuleConeHalfAngle } from '../capsule-shadow/frame';
 import { inspectCapsuleShadow } from '../capsule-shadow/inspection';
 import { targetCaptureWork } from '../capture/faces';
 import { PlanarCaptureState } from '../capture/planar-state';
+import { planarReflectionLevels } from '../capture/planar-target';
 import { encodePlanarReflectionUniform } from '../capture/planar-uniform';
 import { PlanarReflectionInvalidError } from '../components/planar-reflection';
 import type { ProjectedDecalInvalidError } from '../decals/component';
@@ -49,6 +50,7 @@ import {
 import { retainedFoldInstanceKeys } from './fold-instance-buffer';
 import { canRetainMaterialBindings } from './material-binding-index';
 import { materialGeometry } from './material-geometry';
+import { foldRenderableSnapshot } from './mesh-ssbo';
 import { prepareScenePasses, scenePassRequests } from './scene-pass-work';
 import { shadowViewPlanesByView } from './shadow-culling';
 import { prepareShadowMaterialPipelines } from './shadow-pass';
@@ -1278,7 +1280,16 @@ function writePlanarReflectionUniform(
   pipelineState: PipelineState,
   planarCapture: ReturnType<PlanarCaptureState['current']>,
 ): void {
-  const planarUniform = encodePlanarReflectionUniform(planarCapture?.camera);
+  const planarUniform = encodePlanarReflectionUniform(
+    planarCapture?.camera,
+    planarCapture === undefined
+      ? 1
+      : planarReflectionLevels(
+          internals.device,
+          planarCapture.camera.planarReflection,
+          planarCapture.physical.descriptor,
+        ),
+  );
   const planarUpload = internals.device.queue.writeBuffer(
     pipelineState.viewUniformBuffer,
     PLANAR_REFLECTION_UNIFORM_OFFSET,
@@ -1650,10 +1661,7 @@ export function prepareFrameGraphInputs(
               world,
               frameState,
               transparentDispatch,
-              renderables.map((source) => ({
-                transform: source.transform,
-                material: source.material.snapshot,
-              })),
+              renderables.map((source) => foldRenderableSnapshot(source, source.material.snapshot)),
             ),
     );
 

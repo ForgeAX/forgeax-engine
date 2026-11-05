@@ -113,10 +113,10 @@ const SPRITE_FILE = fileURLToPath(
   new URL('../../../render/src/record/main-pass-sprite-draws.ts', import.meta.url),
 );
 describe('production-path shared instance bind-group resolver', () => {
-  it('sprite identity and sprite-instance paths use the shared resolver', () => {
+  it('sprite identity and collection paths use the shared geometry resolver', () => {
     const src = readFileSync(SPRITE_FILE, 'utf8');
-    expect(src).toContain('const spriteInstBg = resolveGeometryInstancesBindGroup(');
-    expect(src).toContain('const spriteInstancesBg = resolveGeometryInstancesBindGroup(');
+    expect(src).toContain('resolveGeometryInstancesBindGroup(c, identity, undefined)');
+    expect(src).toContain('resolveGeometryInstanceBuffer(c, spriteEntry, identityDraws, false)');
   });
 });
 
@@ -127,18 +127,28 @@ const SPRITE_INSTANCES_FILE = fileURLToPath(
 );
 
 describe('production-path sprite instanceBuffers world-aware key', () => {
-  it('Instances and SpriteInstances both upload through the shared owner', () => {
+  it('Instances and SpriteInstances reach their shared residency owners', () => {
     const src = readFileSync(SPRITE_FILE, 'utf8');
-    expect(src).toContain('uploadSpriteInstanceBuffer(');
+    expect(src).toContain('resolveGeometryInstanceBuffer(c, spriteEntry, identityDraws, false)');
     expect(src).not.toContain('frameState.instanceBuffers.');
+    const geometry = readFileSync(
+      new URL('../../../render/src/record/main-pass-geometry.ts', import.meta.url),
+      'utf8',
+    );
+    expect(geometry).toContain('resolveSpriteInstanceDraws(c, entry)');
     expect(readFileSync(SPRITE_INSTANCES_FILE, 'utf8')).toContain('uploadSpriteInstanceBuffer(');
   });
 
   it('the shared owner keys get and set by the world-aware key', () => {
     const src = readFileSync(SPRITE_INSTANCES_FILE, 'utf8');
     expect(src).toContain('const key = worldEntityKey(worldId, snapshot.cacheKey);');
-    expect(src).toContain('frameState.instanceBuffers.get(key)');
-    expect(src).toContain('frameState.instanceBuffers.set(key, active)');
+    expect(src).toContain('const cache = spritePageCache(frameState, key, pageStart);');
+    expect(src).toContain('const address = pageStart ?? key;');
+    expect(src).toContain('cache.get(address)');
+    expect(src).toContain('cache.set(address, active)');
+    expect(src).toContain('let cache = frameState.instanceBuffers;');
+    expect(src).toContain('frameState.instanceBufferChunks?.get(key)');
+    expect(src).toContain('frameState.instanceBufferChunks?.set(key, cache)');
   });
 });
 

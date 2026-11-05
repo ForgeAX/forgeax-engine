@@ -87,7 +87,7 @@ function texture(
       format: 'rgba16float',
       size: { width, height, depthOrArrayLayers: layers },
       mipLevelCount: mips,
-      usage,
+      usage: runtime.device.caps.storageTexture ? usage : usage & ~0x08,
       textureBindingViewDimension: undefined,
     })
     .unwrap();
@@ -99,6 +99,7 @@ function texture(
 export function atmosphereMediumKey(environment: SelectedEnvironmentFrame): string {
   if (environment.source.kind !== 'atmosphere') return '';
   const {
+    backgroundOnly: _backgroundOnly,
     capturePosition: _capture,
     groundOrigin: _origin,
     aerialPerspectiveStart: _start,
@@ -169,7 +170,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
         key,
         references: 0,
         scope,
-        transmittance: texture(runtime, scope, 'atmosphere-transmittance', 256, 64, 1, 1, 0x0c),
+        transmittance: texture(runtime, scope, 'atmosphere-transmittance', 256, 64, 1, 1, 0x1c),
         multipleScattering: texture(
           runtime,
           scope,
@@ -178,7 +179,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
           32,
           1,
           1,
-          0x0c,
+          0x1c,
         ),
       };
     } catch (error) {
@@ -277,6 +278,12 @@ export function retainAtmosphere(
   runtime: Runtime,
   environment: SelectedEnvironmentFrame,
 ): AtmosphereLease {
+  if (environment.source.kind === 'atmosphere' && environment.source.atmosphere.backgroundOnly)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'full Atmosphere for environment, cube and planar captures',
+      hint: 'backgroundOnly supplies display sky only; remove captures or select full Atmosphere on a capable device',
+    });
   return select(runtime, environment).retain();
 }
 function lease(runtime: Runtime, storage: Generation): AtmosphereLease {

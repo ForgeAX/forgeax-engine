@@ -136,6 +136,11 @@ the existing bounded file-I/O owner. A canceled integrity tail is unverified;
 retain every artifact and the SQLite-only mutable-store exclusion. See
 [SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
 
+For a source-consumer job cancellation, compare complete stage timings first.
+After the independent cold Engine rebuild, Preview and View use that rebuild's
+shared manifest. Preserve the source-edit proof, full Browser journeys and
+integrity checks; duplicate input production does not justify a longer deadline.
+
 If a source consumer with precompiled Rapier unexpectedly requests Rust, compare
 its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the
 3D SIMD glue and declarations. Follow [native artifact admission](../../scripts/ci/README.md#native-rapier-artifact-admission);

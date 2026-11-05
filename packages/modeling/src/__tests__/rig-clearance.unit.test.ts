@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CLEARANCE_PRECISION,
   CONTACT_DISTANCE,
+  nearest,
+  partGeometry,
   type ScanPair,
   triangleDistance,
 } from '../interference';
@@ -11,6 +13,50 @@ import { type Rig, rig } from '../rig';
 import { sel } from '../selectors';
 
 type P = readonly [number, number, number];
+
+it('nearest preserves the exact distance without visiting distant triangle leaves first', () => {
+  const m = model();
+  for (let i = 0; i < 16; i++) m.box({ size: [1, 1, 1], center: [i * 4, 0, 0] });
+  const part = partGeometry(m.editMesh, 'separated-boxes', m.editMesh.faces(), true);
+  const exhaustive = (p: P) => {
+    let best = Infinity;
+    for (let i = 0; i < part.tris.length; i += 9) {
+      const triangle: readonly P[] = [
+        [part.tris[i] as number, part.tris[i + 1] as number, part.tris[i + 2] as number],
+        [part.tris[i + 3] as number, part.tris[i + 4] as number, part.tris[i + 5] as number],
+        [part.tris[i + 6] as number, part.tris[i + 7] as number, part.tris[i + 8] as number],
+      ];
+      best = Math.min(best, pointTriangleDistance(p, triangle));
+    }
+    return best;
+  };
+  for (const point of [
+    [-0.75, 0.2, 0.1],
+    [60.75, -0.2, 0.1],
+    [31.5, 2, 3],
+    [0, 0, 0.5],
+  ] as const) {
+    expect(nearest(part, point)).toBe(exhaustive(point));
+  }
+  let reads = 0;
+  const watched = {
+    ...part,
+    tris: new Proxy(part.tris, {
+      get(target, property) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) reads++;
+        return Reflect.get(target, property, target);
+      },
+    }),
+  };
+  for (const point of [
+    [-0.75, 0.2, 0.1],
+    [60.75, -0.2, 0.1],
+  ] as const) {
+    reads = 0;
+    expect(nearest(watched, point)).toBe(0.25);
+    expect(reads).toBeLessThanOrEqual(9 * 32);
+  }
+});
 
 /**
  * A 10 mm wide, 4 mm thick plate slides 2 m along x over a fixed plate of the same size,

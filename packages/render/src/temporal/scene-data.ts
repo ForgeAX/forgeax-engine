@@ -101,6 +101,8 @@ export type StandardSceneSurfaceAdmission =
       readonly lane: SceneDataLane;
       readonly renderPath: 'forward' | 'deferred';
       readonly status: 'available';
+      /** Full contributor proof, independent of diagnostic row retention. */
+      readonly deferredGBufferEmpty?: boolean;
       readonly producer: StandardSceneSurfaceProducer;
       readonly missingContributorIds: readonly [];
     }
@@ -112,7 +114,11 @@ export type StandardSceneSurfaceAdmission =
       readonly lane: SceneDataLane;
       readonly renderPath: 'forward' | 'deferred' | undefined;
       readonly status: 'unavailable';
+      readonly deferredGBufferEmpty?: boolean;
       readonly reason: 'producer-missing' | 'coverage-incomplete';
+      /** Stock Deferred AO precedes valid Forward-only opaque writers. This
+       * does not certify full-scene normal/depth coverage for feature consumers. */
+      readonly deferredAoCompatible?: boolean;
       readonly missingContributorIds: readonly string[];
       readonly missingContributors: readonly StandardSceneDataMissingContributor[];
       readonly omittedMissingContributorCount: number;

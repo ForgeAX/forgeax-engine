@@ -14,6 +14,8 @@ export default definePack({
         speed: 5.5,
         jumpSpeed: 6.25,
         gravity: 17,
+        transform: { $asset: guidText(assetGuid(PACKAGE_IDS.character, 'animation/player-transform')) },
+        wheels: { $asset: guidText(assetGuid(PACKAGE_IDS.character, 'animation/player-wheels')) },
         walk: { $asset: guidText(assetGuid(PACKAGE_IDS.character, 'animation/player-walk')) },
       },
     },

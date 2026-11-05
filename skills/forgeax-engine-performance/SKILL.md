@@ -306,6 +306,8 @@ These finite gates do not prove every caller is optimal or zero-allocation.
 
 | Owner or population | Apply this rule | Counterexample/control |
 | --- | --- | --- |
+| Exact nearest-geometry queries | Visit nearer conservative bounds first and tighten the existing exact minimum before farther siblings | Exhaustive distances from both ends and on the surface, bounded actual triangle reads, identical complete motion reports and whole-owner cold/query CPU |
+| Native-only material test production | Use the existing backend target, file-owned bounded cooker and package-local program codec; retain validated byte views until real wire encoding | Portable producer parity, complete consumed artifacts, fresh Registry/device state, current and held material values, native pixels and complete ordinary-owner timing |
 | Composite/string keys | Reuse existing numeric slots or producer identity before inventing another registry | Slot reuse/generation, realm transfer, collision equality and full key construction cost |
 | Packed numeric/spatial keys | Validate integer ranges and exact decoding; preserve the original quantization | Safe-integer overflow, 32-bit coercion, negative/fractional coordinates and traversal order |
 | Tiny/sparse lookup fanout | Use existing inline-first or singleton representations only where their limited API fits | Stored undefined, SameValueZero, insertion order, iteration-time changes and actual overflow fanout |
@@ -318,6 +320,8 @@ These finite gates do not prove every caller is optimal or zero-allocation.
 | Reusable private ledgers | Reuse pending/accepted cells with bounded numeric generations; detach callbacks from mutable work domains | Commit, rejection, clear and held callbacks preserve exact facts without retaining retired resources |
 | Transaction rollback | Journal this transaction's fresh additions when that is the existing invariant | Retain snapshots for arbitrary replacement/removal; abort/retry and completion leases still protect accepted resources |
 | Context service lookup inside simulation | Resolve the injected service at plugin activation and retain it for that Fiber lifetime | Unload/reinstall and dependency invalidation; no global service cache |
+| A collection whose count changes every frame (spawned/retired members) reallocates GPU Scene rows, direct instance buffers, bind groups or bounds hierarchies | Reserve through the shared `dynamicCapacity`/`shouldShrinkCapacity` policy at each owner; a count change inside the reservation resizes in place, keeps addresses, buffers and bind groups, and clears only the released tail | First publication stays exact; growth past the reservation and large shrinks still reallocate; retained rows keep their temporal history and diff-only uploads; the uniform fallback keeps its fixed array |
+| A full re-derive walks the same rows in separate validate, copy and reduce passes | Fuse the passes per leaf node and use branch-free `Math.min`/`Math.max` folds; build identity columns with a loop and memoize their uniqueness proof | Measure on scattered real data: a compare-and-store branch mispredicts there and loses to the shared fold; keep invalid-row and NaN rejection |
 
 A cache hit can still allocate its optional-input or diagnostic collections.
 Read the same live flags in their original order, then build names/descriptors
@@ -449,7 +453,12 @@ sensitivity control, not an equivalent-work optimization.
 | Frozen source/native inputs | Verify the full payload identity even for a README-only input change; identical JS wrappers do not prove identical WASM/native bytes |
 | Backend commands and bundle replay | Count virtual preparation/matching separately from native execution; one bundle call can follow many source command checks |
 | CI placement costs | Use complete file/owner timings, including skipped-file process overhead; interrupted work supplies no completion sample. Preserve the full roster, assertions and deadlines; a scheduling estimate requires complete final-head CI acceptance |
+| Selected coverage evidence | Apply the actual project wrapper's exclusions and type mode before deriving membership; verify the intended cases in the result JSON before claiming qualification |
+| Sampled test attribution | Check actual operation and phase durations before choosing an owner; keep intrusive probes separate from complete ordinary windows and compare full outputs after conservative predicate rejection |
 | Private instrumentation or CPU stub | Separate diagnosis from ordinary acceptance; Node/Null/stub results do not establish browser/native GPU timing or FPS |
+| Vsync-capped FPS | A capped mean near the display rate hides headroom; also report main-thread busy ms/frame from a CPU profile (non-idle samples over frames) and an uncapped heavier workload measured identically on both builds |
+| Shared or loaded host | Record load before and after each run, gate starts on a load ceiling and interleave before/after builds; a run that the host stalled is noise for both builds, not a regression or a gain |
+| Node microbenchmarks of a hot loop | Use the real data distribution (scattered transforms, real counts); a uniform synthetic input can reverse a branch-versus-fold decision. Confirm every kept change in the real game profile |
 
 A queue fake retaining synchronous upload input must copy its exact byte window
 before scratch reuse. Keep byte assertions and separately verify real GPU
@@ -505,3 +514,10 @@ When animation times are externally sampled, zero playback speed does not permit
 skipping pose evaluation. Retain events, normalization and target updates while
 avoiding unchanged clock writes; verify paused, wrapping and externally edited
 targets through the same animation owner.
+
+For fixed-input material builds, capture WGSL records and their complete path
+namespace through the existing Pack source fence, then pass an explicit
+`captureMaterialSourceSnapshot` result to the material cooker. Never apply this
+lifetime to live/default callers. Transport DDC admission requires the product
+cache's producer checks and an explicit pure, sink-free policy identity; cached
+dependency topology may order work but cannot admit or skip publication.

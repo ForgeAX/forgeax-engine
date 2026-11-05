@@ -29,17 +29,26 @@ import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { createAsyncDynamicGeometryHost } from '../async-dynamic-geometry';
 import {
   Camera,
+  CameraView,
   DirectionalLight,
   MeshFilter,
   MeshRenderer,
   PointLight,
   PointLightShadow,
+  SkyboxBackground,
   Skylight,
   SpotLight,
   Visibility,
   VisibilityStateValue,
 } from '../components';
-import { ANTIALIAS_FXAA, ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
+import {
+  ANTIALIAS_FXAA,
+  ANTIALIAS_NONE,
+  ANTIALIAS_TAA,
+  BLOOM_DISABLED,
+} from '../components/camera';
+import { ClippingPlanes, clippingPlanesData } from '../components/clipping-planes';
+import { Outline } from '../components/outline';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { createDynamicGeometryLifecycle } from '../dynamic-geometry';
 import type { RenderFeature } from '../features/types';
@@ -48,7 +57,15 @@ import { standardPipeline } from '../pipeline/standard-pipeline';
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { createRenderPublisher } from '../publication/publisher';
 import { encodeRenderPublication, renderPublicationTransfers } from '../publication/record';
-import type { RenderPipeline as EngineRenderPipeline } from '../render-pipeline';
+import * as candidateViewDemand from '../record/candidate-view-demand';
+import { registerScenePass } from '../record/scene-pass-work';
+import * as scenePipelinePreparation from '../record/scene-pipeline-preparation';
+import {
+  createRenderPipelineTarget,
+  type RenderPipeline as EngineRenderPipeline,
+} from '../render-pipeline';
+import { COLOR_PASS_SELECTOR } from '../systems/pass-selector';
+import { addTypedScenePass } from '../typed-render-graph-primitives';
 import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -68,9 +85,13 @@ struct CandidateVertex { @location(0) position: vec3<f32> }
 @vertex fn vs_scene_index(input: CandidateVertex) -> @builtin(position) vec4<f32> {
   return vec4<f32>(input.position, 1.0);
 }
+@vertex fn vs_temporal(input: CandidateVertex) -> @builtin(position) vec4<f32> {
+  return vec4<f32>(input.position, 1.0);
+}
 @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_opaque() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 @fragment fn fs_gbuffer() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
+@fragment fn fs_temporal() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }
 `;
 
 const reflectedClusterAbi = {
@@ -382,6 +403,7 @@ async function fixture(
   };
   return {
     renderer,
+    identity,
     host,
     errors,
     canvas,
@@ -930,6 +952,502 @@ async function finish<T>(f: Awaited<ReturnType<typeof fixture>>, pending: Promis
   await drawUntil(f, () => settled);
   return result;
 }
+
+it.each([
+  'before',
+  'after',
+] as const)('transfers candidate proof to normal drawing when Worker preparation is %s publication', async (ordering) => {
+  const { RenderMeshResidency } = await import(
+    new URL('../../../app/src/execution/render-mesh-residency.ts', import.meta.url).href
+  );
+  const f = await fixture('color', true);
+  const demand = vi.spyOn(candidateViewDemand, 'readCandidateViewDemand');
+  const post = vi.fn();
+  const worker = new RenderMeshResidency(f.renderer, f.identity, post);
+  try {
+    f.release();
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    await first.release();
+    if (ordering === 'after') {
+      f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+      await f.draw();
+    }
+    const releaseUploads = f.queue.holdCompletions();
+    const pending = worker.receive({
+      kind: 'mesh-prepare',
+      requestId: 1,
+      entity: f.entity,
+      input: structuredClone(f.publishedInput()),
+    });
+    for (let turn = 0; turn < 4; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(post).not.toHaveBeenCalled();
+    const beforeValidation = demand.mock.calls.length;
+    releaseUploads();
+    await pending;
+    expect(post.mock.calls[0]?.[0].result.ok).toBe(true);
+    expect(demand.mock.calls.length).toBeGreaterThan(beforeValidation);
+    if (ordering === 'before') f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+    const receipt = await f.draw();
+    const afterPublication = demand.mock.calls.length;
+    expect(
+      worker.consumed({ ...receipt }, f.world.getResource(FixedTime).tick).bindings,
+    ).toHaveLength(0);
+    for (let repeat = 0; repeat < 4; repeat++) {
+      expect(
+        Array.from(worker.consumed(receipt, f.world.getResource(FixedTime).tick).bindings),
+      ).toContain(1);
+    }
+    expect(
+      demand.mock.calls.length,
+      'published Worker leases must not rebuild candidate demand per draw',
+    ).toBe(afterPublication);
+    f.world.set(f.camera, Camera, { antialias: ANTIALIAS_FXAA }).unwrap();
+    const changedView = await f.draw();
+    expect(changedView.presentation).toBe('ready');
+    expect(f.renderer.inspect().perFramePassNames).toContain('fxaa');
+    expect(
+      Array.from(worker.consumed(changedView, f.world.getResource(FixedTime).tick).bindings),
+    ).toContain(1);
+    expect(demand.mock.calls.length).toBe(afterPublication);
+    f.world.set(f.entity, MeshFilter, { assetHandle: f.previous }).unwrap();
+    const replaced = await f.draw();
+    expect(worker.consumed(replaced, f.world.getResource(FixedTime).tick).bindings).toHaveLength(0);
+    await worker.dispose();
+    expect(worker.consumed(changedView, f.world.getResource(FixedTime).tick).bindings).toHaveLength(
+      0,
+    );
+  } finally {
+    await worker.dispose();
+    demand.mockRestore();
+    await f.dispose();
+  }
+});
+
+it.each([
+  'deferred-gpu',
+  'temporal-gpu',
+  'global-sky-gpu',
+  'global-sky-outline-idle-gpu',
+  'global-sky-outline-selected-gpu',
+  'point-shadow-direct',
+] as const)('prepares a new mesh from the installed graph and warm PSOs without another record frame (%s)', async (lane) => {
+  const f = await fixture('color', true, lane === 'point-shadow-direct');
+  const controller = new AbortController();
+  const outline =
+    lane === 'global-sky-outline-idle-gpu' || lane === 'global-sky-outline-selected-gpu';
+  const globalSky = lane === 'global-sky-gpu' || outline;
+  const declarations =
+    lane === 'global-sky-outline-idle-gpu'
+      ? vi.spyOn(scenePipelinePreparation, 'scenePipelinePreparations')
+      : undefined;
+  const cubeStatus = globalSky
+    ? vi.spyOn(GpuResidencyCache.prototype, 'getCubemapStatus')
+    : undefined;
+  try {
+    f.release();
+    if (globalSky) {
+      f.assets.installDecoder(equirectContribution.kind, equirectContribution.decoder);
+      const sky = f.assets
+        .create({
+          kind: 'equirect',
+          width: 4,
+          height: 2,
+          format: 'rgba16float',
+          colorSpace: 'linear',
+          data: new Uint8Array(64),
+        })
+        .unwrap();
+      f.world
+        .spawn(
+          { component: Skylight, data: { equirect: sky, intensity: 0.7 } },
+          { component: SkyboxBackground, data: { equirect: sky } },
+        )
+        .unwrap();
+      let skyReady = false;
+      for (let frame = 0; frame < 60 && !skyReady; frame++) {
+        const receipt = await f.draw();
+        skyReady =
+          receipt.presentation === 'ready' &&
+          cubeStatus?.mock.calls.some(
+            ([handle], index) =>
+              Number(handle) === Number(sky) && cubeStatus.mock.results[index]?.value === 'ready',
+          ) === true;
+      }
+      expect(
+        skyReady,
+        'the actual published equirect IBL owner must settle before warm preparation',
+      ).toBe(true);
+    }
+    if (lane === 'temporal-gpu') {
+      f.world.set(f.camera, Camera, { antialias: ANTIALIAS_TAA }).unwrap();
+      await f.draw();
+    }
+    if (outline) {
+      f.world.components.register(Outline).unwrap();
+      // The Game retains its actor outline while idle by selecting the meshless camera.
+      f.world
+        .addComponent(f.camera, {
+          component: Outline,
+          data: {
+            entities: [lane === 'global-sky-outline-idle-gpu' ? f.camera : f.entity],
+            width: 1,
+          },
+        })
+        .unwrap();
+      await f.draw();
+    }
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    expect(first.isCurrent()).toBe(true);
+    if (globalSky) {
+      expect(f.renderer.inspect().reflectionProbes.factCount).toBe(0);
+      expect(f.renderer.inspect().reflectionProbes.activeCount).toBe(0);
+    }
+    if (lane !== 'point-shadow-direct')
+      expect(
+        f.asyncPipelines.mock.calls.some(
+          ([descriptor]) => descriptor.vertex.entryPoint === 'vs_scene_index',
+        ),
+      ).toBe(true);
+    if (lane === 'temporal-gpu') {
+      expect(f.renderer.inspect().temporal.mode).toBe('taa');
+      expect(
+        f.asyncPipelines.mock.calls.some(
+          ([descriptor]) => descriptor.fragment?.entryPoint === 'fs_gbuffer',
+        ),
+      ).toBe(true);
+    }
+    const positions = f.candidateMesh.attributes.position;
+    if (!(positions instanceof Float32Array)) throw new Error('Missing candidate positions');
+    const mesh = createMeshBuilder({
+      attributes: {
+        ...f.candidateMesh.attributes,
+        position: positions.map((value) => value * 0.9),
+      },
+      ...(f.candidateMesh.indices === undefined ? {} : { indices: f.candidateMesh.indices }),
+      submeshes: f.candidateMesh.submeshes,
+      materialSlots: f.candidateMesh.materialSlots,
+    })
+      .build()
+      .unwrap();
+    const handle = f.assets.create(mesh).unwrap();
+    const compilations = f.asyncPipelines.mock.calls.length;
+    const warmBefore = f.renderer.inspect().featureGraph?.candidatePipelines;
+    let settled: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>> | undefined;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(
+        structuredClone(f.publishedInput(f.entity, handle, mesh)),
+        'received',
+        { signal: controller.signal },
+      )
+      .then((result) => {
+        settled = result;
+        return result;
+      });
+    // Advance native Promise delivery, deliberately without renderer.draw().
+    for (let turn = 0; turn < 8 && settled === undefined; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.asyncPipelines.mock.calls.length).toBe(compilations);
+    const declared = declarations?.mock.results.at(-1)?.value;
+    expect(
+      settled,
+      `warm candidate must settle without the next RenderRecord; typed pass metadata ${JSON.stringify({ count: declared?.length, missingDemand: declared?.filter((pass) => pass.demand === undefined).length })}`,
+    ).toBeDefined();
+    const second = (await pending).unwrap();
+    expect(f.renderer.inspect().featureGraph?.candidatePipelines?.warmReady).toBe(
+      (warmBefore?.warmReady ?? 0) + 1,
+    );
+    expect(second.isCurrent()).toBe(true);
+    expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
+    await second.release();
+    await first.release();
+  } finally {
+    controller.abort();
+    cubeStatus?.mockRestore();
+    declarations?.mockRestore();
+    await f.dispose();
+  }
+});
+
+it('keeps candidate-local material table IDs independent of the accepted scene namespace', async () => {
+  const f = await fixture('color', true);
+  const controller = new AbortController();
+  try {
+    f.release();
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    const original = structuredClone(f.publishedInput());
+    const preparation = original.pipelinePreparation;
+    const snapshot = preparation.template.snapshot;
+    const localId = (id: number) => (id === 0 ? 0 : id + 5000);
+    const input = {
+      ...original,
+      pipelinePreparation: {
+        ...preparation,
+        materials: preparation.materials.map((row) => ({ ...row, id: localId(row.id) })),
+        template: {
+          ...preparation.template,
+          snapshot: {
+            ...snapshot,
+            material: localId(snapshot.material),
+            materials: snapshot.materials.map(localId),
+            ...(snapshot.materialOverrides === undefined
+              ? {}
+              : {
+                  materialOverrides: snapshot.materialOverrides.map(localId),
+                }),
+          },
+        },
+      },
+    };
+    expect(input.pipelinePreparation.materials.map((row) => row.value.materialHandle)).toEqual(
+      preparation.materials.map((row) => row.value.materialHandle),
+    );
+    expect(input.pipelinePreparation.template.dispatch).toEqual(preparation.template.dispatch);
+    const before = f.renderer.inspect().featureGraph?.candidatePipelines;
+    let settled: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>> | undefined;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(input, 'received', { signal: controller.signal })
+      .then((result) => {
+        settled = result;
+        return result;
+      });
+    for (let turn = 0; turn < 8 && settled === undefined; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled, 'local material IDs do not name accepted scene materials').toBeDefined();
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+    expect(f.renderer.inspect().featureGraph?.candidatePipelines?.warmReady).toBe(
+      (before?.warmReady ?? 0) + 1,
+    );
+    await prepared.release();
+    await first.release();
+  } finally {
+    controller.abort();
+    await f.dispose();
+  }
+});
+
+it.each([
+  'capture',
+  'opaque-selection',
+] as const)('keeps an unqualified graph %s on the ordinary Record route even when display PSOs are warm', async (kind) => {
+  const pipeline: EngineRenderPipeline = {
+    build(context, topology) {
+      const result = standardPipeline.build(context, topology);
+      if (result.ok && kind === 'opaque-selection') {
+        const color = createRenderPipelineTarget(context.graph, 'opaque-selection-color', {
+          format: 'rgba16float',
+          size: 'surface',
+        }).unwrap();
+        const depth = createRenderPipelineTarget(context.graph, 'opaque-selection-depth', {
+          format: 'depth32float-stencil8',
+          size: 'surface',
+        }).unwrap();
+        addTypedScenePass(context.graph, {
+          name: 'opaque-selection',
+          color,
+          depth,
+          selector: COLOR_PASS_SELECTOR,
+          selection: 'camera-outline',
+          // An arbitrary callback still takes precedence over the declared recipe.
+          selectEntities: (frame) => ({ worldId: frame.camera.worldId ?? 0, entities: [] }),
+        }).unwrap();
+      }
+      if (result.ok && kind === 'capture')
+        registerScenePass(context.graph, {
+          selector: undefined,
+          excludeSelector: undefined,
+          recordMode: undefined,
+          passKind: 'forward',
+          gpu: false,
+          gpuFilter: undefined,
+          late: false,
+          capture: true,
+          camera: () => undefined,
+        });
+      return result;
+    },
+  };
+  const f = await fixture('color', true, false, false, false, [], pipeline);
+  const controller = new AbortController();
+  try {
+    f.release();
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    const before = f.renderer.inspect().featureGraph?.candidatePipelines;
+    let settled = false;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received', {
+        signal: controller.signal,
+      })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    for (let turn = 0; turn < 8; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(f.renderer.inspect().featureGraph?.candidatePipelines?.unsupportedGraph).toBe(
+      (before?.unsupportedGraph ?? 0) + 1,
+    );
+    const prepared = (await finish(f, pending)).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+    await prepared.release();
+    await first.release();
+  } finally {
+    controller.abort();
+    await f.dispose();
+  }
+});
+
+it('rechecks current outline selection before a warm candidate completes its upload fence', async () => {
+  const f = await fixture('color', true);
+  let releaseFence: (() => void) | undefined;
+  try {
+    f.release();
+    f.world.components.register(Outline).unwrap();
+    f.world
+      .addComponent(f.camera, {
+        component: Outline,
+        data: { entities: [f.camera], width: 1 },
+      })
+      .unwrap();
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    await f.draw();
+    const graph = f.renderer.inspect().recoveryEvidence.graph;
+    const compilationCount = f.asyncPipelines.mock.calls.length;
+    releaseFence = f.queue.holdCompletions();
+    let settled = false;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received')
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    for (let turn = 0; turn < 8; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(f.asyncPipelines).toHaveBeenCalledTimes(compilationCount);
+    // Change the current selection, not graph topology or the candidate's mesh/material recipe.
+    f.world.set(f.camera, Outline, { entities: [f.entity] }).unwrap();
+    // Keep accepted metadata ahead of recording with a real pending environment upload.
+    f.assets.installDecoder(equirectContribution.kind, equirectContribution.decoder);
+    const sky = f.assets
+      .create({
+        kind: 'equirect',
+        width: 4,
+        height: 2,
+        format: 'rgba16float',
+        colorSpace: 'linear',
+        data: new Uint8Array(64),
+      })
+      .unwrap();
+    f.world.spawn({ component: Skylight, data: { equirect: sky } }).unwrap();
+    const submitted = await f.submit();
+    expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
+    releaseFence();
+    releaseFence = undefined;
+    expect((await pending).ok, 'new selection must require its exact coverage pipelines').toBe(
+      false,
+    );
+    expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
+    expect((await submitted.receipt.completed).ok).toBe(true);
+    submitted.recycle();
+    await first.release();
+  } finally {
+    releaseFence?.();
+    await f.dispose();
+  }
+});
+
+it('rechecks accepted clipping demand while a warm candidate still waits for its upload fence', async () => {
+  const f = await fixture('color', true);
+  let releaseFence: (() => void) | undefined;
+  try {
+    f.release();
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    expect(first.isCurrent()).toBe(true);
+    // Settle the first hidden material's ordinary graph/resource contribution.
+    await f.draw();
+    const graph = f.renderer.inspect().recoveryEvidence.graph;
+    const compilationCount = f.asyncPipelines.mock.calls.length;
+    releaseFence = f.queue.holdCompletions();
+    let settled = false;
+    const pending = f.renderer
+      .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received')
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    for (let turn = 0; turn < 8; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled, 'warm pipeline proof must not bypass physical upload completion').toBe(false);
+    expect(f.asyncPipelines).toHaveBeenCalledTimes(compilationCount);
+    f.world
+      .addComponent(f.camera, {
+        component: ClippingPlanes,
+        data: clippingPlanesData({ planes: [[1, 0, 0, 0]], clipShadows: true }),
+      })
+      .unwrap();
+    // A real pending environment upload stops this accepted packet before another Record.
+    f.assets.installDecoder(equirectContribution.kind, equirectContribution.decoder);
+    const sky = f.assets
+      .create({
+        kind: 'equirect',
+        width: 4,
+        height: 2,
+        format: 'rgba16float',
+        colorSpace: 'linear',
+        data: new Uint8Array(64),
+      })
+      .unwrap();
+    f.world.spawn({ component: Skylight, data: { equirect: sky } }).unwrap();
+    const submitted = await f.submit();
+    expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
+    expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
+    releaseFence();
+    releaseFence = undefined;
+    expect((await pending).ok, 'new accepted demand must invalidate the earlier warm proof').toBe(
+      false,
+    );
+    expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
+    expect((await submitted.receipt.completed).ok).toBe(true);
+    submitted.recycle();
+    await first.release();
+  } finally {
+    releaseFence?.();
+    await f.dispose();
+  }
+});
 
 async function compilationStarted(
   f: Awaited<ReturnType<typeof fixture>>,
@@ -1684,6 +2202,97 @@ it('does not acknowledge view Feature work when a native PSO submits only a prep
     expect(ready).toBe(true);
     expect(submitted).toHaveBeenCalledTimes(1);
   } finally {
+    await f.dispose();
+  }
+});
+
+it.each([
+  'forward',
+  'deferred',
+] as const)('keeps the complete composed surface untouched while %s view pipelines are pending', async (renderPath) => {
+  const f = await fixture(renderPath === 'forward' ? 'transmission' : 'color');
+  expect(f.renderer.setProfile({ ...f.renderer.inspect().profile, renderPath }).ok).toBe(true);
+  const acquire = vi.spyOn(RhiNullCanvasContext.prototype, 'getCurrentTexture');
+  const draws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'draw');
+  const indirect = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexedIndirect');
+  const direct = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexed');
+  try {
+    if (renderPath === 'forward') {
+      // An HDR auxiliary view can have a ready native pipeline while the
+      // display pipeline is held. Both still share this frame's barrier.
+      const created = f.renderer.createRenderTarget({
+        shape: '2d',
+        width: 32,
+        height: 32,
+        format: 'rgba16float',
+        mipLevels: 1,
+        sampleCount: 1,
+        sampled: true,
+        readback: false,
+      });
+      if (!created.ok) throw created.error;
+      const target = created.value;
+      f.world
+        .spawn(
+          { component: Transform, data: { pos: [0, 0, 8] } },
+          {
+            component: Camera,
+            data: {
+              fov: Math.PI / 3,
+              aspect: 1,
+              near: 0.1,
+              far: 100,
+              target: f.world.allocSharedRef('RenderTarget', target),
+              antialias: ANTIALIAS_NONE,
+              bloom: BLOOM_DISABLED,
+            },
+          },
+        )
+        .unwrap();
+    }
+    f.world
+      .addComponent(f.camera, {
+        component: CameraView,
+        data: { viewport: [0, 0, 0.5, 1], order: 0 },
+      })
+      .unwrap();
+    f.world
+      .spawn(
+        { component: Transform, data: { pos: [0, 0, 8] } },
+        {
+          component: Camera,
+          data: {
+            fov: Math.PI / 3,
+            aspect: 1,
+            near: 0.1,
+            far: 100,
+            antialias: ANTIALIAS_NONE,
+            bloom: BLOOM_DISABLED,
+          },
+        },
+        { component: CameraView, data: { viewport: [0.5, 0, 0.5, 1], order: 1 } },
+      )
+      .unwrap();
+    f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
+    const pending = await f.draw();
+    expect(f.held.length).toBeGreaterThan(0);
+    expect(pending.presentation).toBe('pending');
+    expect(acquire).not.toHaveBeenCalled();
+    expect(draws).not.toHaveBeenCalled();
+    expect(indirect).not.toHaveBeenCalled();
+    expect(direct).not.toHaveBeenCalled();
+    f.release();
+    let ready = false;
+    for (let frame = 0; frame < 30 && !ready; frame++)
+      ready = (await f.draw()).presentation === 'ready';
+    expect(ready).toBe(true);
+    expect(acquire).toHaveBeenCalled();
+    expect(draws.mock.calls.length + indirect.mock.calls.length).toBeGreaterThan(0);
+  } finally {
+    acquire.mockRestore();
+    draws.mockRestore();
+    indirect.mockRestore();
+    direct.mockRestore();
     await f.dispose();
   }
 });

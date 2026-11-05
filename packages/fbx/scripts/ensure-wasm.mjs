@@ -2,14 +2,23 @@
 // ensure-wasm.mjs — postinstall best-effort hydration of the fbx pkg/ WASM.
 // Thin config over scripts/lib/ensure-wasm-lib.mjs (shared with -codec, -wgpu-wasm).
 
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG = join(SCRIPT_DIR, '..', 'pkg');
 const presenceMarkers = [join(PKG, 'fbx-wasm.mjs'), join(PKG, 'fbx-wasm.wasm')];
-if (presenceMarkers.every(existsSync)) {
+const ready = presenceMarkers.every((path) => {
+  if (!existsSync(path)) return false;
+  const stats = statSync(path);
+  return stats.isFile() && stats.size > 0;
+});
+if (process.argv.includes('--check')) {
+  if (!ready) process.stderr.write('[fbx] complete nonempty glue and WASM payloads are required.\n');
+  process.exit(ready ? 0 : 1);
+}
+if (ready) {
   process.stdout.write('[fbx] pkg/ WASM already present -- skipping fetch.\n');
   process.exit(0);
 }
@@ -19,6 +28,7 @@ process.exit(
   ensureWasm({
     pkgLabel: 'fbx',
     presenceMarkers,
+    ready,
     fetchScript: join(SCRIPT_DIR, 'fetch-wasm.mjs'),
     skipEnv: 'FORGEAX_SKIP_FBX_WASM_FETCH',
     buildHint:

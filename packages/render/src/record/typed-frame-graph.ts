@@ -418,6 +418,7 @@ function importSsrHistoryTarget(
   role: 'read' | 'write',
   extent: RenderExtent | undefined,
   surface = false,
+  storage = true,
 ): import('../render-pipeline').RenderPipelineTarget {
   const resolveSurface = (frame: RenderPipelineFrame) => {
     const internal = frame as import('./render-context')._InternalRenderPipelineContext;
@@ -434,7 +435,10 @@ function importSsrHistoryTarget(
       role === 'read'
         ? (candidate.readSlot ?? (candidate.writeSlot === 0 ? 1 : 0))
         : candidate.writeSlot;
-    return owner.resources.slots[slot];
+    const resolved = owner.resources.slots[slot];
+    if (resolved === undefined)
+      throw new Error('SSR history slot is outside the admitted resource cohort');
+    return resolved;
   };
   const texture = graph.importTexture(
     label,
@@ -442,16 +446,16 @@ function importSsrHistoryTarget(
       format: surface ? 'rgba8unorm' : 'rgba16float',
       size:
         extent === undefined
-          ? 'half-surface'
+          ? 'surface'
           : {
-              width: Math.max(1, Math.floor(extent.internalWidth / 2)),
-              height: Math.max(1, Math.floor(extent.internalHeight / 2)),
+              width: Math.max(1, Math.floor(extent.internalWidth)),
+              height: Math.max(1, Math.floor(extent.internalHeight)),
             },
       usage:
         GPU_TEXTURE_USAGE_COPY_SRC |
         GPU_TEXTURE_USAGE_COPY_DST |
         GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        GPU_TEXTURE_USAGE_STORAGE_BINDING |
+        (storage ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0) |
         GPU_TEXTURE_USAGE_TEXTURE_BINDING,
       domain: 'linear-hdr',
     },
@@ -476,18 +480,20 @@ function importSsrHistoryTarget(
 function importSsrHistoryTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   extent: RenderExtent | undefined,
+  storage: boolean,
 ): NonNullable<
   import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['ssrHistory']
 > {
   return {
-    previous: importSsrHistoryTarget(graph, 'ssr-history-previous', 'read', extent),
-    output: importSsrHistoryTarget(graph, 'ssr-history-output', 'write', extent),
+    previous: importSsrHistoryTarget(graph, 'ssr-history-previous', 'read', extent, false, storage),
+    output: importSsrHistoryTarget(graph, 'ssr-history-output', 'write', extent, false, storage),
     previousSurface: importSsrHistoryTarget(
       graph,
       'ssr-history-previous-surface',
       'read',
       extent,
       true,
+      storage,
     ),
     outputSurface: importSsrHistoryTarget(
       graph,
@@ -495,6 +501,7 @@ function importSsrHistoryTargets(
       'write',
       extent,
       true,
+      storage,
     ),
     params: (() => {
       const imported = graph.importBuffer(
@@ -1880,6 +1887,9 @@ function topologyOf(
     },
     camera: cameraTopologyOf(camera, clearOnly),
     atmosphere: !clearOnly && frameState.environmentFrame?.source.kind === 'atmosphere',
+    atmosphereBackgroundOnly:
+      frameState.environmentFrame?.source.kind === 'atmosphere' &&
+      frameState.environmentFrame.source.atmosphere.backgroundOnly,
     output: outputTopologyOf(camera, frameState, clearOnly),
     temporal: {
       taa: camera.antialias === 'taa',
@@ -2304,7 +2314,12 @@ function importStandardOutputInputs(
   topology: RenderPipelineTopology,
 ): Result<Pick<StandardGraphInputs, 'standardOutput'>, RenderGraphError> {
   const autoExposure =
-    topology.output?.autoExposure === true ? importAutoExposureGraphResources(builder) : undefined;
+    topology.output?.autoExposure === true
+      ? importAutoExposureGraphResources(
+          builder,
+          topology.lane.compute && topology.lane.storageBuffer ? 'compute' : 'fragment',
+        )
+      : undefined;
   if (autoExposure !== undefined && !autoExposure.ok) return autoExposure;
   const colorLut =
     topology.output?.colorLut === true ? importColorLutSource(builder, frameState) : undefined;
@@ -2337,7 +2352,9 @@ function importStandardGraphInputs(
       : createTargetCoverageAttachment(builder, topology.extent);
   if (targetCoverage !== undefined && !targetCoverage.ok) return targetCoverage;
   const ssrHistory =
-    ssr?.status === 'admitted' ? importSsrHistoryTargets(builder, topology.extent) : undefined;
+    ssr?.status === 'admitted'
+      ? importSsrHistoryTargets(builder, topology.extent, topology.lane.compute)
+      : undefined;
   return ok({
     ...standardOutput.value,
     ...(taaHistory === undefined ? {} : { taaHistory }),
@@ -3092,10 +3109,21 @@ export function compileTargetCaptureFrameGraph(
   if (!shadows.ok) throw shadows.error;
   const targets =
     probe === undefined
-      ? addTargetCaptureGraphPasses(graph, state, {
-          shadows: shadows.value,
-          accesses: buffers.value === null ? [] : standardClusterReadAccesses(buffers.value),
-        })
+      ? addTargetCaptureGraphPasses(
+          graph,
+          state,
+          {
+            shadows: shadows.value,
+            accesses: buffers.value === null ? [] : standardClusterReadAccesses(buffers.value),
+          },
+          undefined,
+          ({ pass, resources, source, format }) => {
+            const sourceView = resources.textureView(source);
+            if (!sourceView.ok) throw sourceView.error;
+            const encoded = encodeMipmapLevel(internals.device, pass, sourceView.value, format);
+            if (!encoded.ok) throw encoded.error;
+          },
+        )
       : addReflectionProbeGraphPasses(graph, { work: [probe] }, undefined, shadows.value);
   if (!targets.ok) throw targets.error;
   const compiled = graph.compile({

@@ -1490,6 +1490,7 @@ function atmosphereParametersOf(
   const groundY = atmosphereWorld?.[13] ?? 0;
   const groundZ = atmosphereWorld?.[14] ?? 0;
   return {
+    backgroundOnly: world[worldRead].getFieldValue(entity, Atmosphere, 'backgroundOnly') === 1,
     planetRadius: world[worldRead].getFieldValue(entity, Atmosphere, 'planetRadius') as number,
     atmosphereHeight: world[worldRead].getFieldValue(
       entity,

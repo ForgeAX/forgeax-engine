@@ -3,6 +3,14 @@ import { expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { comparePixels, displayPixels, readyFrames, verifyReplay } from './render.fixture';
 
+export const flatShadingMaterialTypes = [
+  'MeshLambertMaterial',
+  'MeshStandardMaterial',
+  'MeshPhysicalMaterial',
+] as const;
+
+type FlatShadingMaterialType = (typeof flatShadingMaterialTypes)[number];
+
 export async function verifyFlatShading(
   renderer: THREE.WebGPURenderer,
   oracle?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<Uint8Array>,
@@ -11,6 +19,7 @@ export async function verifyFlatShading(
     capture: THREE.ThreeFrameCapture,
     expected?: Uint8Array,
   ) => Promise<void>,
+  materialType?: FlatShadingMaterialType,
 ) {
   const scene = new THREE.Scene();
   const orthographic = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
@@ -37,7 +46,10 @@ export async function verifyFlatShading(
       clearcoatRoughness: 0.1,
     }),
   ];
-  const mesh = new THREE.Mesh(geometry, materials[0]);
+  const selectedMaterials = materials.filter(
+    (material) => materialType === undefined || material.type === materialType,
+  );
+  const mesh = new THREE.Mesh(geometry, selectedMaterials[0]);
   mesh.rotation.set(0.2, 0.35, 0.1);
   const light = new THREE.DirectionalLight(0xffffff, 2);
   light.position.set(1, 2, 3);
@@ -55,7 +67,7 @@ export async function verifyFlatShading(
   await renderer.init();
   try {
     await readyFrames(renderer, scene, camera, 60);
-    for (const material of materials) {
+    for (const material of selectedMaterials) {
       mesh.material = material;
       mesh.geometry = geometry;
       const smooth = await frame(`${material.type}-smooth`);

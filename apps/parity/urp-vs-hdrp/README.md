@@ -19,9 +19,18 @@ exposes `window.__captureLeft` / `window.__captureRight` for the
 The renderer profile and lane identity are the only configuration difference;
 no pipeline registry or install step is involved.
 
-The two independent hosts initialize concurrently, then their Worlds submit
-the initial scene frames concurrently. Startup logs identify host preparation,
-World preparation and completed-frame boundaries. Both
+The two independent hosts initialize concurrently, then each World completes
+its first scene picture before the peer submits. This keeps a cold GPU frame
+from holding the other host's pending barrier behind native compilation.
+Startup logs identify host preparation, World preparation and completed-frame boundaries. Both
 ready completion receipts are required before either capture hook is published.
-The Browser startup deadline remains 30 seconds; both renderers, snapshots and
-pixel comparisons retain the ordinary scene path.
+The Browser startup deadline remains 30 seconds, each ready-frame deadline
+remains 15 seconds and the regression case remains bounded at 90 seconds.
+Both renderers, snapshots and pixel comparisons retain the ordinary scene path.
+
+The single-cube lighting fixture sets `gpuOcclusion: false`: no object can
+occlude another, so building a hierarchical-depth pyramid adds unrelated cold
+GPU work. GPU visibility, cluster membership and indirect PBR draws remain
+active. The Browser regression also enables the default occlusion path on both
+real devices and requires byte-identical pictures before restoring the lighting
+profile and running the original light removal/restoration controls.

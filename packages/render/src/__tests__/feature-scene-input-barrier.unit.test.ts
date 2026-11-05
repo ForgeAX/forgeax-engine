@@ -114,7 +114,11 @@ it.each([
       data: {
         state: host.world.allocUniqueRef('ViewGraphSeal', {
           frame: 1,
-          prepared: { internals, cubeCapture: { sceneInputs: owner.work } },
+          prepared: {
+            internals,
+            frameState: { pipelinePreparationPending: false },
+            cubeCapture: { sceneInputs: owner.work },
+          },
           outcome: { kind: 'sealed', graph: {}, value: {} },
         }),
       },

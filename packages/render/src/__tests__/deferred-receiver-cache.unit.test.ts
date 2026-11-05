@@ -9,6 +9,7 @@ import { addStandardDeferredLighting } from '../pipeline/standard-deferred-light
 import { buildPerFrameBindGroups } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { createStandardSceneSurfaceAdmission } from '../temporal/standard-scene-data-admission';
 
 vi.mock('../record/frame-lighting', () => ({ buildPerFrameBindGroups: vi.fn() }));
 vi.mock('../record/main-pass-material', () => ({ prepareMaterialSkylight: vi.fn() }));
@@ -64,6 +65,7 @@ async function fixture() {
   }).unwrap();
   const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encodeDirect;
   expect(encode).toBeDefined();
+  const frameState = {};
   const frame = {
     runtime: {
       device,
@@ -74,7 +76,7 @@ async function fixture() {
           createShaderModuleImmediate(device, desc),
       },
     },
-    frameState: {},
+    frameState,
     validatedOrdered: [],
     pipelineState: { viewBindGroupLayout: layout, defaultWhiteTextureView: stable },
     bindGroupCounts: { createBindGroup: 0, keys: [] },
@@ -92,6 +94,7 @@ async function fixture() {
   return {
     device,
     frame,
+    frameState,
     createGroup,
     context,
     encode,
@@ -127,6 +130,37 @@ it('rebinds Deferred geometry when only the receiver texture view changes', asyn
     value: replacement,
   });
   expect(context.pass.setBindGroup).toHaveBeenCalledTimes(12);
+  dispose();
+});
+
+it('retains the attachment pass but creates no lighting pipeline for a proven empty GBuffer', async () => {
+  const { device, frameState, context, encode, dispose } = await fixture();
+  const makePipeline = vi.spyOn(device, 'createRenderPipeline');
+  const admission = createStandardSceneSurfaceAdmission({
+    viewIdentity: 'main',
+    generation: 1,
+    deviceGeneration: 1,
+    standardPipeline: true,
+    cameraAvailable: true,
+    lane: 'clustered',
+    renderPath: 'deferred',
+    contributors: [],
+  });
+  Object.assign(frameState, { standardSceneSurfaceAdmission: admission });
+  encode?.(context.pass, context.frame, context.resources);
+  expect(makePipeline).not.toHaveBeenCalled();
+  expect(context.pass.draw).not.toHaveBeenCalled();
+  // A cached graph must immediately resume lighting when current-view proof
+  // is absent, or when an empty proof belongs to an older device generation.
+  Object.assign(frameState, {
+    standardSceneSurfaceAdmission: { ...admission, deviceGeneration: 0 },
+  });
+  encode?.(context.pass, context.frame, context.resources);
+  expect(makePipeline).toHaveBeenCalledTimes(1);
+  expect(context.pass.draw).toHaveBeenCalledTimes(1);
+  Object.assign(frameState, { standardSceneSurfaceAdmission: undefined });
+  encode?.(context.pass, context.frame, context.resources);
+  expect(context.pass.draw).toHaveBeenCalledTimes(2);
   dispose();
 });
 

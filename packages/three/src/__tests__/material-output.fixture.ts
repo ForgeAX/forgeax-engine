@@ -2,6 +2,7 @@ import * as THREE from '@forgeax/engine/three';
 import { expect, it } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
+import materialOutputPartitions from './material-output-partitions.json' with { type: 'json' };
 import {
   browserRendererFixture,
   comparePixels,
@@ -11,33 +12,54 @@ import {
 } from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
 
-const cases = [
-  'normal',
-  'opaque-map',
-  'alpha-map',
-  'hash',
-  'cutoff',
-  'coverage',
-  'normal-premultiplied',
-  'additive-premultiplied',
-  'subtractive',
-  'multiply',
-  'custom',
-  'double-sided',
-] as const;
-
-const materialOutputCases = [
-  ...cases,
-  ...cases.filter((name) => name !== 'normal').map((name) => `standard-${name}`),
-  'physical-double-sided',
-];
+function configureOutputMaterial(
+  material: THREE.Material,
+  name: string,
+  texture: THREE.DataTexture,
+  bytes: Uint8Array,
+): void {
+  if (name === 'opaque-map' || name === 'cutoff' || name === 'coverage')
+    (material as THREE.MeshBasicMaterial).map = texture;
+  if (name === 'alpha-map') {
+    for (let i = 0; i < 64; i++)
+      bytes.set([Math.round((i * 255) / 63), 255 - Math.round((i * 255) / 63), 0, 255], i * 4);
+    (material as THREE.MeshBasicMaterial).alphaMap = texture;
+    material.transparent = true;
+  }
+  if (name === 'hash') {
+    material.alphaHash = true;
+    material.opacity = 0.5;
+  }
+  if (name === 'cutoff' || name === 'coverage') material.alphaTest = 0.5;
+  if (name === 'coverage') material.alphaToCoverage = true;
+  if (name.endsWith('premultiplied') || ['subtractive', 'multiply', 'custom'].includes(name)) {
+    material.transparent = true;
+    material.opacity = 0.4;
+    material.premultipliedAlpha = true;
+    if (name === 'additive-premultiplied') material.blending = THREE.AdditiveBlending;
+    if (name === 'subtractive') material.blending = THREE.SubtractiveBlending;
+    if (name === 'multiply') material.blending = THREE.MultiplyBlending;
+    if (name === 'custom') {
+      material.blending = THREE.CustomBlending;
+      material.blendSrc = THREE.OneFactor;
+      material.blendDst = THREE.OneMinusSrcColorFactor;
+    }
+  }
+  if (name === 'double-sided') {
+    material.transparent = true;
+    material.opacity = 0.4;
+    material.side = THREE.DoubleSide;
+  }
+}
 
 // Every declared case belongs to exactly one browser process, including new cases.
-export function testMaterialOutputPartition(partition: 0 | 1): void {
+export function testMaterialOutputPartition(partition: 0 | 1 | 2 | 3): void {
   const rendererFor = browserRendererFixture();
-  it.each(
-    materialOutputCases.filter((_, index) => index % 2 === partition),
-  )('matches WebGPU material output: %s', { timeout: 120000 }, async (caseName) => {
+  const cases = materialOutputPartitions[partition];
+  if (cases === undefined) throw new Error('Material output partition is missing');
+  it.each(cases)('matches WebGPU material output: %s', {
+    timeout: 120000,
+  }, async (caseName) => {
     const physical = caseName.startsWith('physical-');
     const standard = physical || caseName.startsWith('standard-');
     const name = caseName.replace(/^(standard|physical)-/, '');
@@ -59,38 +81,7 @@ export function testMaterialOutputPartition(partition: 0 | 1): void {
             ? new THREE.MeshStandardMaterial({ color: 0xf0a060 })
             : new THREE.MeshBasicMaterial({ color: 0xf0a060 });
     if (standard) scene.add(new THREE.AmbientLight(0xffffff, Math.PI));
-    if (name === 'opaque-map' || name === 'cutoff' || name === 'coverage')
-      (material as THREE.MeshBasicMaterial).map = texture;
-    if (name === 'alpha-map') {
-      for (let i = 0; i < 64; i++)
-        bytes.set([Math.round((i * 255) / 63), 255 - Math.round((i * 255) / 63), 0, 255], i * 4);
-      (material as THREE.MeshBasicMaterial).alphaMap = texture;
-      material.transparent = true;
-    }
-    if (name === 'hash') {
-      material.alphaHash = true;
-      material.opacity = 0.5;
-    }
-    if (name === 'cutoff' || name === 'coverage') material.alphaTest = 0.5;
-    if (name === 'coverage') material.alphaToCoverage = true;
-    if (name.endsWith('premultiplied') || ['subtractive', 'multiply', 'custom'].includes(name)) {
-      material.transparent = true;
-      material.opacity = 0.4;
-      material.premultipliedAlpha = true;
-      if (name === 'additive-premultiplied') material.blending = THREE.AdditiveBlending;
-      if (name === 'subtractive') material.blending = THREE.SubtractiveBlending;
-      if (name === 'multiply') material.blending = THREE.MultiplyBlending;
-      if (name === 'custom') {
-        material.blending = THREE.CustomBlending;
-        material.blendSrc = THREE.OneFactor;
-        material.blendDst = THREE.OneMinusSrcColorFactor;
-      }
-    }
-    if (name === 'double-sided') {
-      material.transparent = true;
-      material.opacity = 0.4;
-      material.side = THREE.DoubleSide;
-    }
+    configureOutputMaterial(material, name, texture, bytes);
     const mesh = new THREE.Mesh(
       name === 'normal' || name === 'double-sided'
         ? new THREE.SphereGeometry(

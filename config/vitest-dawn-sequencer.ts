@@ -41,7 +41,105 @@ export function planDawnShards(files: TestSpecification[], root: string): TestSp
       }, 0),
     }),
   );
-  return partitionFiles(files, root, bins, fileSeconds);
+  partitionFiles(files, root, bins, fileSeconds);
+  return refineDawnShards(bins, root);
+}
+
+// Retained maxima protect capacity, while distinct complete run snapshots
+// prevent a single slow runner from clustering the next ordinary partition.
+function refineDawnShards(
+  bins: { files: TestSpecification[]; seconds: number }[],
+  root: string,
+): TestSpecification[][] {
+  const snapshots = [timings.previousRun, timings.latestRun];
+  const pathOf = (file: TestSpecification) => relative(root, file.moduleId).replaceAll('\\', '/');
+  const paths = new Map(
+    bins.flatMap((bin) => bin.files.map((file) => [file, pathOf(file)] as const)),
+  );
+  const reserves = new Map(
+    [...paths].map(([file, path]) => [file, fileSeconds.get(path) ?? unmeasuredFileSeconds]),
+  );
+  const reserve = (file: TestSpecification) => reserves.get(file) ?? unmeasuredFileSeconds;
+  const costs = snapshots.map((snapshot) => {
+    const measured = new Map(Object.entries(snapshot.files));
+    const values = new Map(
+      [...paths].map(([file, path]) => [file, measured.get(path) ?? reserve(file)]),
+    );
+    return (file: TestSpecification) => values.get(file) ?? reserve(file);
+  });
+  const loads = snapshots.map((snapshot, sample) => {
+    const owners = new Map(Object.entries(snapshot.owners));
+    return bins.map((bin, lane) =>
+      bin.files.reduce(
+        (sum, file) => sum + costs[sample](file),
+        DAWN_GATE_SHARDS[lane].reduce(
+          (sum, owner) =>
+            owner.startsWith('ordinary-')
+              ? sum
+              : sum + (owners.get(owner) ?? tailSeconds.get(owner) ?? 0),
+          0,
+        ),
+      ),
+    );
+  });
+  const largest = Math.max(...bins.flatMap((bin) => bin.files.map(reserve)));
+  const capacity = Math.max(...bins.map((bin) => bin.seconds)) + largest;
+  const score = (values: number[][]) => [
+    Math.max(...values.flat()),
+    values.flat().reduce((sum, value) => sum + value * value, 0),
+  ];
+  const improves = (left: number[], right: number[]) =>
+    left[0] < right[0] - 1e-6 || (Math.abs(left[0] - right[0]) < 1e-6 && left[1] < right[1] - 1e-6);
+
+  for (let iteration = 0; iteration < 32; iteration += 1) {
+    let best = score(loads);
+    let selected: { left: number; right: number; a: number; b: number } | undefined;
+    for (let left = 0; left < bins.length; left += 1) {
+      for (let right = left + 1; right < bins.length; right += 1) {
+        for (let a = 0; a < bins[left].files.length; a += 1) {
+          for (let b = 0; b < bins[right].files.length; b += 1) {
+            const first = bins[left].files[a];
+            const second = bins[right].files[b];
+            const delta = reserve(second) - reserve(first);
+            const retained = bins.map(
+              (bin, lane) => bin.seconds + (lane === left ? delta : lane === right ? -delta : 0),
+            );
+            if (
+              Math.max(...retained) > capacity ||
+              Math.max(...retained) - Math.min(...retained) > largest + 1e-6
+            )
+              continue;
+            const candidate = loads.map((values, sample) => {
+              const delta = costs[sample](second) - costs[sample](first);
+              return values.map(
+                (value, lane) => value + (lane === left ? delta : lane === right ? -delta : 0),
+              );
+            });
+            const next = score(candidate);
+            if (improves(next, best)) {
+              best = next;
+              selected = { left, right, a, b };
+            }
+          }
+        }
+      }
+    }
+    if (!selected) break;
+    const { left, right, a, b } = selected;
+    const first = bins[left].files[a];
+    const second = bins[right].files[b];
+    const delta = reserve(second) - reserve(first);
+    bins[left].seconds += delta;
+    bins[right].seconds -= delta;
+    costs.forEach((cost, sample) => {
+      const delta = cost(second) - cost(first);
+      loads[sample][left] += delta;
+      loads[sample][right] -= delta;
+    });
+    bins[left].files[a] = second;
+    bins[right].files[b] = first;
+  }
+  return bins.map((bin) => bin.files);
 }
 
 function partitionFiles(

@@ -60,6 +60,7 @@ type LiveOperation =
   | 'camera/set'
   | 'camera/release'
   | 'find'
+  | 'pick'
   | 'focus';
 
 const string = { type: 'string' } satisfies ToolJsonSchema;
@@ -197,7 +198,10 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'sdk.install': schema({ ...root, version: string }),
   'preview.analyze': schema({ ...root, artifact: string, json: boolean }),
   'rhi.capture': schema({ ...root, ...liveReady, output: string, json: boolean }),
-  'rhi.summary': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
+  'rhi.summary': schema(
+    { ...root, artifact: string, digest: string, passes: boolean, label: string, json: boolean },
+    ['artifact'],
+  ),
   'rhi.timing': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
   'rhi.inspect': schema(
     {
@@ -285,6 +289,22 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     name: string,
     limit: { type: 'integer', minimum: 1, maximum: 100 },
   }),
+  'dev.pick': schema(
+    {
+      ...root,
+      ...liveIdentity,
+      ...liveReady,
+      x: {
+        type: 'number',
+        description: 'Pixel column of the presented frame (0 = left), as in dev look PNGs.',
+      },
+      y: {
+        type: 'number',
+        description: 'Pixel row of the presented frame (0 = top), as in dev look PNGs.',
+      },
+    },
+    ['x', 'y'],
+  ),
   'dev.camera.release': schema({ ...root, ...liveIdentity, ...liveReady }),
   'dev.camera.get': schema({ ...root, ...liveIdentity, ...liveReady }),
   'dev.camera.set': schema({
@@ -339,6 +359,12 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     hideUi: {
       type: 'boolean',
       description: 'Hide #game-ui while capturing so the image and metrics show the scene alone.',
+    },
+    view: {
+      type: 'string',
+      enum: ['final', 'luminance'],
+      description:
+        'luminance also writes a pre-tonemap HDR luminance heat map banded in stops around the bloom threshold.',
     },
   }),
 };
@@ -463,12 +489,14 @@ export function createUnifiedCommandContributions(
               example:
                 operation === 'focus'
                   ? { name: 'Player' }
-                  : operation === 'eval'
-                    ? {
-                        revision: '<from dev status>',
-                        code: 'return simulation.execution.report()',
-                      }
-                    : {},
+                  : operation === 'pick'
+                    ? { x: 640, y: 360 }
+                    : operation === 'eval'
+                      ? {
+                          revision: '<from dev status>',
+                          code: 'return simulation.execution.report()',
+                        }
+                      : {},
             }),
       },
     );
@@ -792,8 +820,14 @@ export function createUnifiedCommandContributions(
   const debugContributions = [
     offlinePreviewAnalysis,
     rhi('rhi.capture', 'Captures one live frame into an ArtifactRef.'),
-    rhi('rhi.summary', 'Lists work indices, pipeline entry points, and missing initial contents.'),
-    rhi('rhi.inspect', 'Inspects one RHI work item on a fresh replay backend.'),
+    rhi(
+      'rhi.summary',
+      'Lists passes (labels, targets, draw and dispatch counts, pipeline labels; --passes, --label REGEX), work indices and missing initial contents. Needs no GPU.',
+    ),
+    rhi(
+      'rhi.inspect',
+      'Inspects one RHI work item: pipeline and bindings from the tape, pixels and outputs on a fresh replay backend.',
+    ),
     rhi(
       'rhi.read',
       'Batch-reads resources or bindings at work indices as records, image stats, atlas tiles and PNGs.',
@@ -1021,6 +1055,12 @@ export function createUnifiedCommandContributions(
       'Find scene entities',
       'Finds names and revision-bound references in the current World.',
       'find',
+    ),
+    live(
+      'dev.pick',
+      'Pick at a pixel',
+      'Reports the HDR sample and the frontmost surface (entity, mesh, material, world hit; transparent surfaces included) under one canvas pixel without changing the World.',
+      'pick',
     ),
     live(
       'dev.camera.release',

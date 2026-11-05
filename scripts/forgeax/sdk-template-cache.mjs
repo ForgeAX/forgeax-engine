@@ -7,6 +7,9 @@ import { join, resolve } from 'node:path';
  * copies every template file, so entries shipped here seed each new project.
  */
 export const TEMPLATE_BUILD_CACHE = '.forgeax/ddc/build-cache';
+// Only cooked products are portable template inputs. Transport projections bind
+// the consumer's publication URLs and may be rebuilt without cooking any asset.
+const PRODUCT_STORES = ['scriptable-pack-product-kinds', 'scriptable-pack-products'];
 
 async function directoryNames(path) {
   try {
@@ -24,7 +27,7 @@ async function directoryNames(path) {
 export async function buildCacheEntries(projectRoot) {
   const cache = resolve(projectRoot, TEMPLATE_BUILD_CACHE);
   const rows = [];
-  for (const store of await directoryNames(cache)) {
+  for (const store of PRODUCT_STORES) {
     for (const key of await directoryNames(join(cache, store, 'entries'))) {
       rows.push(`${store}/${key}`);
     }
@@ -38,7 +41,8 @@ export async function buildCacheEntries(projectRoot) {
  * so a project created from this template with the same Engine and Node hits
  * them on its first `dev start` / `project play`; edited sources re-cook.
  * Every other build output (dist, generated host, project DDC, staging
- * directories) is removed again, leaving the template's files unchanged.
+ * directories and raw native-computation caches) is removed again, leaving the
+ * template's files unchanged. Cooked native outputs already belong to Pack products.
  */
 export async function seedTemplateBuildCache(template, build) {
   const before = new Set(await readdir(template));
@@ -47,8 +51,10 @@ export async function seedTemplateBuildCache(template, build) {
   const cache = resolve(template, TEMPLATE_BUILD_CACHE);
   const keep = await mkdtemp(join(tmpdir(), 'forgeax-sdk-template-cache-'));
   try {
-    for (const store of await directoryNames(cache)) {
-      await cp(join(cache, store, 'entries'), join(keep, store, 'entries'), { recursive: true });
+    for (const store of PRODUCT_STORES) {
+      const entries = join(cache, store, 'entries');
+      if ((await directoryNames(entries)).length === 0) continue;
+      await cp(entries, join(keep, store, 'entries'), { recursive: true });
     }
     for (const name of await readdir(template)) {
       if (!before.has(name)) await rm(resolve(template, name), { recursive: true, force: true });

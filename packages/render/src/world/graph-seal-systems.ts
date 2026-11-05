@@ -12,6 +12,7 @@ import {
   type ViewGraphSealOutcome,
 } from '../record/frame';
 import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import {
   captureGraphOutcome,
   prepareCaptureGraphs,
@@ -234,6 +235,20 @@ export function registerGraphSealSystems(world: World): void {
           return index < 0 ? order.length : index;
         };
         states.sort((a, b) => rank(a) - rank(b));
+        // One physical frame cannot publish a mixture of prepared and pending
+        // views. Keep every view at its preparation barrier before any capture
+        // or scene work is encoded into the shared command encoder.
+        const pending = states.find(
+          (state) => state.frame === frame && state.prepared?.frameState.pipelinePreparationPending,
+        );
+        if (pending?.prepared !== undefined) {
+          const reason = pending.prepared.frameState.pipelinePreparationPendingReason ?? {
+            code: 'scene-pipeline-preparation' as const,
+          };
+          for (const state of states)
+            if (state.frame === frame && state.prepared !== undefined)
+              markPipelinePreparationPending(state.prepared.frameState, reason);
+        }
         for (const state of states) {
           if (
             state.frame !== frame ||

@@ -17,9 +17,12 @@ import {
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
+import { MAX_RENDER_FRAMES_IN_FLIGHT } from '../publication/frame-limits';
 import type { TemporalFrameStage } from '../temporal/frame-coordinator';
 
 export const SSR_HISTORY_FORMAT = 'rgba16float' as const;
+/** Current accepted state plus the publisher's four supported in-flight writes. */
+export const SSR_HISTORY_SLOT_COUNT = MAX_RENDER_FRAMES_IN_FLIGHT + 1;
 export type SsrHistoryResetReason =
   | 'first-enable'
   | 'resize'
@@ -51,14 +54,16 @@ export interface SsrHistoryResources {
   readonly traceHeight: number;
   readonly bytes: number;
   readonly descriptor: TextureDescriptor;
-  readonly slots: readonly [SsrHistorySlot, SsrHistorySlot];
+  readonly slots: readonly SsrHistorySlot[];
   /** One renderer-owned parameter block shared by the temporal resolve. */
   readonly paramsBuffer: Buffer;
   readonly childScope: DeviceScope;
 }
 export interface SsrHistoryCandidate {
-  readonly readSlot: 0 | 1 | null;
-  readonly writeSlot: 0 | 1;
+  /** Existing immutable TemporalView identity; never an independent camera snapshot. */
+  readonly source?: object;
+  readonly readSlot: number | null;
+  readonly writeSlot: number;
   readonly historyValid: boolean;
 }
 export interface SsrHistoryInspection {
@@ -68,12 +73,13 @@ export interface SsrHistoryInspection {
   readonly traceWidth: number;
   readonly traceHeight: number;
   readonly format: typeof SSR_HISTORY_FORMAT;
-  readonly historyCount: 0 | 2;
+  readonly historyCount: number;
   readonly historyValid: boolean;
-  readonly readSlot: 0 | 1 | null;
-  readonly writeSlot: 0 | 1;
+  readonly readSlot: number | null;
+  readonly writeSlot: number | null;
   readonly activeBytes: number;
   readonly candidateBytes: number;
+  readonly pendingFrames?: number;
   readonly retiringBytes: number;
   readonly resetCount: number;
   readonly resetReason: SsrHistoryResetReason | undefined;
@@ -119,7 +125,9 @@ function createResources(
     label: 'ssr-history-rgba16float',
     size: { width: traceWidth, height: traceHeight, depthOrArrayLayers: 1 },
     format: SSR_HISTORY_FORMAT,
-    usage: HISTORY_USAGE,
+    usage: device.caps.storageTexture
+      ? HISTORY_USAGE
+      : HISTORY_USAGE & ~GPU_TEXTURE_USAGE_STORAGE_BINDING,
     mipLevelCount: 1,
     sampleCount: 1,
     dimension: '2d',
@@ -128,7 +136,7 @@ function createResources(
   };
   const childScope = scope.createChild(`${scope.owner}:ssr-history`);
   const slots: SsrHistorySlot[] = [];
-  for (const index of [0, 1] as const) {
+  for (let index = 0; index < SSR_HISTORY_SLOT_COUNT; index++) {
     const texture = device.createTexture({
       ...descriptor,
       label: `ssr-history-rgba16float-${index}`,
@@ -199,9 +207,9 @@ function createResources(
     height,
     traceWidth,
     traceHeight,
-    bytes: traceWidth * traceHeight * 12 * 2,
+    bytes: traceWidth * traceHeight * 12 * SSR_HISTORY_SLOT_COUNT,
     descriptor,
-    slots: slots as [SsrHistorySlot, SsrHistorySlot],
+    slots: Object.freeze(slots),
     paramsBuffer: params.value,
     childScope,
   });
@@ -216,14 +224,22 @@ function failure(
   return { code, expected, hint, ...(detail === undefined ? {} : { detail }) };
 }
 
-/** Owns only SSR's two physical history slots; the shared coordinator owns epochs. */
+/** Owns bounded SSR history allocations; the shared coordinator owns view identity. */
 export class SsrHistoryOwner {
   private activeResources: SsrHistoryResources | undefined;
   private readonly retiringResources = new Set<SsrHistoryResources>();
   private retirementFencePending = false;
   private activeCandidate: SsrHistoryCandidate | undefined;
-  private readIndex: 0 | 1 = 0;
+  private readIndex = 0;
+  private epoch = 0;
+  private serial = 0;
+  private acceptedSerial = 0;
+  private readonly submitted = new Map<
+    SsrHistoryCandidate,
+    { resources: SsrHistoryResources; epoch: number; serial: number }
+  >();
   private valid = false;
+  private acceptedSource: object | undefined;
   private state: SsrHistoryState = 'first-frame';
   private resetReason: SsrHistoryResetReason | undefined = 'first-enable';
   private lastFailure: TemporalFrameStage | undefined;
@@ -261,7 +277,21 @@ export class SsrHistoryOwner {
     return this.activeResources;
   }
 
-  beginFrame(): Result<SsrHistoryCandidate, SsrHistoryError> {
+  private nextWriteSlot(): number {
+    const occupied = new Set<number>();
+    if (this.valid) occupied.add(this.readIndex);
+    for (const [candidate, submitted] of this.submitted) {
+      if (submitted.resources !== this.activeResources) continue;
+      occupied.add(candidate.writeSlot);
+      if (candidate.readSlot !== null) occupied.add(candidate.readSlot);
+    }
+    return this.activeResources?.slots.findIndex((_, index) => !occupied.has(index)) ?? -1;
+  }
+
+  beginFrame(source?: {
+    readonly current: object;
+    readonly previous: object | undefined;
+  }): Result<SsrHistoryCandidate, SsrHistoryError> {
     if (
       this.activeResources === undefined ||
       this.state === 'retired' ||
@@ -284,11 +314,27 @@ export class SsrHistoryOwner {
         ),
       );
     }
-    const writeSlot: 0 | 1 = this.valid ? (this.readIndex === 0 ? 1 : 0) : 0;
+    const writeSlot = this.nextWriteSlot();
+    if (writeSlot < 0)
+      return err(
+        failure(
+          'ssr-history-active',
+          'a free SSR history slot',
+          'await the oldest frame completion before drawing again',
+        ),
+      );
+    // SceneData motion describes the last submitted view. A completed older
+    // history cannot be reprojected with that one-step motion under GPU backlog.
+    const historyValid =
+      this.valid &&
+      this.resetReason === undefined &&
+      (source === undefined ||
+        (source.previous !== undefined && source.previous === this.acceptedSource));
     const candidate = Object.freeze({
-      readSlot: this.valid ? this.readIndex : null,
+      ...(source === undefined ? {} : { source: source.current }),
+      readSlot: historyValid ? this.readIndex : null,
       writeSlot,
-      historyValid: this.valid && this.resetReason === undefined,
+      historyValid,
     }) as SsrHistoryCandidate;
     this.activeCandidate = candidate;
     this.state = this.valid ? 'stable' : this.state === 'aborted' ? 'aborted' : 'first-frame';
@@ -296,6 +342,45 @@ export class SsrHistoryOwner {
     return ok(candidate);
   }
 
+  /** Accepted submit releases the encoder candidate, but only completion publishes history. */
+  submitFrame(candidate: SsrHistoryCandidate, queue: RhiQueue): Result<void, SsrHistoryError> {
+    if (this.activeCandidate !== candidate || this.activeResources === undefined)
+      return err(
+        failure(
+          'ssr-history-not-active',
+          'the current encoded candidate',
+          'submit the candidate returned by beginFrame',
+        ),
+      );
+    const record = { resources: this.activeResources, epoch: this.epoch, serial: ++this.serial };
+    this.submitted.set(candidate, record);
+    this.activeCandidate = undefined;
+    void queue.onSubmittedWorkDone().then(
+      () => {
+        this.submitted.delete(candidate);
+        if (
+          record.epoch !== this.epoch ||
+          record.resources !== this.activeResources ||
+          record.serial <= this.acceptedSerial
+        )
+          return;
+        this.acceptedSerial = record.serial;
+        this.readIndex = candidate.writeSlot;
+        this.acceptedSource = candidate.source;
+        this.valid = true;
+        this.state = 'stable';
+        this.resetReason = undefined;
+        this.lastFailure = undefined;
+      },
+      () => {
+        this.submitted.delete(candidate);
+        if (record.resources === this.activeResources) this.reset('device-recovery');
+      },
+    );
+    return ok(undefined);
+  }
+
+  /** Direct owner adapters call this only once their frame completion is established. */
   commitFrame(candidate: SsrHistoryCandidate): Result<void, SsrHistoryError> {
     if (this.activeCandidate !== candidate) {
       return err(
@@ -307,6 +392,7 @@ export class SsrHistoryOwner {
       );
     }
     this.readIndex = candidate.writeSlot;
+    this.acceptedSource = candidate.source;
     this.valid = true;
     this.activeCandidate = undefined;
     this.state = 'stable';
@@ -323,6 +409,7 @@ export class SsrHistoryOwner {
   }
 
   reset(reason: SsrHistoryResetReason): void {
+    this.epoch++;
     this.activeCandidate = undefined;
     this.valid = false;
     this.readIndex = 0;
@@ -341,6 +428,7 @@ export class SsrHistoryOwner {
     );
     if (!next.ok) return next;
     if (this.activeResources !== undefined) this.retiringResources.add(this.activeResources);
+    this.epoch++;
     this.activeResources = next.value;
     this.activeCandidate = undefined;
     this.valid = false;
@@ -408,6 +496,7 @@ export class SsrHistoryOwner {
 
   inspect(): SsrHistoryInspection {
     const active = this.activeResources;
+    const available = this.activeCandidate?.writeSlot ?? this.nextWriteSlot();
     return Object.freeze({
       state: this.state,
       width: active?.width ?? 0,
@@ -415,12 +504,20 @@ export class SsrHistoryOwner {
       traceWidth: active?.traceWidth ?? 0,
       traceHeight: active?.traceHeight ?? 0,
       format: SSR_HISTORY_FORMAT,
-      historyCount: active === undefined ? 0 : 2,
-      historyValid: this.valid,
-      readSlot: active === undefined ? null : this.valid ? this.readIndex : null,
-      writeSlot: active === undefined ? 0 : this.valid ? (this.readIndex === 0 ? 1 : 0) : 0,
+      historyCount: active?.slots.length ?? 0,
+      historyValid: this.activeCandidate?.historyValid ?? this.valid,
+      readSlot:
+        active === undefined
+          ? null
+          : this.activeCandidate !== undefined
+            ? this.activeCandidate.readSlot
+            : this.valid
+              ? this.readIndex
+              : null,
+      writeSlot: active === undefined || available < 0 ? null : available,
       activeBytes: active?.bytes ?? 0,
       candidateBytes: 0,
+      pendingFrames: this.submitted.size,
       retiringBytes: [...this.retiringResources]
         .filter((entry) => entry !== active)
         .reduce((sum, entry) => sum + entry.bytes, 0),

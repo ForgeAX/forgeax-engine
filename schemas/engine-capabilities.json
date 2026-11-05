@@ -242,6 +242,10 @@
       "form": "opt-in"
     },
     {
+      "name": "Physical Sky Background",
+      "form": "opt-in"
+    },
+    {
       "name": "Environment generation/LKG",
       "form": "built-in"
     },
@@ -1692,6 +1696,22 @@
     {
       "name": "ECS numeric memory services",
       "form": "opt-in"
+    },
+    {
+      "name": "Editable mesh modeling kernel",
+      "form": "build-time"
+    },
+    {
+      "name": "Modeling drawings and step replay",
+      "form": "build-time"
+    },
+    {
+      "name": "Standard parallax displacement",
+      "form": "opt-in"
+    },
+    {
+      "name": "Automatic Mesh LOD generation",
+      "form": "build-time"
     }
   ]
 }

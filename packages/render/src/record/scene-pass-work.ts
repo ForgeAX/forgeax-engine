@@ -39,7 +39,12 @@ import {
   type MaterialRecordMode,
   materialMatchesPass,
 } from './material-pass-selection';
-import type { FoldBucket, FoldDispatchPlan, FoldRenderableLike } from './mesh-ssbo';
+import {
+  type FoldBucket,
+  type FoldDispatchPlan,
+  type FoldRenderableLike,
+  foldRenderableSnapshot,
+} from './mesh-ssbo';
 import type { _InternalRenderPipelineContext } from './render-context';
 
 /** One actual graph node shares this request between preparation and recording. */
@@ -245,11 +250,7 @@ export interface ScenePassInputs {
 function foldSource(row: ValidatedRenderable, materials: MaterialFrame): FoldRenderableLike {
   const accepted = materials.get(row.source.material);
   if (accepted === undefined) throw new Error('Draw folding requires its accepted material');
-  return {
-    transform: row.source.transform,
-    material: accepted.snapshot,
-    spriteRegion: row.source.spriteRegion,
-  };
+  return foldRenderableSnapshot(row.source, accepted.snapshot);
 }
 
 /** Camera facts CPU LOD selection reads. */

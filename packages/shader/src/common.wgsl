@@ -167,7 +167,8 @@ struct Mesh {
 #endif
   // x/y: visible-surface row/count; z: lossless surface direct-light mask.
   surface : vec4<u32>,
-  // Instance-local atlas rectangle; surface.w selects it independently of material values.
+  // Instance-local atlas rectangle; surface.w bit 0 selects it.
+  // Uniform Mesh also carries meshSurfaceFlags no-receive bit 1 in surface.w.
   spriteRegion : vec4<f32>,
 };
 

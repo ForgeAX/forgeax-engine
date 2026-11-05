@@ -1240,6 +1240,46 @@ it('switches the real AO graph from compute GTAO through fragment SSAO and back'
 });
 
 it.each([
+  ['ssao', true],
+  ['ssao', false],
+  ['gtao', true],
+  ['gtao', false],
+] as const)('admits visible Unlit %s input with storageBuffer=%s', async (algorithm, storageBuffer) => {
+  let catalog: SceneDataCatalog | undefined;
+  const fixture = await createSceneDataRuntime(
+    sceneDataConsumer(
+      () => {},
+      () => {},
+      {
+        onCatalog: (value) => {
+          catalog = value;
+        },
+      },
+    ),
+    { algorithm, storageBuffer, unlit: true },
+  );
+  try {
+    await completeSceneDataFrame(fixture);
+    await completeSceneDataFrame(fixture);
+    expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
+      status: 'available',
+      completeness: 'exact',
+      missingContributorIds: [],
+    });
+    expect(fixture.renderer.inspect().output.graphPassNames).toContain(
+      'standard-scene-surface-data',
+    );
+    expect(fixture.renderer.inspect().standardLighting?.ambientOcclusion).toMatchObject({
+      status: 'active',
+      algorithm,
+    });
+    expect(fixture.errors).toEqual([]);
+  } finally {
+    await fixture.host.dispose();
+  }
+});
+
+it.each([
   'forward',
   'deferred',
 ] as const)('keeps same-demand AO graph resources stable across direct strength and recorder boundaries (%s)', async (renderPath) => {
@@ -1397,6 +1437,10 @@ function sceneDataManifestUrl(clusterTextureConsumer = false): string {
   const source = renderLifecycleManifestUrl();
   const manifest = JSON.parse(decodeURIComponent(source.slice(source.indexOf(',') + 1)));
   for (const entry of manifest.materialShaders) {
+    if (entry.identifier === 'forgeax::default-unlit') {
+      entry.composedWgsl += fullscreenRaster;
+      entry.entryPoints = fullscreenRasterEntryPoints;
+    }
     if (entry.identifier !== 'forgeax::default-standard-pbr') continue;
     entry.composedWgsl += fullscreenRaster;
     entry.entryPoints = fullscreenRasterEntryPoints;
@@ -1688,8 +1732,8 @@ it.each([
       completeness: 'exact',
     });
     expect(catalog?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA)).toMatchObject({
-      status: 'unavailable',
-      reason: 'coverage-incomplete',
+      status: 'available',
+      completeness: 'exact',
     });
     const passNames = fixture.renderer.inspect().output.graphPassNames;
     const producerIndex = passNames.indexOf('standard-scene-data');
@@ -1922,7 +1966,7 @@ it('returns producer-missing from a real camera-less Renderer view', async () =>
   }
 });
 
-it('rejects unsupported visible material coverage and recovers on the next admitted candidate', async () => {
+it('rejects unsupported visible deformation and recovers on the next admitted candidate', async () => {
   const requireErrors: unknown[] = [];
   const catalogs: SceneDataCatalog[] = [];
   const priorValidations: boolean[] = [];
@@ -1939,7 +1983,7 @@ it('rejects unsupported visible material coverage and recovers on the next admit
       onPriorValidation: (result) => priorValidations.push(result.ok),
     },
   );
-  const fixture = await createSceneDataRuntime(feature);
+  const fixture = await createSceneDataRuntime(feature, { morphTarget: true });
   try {
     const warmup = fixture.drawFrame();
     expect(warmup.ok, warmup.ok ? '' : JSON.stringify(warmup.error)).toBe(true);
@@ -1969,9 +2013,7 @@ it('rejects unsupported visible material coverage and recovers on the next admit
     const initialAdmission = catalogs.at(-1)?.surfaceAdmissionIdentity;
     const frameIdBeforeUnsupported = fixture.renderer.inspect().frame.frameId;
 
-    fixture.world
-      .set(fixture.entity, MeshRenderer, { materials: [fixture.unlitMaterial] })
-      .unwrap();
+    fixture.enableMorph().unwrap();
     fixture.update();
     const unsupported = fixture.drawFrame();
     expect(unsupported).toMatchObject({
@@ -2010,9 +2052,7 @@ it('rejects unsupported visible material coverage and recovers on the next admit
     expect(priorValidations.at(-1)).toBe(false);
     expect(fixture.renderer.inspect().frame.frameId).toBe(frameIdBeforeUnsupported);
 
-    fixture.world
-      .set(fixture.entity, MeshRenderer, { materials: [fixture.standardMaterial] })
-      .unwrap();
+    fixture.disableMorph().unwrap();
     fixture.update();
     const recovered = fixture.drawFrame();
     expect(recovered.ok, recovered.ok ? '' : JSON.stringify(recovered.error)).toBe(true);
@@ -2140,7 +2180,15 @@ it.each([
     fixture.update();
     const acceptedFrameId = fixture.renderer.inspect().frame.frameId;
     const candidate = fixture.drawFrame();
-    expect(candidate.ok, JSON.stringify({ errors: fixture.errors, requireErrors })).toBe(false);
+    expect(candidate.ok, JSON.stringify(fixture.errors)).toBe(true);
+    if (!candidate.ok) return;
+    expect((await candidate.value.completed).ok).toBe(true);
+    expect(fixture.renderer.inspect().frame.frameId).toBeGreaterThan(acceptedFrameId);
+    expect(fixture.renderer.inspect().perFramePassNames).toContain('forward');
+    if (!consumesSurface) {
+      expect(fixture.errors).toEqual([]);
+      return;
+    }
     const unavailable = [...fixture.errors]
       .reverse()
       .find(
@@ -2175,7 +2223,7 @@ it.each([
       });
     }
     if (consumesSurface) expect(requireErrors.at(-1)).toBeInstanceOf(SceneDataUnavailableError);
-    expect(fixture.renderer.inspect().frame.frameId).toBe(acceptedFrameId);
+    expect(fixture.renderer.inspect().frame.frameId).toBeGreaterThan(acceptedFrameId);
   } finally {
     await fixture.host.dispose();
   }

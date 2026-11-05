@@ -657,6 +657,14 @@ export interface ExtrudePolygonOptions {
 }
 
 export function segmentsCross(a: Point2, b: Point2, c: Point2, d: Point2): boolean {
+  if (
+    Math.max(a[0], b[0]) < Math.min(c[0], d[0]) ||
+    Math.max(c[0], d[0]) < Math.min(a[0], b[0]) ||
+    Math.max(a[1], b[1]) < Math.min(c[1], d[1]) ||
+    Math.max(c[1], d[1]) < Math.min(a[1], b[1])
+  ) {
+    return false;
+  }
   const d1 = orient2d(a[0], a[1], b[0], b[1], c[0], c[1]);
   const d2 = orient2d(a[0], a[1], b[0], b[1], d[0], d[1]);
   const d3 = orient2d(c[0], c[1], d[0], d[1], a[0], a[1]);

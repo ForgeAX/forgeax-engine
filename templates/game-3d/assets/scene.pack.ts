@@ -25,7 +25,7 @@ import { Skin } from '@forgeax/engine/skinning';
 import type { AssetGuid, SceneAsset, SceneEntity } from '@forgeax/engine/types';
 import { ok } from '@forgeax/engine/types';
 import { assetGuid, guidText, PACKAGE_IDS, SUN_OUTGOING_DIRECTION } from './shared/asset-refs.ts';
-import { PLAYER_RIG } from './player/player-rig.ts';
+import { PLAYER_RIG, PLAYER_COLLIDER } from './player/player-rig.ts';
 
 function meshEntity(
   key: string,
@@ -91,7 +91,7 @@ function staticSphere(radius: number) {
 }
 
 function showcaseScene(): SceneAsset {
-  const playerPosition = [0, 0.95, 7.4] as const;
+  const playerPosition = [0, PLAYER_COLLIDER.radius + PLAYER_COLLIDER.halfHeight + 0.02, 7.4] as const;
   const cameraPosition = [0, 3.35, 13.5] as const;
   const target = [0, 1.42, 7.4] as const;
   const cameraRotation = quat.fromLookAt(quat.create(), cameraPosition, target, [0, 1, 0]);
@@ -257,13 +257,12 @@ function showcaseScene(): SceneAsset {
           RigidBody: { type: RigidBodyTypeValue.kinematic },
           Collider: {
             shape: ColliderShapeValue.capsule,
-            radius: 0.38,
-            halfHeight: 0.55,
+            ...PLAYER_COLLIDER,
             friction: 0.7,
             restitution: 0,
           },
           CharacterController: {
-            offset: 0.03,
+            offset: 0.01,
             maxSlopeClimbDeg: 48,
             minSlopeSlideDeg: 55,
             autoStepMaxHeight: 0.32,

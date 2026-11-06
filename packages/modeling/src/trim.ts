@@ -1,7 +1,13 @@
 import { err, ok, type Result, type TextureAsset } from '@forgeax/engine-types';
 import { maxOf, minOf, pushAll } from './arrays';
 import { type BakeResult, bakeMaps, DEFAULT_DETAIL_NORMALS } from './bake';
-import { emissiveScale, MATERIAL_ID_PALETTE, resolveSlot, tsBakeBackend } from './compute/bake-ts';
+import {
+  emissiveScale,
+  materialIdError,
+  resolveMaterialId,
+  resolveSlot,
+  tsBakeBackend,
+} from './compute/bake-ts';
 import {
   type BakeMapKind,
   type BakeSlot,
@@ -912,7 +918,7 @@ export interface TrimBakeReport {
 export interface TrimBakeResult {
   readonly textures: Partial<Record<TrimMapKind, TextureAsset>>;
   readonly references: Partial<Record<TrimMapKind, TextureReference>>;
-  /** Material-id colors (linear) per detail slot, in palette order. */
+  /** Resolved material-id colors (linear) per encountered slot. */
   readonly materials: readonly { readonly slot: string; readonly color: readonly number[] }[];
   readonly report: TrimBakeReport;
   /** No `error` or `warn` issue in the bake of the mesh modules (always true without them). */
@@ -1014,17 +1020,19 @@ function background(map: TrimMapKind): readonly number[] {
   }
 }
 
-/** sRGB byte of a linear palette channel, exactly as `textureFrom` encodes it. */
-function paletteBytes(): number[][] {
-  const out: number[][] = [];
-  for (const c of MATERIAL_ID_PALETTE) {
-    const probe = textureFrom(1, 1, () => [c[0], c[1], c[2], 1], {
+/** Preserve each baked ID's authored linear value when copying its quantized sRGB texels. */
+function paletteBytes(materials: readonly { readonly color: readonly number[] }[]) {
+  return materials.map(({ color }) => {
+    const c = color;
+    const probe = textureFrom(1, 1, () => [c[0] as number, c[1] as number, c[2] as number, 1], {
       colorSpace: 'srgb',
       mips: false,
     });
-    out.push(probe.ok ? Array.from((probe.value.data as Uint8Array).subarray(0, 3)) : [0, 0, 0]);
-  }
-  return out;
+    return {
+      color,
+      bytes: probe.ok ? Array.from((probe.value.data as Uint8Array).subarray(0, 3)) : [0, 0, 0],
+    };
+  });
 }
 
 interface Field {
@@ -1061,7 +1069,7 @@ function rasterizeField(
   region: TrimRegion,
   maps: readonly TrimMapKind[],
   planes: ReadonlyMap<TrimMapKind, Plane>,
-  slotIndex: (slot: string) => number,
+  materialId: (slot: string) => readonly number[],
   settings: {
     samples: number;
     heightRange: number;
@@ -1162,9 +1170,7 @@ function rasterizeField(
             break;
           }
           case 'materialId': {
-            const c = MATERIAL_ID_PALETTE[
-              slotIndex(field.material(s, t)) % MATERIAL_ID_PALETTE.length
-            ] as readonly number[];
+            const c = materialId(field.material(s, t));
             plane.set([c[0] as number, c[1] as number, c[2] as number, 1], o);
             break;
           }
@@ -1188,7 +1194,7 @@ function copyBaked(
   texture: TextureAsset,
   region: TrimRegion,
   plane: Plane,
-  palette: readonly number[][],
+  palette: readonly { readonly color: readonly number[]; readonly bytes: readonly number[] }[],
 ): void {
   const data = texture.data as Uint8Array;
   const size = region.resolution;
@@ -1205,17 +1211,17 @@ function copyBaked(
           }
           return d;
         };
-        let best = -1;
+        let color: readonly number[] = [0, 0, 0];
         let bestDistance = gap([0, 0, 0]);
-        for (const [p, bytes] of palette.entries()) {
+        for (const candidate of palette) {
+          const { bytes } = candidate;
           const d = gap(bytes);
           if (d < bestDistance) {
             bestDistance = d;
-            best = p;
+            color = candidate.color;
           }
         }
-        const c = best < 0 ? [0, 0, 0] : (MATERIAL_ID_PALETTE[best] as readonly number[]);
-        plane.set([c[0] as number, c[1] as number, c[2] as number, 1], o);
+        plane.set([color[0] as number, color[1] as number, color[2] as number, 1], o);
         continue;
       }
       for (let c = 0; c < 4; c++) {
@@ -1256,6 +1262,9 @@ export function bakeTrimSheet(
   sheet: TrimSheet,
   settings: TrimBakeSettings,
 ): Result<TrimBakeResult, ModelingError> {
+  const slotTable = settings.slots ?? {};
+  const invalidId = materialIdError(slotTable);
+  if (invalidId !== undefined) return err(invalidId);
   const maps = settings.maps;
   if (maps.length === 0 || maps.some((m) => !(TRIM_MAP_KINDS as readonly string[]).includes(m))) {
     return err(invalid(`maps are some of ${TRIM_MAP_KINDS.join(', ')}`, { maps }));
@@ -1364,19 +1373,18 @@ export function bakeTrimSheet(
   const materials: { slot: string; color: readonly number[] }[] = (
     baked?.provenance.materials ?? []
   ).map((m) => ({ slot: m.slot, color: m.color }));
-  const slotIndex = (slot: string) => {
-    let i = materials.findIndex((m) => m.slot === slot);
-    if (i < 0) {
-      i = materials.length;
-      materials.push({
+  const materialId = (slot: string) => {
+    let material = materials.find((m) => m.slot === slot);
+    if (material === undefined) {
+      material = {
         slot,
-        color: [...(MATERIAL_ID_PALETTE[i % MATERIAL_ID_PALETTE.length] as readonly number[])],
-      });
+        color: [...resolveMaterialId(slotTable, slot, materials.length)],
+      };
+      materials.push(material);
     }
-    return i;
+    return material.color;
   };
-  const palette = paletteBytes();
-  const slotTable = settings.slots ?? {};
+  const palette = paletteBytes(materials);
   const glow = emissiveScale(slotTable);
   const resolved = new Map<string, ReturnType<typeof resolveSlot>>();
   const curvature = new Float64Array(maps.includes('curvature') ? size * size : 0).fill(Number.NaN);
@@ -1405,7 +1413,7 @@ export function bakeTrimSheet(
       region,
       maps,
       planes,
-      slotIndex,
+      materialId,
       {
         samples,
         heightRange,

@@ -46,8 +46,17 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
   const disposalFailures: unknown[] = [];
   try {
     const { bootstrapReady } = await import('../../../../apps/parity/urp-vs-hdrp/src/main');
+    const earlyCaptureLeft = window.__captureLeft;
+    const earlyCaptureRight = window.__captureRight;
+    const firstCapture = earlyCaptureLeft?.();
+    void firstCapture?.catch(() => {});
     // The fixture completes its initial submissions before capture or disposal.
     const fixture = await bootstrapReady;
+    expect(
+      earlyCaptureLeft,
+      'capture API must be published before cold initialization completes',
+    ).toBeTypeOf('function');
+    expect(earlyCaptureRight).toBeTypeOf('function');
     expect(submissions.peak, 'independent cold hosts must not queue competing scene frames').toBe(
       1,
     );
@@ -55,7 +64,8 @@ it('captures nonempty equal Standard scenes after native canvas presentation', a
     const captureRight = window.__captureRight;
     if (captureLeft === undefined || captureRight === undefined)
       throw new Error('Standard parity capture hooks were not installed');
-    const a = await captureLeft();
+    if (firstCapture === undefined) throw new Error('Early capture API was not installed');
+    const a = await firstCapture;
     // Force real compositor observation between the two receipt-bound captures.
     await page.elementLocator(left).screenshot({ save: false });
     const b = await captureRight();

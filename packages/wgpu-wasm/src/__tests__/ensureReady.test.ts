@@ -95,7 +95,7 @@ async function manifestFor(artifact: Uint8Array): Promise<Uint8Array> {
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(async (path: string) => {
     if (path.endsWith('provenance.json')) return mockManifestBytes;
-    if (path.endsWith('wgpu_wasm.js')) return MOCK_GLUE;
+    if (path.endsWith('wgpu_wasm_glue.bytes')) return MOCK_GLUE;
     return mockArtifactBytes;
   }),
 }));
@@ -117,6 +117,7 @@ describe('ensureReady singleton wrapper', () => {
 
   it('returns the same Promise reference across N calls (charter proposition 6 idempotency)', async () => {
     const mod = await import('../index.js');
+    expect(mod).not.toHaveProperty('__resetForTests');
     const p1 = mod.ensureReady();
     const p2 = mod.ensureReady();
     const p3 = mod.ensureReady();
@@ -169,14 +170,15 @@ describe('ensureReady singleton wrapper', () => {
   });
 
   it('changes identity after a new verified native payload with unchanged glue and keeps loaded identity stable', async () => {
-    const mod = await import('../index.js');
-    const original = await mod.getCompilerFingerprint();
+    const first = await import('../index.js');
+    const original = await first.getCompilerFingerprint();
     mockArtifactBytes = new Uint8Array([4, 5, 6]);
     mockManifestBytes = await manifestFor(mockArtifactBytes);
     // Disk changes do not pretend that the already-loaded compiler changed.
-    expect(await mod.getCompilerFingerprint()).toBe(original);
-    mod.__resetForTests();
-    const replacement = await mod.getCompilerFingerprint();
+    expect(await first.getCompilerFingerprint()).toBe(original);
+    vi.resetModules();
+    const second = await import('../index.js');
+    const replacement = await second.getCompilerFingerprint();
     expect(replacement).not.toBe(original);
     expect(replacement).toBe(
       JSON.parse(new TextDecoder().decode(mockManifestBytes)).compilerFingerprint,
@@ -196,9 +198,9 @@ describe('ensureReady singleton wrapper', () => {
     expect(_initCallCount).toBe(1);
   });
 
-  it('normalizes Vite raw glue transport before provenance verification', async () => {
-    // Import while Vite's own Node transport still has process; the tested loader
-    // detects the browser branch when ensureReady runs below.
+  it('loads original glue bytes from a bundler-neutral asset before provenance verification', async () => {
+    // Import while the test runner still has process; the tested loader detects
+    // the browser branch when ensureReady runs below.
     const mod = await import('../index.js');
     // Hide Node detection while retaining the test runner's asynchronous transport.
     vi.stubGlobal('process', {
@@ -221,11 +223,9 @@ describe('ensureReady singleton wrapper', () => {
       if (url.pathname.endsWith('/wgpu_wasm_bg.wasm')) {
         return response(MOCK_ARTIFACT);
       }
-      expect(url.pathname.endsWith('/wgpu_wasm.js')).toBe(true);
-      expect(url.search).toBe('?raw');
-      expect(url.searchParams.has('raw')).toBe(true);
-      const glueSource = new TextDecoder().decode(MOCK_GLUE);
-      return response(new TextEncoder().encode(`export default ${JSON.stringify(glueSource)}`));
+      expect(url.pathname.endsWith('/dist/wgpu_wasm_glue.bytes')).toBe(true);
+      expect(url.search).toBe('');
+      return response(MOCK_GLUE);
     });
     vi.stubGlobal('fetch', fetchMock);
     await expect(mod.ensureReady()).resolves.toBeDefined();
@@ -238,7 +238,7 @@ describe('ensureReady singleton wrapper', () => {
     { encoding: 'percent', tampered: false },
     { encoding: 'base64', tampered: true },
     { encoding: 'percent', tampered: true },
-  ])('verifies embedded $encoding provenance without fetch (tampered=$tampered)', async ({
+  ])('verifies embedded $encoding provenance and glue without data fetch (tampered=$tampered)', async ({
     encoding,
     tampered,
   }) => {
@@ -251,11 +251,22 @@ describe('ensureReady singleton wrapper', () => {
       encoding === 'base64'
         ? `data:application/json;charset=utf-8;base64,${btoa(manifest)}`
         : `data:application/json,${encodeURIComponent(manifest)}`;
+    const embeddedGlue = `data:application/octet-stream;base64,${btoa(
+      String.fromCharCode(...MOCK_GLUE),
+    )}`;
     vi.stubGlobal(
       'URL',
       class extends NativeURL {
         constructor(input: string | URL, base?: string | URL) {
-          super(String(input).endsWith('/provenance.json') ? embedded : input, base);
+          const source = String(input);
+          super(
+            source.endsWith('/provenance.json')
+              ? embedded
+              : source.endsWith('/dist/wgpu_wasm_glue.bytes')
+                ? embeddedGlue
+                : input,
+            base,
+          );
         }
       },
     );
@@ -277,6 +288,6 @@ describe('ensureReady singleton wrapper', () => {
       await expect(mod.ensureReady()).resolves.toBeDefined();
       expect(_initCallCount).toBe(1);
     }
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

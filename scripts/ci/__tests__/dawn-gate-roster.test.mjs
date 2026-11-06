@@ -445,94 +445,83 @@ test('ordinary backfill honors native-owner placement reserves without losing fi
   );
 });
 
-test('preceding complete Dawn receipts replay the roster below the unchanged native-step bound', () => {
+for (const receipt of [
+  { runId: 41741792994, ownerCount: 27, missing: ['gi-1', 'gi-5'] },
+  { runId: 41840653604, ownerCount: 28, missing: ['gi-5'] },
+  { runId: 41891389810, ownerCount: 27, missing: ['gi-4', 'direct-light'] },
+  { runId: 42076518011, ownerCount: 28, missing: ['direct-light'] },
+  { runId: 42146194978, ownerCount: 28, missing: ['screen-probe'] },
+]) {
+  test(`run ${receipt.runId} retains three minutes of native-step headroom`, (t) => {
+    const timings = JSON.parse(
+      readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
+    );
+    const snapshot = JSON.parse(
+      readFileSync(
+        new URL(`./fixtures/dawn-completed-${receipt.runId}.json`, import.meta.url),
+        'utf8',
+      ),
+    );
+    assert.equal(snapshot.runId, receipt.runId);
+    assert.equal(Object.keys(snapshot.files).length, 354);
+    assert.equal(Object.keys(snapshot.owners).length, receipt.ownerCount);
+
+    const ordinaryFiles = configuredPartitions.flatMap((partition) =>
+      partition.map((specification) =>
+        relative(root, specification.moduleId).replaceAll('\\', '/'),
+      ),
+    );
+    assert.equal(new Set(ordinaryFiles).size, nativeSpecifications.length);
+    assert.deepEqual([...ordinaryFiles].sort(), Object.keys(snapshot.files).sort());
+
+    const fallback = Math.max(...Object.values(timings.files));
+    const fileCost = (file) => snapshot.files[file] ?? timings.files[file] ?? fallback;
+    const laneSeconds = DAWN_GATE_SHARDS.map((owners, lane) => {
+      const ordinarySeconds = configuredPartitions[lane].reduce(
+        (sum, specification) =>
+          sum + fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
+        0,
+      );
+      const ownerSeconds = owners
+        .filter((id) => !id.startsWith('ordinary-'))
+        .reduce((sum, id) => {
+          const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
+          const completed = snapshot.owners[id];
+          const retained =
+            timings.owners[id] ?? group.files.reduce((total, file) => total + fileCost(file), 0);
+          return sum + (completed ?? Math.max(retained, group.placementReserveSeconds ?? 0));
+        }, 0);
+      // Retain five seconds for each run's complete shader-profile producer.
+      return ordinarySeconds + ownerSeconds + 5;
+    });
+
+    assert.ok(
+      Math.max(...laneSeconds) <= 2_200,
+      `completed receipts should preserve three minutes below the unchanged 40-minute Dawn step; got ${laneSeconds.map((seconds) => seconds.toFixed(1)).join(', ')}s`,
+    );
+    for (const id of receipt.missing) assert.ok(!Object.hasOwn(snapshot.owners, id));
+    assert.ok(Object.hasOwn(snapshot.owners, 'shadow-fields'));
+    t.diagnostic(JSON.stringify({ runId: receipt.runId, laneSeconds }));
+  });
+}
+
+test('latest Dawn timing ledger retains the preceding maximum measurements', () => {
   const timings = JSON.parse(
     readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
   );
-  const latestRun = timings.previousRun;
-  assert.equal(latestRun.runId, 41741792994);
-  assert.equal(Object.keys(latestRun.files).length, 354);
-
-  const ordinaryFiles = configuredPartitions.flatMap((partition) =>
-    partition.map((specification) => relative(root, specification.moduleId).replaceAll('\\', '/')),
+  const previousLedger = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/dawn-ledger-before-41998440989.json', import.meta.url),
+      'utf8',
+    ),
   );
-  assert.equal(new Set(ordinaryFiles).size, nativeSpecifications.length);
-  assert.deepEqual([...ordinaryFiles].sort(), Object.keys(latestRun.files).sort());
-
-  const fallback = Math.max(...Object.values(timings.files));
-  const fileCost = (file) => latestRun.files[file] ?? timings.files[file] ?? fallback;
-  const laneSeconds = DAWN_GATE_SHARDS.map((owners, lane) => {
-    const ordinarySeconds = configuredPartitions[lane].reduce(
-      (sum, specification) =>
-        sum + fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
-      0,
-    );
-    const ownerSeconds = owners
-      .filter((id) => !id.startsWith('ordinary-'))
-      .reduce((sum, id) => {
-        const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-        const completed = latestRun.owners[id];
-        const retained =
-          timings.owners[id] ?? group.files.reduce((total, file) => total + fileCost(file), 0);
-        return sum + (completed ?? Math.max(retained, group.placementReserveSeconds ?? 0));
-      }, 0);
-    // Latest run's four shader-profile producers took at most 4.427 seconds.
-    return ordinarySeconds + ownerSeconds + 5;
-  });
-
-  assert.ok(
-    Math.max(...laneSeconds) <= 2_200,
-    `latest complete receipts should preserve three minutes below the unchanged 40-minute Dawn step; got ${laneSeconds.map((seconds) => seconds.toFixed(1)).join(', ')}s`,
-  );
-  assert.ok(!Object.hasOwn(latestRun.owners, 'gi-1'));
-  assert.ok(!Object.hasOwn(latestRun.owners, 'gi-5'));
-  assert.ok(Object.hasOwn(latestRun.owners, 'shadow-fields'));
-});
-
-test('run 41840653604 retains three minutes of native-step headroom', () => {
-  const timings = JSON.parse(
-    readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json'), 'utf8'),
-  );
-  const latestRun = JSON.parse(
-    readFileSync(new URL('./fixtures/dawn-completed-41840653604.json', import.meta.url), 'utf8'),
-  );
-  assert.equal(latestRun.runId, 41840653604);
-  assert.equal(Object.keys(latestRun.files).length, 354);
-
-  const ordinaryFiles = configuredPartitions.flatMap((partition) =>
-    partition.map((specification) => relative(root, specification.moduleId).replaceAll('\\', '/')),
-  );
-  assert.equal(new Set(ordinaryFiles).size, nativeSpecifications.length);
-  assert.deepEqual([...ordinaryFiles].sort(), Object.keys(latestRun.files).sort());
-
-  const fallback = Math.max(...Object.values(timings.files));
-  const fileCost = (file) => latestRun.files[file] ?? timings.files[file] ?? fallback;
-  const laneSeconds = DAWN_GATE_SHARDS.map((owners, lane) => {
-    const ordinarySeconds = configuredPartitions[lane].reduce(
-      (sum, specification) =>
-        sum + fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
-      0,
-    );
-    const ownerSeconds = owners
-      .filter((id) => !id.startsWith('ordinary-'))
-      .reduce((sum, id) => {
-        const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-        const completed = latestRun.owners[id];
-        const retained =
-          timings.owners[id] ?? group.files.reduce((total, file) => total + fileCost(file), 0);
-        return sum + (completed ?? Math.max(retained, group.placementReserveSeconds ?? 0));
-      }, 0);
-    // Latest run's four shader-profile producers took at most 4.427 seconds.
-    return ordinarySeconds + ownerSeconds + 5;
-  });
-
-  assert.ok(
-    Math.max(...laneSeconds) <= 2_200,
-    `latest complete receipts should preserve three minutes below the unchanged 40-minute Dawn step; got ${laneSeconds.map((seconds) => seconds.toFixed(1)).join(', ')}s`,
-  );
-  assert.ok(Object.hasOwn(latestRun.owners, 'gi-1'));
-  assert.ok(!Object.hasOwn(latestRun.owners, 'gi-5'));
-  assert.ok(Object.hasOwn(latestRun.owners, 'shadow-fields'));
+  assert.equal(timings.latestRun.runId, 42146194978);
+  for (const [file, seconds] of Object.entries(previousLedger.files)) {
+    assert.ok(timings.files[file] >= seconds, `historical file maximum decreased: ${file}`);
+  }
+  for (const [owner, seconds] of Object.entries(previousLedger.owners)) {
+    assert.ok(timings.owners[owner] >= seconds, `historical owner maximum decreased: ${owner}`);
+  }
 });
 
 test('long native capture journeys start before ordinary backfill', () => {

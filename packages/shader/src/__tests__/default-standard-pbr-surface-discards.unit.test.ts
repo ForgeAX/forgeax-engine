@@ -67,3 +67,10 @@ describe('Standard surface discard override', () => {
     );
   });
 });
+
+it('declares conservative shadow reception with a static nonreceiver gate', () => {
+  expect(shader).toContain('@id(64002) override standardShadowReception: u32 = 1u;');
+  expect(shader).toMatch(
+    /fn standardReceivesShadows\(in : VsOut\) -> bool \{\s*if \(standardShadowReception == 0u\) \{ return false; \}/,
+  );
+});

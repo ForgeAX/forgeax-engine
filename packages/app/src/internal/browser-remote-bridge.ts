@@ -13,9 +13,9 @@
 // the relay forwards to us; we eval and reply. This is the engine-side mirror of
 // the editor's ViewportComponent DEV bridge.
 //
-// This module is reached only via a DEV-gated dynamic import from create-app.ts,
-// so production (import.meta.env.DEV === false) never bundles it (tree-shake /
-// zero-injection). It carries NO static top-level @forgeax/engine-remote
+// This module is reached only through the optional browser host adapter, so
+// production hosts that do not provide the bridge capability never bundle it.
+// It carries NO static top-level @forgeax/engine-remote
 // dependency — the eval core is pulled by a further dynamic import, keeping
 // @forgeax/engine-app free of a runtime dep on @forgeax/engine-remote (same
 // discipline as the createApp startServer path). The import is deliberately
@@ -44,6 +44,22 @@ export interface BrowserRemoteBridgeDeps
   readonly runtimeModule: unknown;
   /** Relay port. */
   readonly port: string;
+}
+
+export interface BrowserExecutionBridgeDeps {
+  readonly execute: NonNullable<ExecutionRemoteEval>;
+  /** Read Host-owned execution facts without waiting for a Worker frame boundary. */
+  readonly readStatus: () => unknown;
+  readonly port: string;
+  /** Revoke synthetic input when the relay socket disappears. */
+  readonly clearInput?: () => void;
+  /** Open a fresh Worker synthetic-input lease. */
+  readonly beginInputLease?: () => void;
+  /** Finish a Worker-owned profiler session out-of-band after a timeout. */
+  readonly finishProfiler?: (expected?: {
+    readonly worldIdentity?: string;
+    readonly captureId?: string;
+  }) => void;
 }
 
 /**
@@ -113,21 +129,9 @@ function createInputLease(input: unknown): {
  * browser owns only the socket; the supplied executor posts the code into the
  * Worker, so no host-side shadow World can become the observation authority.
  */
-export async function installBrowserExecutionBridge(deps: {
-  readonly execute: NonNullable<ExecutionRemoteEval>;
-  /** Read Host-owned execution facts without waiting for a Worker frame boundary. */
-  readonly readStatus: () => unknown;
-  readonly port: string;
-  /** Revoke synthetic input when the relay socket disappears. */
-  readonly clearInput?: () => void;
-  /** Open a fresh Worker synthetic-input lease. */
-  readonly beginInputLease?: () => void;
-  /** Finish a Worker-owned profiler session out-of-band after a timeout. */
-  readonly finishProfiler?: (expected?: {
-    readonly worldIdentity?: string;
-    readonly captureId?: string;
-  }) => void;
-}): Promise<() => void> {
+export async function installBrowserExecutionBridge(
+  deps: BrowserExecutionBridgeDeps,
+): Promise<() => void> {
   const url = bridgeUrl(deps.port);
   let ws: WebSocket | null = null;
   let backoff = 1000;
@@ -277,8 +281,6 @@ export async function installBrowserExecutionBridge(deps: {
       current.close();
     }
   };
-  const hot = (import.meta as { hot?: { dispose(cb: () => void): void } }).hot;
-  if (hot) hot.dispose(teardown);
   return teardown;
 }
 
@@ -385,12 +387,11 @@ export function serializeBridgeResult(result: ExecuteResult): BrowserBridgeResul
 }
 
 /**
- * Install the DEV-only browser remote bridge. Idempotent per call site; the
- * caller gates on import.meta.env.DEV so this never runs in production.
+ * Install the optional browser remote bridge. The host adapter decides whether
+ * this capability is available in the current tool environment.
  *
- * Returns a teardown function that stops reconnection and closes the socket —
- * the caller wires it to import.meta.hot.dispose so a vite HMR of the host app
- * does not stack duplicate bridges.
+ * Returns a teardown function that stops reconnection and closes the socket.
+ * The host adapter owns any hot-reload disposal registration.
  */
 export async function installBrowserRemoteBridge(
   deps: BrowserRemoteBridgeDeps,
@@ -698,13 +699,6 @@ export async function installBrowserRemoteBridge(
       }
     }
   };
-
-  // Self-register HMR teardown so a vite HMR of the host app does not stack
-  // duplicate bridges. Kept here (not in create-app.ts) so create-app.ts carries
-  // no import.meta.hot reference — the rhi-debug guard gate requires every
-  // import.meta.hot there to sit inside the FORGEAX_ENGINE_RHI_DEBUG block.
-  const hot = (import.meta as { hot?: { dispose(cb: () => void): void } }).hot;
-  if (hot) hot.dispose(teardown);
 
   return teardown;
 }

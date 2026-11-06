@@ -239,7 +239,7 @@ plugins for unselected projects performs no revision subprocess. Explicit
 `FORGEAX_SOURCE_SHA` precedes `GITHUB_SHA`; an active load otherwise queries Git
 in the current working directory and keeps an undefined revision outside Git.
 
-> feat-20260608-create-app-param-surface-trim / M3 / D-4 q7-A: a single inline-emit virtual module that surfaces the build-time bundler-injected wiring (`shaderManifestUrl` + optional `importTransport`) as a `BundlerOptions`-compatible factory call. AI users discover the entry through one import line; the manifest URL stays a single SSOT inside the plugin emit path.
+> The inline virtual module returns renderer build inputs and App host capabilities through one factory call. It keeps the shader manifest URL as a single SSOT and moves Vite environment, HMR, debug recorder, and browser relay interpretation into this tool adapter.
 
 ```ts
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -247,7 +247,7 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 // One-screen takeoff: pass adapter() directly as the third arg.
 const app = await createApp(canvas, {}, forgeaxBundlerAdapter());
 
-// Spread form when a real dev import-transport must be wired:
+// Spread form when a host supplies a runtime import transport:
 import { createDevImportTransport } from '@forgeax/engine-runtime';
 const bundler = { ...forgeaxBundlerAdapter(), importTransport: createDevImportTransport() };
 const renderer = await createRenderer(canvas, {}, bundler);
@@ -257,7 +257,8 @@ const renderer = await createRenderer(canvas, {}, bundler);
 
 - `forgeaxShader(options?)` mounts `resolveId` (claims the virtual id) + `load` (returns the inline adapter source) hooks alongside the 4 build hooks. Same plugin, no second package.
 - The adapter source closes over the plugin's `SHADER_MANIFEST_URL` constant -- a single SSOT shared with `generateBundle` emit + dev `configureServer` middleware. `apps/` source never types the literal `'/shaders/manifest.json'`; CI grep gate (AC-12) enforces zero hits.
-- The adapter source **does NOT import** `@forgeax/engine-app`. The return value relies on TypeScript structural typing to satisfy `BundlerOptions` at every callsite (D-4 q7-A reverse-coupling guard: `vite-plugin-shader` -> `@forgeax/engine-app` is forbidden by the package layering).
+- App consumes the generated adapter as `AppHostAdapter`; generic App runtime code never reads Vite metadata. Optional recorder and browser bridge methods dynamically import `@forgeax/engine-app/host-adapter` only when the Vite gates enable them, and HMR teardown is registered by the tool adapter.
+- The plugin package does not add an App runtime dependency. Its ambient virtual module declaration type-imports the existing App facade so consumer callsites retain the full host adapter contract.
 - The TypeScript ambient module declaration (`declare module 'virtual:forgeax/bundler'`) ships in each app's `src/vite-env.d.ts` so per-app `tsc --noEmit` resolves the import without each app having to depend on the plugin's package types.
 
 ## 关联

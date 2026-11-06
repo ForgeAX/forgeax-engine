@@ -73,6 +73,15 @@ app.world.addSystem(Update, {
 app.start().unwrap();
 ```
 
+`forgeaxBundlerAdapter()` returns the App host adapter. It carries renderer
+build inputs and, when the configured host provides them, explicit RHI recorder
+and browser relay capabilities. The App consumes those capabilities without
+reading bundler metadata itself. Hosts that assemble a Node App opt into the
+remote server with `remoteServe: true` in the `createApp` arguments.
+The App releases relay capabilities once across stop, disposal and host cleanup.
+With execution bootstrapping, provide `shaderManifestUrl`; host-side
+`readShaderManifest` callbacks cannot cross that execution boundary.
+
 The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. CSS-sized drawing buffers default to one physical pixel per CSS pixel, matching Three.js `setPixelRatio(1)`. App does not select this scale from device pixel ratio or device performance; set `canvasPixelRatio` explicitly to request a different scale, for example `window.devicePixelRatio`. Render's authored `DynamicResolution` remains a separate opt-in. Dimensions clamp proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
 
 The browser form installs `canvasAspectPlugin` automatically. Native presentation
@@ -1385,8 +1394,7 @@ Quick start in a Node or dawn-node host:
 ```ts
 import { createApp } from '@forgeax/engine-app';
 
-process.env.FORGEAX_ENGINE_REMOTE_SERVE = '1';
-const result = await createApp({ world, renderer });
+const result = await createApp({ world, renderer, remoteServe: true });
 // Use the existing WS client to call the existing introspect method.
 ```
 
@@ -1396,7 +1404,7 @@ remote `introspect` response; app does not define, validate, or own a component.
 
 | Boundary | Contract | Recovery |
 |:--|:--|:--|
-| App -> remote | `startServer({ introspection })` carries data only | If remote is absent, verify dev mode or the explicit headless env flag |
+| App -> remote | `startServer({ introspection })` carries data only | If remote is absent, pass `remoteServe: true` from the host that owns startup policy |
 | Remote -> consumer | Existing `eval` and `introspect` methods remain the full surface | Use the returned `RemoteError` fields, never message parsing |
 | ECS/render | Registry and `Visibility` remain package-owned | Use `_import('@forgeax/engine/render')` in eval, not app-local labels |
 

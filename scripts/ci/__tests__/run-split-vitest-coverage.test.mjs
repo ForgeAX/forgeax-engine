@@ -83,6 +83,7 @@ import {
   assignCoverageShards,
   buildGroupArgs,
   buildTypecheckArgs,
+  coverageAssignmentLaneFinishes,
   coverageGroupOrder,
   coverageGroups,
   isExclusiveCoverageGroup,
@@ -285,6 +286,17 @@ test('allows CI coverage to reuse the repository-wide typecheck gate', () => {
   assert.equal(options.groupConcurrency, 'auto');
 });
 
+test('supports the single standalone Vitest type-test preflight', () => {
+  const options = parseArgs(['--typecheck-only', '--max-workers=1']);
+  assert.equal(options.typecheckOnly, true);
+  assert.equal(options.typecheck, true);
+  assert.equal(options.maxWorkers, 1);
+  assert.throws(
+    () => parseArgs(['--typecheck-only', '--skip-typecheck']),
+    /cannot be combined with --skip-typecheck/,
+  );
+});
+
 test('runs one typecheck-only preflight over the selected project roster', () => {
   assert.deepEqual(
     buildTypecheckArgs({
@@ -317,9 +329,14 @@ test('coverage workflow downloads every produced matrix shard', () => {
     Array.from({ length: shards.length }, (_, index) => index),
   );
   const produce = producer.steps.find((step) => step.run?.includes('--shard-count='));
+  const primary = workflow.jobs['primary-pnpm'];
+  const typecheck = primary.steps.find((step) => step.name === 'Vitest type-test preflight');
   const consume = workflow.jobs['coverage-pnpm'].steps.find((step) =>
     step.run?.includes('--artifact-pattern "coverage-shard-*"'),
   );
+  assert.ok(typecheck?.run.includes('--typecheck-only'));
+  assert.ok(produce.run.includes('--skip-typecheck'));
+  assert.equal(shards.length, 4, 'retain the existing four-runner coverage limit');
   assert.equal(Number(produce.run.match(/--shard-count=(\d+)/)?.[1]), shards.length);
   assert.equal(Number(consume.run.match(/--expected-count (\d+)/)?.[1]), shards.length);
 });
@@ -490,7 +507,7 @@ test('the complete roster leaves early admission headroom for its long exclusive
     ),
   );
   assert.ok(compiler >= 0 && groups[compiler].weight >= 900);
-  const assignment = assignCoverageShards(groups, 4);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
   const exclusiveNeighbors = groups.filter(
     (group, index) =>
       index !== compiler &&
@@ -503,7 +520,7 @@ test('the complete roster leaves early admission headroom for its long exclusive
     'the long compiler must leave room for its complete tail instead of stacking exclusive owners',
   );
   const criticalLane = assignment[compiler];
-  const lane = { slots: [criticalLane === 0 ? 185 : 0, criticalLane === 0 ? 185 : 0] };
+  const lane = { slots: [0, 0] };
   for (const index of coverageGroupOrder(groups)) {
     const group = groups[index];
     if (assignment[index] !== criticalLane || isExclusiveCoverageGroup(group)) continue;
@@ -584,34 +601,65 @@ test('partial observations cannot optimize a current roster with stale samples',
 });
 
 test('current and retained complete coverage receipts bound all four replay forecasts', () => {
+  const latestReceipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-41828488495.json', import.meta.url),
+      'utf8',
+    ),
+  );
   const groups = coverageGroups(allProjectNames(), 8);
-
-  for (const typecheck of [true, false]) {
-    const assignment = assignCoverageShards(groups, 4, { typecheck });
-    assert.equal(assignment.length, groups.length, 'retain every complete child');
-    const lanes = Array.from({ length: 4 }, (_value, lane) => ({
-      parallel: Array(2).fill(lane === 0 && typecheck ? 185 : 0),
-      exclusive: 0,
-    }));
-    for (const index of coverageGroupOrder(groups)) {
-      const group = groups[index];
-      const weight = group.observedSeconds ?? group.weight;
-      const lane = lanes[assignment[index]];
-      if (group.files.length > 0) lane.exclusive += weight;
-      else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += weight;
-    }
-    const finish = Math.max(...lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive));
-    assert.ok(
-      finish <= 2300,
-      `the complete four-job replay must stay below 2300s before remaining setup; got ${finish}s`,
-    );
-  }
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  assert.equal(assignment.length, groups.length, 'retain every complete child');
+  const lanes = coverageAssignmentLaneFinishes(groups, assignment, 4, false, true);
+  assert.ok(
+    Math.max(...lanes) <= 2300,
+    `the runtime-only four-job replay must stay below 2300s before remaining setup; got ${lanes}`,
+  );
   assert.equal(groups.length, 60, 'retain every reserved complete child');
   assert.equal(
     groups.filter((group) => group.observedSeconds !== undefined).length,
-    59,
-    'the interrupted Vite owner keeps its reservation without a current-run sample',
+    Object.keys(latestReceipt.completedSeconds).length,
+    'observations match the latest complete-child receipt while unfinished work keeps reservations',
   );
+});
+
+test('retained partial receipts rebalance every complete-owner replay scenario', () => {
+  const completed = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
+  assert.ok(completed.replayRuns.length >= 4, 'retain distinct historical replay windows');
+
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  assert.equal(assignment.length, groups.length);
+
+  for (const group of groups) {
+    if (!group.replaySeconds) continue;
+    assert.equal(group.replaySeconds.length, completed.replayRuns.length);
+    for (const [index, run] of completed.replayRuns.entries()) {
+      const expected = run.completedSeconds?.[group.label] ?? run.reservedSeconds?.[group.label];
+      assert.equal(group.replaySeconds[index], expected, `${group.label} replay ${index}`);
+    }
+  }
+
+  const scenarios = [
+    { name: 'latest', replay: -1, budget: 2300 },
+    ...completed.replayRuns.map((run, index) => ({
+      name: String(run.run ?? run.runId),
+      replay: index,
+      budget: run.budgetSeconds ?? 2300,
+    })),
+  ].map(({ name, replay, budget }) => ({
+    name,
+    budget,
+    lanes: coverageAssignmentLaneFinishes(groups, assignment, 4, false, true, replay),
+  }));
+  for (const scenario of scenarios) {
+    assert.ok(
+      Math.max(...scenario.lanes) <= scenario.budget,
+      `${scenario.name} must leave setup headroom: ${scenario.lanes}`,
+    );
+  }
 });
 
 test('completed run 41828488495 leaves the interrupted compiler its full reserved window', () => {
@@ -627,11 +675,8 @@ test('completed run 41828488495 leaves the interrupted compiler its full reserve
     [...Object.keys(receipt.completedSeconds), receipt.interruptedGroup].sort(),
     'retain all complete owners and the interrupted compiler without inventing a sample',
   );
-  const assignment = assignCoverageShards(groups, 4);
-  const lanes = Array.from({ length: 4 }, (_value, index) => ({
-    parallel: [index === 0 ? 185 : 0, index === 0 ? 185 : 0],
-    exclusive: 0,
-  }));
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const lanes = Array.from({ length: 4 }, () => ({ parallel: [0, 0], exclusive: 0 }));
   for (const index of coverageGroupOrder(groups)) {
     const group = groups[index];
     const seconds = receipt.completedSeconds[group.label] ?? group.weight;
@@ -653,27 +698,25 @@ test('run 41840653604 stays bounded without discarding the preceding complete co
       'utf8',
     ),
   );
+  const completedCoverage = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
   assert.equal(Object.keys(receipt.completedSeconds).length, 48);
   assert.ok(!Object.hasOwn(receipt.completedSeconds, '@forgeax/engine-modeling:shard-13-of-16'));
   const groups = coverageGroups(allProjectNames(), 8);
-  const assignment = assignCoverageShards(groups, 4);
-  const lanes = Array.from({ length: 4 }, (_value, lane) => ({
-    parallel: [lane === 0 ? 185 : 0, lane === 0 ? 185 : 0],
-    exclusive: 0,
-  }));
-  for (const index of coverageGroupOrder(groups)) {
-    const group = groups[index];
-    // Unfinished children retain the previous complete cohort or their forecast.
-    // The source owner always keeps its full reserved production window.
-    const seconds =
-      isExclusiveCoverageGroup(group) && group.weight >= 900
-        ? group.weight
-        : (receipt.completedSeconds[group.label] ?? group.observedSeconds ?? group.weight);
-    const lane = lanes[assignment[index]];
-    if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
-    else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
-  }
-  const finishes = lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const partialReplayIndex = completedCoverage.replayRuns.findIndex(
+    (run) => run.run === receipt.run,
+  );
+  assert.notEqual(partialReplayIndex, -1);
+  const finishes = coverageAssignmentLaneFinishes(
+    groups,
+    assignment,
+    4,
+    false,
+    true,
+    partialReplayIndex,
+  );
   assert.ok(
     Math.max(...finishes) <= 2300,
     `retain setup headroom in the partial-run replay: ${finishes}`,
@@ -747,24 +790,46 @@ test('each Modeling cost-ranked wave spans all four coverage jobs', () => {
   }
 });
 
-test('each Modeling rank position also spans all four coverage jobs', () => {
-  const groups = coverageGroups(allProjectNames(), 8);
-  const assignment = assignCoverageShards(groups, 4);
-  for (let rank = 0; rank < 4; rank++) {
-    const cohort = groups.filter(
-      (group) =>
-        group.projects[0] === '@forgeax/engine-modeling' &&
-        group.shard &&
-        (Number(group.shard.split('/')[0]) - 1) % 4 === rank,
+for (const { runId, completedCount } of [
+  { runId: 42049090931, completedCount: 56 },
+  { runId: 42076518011, completedCount: 50 },
+]) {
+  test(`slow completed children in run ${runId} leave room for every unfinished owner`, () => {
+    const receipt = JSON.parse(
+      readFileSync(new URL(`./fixtures/coverage-completed-${runId}.json`, import.meta.url), 'utf8'),
     );
-    assert.equal(cohort.length, 4);
-    assert.equal(
-      new Set(cohort.map((group) => assignment[groups.indexOf(group)])).size,
-      4,
-      'run 41587190083 stacked Modeling 1/5/9/13 on one job and 4/7/12/15 on another',
+    assert.equal(Object.keys(receipt.completedSeconds).length, completedCount);
+    const groups = coverageGroups(allProjectNames(), 8);
+    const pending = groups.filter((group) => !(group.label in receipt.completedSeconds));
+    assert.deepEqual(
+      pending.map((group) => group.label).sort(),
+      Object.keys(receipt.reservedSeconds).sort(),
     );
-  }
-});
+    const assignment = assignCoverageShards(groups, 4);
+    const lanes = Array.from({ length: 4 }, (_, lane) => ({
+      parallel: Array(2).fill(lane === 0 ? 185 : 0),
+      exclusive: 0,
+    }));
+    for (const index of coverageGroupOrder(groups)) {
+      const group = groups[index];
+      const seconds = receipt.completedSeconds[group.label] ?? group.weight;
+      const lane = lanes[assignment[index]];
+      if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
+      else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
+    }
+    const finishes = lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive);
+    assert.ok(
+      Math.max(...finishes) <= 2450,
+      `${completedCount} completed children plus unchanged unfinished reservations retain setup headroom: ${finishes}`,
+    );
+    const replay = JSON.parse(
+      readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+    ).replayRuns.findIndex((run) => run.runId === runId);
+    for (const group of pending) {
+      assert.equal(group.replaySeconds[replay], receipt.reservedSeconds[group.label]);
+    }
+  });
+}
 
 test('complete fine waves admit unequal forecasts without a greedy placement dead end', () => {
   const groups = [
@@ -780,7 +845,7 @@ test('complete fine waves admit unequal forecasts without a greedy placement dea
     const assignment = assignCoverageShards(groups, 4, { typecheck });
     for (let offset = 0; offset < 4; offset++) {
       assert.equal(new Set(assignment.slice(offset * 4, offset * 4 + 4)).size, 4);
-      assert.equal(new Set([0, 1, 2, 3].map((wave) => assignment[wave * 4 + offset])).size, 4);
+      assert.equal(assignment.filter((lane) => lane === offset).length, 4);
     }
     assert.deepEqual(assignCoverageShards(groups, 4, { typecheck }), assignment);
   }
@@ -1253,7 +1318,13 @@ test('isolates the live ECS repository scan once and excludes it elsewhere', () 
   const groups = coverageGroups(['@forgeax/engine-ecs', '@forgeax/engine-scene'], 8);
   const owners = groups.filter((group) => group.files.includes(scanFile));
   assert.equal(owners.length, 1);
-  const { weight: _weight, observedSeconds, replaySeconds: _replaySeconds, ...owner } = owners[0];
+  const {
+    weight: _weight,
+    observedSeconds,
+    replaySeconds: _replaySeconds,
+    replayBudgetSeconds: _replayBudgetSeconds,
+    ...owner
+  } = owners[0];
   assert.ok(Number.isFinite(observedSeconds) && observedSeconds > 0);
   assert.deepEqual(owner, {
     label: `@forgeax/engine-ecs:${scanFiles.join(',')}`,
@@ -1577,4 +1648,84 @@ test('large source and production recovery files have one exclusive instrumented
       file,
     );
   }
+});
+
+test('run 41970460421 fits the original job window using its completed compiler receipt', () => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-41970460421.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 44);
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  const lanes = Array.from({ length: 4 }, (_, lane) => ({
+    parallel: Array(2).fill(lane === 0 ? 185 : 0),
+    exclusive: 0,
+  }));
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    const seconds = receipt.completedSeconds[group.label] ?? group.observedSeconds ?? group.weight;
+    const lane = lanes[assignment[index]];
+    if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
+    else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
+  }
+  const finishes = lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive);
+  assert.ok(
+    Math.max(...finishes) <= 2450,
+    `44 completed children plus unchanged forecasts must leave setup headroom: ${finishes}`,
+  );
+  const source = groups.find((group) =>
+    group.files.includes(
+      'packages/vite-plugin-shader/src/__tests__/direct-dfg-manifest.integration.test.ts',
+    ),
+  );
+  assert.ok(source.weight >= 920, 'retain the conservative source reservation');
+  assert.equal(
+    receipt.completedSeconds[source.label],
+    413.3,
+    'only the complete source child supplies a measured replay cost',
+  );
+});
+
+test('coverage admission bounds child-process tails when completed forecasts understate a lane', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  const counts = Array.from(
+    { length: 4 },
+    (_, lane) => assignment.filter((value) => value === lane).length,
+  );
+  assert.ok(
+    Math.max(...counts) <= 16,
+    `retain setup/serial-tail headroom instead of stranding 21 children: ${counts}`,
+  );
+});
+
+test('run 41987337840 retains every completed child and leaves room for the six unfinished owners', () => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-41987337840.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 54);
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4);
+  const lanes = Array.from({ length: 4 }, (_, lane) => ({
+    parallel: Array(2).fill(lane === 0 ? 185 : 0),
+    exclusive: 0,
+  }));
+  for (const index of coverageGroupOrder(groups)) {
+    const group = groups[index];
+    const seconds = receipt.completedSeconds[group.label] ?? group.observedSeconds ?? group.weight;
+    const lane = lanes[assignment[index]];
+    if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
+    else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
+  }
+  const finishes = lanes.map((lane) => Math.max(...lane.parallel) + lane.exclusive);
+  assert.ok(
+    Math.max(...finishes) <= 2300,
+    `the interrupted lane retains every unmeasured owner inside the original job window: ${finishes}`,
+  );
 });

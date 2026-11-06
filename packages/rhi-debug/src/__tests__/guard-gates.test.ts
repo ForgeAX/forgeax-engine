@@ -4,8 +4,8 @@
 // flag-drift point or a second error owner turns this test red.
 //
 // AC-07: full-repo grep zero-hit for --runId / --ws-url (flag drift).
-// AC-08 partial: recorder injection and import.meta.hot in the browser host are inside the
-//   rhiDebugFlag === '1' guard block.
+// AC-08 partial: browser core consumes recorder capability explicitly; the
+//   optional host adapter owns recorder construction without Vite/HMR checks.
 //
 // t10; requirements AC-07/AC-08/AC-09; plan-strategy §2 D-8.
 
@@ -109,8 +109,8 @@ describe('RHI-debug error owner gate', () => {
   });
 });
 
-describe('AC-08 partial: browser debug work in rhiDebugFlag guard', () => {
-  it('recorder injection and HMR references stay inside the rhiDebugFlag guard block', () => {
+describe('AC-08 partial: explicit browser host capability', () => {
+  it('keeps recorder construction in the host adapter and out of browser core', () => {
     const browserAppPath = path.resolve(
       __dirname,
       '..',
@@ -122,67 +122,30 @@ describe('AC-08 partial: browser debug work in rhiDebugFlag guard', () => {
       'src',
       'browser.ts',
     );
-    const content = readFileSync(browserAppPath, 'utf-8');
-    expect(content).toContain('attachRecorder(');
-    const lines = content.split('\n');
+    const browserContent = readFileSync(browserAppPath, 'utf-8');
+    expect(browserContent).toContain('if (bundler?.attachRhiRecorder !== undefined)');
+    expect(browserContent).toContain('await bundler.attachRhiRecorder(rendererOpts)');
+    expect(browserContent).not.toContain('attachRecorder(');
+    expect(browserContent).not.toMatch(/\bimport\.meta\.(?:env|hot)\b/);
+    expect(browserContent).not.toContain('rhiDebugFlag');
 
-    const guardConditionIdx = lines.findIndex((l) => l.includes("rhiDebugFlag === '1'"));
-    expect(guardConditionIdx).not.toBe(-1);
-    let guardOpenIdx = -1;
-    for (let i = guardConditionIdx; i >= 0; i--) {
-      if (lines[i]?.includes('if (')) {
-        guardOpenIdx = i;
-        break;
-      }
-    }
-    expect(guardOpenIdx).not.toBe(-1);
-
-    const guardBraceIdx = lines.findIndex(
-      (l, index) => index >= guardConditionIdx && l.includes('{'),
+    const hostAdapterPath = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      '..',
+      'packages',
+      'app',
+      'src',
+      'host-adapter.ts',
     );
-    expect(guardBraceIdx).not.toBe(-1);
-
-    // Find the matching '}' at the same indent level as the 'if' statement.
-    // Avoid counting braces inside template literals or strings by matching
-    // the exact indent prefix.
-    const guardLine = lines[guardBraceIdx];
-    if (guardLine === undefined) throw new Error('unreachable: guardBraceIdx verified above');
-    const indentMatch = guardLine.match(/^(\s*)/);
-    if (indentMatch === null)
-      throw new Error('unreachable: every line matches the whitespace regex');
-    const indent = indentMatch[1];
-    let guardCloseIdx = -1;
-    for (let i = guardBraceIdx + 1; i < lines.length; i++) {
-      if (lines[i] === `${indent}}`) {
-        guardCloseIdx = i;
-        break;
-      }
-    }
-    expect(guardCloseIdx).not.toBe(-1);
-
-    // Verify all hotMeta / import.meta.hot references in non-comment lines
-    // fall within the guard block.
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line === undefined) break;
-      const trimmed = line.trimStart();
-      // Skip comment-only lines.
-      if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-      if (
-        trimmed.includes('attachRecorder(') ||
-        trimmed.includes('hotMeta') ||
-        (trimmed.includes('import.meta') && trimmed.includes('hot'))
-      ) {
-        expect(
-          i,
-          `import.meta.hot reference at line ${i + 1} is outside rhiDebugFlag guard (guard: ${guardOpenIdx + 1}-${guardCloseIdx + 1})`,
-        ).toBeGreaterThanOrEqual(guardOpenIdx);
-        expect(
-          i,
-          `import.meta.hot reference at line ${i + 1} is outside rhiDebugFlag guard (guard: ${guardOpenIdx + 1}-${guardCloseIdx + 1})`,
-        ).toBeLessThanOrEqual(guardCloseIdx);
-      }
-    }
+    const hostAdapterContent = readFileSync(hostAdapterPath, 'utf-8');
+    expect(hostAdapterContent).toContain(
+      'attachRecorder(await recordableBackend(rendererOptions))',
+    );
+    expect(hostAdapterContent).not.toMatch(/\bimport\.meta\.(?:env|hot)\b/);
+    expect(hostAdapterContent).not.toMatch(/\bprocess\.env\b/);
   });
 });
 

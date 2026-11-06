@@ -92,6 +92,9 @@ async function buildProduction(
     cookers: context.opts.cookers ?? [],
     importerRegistry: context.importerRegistry,
     fsForImport: context.fsForImport,
+    ...(context.opts.producerIdentity === undefined
+      ? {}
+      : { producerIdentity: context.opts.producerIdentity }),
     cookedCurrentProjection: context.cookedCurrentProjection,
     directCurrentProjection: context.directCurrentProjection,
     authoredCookedCurrentProjection: context.authoredCookedCurrentProjection,

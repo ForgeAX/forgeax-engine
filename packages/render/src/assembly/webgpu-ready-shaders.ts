@@ -300,7 +300,7 @@ function requireEngineTriple(
       code: 'shader-compile-failed',
       expected:
         'manifest entries include pbr.wgsl + unlit.wgsl + tonemap.wgsl (engine SSOT triple)',
-      hint: 'verify @forgeax/engine-vite-plugin-shader emits manifest.json with the 3 engine entries; check vite plugin engineEntries option',
+      hint: 'publish a shader manifest containing pbr.wgsl, unlit.wgsl, and tonemap.wgsl',
     });
   }
   return { ...found, pbr, unlit, tonemap };

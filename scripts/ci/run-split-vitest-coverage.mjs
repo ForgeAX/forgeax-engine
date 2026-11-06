@@ -24,6 +24,7 @@ import {
 import completedCoverage from './coverage-completed-child-seconds.json' with { type: 'json' };
 import { withLocalGpuLease } from './local-gpu-lease.mjs';
 import modelingTimings from './modeling-coverage-file-seconds.json' with { type: 'json' };
+import { createModelingFilePhaseStream } from './modeling-file-phase-reporter.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(scriptDir, '../..');
@@ -393,6 +394,8 @@ function parsePositiveInt(value, name, { max = Number.POSITIVE_INFINITY } = {}) 
 }
 
 export function parseArgs(argv) {
+  const typecheckOnly = argv.includes('--typecheck-only');
+  const args = argv.filter((argument) => argument !== '--typecheck-only');
   const valueOptions = new Set([
     '--project',
     '--group-size',
@@ -419,11 +422,12 @@ export function parseArgs(argv) {
     shardIndex: 0,
     shardOutputDir: null,
     typecheck: true,
+    typecheckOnly,
     vitestArgs: [],
   };
 
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
     if (argument === '--non-coverage') {
       options.coverage = false;
       continue;
@@ -435,7 +439,7 @@ export function parseArgs(argv) {
       continue;
     }
     const [key, inlineValue] = argument.split('=', 2);
-    const value = inlineValue ?? (valueOptions.has(key) ? argv[++index] : undefined);
+    const value = inlineValue ?? (valueOptions.has(key) ? args[++index] : undefined);
     if (key === '--project') {
       if (options.coverage) {
         if (!value) throw new Error('--project requires a value');
@@ -486,6 +490,7 @@ export function parseArgs(argv) {
   if (!options.coverage && (options.shardCount > 1 || options.mergeShards !== null)) {
     throw new Error('coverage shards and --merge-shards require coverage mode');
   }
+  validateTypecheckOnlyOptions(options);
   if (options.shardCount > 1 && options.shardOutputDir === null) {
     throw new Error('--shard-count above 1 requires --shard-output-dir');
   }
@@ -493,6 +498,15 @@ export function parseArgs(argv) {
     throw new Error('--merge-shards cannot be combined with shard execution options');
   }
   return options;
+}
+
+function validateTypecheckOnlyOptions(options) {
+  if (!options.typecheckOnly) return;
+  if (!options.typecheck)
+    throw new Error('--typecheck-only cannot be combined with --skip-typecheck');
+  if (options.shardOutputDir !== null || options.mergeShards !== null) {
+    throw new Error('--typecheck-only cannot be combined with coverage shard outputs');
+  }
 }
 
 function packageProjectNames() {
@@ -623,7 +637,10 @@ export function coverageGroups(
               receipt.run === completed.latestRun ? receipt.latestSeconds : undefined,
             // Partial later runs are distinct scenarios, never restamped as a
             // complete cohort. Missing work keeps the admitted cohort forecast.
-            replaySeconds: completed.replayRuns?.map((run) => run.completedSeconds[group.label]),
+            replaySeconds: completed.replayRuns?.map(
+              (run) => run.completedSeconds[group.label] ?? run.reservedSeconds?.[group.label],
+            ),
+            replayBudgetSeconds: completed.replayRuns?.map((run) => run.budgetSeconds ?? 2300),
           }
         : group;
     });
@@ -678,7 +695,7 @@ function coverageLaneFinish(lane) {
   return Math.max(...lane.parallel) + lane.exclusive;
 }
 
-function coverageAssignmentLaneFinishes(
+export function coverageAssignmentLaneFinishes(
   groups,
   assignment,
   shardCount,
@@ -692,16 +709,12 @@ function coverageAssignmentLaneFinishes(
     const shard = assignment[index];
     if (shard < 0) continue;
     const group = groups[index];
-    // A shorter completed compiler sample must not spend the reserved serial
-    // tail that its conservative forecast needs on the critical lane.
-    const forecast =
-      completed && index !== critical && group.observedSeconds !== undefined
-        ? {
-            ...group,
-            weight:
-              (replay >= 0 ? group.replaySeconds?.[replay] : undefined) ?? group.observedSeconds,
-          }
-        : group;
+    // Keep the critical reservation in unmeasured scenarios. A completed
+    // compiler in a separate run is evidence for that scenario only.
+    const seconds =
+      (replay >= 0 ? group.replaySeconds?.[replay] : undefined) ??
+      (index !== critical ? group.observedSeconds : undefined);
+    const forecast = completed && seconds !== undefined ? { ...group, weight: seconds } : group;
     lanes[shard] = appendCoverageLane(lanes[shard], forecast);
   }
   return lanes.map(coverageLaneFinish);
@@ -741,21 +754,23 @@ function retainsExclusiveCoverageHeadroom(groups, assignment, index, shard) {
   );
 }
 
-function admitsFineCoveragePartition(siblings, part, count, shardCount) {
+function admitsFineCoveragePartition(siblings, part, shardCount) {
   const wave = Math.floor((part - 1) / shardCount);
-  const rank = (part - 1) % shardCount;
-  const parts = siblings.map((candidate) => Number(candidate.shard.split('/')[0]) - 1);
-  return (
-    !parts.some((position) => Math.floor(position / shardCount) === wave) &&
-    parts.filter((position) => position % shardCount === rank).length <
-      Math.ceil(count / shardCount / shardCount)
+  return !siblings.some(
+    (candidate) => Math.floor((Number(candidate.shard.split('/')[0]) - 1) / shardCount) === wave,
   );
 }
 
-// Broad project halves must span jobs. Fine partitions balance by scheduled
-// work: equal child counts can strand a whole exclusive compiler behind them.
+// Broad project halves span jobs; fine partitions retain both spread quotas
+// and source headroom while complete-child placement balances measured work.
 function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
   if (!retainsExclusiveCoverageHeadroom(groups, assignment, index, shard)) return false;
+  // Timings do not bound startup and serial tails when a few cold children
+  // overrun. Keep at most one child above the even share on every physical job.
+  const childNeighbors = assignment.filter(
+    (lane, position) => position !== index && lane === shard,
+  );
+  if (childNeighbors.length >= Math.ceil(groups.length / shardCount) + 1) return false;
   const group = groups[index];
   if (!group.shard) return true;
   const [part, count] = group.shard.split('/').map(Number);
@@ -768,7 +783,7 @@ function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
   );
   if (siblings.length >= Math.ceil(count / shardCount)) return false;
   if (count > shardCount) {
-    return admitsFineCoveragePartition(siblings, part, count, shardCount);
+    return admitsFineCoveragePartition(siblings, part, shardCount);
   }
   const broad = groups.filter(
     (candidate) => candidate.shard && Number(candidate.shard.split('/')[1]) <= shardCount,
@@ -794,7 +809,7 @@ function fineCoverageWave(groups, order, index, shardCount) {
 }
 
 // Admit one complete wave atomically. At most four actual jobs means at most
-// 24 complete permutations, avoiding a greedy dead end under both spread quotas.
+// 24 complete permutations, avoiding a greedy dead end under the complete-wave spread quota.
 function placeFineCoverageWave(groups, indexes, assignment, lanes, shardCount) {
   let best;
   function visit(offset, planned, projected) {
@@ -824,37 +839,6 @@ function placeFineCoverageWave(groups, indexes, assignment, lanes, shardCount) {
 
 // The actual 16-part/four-job roster has at most 576 complete wave/rank
 // allocations. Larger future rosters keep bounded wave admission and local moves.
-function* fineCoverageAssignments(groups, assignment, shardCount) {
-  const projects = new Map();
-  for (let index = 0; index < groups.length; index++) {
-    const group = groups[index];
-    if (!group.shard || Number(group.shard.split('/')[1]) <= shardCount) continue;
-    const key = `${group.projects[0]}:${group.shard.split('/')[1]}`;
-    const indexes = projects.get(key) ?? [];
-    indexes.push(index);
-    projects.set(key, indexes);
-  }
-  for (const indexes of projects.values()) {
-    if (indexes.length > shardCount * shardCount) continue;
-    const planned = [...assignment];
-    for (const index of indexes) planned[index] = -1;
-    function* visit(offset, current) {
-      if (offset === indexes.length) {
-        yield current;
-        return;
-      }
-      const index = indexes[offset];
-      for (let shard = 0; shard < shardCount; shard++) {
-        if (!canPlaceCoverageGroup(groups, current, index, shard, shardCount)) continue;
-        const next = [...current];
-        next[index] = shard;
-        yield* visit(offset + 1, next);
-      }
-    }
-    yield* visit(0, planned);
-  }
-}
-
 function* coverageAssignmentCandidates(groups, assignment, shardCount) {
   for (let index = 0; index < groups.length; index++) {
     for (let shard = 0; shard < shardCount; shard++) {
@@ -880,37 +864,42 @@ function* coverageAssignmentCandidates(groups, assignment, shardCount) {
         yield candidate;
     }
   }
-  yield* fineCoverageAssignments(groups, assignment, shardCount);
 }
 
 function balanceCompletedCoverage(groups, assignment, shardCount, typecheck) {
-  const capacity = coverageAssignmentFinish(groups, assignment, shardCount, typecheck);
+  if (!groups.some((group) => group.observedSeconds !== undefined)) return assignment;
   let current = assignment;
-  let finish = coverageAssignmentFinish(groups, current, shardCount, typecheck, true);
+  let metrics = coverageAssignmentMetrics(groups, current, shardCount, typecheck);
   for (;;) {
     let best = current;
-    let bestFinish = finish;
+    let bestMetrics = metrics;
     for (const candidate of coverageAssignmentCandidates(groups, current, shardCount)) {
-      if (coverageAssignmentFinish(groups, candidate, shardCount, typecheck) > capacity) continue;
-      const completed = coverageAssignmentFinish(groups, candidate, shardCount, typecheck, true);
-      if (completed < bestFinish) {
+      const candidateMetrics = coverageAssignmentMetrics(groups, candidate, shardCount, typecheck);
+      if (completedCoverageMetricsImprove(candidateMetrics, bestMetrics)) {
         best = candidate;
-        bestFinish = completed;
+        bestMetrics = candidateMetrics;
       }
     }
     if (best === current) return current;
     current = best;
-    finish = bestFinish;
+    metrics = bestMetrics;
   }
 }
 
 function coverageAssignmentMetrics(groups, assignment, shardCount, typecheck) {
   const replayCount = Math.max(0, ...groups.map((group) => group.replaySeconds?.length ?? 0));
+  // Compare each scenario against its retained execution window. A slower
+  // cohort must not erase the preceding cohorts' stricter regression bounds.
+  const budgets = groups.find((group) => group.replayBudgetSeconds)?.replayBudgetSeconds;
   const finishes = Array.from({ length: replayCount + 1 }, (_value, index) =>
-    coverageAssignmentLaneFinishes(groups, assignment, shardCount, typecheck, true, index - 1),
+    coverageAssignmentLaneFinishes(groups, assignment, shardCount, typecheck, true, index - 1).map(
+      (finish) => (finish * 2300) / (index === 0 ? 2300 : (budgets?.[index - 1] ?? 2300)),
+    ),
   ).flat();
   return {
     finish: Math.max(...finishes),
+    violation: Math.hypot(...finishes.map((finish) => Math.max(0, finish - 2300))),
+    reservation: coverageAssignmentFinish(groups, assignment, shardCount, typecheck),
     spread: finishes.reduce((total, finish) => total + finish * finish, 0),
   };
 }
@@ -924,6 +913,7 @@ function completedCoverageCacheKey(groups, shardCount, typecheck) {
       group.weight,
       group.observedSeconds ?? null,
       group.replaySeconds ?? null,
+      group.replayBudgetSeconds ?? null,
       group.shard ?? null,
       group.startEarly === true,
       group.gpuLease === true,
@@ -952,38 +942,11 @@ function shuffleCoverageLanes(shardCount, random) {
   return lanes;
 }
 
-function startCompletedCoverageRestart(
-  groups,
-  best,
-  restart,
-  shardCount,
-  typecheck,
-  capacity,
-  finePlans,
-  fineIndexes,
-  broadIndexes,
-  random,
-) {
-  if (restart === 0) return [...best];
-  const current = [...best];
-  const plan = finePlans[Math.floor(random() * finePlans.length)];
-  for (const index of fineIndexes) current[index] = plan[index];
-  const lanes = shuffleCoverageLanes(shardCount, random);
-  broadIndexes.forEach((index, offset) => {
-    current[index] = lanes[offset];
-  });
-  return coverageAssignmentFinish(groups, current, shardCount, typecheck) <= capacity
-    ? current
-    : [...best];
-}
-
 function completedCoverageCandidate(
   groups,
   current,
   move,
   shardCount,
-  finePlans,
-  fineIndexes,
   broadIndexes,
   movableIndexes,
   random,
@@ -996,19 +959,16 @@ function completedCoverageCandidate(
     });
     return candidate;
   }
-  if (move === 1) {
-    const plan = finePlans[Math.floor(random() * finePlans.length)];
-    for (const index of fineIndexes) candidate[index] = plan[index];
-    return candidate;
-  }
-  if (move === 2) {
-    const left = Math.floor(random() * groups.length);
-    const right = Math.floor(random() * groups.length);
-    if (left === right || current[left] === current[right]) return null;
-    [candidate[left], candidate[right]] = [candidate[right], candidate[left]];
+  if (move === 1 || move === 2) {
+    const indexes = Array.from({ length: move + 1 }, () => Math.floor(random() * groups.length));
+    if (new Set(indexes).size !== indexes.length) return null;
+    indexes.forEach((index, offset) => {
+      candidate[index] = current[indexes[(offset + 1) % indexes.length]];
+    });
     if (
-      !canPlaceCoverageGroup(groups, candidate, left, candidate[left], shardCount) ||
-      !canPlaceCoverageGroup(groups, candidate, right, candidate[right], shardCount)
+      indexes.some(
+        (index) => !canPlaceCoverageGroup(groups, candidate, index, candidate[index], shardCount),
+      )
     )
       return null;
     return candidate;
@@ -1026,12 +986,26 @@ function completedCoverageCandidate(
 }
 
 function acceptCompletedCoverageCandidate(current, candidate, iteration, random) {
-  const delta = candidate.finish - current.finish;
+  const currentFits = current.finish <= 2300;
+  const candidateFits = candidate.finish <= 2300;
+  if (currentFits !== candidateFits) return candidateFits;
+  const delta = currentFits
+    ? candidate.reservation - current.reservation
+    : candidate.violation - current.violation;
   const temperature = 35 * 0.02 ** (iteration / completedCoverageSearchIterations);
   return delta <= 0 || random() < Math.exp(-delta / temperature);
 }
 
 function completedCoverageMetricsImprove(candidate, current) {
+  const currentFits = current.finish <= 2300;
+  const candidateFits = candidate.finish <= 2300;
+  if (currentFits !== candidateFits) return candidateFits;
+  if (currentFits && candidate.reservation !== current.reservation) {
+    return candidate.reservation < current.reservation;
+  }
+  if (!currentFits && candidate.violation !== current.violation) {
+    return candidate.violation < current.violation;
+  }
   return (
     candidate.finish < current.finish ||
     (candidate.finish === current.finish && candidate.spread < current.spread)
@@ -1039,8 +1013,10 @@ function completedCoverageMetricsImprove(candidate, current) {
 }
 
 // A bounded deterministic search escapes one-move scheduling minima in the
-// partial run replay. It changes complete-group placement only, and candidates
-// stay under the original conservative reservation and roster constraints.
+// partial run replay. Keep complete-group and roster constraints. Historical
+// maxima remain the balancing objective once every retained run fits its own
+// window. Their envelope is not another hard deadline: independent historical
+// maxima need not have occurred simultaneously.
 function optimizeCompletedCoverage(groups, assignment, shardCount, typecheck) {
   const measured = groups.filter((group) => group.observedSeconds !== undefined).length;
   if (measured < 20) return assignment;
@@ -1060,27 +1036,12 @@ function optimizeCompletedCoverage(groups, assignment, shardCount, typecheck) {
     return assignment;
   }
 
-  const finePlans = [...fineCoverageAssignments(groups, assignment, shardCount)];
-  if (finePlans.length === 0) return assignment;
-
-  const capacity = coverageAssignmentFinish(groups, assignment, shardCount, typecheck);
   let best = [...assignment];
   let bestMetrics = coverageAssignmentMetrics(groups, best, shardCount, typecheck);
   const random = completedCoverageRandom();
 
   for (let restart = 0; restart < completedCoverageSearchRestarts; restart += 1) {
-    let current = startCompletedCoverageRestart(
-      groups,
-      best,
-      restart,
-      shardCount,
-      typecheck,
-      capacity,
-      finePlans,
-      fineIndexes,
-      broadIndexes,
-      random,
-    );
+    let current = [...best];
     let currentMetrics = coverageAssignmentMetrics(groups, current, shardCount, typecheck);
 
     for (let iteration = 0; iteration < completedCoverageSearchIterations; iteration += 1) {
@@ -1090,14 +1051,11 @@ function optimizeCompletedCoverage(groups, assignment, shardCount, typecheck) {
         current,
         move,
         shardCount,
-        finePlans,
-        fineIndexes,
         broadIndexes,
         movableIndexes,
         random,
       );
       if (!candidate) continue;
-      if (coverageAssignmentFinish(groups, candidate, shardCount, typecheck) > capacity) continue;
       const metrics = coverageAssignmentMetrics(groups, candidate, shardCount, typecheck);
       if (acceptCompletedCoverageCandidate(currentMetrics, metrics, iteration, random)) {
         current = candidate;
@@ -1109,7 +1067,7 @@ function optimizeCompletedCoverage(groups, assignment, shardCount, typecheck) {
       }
     }
   }
-  return best;
+  return balanceCompletedCoverage(groups, best, shardCount, typecheck);
 }
 
 function cachedCoverageAssignment(groups, shardCount, typecheck) {
@@ -1243,7 +1201,7 @@ function readReport(reportPath) {
   }
 }
 
-function runChild(args, { env = process.env } = {}) {
+export function runChild(args, { env = process.env, progress, filePhases = false } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, args, {
       cwd: rootDir,
@@ -1252,25 +1210,32 @@ function runChild(args, { env = process.env } = {}) {
     });
     const stdout = [];
     const stderr = [];
+    const phases = filePhases && progress ? createModelingFilePhaseStream(progress) : null;
     let outputBytes = 0;
     let outputError = null;
-    const collect = (chunks) => (chunk) => {
+    const collect = (stream, chunks) => (chunk) => {
+      if (stream === 'stderr') phases?.collect(chunk);
       outputBytes += chunk.length;
       if (outputBytes > maxChildOutputBytes) {
         outputError ??= new Error(
           `Vitest child output exceeded ${maxChildOutputBytes} bytes; refusing to buffer unbounded concurrent logs`,
         );
+        phases?.stop();
         child.kill('SIGTERM');
         return;
       }
       chunks.push(chunk);
     };
-    child.stdout.on('data', collect(stdout));
-    child.stderr.on('data', collect(stderr));
-    child.on('error', (error) => resolve({ error, status: null, signal: null, stdout, stderr }));
-    child.on('close', (status, signal) =>
-      resolve({ error: outputError, status, signal, stdout, stderr }),
-    );
+    child.stdout.on('data', collect('stdout', stdout));
+    child.stderr.on('data', collect('stderr', stderr));
+    child.on('error', (error) => {
+      phases?.stop();
+      resolve({ error, status: null, signal: null, stdout, stderr });
+    });
+    child.on('close', (status, signal) => {
+      phases?.stop();
+      resolve({ error: outputError, status, signal, stdout, stderr });
+    });
   });
 }
 
@@ -1375,6 +1340,9 @@ export function buildGroupArgs({
     ...coverageThresholds,
     '--reporter=default',
     '--reporter=json',
+    ...(group.projects.length === 1 && group.projects[0] === '@forgeax/engine-modeling'
+      ? [`--reporter=${path.join(scriptDir, 'modeling-file-phase-reporter.mjs')}`]
+      : []),
     `--outputFile=${reportPath}`,
   ];
 }
@@ -1632,12 +1600,28 @@ function mergeShards({ options, groups }) {
   });
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+function resolveProjects(options) {
   const discovered = allProjectNames();
   const projects = options.projects.length ? options.projects : discovered;
   const unknown = projects.filter((project) => !discovered.includes(project));
   if (unknown.length) throw new Error(`unknown Vitest project(s): ${unknown.join(', ')}`);
+  return projects;
+}
+
+async function runVitestTypecheckOnly(options) {
+  const startedAt = Date.now();
+  await runTypecheck({
+    cliPath: path.join(scriptDir, 'run-vitest-projects.mjs'),
+    projects: resolveProjects(options),
+    maxWorkers: options.maxWorkers,
+  });
+  process.stderr.write(
+    `[vitest] typecheck-only preflight passed in ${((Date.now() - startedAt) / 1000).toFixed(2)}s\n`,
+  );
+}
+
+async function main(options) {
+  const projects = resolveProjects(options);
   const groups = coverageGroups(projects, options.groupSize, { isolateFiles: options.coverage });
   if (options.mergeShards !== null) {
     mergeShards({ options, groups });
@@ -1741,7 +1725,18 @@ async function main() {
               };
               return runBrowserCommandImpl
                 ? runBrowserCommandImpl([process.execPath, ...args], { label, env })
-                : runChild(args, { env });
+                : runChild(args, {
+                    env,
+                    filePhases:
+                      options.coverage &&
+                      group.projects.length === 1 &&
+                      group.projects[0] === '@forgeax/engine-modeling',
+                    progress: {
+                      groupIndex: index + 1,
+                      total: selectedGroups.length,
+                      label: group.label,
+                    },
+                  });
             },
           });
         const result =
@@ -1791,7 +1786,9 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    await main();
+    const options = parseArgs(process.argv.slice(2));
+    if (options.typecheckOnly) await runVitestTypecheckOnly(options);
+    else await main(options);
   } catch (error) {
     process.stderr.write(`[vitest] split coverage failed: ${error.message}\n`);
     if (error.signal) process.kill(process.pid, error.signal);

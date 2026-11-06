@@ -57,6 +57,7 @@
   },
   "devDependencies": {
     "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
     "@types/node": "^20.14.0"
   },
   "forgeax": {

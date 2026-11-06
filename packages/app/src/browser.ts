@@ -15,11 +15,7 @@ import { createProfiler } from '@forgeax/engine-profiler';
 import type { Renderer } from '@forgeax/engine-render';
 import type { RendererHostAssembly } from '@forgeax/engine-render/internal/construct-renderer';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
-import {
-  attachRecorder,
-  type CaptureFrameOptions,
-  type RecorderAttachment,
-} from '@forgeax/engine-rhi-debug';
+import type { CaptureFrameOptions, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import * as engineRuntimeModule from '@forgeax/engine-runtime';
 import { createDevImportTransport, EngineEnvironmentError } from '@forgeax/engine-runtime';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
@@ -39,9 +35,9 @@ import {
   publishBrowserFrameSubmitted,
   resetBrowserFrameProgress,
 } from './browser-frame-signal';
-import { recordableBackend } from './internal/recordable-rhi';
 
 export type { BrowserFrameProgress } from './browser-frame-signal';
+export type { AppHostAdapter } from './types';
 
 import { canvasAspectPlugin } from './canvas-policy';
 import {
@@ -74,7 +70,6 @@ import { installCarriedGpuStub } from './execution/gpu-stub';
 import { createWorkerExecutionApp } from './execution/host-controller';
 import { attachInputAuto, type InputAttachHandle } from './internal/input-attach';
 import { mainEngineProfile } from './internal/main-engine-profile';
-import { resolveRemoteServeFlag } from './internal/remote-serve-flag';
 import { remoteServerPlugin } from './internal/remote-server-plugin';
 import {
   createRhiCapture,
@@ -83,9 +78,16 @@ import {
   type RhiCapture,
   subscribeRhiCaptureSubmitted,
 } from './internal/rhi-capture';
-import { resolveRhiDebugFlag } from './internal/rhi-debug-flag';
 import { createRenderFeatureHost, type RenderFeatureHost } from './renderer-plugin';
-import type { App, BundlerOptions, CanvasAppError, CreateAppOptions, ExecutionApp } from './types';
+import type {
+  App,
+  AppHostAdapter,
+  BrowserRemoteBridgeAdapter,
+  BundlerOptions,
+  CanvasAppError,
+  CreateAppOptions,
+  ExecutionApp,
+} from './types';
 
 type RendererBootstrapDiagnostic = {
   readonly name: string;
@@ -126,9 +128,9 @@ function rhiDebugHostPlugin(dispose: () => void): Plugin {
  * through AppError | RhiError | EngineEnvironmentError per requirements AC-01.
  *
  * feat-20260608-create-app-param-surface-trim / M2 / D-3: the third arg is
- * `BundlerOptions` (importTransport + shaderManifestUrl + build) -- the SSOT for
- * host-injected build-tool emit knowledge. M3 demos collapse the third-arg
- * literal to `forgeaxBundlerAdapter()` exported by `virtual:forgeax/bundler`.
+ * `AppHostAdapter` -- renderer construction uses its `BundlerOptions` fields,
+ * while optional host capabilities stay at the App boundary. Hosts pass
+ * `forgeaxBundlerAdapter()` from `virtual:forgeax/bundler` as the third arg.
  *
  * M3 ships the path needed by AC-05 (auto input acquisition plus an ECS scan
  * plugin). M4 finalises the canvas-detached guard +
@@ -144,13 +146,13 @@ function rhiDebugHostPlugin(dispose: () => void): Plugin {
 export function createApp(
   canvas: HTMLCanvasElement,
   opts: CreateAppOptions & { readonly execution: NonNullable<CreateAppOptions['execution']> },
-  bundler?: BundlerOptions,
+  bundler?: AppHostAdapter,
 ): Promise<Result<ExecutionApp, CanvasAppError>>;
 
 export function createApp(
   canvas: HTMLCanvasElement,
   opts?: CreateAppOptions,
-  bundler?: BundlerOptions,
+  bundler?: AppHostAdapter,
 ): Promise<Result<App, CanvasAppError>>;
 
 /** Construct a browser-owned World, Renderer, input and native platform. */
@@ -158,7 +160,7 @@ export function createApp(
 export async function createApp(
   canvas: HTMLCanvasElement,
   opts?: CreateAppOptions,
-  bundler?: BundlerOptions,
+  bundler?: AppHostAdapter,
 ): Promise<Result<App | ExecutionApp, CanvasAppError>> {
   // Canvas-detached fail-fast guard (AC-08). isConnected returns false when
   // the canvas is not in the document tree, including a freshly created canvas
@@ -230,7 +232,7 @@ export async function createApp(
   // Resolve whether the remote eval server should start. The actual
   // startServer call is deferred until World creation because the server
   // needs a live World reference.
-  const shouldStartRemote = readRemoteServeFlag();
+  const shouldStartRemote = bundler?.remoteServe === true;
 
   let debugDraw: DebugDrawSource | undefined;
 
@@ -321,6 +323,7 @@ export async function createApp(
   // Keep one mutable projection reference so Remote can inspect the eventual
   // live Fiber tree without introducing another lifecycle/state owner.
   const pluginProjection = createPluginProjectionBridge();
+  let releaseBrowserBridge: (() => void) | undefined;
   (globalThis as { __forgeaxPluginProjection?: PluginProjectionBridge }).__forgeaxPluginProjection =
     pluginProjection;
   const remoteHandle = shouldStartRemote
@@ -352,6 +355,7 @@ export async function createApp(
     world,
     pluginContext,
     disposePluginContext: disposeAppContext,
+    onTerminal: () => releaseBrowserBridge?.(),
     executionControl,
     frameInspection,
     geometryLane: opts?.execution?.diagnostics?.geometryLane,
@@ -385,23 +389,31 @@ export async function createApp(
     await disposeAppContext();
     return built;
   }
-  // DEV-only browser execution bridge for the persistent DevKit owner. A browser cannot host the
+  // Optional browser execution bridge for the persistent DevKit owner. A browser cannot host the
   // Node WS server that @forgeax/engine-remote/server needs, so the running
   // engine would be unreachable from a CLI in a real dev browser. Instead the
   // page dials OUT to a loopback relay and runs the ws-free eval core against
   // the live world/renderer/assets/rhiCapture.
   //
-  // OPT-IN via VITE_FORGEAX_ENGINE_BRIDGE=1 (set by scripts/dev-live.mjs), NOT
-  // on-by-default: a page that dials a relay which is not running makes the
+  // The host adapter enables this only when its relay is available. A page that
+  // dials a relay which is not running makes the
   // BROWSER itself log "WebSocket connection failed" to the console — noise a
   // JS catch cannot suppress — which trips every zero-console-error browser
-  // smoke (collectathon / hello-*). So a plain `pnpm --filter <app> dev` (and
-  // CI) stays silent; only dev-live.mjs, which also launches the relay, turns
-  // it on. Additive: the Node startServer path above and app.remote are untouched.
-  const bridgePort = browserEngineBridgePort();
-  if (bridgePort !== undefined) {
+  // smoke. The host owns relay startup and opts in only for pages that it owns.
+  // Additive: the Node startServer path above and app.remote are untouched.
+  const browserBridge = bundler?.browserRemoteBridge;
+  if (browserBridge !== undefined) {
     await installAppPlugin(
-      browserRemoteBridgePlugin(bridgePort, built.value, pluginProjection, rhiCapture, opts),
+      browserRemoteBridgePlugin(
+        browserBridge,
+        built.value,
+        pluginProjection,
+        rhiCapture,
+        opts,
+        (release) => {
+          releaseBrowserBridge = release;
+        },
+      ),
     );
   }
   // The public capture entry must already belong to the App frame driver.
@@ -416,13 +428,13 @@ type BrowserExecutionContext = {
   readonly selection: ExecutionSelection;
 };
 
-/** Options that only the execution bootstrap module may construct in its realm. */
+/** Reject host values that cannot be carried into the selected execution realm. */
 function realmBoundExecutionOptionError(
   opts: CreateAppOptions,
   bundler: BundlerOptions | undefined,
   moduleUrl: string,
 ): AppError | undefined {
-  const realmBoundOption = [
+  const realmBoundOptions = [
     ['platform', opts.platform],
     ['features', opts.features],
     ['plugins', opts.plugins],
@@ -436,44 +448,36 @@ function realmBoundExecutionOptionError(
     ['captureReflectionFallbackReadback', opts.captureReflectionFallbackReadback],
     ['drawSource', opts.drawSource],
     ['bundler.importTransport', bundler?.importTransport],
-  ].find(([, value]) => value !== undefined)?.[0];
+    ['bundler.readShaderManifest', bundler?.readShaderManifest],
+  ] as const;
+  const realmBoundOption = realmBoundOptions.find(([, value]) => value !== undefined)?.[0];
   if (realmBoundOption === undefined) return undefined;
+  const hint =
+    realmBoundOption === 'bundler.readShaderManifest'
+      ? 'Set bundler.shaderManifestUrl to the manifest URL; a host reader callback cannot cross the execution realm boundary'
+      : APP_ERROR_HINTS['app-execution-bootstrap-failed'];
   return makeAppError(
     'app-execution-bootstrap-failed',
     APP_EXPECTED['app-execution-bootstrap-failed'],
-    APP_ERROR_HINTS['app-execution-bootstrap-failed'],
+    hint,
     {
       phase: 'prepare',
       moduleUrl,
+      realmBoundOption,
       cause: new TypeError(
-        `${realmBoundOption} must be constructed by the execution bootstrap module`,
+        realmBoundOption === 'bundler.readShaderManifest'
+          ? 'bundler.readShaderManifest is a host callback; provide bundler.shaderManifestUrl for the execution realm'
+          : `${realmBoundOption} must be constructed by the execution bootstrap module`,
       ),
     },
   );
-}
-
-/** DEV-only relay port; undefined unless dev-live explicitly opts in. */
-function browserEngineBridgePort(): string | undefined {
-  if (
-    typeof import.meta !== 'undefined' &&
-    (import.meta as { env?: { DEV?: boolean; VITE_FORGEAX_ENGINE_BRIDGE?: string } }).env?.DEV ===
-      true &&
-    (import.meta as { env?: { VITE_FORGEAX_ENGINE_BRIDGE?: string } }).env
-      ?.VITE_FORGEAX_ENGINE_BRIDGE === '1'
-  ) {
-    return (
-      (import.meta as { env?: { VITE_FORGEAX_ENGINE_BRIDGE_PORT?: string } }).env
-        ?.VITE_FORGEAX_ENGINE_BRIDGE_PORT ?? '5733'
-    );
-  }
-  return undefined;
 }
 
 /** The selected Engine Worker owns the World; this realm only hosts its canvas. */
 async function startWorkerExecutionApp(
   canvas: HTMLCanvasElement,
   opts: CreateAppOptions,
-  bundler: BundlerOptions | undefined,
+  bundler: AppHostAdapter | undefined,
   context: BrowserExecutionContext,
 ): Promise<Result<ExecutionApp, CanvasAppError>> {
   const workerApp = await createWorkerExecutionApp({
@@ -493,51 +497,68 @@ async function startWorkerExecutionApp(
     selection: context.selection,
   });
   if (!workerApp.ok || workerApp.value.remoteEval === undefined) return workerApp;
-  const bridgePort = browserEngineBridgePort();
-  if (bridgePort === undefined) return workerApp;
-  return ok(
-    await withBrowserExecutionBridge(workerApp.value, workerApp.value.remoteEval, bridgePort),
-  );
+  const bridge = bundler?.browserRemoteBridge;
+  if (bridge === undefined) return workerApp;
+  return ok(await withBrowserExecutionBridge(workerApp.value, workerApp.value.remoteEval, bridge));
 }
 
 async function withBrowserExecutionBridge(
   workerExecutionApp: ExecutionApp,
   execute: NonNullable<ExecutionApp['remoteEval']>,
-  port: string,
+  bridge: BrowserRemoteBridgeAdapter,
 ): Promise<ExecutionApp> {
-  const bridge = await import('./internal/browser-remote-bridge');
-  const teardown = await bridge.installBrowserExecutionBridge({
-    execute,
-    readStatus: () => {
-      const execution = workerExecutionApp.execution.report();
-      return {
-        worldIdentity: execution.world.identity,
-        execution,
-        workers: execution.workers,
-      };
-    },
-    port,
-    ...(workerExecutionApp.clearInput === undefined
-      ? {}
-      : { clearInput: workerExecutionApp.clearInput }),
-    ...(workerExecutionApp.beginInputLease === undefined
-      ? {}
-      : { beginInputLease: workerExecutionApp.beginInputLease }),
-    ...(workerExecutionApp.finishProfiler === undefined
-      ? {}
-      : { finishProfiler: workerExecutionApp.finishProfiler }),
-  });
+  const release = createIdempotentRelease(
+    await bridge.installExecutionBridge({
+      execute,
+      readStatus: () => {
+        const execution = workerExecutionApp.execution.report();
+        return {
+          worldIdentity: execution.world.identity,
+          execution,
+          workers: execution.workers,
+        };
+      },
+      port: bridge.port,
+      ...(workerExecutionApp.clearInput === undefined
+        ? {}
+        : { clearInput: workerExecutionApp.clearInput }),
+      ...(workerExecutionApp.beginInputLease === undefined
+        ? {}
+        : { beginInputLease: workerExecutionApp.beginInputLease }),
+      ...(workerExecutionApp.finishProfiler === undefined
+        ? {}
+        : { finishProfiler: workerExecutionApp.finishProfiler }),
+    }),
+  );
+  bridge.registerDispose(release);
   // The worker path returns a realm-local App before the browser bridge
   // is installed. Tie the bridge to that App's existing lifecycle so a
   // stopped worker cannot leave a reconnecting socket behind.
   const stop = workerExecutionApp.stop;
+  const dispose = workerExecutionApp.dispose;
   return {
     ...workerExecutionApp,
     stop: () => {
-      const result = stop();
-      teardown();
+      const result = stop.call(workerExecutionApp);
+      if (result.ok) release();
       return result;
     },
+    dispose: async () => {
+      try {
+        return await dispose.call(workerExecutionApp);
+      } finally {
+        release();
+      }
+    },
+  };
+}
+
+function createIdempotentRelease(release: () => void): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    release();
   };
 }
 
@@ -565,7 +586,7 @@ async function selectBrowserExecution(
   canvas: HTMLCanvasElement,
   opts: CreateAppOptions,
   execution: CreateAppExecution,
-  bundler: BundlerOptions | undefined,
+  bundler: AppHostAdapter | undefined,
 ): Promise<
   Result<{ readonly bootstrapUrl: string; readonly context: BrowserExecutionContext }, AppError>
 > {
@@ -592,13 +613,13 @@ async function prepareLocalExecution(
   bootstrapUrl: string,
   opts: CreateAppOptions,
   execution: CreateAppExecution,
-  bundler: BundlerOptions | undefined,
+  bundler: AppHostAdapter | undefined,
 ): Promise<
   Result<
     {
       readonly bootstrap: PreparedExecutionBootstrap;
       readonly options: CreateAppOptions;
-      readonly bundler: BundlerOptions | undefined;
+      readonly bundler: AppHostAdapter | undefined;
     },
     AppError
   >
@@ -684,27 +705,6 @@ interface RhiDebugHost {
   readonly attachment: RecorderAttachment;
   readonly capture: RhiCapture;
   readonly global: RhiDebugGlobal;
-}
-
-// Read FORGEAX_ENGINE_RHI_DEBUG from two sources (plan-strategy D-4):
-//   - browser: import.meta.env, statically replaced by the
-//     vite-plugin-rhi-debug `define` hook. The `typeof import.meta !==
-//     'undefined'` prefix short-circuits under dawn-node, where import.meta
-//     itself can be undefined (C5).
-//   - dawn-node: globalThis.process.env (no vite define on the native path).
-// resolveRhiDebugFlag (internal/rhi-debug-flag) is the SSOT for the `??`
-// precedence. Keeps this file @types/node-free (engine-app ships ESM into both
-// browser + dawn-node). Keep the Vite define key in a direct property
-// expression; optional chaining keeps the package safe on the Dawn/Node path
-// where `import.meta.env` is absent.
-function readRhiDebugFlag(): string | undefined {
-  const importMetaEnv =
-    typeof import.meta !== 'undefined'
-      ? { FORGEAX_ENGINE_RHI_DEBUG: import.meta.env?.FORGEAX_ENGINE_RHI_DEBUG }
-      : undefined;
-  const processEnv = (globalThis as { process?: { env?: { FORGEAX_ENGINE_RHI_DEBUG?: string } } })
-    .process?.env;
-  return resolveRhiDebugFlag(importMetaEnv, processEnv);
 }
 
 /** Route renderer options through an attached recorder and expose its capture. */
@@ -809,29 +809,16 @@ interface BrowserRendering extends BrowserRendererHost {
 async function constructBrowserRendering(
   canvas: HTMLCanvasElement,
   opts: CreateAppOptions | undefined,
-  bundler: BundlerOptions | undefined,
+  bundler: AppHostAdapter | undefined,
   preparedExecutionBootstrap: PreparedExecutionBootstrap | undefined,
 ): Promise<Result<BrowserRendering, CanvasAppError>> {
   const rendererOpts = rendererOptionsFor(opts, preparedExecutionBootstrap);
-  // FORGEAX_ENGINE_RHI_DEBUG=1 attaches the recorder at the Runtime backend
-  // seam. Render remains the owner of device/surface lifecycle.
-  // A browser production build must be able to erase the entire recorder
-  // branch. The `undefined` arm preserves Dawn/Node's process.env fallback;
-  // Vite replaces the direct property with `"0"` or `"1"`, making this outer
-  // guard a literal false/true before Rollup sees the debug-only imports.
-  // Keep the Vite define key in a direct property expression: wrapping
-  // `import.meta` in a structural cast hides the token from Vite's define pass.
-  const browserBuildRhiDebugFlag =
-    typeof import.meta !== 'undefined' ? import.meta.env?.FORGEAX_ENGINE_RHI_DEBUG : undefined;
-  const rhiDebugFlag = readRhiDebugFlag();
+  // The host explicitly supplies this optional capability. Tool adapters own
+  // the decision to make it available; renderer lifecycle remains here.
   let rhiDebug: RhiDebugHost | undefined;
-  if (
-    (browserBuildRhiDebugFlag === undefined || browserBuildRhiDebugFlag === '1') &&
-    rhiDebugFlag === '1'
-  ) {
-    const attached = attachRecorder(await recordableBackend(rendererOpts));
-    if (!attached.ok) throw new Error(attached.error.hint);
-    rhiDebug = adoptRhiDebugRecorder(rendererOpts, attached.value);
+  if (bundler?.attachRhiRecorder !== undefined) {
+    const attachment = await bundler.attachRhiRecorder(rendererOpts);
+    rhiDebug = adoptRhiDebugRecorder(rendererOpts, attachment);
   }
   const host = await constructBrowserRendererHost(
     canvas,
@@ -891,16 +878,6 @@ function assembleBrowserAssets(
     ...(opts?.assetDecoders === undefined ? {} : { decoderContributions: opts.assetDecoders }),
     ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
   });
-}
-
-/** Dual-source gating mirrors the rhi-debug flag (feat-20260629 M4 / w20). */
-function readRemoteServeFlag(): boolean {
-  return resolveRemoteServeFlag(
-    typeof import.meta !== 'undefined'
-      ? (import.meta as { env?: { DEV?: boolean } }).env?.DEV
-      : undefined,
-    (globalThis as { process?: { env?: { FORGEAX_ENGINE_REMOTE_SERVE?: string } } }).process?.env,
-  );
 }
 
 // A normal canvas app owns its browser acquisition. An embedding host that
@@ -1122,11 +1099,12 @@ function browserFrameSignalPlugin(canvas: HTMLCanvasElement, renderer: Renderer)
 }
 
 function browserRemoteBridgePlugin(
-  port: string,
+  bridgeAdapter: BrowserRemoteBridgeAdapter,
   app: App,
   pluginProjection: PluginProjectionBridge,
   rhiCapture: RhiCapture | undefined,
   opts: CreateAppOptions | undefined,
+  ownRelease: (release: () => void) => void,
 ): Plugin {
   return {
     name: 'browser-remote-bridge',
@@ -1135,20 +1113,23 @@ function browserRemoteBridgePlugin(
       if (ctx.renderer === undefined || ctx.assets === undefined) {
         throw new Error('browser remote bridge requires renderer and assets services');
       }
-      const bridge = await import('./internal/browser-remote-bridge');
-      const teardown = await bridge.installBrowserRemoteBridge({
-        world: ctx.world,
-        renderer: ctx.renderer,
-        assets: ctx.assets,
-        runtimeModule: engineRuntimeModule,
-        ...(rhiCapture !== undefined ? { rhiCapture } : {}),
-        plugins: pluginProjection,
-        simulation: app,
-        ...(opts?.profiler !== undefined ? { profiler: opts.profiler } : {}),
-        execution: app.execution,
-        port,
-      });
-      ctx.effect(() => teardown, 'remote/browser-bridge');
+      const release = createIdempotentRelease(
+        await bridgeAdapter.installLocalBridge({
+          world: ctx.world,
+          renderer: ctx.renderer,
+          assets: ctx.assets,
+          runtimeModule: engineRuntimeModule,
+          ...(rhiCapture !== undefined ? { rhiCapture } : {}),
+          plugins: pluginProjection,
+          simulation: app,
+          ...(opts?.profiler !== undefined ? { profiler: opts.profiler } : {}),
+          execution: app.execution,
+          port: bridgeAdapter.port,
+        }),
+      );
+      ownRelease(release);
+      bridgeAdapter.registerDispose(release);
+      ctx.effect(() => release, 'remote/browser-bridge');
     },
   };
 }

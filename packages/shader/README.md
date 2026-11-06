@@ -408,6 +408,13 @@ The same word's bit 0 independently selects a draw-local Sprite atlas rectangle;
 Sprite consumers mask that bit explicitly. Both rigid and skinned Standard
 receivers honor the flag; shadow casting remains a separate source decision.
 
+Rigid Standard exposes fragment override `64002` (`standardShadowReception`),
+defaulting to one. A direct draw that declares no shadow reception may set it to
+zero, allowing native compilation to remove the unreachable sampling functions.
+Receiving draws, unselected GPU batches and programs without the override keep
+the Mesh-flag contract. It does not change shadow casting, bind-group layouts,
+material values or the skinned template.
+
 When storage buffers are unavailable, the same 96-byte light records, grid
 offset/count pairs and complete membership list use one `rgba32uint` texture at
 `@group(2) @binding(3)`. Its width is 1024 texels; four consecutive words form

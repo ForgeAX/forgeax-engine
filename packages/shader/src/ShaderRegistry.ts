@@ -445,7 +445,7 @@ export class ShaderRegistry {
         return err(
           manifestMalformed({
             message: 'ShaderRegistry: manifest JSON parse failed',
-            hint: 'manifest.json must be valid JSON; rebuild via @forgeax/engine-vite-plugin-shader generateBundle',
+            hint: 'manifest.json must be valid JSON; rebuild the project shader manifest with its configured producer',
             reason: e instanceof Error ? e.message : String(e),
           }),
         );

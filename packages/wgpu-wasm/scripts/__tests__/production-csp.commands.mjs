@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, preview } from 'vite';
+import { verifyArtifactProvenance } from '../provenance.mjs';
 
 const packageRoot = fileURLToPath(new URL('../../', import.meta.url));
 const csp = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; worker-src 'self'";
@@ -24,7 +26,18 @@ export const productionCspCommands = {
     const output = await mkdtemp(join(tmpdir(), 'forgeax-wgpu-csp-'));
     fixture = { output };
     try {
-      const provenance = JSON.parse(await readFile(join(packageRoot, 'pkg/provenance.json'), 'utf8'));
+      const [provenance, builtGlue, sourceGlue] = await Promise.all([
+        verifyArtifactProvenance(),
+        readFile(join(packageRoot, 'dist/wgpu_wasm_glue.bytes')),
+        readFile(join(packageRoot, 'pkg/wgpu_wasm.js')),
+      ]);
+      const builtGlueSha256 = createHash('sha256').update(builtGlue).digest('hex');
+      if (
+        builtGlue.byteLength !== provenance.glueBytes ||
+        builtGlueSha256 !== provenance.glueSha256 ||
+        !builtGlue.equals(sourceGlue)
+      )
+        throw new Error('Built browser glue asset does not match wgpu-wasm provenance');
       await build({
         configFile: false,
         root: packageRoot,

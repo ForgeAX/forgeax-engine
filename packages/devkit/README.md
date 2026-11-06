@@ -1,5 +1,10 @@
 # @forgeax/engine-devkit
 
+Custom build hosts use `readProjectFacts` from the package root and
+`loadProjectCookers` from `@forgeax/engine-devkit/plugin-build` to execute the
+selected project's declared build root. The returned session exposes cookers and
+watched source files; its owner disposes it on shutdown or failed startup.
+
 Frame submission observes texture residency only when a prepared resource has a
 texture binding to verify. That read requests the same frame and complete material
 binding inventory together; ordinary game submissions do not construct unrelated

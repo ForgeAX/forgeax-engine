@@ -1,7 +1,7 @@
 // @perf-budget-skip: intentional real file-watcher integration regression gate.
 
 import type { FSWatcher } from 'node:fs';
-import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -58,6 +58,11 @@ describe('dev watcher regression', () => {
     await writeFile(join(root, 'assets', 'hud.ui.css'), '.hud { color: white; }');
     await writeFile(join(root, 'assets', 'hero.png'), new Uint8Array([1]));
     await writeFile(join(root, 'assets', 'level.reel.json'), '{"version":1}');
+    // Establish distinct initial stat facts for the same-size edits below.
+    await Promise.all([
+      utimes(join(root, 'assets', 'hero.png'), 0, 0),
+      utimes(join(root, 'assets', 'level.reel.json'), 0, 0),
+    ]);
   });
 
   afterEach(async () => {
@@ -184,6 +189,7 @@ describe('dev watcher regression', () => {
     const sidecarPath = `${sourcePath}.meta.json`;
     await writeFile(sourcePath, 'source-old');
     await writeFile(sidecarPath, '{"revision":0}');
+    await utimes(sidecarPath, 0, 0);
     const batches: Array<{
       readonly sidecars: readonly { readonly filename: string }[];
       readonly sources: readonly { readonly filename: string }[];

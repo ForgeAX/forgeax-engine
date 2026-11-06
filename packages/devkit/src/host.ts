@@ -3251,6 +3251,7 @@ export async function createViteConfig(
       ddc: devKitDdcRoots(facts.root),
       watch: false,
       importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers],
+      producerIdentity: cookerSession.producerIdentity,
       cookers: cookerSession.cookers,
       ignorePath,
     });

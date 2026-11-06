@@ -229,7 +229,7 @@ export function recordSpritePass(
           code: 'shader-compile-failed',
           expected:
             'manifest entries include sprite.wgsl + the engine triple (pbr + unlit + tonemap)',
-          hint: 'verify @forgeax/engine-vite-plugin-shader emits manifest.json with the 4 engine entries (sprite.wgsl is required when spawning sprite materials); check vite plugin engineEntries option',
+          hint: 'publish a shader manifest containing sprite.wgsl, pbr.wgsl, unlit.wgsl, and tonemap.wgsl',
         }),
       );
     };
@@ -459,7 +459,7 @@ function recordSpriteEntityDraws(
             code: 'shader-compile-failed',
             expected:
               'manifest entries include sprite.wgsl + sprite-lit.wgsl (when sprite-lit materials are used) + the engine triple (pbr + unlit + tonemap)',
-            hint: 'verify @forgeax/engine-vite-plugin-shader emits manifest.json with sprite.wgsl AND sprite-lit.wgsl entries; check vite plugin engineEntries option',
+            hint: 'publish a shader manifest containing sprite.wgsl, sprite-lit.wgsl when used, pbr.wgsl, unlit.wgsl, and tonemap.wgsl',
           }),
         );
       }

@@ -80,6 +80,9 @@ clusteredCanvas.width = CANVAS_W;
 clusteredCanvas.height = CANVAS_H;
 
 export const bootstrapReady = bootstrap();
+// Hook availability is independent of cold GPU preparation. Both hooks await
+// this one initialization before drawing or reading either completed picture.
+declareCaptureHooks(bootstrapReady);
 bootstrapReady.catch((err: unknown) => {
   if (err instanceof EngineEnvironmentError) {
     console.error('[parity-standard-lanes] no usable backend:', err);
@@ -181,17 +184,9 @@ async function bootstrap() {
     performance.now() - framePreparationStarted,
   );
 
-  declareCaptureHooks(
-    directRenderer,
-    directWorld,
-    worldAttachment1.value,
-    clusteredRenderer,
-    clusteredWorld,
-    worldAttachment2.value,
-  );
   return {
-    direct: { world: directWorld, lights: directLights },
-    clustered: { world: clusteredWorld, lights: clusteredLights },
+    direct: { renderer: directRenderer, world: directWorld, lease: worldAttachment1.value, lights: directLights },
+    clustered: { renderer: clusteredRenderer, world: clusteredWorld, lease: worldAttachment2.value, lights: clusteredLights },
   };
 }
 
@@ -263,19 +258,10 @@ declare global {
   }
 }
 
-function declareCaptureHooks(
-  direct: Renderer,
-  directWorld: World,
-  directLease: RenderWorldLease,
-  clustered: Renderer,
-  clusteredWorld: World,
-  clusteredLease: RenderWorldLease,
-): void {
-  const captureFor = (
-    renderer: Renderer,
-    world: World,
-    lease: RenderWorldLease,
-  ): (() => Promise<Uint8Array>) => async () => {
+type ParityScene = { renderer: Renderer; world: World; lease: RenderWorldLease };
+
+function declareCaptureHooks(ready: Promise<{ direct: ParityScene; clustered: ParityScene }>): void {
+  const captureFor = async ({ renderer, world, lease }: ParityScene): Promise<Uint8Array> => {
     world.update().unwrap();
     return captureDisplayFrame(renderer, {
       leases: [lease],
@@ -283,6 +269,12 @@ function declareCaptureHooks(
       environment: { lease },
     });
   };
-  window.__captureLeft = captureFor(direct, directWorld, directLease);
-  window.__captureRight = captureFor(clustered, clusteredWorld, clusteredLease);
+  window.__captureLeft = async () => {
+    const { direct } = await ready;
+    return captureFor(direct);
+  };
+  window.__captureRight = async () => {
+    const { clustered } = await ready;
+    return captureFor(clustered);
+  };
 }

@@ -155,7 +155,7 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 // Complete native owners share four lanes; ordinary files fill the remaining
 // time using the latest measured costs. Each process keeps its native lifetime.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze(['ordinary-1', 'compact-2', 'gi-2', 'gi-3', 'gi-6', 'rect-source', 'renderer']),
+  Object.freeze(['ordinary-1', 'compact-2', 'rect-source', 'renderer']),
   Object.freeze([
     'ordinary-2',
     'gi-1',
@@ -165,6 +165,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'heavy-4',
     'shadow-quality',
     'specular-aa',
+    'gi-2',
   ]),
   Object.freeze([
     'ordinary-3',
@@ -176,6 +177,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'nested-discard',
     'surface-pipelines',
     'vfx-depth',
+    'gi-3',
   ]),
   Object.freeze([
     'ordinary-4',
@@ -187,6 +189,7 @@ export const DAWN_GATE_SHARDS = Object.freeze([
     'shadow-fields',
     'timing-lifecycle',
     'transmission',
+    'gi-6',
   ]),
 ]);
 

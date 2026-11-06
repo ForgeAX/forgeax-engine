@@ -70,7 +70,6 @@ import {
 import {
   buildPerSubmeshMaterialBg,
   materialBindingResourcesCurrent,
-  materialDiagnosticsEnabled,
   type PerSubmeshMaterialBgDeps,
   prepareMaterialSkylight,
 } from './main-pass-material';
@@ -2408,7 +2407,6 @@ export function recordShadowCasterDraws(
           resolveRenderTargetTextureSource: runtime.resolveRenderTargetTextureSource,
           materialBgShared: c.frameState.materialBgShared,
           materialBgAssemblyCache: c.materialBgAssemblyCache,
-          diagnostics: materialDiagnosticsEnabled(),
           frameState: c.frameState,
           bindGroupCounts: c.bindGroupCounts,
         };
@@ -2616,7 +2614,6 @@ function ensureGpuDrivenAlphaMaskMaterialBg(
     skylightResources,
     materialBgShared: c.frameState.materialBgShared,
     materialBgAssemblyCache: c.materialBgAssemblyCache,
-    diagnostics: materialDiagnosticsEnabled(),
     sceneMaterialBuffer,
     bindGroupCounts: c.bindGroupCounts,
     frameState: c.frameState,
@@ -2676,7 +2673,6 @@ function ensureGpuDrivenCustomShadowMaterialBg(
     skylightResources,
     materialBgShared: c.frameState.materialBgShared,
     materialBgAssemblyCache: c.materialBgAssemblyCache,
-    diagnostics: materialDiagnosticsEnabled(),
     bindGroupCounts: c.bindGroupCounts,
     frameState: c.frameState,
     sceneMaterialBuffer,

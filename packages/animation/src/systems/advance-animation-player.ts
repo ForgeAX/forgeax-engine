@@ -41,9 +41,9 @@ import { sampleChannel } from '../sample-channel';
 //   - channel target missing : skip channel
 //   - channel missing on slot: per-channel normalize covers it
 //
-// w5 layers a dev-mode warn pass on top of these silent skips
-// (channel-target-missing / channel-missing-on-some-slot, once per
-// (entity, channelKey, reason)).
+// Structured diagnostic facts report these skips to subscribed observers
+// (channel-target-missing / channel-missing-on-some-slot), once per
+// (entity, channelKey, reason).
 //
 // Decision anchors:
 //   - requirements IS-2 / AC-03 / AC-04 / AC-05 (best-effort N-way blend)
@@ -64,8 +64,7 @@ import type { AnimationClip, AnimationTransformChannel } from '@forgeax/engine-t
 import { err, ok } from '@forgeax/engine-types';
 import {
   emitAnimationDiagnostic,
-  isAnimationDevMode,
-  _resetAnimationWarnsForTests as resetAnimationDiagnosticsForTests,
+  hasAnimationDiagnosticSubscribers,
 } from '../animation-diagnostic';
 import {
   animationMaskWeight,
@@ -98,11 +97,6 @@ import { clearAnimationEvents, collectTimelineEvents, publishTimelineEvents } fr
  */
 export const ADVANCE_ANIMATION_PLAYER_SYSTEM = 'advanceAnimationPlayer' as const;
 export const AnimationSet = defineSystemSet({ name: 'animation' });
-
-export function _resetAnimationWarnsForTests(world: World): void {
-  resetAnimationDiagnosticsForTests(world);
-  targetMapCacheByWorld.delete(world);
-}
 
 /**
  * Advance all AnimationPlayer components by dt, blend the N active clips per
@@ -323,12 +317,12 @@ function collectActiveSlotsAndAdvanceTimes(
  * for translation/scale, nlerp with sign-fixed reference for rotation),
  * then writes one `world.set(joint, Transform, ...)` per touched joint.
  *
- * Dev-mode warns (D-2):
+ * Diagnostic facts (D-2):
  *   - channel-target-missing: a clip channel ID does not resolve in this
  *     player's explicit target set. Once per (entityId, clip, chIdx).
  *   - channel-missing-on-some-slot: a (joint, kind) tuple is covered by
  *     some slot but missing on another. The warn is emitted once per
- *     (entityId, the-covering-slot's-clip, that-slot's-chIdx) so users
+ *     (entityId, the-covering-slot's-clip, that-slot's-chIdx) so observers
  *     find the authoring point that has the channel; per-channel sumW
  *     normalize covers the runtime gap regardless.
  */
@@ -475,11 +469,10 @@ function tickEntityTargets(
   scratch.generation += 1;
   scratch.targets.length = 0;
   // Per-slot signature of (joint, channel-kind) coverage — used to detect
-  // channel-missing-on-some-slot once at the end of the channel walk. Lazy
-  // build only when there are 2+ active slots and dev-mode is on (warn pass
-  // is skipped in production by the shared diagnostics mode gate).
+  // channel-missing-on-some-slot once at the end of the channel walk. Build it
+  // only when an explicit diagnostic observer is attached.
   const slotCoverage: SlotCoverage | undefined =
-    activeSlots.length >= 2 && isAnimationDevMode() ? new Map() : undefined;
+    activeSlots.length >= 2 && hasAnimationDiagnosticSubscribers() ? new Map() : undefined;
 
   for (let slotIdx = 0; slotIdx < activeSlots.length; slotIdx++) {
     // biome-ignore lint/style/noNonNullAssertion: bounded by activeSlots.length

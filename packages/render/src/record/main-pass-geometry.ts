@@ -103,11 +103,7 @@ import {
   worldEntityKey,
 } from './frame-snapshot';
 import type { RenderableDrawReceipt } from './gpu-draw-receipts';
-import {
-  geometryRenderStateForTopology,
-  materialDiagnosticsEnabled,
-  selectMaterialGroup2,
-} from './main-pass-material';
+import { geometryRenderStateForTopology, selectMaterialGroup2 } from './main-pass-material';
 import {
   type FoldBucket,
   getOrCreateFromChain,
@@ -213,7 +209,7 @@ function gpuDrivenDrawIndicesBySubmesh(
   return indices;
 }
 
-function recordIblPipelineBinding(
+export function recordIblPipelineBinding(
   c: _InternalRenderPipelineContext,
   material: MaterialSnapshot,
   pipeline: RenderPipeline,
@@ -555,10 +551,6 @@ export function recordGeometryDraws(
   const prepared = admittedGeometryMaterialPasses(c, selectedDispatch, passKind === 'temporal');
   const materialPasses =
     prepared?.groups ?? selectedMaterialPasses(selectedDispatch, passKind === 'temporal');
-  const diagnosticsEnabled = materialDiagnosticsEnabled();
-  const pipelineDrawReceipts =
-    (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-      ?.FORGEAX_MATERIAL_PIPELINE_DIAGNOSTICS === '1';
   const colorFormatOverride = c.transparentColorFormat as GPUTextureFormat | undefined;
   // The prepared Standard topology is the frame authority. A bind-group
   // identity is only a resource result; using it to infer the shader lane
@@ -935,7 +927,6 @@ export function recordGeometryDraws(
   ): BindGroup => {
     const materialSlot =
       materialSlotIndices.at(i)?.[sourceSlot] ?? materialSlotIndices.at(i)?.[0] ?? 0;
-    if (pipelineDrawReceipts) logMaterialPipelineDrawReceipt(entry, materialSlot, submeshMaterial);
     const perSubmeshBg =
       c.profilePhase === undefined
         ? resolveMaterialBindGroup(
@@ -1031,35 +1022,6 @@ export function recordGeometryDraws(
       runtime.device.caps.storageBuffer,
     );
     return selectedGroup;
-  };
-
-  const logSubmittedDraw = (
-    entry: import('./frame-snapshot').ValidatedRenderable,
-    submeshMaterial: MaterialSnapshot,
-    textureHandles: NonNullable<MaterialSnapshot['textureHandles']>,
-    group2Contract: NonNullable<MaterialShaderPipelineEntry['group2Contract']>,
-  ): void => {
-    console.error(
-      `[render-material] draw submitted: ${JSON.stringify({
-        entityKey: entry.source.entityKey,
-        materialHandle: submeshMaterial.materialHandle,
-        shader: pipelineSelection.shader,
-        textureHandles: [...textureHandles.entries()].map(([field, handle]) => ({
-          field,
-          handle,
-        })),
-        skin:
-          group2Contract === 'skin' || group2Contract === 'skin-cluster'
-            ? {
-                group2Contract,
-                taskReady: entitySkinTask !== undefined,
-                taskByteOffset: entitySkinTask?.dataOffset,
-                dynamicOffsets: [...group2DynamicOffsets],
-              }
-            : undefined,
-        pipelineReady: true,
-      })}`,
-    );
   };
 
   // One synchronous geometry pass owns its prepared submit callbacks. Nested
@@ -1167,15 +1129,6 @@ export function recordGeometryDraws(
       lastViewOffset = viewOffset;
     }
     if (smPipelineHandle === null) {
-      if (diagnosticsEnabled)
-        console.error(
-          `[render-material] draw skipped: ${JSON.stringify({
-            entityKey: entry.source.entityKey,
-            materialHandle: submeshMaterial.materialHandle,
-            shader: smMaterialShaderId,
-            reason: 'pipeline-unavailable',
-          })}`,
-        );
       return;
     }
     const instanceDraws = submeshInstanceDraws(entry, smIdx, submeshMaterial, probeBlendAvailable);
@@ -1184,13 +1137,6 @@ export function recordGeometryDraws(
     if (materialGroup2Contract === undefined) return;
     const group2BindGroup = selectSubmeshGroup2(entry, materialGroup2Contract, meshBinding);
     if (group2BindGroup === null) return;
-    if (diagnosticsEnabled && submeshMaterial.textureHandles !== undefined)
-      logSubmittedDraw(
-        entry,
-        submeshMaterial,
-        submeshMaterial.textureHandles,
-        materialGroup2Contract,
-      );
     const fold = entityFold;
     prepareMeshDraw(c, entry, fold !== undefined);
     pass.setBindGroup(2, group2BindGroup, group2DynamicOffsets);
@@ -1207,9 +1153,7 @@ export function recordGeometryDraws(
     submittedRange = range;
     submittedInstances = cpuInstanceLodDraws(entry, smIdx, instanceDraws);
     profileGeometrySegment(c, passKind, 'draw-submit', submitPreparedSubmesh);
-    if (diagnosticsEnabled) {
-      recordIblPipelineBinding(c, submeshMaterial, smPipelineHandle, perSubmeshBg);
-    }
+    recordIblPipelineBinding(c, submeshMaterial, smPipelineHandle, perSubmeshBg);
   };
 
   /** Record one selected material pass of a submesh; false aborts the entity. */
@@ -1513,27 +1457,6 @@ function foldInstanceDraws(
   const foldBuffer = resolveFoldInstanceBuffer(c, fold, renderableIndex);
   if (foldBuffer === null) return null;
   return [probeBoundInstanceDraw(c, foldBuffer, undefined, fold.bucketSize)];
-}
-
-function logMaterialPipelineDrawReceipt(
-  entry: ValidatedRenderable,
-  materialSlot: number,
-  material: MaterialSnapshot,
-): void {
-  if (
-    material.materialShaderId !== 'forgeax::default-standard-pbr' &&
-    material.materialShaderId !== 'forgeax::pbr-skin'
-  )
-    return;
-  console.error(
-    `[render-material] draw receipt: ${JSON.stringify({
-      entityIndex: entry.renderableIndex,
-      materialSlot,
-      materialHandle: material.materialHandle,
-      clearcoat: material.paramSnapshot?.clearcoat,
-      shader: material.materialShaderId,
-    })}`,
-  );
 }
 
 /**

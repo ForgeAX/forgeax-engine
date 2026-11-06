@@ -58,21 +58,11 @@ function inspect(value: unknown): string {
   );
 }
 
-/** Scope the existing opt-in binding receipt required by the active-IBL oracle. */
+/** Run the active-IBL oracle against the renderer's bounded frame receipt. */
 export async function verifyVfxMeshLighting(
   options: Parameters<typeof runVfxMeshLighting>[0],
 ): Promise<void> {
-  const globals = globalThis as { process?: { env: Record<string, string | undefined> } };
-  const priorProcess = globals.process;
-  const diagnosticProcess = priorProcess ?? { env: {} };
-  const priorFlag = diagnosticProcess.env.FORGEAX_MATERIAL_DIAGNOSTICS;
-  globals.process = diagnosticProcess;
-  diagnosticProcess.env.FORGEAX_MATERIAL_DIAGNOSTICS = '1';
-  const verification = runVfxMeshLighting(options).finally(() => {
-    if (priorFlag === undefined) delete diagnosticProcess.env.FORGEAX_MATERIAL_DIAGNOSTICS;
-    else diagnosticProcess.env.FORGEAX_MATERIAL_DIAGNOSTICS = priorFlag;
-    if (priorProcess === undefined) delete globals.process;
-  });
+  const verification = runVfxMeshLighting(options);
   // Vitest aborts the test context at its original timeout, but does not
   // terminate its async body. Await that body's existing cleanup in the
   // runner's original finished-hook budget; an incomplete drain stays failed.

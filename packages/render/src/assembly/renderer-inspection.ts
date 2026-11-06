@@ -2,6 +2,7 @@ import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type { RhiCanvasSurfacePresentationProof, TextureFormat } from '@forgeax/engine-rhi';
 import { dofInspection } from '../features/depth-of-field/depth-of-field-assembly';
 import { emptyBloomInspection } from '../inspection-types';
+import type { IblBindingInspection } from '../mesh-material-bindings';
 import type { OutputColorSpaceReport } from '../output-color-space';
 import type { AutoExposureInspection } from '../pipeline/standard-output/auto-exposure/inspection';
 import type { StandardLutState } from '../pipeline/standard-output/lut-state';
@@ -59,6 +60,18 @@ function writesSurface(pass: CompiledRenderGraphInfo['passes'][number]): boolean
       (access.resource === 'surface' || access.resource.startsWith('surface.')) &&
       access.usage === 'color-attachment',
   );
+}
+
+/**
+ * Preparation can record a partial IBL resource baseline for any material
+ * draw. Publish it only after a Standard draw records its final pipeline fact.
+ */
+export function projectIblBindingInspection(
+  receipt: IblBindingInspection | undefined,
+): IblBindingInspection | undefined {
+  if (receipt?.pipeline === undefined || receipt.pipeline.drawFrameId !== receipt.frameId)
+    return undefined;
+  return receipt;
 }
 
 /**
@@ -193,6 +206,7 @@ export function projectRenderViewInspection(
   const temporalTarget = viewTemporalTarget(inspected);
   const motionBlur = viewMotionBlur(inspected);
   const transmission = viewTransmission(inspected);
+  const iblBinding = projectIblBindingInspection(inspected.frameState.iblBindingInspection);
   return {
     featureGraph: viewFeatureGraph(inspected),
     materialTextureSources: inspected.recorded.materialTextureSources,
@@ -207,9 +221,7 @@ export function projectRenderViewInspection(
     ...(graphGenerationAllocation === undefined
       ? {}
       : { renderGraphGenerationAllocation: graphGenerationAllocation }),
-    ...(inspected.frameState.iblBindingInspection === undefined
-      ? {}
-      : { iblBinding: inspected.frameState.iblBindingInspection }),
+    ...(iblBinding === undefined ? {} : { iblBinding }),
     reflectionProbes: inspected.reflectionProbes.inspect(),
     ssrDependencies: viewSsrDependencies(inspected),
     ssr: viewSsr(inspected),

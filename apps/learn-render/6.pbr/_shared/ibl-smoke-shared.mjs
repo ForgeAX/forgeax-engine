@@ -53,8 +53,6 @@ const SMOKE_DELTA_THRESHOLD = Number.parseFloat(process.env.SMOKE_DELTA_THRESHOL
 const WIDTH = 512;
 const HEIGHT = 512;
 const IBL_READY_TIMEOUT_MS = 120_000;
-// Publishes renderer.inspect().iblBinding, the readiness fact the IBL wait below reads.
-process.env.FORGEAX_MATERIAL_DIAGNOSTICS = '1';
 
 const NEWPORT_LOFT_GUID = '019e4a26-3c29-7420-af5d-20f2724a16b0';
 const FALSIFY_HDR_BIN_EMPTY = process.env.FALSIFY === 'hdr-bin-empty';

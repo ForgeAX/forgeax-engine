@@ -15,7 +15,7 @@ it.each(['scene', 'character'])('loads the %s Pack through isolated source gener
       readByGuid: async () => { throw new Error('Character generation must be self-contained'); },
     });
     if (!built.ok) throw built.error;
-    expect(built.value).toHaveProperty('mesh/player.kind', 'mesh');
+    expect(built.value).toHaveProperty('mesh/player.execution', 'cooked');
     expect(built.value).toHaveProperty('texture/convoy-normal.execution', 'cooked');
   }
 });

@@ -12,6 +12,8 @@ import materialsPack from '../materials.pack.ts';
 import scenePack from '../scene.pack.ts';
 import gamePack from '../game.pack.ts';
 import uiPack from '../ui/ui.pack.ts';
+import { createMeshJobCooker } from '@forgeax/engine/modeling';
+import { CONVOY_JOB } from '../player/convoy-job.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { EngineContent } from '@forgeax/engine/content';
 import { assetGuid, guidText, PACKAGE_IDS, RUSTED_IRON_MATERIAL_GUID } from '../shared/asset-refs.ts';
@@ -34,11 +36,14 @@ import {
 async function build(pack: {
   readonly build: (reader: never) => unknown;
 }): Promise<Record<string, unknown>> {
-  const result = await pack.build((pack === characterPack ? { values: { resolution: 512 } } : undefined) as never);
+  const result = await pack.build((pack === characterPack ? { packageId: PACKAGE_IDS.character, values: { resolution: 128 } } : undefined) as never);
   if (typeof result !== 'object' || result === null || !('ok' in result) || result.ok !== true) {
     throw new Error(`ScriptablePack build failed: ${JSON.stringify(result)}`);
   }
-  return (result as unknown as { readonly value: Record<string, unknown> }).value;
+  const outputs = (result as unknown as { readonly value: Record<string, unknown> }).value;
+  if (pack !== characterPack) return outputs;
+  const cooker = createMeshJobCooker([CONVOY_JOB], { timeoutMs: 180000 });
+  return Object.fromEntries(await Promise.all(Object.entries(outputs).map(async ([key, entry]) => [key, (await cooker.cook({ guid: guidText(assetGuid(PACKAGE_IDS.character, key)), source: (entry as { source: unknown }).source })).payload])));
 }
 
 type Matrix = number[];

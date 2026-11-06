@@ -146,6 +146,13 @@ Start with [`schemas/asset-authority.schema.json`](../../schemas/asset-authority
 
 For any category, inspect the `subject`, `execution`, `lifecycle`, `lastKnownGood`, and `sourceKey` fields before choosing recovery. The AI path is `inspect` -> `rebuild` or `cold-cook`; `preview-LKG` is read-only, while `override`, `promote`, and `stop-publish` are explicit gateway or publication operations. Do not infer identity from a suffix, path, cache hit, or message text.
 
+For repeated production Meta imports, inspect the host's sealed producer identity
+and existing Pack product DDC before proposing another cache. Follow the
+[Import cache boundary](../../packages/import/README.md): a verified hit must
+skip import and native Cook, while changed source, sibling bytes, Meta settings
+or producer identities must miss. Retain importer/Cooker call counts in a
+cold/warm regression and verify the current publication after cache restoration.
+
 ### Transmission/refraction
 
 For transmission/refraction, preserve the same Standard values through GLTF parse, Pack cook, GUID

@@ -33,10 +33,6 @@ const camera = {
 
 const entry: ExecutionBootstrapEntry = (data) => {
   const mode = String(data);
-  if (mode === 'environment') {
-    // Enable the existing binding receipt in each fixture-owned renderer realm.
-    Object.assign(globalThis, { process: { env: { FORGEAX_MATERIAL_DIAGNOSTICS: '1' } } });
-  }
   const crashRenderer = rendererCrashProbe();
   let revision = 0;
   let acknowledgments = 0;

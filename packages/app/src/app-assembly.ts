@@ -26,7 +26,6 @@ import { assembledEngineProfile } from './internal/assembled-engine-profile';
 import { projectComponentIntrospection } from './internal/component-introspection';
 import { ErrorFanoutRegistry } from './internal/error-fanout';
 import { createFrameLoop } from './internal/frame-loop';
-import { resolveRemoteServeFlag } from './internal/remote-serve-flag';
 import { remoteServerPlugin } from './internal/remote-server-plugin';
 import { bindRhiCaptureFrameDriver, type RhiCapture } from './internal/rhi-capture';
 import { createAppObservation } from './observation';
@@ -144,10 +143,7 @@ export async function createAppFromAssemble(
     );
   }
 
-  const shouldStartRemote = resolveRemoteServeFlag(
-    undefined,
-    (globalThis as { process?: { env?: { FORGEAX_ENGINE_REMOTE_SERVE?: string } } }).process?.env,
-  );
+  const shouldStartRemote = args.remoteServe === true;
   const assembledAudioBackend = pluginContext.audio;
   const frameInspection = createFrameInspectionRef();
   const executionControl = createLocalExecutionControl(
@@ -231,6 +227,8 @@ export interface BuildAppArgs {
   readonly world: World;
   readonly pluginContext: Context;
   readonly disposePluginContext?: () => Promise<void>;
+  /** Releases Host-owned session resources when this App reaches a terminal state. */
+  readonly onTerminal?: () => void;
   readonly inputBackend?: InputBackend | undefined;
   /**
    * M2 D-4: callback that buildApp calls after creating the ErrorFanoutRegistry
@@ -595,6 +593,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         execution.setEngineHealth('stopped');
       }
       unsubscribeRendererErrors();
+      if (r.ok) args.onTerminal?.();
       return r;
     },
     async dispose(): Promise<Result<void, AppError>> {
@@ -603,8 +602,12 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       const state = loop.getState();
       const stopped = state === 'running' || state === 'paused' ? loop.stop() : ok(undefined);
       if (state === 'idle') loop.setStopped();
-      await loop.drainFrameReceipts();
-      await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
+      try {
+        await loop.drainFrameReceipts();
+        await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
+      } finally {
+        args.onTerminal?.();
+      }
       observation.release();
       localHdr.close();
       unsubscribeRendererErrors();

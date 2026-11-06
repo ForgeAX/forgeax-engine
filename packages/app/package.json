@@ -15,6 +15,10 @@
     "./browser": {
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.mjs"
+    },
+    "./host-adapter": {
+      "types": "./dist/host-adapter.d.ts",
+      "import": "./dist/host-adapter.mjs"
     }
   },
   "main": "./dist/index.mjs",

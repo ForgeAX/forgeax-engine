@@ -83,7 +83,7 @@ export class PointShadowRecipeError extends Error {
         detail.capability === 'pointShadowShader'
           ? {
               expected: 'the loaded Standard shaders sample the point-shadow cube atlas',
-              hint: 'set package.json#forgeax.pointShadows: true in a DevKit game (or forgeaxShader({ engineEntries: { pointShadows: true } }) in a custom Vite build), or keep point shadows disabled',
+              hint: 'provide a Standard shader manifest containing point-shadow variants, or disable point shadows',
             }
           : {
               expected:

@@ -16,6 +16,12 @@ geometry rather than the presence of HTML text.
 
 ## Render happy path
 
+Supply optional host tools through the App host adapter. Keep environment and
+HMR interpretation in DevKit or the bundler adapter; App, Renderer and animation
+consume explicit capabilities and diagnostic subscriptions. Follow the
+[runtime boundary contracts](../../scripts/ci/README.md#runtime-and-tool-boundary-contracts)
+when adding an adapter or diagnosing a boundary gate failure.
+
 The app host follows `RenderScene -> Standard Pipeline -> DeviceScope -> FrameReceipt`.
 Use `createApp`, then let the host perform `attach -> draw`; use `inspect`, `observe`, and `recover`
 with the returned receipt. Domain producers keep their own assets, input, audio, and plugin owners.

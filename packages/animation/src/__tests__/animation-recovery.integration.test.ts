@@ -118,7 +118,7 @@ describe('same-world animation binding recovery', () => {
     const brokenAfterRepair = positionX(world, brokenTarget);
     expect(brokenAfterRepair).toBeGreaterThan(brokenDuringFault);
     expect(diagnostics).toHaveLength(diagnosticCountAtFault);
-    expect(warn).toHaveBeenCalledTimes(diagnosticCountAtFault);
+    expect(warn).not.toHaveBeenCalled();
 
     unsubscribe();
     unsubscribe();

@@ -38,6 +38,13 @@ closed structured error, never a fallback to `cwd` or `roots[0]`.
 > `cacheIdentity`; unidentifiable or externally read products build cold.
 > Cache hits still undergo the current publication's closure validation.
 
+For production Meta imports, DevKit also supplies `producerIdentity` from its
+sealed build-program graph and plugin configuration. Custom hosts may supply
+the same evidence explicitly; it must change when importer code or configuration
+changes. Together with `ddc.buildCacheRoot`, this enables reuse through the
+existing Pack product store before import and native Cook. Without that identity,
+Meta follows ordinary production. See the [Import cache boundary](../import/README.md).
+
 The project root is the only home for v2 project lifecycle state. The Engine
 DDC lifecycle owns leases, candidate generations, `current`, `lastKnownGood`,
 discard, close, and crash recovery. The plugin remains the single Pack owner:

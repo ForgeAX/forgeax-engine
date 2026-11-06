@@ -407,6 +407,7 @@ describe('GPU-driven production projection', () => {
           expect.objectContaining({ detail: expect.objectContaining({ cause: failure }) }),
         ]),
       );
+      const beforeRetry = renderer.inspect().renderScene.gpuDriven.preparedBundleHits ?? 0;
       const retried = renderer.draw(input);
       if (!retried.ok) throw retried.error;
       const retry = retried.value;
@@ -416,7 +417,13 @@ describe('GPU-driven production projection', () => {
       expect(submit).toHaveBeenCalledOnce();
       expect(submitted).toHaveBeenCalledOnce();
       expect(acknowledged).toHaveBeenCalledOnce();
-      expect(renderer.inspect().renderScene.gpuDriven.encodedIndirectDraws).toBeGreaterThan(0);
+      const inspection = renderer.inspect();
+      expect(inspection.renderScene.gpuDriven.encodedIndirectDraws).toBeGreaterThan(0);
+      if (path === 'hit')
+        expect(inspection.renderScene.gpuDriven.preparedBundleHits).toBeGreaterThan(beforeRetry);
+      const iblBinding = inspection.iblBinding;
+      expect(iblBinding?.pipeline).toBeDefined();
+      expect(iblBinding?.pipeline?.drawFrameId).toBe(iblBinding?.frameId);
     } finally {
       execute.mockRestore();
       bundles.mockRestore();

@@ -249,19 +249,6 @@ function isImageError(error: unknown): error is ImageError {
   return typeof code === 'string' && code.startsWith('image-');
 }
 
-/** Opt-in `FORGEAX_MATERIAL_DIAGNOSTICS=1` gate shared by the main-pass recorders. */
-export function materialDiagnosticsEnabled(): boolean {
-  if (typeof globalThis !== 'object' || globalThis === null || !('process' in globalThis)) {
-    return false;
-  }
-  const processValue = (
-    globalThis as {
-      readonly process?: { readonly env?: Record<string, string | undefined> };
-    }
-  ).process;
-  return processValue?.env?.FORGEAX_MATERIAL_DIAGNOSTICS === '1';
-}
-
 export function residentTextureView(
   world: RenderResourceScope,
   store: GpuResidencyCache,
@@ -270,15 +257,7 @@ export function residentTextureView(
   worldId: RenderResourceScope | number = world,
 ): TextureView | undefined {
   const podRes = world.resolveAsset<TextureAsset>(handle);
-  const diagnosticsEnabled = materialDiagnosticsEnabled();
-  if (!podRes.ok) {
-    if (diagnosticsEnabled) {
-      console.error(
-        `[render-material] texture resolve failed: ${JSON.stringify({ handle: Number(handle), error: podRes.error })}`,
-      );
-    }
-    return undefined;
-  }
+  if (!podRes.ok) return undefined;
   const residentRes = store.ensureResident(handle, podRes.value, worldId);
   if (!residentRes.ok) {
     // Preserve the concrete asset-capability boundary on the renderer error
@@ -287,41 +266,9 @@ export function residentTextureView(
     if (residentRes.error instanceof RhiError || isImageError(residentRes.error)) {
       runtime.errorRegistry.fire(residentRes.error);
     }
-    if (diagnosticsEnabled) {
-      console.error(
-        `[render-material] texture residency failed: ${JSON.stringify({
-          handle: Number(handle),
-          pod: {
-            kind: podRes.value.kind,
-            shape: podRes.value.shape,
-            format: podRes.value.format,
-            dataByteLength: podRes.value.data.byteLength,
-            mips: podRes.value.mips,
-          },
-          error: residentRes.error,
-        })}`,
-      );
-    }
     return undefined;
   }
-  const view = store.getTextureGpuView(handle, worldId);
-  if (diagnosticsEnabled) {
-    console.error(
-      `[render-material] texture residency ready: ${JSON.stringify({
-        handle: Number(handle),
-        pod: {
-          kind: podRes.value.kind,
-          shape: podRes.value.shape,
-          format: podRes.value.format,
-          dataByteLength: podRes.value.data.byteLength,
-          mips: podRes.value.mips,
-        },
-        receipt: 'receipt' in residentRes.value ? residentRes.value.receipt : undefined,
-        viewReady: view !== undefined,
-      })}`,
-    );
-  }
-  return view;
+  return store.getTextureGpuView(handle, worldId);
 }
 
 function residentSampler(
@@ -1212,8 +1159,6 @@ export interface PerSubmeshMaterialBgDeps {
   readonly materialBgShared: Map<string, WeakMap<object, unknown>>;
   /** Cross-frame final BG reuse keyed by the stable source material handle. */
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
-  /** {@link materialDiagnosticsEnabled}, read once per recording instead of per draw. */
-  readonly diagnostics?: boolean;
   /** Producer-owned numeric scene rows consumed by scene-index PBR draws. */
   readonly sceneMaterialBuffer?: Buffer;
   /** Active transmission backdrop; undefined/null means layout placeholder. */
@@ -1577,7 +1522,7 @@ export function buildPerSubmeshMaterialBg(
         pipelineState.viewUniformBuffer,
       )
     ) {
-      if (deps.diagnostics ?? materialDiagnosticsEnabled())
+      if (deps.frameState.iblBindingInspection !== undefined)
         recordIblMaterialBindingHit(
           deps.frameState,
           smMaterialBgl,
@@ -1829,9 +1774,6 @@ function assembleMaterialBg(
     resource: { kind: 'buffer', value: { buffer: uniformBuffer, offset: 0, size: materialSlice } },
   };
   const materialCacheHandles = smMergedEntries.map((entry) => extractEntryResourceHandle(entry));
-  const diagnosticsEnabled = deps.diagnostics ?? materialDiagnosticsEnabled();
-  if (diagnosticsEnabled)
-    logMaterialCacheHandles(deps, assembly, smMergedEntries, materialCacheHandles);
   const smBindGroup = materialBindingGroup(
     runtime,
     assembly.bgl,
@@ -1842,16 +1784,14 @@ function assembleMaterialBg(
     transmissionBackdropView != null,
     deps.bindGroupCounts,
   );
-  if (diagnosticsEnabled) {
-    recordIblMaterialBinding(
-      deps.frameState,
-      assembly.bgl,
-      smBindGroup,
-      smMergedEntries,
-      smBaseEntries.length,
-      'miss',
-    );
-  }
+  recordIblMaterialBinding(
+    deps.frameState,
+    assembly.bgl,
+    smBindGroup,
+    smMergedEntries,
+    smBaseEntries.length,
+    'miss',
+  );
   retainMaterialBgAssembly(deps, assembly, uniformResources, uniformBuffer, smBindGroup);
   return smBindGroup;
 }
@@ -2311,49 +2251,6 @@ function appendSharedMaterialTables(
       binding: 46,
       resource: { kind: 'buffer' as const, value: { buffer: sceneMaterialBuffer } },
     });
-  }
-}
-
-function logMaterialCacheHandles(
-  deps: PerSubmeshMaterialBgDeps,
-  assembly: MaterialBgAssembly,
-  entries: readonly BindGroupEntry[],
-  materialCacheHandles: readonly unknown[],
-): void {
-  const { material, entityKey, shaderId, materialHandle } = assembly;
-  if (material.textureHandles === undefined && materialHandle !== undefined) {
-    console.error(
-      `[render-material] scalar material cache handles: ${JSON.stringify({
-        entityKey,
-        materialHandle,
-        shader: shaderId,
-        surfaceModel: material.surfaceModel,
-        layoutIdentity: getOpaqueResourceIdentity(assembly.bgl as object),
-        bindings: entries.map((entry) => entry.binding),
-        graphResources: {
-          rawDepth: deps.surfaceRawDepthView != null,
-          nearestLayer: deps.surfaceNearestLayerView != null,
-          nearestDepth: deps.surfaceNearestDepthView != null,
-        },
-        paramSnapshot: material.paramSnapshot,
-        handleTypes: materialCacheHandles.map((handle) => typeof handle),
-      })}`,
-    );
-  }
-  if (materialCacheHandles.some((handle) => typeof handle !== 'object' || handle === null)) {
-    console.error(
-      `[render-material] invalid material cache handle: ${JSON.stringify({
-        entityKey,
-        materialHandle,
-        shader: shaderId,
-        entries: entries.map((entry, index) => ({
-          index,
-          binding: entry.binding,
-          kind: entry.resource.kind,
-          handleType: typeof materialCacheHandles[index],
-        })),
-      })}`,
-    );
   }
 }
 

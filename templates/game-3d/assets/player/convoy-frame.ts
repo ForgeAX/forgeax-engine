@@ -1,25 +1,7 @@
 import { model, sel, type DesignedContact, type Model, type Tuple3 } from '@forgeax/engine/modeling';
-import { createPlayerRig } from './player-rig.ts';
+import { createPlayerRig, nativeJointName as native } from './player-rig.ts';
 import { CONVOY_LAYOUT, type ConvoyLayout } from './convoy-layout.ts';
-
-export interface ConvoyBinding { readonly tag: string; readonly joint: string }
-const native = (name: string) => name.toLowerCase().replaceAll('.', '-');
-
-function appendFrameParts(target: Model, parts: Model[]) {
-  // Model operations keep rollback copies. Assemble small peers first rather
-  // than copying the complete armored body for every rod and bearing.
-  let level = parts;
-  while (level.length > 1) {
-    const next: Model[] = [];
-    for (let i = 0; i < level.length; i += 2) {
-      const part = level[i]!;
-      if (level[i + 1] !== undefined) part.append(level[i + 1]!);
-      next.push(part);
-    }
-    level = next;
-  }
-  if (level[0] !== undefined) target.append(level[0]);
-}
+import { addConvoyPart, appendConvoyParts, type ConvoyBinding } from './convoy-parts.ts';
 
 /** Load-bearing members stay geometry; tread, fasteners and surface finish bake down. */
 export function convoyFrame(base: Model, detail: Model, binding: ConvoyBinding[], layout: ConvoyLayout = CONVOY_LAYOUT) {
@@ -28,16 +10,12 @@ export function convoyFrame(base: Model, detail: Model, binding: ConvoyBinding[]
   let serial = 0;
   const add = (joint: string, build: (part: Model, high: boolean) => void) => {
     const tag = `bake:mount-${native(joint)}-${serial++}`;
-    binding.push({ tag, joint });
-    for (const [parts, high] of [[lowParts, false], [highParts, true]] as const) {
-      const part = model(); build(part, high);
+    addConvoyPart([lowParts, highParts], binding, joint, tag, (part, high) => {
+      build(part, high);
       const sharp = sel.edges.dihedral('>', 40);
       if (part.count(sharp) > 0) part.markSharp(sharp);
       part.uv.project({ mode: 'box', scale: 8 });
-      if (part.poisoned !== undefined) throw part.poisoned;
-      part.tag(sel.all(), tag); part.tag(sel.all(), 'structural');
-      parts.push(part);
-    }
+    }, { structural: true });
   };
   const tube = (joint: string, center: Tuple3, outer: number, inner: number, length: number, axis: 'x' | 'y' | 'z', material = 'steel') => add(joint, (part, high) => {
     if (inner > 0) part.revolve({ points: [[inner, -length / 2], [outer, -length / 2], [outer, length / 2], [inner, length / 2], [inner, -length / 2]], segments: high ? 48 : 16, material });
@@ -197,7 +175,7 @@ export function convoyFrame(base: Model, detail: Model, binding: ConvoyBinding[]
     fit(native(bogie), native(first)); fit(native(first), native(track));
     fit(native(bogie), native(track), 0.001, rear.travel * 2 + 0.01);
   }
-  appendFrameParts(base, lowParts);
-  appendFrameParts(detail, highParts);
+  appendConvoyParts(base, lowParts);
+  appendConvoyParts(detail, highParts);
   return contacts;
 }

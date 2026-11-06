@@ -51,7 +51,7 @@ function refineDawnShards(
   bins: { files: TestSpecification[]; seconds: number }[],
   root: string,
 ): TestSpecification[][] {
-  const snapshots = [timings.previousRun, timings.latestRun];
+  const snapshots = [timings.previousRun, timings.latestRun, ...timings.replayRuns];
   const pathOf = (file: TestSpecification) => relative(root, file.moduleId).replaceAll('\\', '/');
   const paths = new Map(
     bins.flatMap((bin) => bin.files.map((file) => [file, pathOf(file)] as const)),

@@ -1230,7 +1230,7 @@ export interface RenderInspection {
    */
   readonly transparency?: import('./oit/view').TransparencyInspection;
   readonly meshMaterialBindings: readonly MeshMaterialBindingObservation[];
-  /** Final-submit Standard IBL binding-chain receipt, when diagnostics ran. */
+  /** Final-submit Standard IBL binding-chain receipt when a Standard pass is recorded. */
   readonly iblBinding?: IblBindingInspection;
   readonly perFramePassNames: readonly string[];
   readonly bindGroupCounts: {

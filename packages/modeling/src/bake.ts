@@ -641,6 +641,7 @@ const SETTINGS_SHAPE: OptionShape = {
   thickness: { rays: true, distance: true },
   slots: {
     record: {
+      materialId: true,
       baseColor: true,
       roughness: true,
       metallic: true,

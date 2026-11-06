@@ -46,10 +46,9 @@ import {
   geometryPipelineRequestContext,
   prepareGeometryPipelineRequests,
 } from './geometry-pipeline-requests';
-import { recordGeometryDraws } from './main-pass-geometry';
+import { recordGeometryDraws, recordIblPipelineBinding } from './main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
-  materialDiagnosticsEnabled,
   type PerSubmeshMaterialBgDeps,
   prepareMaterialSkylight,
 } from './main-pass-material';
@@ -255,7 +254,7 @@ export function prepareMainPassPipelineDemand(
     {
       ...c,
       ...(colorFormats[0] === undefined ? {} : { transparentColorFormat: colorFormats[0] }),
-      translucentFog: blended && (c.viewBindGroupDynamicOffset ?? 0) === 0,
+      translucentFog: blended && (c.viewBindGroupDynamicOffset ?? 0) === 0 && c.viewFog !== false,
       splitLdrSprite: blended ? false : c.splitLdrSprite,
     },
     {
@@ -505,12 +504,12 @@ export function encodeMainPass(
       : selectMainPassDispatch(c, passSelector);
   const selectedGpuMaterialSlots = selectPassGpuMaterialSlots(c, selector, options);
   const hasGpuMaterials = selectsGpuMaterials(c, options, selectedGpuMaterialSlots);
+  const hasDrawWork = hasGpuMaterials || selectsCpuDraws(validatedOrdered, matchedMaterials);
   // Shared GPU materials are work even when there are no direct draw rows.
   if (
     clusteredBindGroupMissing ||
     !(
-      selectsCpuDraws(validatedOrdered, matchedMaterials) ||
-      hasGpuMaterials ||
+      hasDrawWork ||
       hasMainPassPipelinePreparation(c, passSelector, recordMode, options?.excludeSelector)
     )
   )
@@ -519,7 +518,7 @@ export function encodeMainPass(
   // Per-entity material bind groups assemble inside the draw loops from the
   // scene-level Skylight resources resolved once here.
   const { skylightResources, activeViews } = prepareMaterialSkylight(c);
-  if (materialDiagnosticsEnabled()) publishIblBindingInspection(c, skylightResources, activeViews);
+  publishIblBindingInspection(c, skylightResources, activeViews, hasDrawWork);
   const resolveMaterialBindGroup = createMaterialBindGroupResolver(c, options, skylightResources);
   const colorFormats = mainPassColorFormats(c, options);
   if (gpuDrivenStandardPbrFrameResources !== undefined) {
@@ -894,7 +893,8 @@ function mainPassRecordContext(
     recordMode === 'translucent-before-transmission' ||
     recordMode === 'oit-accumulate' ||
     recordMode === 'oit-residual';
-  const translucentFog = blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0;
+  const translucentFog =
+    blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0 && c.viewFog !== false;
   const splitLdrSprite = blendedRecordMode ? false : c.splitLdrSprite;
   if ((c.translucentFog === true) === translucentFog && c.splitLdrSprite === splitLdrSprite)
     return c;
@@ -959,7 +959,9 @@ function publishIblBindingInspection(
   c: _InternalRenderPipelineContext,
   skylightResources: SkylightBindGroupResources,
   activeViews: object | undefined,
+  hasDrawWork: boolean,
 ): void {
+  if (!hasDrawWork) return;
   const { runtime, frameState, pipelineState } = c;
   const activeCache =
     c.skylight === undefined
@@ -1113,7 +1115,6 @@ function createPerSubmeshMaterialBgDeps(
       : { planarReflectionView: c.planarReflectionView }),
     materialBgShared: frameState.materialBgShared,
     materialBgAssemblyCache: c.materialBgAssemblyCache,
-    diagnostics: materialDiagnosticsEnabled(),
     frameState,
     bindGroupCounts: c.bindGroupCounts,
     ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),
@@ -1183,6 +1184,10 @@ function publishMaterialBindingPreparer(
         materialUniformSlot(runtime, material) * MATERIAL_PER_ENTITY_STRIDE,
       ),
     };
+  };
+  resources.recordMaterialPipelineBinding = (slot, pipeline, group) => {
+    const material = materialSlots[slot];
+    if (material !== undefined) recordIblPipelineBinding(c, material, pipeline, group);
   };
 }
 

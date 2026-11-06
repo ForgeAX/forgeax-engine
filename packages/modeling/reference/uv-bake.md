@@ -163,7 +163,7 @@ point of the group.
 | `thickness` | mean of min(t, reach) / reach over `thickness.rays` (32) cosine-distributed rays into the detail (0 thin, 1 at least `thickness.distance` thick; default 0.1 x the group diagonal) |
 | `opacity` | fraction of a texel's samples whose ray found the detail (no nearest-point fallback); its mips keep the alpha-test coverage at `opacity.cutoff` (default 0.5) |
 | `ormh` | R = AO, G = roughness and B = metallic of the hit material slot (`slots`, below), A = height |
-| `materialId` | detail material slot as `MATERIAL_ID_PALETTE` color (sRGB); its mips point-sample level 0, so every level holds only slot colors; `provenance.materials` lists the slots (an id mask; colour comes from `baseColor`) |
+| `materialId` | detail slot's authored `materialId` or `MATERIAL_ID_PALETTE` fallback, stored as sRGB; its mips point-sample level 0, so every level holds only slot colors; `provenance.materials` lists the resolved linear colors (an id mask; appearance comes from `baseColor`) |
 | `baseColor` | the hit slot's `baseColor` (sRGB RGBA, an sRGB texture); its alpha also multiplies `opacity` |
 | `emissive` | the hit slot's linear `emissive` x `emissiveIntensity` over `provenance.emissiveScale` (the brightest slot, at least 1; use it as the material's emissive intensity), linear RGB |
 | `resample` | a detail texture (`resample`, rgba8) through the detail uv0 |
@@ -179,12 +179,24 @@ match. Each map kind has at most one settings object named after it (`height`,
 
 **Slots**: `slots: Record<slot, BakeSlot>` is the one per-material table the slot
 maps read: `{ baseColor?: [r, g, b, a] (sRGB), roughness?, metallic?, emissive?: [r, g, b]
-(linear), emissiveIntensity? }`. `ormh` reads roughness and metallic, `baseColor` the colour,
+(linear), emissiveIntensity?, materialId?: [r, g, b] (linear) }`. `ormh` reads roughness and metallic, `baseColor` the colour,
 `emissive` the emission, `opacity` the alpha (times its ray-hit coverage). A slot without an
 entry, or an unset field, takes `slots['*']`, then the defaults (white opaque, 0.5, 0, no
 emission, intensity 1); `'*'` never names a material slot. Fields out of range are
 `model-invalid-argument`, misspelt ones too (`detail.option`). `bakeTrimSheet` reads the
 same table (`slots`), and its analytic modules map their `material` names through it.
+`materialId` takes three finite channels in [0, 1]: the slot's value, then `slots['*']`,
+then the existing slot-order palette (which cycles after eight colors). Assign distinct
+colors for stable slot identities beyond that palette, or share a color across slots
+to bake a semantic family mask. Changing appearance or slot order does not change an
+authored ID. ID colors affect only the ID map and its provenance; they do not affect
+base color, opacity, emission or material response. Mesh and analytic trim modules
+use the same policy.
+IDs stay categorical through the complete bake: each texel keeps its first accepted
+opaque correspondence sample, gutter rings copy the first covered neighbor in row
+order, the B-spline filter skips IDs, and mips point-sample level 0. Continuous maps
+keep their existing sample and gutter averaging. This also corrects mixed boundary
+and gutter colors in legacy palette bakes; the palette colors themselves are unchanged.
 Gate (`bake-slots.unit.test.ts`): a glow strip's emissive covers its projection at IoU 1
 (gate 0.95) and is zero elsewhere; without a glow entry nothing glows, swapped names move it,
 and alpha 0.3 drops the hull's opacity to 77.

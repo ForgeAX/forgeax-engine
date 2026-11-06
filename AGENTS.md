@@ -10,6 +10,7 @@ AI-first TypeScript game engine; AI is the primary user. Reduce the concepts a r
 ## Implementation
 
 - ESM-only TypeScript, strict flags from `tsconfig.base.json`. Schemas declare components/resources/events. Expected failures return structured `Result`; closed error-code unions and discriminated details remain source-owned and exhaustively handled.
+- Runtime modules consume explicit host inputs and engine-owned diagnostics; they do not infer development mode from bundler metadata or ambient process environment. Tool and platform adapters own those inputs. Run `pnpm check:runtime-boundaries` and its built-output counterpart before delivery.
 - English-only source and agent guidance. Follow Biome, package naming and `packages/runtime/README.md` naming rules. Avoid redundant wrappers, state copies and compatibility paths; wire/error-code compatibility follows the documented version boundary.
 - Tests belong in the nearest owning `__tests__/`; runner-specific filenames and `bench/*.bench.ts` follow the reference. Add a same-path regression gate for a reproducible bug; reproduce it red, fix its owner, then pass relevant checks.
 - Fix vulnerabilities in the owning manifest/version policy and lockfiles, not installed/cache artifacts; verify a fresh consumer. Keep `pnpm-lock.yaml` and `bun.lock` synchronized; use `pnpm sync:check` and channel-alignment checks when those inputs change.

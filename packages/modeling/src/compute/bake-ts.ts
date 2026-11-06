@@ -399,6 +399,7 @@ export class Baker {
   private readonly inward: Float64Array;
   /** Resolved `BakeSlot` per detail material slot, colors linear, emission over `emissiveScale`. */
   private readonly slotSurface: readonly ResolvedSlot[];
+  private readonly slotIds: readonly (readonly number[])[];
   /** Detail point and unit shading normal of the last evaluated sample. */
   lastPoint: Tuple3 = [0, 0, 0];
   lastNormal: Tuple3 = [0, 0, 1];
@@ -464,6 +465,7 @@ export class Baker {
     this.inward = coneRays(params.thickness.rays, 1);
     const scale = emissiveScale(params.slots);
     this.slotSurface = detail.slots.map((slot) => resolveSlot(params.slots, slot, scale));
+    this.slotIds = detail.slots.map((slot, i) => resolveMaterialId(params.slots, slot, i));
     this.eps = diagonal * 1e-5;
   }
 
@@ -793,9 +795,7 @@ export class Baker {
           break;
         }
         case 'materialId': {
-          const color = MATERIAL_ID_PALETTE[
-            (this.detail.triangleSlot[tri] as number) % MATERIAL_ID_PALETTE.length
-          ] as readonly number[];
+          const color = this.slotIds[this.detail.triangleSlot[tri] as number] as readonly number[];
           out.set([color[0] as number, color[1] as number, color[2] as number, 1], o);
           break;
         }
@@ -919,6 +919,46 @@ interface ResolvedSlot {
 
 const slotEntry = (slots: Readonly<Record<string, BakeSlot>>, name: string) =>
   Object.hasOwn(slots, name) ? slots[name] : undefined;
+
+/** The ID mask is authored independently of appearance; legacy slots retain their palette. */
+export function resolveMaterialId(
+  slots: Readonly<Record<string, BakeSlot>>,
+  name: string,
+  index: number,
+): readonly [number, number, number] {
+  return (
+    slotEntry(slots, name)?.materialId ??
+    slotEntry(slots, '*')?.materialId ??
+    (MATERIAL_ID_PALETTE[index % MATERIAL_ID_PALETTE.length] as readonly [number, number, number])
+  );
+}
+
+/** Shared by correspondence bakes and analytic trim fields. */
+export function materialIdError(
+  slots: Readonly<Record<string, BakeSlot>>,
+): ModelingError | undefined {
+  for (const [slot, surface] of Object.entries(slots)) {
+    const color = surface?.materialId;
+    if (
+      color !== undefined &&
+      !(
+        Array.isArray(color) &&
+        color.length === 3 &&
+        [0, 1, 2].every((channel) => {
+          const value = color[channel];
+          return typeof value === 'number' && value >= 0 && value <= 1;
+        })
+      )
+    ) {
+      return modelingError(
+        'model-invalid-argument',
+        'materialId is three linear RGB channels in [0, 1]',
+        { slot, materialId: color },
+      );
+    }
+  }
+  return undefined;
+}
 
 /**
  * The surface of material slot `name`: its entry, then `'*'`, then the defaults (white
@@ -1296,11 +1336,12 @@ const MIXED = -2;
 
 /**
  * Grow every map `gutter` texels (or until the atlas is full) past its charts: each new
- * texel averages its covered 8-neighbors and inherits their chart in `owner` (MIXED when
- * they disagree). Each ring is found from the previous one, so a fill costs one visit
- * per texel.
+ * texel averages its covered 8-neighbors, except material IDs copy the first covered
+ * neighbor in row order. Chart ownership stays MIXED when neighbors disagree. Each
+ * ring is found from the previous one, so a fill costs one visit per texel.
  */
 function dilate(
+  kinds: readonly BakeMapKind[],
   values: Float64Array[],
   covered: Uint8Array,
   owner: Int32Array,
@@ -1340,7 +1381,8 @@ function dilate(
       }
       owner[i] = chart;
     }
-    for (const v of values) {
+    for (const [k, v] of values.entries()) {
+      const categorical = kinds[k] === 'materialId';
       for (const i of fresh) {
         const x = i % grid.w;
         const y = (i - x) / grid.w;
@@ -1349,7 +1391,7 @@ function dilate(
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
             const j = neighbor(x + dx, y + dy, grid);
-            if (j < 0 || covered[j] !== 1) continue;
+            if (j < 0 || covered[j] !== 1 || (categorical && n > 0)) continue;
             n++;
             for (let c = 0; c < 4; c++) acc[c] = (acc[c] as number) + (v[j * 4 + c] as number);
           }
@@ -1544,6 +1586,8 @@ function invalidParams(params: BakeJobParams, inputs: number): ModelingError | u
     return bad('ao.floor is a finite height in meters', { floor: ao.floor });
   }
   const { height, thickness, slots, edgeWear, cavity, opacity, wrap } = params;
+  const invalidId = materialIdError(slots);
+  if (invalidId !== undefined) return invalidId;
   if (height.bits !== 8 && height.bits !== 16) {
     return bad('height.bits is 8 or 16', { bits: height.bits });
   }
@@ -1817,7 +1861,7 @@ export interface PreparedBake {
 export interface BakeRows {
   /** Tile rows (32 texel rows each) in the order their texels follow. */
   readonly rows: readonly number[];
-  /** Per map: four summed channels per texel. */
+  /** Per map: four summed channels per texel; material IDs retain the first accepted sample. */
   readonly sums: readonly Float64Array[];
   readonly weight: Float64Array;
   readonly island: Int32Array;
@@ -2360,11 +2404,17 @@ export function bakeRows(
               );
               const opaque = opacity < 0 || baker.lastHit;
               if (opacity >= 0 && opaque) hits[i] = (hits[i] as number) + 1;
-              for (const [k] of maps.entries()) {
+              for (const [k, kind] of maps.entries()) {
                 if (!opaque && k !== opacity) continue;
                 const sum = sums[k] as Float64Array;
-                for (let c = 0; c < 4; c++)
-                  sum[i * 4 + c] = (sum[i * 4 + c] as number) + (sample[k * 4 + c] as number);
+                if (kind === 'materialId') {
+                  if (sum[i * 4 + 3] === 0) {
+                    for (let c = 0; c < 4; c++) sum[i * 4 + c] = sample[k * 4 + c] as number;
+                  }
+                } else {
+                  for (let c = 0; c < 4; c++)
+                    sum[i * 4 + c] = (sum[i * 4 + c] as number) + (sample[k * 4 + c] as number);
+                }
               }
               weight[i] = (weight[i] as number) + 1;
               if (island[i] === NONE) island[i] = islands[t] as number;
@@ -2583,8 +2633,10 @@ function finishTexture(
     for (let i = 0; i < texels; i++) {
       const w = lw[i] as number;
       if (!(w > 0)) continue;
-      for (const v of values)
+      for (const [j, v] of values.entries()) {
+        if (kinds[j] === 'materialId') continue;
         for (let c = 0; c < 4; c++) v[i * 4 + c] = (v[i * 4 + c] as number) / w;
+      }
     }
     const point = new Float64Array(pointSum);
     const normal = new Float64Array(normalSum);
@@ -2620,7 +2672,7 @@ function finishTexture(
     curvatureRange = Math.max(curvatureRange, encodeMaps(kinds, values, lw, encoding));
     const mask = Uint8Array.from(lw, (w) => (w > 0 ? 1 : 0));
     const layerOwner = Int32Array.from(island, (o, i) => ((lw[i] as number) > 0 ? o : UNOWNED));
-    dilate(values, mask, layerOwner, grid, params.gutter === 'fill' ? fill : params.gutter);
+    dilate(kinds, values, mask, layerOwner, grid, params.gutter === 'fill' ? fill : params.gutter);
     for (const [j, k] of layer.kinds.entries()) sums[k] = values[j] as Float64Array;
     if (layer.weight === weight) owner = layerOwner;
   }
@@ -2718,7 +2770,7 @@ export function finishBake(
       groups: groupReports,
       materials: prepared.detailSlots.map((slot, i) => ({
         slot,
-        color: [...(MATERIAL_ID_PALETTE[i % MATERIAL_ID_PALETTE.length] as readonly number[])],
+        color: [...resolveMaterialId(params.slots, slot, i)],
       })),
       curvatureRange,
       heightRange,

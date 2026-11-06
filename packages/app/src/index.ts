@@ -295,8 +295,10 @@ export {
 export type {
   App,
   AppAssembleArgs,
+  AppHostAdapter,
   AppStepFrameOptions,
   AssembleAppError,
+  BrowserRemoteBridgeAdapter,
   BundlerOptions,
   CanvasAppError,
   CanvasDrawingBufferSize,

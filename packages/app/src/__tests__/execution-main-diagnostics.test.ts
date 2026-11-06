@@ -4,18 +4,42 @@ import { Context } from '@forgeax/engine-plugin';
 import type { createProfiler } from '@forgeax/engine-profiler';
 import type { RendererHostAssembly } from '@forgeax/engine-runtime/internal/renderer-host';
 import { ok } from '@forgeax/engine-types';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createApp } from '../browser';
 import { prepareBootstrapEntry } from '../execution/bootstrap-entry';
 import type { RuntimePackAssembly } from '../runtime-packs.js';
 import { ssrIdentityFixture } from './execution-fixtures';
 
 const constructRuntimeRendererHost = vi.hoisted(() => vi.fn());
+const executionHostTestDoubles = vi.hoisted(() => ({
+  probeCapabilities: vi.fn(),
+  createWorkerApp: vi.fn(),
+}));
 vi.mock('@forgeax/engine-runtime/internal/renderer-host', () => ({
   constructRuntimeRendererHost,
   loadRhiPack: vi.fn(),
 }));
+vi.mock('../execution', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../execution')>()),
+  probeExecutionCapabilities: executionHostTestDoubles.probeCapabilities,
+}));
+vi.mock('../execution/host-controller', () => ({
+  createWorkerExecutionApp: executionHostTestDoubles.createWorkerApp,
+}));
 afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => {
+  const unavailable = { available: false, reason: 'fixture' };
+  executionHostTestDoubles.probeCapabilities.mockReset().mockResolvedValue({
+    worker: unavailable,
+    offscreenCanvas: unavailable,
+    workerAnimationFrame: unavailable,
+    workerWebGpu: unavailable,
+    crossOriginIsolated: unavailable,
+    sharedArrayBuffer: unavailable,
+    atomicsWait: unavailable,
+  });
+  executionHostTestDoubles.createWorkerApp.mockReset();
+});
 
 it.each([
   false,
@@ -94,6 +118,235 @@ it('keeps top-level SSR identity realm-bound when execution is configured', asyn
   });
   expect(result).toMatchObject({ ok: false, error: { code: 'app-execution-bootstrap-failed' } });
   expect(constructRuntimeRendererHost).not.toHaveBeenCalled();
+});
+
+it('releases the Worker browser bridge on terminal stop, not idle stop or pause', async () => {
+  const available = { available: true, reason: 'fixture' };
+  executionHostTestDoubles.probeCapabilities.mockResolvedValue({
+    worker: available,
+    offscreenCanvas: available,
+    workerAnimationFrame: available,
+    workerWebGpu: available,
+    crossOriginIsolated: available,
+    sharedArrayBuffer: available,
+    atomicsWait: available,
+  });
+  let workerState: 'idle' | 'running' | 'paused' | 'stopped' = 'idle';
+  let workerApp: object;
+  const baseStart = vi.fn(() => {
+    workerState = 'running';
+    return ok(undefined);
+  });
+  const basePause = vi.fn(() => {
+    workerState = 'paused';
+    return ok(undefined);
+  });
+  const baseResume = vi.fn(() => {
+    workerState = 'running';
+    return ok(undefined);
+  });
+  const baseStop = vi.fn(function (this: unknown) {
+    expect(this).toBe(workerApp);
+    if (workerState !== 'running' && workerState !== 'paused') {
+      return { ok: false, error: { code: 'app-not-started' } as never };
+    }
+    workerState = 'stopped';
+    return ok(undefined);
+  });
+  const baseDispose = vi.fn(async function (this: unknown) {
+    expect(this).toBe(workerApp);
+    workerState = 'stopped';
+    return ok(undefined);
+  });
+  workerApp = {
+    execution: { report: () => ({}) },
+    remoteEval: vi.fn(),
+    start: baseStart,
+    pause: basePause,
+    resume: baseResume,
+    stop: baseStop,
+    dispose: baseDispose,
+  };
+  executionHostTestDoubles.createWorkerApp.mockResolvedValue(ok(workerApp as never));
+
+  const teardown = vi.fn();
+  let hostDispose: (() => void) | undefined;
+  const bridge = {
+    port: '5733',
+    installExecutionBridge: vi.fn(async () => teardown),
+    installLocalBridge: vi.fn(async () => teardown),
+    registerDispose: vi.fn((dispose: () => void) => {
+      hostDispose = dispose;
+    }),
+  };
+  const canvas = {
+    tagName: 'CANVAS',
+    isConnected: true,
+    width: 64,
+    height: 64,
+    clientWidth: 64,
+    clientHeight: 64,
+  } as unknown as HTMLCanvasElement;
+  const result = await createApp(
+    canvas,
+    {
+      execution: {
+        bootstrap: 'https://example.test/engine-bootstrap.js',
+        workers: { engine: true, render: false, kernels: false },
+      },
+    },
+    { browserRemoteBridge: bridge },
+  );
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+
+  expect(result.value.stop()).toMatchObject({ ok: false, error: { code: 'app-not-started' } });
+  expect(teardown).not.toHaveBeenCalled();
+  expect(result.value.start()).toMatchObject({ ok: true });
+  expect(result.value.pause()).toMatchObject({ ok: true });
+  expect(teardown).not.toHaveBeenCalled();
+  expect(result.value.resume()).toMatchObject({ ok: true });
+  expect(teardown).not.toHaveBeenCalled();
+  expect(result.value.stop()).toMatchObject({ ok: true });
+  expect(teardown).toHaveBeenCalledOnce();
+
+  await result.value.dispose();
+  hostDispose?.();
+  hostDispose?.();
+  result.value.stop();
+
+  expect(baseDispose).toHaveBeenCalledOnce();
+  expect(baseStart).toHaveBeenCalledOnce();
+  expect(basePause).toHaveBeenCalledOnce();
+  expect(baseResume).toHaveBeenCalledOnce();
+  expect(baseStop).toHaveBeenCalledTimes(3);
+  expect(teardown).toHaveBeenCalledOnce();
+});
+
+it('keeps the local browser bridge through idle stop and pause, then releases on terminal stop', async () => {
+  const renderer = {
+    state: () => 'alive',
+    inspect: () => ({}),
+    attach: () => ({ ok: true, value: { dispose() {} } }),
+    subscribe: () => () => {},
+    dispose: vi.fn(),
+    releaseSurface: () => ({ ok: true, value: undefined }),
+    restoreSurface: () => ({ ok: true, value: undefined }),
+  };
+  const assets = new AssetRegistry({ shaderRegistry: {} as never });
+  constructRuntimeRendererHost.mockResolvedValue({
+    ok: true,
+    value: {
+      renderer,
+      assets,
+      initialization: Promise.resolve(
+        ok(undefined),
+      ) satisfies RendererHostAssembly['initialization'],
+    },
+  });
+  vi.stubGlobal('requestAnimationFrame', () => 1);
+  vi.stubGlobal('cancelAnimationFrame', () => {});
+  const canvas = {
+    tagName: 'CANVAS',
+    isConnected: true,
+    width: 64,
+    height: 64,
+    clientWidth: 64,
+    clientHeight: 64,
+    addEventListener() {},
+    removeEventListener() {},
+  } as unknown as HTMLCanvasElement;
+  const teardown = vi.fn();
+  let hostDispose: (() => void) | undefined;
+  const bridge = {
+    port: '5733',
+    installExecutionBridge: vi.fn(async () => teardown),
+    installLocalBridge: vi.fn(async () => teardown),
+    registerDispose: vi.fn((dispose: () => void) => {
+      hostDispose = dispose;
+    }),
+  };
+
+  const result = await createApp(
+    canvas,
+    { input: { sample: vi.fn(), detach: vi.fn() } },
+    { browserRemoteBridge: bridge },
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+
+  expect(result.value.stop()).toMatchObject({ ok: false, error: { code: 'app-not-started' } });
+  expect(teardown).not.toHaveBeenCalled();
+  result.value.start().unwrap();
+  result.value.pause().unwrap();
+  expect(teardown).not.toHaveBeenCalled();
+  result.value.resume().unwrap();
+  result.value.stop().unwrap();
+  expect(teardown).toHaveBeenCalledOnce();
+
+  await result.value.dispose();
+  hostDispose?.();
+  hostDispose?.();
+  assets.dispose();
+
+  expect(bridge.installLocalBridge).toHaveBeenCalledOnce();
+  expect(teardown).toHaveBeenCalledOnce();
+  expect(renderer.dispose).toHaveBeenCalledOnce();
+});
+
+it('rejects a Worker shader manifest reader with a URL-based recovery hint', async () => {
+  const available = { available: true, reason: 'fixture' };
+  executionHostTestDoubles.probeCapabilities.mockResolvedValue({
+    worker: available,
+    offscreenCanvas: available,
+    workerAnimationFrame: available,
+    workerWebGpu: available,
+    crossOriginIsolated: available,
+    sharedArrayBuffer: available,
+    atomicsWait: available,
+  });
+  executionHostTestDoubles.createWorkerApp.mockResolvedValue(ok({ remoteEval: vi.fn() } as never));
+  const canvas = {
+    tagName: 'CANVAS',
+    isConnected: true,
+    width: 64,
+    height: 64,
+    clientWidth: 64,
+    clientHeight: 64,
+  } as unknown as HTMLCanvasElement;
+  const readShaderManifest = vi.fn(async () => '{}');
+  const result = await createApp(
+    canvas,
+    {
+      execution: {
+        bootstrap: 'https://example.test/engine-bootstrap.js',
+        workers: { engine: true, render: false, kernels: false },
+      },
+    },
+    {
+      shaderManifestUrl: 'https://example.test/shaders.json',
+      readShaderManifest,
+    },
+  );
+
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      code: 'app-execution-bootstrap-failed',
+      detail: {
+        phase: 'prepare',
+        realmBoundOption: 'bundler.readShaderManifest',
+      },
+    },
+  });
+  if (!result.ok) {
+    expect(result.error.hint).toContain('shaderManifestUrl');
+    expect(result.error.detail.cause).toMatchObject({
+      message: expect.stringContaining('shaderManifestUrl'),
+    });
+  }
+  expect(readShaderManifest).not.toHaveBeenCalled();
 });
 
 it.each([

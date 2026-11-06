@@ -990,6 +990,13 @@ export interface ScriptablePackBuildWorkItem {
   readonly publicationGeneration?: number;
 }
 
+/** Identity and captured files shared by every Pack producer's existing DDC. */
+export interface PackBuildCacheSubject extends Omit<ScriptablePackBuildWorkItem, 'definition'> {
+  readonly definition: Pick<AnyScriptablePackDefinition, 'packageId'>;
+  /** Before producer execution, only these files are available for discovery. */
+  readonly discoverySourceClosure?: readonly ScriptablePackSourceClosureEntry[];
+}
+
 export interface ScriptablePackBuildWorklistOptions {
   readonly subjects: readonly ScriptablePackBuildWorkItem[];
   readonly outputs: AssetOutputProducerRegistry;
@@ -1016,7 +1023,7 @@ export type ScriptablePackDependencyResolver = (guid: string) => Promise<string 
 /** Optional producer cache; the worklist still owns current-generation reference validation. */
 export interface ScriptablePackBuildProductCache {
   /** Advisory prior topology only; current production and reference validation remain authoritative. */
-  dependencies?(subject: ScriptablePackBuildWorkItem): Promise<
+  dependencies?(subject: PackBuildCacheSubject): Promise<
     | {
         readonly outputs: readonly string[];
         readonly reads: readonly string[];
@@ -1024,10 +1031,10 @@ export interface ScriptablePackBuildProductCache {
     | undefined
   >;
   read(
-    subject: ScriptablePackBuildWorkItem,
+    subject: PackBuildCacheSubject,
     resolve?: ScriptablePackDependencyResolver,
   ): Promise<ScriptablePackBuildProduct | undefined>;
-  write(subject: ScriptablePackBuildWorkItem, product: ScriptablePackBuildProduct): Promise<void>;
+  write(subject: PackBuildCacheSubject, product: ScriptablePackBuildProduct): Promise<void>;
 }
 
 export interface ScriptablePackBuildWorklistProduct {

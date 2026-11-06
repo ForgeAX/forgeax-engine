@@ -384,15 +384,57 @@ dynamic bodies for that call. Omitting the option restores normal pushing, even
 on a reused controller. This still updates the character's pose, next kinematic
 target, attached colliders, `Transform`, and `grounded`; it is not a read-only
 query or a rollback transaction. Sensors and collision/pair filters are unchanged.
-There is no `dt` parameter: tuning is read from the component each call, and the
-delta already encodes elapsed time. Spawn the collider at its resting height (capsule center = ground top +
+The supplied delta already encodes active movement; tuning is read from the
+component each call. Spawn the collider at its resting height (capsule center = ground top +
 radius + halfHeight); a capsule penetrating the floor has a degenerate contact and
 will not auto-step or report grounded correctly.
+
+For historical input replay against the current complete collision scene, use
+`{ bodyMotion: 'frozen' }`. This 3D policy suppresses velocity-driven motion from
+other bodies and always disables dynamic-body impulses. Explicitly combining it
+with `applyImpulsesToDynamicBodies: true` or supplying an unknown motion policy
+throws `invalid-body-config` before native preparation or mutation. The default
+`bodyMotion: 'live'` retains support carry; setting only the impulse flag to
+`false` also retains that live motion.
+
+Live 3D movement may supply `deltaTime` as a positive finite number of seconds
+from the displacement producer. This interval controls support motion and native
+dynamic-body impulses; it never scales `desiredDelta`. Omission preserves the
+World timestep, including on the next call to a cached controller. Invalid live
+intervals (zero, negative, non-finite or non-numeric) and any custom interval with
+`bodyMotion: 'frozen'` throw `invalid-body-config` before native preparation.
+
+For a logical input split into geometric sweeps, divide both its displacement
+and its producer interval. The total interval remains that of one input, even
+when the World uses a different fixed rate:
+
+```ts
+const segment = { deltaTime: inputSeconds / count };
+for (let i = 0; i < count; i++) {
+  pw.moveAndSlide(character, segmentDelta, segment);
+}
+// A collision-only correction leg adds no support time or dynamic-body impulse.
+pw.moveAndSlide(character, correctionDelta, { bodyMotion: 'frozen' });
+```
+
+These per-call options do not advance the World or change another system's clock.
+The backend overrides time only around the guarded synchronous KCC computation
+and restores the exact original timestep on success or exception. Omitting both
+the interval and frozen policy adds no World-timestep getter to the live path.
+
+Frozen movement still applies the supplied displacement, current geometric
+collision response, slopes, auto-step, ground-snap and penetration recovery. It
+updates the character's pose, colliders, next target and grounded output. It does
+not advance the World, rewind other bodies, reconstruct historical colliders or
+provide a read-only query. Perform a complete synchronous replay in one current
+scene; use the same frozen policy for every main and stair sub-sweep. The 2D
+interface and behavior are unchanged.
 
 In the 3D Rapier backend, contacted moving supports contribute their tangential
 motion through the native KCC friction accumulator before shape casting. This
 also carries a character when a descending platform produces no cast hit. Call
-`moveAndSlide` once per fixed tick with input and integrated gravity; adding
+`moveAndSlide` once per fixed tick with input and integrated gravity, or supply
+the producer interval when movement has its own clock or subdivisions. Adding
 platform displacement again duplicates that carry. Author platform motion before
 fixed Scene propagation, then solve the character after `physicsSyncBackend` and
 before `physicsStepSimulation`. Presentation reads Scene's sampled poses, never

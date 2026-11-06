@@ -19,6 +19,7 @@ import { defineConfig } from 'vite';
 import { targetProfileImporter } from '../../apps/game-capability-lab/assets/plugins/target-profile-importer';
 import { createParticleCodeNativeCookerFromRoots } from '@forgeax/engine-vfx-compiler';
 import { resolveProjectPort } from '@forgeax/engine-devkit';
+import { loadPreviewProjectCookers } from './src/project-cookers.ts';
 import {
   collectAssetDeclarationRoots,
   gameCapabilityAssetRoots,
@@ -206,10 +207,12 @@ export default defineConfig(async ({ command }) => {
   }
   const runtimeBinding = createStandaloneRuntimeAssetBinding('preview');
   const convoyCookers = [];
+  let projectCookers: Awaited<ReturnType<typeof loadPreviewProjectCookers>> | undefined;
   if (packRoots.includes(resolve(game3dRoot, 'assets', 'character.pack.ts'))) {
-    const { createConvoyCooker } = await import('../../templates/game-3d/assets/player/convoy-finish.ts');
-    convoyCookers.push(createConvoyCooker());
+    projectCookers = await loadPreviewProjectCookers(game3dRoot, resolve(monorepoRoot, 'shared-build-inputs', 'ddc'));
+    convoyCookers.push(...projectCookers.session.cookers);
   }
+  try {
   const pack = pluginPack({
       runtimeBinding,
       producerReadiness: readiness.value,
@@ -271,6 +274,7 @@ export default defineConfig(async ({ command }) => {
         } }
       : {}),
   plugins: [
+    ...(projectCookers === undefined ? [] : [projectCookers.plugin]),
     executionWorkerEntries(),
     forgeaxShader({
       // game-default custom materials are authored packs: the pack owns the
@@ -312,4 +316,9 @@ export default defineConfig(async ({ command }) => {
     },
   },
 });
+  } catch (cause) {
+    // Session cleanup must not replace the configuration failure.
+    await projectCookers?.session.dispose().catch(() => undefined);
+    throw cause;
+  }
 });

@@ -297,6 +297,8 @@ export type BakeMapKind =
  * `'*'`, then the defaults: white opaque, roughness 0.5, metallic 0, no emission, intensity 1.
  */
 export interface BakeSlot {
+  /** Linear RGB ID mask color; defaults to the slot-order material palette. */
+  readonly materialId?: readonly [number, number, number];
   readonly baseColor?: readonly [number, number, number, number];
   readonly roughness?: number;
   readonly metallic?: number;

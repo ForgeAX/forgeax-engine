@@ -84,6 +84,28 @@ Source-package production and Vite development request product-only import;
 their shared transport finalizer owns Pack projection, so import does not build
 an additional Pack that those callers discard.
 
+Production Meta imports reuse the existing Pack build-product DDC before import
+and native Cook. The host supplies its sealed build-program identity; the same
+Pack cache owns storage, typed-array encoding, integrity and material generation
+rebinding. No producer identity means ordinary uncached production.
+
+```mermaid
+flowchart LR
+  M["Source plus Meta"] --> K["Pack product DDC lookup"]
+  K -->|miss| I["Import and native Cook"]
+  I --> D["Store complete Pack build product"]
+  K -->|hit| P["Current publication validation"]
+  D --> P
+```
+
+Lookup includes Meta declarations and settings, primary and captured sibling file
+bytes, Engine identity, sealed importer programs and versioned native cookers.
+The prior file roster only discovers inputs to hash; it never replaces current
+byte checks. Import dependency labels can name builtin shaders and are not file
+paths; native cookers retain authority for their complete source identity.
+Missing or corrupt cache evidence falls back to the producer. Every hit still
+checks declared GUID closure and passes through the ordinary publication owner.
+
 Imported materials use the host's registered material cooker before the complete
 source package is published. `produceSourcePackage` accepts the same `cookers`
 as Pack production; Vite forwards its existing registration in dev and build.
@@ -465,6 +487,11 @@ derived data, not Pack or Catalog authority.
 > reuse: serialization, decompression, or cache I/O failure falls back to normal
 > Pack production.
 
+Cache format 10 copies only reachable typed-view bytes into zeroed backing storage and
+normalizes string storage before V8 encoding. Unrelated pooled bytes and V8
+one-byte/two-byte string representations cannot enter SDK publication identity.
+Unobserved backing tails are trimmed. View offsets, shared buffers and explicitly
+reachable ArrayBuffer bytes are preserved.
 Before V8 encoding, equal immutable plain-data subtrees and byte bodies are shared
 within the disposable product representation. Caller-owned publications are not
 mutated; sparse arrays, special scalar values and cyclic/non-POD graphs keep their

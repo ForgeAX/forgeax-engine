@@ -428,77 +428,7 @@ export function ensureMeshSsboCapacity(
   const beforeMesh = recordContext(internals).meshSsboState?.meshSlotCount ?? 0;
   const beforeMaterial = recordContext(internals).meshSsboState?.materialSlotCount ?? 0;
   if (beforeMesh >= neededMeshSlots && beforeMaterial >= neededMaterialSlots) return { ok: true };
-  const result = grow(neededMeshSlots, neededMaterialSlots);
-  if (!result.ok) return result;
-  const after = recordContext(internals).meshSsboState;
-  if (
-    after !== undefined &&
-    (after.meshSlotCount !== beforeMesh || after.materialSlotCount !== beforeMaterial) &&
-    meshSsboDevModeProbe()
-  ) {
-    // biome-ignore lint/suspicious/noConsole: bounded dev-only capacity transition evidence
-    console.info(
-      '[mesh-ssbo] grew mesh slots: %d -> %d (requested=%d); material slots: %d -> %d (requested=%d)',
-      beforeMesh,
-      after.meshSlotCount,
-      neededMeshSlots,
-      beforeMaterial,
-      after.materialSlotCount,
-      neededMaterialSlots,
-    );
-  }
-  return result;
-}
-
-/**
- * Test seam: a closure-local function pointer ensureMeshSsboCapacity reads
- * for the dev-mode gate. Defaults to `isMeshSsboDevMode`; tests swap it out
- * via `setMeshSsboDevModeProbeForTests` because vitest 4.x export bindings
- * are non-writable (ESM spec) and `import.meta.env.DEV` is build-time-frozen
- * by the vite transform — neither `vi.spyOn(recordModule, 'isMeshSsboDevMode')`
- * nor `vi.stubEnv('DEV', false)` toggles it at runtime.
- */
-let meshSsboDevModeProbe: () => boolean = isMeshSsboDevMode;
-
-/**
- * @internal — test-only injection seam for `ensureMeshSsboCapacity`'s
- * dev-mode gate. Pass `undefined` to restore the production probe
- * (`isMeshSsboDevMode`). Production code paths NEVER call this.
- */
-export function setMeshSsboDevModeProbeForTests(probe: (() => boolean) | undefined): void {
-  meshSsboDevModeProbe = probe ?? isMeshSsboDevMode;
-}
-
-/**
- * Dev-mode probe for `ensureMeshSsboCapacity`'s console.info gate
- * (plan-strategy §2.D-3 + AC-11). True when the build is in dev mode:
- *   - `import.meta.env?.DEV` is truthy (vite dev / vitest), OR
- *   - `process.env.NODE_ENV !== 'production'` (esbuild / tsup / dawn-node).
- * Optional-chain keeps it safe in non-vite ESM envs that never inject
- * `import.meta.env` (the chain short-circuits to undefined → falsy).
- *
- * Vite's `import.meta.env.DEV` is constant-folded at build time, so the
- * production bundle dead-code-strips the entire branch even though the
- * test fall-through reads `process.env.NODE_ENV`.
- *
- * @internal — exported as a function (not a const) so unit tests can
- * `vi.spyOn(...).mockReturnValue(false)` to exercise the dev=false path
- * (vitest 4.x cannot toggle `import.meta.env.DEV` at runtime — it is
- * compile-time-frozen by the vite transform).
- */
-export function isMeshSsboDevMode(): boolean {
-  const importMetaDev = (import.meta as { env?: { DEV?: unknown } }).env?.DEV;
-  if (importMetaDev) return true;
-  // Fallback for tsup / esbuild / dawn-node where import.meta.env is absent:
-  // NODE_ENV !== 'production' counts as dev. NODE_ENV unset (undefined)
-  // also counts as dev so test envs without explicit NODE_ENV log too —
-  // production builds always set NODE_ENV='production'. We read process via
-  // globalThis to keep this file @types/node-free (rest of the package is
-  // browser-typed; engine-runtime ships ESM into both browser + dawn-node).
-  const proc = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
-  if (proc !== undefined && proc.env?.NODE_ENV === 'production') return false;
-  if (proc === undefined) return false;
-  return true;
+  return grow(neededMeshSlots, neededMaterialSlots);
 }
 
 // Transform, temporal, surface and Sprite region fit the aligned direct slot.

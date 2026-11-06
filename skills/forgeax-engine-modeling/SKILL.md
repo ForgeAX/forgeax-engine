@@ -129,6 +129,8 @@ materials, textures and text are in [materials](../../packages/modeling/referenc
 unwrapping, automatic charts (`uv.unwrap` / `uv.auto` accept opt-in `refine: 'slim'`), trim sheets, and baking a
 detailed mesh onto a low one are in [uv-bake](../../packages/modeling/reference/uv-bake.md) (example `armor-bake`);
 `cage-clip` and `stray-detail` bake issues now carry clustered findings with a fix `hint`.
+For categorical surface masks, set `BakeSlot.materialId` explicitly and bake `materialId`;
+appearance colors and the repeating default palette do not establish material identity.
 
 **Seeing and verifying.** Render often and look; numbers alone do not reveal a wrong shape.
 `forgeax model render` draws real Engine frames (orthographic sheets, wireframe, overlays,
@@ -145,6 +147,10 @@ in [export](../../packages/modeling/reference/export.md); skinned LODs reduce jo
 Pack's `material/<slot>` outputs to slots of the same name (`materialBinding` reports each slot);
 `model render` also returns `renderer { backend, adapter, software }`; `software` is true on Lavapipe or SwiftShader, so label pixel-only findings from such a render;
 bakes and the full scene show in `forgeax project preview` inside a game project (see `forgeax-engine-cli`).
+An offline recipe producing meshes, materials and processed textures can use `AssetsJob`
+and `assetsJobSources`; register it with `createMeshJobCooker` and forward its `cache` to
+`bakeMaps`. Keep the recipe in the Pack's static import closure; one job serves its declared
+outputs through the existing Pack producer, without a project-owned cache or baked defaults.
 
 ## Failure modes
 

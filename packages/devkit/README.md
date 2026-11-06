@@ -257,6 +257,9 @@ strings; descriptor parser objects remain with the runtime contribution.
 `project check --detail --json` includes `value.uiAuthoringProfile`, the current
 HTML/CSS support table used by UI validation. Read `css.nativeProperties` before
 authoring portable styles; browser-only UI can declare its existing `browserExtensions`.
+`project check` also classifies every declared `*.ui.html` source with the importer's
+rules and fails with `source-validation-failed` and source-located diagnostics, so
+these errors no longer wait for `project build`.
 
 The `forgeax` process prints a compact presentation by default, because agents
 re-read every result on later turns. Envelope fields (`ok`, `command`, `value`,

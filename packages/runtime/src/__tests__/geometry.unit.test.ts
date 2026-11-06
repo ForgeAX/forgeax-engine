@@ -69,11 +69,7 @@ import type {
   PipelineBuilderShaderModuleFactory,
 } from '../../../render/src/pipeline-builder';
 import { buildPipelineForMaterialShader } from '../../../render/src/pipeline-builder';
-import {
-  ensureMeshSsboCapacity,
-  isMeshSsboDevMode,
-  setMeshSsboDevModeProbeForTests,
-} from '../../../render/src/record/mesh-ssbo';
+import { ensureMeshSsboCapacity } from '../../../render/src/record/mesh-ssbo';
 import type { ExtractedFrame } from '../../../render/src/render-system-extract';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
@@ -1553,32 +1549,27 @@ function drawPublished(renderer: RendererType, world: WorldType) {
     });
   });
 
-  // ── T-M3-03: BindGroup cache miss + dev console.info ────────────────────
+  // ── T-M3-03: BindGroup cache invalidation after buffer growth ───────────
   //
   // Anchors:
   //   - requirements §AC-07 (BindGroup cache auto-invalidates after grow —
   // feat-20260622-handle-to-id-allocator-elimination: after grow the
   //   new inner buffer object is a fresh WeakMap chain key → cache miss)
-  //   - requirements §AC-11 (dev mode console.info with `[mesh-ssbo]` prefix)
-  //   - plan-strategy §2.D-3 (import.meta.env?.DEV optional-chain — dawn smoke
-  //     defaults false)
-  //   - plan-strategy §5.3 rows 7-8
 
-  describe('T-M3-03 BindGroup cache miss + dev console.info', () => {
-    beforeEach(() => {
-      vi.restoreAllMocks();
-    });
+  describe('T-M3-03 BindGroup cache invalidation after buffer growth', () => {
     afterEach(() => {
       vi.restoreAllMocks();
     });
 
-    it('(a) inner buffer changes after grow — new WeakMap key → cache miss (AC-07)', () => {
+    it('inner buffer changes after grow — new WeakMap key misses and no debug log is emitted', () => {
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
       const { internals, ctrl } = makeInternalsWithRealController();
       const meshBeforeBuf = ctrl.state.mesh.buffer;
       // Simulate a WeakMap chain root keyed by the pre-grow inner buffer.
       const root = new WeakMap<object, unknown>();
       root.set(meshBeforeBuf as unknown as object, { __leaf: 'bg-old' });
 
+      // Actual slot growth is independent of whether development tooling is present.
       ensureMeshSsboCapacity(internals, 1500, 1500);
 
       const meshAfterBuf = ctrl.state.mesh.buffer;
@@ -1587,78 +1578,6 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // lookup naturally misses — no numeric id needed.
       expect(root.has(meshAfterBuf as unknown as object)).toBe(false);
       expect(root.has(meshBeforeBuf as unknown as object)).toBe(true);
-    });
-
-    it('(b) dev=true (vitest default) → console.info called once with `[mesh-ssbo]` + old + new + requested', () => {
-      // Vitest default env: import.meta.env.DEV === true ⇒ isMeshSsboDevMode() ⇒ true.
-      // (vitest 4.x cannot toggle import.meta.env.DEV at runtime; that path is
-      // build-time-frozen by the vite transform — we exercise dev=false in (c)
-      // via the spyable isMeshSsboDevMode helper.)
-      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
-      const { internals } = makeInternalsWithRealController();
-      ensureMeshSsboCapacity(internals, 1500, 1500);
-      expect(infoSpy).toHaveBeenCalledTimes(1);
-      const args = infoSpy.mock.calls[0] ?? [];
-      const fmt = args[0] as string;
-      expect(typeof fmt).toBe('string');
-      expect(fmt).toContain('[mesh-ssbo]');
-      // The trailing format args carry old / new / requested in some order; assert
-      // all three numeric values are present in the args list.
-      const numericArgs = args.slice(1).filter((a) => typeof a === 'number') as number[];
-      expect(numericArgs).toContain(1024); // old slotCount
-      expect(numericArgs).toContain(2048); // new slotCount (pow2 from 1024 for 1500)
-      expect(numericArgs).toContain(1500); // requested
-    });
-
-    it('(c) dev=false (probe injected) → console.info NOT called', () => {
-      // ESM module bindings are read-only and `import.meta.env.DEV` is
-      // build-time-frozen by the vite transform — neither `vi.spyOn` on the
-      // module namespace nor `vi.stubEnv('DEV', false)` toggles it at runtime
-      // in vitest 4.x. The injection seam `setMeshSsboDevModeProbeForTests`
-      // swaps the closure-local pointer ensureMeshSsboCapacity reads to
-      // exercise the dev=false path deterministically.
-      setMeshSsboDevModeProbeForTests(() => false);
-      try {
-        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
-        const { internals } = makeInternalsWithRealController();
-        ensureMeshSsboCapacity(internals, 1500, 1500);
-        expect(infoSpy).not.toHaveBeenCalled();
-      } finally {
-        setMeshSsboDevModeProbeForTests(undefined);
-      }
-    });
-
-    it('(c-2) isMeshSsboDevMode helper itself returns true under vitest defaults', () => {
-      // Sanity-check the production probe path: under vitest `import.meta.env.DEV`
-      // is `true`, so `isMeshSsboDevMode()` short-circuits true. This locks the
-      // contract that the OR-of-sources logic respects vite's compile-time inject
-      // (the dev=false branch is exercised in (c) via the injection seam).
-      expect(isMeshSsboDevMode()).toBe(true);
-    });
-
-    it('(d) ceiling path — no console.info even with dev=true (only successful grow logs)', () => {
-      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
-      const TIGHT_LIMIT = 256 * 1024;
-      const { device } = makeFakeDevice({
-        maxStorageBufferBindingSize: TIGHT_LIMIT,
-        maxUniformBufferBindingSize: HIGH_LIMIT,
-      });
-      const fireSpy = vi.fn((_e: RuntimeLayerError) => undefined);
-      const ctrl = createMeshSsboGrowController({
-        device: device as unknown as Parameters<typeof createMeshSsboGrowController>[0]['device'],
-        errorRegistry: { fire: fireSpy as unknown as (e: RuntimeLayerError) => void },
-        initialSlotCount: INITIAL_SLOT_COUNT,
-        materialStride: PER_ENTITY_STRIDE,
-        meshUsage: MESH_USAGE,
-        materialUsage: MATERIAL_USAGE,
-      });
-      ctrl.initialBuild();
-      const internals: FakeInternals = {
-        growMeshSsbo: ctrl.growMeshSsbo,
-        meshSsboState: ctrl.state,
-        errorRegistry: { fire: fireSpy as unknown as (e: RuntimeLayerError) => void },
-      };
-      ensureMeshSsboCapacity(internals, 4096, 4096);
       expect(infoSpy).not.toHaveBeenCalled();
     });
   });

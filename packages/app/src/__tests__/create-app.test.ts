@@ -1,91 +1,15 @@
-// M3 / w15: FORGEAX_ENGINE_RHI_DEBUG guard three-segment dual-source evaluation.
-//
-// The canvas-form guard in create-app.ts reads the flag from two sources with a
-// precise precedence + short-circuit shape (plan-strategy D-4):
-//
-//   (typeof import.meta !== 'undefined' && import.meta.env?.FORGEAX_ENGINE_RHI_DEBUG)
-//     ?? globalThis.process?.env?.FORGEAX_ENGINE_RHI_DEBUG
-//
-// That expression is extracted into the pure `resolveRhiDebugFlag` helper so the
-// three deployment scenarios can be exercised without a real bundler / runtime:
-//   (a) browser: import.meta.env replaced by the vite define -> '1' wins
-//   (b) dawn-node: import.meta absent (modelled as undefined env) -> falls
-//       through to globalThis.process.env
-//   (c) unset: neither source carries '1' -> undefined -> guard does not fire
-//
-// C5 (plan-strategy): the `typeof import.meta !== 'undefined'` prefix must
-// short-circuit before any `.env` access, because under dawn-node `import.meta`
-// itself can be undefined; passing `undefined` for the import.meta.env arg is
-// the unit-level model of that prefix evaluating to false.
-//
-// OOS-1/2: only the DevTools-trigger path is in scope; this test does not
-// exercise external HTTP triggers or in-page buttons.
-
 import { World } from '@forgeax/engine-ecs';
 import { Camera, orthographic, perspective } from '@forgeax/engine-render';
 import { describe, expect, it, vi } from 'vitest';
 
 import { syncCanvasDrawingBuffer } from '../browser';
 import { syncCameraAspect } from '../canvas-policy';
-import { resolveRhiDebugFlag } from '../internal/rhi-debug-flag';
 
 describe('create-app.test.ts', () => {
-  describe('resolveRhiDebugFlag three-segment dual-source (w15 / D-4)', () => {
-    it('(a) browser: import.meta.env.FORGEAX_ENGINE_RHI_DEBUG === "1" wins', () => {
-      const flag = resolveRhiDebugFlag(
-        { FORGEAX_ENGINE_RHI_DEBUG: '1' },
-        { FORGEAX_ENGINE_RHI_DEBUG: undefined },
-      );
-      expect(flag).toBe('1');
-    });
-
-    it('(b) dawn-node: import.meta absent -> falls through to process.env', () => {
-      // `undefined` models `typeof import.meta === 'undefined'` short-circuiting
-      // the first operand to a falsy value, so the `??` chain consults process.env.
-      const flag = resolveRhiDebugFlag(undefined, { FORGEAX_ENGINE_RHI_DEBUG: '1' });
-      expect(flag).toBe('1');
-    });
-
-    it('(b2) import.meta.env present but flag unset -> still falls through to process.env', () => {
-      // `import.meta.env` exists (vite always injects it) but the key is absent;
-      // the first operand is `undefined`, so `??` consults process.env.
-      const flag = resolveRhiDebugFlag({}, { FORGEAX_ENGINE_RHI_DEBUG: '1' });
-      expect(flag).toBe('1');
-    });
-
-    it('(c) unset: neither source carries the flag -> undefined (guard does not fire)', () => {
-      expect(resolveRhiDebugFlag(undefined, undefined)).toBeUndefined();
-      expect(resolveRhiDebugFlag({}, {})).toBeUndefined();
-      expect(
-        resolveRhiDebugFlag(
-          { FORGEAX_ENGINE_RHI_DEBUG: undefined },
-          { FORGEAX_ENGINE_RHI_DEBUG: undefined },
-        ),
-      ).toBeUndefined();
-    });
-
-    it('import.meta.env wins over process.env when both set (precedence)', () => {
-      // Browser path takes precedence: the `??` only consults process.env when
-      // the first operand is null/undefined, and '1' is neither.
-      const flag = resolveRhiDebugFlag(
-        { FORGEAX_ENGINE_RHI_DEBUG: '1' },
-        { FORGEAX_ENGINE_RHI_DEBUG: '0' },
-      );
-      expect(flag).toBe('1');
-    });
-
-    it('a non-"1" value is returned verbatim (guard compares === "1" at call site)', () => {
-      // resolveRhiDebugFlag returns the raw flag; the create-app guard does the
-      // `=== '1'` comparison. A '0' value must therefore not be coerced to fire.
-      expect(resolveRhiDebugFlag({ FORGEAX_ENGINE_RHI_DEBUG: '0' }, undefined)).toBe('0');
-    });
-  });
-
   describe('zero-injection when flag unset (c) (w15 / F-3)', () => {
     it('globalThis.__forgeax is undefined before any flagged createApp runs', () => {
-      // With the flag unset (the default unit-test environment: no vite define,
-      // no process.env override), the canvas form never touches globalThis, so
-      // the capture entry point does not exist. A DevTools caller invoking it
+      // The canvas form publishes capture only when the explicit host adapter
+      // supplies a recorder capability. A DevTools caller invoking it
       // would hit a TypeError -- the explicit-failure contract (charter P3).
       const g = globalThis as { __forgeax?: { captureFrame?: unknown } };
       expect(g.__forgeax).toBeUndefined();

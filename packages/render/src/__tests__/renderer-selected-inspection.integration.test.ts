@@ -81,6 +81,7 @@ it('selects status before source inventories while preserving an explicit full d
     const full = renderer.inspect();
     expect(full.renderScene.projectionRecords).toBe(128);
     expect(full.meshMaterialBindings).toHaveLength(1);
+    expect(full.iblBinding).toBeUndefined();
     for (const spy of spies) expect(spy).toHaveBeenCalledOnce();
     const owner = spies[0]?.mock.calls[0]?.[0];
     expect(owner).toBeDefined();

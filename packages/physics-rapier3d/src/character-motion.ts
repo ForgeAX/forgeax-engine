@@ -3,6 +3,7 @@ import {
   CharacterController,
   type CharacterSynchronization,
   Collider,
+  type MoveAndSlideOptions,
   PHYSICS_ERROR_HINTS,
   PhysicsError,
   RigidBodyTypeValue,
@@ -117,4 +118,38 @@ export function characterSynchronizationSource(
       },
     });
   return { state, handle, index, previous };
+}
+
+/** Validate call policy before any native preparation or character mutation. */
+export function characterMovementDeltaTime(
+  options: MoveAndSlideOptions | undefined,
+): number | undefined {
+  const mode = options?.bodyMotion,
+    impulses = options?.applyImpulsesToDynamicBodies,
+    deltaTime = options?.deltaTime;
+  if (mode !== undefined && mode !== 'live' && mode !== 'frozen')
+    throw new PhysicsError({
+      code: 'invalid-body-config',
+      expected: "bodyMotion is 'live', 'frozen', or omitted",
+      hint: 'Select the live or frozen character movement policy.',
+      detail: { code: 'invalid-body-config', field: 'bodyMotion', value: mode },
+    });
+  if (mode === 'frozen' && impulses === true)
+    throw new PhysicsError({
+      code: 'invalid-body-config',
+      expected: 'frozen character movement does not apply dynamic-body impulses',
+      hint: 'Omit applyImpulsesToDynamicBodies or set it to false for frozen movement.',
+      detail: { code: 'invalid-body-config', field: 'applyImpulsesToDynamicBodies', value: true },
+    });
+  if (
+    deltaTime !== undefined &&
+    (mode === 'frozen' || !Number.isFinite(deltaTime) || deltaTime <= 0)
+  )
+    throw new PhysicsError({
+      code: 'invalid-body-config',
+      expected: 'a positive finite live movement interval, or no interval for frozen movement',
+      hint: 'Supply producer deltaTime in seconds for live movement; omit it for frozen movement.',
+      detail: { code: 'invalid-body-config', field: 'deltaTime', value: deltaTime },
+    });
+  return mode === 'frozen' ? 0 : deltaTime;
 }

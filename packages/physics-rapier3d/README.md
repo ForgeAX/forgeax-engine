@@ -32,6 +32,24 @@ Install `physics3d` in the World; game code consumes the optional
 | Handoff | Detached body motion, explicit world pose/velocity writes and dynamic impulses use structured Results. Pose writes queue ordinary writeback; animation/visual blend stays upstream. |
 | Retirement | Constraint leases are idempotent across endpoint removal and backend disposal. Partial native retirement is observable as `managed-physics-failed` with `rebuild-required`; it never reports rollback success. |
 
+The 3D `moveAndSlide` policy `{ bodyMotion: 'frozen' }` resolves the supplied
+character displacement against current geometry while suppressing velocity-driven
+support motion and all dynamic-body impulses. Default/live calls and calls that
+only disable impulses keep ordinary support carry. Live calls may supply positive
+finite `deltaTime` seconds from the displacement producer, controlling support
+motion and dynamic-body impulses without scaling the supplied displacement.
+Omitting it preserves the World timestep. Divide producer time across geometric
+subdivisions; frozen correction legs consume no additional support time.
+Invalid intervals and frozen calls with custom time are rejected before native
+preparation. Frozen calls use zero query time; explicit live intervals temporarily
+replace native query time only during the synchronous KCC computation. The existing
+native-execution guard rejects reentry, and `finally` restores the exact previous
+timestep even if computation throws. No simulation step is performed; frozen
+movement also leaves other bodies untouched. Shape casting, slopes, auto-step,
+ground-snap, penetration recovery and
+character pose/grounded writes remain active. See the
+[3D movement contract](../physics/README.md#character-movement-moveandslide).
+
 Writeback preserves Transform scale and shear and uses live entity generations and
 current table bindings, including table growth and structural moves. Native pose
 records returned by `writebackDynamicBodies()` remain detached caller-owned values.

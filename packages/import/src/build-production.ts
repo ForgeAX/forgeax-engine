@@ -46,11 +46,13 @@ import {
   type ScriptablePackInput,
   type ScriptablePackProductionOptions,
 } from './scriptable-pack-host.js';
+import { createPackBuildProductCache } from './scriptable-pack-product-cache.js';
 import {
   finalizeSourcePackage,
   produceSourcePackage,
   sourcePackageAssetsByGuid,
 } from './source-package.js';
+import type { SourcePackageBuildDdc } from './source-package-build-product.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
 
 export interface BuildProductionFailure {
@@ -90,6 +92,7 @@ export interface BuildProductionOptions {
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
   /** Reuse producer-verified immutable products; publication remains current-generation work. */
   readonly buildCacheRoot?: string;
+  readonly producerIdentity?: string;
   readonly sink: BuildProductionSink;
   readonly fail: (failure: BuildProductionFailure) => Error;
 }
@@ -376,6 +379,7 @@ interface BuildEmissionWork {
   readonly importedEntries: PackIndexEntry[];
   readonly context: BuildProductionOptions;
   readonly sharedMaterialPrograms: Set<string>;
+  readonly sourcePackageDdc?: SourcePackageBuildDdc;
 }
 
 interface PackEmissionOptions {
@@ -742,6 +746,7 @@ async function emitBuildEntry(
     registry: work.context.importerRegistry,
     fs: work.context.fsForImport,
     cookers: work.context.cookers,
+    ...(work.sourcePackageDdc === undefined ? {} : { ddc: work.sourcePackageDdc }),
   });
   if (!sourcePackage.ok) throw work.context.fail(sourcePackage.error);
   const ownerFinalizer = work.context.importerRegistry.get(runMeta.importer)?.finalize;
@@ -802,7 +807,29 @@ export async function produceBuildAssets(
   const availableGuids = new Set(entries.map((entry) => entry.guid.toLowerCase()));
   const importedEntries = [...entries];
   const guidSeen = new Set<string>();
-  const work: BuildEmissionWork = { importedEntries, context, sharedMaterialPrograms: new Set() };
+  const products =
+    context.buildCacheRoot === undefined || context.producerIdentity === undefined
+      ? undefined
+      : await createPackBuildProductCache({
+          root: context.buildCacheRoot,
+          identityRoot: context.cwd,
+          outputVersions: { 'meta-source-package': '1' },
+          cookers: context.cookers,
+        });
+  const work: BuildEmissionWork = {
+    importedEntries,
+    context,
+    sharedMaterialPrograms: new Set(),
+    ...(products === undefined
+      ? {}
+      : {
+          sourcePackageDdc: {
+            products,
+            producerIdentity: `${context.producerIdentity}:${products.producerIdentity}`,
+            identityRoot: context.cwd,
+          },
+        }),
+  };
   // Emission owns the remaining queue. Published payloads no longer need to
   // survive while subsequent Packs are cooked; Catalog rows live in entries.
   for (let bundle = dynamicBundles.shift(); bundle !== undefined; bundle = dynamicBundles.shift()) {

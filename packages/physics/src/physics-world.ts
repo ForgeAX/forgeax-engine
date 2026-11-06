@@ -54,10 +54,23 @@ export interface RaycastHit {
 }
 
 /** Per-call policy for 3D character movement; the character itself still moves. */
-export interface MoveAndSlideOptions {
-  /** Apply native contact impulses to dynamic bodies. Defaults to true. */
-  readonly applyImpulsesToDynamicBodies?: boolean;
-}
+export type MoveAndSlideOptions =
+  | {
+      /** Include current support motion. This is the default live policy. */
+      readonly bodyMotion?: 'live';
+      /** Positive finite producer interval in seconds. Omit to use the World timestep. */
+      readonly deltaTime?: number;
+      /** Apply native contact impulses to dynamic bodies. Defaults to true. */
+      readonly applyImpulsesToDynamicBodies?: boolean;
+    }
+  | {
+      /** Resolve current geometry without integrating other bodies' motion. */
+      readonly bodyMotion: 'frozen';
+      /** Frozen movement consumes no time; custom intervals are invalid. */
+      readonly deltaTime?: never;
+      /** Frozen movement never applies impulses to other bodies. */
+      readonly applyImpulsesToDynamicBodies?: false;
+    };
 
 /** Synchronous 3D character handoff; gravity and stance decisions remain game-owned. */
 export interface CharacterSynchronization {
@@ -201,13 +214,18 @@ export interface PhysicsWorld {
    *
    * Tuning (offset / slope / auto-step / ground-snap) is read from the
    * `CharacterController` component each call. The optional call policy can
-   * suppress impulses on other dynamic bodies; it does not suppress this
+   * suppress impulses on other dynamic bodies. The explicit frozen policy also
+   * ignores velocity-driven motion from other bodies and forces impulses off;
+   * current geometric collision response remains active. Neither policy suppresses this
    * character's pose/collider/grounded writes and is not a non-mutating query.
-   * There is no `dt` parameter (the delta already encodes elapsed time).
+   * Live `options.deltaTime` sets the producer interval for support motion and
+   * impulses; desiredDelta already encodes active movement and is never scaled.
+   * Omit it to use the World timestep. Split that interval across geometric
+   * subdivisions; frozen correction legs consume no additional body-motion time.
    *
    * @param entity       the character entity (kinematic RigidBody + Collider + CharacterController).
    * @param desiredDelta the requested world-space displacement for this step.
-   * @param options      optional per-call dynamic-body impulse policy; defaults to applying impulses.
+   * @param options      optional 3D producer time, body-motion and dynamic-body impulse policy.
    * @returns the actual displacement applied after collision resolution.
    * @throws PhysicsError `body-not-found` if the entity has no Rapier body,
    *   `collider-not-found` if the body has no collider,

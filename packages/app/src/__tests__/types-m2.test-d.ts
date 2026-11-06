@@ -22,7 +22,7 @@
 
 import type { RendererOptions } from '@forgeax/engine-render';
 import { describe, expectTypeOf, it } from 'vitest';
-import type { BundlerOptions, CreateAppOptions } from '../index';
+import type { AppAssembleArgs, AppHostAdapter, BundlerOptions, CreateAppOptions } from '../index';
 
 describe('RendererOptions surface after M2 (AC-06)', () => {
   it('RendererOptions does not carry `shaderManifestUrl`', () => {
@@ -51,6 +51,21 @@ describe('BundlerOptions surface (AC-13)', () => {
   it('BundlerOptions accepts the empty literal (all fields optional)', () => {
     const bundler: BundlerOptions = {};
     void bundler;
+  });
+});
+
+describe('App host adapter boundary', () => {
+  it('extends renderer build inputs with explicit host capabilities', () => {
+    const adapter: AppHostAdapter = {
+      shaderManifestUrl: '/shaders/manifest.json',
+      remoteServe: true,
+    };
+    expectTypeOf<AppHostAdapter['remoteServe']>().toEqualTypeOf<boolean | undefined>();
+    void adapter;
+  });
+
+  it('exposes remote startup as an explicit assemble host fact', () => {
+    expectTypeOf<AppAssembleArgs['remoteServe']>().toEqualTypeOf<boolean | undefined>();
   });
 });
 

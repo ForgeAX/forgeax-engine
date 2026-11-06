@@ -9,6 +9,7 @@ import { encodePlanarReflectionUniform } from '../capture/planar-uniform';
 import { PlanarReflectionInvalidError } from '../components/planar-reflection';
 import type { ProjectedDecalInvalidError } from '../decals/component';
 import { directMorphGeometry } from '../device/morph-geometry';
+import { viewFogIsActive } from '../environment/frame';
 import type { FogFrame } from '../extract/environment';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import { EMPTY_MATERIAL_BINDINGS } from '../gpu-driven/material-bindings';
@@ -2556,6 +2557,7 @@ export function sealFrameGraph(
     skyboxActive,
     skybox,
     splitLdrSprite,
+    viewFog: viewFogIsActive(analyticFog, frameState.environmentFrame),
     msaaActive,
     postProcessParams: framePostProcessParams,
     ...shaderSourcePassContext(internals),

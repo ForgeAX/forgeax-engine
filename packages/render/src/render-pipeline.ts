@@ -34,6 +34,7 @@ import type {
   RhiCaps,
   RhiError,
   RhiRenderPassEncoder,
+  RenderPipeline as RhiRenderPipeline,
   Texture,
   TextureFormat,
   TextureView,
@@ -586,6 +587,12 @@ export interface GpuDrivenStandardPbrFrameResources {
   prepareMaterialBinding(
     slot: number,
   ): { readonly group: BindGroup; readonly byteOffset: number } | undefined;
+  /** Record the selected material pipeline only when its indirect draw is encoded. */
+  recordMaterialPipelineBinding?: (
+    slot: number,
+    pipeline: RhiRenderPipeline,
+    group: BindGroup,
+  ) => void;
   /** Frame-global material slots keyed by shared binding and its physical resource class. */
   materialSlotIndicesByBinding: import('./record/fold-buckets').MaterialBindingSlots;
   /** The current pass selects material membership and attachment formats. */

@@ -224,14 +224,14 @@ events, and pose sampling still advance normally. Comparing the current columns
 also restores external author edits without a second pose cache. Normal scene
 propagation then computes world transforms.
 
-Development diagnostics are structured objects with `code`, `hint`, and
-`detail`. They skip only the malformed channel or target and let valid sibling
-players continue. `console.warn` aggregates repeated channel failures by player,
-target, and reason. `subscribeAnimationDiagnostics(listener)` separately emits
-each unique player/clip/channel/target/reason fact so editor diagnostics can
-group and locate failures without parsing console text. The subscription is a
-read-only observation seam, not a queue or ECS resource. Production builds
-silently skip malformed entries without emitting these diagnostics.
+Animation diagnostics are structured objects with `code`, `hint`, and `detail`.
+They skip only the malformed channel or target and let valid sibling players
+continue. `subscribeAnimationDiagnostics(listener)` observes each unique
+player/clip/channel/target/reason fact, independent of host or build mode. The
+subscription is a read-only observation seam, not a queue or ECS resource; the
+listener owns presentation or logging. Without a listener, diagnostic-only
+slot-coverage work is skipped. Playback clocks, events, and valid channel
+sampling continue unchanged in every host environment.
 
 ## Error recovery
 

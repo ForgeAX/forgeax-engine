@@ -1,9 +1,7 @@
-import { createBakeCooker, hash2, mipChain, valueNoise, type BakeMapKind } from '@forgeax/engine/modeling';
+import { CONVOY_SURFACE_IDS } from './convoy-surfaces.ts';
+import { hash2, mipChain, valueNoise } from '@forgeax/engine/modeling';
 import type { TextureAsset } from '@forgeax/engine/types';
-import { type ConvoyFinish, convoyFinishKey, readConvoyFinish, writeConvoyFinish } from './convoy-finish-cache.ts';
 
-export const CONVOY_FINISH_KIND = 'game-3d-convoy-finish';
-export const CONVOY_FINISH_VERSION = 'convoy-surface/6';
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
 const byte = (n: number) => Math.round(clamp(n) * 255);
 
@@ -37,15 +35,8 @@ export function convoyHardwareTextures(): Record<string, TextureAsset> {
   };
 }
 
-function finishSurface(color: Uint8Array, ormh: Uint8Array, emission: Uint8Array, i: number) {
-  const [r, g, b] = [color[i]! / 255, color[i + 1]! / 255, color[i + 2]! / 255];
-  const glowing = emission[i]! + emission[i + 1]! + emission[i + 2]! > 0;
-  const painted = !glowing && ((r > g * 1.7 && r > b * 1.5) || (b > r * 1.7 && b > g * 1.6));
-  const metal = ormh[i + 2]! > 140;
-  const glass = !painted && !metal && b > r * 1.6 && g > r * 1.5 && !glowing;
-  const rubber = !metal && !painted && !glass && Math.max(r, g, b) < 0.12;
-  return { painted, metal, glass, rubber };
-}
+const surfaceKey = (r: number, g: number, b: number) => r | (g << 8) | (b << 16);
+const surfaceFamilies = new Map(Object.entries(CONVOY_SURFACE_IDS).map(([family, color]) => [surfaceKey(...color.map(value => value * 255) as [number, number, number]), family]));
 
 function blendMicroNormal(normal: Uint8Array, i: number, dx: number, dy: number) {
   // Reoriented normal mapping layers microfinish over the actual baked high surface.
@@ -86,10 +77,12 @@ export function finishConvoyTextures(maps: Readonly<Record<string, TextureAsset>
   const color = pixels('baseColor').slice(), ormh = pixels('ormh').slice();
   const coat = new Uint8Array(color.length), normal = pixels('normal').slice();
   const width = maps.baseColor!.shape.extent.width;
-  const emission = pixels('emissive');
+  const ids = pixels('materialId');
   const position = pixels('position'), wear = pixels('edgeWear'), cavity = pixels('cavity');
   for (let i = 0; i < color.length; i += 4) {
-    const { painted, metal, glass, rubber } = finishSurface(color, ormh, emission, i);
+    const family = surfaceFamilies.get(surfaceKey(ids[i]!, ids[i + 1]!, ids[i + 2]!));
+    if (family === undefined) throw new Error('Unknown Convoy material family ID');
+    const painted = family === 'painted', metal = family === 'metal', glass = family === 'glass', rubber = family === 'rubber';
     const pixel = i / 4, px = pixel % width, py = Math.floor(pixel / width);
     const grit = hash2(px, py, 17);
     const brushed = valueNoise(px * 0.035, py, 1, 31);
@@ -120,48 +113,4 @@ export function finishConvoyTextures(maps: Readonly<Record<string, TextureAsset>
     coat: { ...maps.ormh!, data: coat },
   };
   return deliveryMips(raw);
-}
-
-/** One Engine bake job, then deterministic paint/roughness/coat and delivery mips. */
-export function createConvoyCooker(): ReturnType<typeof createBakeCooker> {
-  const baker = createBakeCooker();
-  const pending = new Map<string, Promise<ConvoyFinish>>();
-  let previous: { signature: string; value: ConvoyFinish } | undefined;
-  return {
-    key: CONVOY_FINISH_KIND, timeoutMs: 180000,
-    cacheIdentity: async () => `${await baker.cacheIdentity?.()}:${CONVOY_FINISH_VERSION}`,
-    async cook(input, context) {
-      const { finishMap, ...provided } = input.source as Record<string, unknown>;
-      const source: Record<string, unknown> = { ...provided, params: structuredClone(provided.params) };
-      const signature = convoyFinishKey([await baker.cacheIdentity?.(), CONVOY_FINISH_VERSION, source.base, source.detail, source.params]);
-      let job = pending.get(signature);
-      if (job === undefined) {
-        job = previous?.signature === signature ? Promise.resolve(previous.value) : (async () => {
-          const restored = readConvoyFinish(context?.cache, signature);
-          if (restored !== undefined) return restored;
-          const maps: Record<string, TextureAsset> = {}, facts: ConvoyFinish['facts'] = {};
-          for (const map of (source.params as { maps: BakeMapKind[] }).maps) {
-            const { payload, guid: _guid, ...fact } = await baker.cook({ ...input, source: { ...source, map, mips: false } }, context);
-            maps[map] = payload;
-            facts[map] = fact;
-          }
-          const value = { textures: finishConvoyTextures(maps), facts };
-          writeConvoyFinish(context?.cache, signature, value);
-          return value;
-        })();
-        pending.set(signature, job);
-      }
-      try {
-        const value = await job;
-        // Retain one completed atlas; in-flight recipes coalesce independently.
-        previous = { signature, value };
-        const map = typeof finishMap === 'string' ? finishMap : String(source.map);
-        if (!Object.hasOwn(value.textures, map)) throw new Error(`Unknown convoy finish map: ${map}`);
-        const fact = value.facts[String(source.map)]!;
-        return { ...fact, guid: input.guid, payload: value.textures[map]!, inputFingerprint: `${fact.inputFingerprint}:${CONVOY_FINISH_VERSION}:${map}` };
-      } finally {
-        if (pending.get(signature) === job) pending.delete(signature);
-      }
-    },
-  };
 }

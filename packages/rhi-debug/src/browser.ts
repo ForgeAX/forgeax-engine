@@ -165,7 +165,7 @@ async function request(
     return err({
       code: 'browser-capture-transport-unavailable',
       expected: 'the configured RHI tape endpoint to accept a browser upload',
-      hint: 'start the Vite RHI-debug transport or provide a reachable endpoint; a retried upload resumes',
+      hint: 'make the configured RHI tape endpoint reachable; retrying the upload resumes from held chunks',
       detail: { endpoint, stage },
     });
   }

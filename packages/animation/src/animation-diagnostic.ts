@@ -48,11 +48,9 @@ export function subscribeAnimationDiagnostics(listener: AnimationDiagnosticListe
   return () => listeners.delete(listener);
 }
 
-/** @internal */
-export function isAnimationDevMode(): boolean {
-  const proc = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
-  if (proc?.env?.NODE_ENV === 'production') return false;
-  return Boolean((import.meta as { env?: { DEV?: unknown } }).env?.DEV) || proc !== undefined;
+/** @internal Diagnostic-only aggregate work is needed only for an observer. */
+export function hasAnimationDiagnosticSubscribers(): boolean {
+  return listeners.size > 0;
 }
 
 export function emitAnimationDiagnostic(
@@ -60,7 +58,7 @@ export function emitAnimationDiagnostic(
   detail: AnimationDiagnosticDetail,
   hint: string,
 ): void {
-  if (!isAnimationDevMode()) return;
+  if (listeners.size === 0) return;
   let emitted = emittedKeysByWorld.get(world);
   if (emitted === undefined) {
     emitted = new Set();
@@ -83,11 +81,4 @@ export function emitAnimationDiagnostic(
       // Diagnostics must never break animation evaluation.
     }
   }
-
-  console.warn(frozen);
-}
-
-/** @internal */
-export function _resetAnimationWarnsForTests(world: World): void {
-  emittedKeysByWorld.delete(world);
 }

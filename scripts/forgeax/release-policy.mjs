@@ -47,14 +47,18 @@ export function assertSuccessfulCandidateRun(run, expectedRunId) {
     throw new Error('release-candidate-run-not-successful');
 }
 
-/** The next development version continues the current `next` sequence on the next minor. */
+/** Continue the published development line, at least one minor beyond stable. */
 export function developmentVersion(stable, currentNext, source) {
   if (releasePolicy(stable).channel !== 'stable' || !/^[0-9a-f]{40}$/.test(source)) {
     throw new Error('release-development-baseline-invalid');
   }
   const [major, minor] = stable.split('.');
-  const core = `${major}.${BigInt(minor) + 1n}.0`;
+  const minimum = [BigInt(major), BigInt(minor) + 1n, 0n];
   const previous = currentNext === undefined ? undefined : parse(currentNext);
+  const core =
+    previous?.policy.channel === 'next' && compareCore(previous.core, minimum) > 0
+      ? previous.core.join('.')
+      : minimum.join('.');
   const sequence =
     previous?.policy.channel === 'next' && currentNext.startsWith(`${core}-dev.`)
       ? BigInt(previous.sequence) + 1n

@@ -234,10 +234,35 @@ describe('native build root process', () => {
     await first.dispose();
     const second = await loadProjectCookers(facts, [], {}, { buildCacheRoot });
     sessions.push(second);
+    expect(first.producerIdentity).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(second.producerIdentity).toBe(first.producerIdentity);
     expect(await cook(second, 'fixture-a')).toEqual({ seen: [9, 7], cache: true });
     const storeless = await loadProjectCookers(facts, []);
     sessions.push(storeless);
     expect(await cook(storeless, 'fixture-a')).toEqual({ seen: null, cache: false });
+  }, 30_000);
+
+  it('invalidates the sealed producer identity for plugin configuration and code changes', async () => {
+    const facts = await fixture('export default { apply() {} };');
+    const identity = async () => {
+      const session = await loadProjectCookers(facts, []);
+      sessions.push(session);
+      const value = session.producerIdentity;
+      await session.dispose();
+      return value;
+    };
+    const first = await identity();
+    const declaration = resolve(facts.root, 'assets/build.pack.json');
+    const pack = JSON.parse(await readFile(declaration, 'utf8'));
+    pack.assets['plugin/build'].payload.config = { importVariant: 2 };
+    await writeFile(declaration, JSON.stringify(pack));
+    const configured = await identity();
+    expect(configured).not.toBe(first);
+    await writeFile(
+      resolve(facts.root, 'assets/build.ts'),
+      'export default { apply() { globalThis.fixtureProducerVersion = 2; } };',
+    );
+    expect(await identity()).not.toBe(configured);
   }, 30_000);
 
   it('rejects a builtin key collision and leaves no build process artifacts', async () => {

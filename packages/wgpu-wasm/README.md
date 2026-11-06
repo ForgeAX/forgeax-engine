@@ -76,6 +76,11 @@ Browser bundles may inline the provenance manifest as a data URL. The loader
 decodes its embedded bytes directly, including base64 and percent encoding,
 without requiring `connect-src data:`. External manifests still use fetch, and
 both transports retain the same WASM, glue and compiler-fingerprint checks.
+The package build copies `pkg/wgpu_wasm.js` byte-for-byte to
+`dist/wgpu_wasm_glue.bytes`; browser and Node loaders verify those bytes against
+the published glue digest. Browser bundlers may emit this resource as a data URL
+or a static asset, and the loader reads either form without parsing a transformed
+JavaScript module response.
 The production CSP browser regression builds both forms and initializes the
 real WASM in a Worker while the host policy rejects data-URL fetches.
 

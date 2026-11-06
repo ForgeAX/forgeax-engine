@@ -12,6 +12,7 @@ import type {
   FogFrame,
 } from '../extract/environment';
 import {
+  fogIsActive,
   freezeAtmosphere,
   validateAtmosphereParameters,
   validateFogParameters,
@@ -122,6 +123,17 @@ export function selectFog(
   const selected = selectFogCandidate(fogs);
   if (!selected.ok) return selected;
   return ok(selected.value === undefined ? undefined : freezeFog(selected.value));
+}
+
+/** Media that can change a forward surface's camera-to-surface color. */
+export function viewFogIsActive(
+  fog: FogFrame | undefined,
+  environment: EnvironmentFrame | undefined,
+): boolean {
+  return (
+    (fog !== undefined && fogIsActive(fog)) ||
+    (environment?.source.kind === 'atmosphere' && !environment.source.atmosphere.backgroundOnly)
+  );
 }
 
 /** Select one immutable frame fact set for every Standard lighting path. */

@@ -317,7 +317,7 @@ const gltfErrorPolicy = {
   },
   'gltf-texture-load-failed': {
     expected: 'externalLoader resolved the URI into an ArrayBuffer without throwing',
-    hint: 'check sidecar meta.json + textures/ directory + vite-plugin-pack /__pack/lookup route',
+    hint: 'check the source texture URI, sidecar metadata, and configured externalLoader resource mapping',
   },
   'gltf-meta-missing': {
     expected: "sidecar <source>.meta.json (importer: 'gltf') present in same directory",

@@ -29,6 +29,7 @@ export interface ProjectCookers {
   readonly cookers: readonly NativeCooker[];
   readonly importers: readonly Importer[];
   readonly watchFiles: ReadonlySet<string>;
+  readonly producerIdentity?: string;
   runTool?(id: string, args: unknown, options?: ToolRunOptions): Promise<ToolTerminal<unknown>>;
   dispose(): Promise<void>;
 }
@@ -333,6 +334,7 @@ export async function loadProjectCookers(
       delivery: started.delivery,
       cookers: [...builtins, ...remote],
       importers,
+      producerIdentity: compiled.producerIdentity,
       watchFiles,
       dispose,
       runTool(tool, args, options = {}) {

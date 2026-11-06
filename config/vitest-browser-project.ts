@@ -361,13 +361,9 @@ export function createBrowserProject() {
                   return ['--use-webgpu-adapter=swiftshader'];
                 return [argument];
               }),
-              // CI deliberately selects software. Cold submissions can exceed
-              // Chromium's GPU watchdog; the unchanged test deadlines bound them.
+              // Shared launch policy owns the software GPU watchdog setting.
               ...(process.env.CI
-                ? [
-                    ...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader']),
-                    '--disable-gpu-watchdog',
-                  ]
+                ? [...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader'])]
                 : []),
             ],
           },

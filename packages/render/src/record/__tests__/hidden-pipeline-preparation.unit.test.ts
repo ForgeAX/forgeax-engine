@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-shader';
 import { expect, it, vi } from 'vitest';
 import type { DispatchEntry } from '../../render-system-extract';
+import { prepareMainPassPipelines } from '../main-pass';
 import { recordGeometryDraws } from '../main-pass-geometry';
 import { prepareShadowMaterialPipelines } from '../shadow-pass';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
@@ -32,6 +33,39 @@ const pass = (mode = 'Forward'): Omit<DispatchEntry, 'entityIndex' | 'renderable
   materialShaderId: 'test::prepared',
   vertexEntry: 'vertex',
   fragmentEntry: 'fragment',
+});
+
+it.each([
+  { fog: false, fragment: 'fs_opaque' },
+  { fog: true, fragment: undefined },
+  { fog: undefined, fragment: undefined },
+])('selects the transparent preparation entry from the view medium (fog=$fog)', async ({
+  fog,
+  fragment,
+}) => {
+  const f = await setup();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  Object.assign(f.authoredPass, {
+    fragmentEntry: undefined,
+    renderState: {
+      blend: {
+        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+      },
+    },
+  });
+  f.entry.source.material.adopt({ ...f.entry.source.material.snapshot, transparent: true });
+  Object.assign(f.c, { viewFog: fog });
+  f.acceptMaterials();
+  try {
+    prepareMainPassPipelines(f.c, { LightMode: ['Forward'] }, { recordMode: 'transparent' }, 1, [
+      'rgba16float',
+    ]);
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(lookup.mock.calls[0]?.[19]).toBe(fragment);
+  } finally {
+    f.dispose();
+  }
 });
 async function setup() {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -234,6 +268,35 @@ it('prepares only authored ShadowCaster passes through validated module readines
     prepareShadowMaterialPipelines(f.c, true, () => false);
     expect(f.c.frameState.pipelinePreparationPending).toBe(false);
     expect(f.entry.source.authorVisible).toBe(false);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('separates receiver and nonreceiver PSOs sharing a program during preparation', async () => {
+  const f = await setup();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  const nonreceiver = f.add({ entity: 2, submeshes: 1 });
+  Object.assign(nonreceiver.source, {
+    authorVisible: false,
+    shadowReceiver: false,
+    pipelinePreparation: [f.authoredPass],
+  });
+  nonreceiver.source.material.adopt({
+    ...nonreceiver.source.material.snapshot,
+    materialShaderId: 'test::prepared',
+  });
+  Object.assign(f.c, { pipelinePreparationEntries: [f.entry, nonreceiver] });
+  Object.assign(f.c.runtime, {
+    getMaterialShaderArtifact: () =>
+      artifactFor(
+        createMaterialShaderProgram('@id(64002) override standardShadowReception: u32 = 1u;'),
+      ),
+  });
+  try {
+    f.encode();
+    expect(lookup.mock.calls.map((call) => call[21])).toEqual([{ '64002': 1 }, { '64002': 0 }]);
+    expect(f.receipts).toEqual([]);
   } finally {
     f.dispose();
   }

@@ -66,6 +66,11 @@ further state queries and the repair owner.
 
 ## View development and host validation
 
+Custom Preview hosts use `readProjectFacts` from `@forgeax/engine-devkit` and
+`loadProjectCookers` from its `plugin-build` subpath to activate the selected project's build root.
+Include the session's `watchFiles` in source-change handling and await `dispose()`
+on shutdown or failed startup.
+
 Select the [View operating mode](../../tools/forgeax-mcp/README.md#view-operating-modes)
 before starting services. Default interface development, human review and browser
 annotations to platform independent View; hand off its actual View/project URL.

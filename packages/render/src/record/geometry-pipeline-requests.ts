@@ -31,6 +31,7 @@ import {
   transformRenderState,
 } from '../material-render-state';
 import {
+  effectiveStandardShadowReception,
   effectiveStandardSurfaceDiscards,
   materialAbiRasterConstants,
   standardSurfaceDiscardMask,
@@ -68,7 +69,7 @@ type DirectSurfaceLayoutKind = 'surface-direct-pbr' | 'surface-direct-cluster-pb
 type MaterialPipelineLookup = {
   readonly materialShaderId: string;
   readonly isHdrTarget: boolean;
-  readonly renderStateKey: string;
+  readonly shadowReceiver: boolean;
   readonly topology: PrimitiveTopology;
   readonly indexFormat: 'uint16' | 'uint32';
   readonly variantSet: string | undefined;
@@ -239,6 +240,7 @@ export interface GeometryPipelineRequestContext {
   readonly capturedAtmosphere: boolean;
   readonly reflectionFallbackColorFormat: GPUTextureFormat | undefined;
   readonly translucentFog: boolean;
+  readonly viewFog?: boolean | undefined;
   readonly splitLdrSprite: boolean;
   readonly transparentColorFormat: GPUTextureFormat | undefined;
   readonly warnedNineSliceScaleEntities: Set<number>;
@@ -255,6 +257,7 @@ export function geometryPipelineRequestContext(
     | 'capturedAtmosphere'
     | 'reflectionFallbackColorFormat'
     | 'translucentFog'
+    | 'viewFog'
     | 'splitLdrSprite'
     | 'transparentColorFormat'
     | 'frameState'
@@ -269,6 +272,7 @@ export function geometryPipelineRequestContext(
     capturedAtmosphere: c.capturedAtmosphere !== undefined,
     reflectionFallbackColorFormat: c.reflectionFallbackColorFormat,
     translucentFog: c.translucentFog === true,
+    viewFog: c.viewFog,
     splitLdrSprite: c.splitLdrSprite,
     transparentColorFormat: c.transparentColorFormat,
     warnedNineSliceScaleEntities: c.frameState.warnedNineSliceScaleEntities,
@@ -334,6 +338,7 @@ export function createGeometryPipelineRequests(
     textureMask?: number,
     layoutKind?: DirectSurfaceLayoutKind,
     pipelinePreparation = false,
+    shadowReceiver = true,
   ): MaterialShaderPipelineEntry | null => {
     const baseVariantSet = withCoverageVariant(variantSet);
     // Skinned Standard has no visible-surface variant: deformed draws publish no
@@ -389,7 +394,7 @@ export function createGeometryPipelineRequests(
       for (const cached of cachedLookups) {
         if (
           cached.isHdrTarget === isHdrTarget &&
-          cached.renderStateKey === renderStateKey &&
+          cached.shadowReceiver === shadowReceiver &&
           cached.topology === topology &&
           cached.indexFormat === indexFormat &&
           cached.variantSet === pipelineVariantSet &&
@@ -465,6 +470,7 @@ export function createGeometryPipelineRequests(
             shaderArtifact,
             standardSurfaceDiscardMask(false, (c.clipping?.planes.length ?? 0) > 0),
           ),
+          effectiveStandardShadowReception(shaderArtifact, shadowReceiver),
         ),
       ) ?? null;
     const handle = profile(resolvePipeline);
@@ -479,7 +485,7 @@ export function createGeometryPipelineRequests(
       const nextLookup: MaterialPipelineLookup = {
         materialShaderId,
         isHdrTarget,
-        renderStateKey,
+        shadowReceiver,
         topology,
         indexFormat,
         variantSet: pipelineVariantSet,
@@ -641,6 +647,7 @@ export function createGeometryPipelineRequests(
         submeshMaterial.standardTextureMask,
         undefined,
         pipelinePreparation,
+        entry.source.shadowReceiver !== false,
       );
       materialPipelineEntry = unlitRsp;
       smPipelineHandle =
@@ -733,6 +740,7 @@ export function createGeometryPipelineRequests(
             : 'surface-direct-pbr'
           : undefined,
         pipelinePreparation,
+        entry.source.shadowReceiver !== false,
       );
       // feat-20260615-pipeline-spec-ssot M6-T1: cache miss resolves to
       // null uniformly across URP / HDRP / skin shaders. Charter P3

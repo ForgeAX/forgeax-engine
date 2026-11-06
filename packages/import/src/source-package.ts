@@ -12,6 +12,11 @@ import { err, ok } from '@forgeax/engine-types';
 import type { ImportRunnerFs, RunImportMeta } from './import-runner.js';
 import { runImport } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
+import {
+  persistSourcePackageBuildProduct,
+  prepareSourcePackageBuildProduct,
+  type SourcePackageBuildDdc,
+} from './source-package-build-product.js';
 
 export type ProducerReadiness = 'before-consume' | 'on-demand';
 
@@ -46,6 +51,7 @@ export interface SourcePackageProducerInput {
   readonly registry: ImporterRegistry;
   readonly fs: ImportRunnerFs;
   readonly cookers?: readonly NativeCooker[];
+  readonly ddc?: SourcePackageBuildDdc;
 }
 
 export interface SourcePackageClosureDetail {
@@ -147,12 +153,25 @@ export async function produceSourcePackage(
   const declaredGuids = input.meta.subAssets.map((asset) => asset.guid);
   const cookers = new NativeCookerRegistry();
   for (const cooker of input.cookers ?? []) cookers.register(cooker);
-  const result = await runImport(
-    { ...input.meta, buildPack: false },
-    input.registry,
-    input.fs,
-    cookers,
-  );
+  const prepared =
+    input.ddc === undefined
+      ? undefined
+      : await prepareSourcePackageBuildProduct(input.meta, input.fs, input.ddc).catch(
+          () => undefined,
+        );
+  const cached =
+    prepared === undefined
+      ? undefined
+      : await input.ddc?.products.read(prepared.subject).catch(() => undefined);
+  const result =
+    cached === undefined
+      ? await runImport(
+          { ...(prepared?.meta ?? input.meta), buildPack: false },
+          input.registry,
+          prepared?.fs ?? input.fs,
+          cookers,
+        )
+      : ok({ product: cached.product });
   if (!result.ok) {
     // Only output-topology failures describe GUID closure. Preserve the owning
     // import error for missing modules, unreadable sources and conversion failures.
@@ -181,6 +200,7 @@ export async function produceSourcePackage(
   if (!complete) return { ok: false, error: closureError(declaredGuids, producedGuids) };
 
   const product = result.value.product;
+  if (cached === undefined) await persistSourcePackageBuildProduct(input.ddc, prepared, product);
   const anchorGuid = [...declaredGuids].sort((left, right) => left.localeCompare(right))[0];
   if (anchorGuid === undefined)
     return { ok: false, error: closureError(declaredGuids, producedGuids) };

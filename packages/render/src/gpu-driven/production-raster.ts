@@ -13,6 +13,7 @@ import type {
   Result,
   RhiDevice,
   RhiRenderPassEncoder,
+  RenderPipeline as RhiRenderPipeline,
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
@@ -189,6 +190,7 @@ import {
   classOwner,
   materialOwner,
   type RetainedPassEncode,
+  type RetainedRasterBlock,
   RetainedRasterEncodes,
   runFacts,
 } from './retained-raster-encode';
@@ -698,7 +700,7 @@ function bindMaterialSlot(
   batch: ProjectedRasterClass,
   frameResources: GpuDrivenStandardPbrFrameResources,
   globalMaterialSlot: number,
-): void {
+): { readonly group: BindGroup; readonly byteOffset: number } {
   const prepared = frameResources.prepareMaterialBinding(globalMaterialSlot);
   if (prepared === undefined) {
     throw new RhiError({
@@ -710,6 +712,7 @@ function bindMaterialSlot(
   bindings.observeRunMaterial(globalMaterialSlot, prepared.group, prepared.byteOffset);
   const offset = batch.artifact.program.materialUniformRequired === false ? 0 : prepared.byteOffset;
   bindings.bindMaterial(prepared.group, offset);
+  return prepared;
 }
 
 function shadowViewPass(
@@ -2366,6 +2369,8 @@ export class GpuDrivenProduction {
       if (reused !== undefined) {
         bindings.replayRun(reused, this.preparedBundleCounters);
         this.encodedIndirectDraws += reused.draws;
+        if (reused.bundle !== undefined && reused.draws > 0)
+          this.observeRetainedMaterialPipelineBindings(projected, call, reused);
       } else {
         bindings.recordRun(retained.runs.record(lives, start, end, retained.facts));
         for (let index = start; index < end; index++)
@@ -2461,7 +2466,7 @@ export class GpuDrivenProduction {
     )(call.colorFormats, call.formatKey);
     if (!selectedPipeline.ok) throw selectedPipeline.error;
     bindings.bindPipeline(selectedPipeline.value);
-    bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot);
+    const material = bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot);
     const group2 = this.meshGroupFor(projected, call, bindings, batch);
     bindings.observeRunClass(batch, selectedPipeline.value, group2);
     bindings.bindMesh(group2, batch.deformation, frame.view);
@@ -2476,6 +2481,11 @@ export class GpuDrivenProduction {
     }
     const windows = visibleWindowsFor(live, batch, call);
     this.encodeLevels(projected, call, bindings, live, batch, windows);
+    frameResources.recordMaterialPipelineBinding?.(
+      globalMaterialSlot,
+      selectedPipeline.value,
+      material.group,
+    );
     bindings.recordBundle(
       live,
       windows,
@@ -2484,6 +2494,27 @@ export class GpuDrivenProduction {
       this.device,
       this.preparedBundleCounters,
     );
+  }
+
+  private observeRetainedMaterialPipelineBindings(
+    projected: ProjectedRasterGraph,
+    call: RasterEncodeCall,
+    reused: RetainedRasterBlock,
+  ): void {
+    for (const owner of reused.lives) {
+      const live = owner as LiveRasterBatch;
+      const batch = this.classFor(projected, live, call.filter, call.fragmentEntryPoint);
+      const slot = selectedMaterialSlot(live, call.frameResources);
+      if (batch === undefined || slot === undefined) continue;
+      const material = reused.materials.get(slot);
+      const rasterClass = reused.classes.get(batch);
+      if (material !== undefined && rasterClass !== undefined)
+        call.frameResources.recordMaterialPipelineBinding?.(
+          slot,
+          rasterClass.pipeline as RhiRenderPipeline,
+          material.group as BindGroup,
+        );
+    }
   }
 
   /**

@@ -10,15 +10,9 @@
 //   "Cannot find module 'virtual:forgeax/bundler' or its corresponding type
 //   declarations" at typecheck time.
 //
-// Why a *minimal local* shape (D-4 q7-A reverse-coupling guard):
-// - The declared return type is a structural local interface, NOT
-//   `BundlerOptions` from `@forgeax/engine-app`. The plugin must not import
-//   engine-app (would create vite-plugin-shader -> engine-app cycle), and the
-//   adapter relies on TypeScript structural typing to remain BundlerOptions-
-//   compatible at every callsite (TASK-018 test-d locks this).
-// - The minimal shape lists only the two fields the adapter currently
-//   surfaces: `shaderManifestUrl` (string, M2 SSOT) + `importTransport`
-//   (optional, unknown -- consumers cast where they need a typed transport).
+// The adapter's return type is the existing App host facade. The Vite plugin
+// has no runtime dependency on App; this type-only link keeps generated host
+// code assignable without duplicating App's capability contract here.
 //
 // Discovery path (charter F1):
 //   import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -26,20 +20,14 @@
 //   await createApp(canvas, {}, opts);
 
 declare module 'virtual:forgeax/bundler' {
+  import type { AppHostAdapter } from '@forgeax/engine-app';
   /**
-   * Build-time adapter that returns a `BundlerOptions`-compatible object.
+   * Build-time adapter that returns an App host adapter.
    * Plugin emits the real implementation through `resolveId` + `load` hooks
    * (`packages/vite-plugin-shader/src/index.ts`).
    *
-   * @returns Object with `shaderManifestUrl` (string SSOT plumbed by the
-   *   plugin emit path; `/shaders/manifest.json`) and an optional
-   *   `importTransport` that the consumer attaches when needed (asset
-   *   loader integration). Structurally compatible with
-   *   `@forgeax/engine-app` `BundlerOptions`.
+   * @returns Renderer build inputs and optional explicit App capabilities for
+   *   recorder capture, remote service startup, and browser relay lifecycle.
    */
-  export function forgeaxBundlerAdapter(): {
-    readonly shaderManifestUrl: string;
-    readonly importTransport?: undefined;
-    readonly build?: string;
-  };
+  export function forgeaxBundlerAdapter(): AppHostAdapter;
 }

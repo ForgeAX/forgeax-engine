@@ -1148,7 +1148,7 @@ export function writeShadowParamsBuffer(
  * Skylight, 0 direct light (totalLightCount === 0), AND at least one builtin
  * standard/PBR material (which renders black with no light). Custom shaders
  * own their lighting contract and cannot be classified by this generic
- * diagnostic. Suppressed under NODE_ENV=production.
+ * diagnostic.
  *
  * @internal
  */
@@ -1159,8 +1159,6 @@ export function warnZeroLightStandard(
   totalLightCount: number,
 ): void {
   if (skylight !== undefined || totalLightCount !== 0 || frameState.warnedZeroLightStandard) return;
-  const env = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
-  if (env?.env?.NODE_ENV === 'production') return;
   if (hasLitRasterDemand(renderables)) {
     frameState.warnedZeroLightStandard = true;
     console.warn(
@@ -1411,12 +1409,6 @@ export function writeHdrpClusterAndSsaoBuffers(
   const clusterGridBuf = prepared.clusterGrid;
   const lightIndexListBuf = prepared.lightIndexList;
   const lightIndexCount = prepared.membershipEntryCount;
-
-  // Falsify injection point retained for the real prepared payload. It edits
-  // only this frame's projection and never creates a second membership owner.
-  const envFalsify = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-    .process?.env;
-  if (envFalsify?.FORGEAX_HDRP_FALSIFY_CLUSTER_GRID_ZERO) clusterGridBuf.fill(0);
 
   if (prepared.local.some((local) => local.source === undefined)) {
     return err(

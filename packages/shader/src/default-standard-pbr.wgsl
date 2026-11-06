@@ -725,6 +725,7 @@ fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
 // ShadowParticipation.receive: GPU-driven rows ride the flat material lane;
 // per-entity draws read the dynamic-offset Mesh slot directly.
 fn standardReceivesShadows(in : VsOut) -> bool {
+  if (standardShadowReception == 0u) { return false; }
 #if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true
   return (in.materialAddress.x & STANDARD_NO_RECEIVE_BIT) == 0u;
 #else
@@ -843,6 +844,8 @@ fn standardObjectToWorld(in : VsOut) -> mat3x3<f32> {
 // bit when its batch cannot fade or its view carries no clipping planes. The
 // default keeps both discards for every other consumer of this template.
 @id(64001) override standardSurfaceDiscards: u32 = 3u;
+// Keep dynamic reception unless a direct draw proves it cannot receive shadows.
+@id(64002) override standardShadowReception: u32 = 1u;
 
 // Parallax displacement shifts the height slot's source UV set before every
 // Surface and layer sample. Derivatives precede discard and row selection.

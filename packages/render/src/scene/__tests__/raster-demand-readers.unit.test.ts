@@ -137,10 +137,9 @@ it('keeps raster membership with old roots through visibility, instance count, r
   expect([...rasterRowsOf(readCurrent())]).toEqual([]);
 });
 
-it('observes material adoption, preserves the warning latch, and skips disabled production diagnostics', () => {
+it('observes material adoption and preserves the bounded warning latch in every host mode', () => {
   const f = fixture(128);
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-  vi.stubEnv('NODE_ENV', 'test');
   try {
     const state = { warnedZeroLightStandard: false };
     warnZeroLightStandard(state, f.list, undefined, 0);
@@ -156,8 +155,11 @@ it('observes material adoption, preserves the warning latch, and skips disabled 
     warnZeroLightStandard(state, f.list, undefined, 0);
     expect(f.project).not.toHaveBeenCalled();
     vi.stubEnv('NODE_ENV', 'production');
-    warnZeroLightStandard({ warnedZeroLightStandard: false }, f.list, undefined, 0);
-    expect(f.project).not.toHaveBeenCalled();
+    const productionState = { warnedZeroLightStandard: false };
+    warnZeroLightStandard(productionState, f.list, undefined, 0);
+    expect(productionState.warnedZeroLightStandard).toBe(true);
+    expect(f.project).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(2);
   } finally {
     warn.mockRestore();
     vi.unstubAllEnvs();

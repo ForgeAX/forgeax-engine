@@ -644,6 +644,8 @@ export interface _StandardForwardSceneView {
   readonly viewBindGroup: BindGroup | null;
   /** Dynamic View-UBO slot used by auxiliary cube/probe face cameras. */
   readonly viewBindGroupDynamicOffset?: number;
+  /** Analytic fog or finite atmosphere can affect this View; absence stays conservative. */
+  readonly viewFog?: boolean | undefined;
   /** Bind the translucent View copy matching each blended draw's composition. */
   readonly translucentFog?: boolean;
   readonly meshBindGroup: BindGroup | null;

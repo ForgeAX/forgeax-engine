@@ -176,6 +176,14 @@ test('development identity continues the next sequence on the minor after stable
   );
 });
 
+test('development releases retain a newer published next line', () => {
+  const source = `abcdef123456${'a'.repeat(28)}`;
+  assert.equal(
+    developmentVersion('0.4.19', '0.6.0-dev.16816.f086cc6f3e24', source),
+    '0.6.0-dev.16817.abcdef123456',
+  );
+});
+
 test('release CLI proves older source ancestry from a shallow checkout without admitting outsiders', () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-release-ancestry-'));
   const git = (cwd, ...args) =>

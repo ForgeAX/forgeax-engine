@@ -1,32 +1,22 @@
-import { convoyFrame, type ConvoyBinding } from './convoy-frame.ts';
+import { CONVOY_SURFACES, CONVOY_HARDWARE_SLOTS } from './convoy-surfaces.ts';
+import { addConvoyPart, type ConvoyBinding } from './convoy-parts.ts';
+import { convoyFrame } from './convoy-frame.ts';
 import { CONVOY_LAYOUT, mirrorPoint, type ConvoyLayout } from './convoy-layout.ts';
-import { model, rig, sel, bakeSources, type Tuple3, type Pose, type PosePath, textStrokes } from '@forgeax/engine/modeling';
+import { model, rig, sel, type Tuple3, type Pose, type PosePath, textStrokes } from '@forgeax/engine/modeling';
 import { deriveAnimationTargetId } from '@forgeax/engine/animation';
 import { Materials } from '@forgeax/engine/render';
 import type { AnimationClip, MaterialAsset, MeshAsset, SkeletonAsset, SkinAsset } from '@forgeax/engine/types';
-import { assetGuid, guidText, PACKAGE_IDS } from '../shared/asset-refs.ts';
-import { CONVOY_FINISH_KIND, convoyHardwareTextures } from './convoy-finish.ts';
-import { PLAYER_RIG, PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, CONVOY_WHEELS, createPlayerRig, playerTargetPath } from './player-rig.ts';
+import type { PackageId } from '@forgeax/engine/pack/guid';
+import { assetGuid, guidText } from '../shared/asset-refs.ts';
+import { convoyHardwareTextures } from './convoy-finish.ts';
+import { PLAYER_RIG, PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, CONVOY_WHEELS, convoyJointSpecs, nativeJointName as nativeName, playerTargetPath } from './player-rig.ts';
 
 export const CONVOY_NORMALS = { mode: 'weighted' } as const;
 export const CONVOY_DEFAULT_RESOLUTION = 1024;
 const CAB_BACK_BEVEL = 0.025;
 const CAB_BEARING_RADIUS = 0.08;
-export const CONVOY_MAPS = ['normal', 'ao', 'ormh', 'baseColor', 'emissive', 'height', 'curvature', 'edgeWear'] as const;
-const nativeName = (name: string) => name.toLowerCase().replaceAll('.', '-');
-const guid = (key: string) => guidText(assetGuid(PACKAGE_IDS.character, key));
-export const CONVOY_SURFACES = {
-  red: { baseColor: [0.8, 0.055, 0.045, 1], metallic: 0.08, roughness: 0.22 },
-  blue: { baseColor: [0.055, 0.24, 0.63, 1], metallic: 0.08, roughness: 0.24 },
-  steel: { baseColor: [0.8, 0.85, 0.9, 1], metallic: 1, roughness: 0.18 },
-  dark: { baseColor: [0.045, 0.06, 0.085, 1], metallic: 1, roughness: 0.39 },
-  rubber: { baseColor: [0.028, 0.032, 0.038, 1], metallic: 0, roughness: 0.86 },
-  gold: { baseColor: [0.82, 0.49, 0.16, 1], metallic: 0.85, roughness: 0.35 },
-  ink: { baseColor: [0.88, 0.9, 0.83, 1], metallic: 0, roughness: 0.65 },
-  glass: { baseColor: [0.055, 0.27, 0.38, 1], metallic: 0, roughness: 0.06 },
-  cyan: { baseColor: [0.08, 0.55, 0.8, 1], metallic: 0.25, roughness: 0.2, emissive: [0.08, 0.65, 1], emissiveIntensity: 2 },
-  amber: { baseColor: [1, 0.4, 0.04, 1], metallic: 0.2, roughness: 0.3, emissive: [1, 0.28, 0.015], emissiveIntensity: 2 },
-} satisfies NonNullable<Parameters<typeof bakeSources>[0]['slots']>;
+export const CONVOY_MAPS = ['normal', 'ormh', 'baseColor', 'emissive', 'position', 'edgeWear', 'cavity', 'materialId'] as const;
+
 
 export const CONVOY_TRIANGLE_BUDGET = 24000;
 const wheelGroups = ['tire', 'barrel', 'hub', ...[-1, 1].flatMap(side => Array.from({ length: 6 }, (_, n) => `spoke-${side}-${n}`))];
@@ -35,7 +25,7 @@ export const convoyBakeSettings = (resolution: number) => ({
   // Bound projection by the cab back bevel and bearing envelope; avoid re-solving
   // every known part's cage on each cold cook. Wheels keep their tighter group cages.
   cage: { offset: CAB_BACK_BEVEL, maxRay: CAB_BACK_BEVEL + CAB_BEARING_RADIUS },
-  maps: [...CONVOY_MAPS, 'position', 'cavity'] as const,
+  maps: CONVOY_MAPS,
   normals: CONVOY_NORMALS, detailNormals: CONVOY_NORMALS,
   tags: { groupPrefix: 'bake:', floater: 'bake-floater' }, slots: CONVOY_SURFACES,
   ao: { rays: 8, distance: 0.065, denoise: 2 },
@@ -44,23 +34,6 @@ export const convoyBakeSettings = (resolution: number) => ({
   ]))),
 });
 
-function convoyJointSpecs(layout: ConvoyLayout = CONVOY_LAYOUT) {
-  const joints = createPlayerRig(layout);
-  return joints.map(joint => {
-    const common = { name: nativeName(joint.name), parent: joint.parent < 0 ? null : nativeName(joints[joint.parent]!.name), position: [...joint.world] as Tuple3 };
-    const side = joint.name.endsWith('.L') ? -1 : 1;
-    if (joint.name === 'Hips') return { ...common, kind: 'prismatic' as const, axis: 'y' as const, limits: [layout.vehicle.hipsFold, layout.leg.stroke + 0.01] as const };
-    if (joint.name === 'AbdomenSlide') return { ...common, kind: 'prismatic' as const, axis: 'y' as const, limits: [0, layout.abdomen.stroke] as const };
-    if (joint.name.startsWith('HeadSlide')) return { ...common, kind: 'prismatic' as const, axis: 'y' as const, limits: [-layout.head.travel, 0] as const, ...(joint.name === 'HeadSlide' ? { mimic: { joint: 'headslidebase', ratio: 1 } } : {}) };
-    if (joint.name.startsWith('Shin.')) return { ...common, kind: 'prismatic' as const, axis: 'y' as const, limits: [-layout.leg.stroke, 0] as const };
-    if (joint.name.startsWith('RearTrack')) return { ...common, kind: 'prismatic' as const, axis: 'x' as const, limits: [Math.min(0, side * layout.rear.travel), Math.max(0, side * layout.rear.travel)] as const, ...(joint.name.startsWith('RearTrack.') ? { mimic: { joint: nativeName(`RearTrackBase.${side < 0 ? 'L' : 'R'}`), ratio: 1 } } : {}) };
-    if (joint.name.startsWith('Thigh.')) return { ...common, kind: 'revolute' as const, axis: 'x' as const, limits: [-90, 0] as const };
-    if (joint.name.startsWith('RearBogie.') || joint.name.startsWith('Foot.')) return { ...common, kind: 'revolute' as const, axis: 'x' as const, limits: [0, 90] as const, mimic: { joint: nativeName(`Thigh.${side < 0 ? 'L' : 'R'}`), ratio: -1 } };
-    if (joint.name.startsWith('ShinCover.')) return { ...common, kind: 'revolute' as const, axis: 'x' as const, limits: [0, 210] as const };
-    if (joint.name.startsWith('FrontGimbal')) return { ...common, kind: 'revolute' as const, axis: joint.name.startsWith('FrontGimbalX') ? 'x' as const : 'z' as const, limits: [-90, 90] as const };
-    if (joint.name.startsWith('Wheel')) return { ...common, kind: 'revolute' as const, axis: 'x' as const };
-    return { ...common, kind: 'spherical' as const };
-  }); }
 
 type PlateRole = 'armor' | 'shoulder-seat' | 'thigh-sleeve' | 'shin-side' | 'shin-back' | 'foot-shell';
 
@@ -187,15 +160,13 @@ export function buildConvoy(resolution = CONVOY_DEFAULT_RESOLUTION, layout: Conv
   const plateShells = new Map<string, ReturnType<typeof model>>();
   const plate = (joint: string, material: keyof typeof CONVOY_SURFACES, center: Tuple3, size: Tuple3, bevel = 0.016, greeble = false, tilt = 0, role: PlateRole = 'armor') => {
     const tag = `bake:${nativeName(joint)}-${material}-${serial++}`;
-    binding.push({ tag, joint });
-    for (const [target, high] of [[base, false], [detail, true]] as const) {
+    addConvoyPart([base, detail], binding, joint, tag, (part, high) => {
       const key = JSON.stringify([material, size, bevel, high, role, role === 'armor' ? 0 : center]);
       let shell = plateShells.get(key);
       if (shell === undefined) {
         shell = createPlateShell(material, size, bevel, high, role, center, Math.sign(center[0]), layout);
         plateShells.set(key, shell);
       }
-      const part = model();
       part.append(shell, { tag });
       if (high && material === 'glass') {
         const wiper = model();
@@ -210,15 +181,11 @@ export function buildConvoy(resolution = CONVOY_DEFAULT_RESOLUTION, layout: Conv
       if ((joint.includes('Arm.') || joint.includes('Shin.')) && material !== 'dark') part.taper(sel.all(), { axis: 'y', factor: 1.12, axes: ['x'], range: [-size[1] / 2, size[1] / 2], origin: [0, 0, 0] });
       if (role === 'shin-side' || role === 'shin-back') part.markSharp(sel.edges.all());
       if (tilt !== 0) part.rotate(sel.all(), 'z', tilt);
-      part.tag(sel.all(), tag);
-      target.append(part, { translate: center });
-    }
+    }, { translate: center });
   };
   const cylinder = (joint: string, material: keyof typeof CONVOY_SURFACES, center: Tuple3, radius: number, length: number, axis: 'x' | 'y' | 'z' = 'y', bore = 0, structural = false, name?: string) => {
     const tag = `bake:${name ?? `mechanism-${serial++}`}`;
-    binding.push({ tag, joint });
-    for (const [target, high] of [[base, false], [detail, true]] as const) {
-      const part = model();
+    addConvoyPart([base, detail], binding, joint, tag, (part, high) => {
       if (bore > 0) part.revolve({ points: [[bore, -length / 2], [radius, -length / 2], [radius, length / 2], [bore, length / 2], [bore, -length / 2]], segments: high ? 32 : 12, material });
       else part.cylinder({ radiusTop: radius, radiusBottom: radius, height: length, radialSegments: high ? 32 : 8, material });
       if (high && bore === 0 && (material === 'steel' || material === 'dark' || material === 'gold')) {
@@ -226,10 +193,7 @@ export function buildConvoy(resolution = CONVOY_DEFAULT_RESOLUTION, layout: Conv
         for (const t of [-0.38, -0.2, 0.2, 0.38]) part.cylinder({ radiusTop: radius * 1.08, radiusBottom: radius * 1.08, height: 0.006, center: [0, t * length, 0], radialSegments: 32, material: 'dark', tag: 'bake-floater' });
       }
       if (axis !== 'y') part.rotate(sel.all(), axis === 'x' ? 'z' : 'x', 90);
-      part.tag(sel.all(), tag);
-      if (structural) part.tag(sel.all(), 'structural');
-      target.append(part, { translate: center });
-    }
+    }, { translate: center, structural });
   };
   // The hollow, framed cab receives the retracting head; the chest is its windshield.
   plate('Hips', 'dark', [0, body.hipsY - 0.01, 0.015], [0.11, 0.2, 0.17]);
@@ -383,12 +347,11 @@ function skinMaterial(material: MaterialAsset): MaterialAsset {
   return { ...material, passes: [skin(first), ...rest.map(skin)] };
 }
 
-export function convoyAssets(resolution = CONVOY_DEFAULT_RESOLUTION) {
+export function prepareConvoyAssets(resolution: number, packageId: PackageId) {
+  const guid = (key: string) => guidText(assetGuid(packageId, key));
   const { bakeBase, bakeDetail, assembly } = buildConvoy(resolution);
-  const finished = assembly.finish({ key: 'player', packageId: PACKAGE_IDS.character, form: 'skinned', normals: CONVOY_NORMALS, clips: [{ name: 'transform', path: convoyPath(assembly), duration: PLAYER_TRANSFORM_SECONDS, frameRate: 30 }, { name: 'wheels', duration: 1, frameRate: 30, path: { keys: [{ u: 0, pose: {} }, { u: 1, pose: Object.fromEntries(CONVOY_WHEELS.map(wheel => [nativeName(wheel.name), -360])) }] } }] });
+  const finished = assembly.finish({ key: 'player', packageId, form: 'skinned', normals: CONVOY_NORMALS, clips: [{ name: 'transform', path: convoyPath(assembly), duration: PLAYER_TRANSFORM_SECONDS, frameRate: 30 }, { name: 'wheels', duration: 1, frameRate: 30, path: { keys: [{ u: 0, pose: {} }, { u: 1, pose: Object.fromEntries(CONVOY_WHEELS.map(wheel => [nativeName(wheel.name), -360])) }] } }] });
   if (!finished.ok) throw finished.error;
-  const maps = bakeSources({ base: bakeBase, detail: bakeDetail, ...convoyBakeSettings(resolution), resolution, mips: true, key: 'convoy' });
-  if (!maps.ok) throw maps.error;
   const mesh = finished.value['mesh/player'] as MeshAsset;
   const clip = finished.value['animation-clip/player/transform'] as AnimationClip;
   const nativeTargets = new Map(PLAYER_RIG.map((joint, index) => [deriveAnimationTargetId(['player', nativeName(joint.name)]), deriveAnimationTargetId(playerTargetPath(index))]));
@@ -402,18 +365,13 @@ export function convoyAssets(resolution = CONVOY_DEFAULT_RESOLUTION) {
     const targetId = deriveAnimationTargetId(playerTargetPath(index));
     return joint.role !== 'body' || rotationTargets.has(targetId) ? [] : [{ targetId, property: 'rotation' as const, sampler: { input: new Float32Array([0]), output: new Float32Array([0, 0, 0, 1]), interpolation: 'LINEAR' as const } }];
   });
-  return {
+  return { bakeBase, bakeDetail, assets: {
     ...convoyHardwareTextures(),
-    ...Object.fromEntries(['steel', 'dark', 'gold', 'rubber'].map(slot => {
-      const surface = CONVOY_SURFACES[slot as 'steel' | 'dark' | 'gold' | 'rubber'];
+    ...Object.fromEntries(CONVOY_HARDWARE_SLOTS.map(slot => {
+      const { materialId: _materialId, ...surface } = CONVOY_SURFACES[slot];
       return [`material/${slot}`, skinMaterial(Materials.standard({ ...surface, normalTexture: { texture: guid(`texture/convoy-${slot === 'rubber' ? 'rubber' : 'brushed'}-normal`) }, metallicRoughnessTexture: { texture: guid('texture/convoy-hardware-ormh') } }))];
     })),
-    ...Object.fromEntries(['normal', 'ormh', 'baseColor', 'emissive'].map(map => [
-      `texture/convoy-${map === 'baseColor' ? 'base-color' : map}`,
-      { ...maps.value[`texture/convoy-${map}`]!, kind: CONVOY_FINISH_KIND },
-    ])),
-    'texture/convoy-coat': { ...maps.value['texture/convoy-ormh']!, kind: CONVOY_FINISH_KIND, source: { ...maps.value['texture/convoy-ormh']!.source as object, finishMap: 'coat' } },
-    'mesh/player': { ...mesh, materialSlots: mesh.materialSlots.map(({ slotName }) => ({ slotName, defaultMaterial: assetGuid(PACKAGE_IDS.character, `material/${slotName}`) })) },
+    'mesh/player': { ...mesh, materialSlots: mesh.materialSlots.map(({ slotName }) => ({ slotName, defaultMaterial: assetGuid(packageId, `material/${slotName}`) })) },
     'rig/player-skeleton': finished.value['skeleton/player'] as SkeletonAsset,
     'rig/player-skin': { kind: 'skin', skeletonGuid: guid('rig/player-skeleton'), jointPaths: [...PLAYER_JOINT_NAMES] } satisfies SkinAsset,
     'animation/player-transform': { ...transformation, channels: [...transformation.channels, ...restRotations] },
@@ -428,5 +386,5 @@ export function convoyAssets(resolution = CONVOY_DEFAULT_RESOLUTION) {
       occlusionTexture: { texture: guid('texture/convoy-ormh') },
       emissive: [2, 2, 2], emissiveTexture: { texture: guid('texture/convoy-emissive') },
     })),
-  };
+  } };
 }

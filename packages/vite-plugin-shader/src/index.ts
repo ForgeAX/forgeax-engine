@@ -1656,8 +1656,8 @@ export interface ForgeAXShaderPlugin {
    * load: returns `.wgsl` -> null (default fs load -> transform); for the
    * `virtual:forgeax/bundler` id returns the inline-emit adapter source
    * (forgeaxBundlerAdapter factory; structurally compatible with
-   * `@forgeax/engine-app` BundlerOptions, but NEVER imports it -- D-4 q7-A
-   * reverse-coupling guard).
+   * `@forgeax/engine-app` AppHostAdapter. Its optional dynamic imports cross
+   * the host adapter seam only when the configured tool capability is enabled.)
    */
   load(this: MinimalPluginContext, id: string): string | null;
   transform(
@@ -1689,10 +1689,10 @@ const VIRTUAL_BUNDLER_ID = 'virtual:forgeax/bundler';
  */
 /**
  * Inline source returned by the `load` hook for `virtual:forgeax/bundler`.
- * The factory function `forgeaxBundlerAdapter` returns a plain object that is
- * structurally compatible with `@forgeax/engine-app` `BundlerOptions`
- * (TASK-019 / D-4 q7-A: no `@forgeax/engine-app` import to avoid the
- * vite-plugin-shader -> engine-app reverse coupling concern).
+ * The factory function `forgeaxBundlerAdapter` returns the renderer build
+ * inputs and optional host capabilities consumed by `@forgeax/engine-app`.
+ * The plugin itself has no runtime dependency on engine-app; the generated
+ * consumer module imports its host-adapter subpath only inside enabled branches.
  *
  * Why an inline string instead of a separate `.ts` file: the plugin is the
  * only producer; emitting source from the load hook keeps the manifestUrl
@@ -1733,6 +1733,29 @@ export function forgeaxBundlerAdapter() {
     shaderManifestUrl: pageBase === undefined ? manifest : new URL(manifest, pageBase).href,
     importTransport: undefined,
     build: ${JSON.stringify(build)},
+    remoteServe: import.meta.env.DEV === true,
+    ...(import.meta.env.FORGEAX_ENGINE_RHI_DEBUG === '1' ? {
+      attachRhiRecorder: async (rendererOptions) => {
+        const adapter = await import('@forgeax/engine/app/host-adapter');
+        return adapter.attachBrowserRhiRecorder(rendererOptions);
+      },
+    } : {}),
+    ...(import.meta.env.DEV === true && import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE === '1' ? {
+      browserRemoteBridge: {
+        port: import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE_PORT ?? '5733',
+        async installLocalBridge(deps) {
+          const adapter = await import('@forgeax/engine/app/host-adapter');
+          return adapter.installBrowserRemoteBridge(deps);
+        },
+        async installExecutionBridge(deps) {
+          const adapter = await import('@forgeax/engine/app/host-adapter');
+          return adapter.installBrowserExecutionBridge(deps);
+        },
+        registerDispose(dispose) {
+          if (import.meta.hot) import.meta.hot.dispose(dispose);
+        },
+      },
+    } : {}),
   };
 }
 `;
@@ -2566,12 +2589,10 @@ export function forgeaxShader(options: ForgeAXShaderOptions = {}): ForgeAXShader
     // hook 1: load -- two responsibilities:
     //   (a) `.wgsl` -> return null so vite's default fs load runs (forwarded
     //       to the transform hook below);
-    //   (b) `virtual:forgeax/bundler` -> return the adapter source string so
+    //   (b) `virtual:forgeax/bundler` -> return generated adapter source so
     //       vite registers a real module for `import { forgeaxBundlerAdapter }
-    //       from 'virtual:forgeax/bundler'`. The adapter source is a constant
-    //       (VIRTUAL_BUNDLER_SOURCE) closed over the plugin module's
-    //       SHADER_MANIFEST_URL SSOT -- D-4 q7-A reverse-coupling guard means
-    //       NO `@forgeax/engine-app` import inside this source.
+    //       from 'virtual:forgeax/bundler'`. The source closes over the
+    //       SHADER_MANIFEST_PATH SSOT and exposes optional host capabilities.
     load(id: string): string | null {
       if (id === VIRTUAL_BUNDLER_ID) return virtualBundlerSource(currentBuildRevision());
       return null;

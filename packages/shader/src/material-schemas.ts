@@ -30,6 +30,8 @@ export const STANDARD_TEXTURE_MASK_OVERRIDE = '64000';
  * discard defeats hidden-surface removal on tile GPUs even when it never fires.
  */
 export const STANDARD_SURFACE_DISCARDS_OVERRIDE = '64001';
+/** Zero is valid only for an admitted draw that declares no shadow reception. */
+export const STANDARD_SHADOW_RECEPTION_OVERRIDE = '64002';
 /** The visible item may carry a nonzero dithered LOD crossfade. */
 export const STANDARD_SURFACE_DISCARD_LOD_COVERAGE = 1;
 /** The view may carry world-space camera clipping planes. */

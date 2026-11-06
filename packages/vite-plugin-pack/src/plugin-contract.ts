@@ -67,6 +67,8 @@ export interface PluginPackOptions {
   readonly sourceIdentityFor?: ((sourcePath: string) => string) | undefined;
   readonly runtimeBinding?: RuntimeAssetBinding;
   readonly ddc?: PluginPackDdcOptions;
+  /** Sealed build-program graph, including its resolved native import identities. */
+  readonly producerIdentity?: string | undefined;
 }
 
 export interface PluginPackDdcOptions {

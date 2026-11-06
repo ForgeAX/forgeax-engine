@@ -31,6 +31,75 @@ function levelColors(t: TextureAsset): Set<string>[] {
 const subset = (a: Set<string>, b: Set<string>) => [...a].every((c) => b.has(c));
 
 describe('material-ID mips keep IDs', () => {
+  it.each([
+    false,
+    true,
+  ])('keeps category colors through supersampling, filtering and gutter fill (authored: %s)', (authored) => {
+    const base = model();
+    base.plane({ width: 1, height: 1 });
+    const mesh = base.editMesh;
+    for (const face of mesh.faces()) {
+      for (const half of mesh.faceHalves(face)) {
+        const [x, y] = mesh.position(mesh.hVert[half] as number);
+        mesh.setCorner('uv0', half, [0.5 + x * 0.6, 0.5 + y * 0.6]);
+      }
+    }
+    const detail = model();
+    for (const [name, left, right] of [
+      ['left', -0.5, 0.013],
+      ['right', 0.013, 0.5],
+    ] as const) {
+      detail.polygon({
+        points: [
+          [left, -0.5, 0],
+          [right, -0.5, 0],
+          [right, 0.5, 0],
+          [left, 0.5, 0],
+        ],
+        material: name,
+      });
+    }
+    const result = bakeMaps({
+      base,
+      detail,
+      maps: authored ? ['opacity', 'materialId', 'baseColor'] : ['materialId', 'baseColor'],
+      resolution: 32,
+      samples: 4,
+      filter: 'bspline',
+      gutter: 4,
+      cage: { offset: 0.01, maxRay: 0.02 },
+      slots: {
+        left: { baseColor: [1, 0, 0, 1], ...(authored ? { materialId: [1, 0, 0] as const } : {}) },
+        right: { baseColor: [0, 1, 0, 1], ...(authored ? { materialId: [0, 1, 0] as const } : {}) },
+      },
+    });
+    if (!result.ok) throw result.error;
+    const allowed = new Set(['0,0,0,255']);
+    for (const { color } of result.value.provenance.materials) {
+      const encoded = idTexture(
+        1,
+        1,
+        () => [color[0] as number, color[1] as number, color[2] as number, 1],
+        false,
+      );
+      if (!encoded.ok) throw encoded.error;
+      allowed.add(Array.from(encoded.value.data as Uint8Array).join(','));
+    }
+    for (const level of levelColors(result.value.textures.materialId as TextureAsset)) {
+      expect(
+        subset(level, allowed),
+        JSON.stringify([...level].filter((color) => !allowed.has(color))),
+      ).toBe(true);
+    }
+    // Appearance remains continuous: its color filter still averages the red/green boundary.
+    const appearanceIds = new Set(['0,0,0,0', '255,0,0,255', '0,255,0,255']);
+    expect(
+      [...(levelColors(result.value.textures.baseColor as TextureAsset)[0] as Set<string>)].some(
+        (color) => !appearanceIds.has(color),
+      ),
+    ).toBe(true);
+  });
+
   it('idTexture levels hold only level-0 colors (falsifier: the box chain blends them)', () => {
     const texel = (x: number, y: number) =>
       ((x >> 2) + (y >> 2)) % 2 === 0

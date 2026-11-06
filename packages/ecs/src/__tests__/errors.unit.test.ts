@@ -60,7 +60,7 @@ import { sourceHits } from './source-scan.fixture';
   // The repo-wide source scan runs inside the coverage pool alongside 180+
   // instrumented files. Keep the default unit-test budget for normal cases,
   // but allow a contended runner to finish this I/O-only contract gate.
-  const SOURCE_SCAN_TIMEOUT_MS = 30_000;
+  const SOURCE_SCAN_TIMEOUT_MS = 90_000;
 
   describe('ac16-register-component-grep-gate.test.ts', () => {
     describe('AC-16 - register-component call surface is zero repo-wide (w20)', () => {

@@ -22,7 +22,6 @@ import { unwrap } from './specular-aa.fixture';
 
 // A uniform white panorama is indistinguishable from the white fallback cube,
 // so readiness comes from the renderer's IBL binding receipt.
-process.env.FORGEAX_MATERIAL_DIAGNOSTICS = '1';
 const manifest = await buildEngineShaderManifest();
 const compensatedUrl = shaderManifestUrl(manifest);
 const single = singleScatterManifest(manifest);

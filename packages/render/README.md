@@ -319,7 +319,7 @@ their supported authored Standard root independently from layout identity. `DEFA
 > Material pipeline `constants` are common to both stages; texture masks also
 > control vertex displacement. `vertexConstants` can explicitly select the vertex
 > values and participates in pipeline cache identity. Standard material assembly
-> removes its fragment-only Surface discard gate from that vertex projection,
+> removes fragment-only Surface discard and shadow-reception gates from that vertex projection,
 > including the fixed GPU Scene path, while retaining the complete fragment map.
 
 Ordinary direct draws derive the same Surface discard mask as GPU Scene draws.
@@ -327,6 +327,14 @@ Their direct ABI cannot read GPU LOD coverage; the view-clipping bit follows the
 current camera's plane count. Only the selected material program declaring the
 existing override receives it. Pipeline receipt and constant selection share one
 cooked-program request. Preparation and visible recording select identical constants; authored alpha/material clipping and temporal entries keep their rules.
+
+Direct Standard draws also specialize shadow reception from the admitted
+`ShadowParticipation.receive` snapshot. An explicit nonreceiver omits shadow
+sampling from native compilation; receiving and unknown GPU batches retain the
+conservative shader default. The selected program must declare the numeric
+override. Hidden preparation and visible recording share this selection, and
+receiver state participates in the pass-local lookup key; changing reception
+cannot reuse a nonreceiver pipeline. Texture masks remain valid vertex constants.
 
 Set `MeshRenderer.preparePipelines: true` on the finite mesh roster that this
 session can select, including meshes with hidden `Visibility`. The renderer
@@ -1311,6 +1319,12 @@ Fog composites depth-correctly with translucency (the Unreal
    Opaque draws and frames without Fog bind the unfogged composition, so the
    same program is never fogged twice. `translucentViewOffset(composition)` is
    the byte offset of each copy inside the View buffer.
+
+The recording view derives `viewFog` from its admitted analytic fog and finite
+atmosphere. Without either medium, transparent draws use the base View and the
+existing `fs_opaque` entry, keeping unused fog and atmosphere code out of native
+pipeline compilation. Preparation and visible recording share this decision;
+unknown helper contexts keep conservative fog composition.
 
 `renderState: { fog: false }` (Three `Material.fog = false`) skips fog per
 material. Blended draws bind the unfogged composition. Opaque forward draws with
@@ -3924,6 +3938,12 @@ Asynchronous IBL shader preparation revalidates its DeviceScope before creating
 layouts or pipelines. If disposal or recovery retires that scope while compilation
 is pending, preparation returns `rhi-not-available` without touching the retired
 device; the current source owner can retry on the replacement generation.
+`Renderer.inspect().iblBinding` reports the bounded final Standard IBL binding
+receipt when a Standard material pass is recorded. It reflects the resources
+used by the frame and needs no process-environment diagnostic flag. Preparation
+baselines without a matching Standard draw are not published as final receipts.
+Texture residency failures continue through the structured renderer error channel and
+the existing fallback path.
 
 ## SSR admission and bounded inspection
 

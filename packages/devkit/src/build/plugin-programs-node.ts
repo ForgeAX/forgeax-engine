@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
@@ -33,7 +34,11 @@ export async function compileNodePluginPrograms(
   resolution: Pick<InlineConfig, 'resolve' | 'plugins'> = {},
   trace: <T>(stage: string, operation: () => Promise<T>) => Promise<T> = (_stage, operation) =>
     operation(),
-): Promise<{ readonly entry: string; readonly watchFiles: ReadonlySet<string> }> {
+): Promise<{
+  readonly entry: string;
+  readonly watchFiles: ReadonlySet<string>;
+  readonly producerIdentity: string;
+}> {
   // The selected realm root and its references own execution placement.
   // Sharing a Pack source does not make another realm's plugins executable here.
   const records = pluginAssetClosure(inventory, facts.roots[target]);
@@ -225,5 +230,18 @@ export function createPrograms(sessionId, contextId, sessionGeneration) {
 }
 `,
   );
-  return { entry, watchFiles };
+  return {
+    entry,
+    watchFiles,
+    producerIdentity: `sha256:${createHash('sha256')
+      .update(
+        JSON.stringify([
+          target,
+          facts.roots[target],
+          artifacts,
+          records.map(({ definition }) => [definition.guid, definition.asset]),
+        ]),
+      )
+      .digest('hex')}`,
+  };
 }

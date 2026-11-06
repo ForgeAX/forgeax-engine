@@ -26,6 +26,7 @@ describe('vite-plugin-pack public type surface', () => {
       | 'sourceIdentityFor'
       | 'runtimeBinding'
       | 'ddc'
+      | 'producerIdentity'
     >();
     expectTypeOf<keyof PluginPackDdcOptions>().toEqualTypeOf<
       'buildCacheRoot' | 'projectDdcRoot' | 'identityRoot'

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deserialize, serialize } from 'node:v8';
+import { deserialize, Serializer, serialize } from 'node:v8';
 import { brotliDecompressSync } from 'node:zlib';
 import { DdcEntryStore, ddcOutputDigest } from '@forgeax/engine-ddc';
 import {
@@ -18,9 +18,53 @@ import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import type { ScriptablePackBuildProduct } from '../scriptable-pack-build-core.js';
 import { produceScriptablePackProducts } from '../scriptable-pack-host.js';
-import { createScriptablePackProductCache } from '../scriptable-pack-product-cache.js';
+import {
+  createScriptablePackProductCache,
+  shareImmutableProductData,
+} from '../scriptable-pack-product-cache.js';
 
 const revision = (text: string) => `sha256:${createHash('sha256').update(text).digest('hex')}`;
+
+function encodeProduct(value: unknown): Buffer {
+  const serializer = new Serializer();
+  serializer.writeHeader();
+  serializer.writeValue(shareImmutableProductData(value));
+  return serializer.releaseBuffer();
+}
+
+it('encodes only visible typed-array bytes independently of pooled storage', () => {
+  const product = (padding: number, capacity: number) => {
+    const buffer = new ArrayBuffer(capacity);
+    new Uint8Array(buffer).fill(padding);
+    const values = new Float32Array(buffer, 16, 3);
+    values.set([1, -0, 3.5]);
+    return { values, bytes: new Uint8Array(buffer, 16, 12), view: new DataView(buffer, 16, 12) };
+  };
+  const first = product(17, 128);
+  const second = product(233, 256);
+  expect(encodeProduct(first)).toEqual(encodeProduct(second));
+  const restored = deserialize(encodeProduct(first)) as typeof first;
+  deepStrictEqual(restored, first);
+  expect(restored.values.buffer).toBe(restored.bytes.buffer);
+  expect(restored.values.buffer).toBe(restored.view.buffer);
+  expect(restored.values.byteOffset).toBe(16);
+  expect([...new Uint8Array(restored.values.buffer, 0, 16)]).toEqual(new Array(16).fill(0));
+  expect(restored.values.buffer.byteLength).toBe(28);
+  expect(first.values.buffer.byteLength).toBe(128);
+  const explicit = { buffer: first.values.buffer, values: first.values };
+  const explicitRestored = deserialize(encodeProduct(explicit)) as typeof explicit;
+  deepStrictEqual(explicitRestored, explicit);
+  expect(explicitRestored.values.buffer).toBe(explicitRestored.buffer);
+});
+
+it('encodes equal strings independently of V8 one-byte or two-byte storage', () => {
+  const narrow = 'cache-product'.repeat(100);
+  const wide = `\u0100${narrow}`.slice(1);
+  expect(narrow).toBe(wide);
+  expect(encodeProduct({ text: narrow })).toEqual(encodeProduct({ text: wide }));
+  const text = '\ud800x\udfff';
+  deepStrictEqual(deserialize(encodeProduct({ text })), { text });
+});
 
 it('keeps cached geometry buffers bounded when individual outputs cross a Worker boundary', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-pack-cache-geometry-buffers-'));

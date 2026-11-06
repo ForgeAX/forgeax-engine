@@ -5,6 +5,7 @@ import { createWorldContext, Entity, World } from '@forgeax/engine-ecs';
 import { ChildOf, scenePlugin, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTargetIdValue, AssetHandle } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { subscribeAnimationDiagnostics } from '../animation-diagnostic';
 import { AnimationPlayer } from '../animation-player';
 import {
   AnimatedBy,
@@ -100,12 +101,18 @@ describe('animation target isolation and lifecycle', () => {
       weights: [1, 1],
       speeds: [1, 1],
     });
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    world.update(0.1);
+    const diagnostics: unknown[] = [];
+    const unsubscribe = subscribeAnimationDiagnostics((source, diagnostic) => {
+      if (source === world) diagnostics.push(diagnostic);
+    });
+    try {
+      world.update(0.1);
+    } finally {
+      unsubscribe();
+    }
 
     expect(world.get(valid.target, Transform).unwrap().pos[0]).toBeCloseTo(1);
-    expect(new Set(warn.mock.calls.map(([value]) => (value as { code?: string }).code))).toEqual(
+    expect(new Set(diagnostics.map((value) => (value as { code?: string }).code))).toEqual(
       new Set([
         'animation-target-missing',
         'animation-target-transform-missing',

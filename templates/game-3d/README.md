@@ -216,9 +216,12 @@ close the vase panel and tap **Transform**. Jump is available in robot mode.
 | `assets/player/convoy-layout.ts` | Physical dimensions, manufacturing clearances, solved hardpoints, panel spans, telescope engagement and vehicle destinations |
 | `assets/player/convoy-model.ts` | Shared low/high part recipe: boxes, bevels, tapered armor, panel lines, linear grilles, radial tire tread and rigid rig export |
 | `assets/player/convoy-frame.ts` | Load-bearing axles, nested bearings, sliding tracks, spine, abdomen carriage and measured fit bands |
-| `assets/player/player-rig.ts` | Named body/mechanism topology and rest anchors derived from the solved assembly |
+| `assets/player/player-rig.ts` | One named joint hierarchy derives rest anchors, modeling motion rules, runtime bone order and animation paths |
+| `assets/player/convoy-parts.ts` | Paired low/high part identity, rigid bindings and balanced frame assembly |
 | `assets/character.pack.ts` | Stable mesh/skeleton/skin identities, walk clip and 512-2048 texel atlas resolution (default 1024) |
-| `assets/player/modeling-build.pack.ts` | Convoy NativeCooker registered through `forge.json.roots.build` |
+| `assets/player/modeling-build.pack.ts` | Standard Modeling asset-job cooker registered through `forge.json.roots.build` |
+| `assets/player/convoy-job.ts` | One deferred asset set for geometry, rig, clips, materials and finished texture maps |
+| `assets/player/convoy-surfaces.ts` | Authored material slots and explicit categorical finish IDs |
 | `assets/player/convoy-finish.ts` | Cooked paint, roughness and clearcoat masks with delivery mips |
 | `assets/player/player.ts` | Reversible animation clock, separate body/wheel masks, movement and read projection |
 | `assets/player/player-input.ts` | Keyboard and touch transformation edges through the existing semantic control channel |
@@ -282,17 +285,17 @@ the wheel contact plane, with a 10 mm character-controller offset.
 | AO | Occlusion reuses the identical ORMH red channel |
 | Emissive | Cyan eyes/headlights and amber roof markers |
 | Coat | Red clearcoat mask and green clearcoat roughness |
-| Height, curvature, edge wear, position, cavity | Bake inspection and finish inputs; these auxiliary maps are excluded from runtime publication |
+| Edge wear, position, cavity, material ID | Internal finish inputs; these auxiliary maps are excluded from runtime publication |
 
 Only the low mesh, skeleton, clips and five skinned Standard material slots reach the renderer:
 unique baked armor plus shared dark steel, bright steel, brass and rubber finishes. The high
 geometry is a bake input. No runtime modeling import or external model/texture payload is needed.
 
-The build-only Convoy cooker caches its completed five-texture finish and delivery
-mips alongside the raw native bake. Native producer identity, source inputs and
-finish version own the cache key; metadata and pixel digests reject stale or
-damaged entries. Fresh disposable source copies reuse identical results while
-each restored texture retains its own backing buffer. GUIDs bind at publication.
+The ordinary Modeling assets job builds the complete set once per parameter set. Its
+bake receives the host compute cache; the Pack product cache stores the finished assets.
+Explicit material-family IDs keep paint, bare metal, glass and rubber independent of
+their display colors. The normal cook requests only the maps the finish consumes;
+standalone AO and height are requested by the small diagnostic test instead.
 
 The template tests retain closed surfaces, unit normals, a 24,000-triangle budget, rigid plate
 lengths, bind consistency and the closed opposite-limb walk cycle. Additional tests sample the
@@ -396,18 +399,16 @@ budgets on small SDK consumers. Every geometry, determinism and runtime test sti
 
 ### Pack cooking and cache recovery
 
-`assets/character.pack.ts` declares the low/high model and deferred bake sources.
-The build plugin selected by `forge.json.roots.build` registers the Convoy surface
-cooker, which calls Modeling's `createBakeCooker` and applies the authored paint,
-roughness and clearcoat finish. Ordinary `forgeax project build` produces the
-five runtime textures and their complete 1K mip chains through the asset pipeline.
+`assets/character.pack.ts` declares one `AssetsJob` through `assetsJobSources`, with
+fixed ordinary output keys. The build plugin selected by `forge.json.roots.build`
+registers Modeling's `createMeshJobCooker`. One job builds the low/high geometry,
+rig, clips, materials and five finished 1K atlas maps, then publishes ordinary assets
+under the Pack instance's GUIDs. Model capture executes the same recipe in place.
 
-The project ships source recipes, with no default atlas JSON or separate baking
-command. The producer uses the normal DDC for the raw bake and finished textures;
-matching concurrent outputs share one atlas job. Geometry, bake settings, producer
-identity and finish version determine reuse. Source changes or missing/corrupt
-cache entries return to the same producer during normal building. Changes to the
-finish algorithm increment `CONVOY_FINISH_VERSION`.
+The source recipe and Pack parameters are authoritative. The host supplies the raw
+bake cache and owns complete Pack-product reuse, including source-closure and cooker
+identity checks. Missing or damaged derived entries rebuild through the same job.
+No separate baking command, default atlas payload or game-owned cache is required.
 
 To verify recovery, clear the project's derived cache and run `forgeax project build`
 again. No authored output needs restoring first. Each independent dimensional test

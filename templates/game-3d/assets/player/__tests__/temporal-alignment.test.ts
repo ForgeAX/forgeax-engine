@@ -10,10 +10,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { camera as cameraPlugin } from '../../camera/camera.pack.ts';
 import { sceneWorldFixture } from '../../shared/__tests__/plugin-fixture.ts';
 import playerPlugin, { ThirdPersonRig } from '../player.ts';
-import { convoyAssets } from '../convoy-model.ts';
+import { prepareConvoyAssets } from '../convoy-model.ts';
 import { PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, PLAYER_COLLIDER } from '../player-rig.ts';
 
-const convoy = convoyAssets();
+import { PACKAGE_IDS } from '../../shared/asset-refs.ts';
+const convoy = prepareConvoyAssets(512, PACKAGE_IDS.character).assets;
 
 async function temporalFixture() {
   const { world, ctx, asset, assets } = await sceneWorldFixture();

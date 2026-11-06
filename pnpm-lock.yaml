@@ -13515,6 +13515,9 @@ importers:
       '@forgeax/engine-assets-runtime':
         specifier: workspace:*
         version: link:../assets-runtime
+      '@forgeax/engine-shader-compiler':
+        specifier: workspace:*
+        version: link:../shader-compiler
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.40

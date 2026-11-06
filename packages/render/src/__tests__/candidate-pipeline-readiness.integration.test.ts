@@ -1158,7 +1158,9 @@ it.each([
     for (let turn = 0; turn < 8 && settled === undefined; turn++)
       await new Promise<void>((resolve) => setImmediate(resolve));
     expect(f.asyncPipelines.mock.calls.length).toBe(compilations);
-    const declared = declarations?.mock.results.at(-1)?.value;
+    const declared:
+      | ReturnType<typeof scenePipelinePreparation.scenePipelinePreparations>
+      | undefined = declarations?.mock.results.at(-1)?.value;
     expect(
       settled,
       `warm candidate must settle without the next RenderRecord; typed pass metadata ${JSON.stringify({ count: declared?.length, missingDemand: declared?.filter((pass) => pass.demand === undefined).length })}`,

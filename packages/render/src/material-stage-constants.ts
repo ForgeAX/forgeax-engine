@@ -1,5 +1,6 @@
 import {
   type MaterialShaderArtifact,
+  STANDARD_SHADOW_RECEPTION_OVERRIDE,
   STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
   STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
@@ -25,11 +26,27 @@ export function effectiveStandardSurfaceDiscards(
     : undefined;
 }
 
+/** Old and custom programs without this declaration keep their original reception. */
+export function effectiveStandardShadowReception(
+  artifact: MaterialShaderArtifact | undefined,
+  shadowReceiver: boolean,
+): number | undefined {
+  return artifact?.program.overrideIds.includes(STANDARD_SHADOW_RECEPTION_OVERRIDE)
+    ? Number(shadowReceiver)
+    : undefined;
+}
+
 export function materialAbiRasterConstants(
   standardTextureMask: number | undefined,
   standardSurfaceDiscards: number | undefined,
+  standardShadowReception?: number,
 ): Record<string, number> | undefined {
-  if (standardTextureMask === undefined && standardSurfaceDiscards === undefined) return undefined;
+  if (
+    standardTextureMask === undefined &&
+    standardSurfaceDiscards === undefined &&
+    standardShadowReception === undefined
+  )
+    return undefined;
   return {
     ...(standardTextureMask === undefined
       ? {}
@@ -37,17 +54,25 @@ export function materialAbiRasterConstants(
     ...(standardSurfaceDiscards === undefined
       ? {}
       : { [STANDARD_SURFACE_DISCARDS_OVERRIDE]: standardSurfaceDiscards }),
+    ...(standardShadowReception === undefined
+      ? {}
+      : { [STANDARD_SHADOW_RECEPTION_OVERRIDE]: standardShadowReception }),
   };
 }
 
-/** Texture masks also select vertex displacement; Surface discard gates are fragment-only. */
+/** Texture masks also select vertex displacement; surface and shadow gates are fragment-only. */
 export function materialVertexConstants(
   constants: Readonly<Record<string, number>> | undefined,
 ): Readonly<Record<string, number>> | undefined {
-  if (constants === undefined || !Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE))
+  if (
+    constants === undefined ||
+    (!Object.hasOwn(constants, STANDARD_SURFACE_DISCARDS_OVERRIDE) &&
+      !Object.hasOwn(constants, STANDARD_SHADOW_RECEPTION_OVERRIDE))
+  )
     return constants;
   const vertex = { ...constants };
   delete vertex[STANDARD_SURFACE_DISCARDS_OVERRIDE];
+  delete vertex[STANDARD_SHADOW_RECEPTION_OVERRIDE];
   return vertex;
 }
 

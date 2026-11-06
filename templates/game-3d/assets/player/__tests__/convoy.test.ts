@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
+import { AssetGuid, definePackageId } from '@forgeax/engine/pack/source';
 import { bakeMaps } from '@forgeax/engine/modeling';
 import { deriveAnimationTargetId } from '@forgeax/engine/animation';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { buildConvoy, convoyAssets, convoyPath, CONVOY_NORMALS, CONVOY_MAPS, convoyBakeSettings, CONVOY_TRIANGLE_BUDGET } from '../convoy-model.ts';
-import { CONVOY_FINISH_KIND, finishConvoyTextures } from '../convoy-finish.ts';
+import { buildConvoy, prepareConvoyAssets, convoyPath, CONVOY_NORMALS, convoyBakeSettings, CONVOY_TRIANGLE_BUDGET } from '../convoy-model.ts';
+import { finishConvoyTextures } from '../convoy-finish.ts';
+import { CONVOY_OUTPUT_KEYS } from '../convoy-job.ts';
+import { PACKAGE_IDS } from '../../shared/asset-refs.ts';
 import characterPack from '../../character.pack.ts';
 import { CONVOY_WHEELS, PLAYER_RIG, playerTargetPath } from '../player-rig.ts';
 
@@ -28,12 +31,18 @@ describe('Convoy native modeling delivery', () => {
     }
   });
 
-  it('exports complete rest tracks and six independent wheel rotations at the declared 1K default', { timeout: 30000 }, () => {
-    const assets = convoyAssets();
+  it('exports complete rest tracks and six independent wheel rotations at the declared 1K default', { timeout: 30000 }, async () => {
+    const instance = definePackageId('019fb7ce-3700-7000-8000-00000000c00f');
+    const assets = prepareConvoyAssets(512, instance).assets;
+    const guid = (key: string) => AssetGuid.format(AssetGuid.derive(instance, key));
+    expect(assets['rig/player-skin'].skeletonGuid).toBe(guid('rig/player-skeleton'));
+    expect(assets['material/convoy'].values?.baseColorTexture).toEqual({ texture: guid('texture/convoy-base-color') });
+    for (const slot of assets['mesh/player'].materialSlots) expect(slot.defaultMaterial).toEqual(AssetGuid.derive(instance, `material/${slot.slotName}`));
     expect(characterPack.parameters?.find(parameter => parameter.name === 'resolution')?.default).toBe(1024);
-    const textures = Object.values(assets).filter(asset => asset.kind === CONVOY_FINISH_KIND);
-    expect(textures).toHaveLength(5);
-    for (const asset of textures) expect(asset).toHaveProperty('source.params.resolution', 1024);
+    const declared = await characterPack.build({ packageId: PACKAGE_IDS.character, values: { resolution: 1024 }, readByGuid: async () => { throw new Error('Unexpected dependency'); } });
+    if (!declared.ok) throw declared.error;
+    expect(Object.keys(declared.value).sort()).toEqual([...CONVOY_OUTPUT_KEYS].sort());
+    for (const source of Object.values(declared.value)) expect(source).toHaveProperty('source.params.resolution', 1024);
     const transform = assets['animation/player-transform'];
     const wheels = assets['animation/player-wheels'];
     const valid = new Set(PLAYER_RIG.map((_, index) => deriveAnimationTargetId(playerTargetPath(index))));
@@ -50,9 +59,9 @@ describe('Convoy native modeling delivery', () => {
 
   it('bakes real high surface detail into tangent normals, AO and height', { timeout: 60_000 }, () => {
     const { bakeBase: base, bakeDetail: detail } = built;
-    const baked = bakeMaps({ base, detail, ...convoyBakeSettings(128), resolution: 128, mips: false });
+    const baked = bakeMaps({ base, detail, ...convoyBakeSettings(128), maps: [...convoyBakeSettings(128).maps, 'ao', 'height'], resolution: 128, mips: false });
     if (!baked.ok) throw baked.error;
-    const pixels = (map: typeof CONVOY_MAPS[number]) => baked.value.textures[map]!.data as Uint8Array;
+    const pixels = (map: keyof typeof baked.value.textures) => baked.value.textures[map]!.data as Uint8Array;
     const normal = pixels('normal'), ao = pixels('ao'), height = pixels('height');
     let tilted = 0, occluded = 0;
     const heights = new Set<number>();

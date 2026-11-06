@@ -90,7 +90,11 @@ import { err, ok, type Result, type RigidBodyType } from '@forgeax/engine-types'
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
 import { rapierBodyTypeFromString, rapierBodyTypeToString } from './body-type.js';
 import { applyKccTuning } from './character-controller-tuning.js';
-import { characterSynchronizationSource, requireCharacterBody } from './character-motion.js';
+import {
+  characterMovementDeltaTime,
+  characterSynchronizationSource,
+  requireCharacterBody,
+} from './character-motion.js';
 import {
   currentContactOwner,
   queryContactManifolds,
@@ -3107,6 +3111,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   moveAndSlide(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3 {
     this.assertActive('moveAndSlide');
+    const deltaTime = characterMovementDeltaTime(options);
     this.contactDeltaTime = 0;
     if (this.recoveryBlocked())
       throw new DerivedPhysicsError(
@@ -3118,7 +3123,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.preparePairIsolation(false);
     this.nativeExecuting = true;
     try {
-      return this.computeMove(entity, desiredDelta, options);
+      return this.computeMove(entity, desiredDelta, options, deltaTime);
     } finally {
       this.nativeExecuting = false;
     }
@@ -3147,7 +3152,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
    * structured PhysicsError before the World is read, so error-path tests can
    * call this without registered systems.
    */
-  private computeMove(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3 {
+  private computeMove(
+    entity: number,
+    desiredDelta: Vec3,
+    options: MoveAndSlideOptions | undefined,
+    deltaTime: number | undefined,
+  ): Vec3 {
     const RAPIER = this.rapierModule;
     const body = requireCharacterBody(entity, this.bodyForEntity(entity), RAPIER);
     const collider = body.collider(0); // D-4: zero-schema reverse lookup
@@ -3156,20 +3166,28 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     const cc = this.readCharacterController(entity);
     const ctrl = this.ensureKcc(entity, cc.offset);
     applyKccTuning(ctrl, cc);
-    if (options?.applyImpulsesToDynamicBodies === false)
+    if (deltaTime === 0 || options?.applyImpulsesToDynamicBodies === false)
       ctrl.setApplyImpulsesToDynamicBodies(false);
 
     const delta = { x: desiredDelta[0] ?? 0, y: desiredDelta[1] ?? 0, z: desiredDelta[2] ?? 0 };
-    ctrl.computeColliderMovement(
-      collider,
-      delta,
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      collider.collisionGroups(),
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier Collider in filter predicate
-      (other: any) =>
-        this.isolationColliderOwners.get(other.handle) !== entity &&
-        !this.colliderPairIsolated(collider.handle, other.handle),
-    );
+    // The KCC consumes producer time synchronously under the native-execution
+    // guard. Default live calls leave its World timestep untouched.
+    const timestep = deltaTime === undefined ? 0 : this.raw.timestep;
+    try {
+      if (deltaTime !== undefined) this.raw.timestep = deltaTime;
+      ctrl.computeColliderMovement(
+        collider,
+        delta,
+        RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+        collider.collisionGroups(),
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier Collider in filter predicate
+        (other: any) =>
+          this.isolationColliderOwners.get(other.handle) !== entity &&
+          !this.colliderPairIsolated(collider.handle, other.handle),
+      );
+    } finally {
+      if (deltaTime !== undefined) this.raw.timestep = timestep;
+    }
 
     // ── Step 2/3: read corrected movement + grounded ──
     const movement = ctrl.computedMovement() as { x: number; y: number; z: number };

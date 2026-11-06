@@ -53,6 +53,9 @@ stop after their short start section unless the task needs more.
 
 ## Run, test, build, and release
 
+- **Iterate locally:** `pnpm exec forgeax dev start` serves source; Vite/DevKit handles TypeScript and Pack assets as needed. No prior `project build`, separate asset build, or manual TypeScript compilation is required.
+- **Build and preview:** `pnpm exec forgeax project build` produces the production `dist/` through Vite and asset producers; `pnpm exec forgeax project preview` serves it. `pnpm typecheck` is a separate check, not a launch prerequisite.
+
 | User intent | Route |
 |:--|:--|
 | Create, change or locally play (default) | Local playable delivery |

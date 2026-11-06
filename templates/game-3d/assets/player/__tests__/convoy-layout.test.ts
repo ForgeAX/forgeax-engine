@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createPlayerRig, convoyJointSpecs, nativeJointName, playerJointIndex, playerTargetPath } from '../player-rig.ts';
 import { createConvoyLayout } from '../convoy-layout.ts';
 
 describe('Convoy dimension constraints', () => {
@@ -35,4 +36,22 @@ describe('Convoy dimension constraints', () => {
     expect(longer.cab).toEqual(original.cab);
     expect(longer.rear.pitch).toBe(original.rear.pitch);
   });
+});
+
+
+it('derives both rig views and animation paths from the same named hierarchy', () => {
+  const layout = createConvoyLayout({ cabWidth: 1.02, legGuideLength: 0.69 });
+  const joints = createPlayerRig(layout), specs = convoyJointSpecs(layout);
+  for (const [index, joint] of joints.entries()) {
+    expect(specs[index]!.name).toBe(nativeJointName(joint.name));
+    expect(specs[index]!.position).toEqual(joint.world);
+    expect(specs[index]!.parent).toBe(joint.parent < 0 ? null : specs[joint.parent]!.name);
+  }
+  expect(specs.find(joint => joint.name === 'shin-l')).toMatchObject({ kind: 'prismatic', axis: 'y', limits: [-layout.leg.stroke, 0] });
+  expect(specs.find(joint => joint.name === 'headslide')).toMatchObject({ kind: 'prismatic', axis: 'y', limits: [-layout.head.travel, 0], mimic: { joint: 'headslidebase', ratio: 1 } });
+  expect(specs.find(joint => joint.name === 'reartrackbase-l')).toMatchObject({ kind: 'prismatic', axis: 'x', limits: [-layout.rear.travel, 0] });
+  expect(specs.find(joint => joint.name === 'reartrack-r')).toMatchObject({ kind: 'prismatic', axis: 'x', limits: [0, layout.rear.travel], mimic: { joint: 'reartrackbase-r', ratio: 1 } });
+  expect(playerTargetPath(playerJointIndex('Foot.L'))).toEqual(['Player', 'Hips', 'Thigh.L', 'Shin.L', 'Foot.L']);
+  expect(playerTargetPath(playerJointIndex('WheelRearB.R'))).toEqual(['Player', 'Hips', 'Thigh.R', 'Shin.R', 'RearBogie.R', 'RearTrackBase.R', 'RearTrack.R', 'WheelRearB.R']);
+  expect(() => playerJointIndex('missing')).toThrow('Unknown player joint');
 });

@@ -138,21 +138,8 @@ describe('direct-light URP browser producer evidence', () => {
     await captureSession.dispose();
   });
 
-  it('captures linear HDR from the current producer attachment', async () => {
-    const capture = await captureBrowser(sceneCase);
-    const observation = capture.observations?.linearHdr;
-
-    expect(observation?.status).toBe('ready');
-    expect(observation?.format).toBe('rgba16float');
-    expect(observation?.bytes?.byteLength).toBeGreaterThan(0);
-    expect(observation?.rawHash).toMatch(/^[0-9a-f]{8,}$/);
-    expect(observation?.frameId).toBeTypeOf('number');
-    expect(observation?.pipelineId).toBe('forgeax::standard');
-    expect(observation?.backendId).toBeTypeOf('string');
-    expect(capture.config.readback?.linearReadback).toBe(true);
-    expect(capture.config.readback?.namedAttachment).toBe(true);
-  });
-
+  // Admit the cold shared renderer through the full lighting comparison first.
+  // The attachment contract retains its own capture, frames and 15-second bound.
   it('matches Three r184 at the center of deterministic point and spot receivers', async () => {
     for (const input of [pointCase, khrSpotCase] as unknown as readonly SceneCase[]) {
       const forgeax = await captureBrowser(input);
@@ -169,6 +156,21 @@ describe('direct-light URP browser producer evidence', () => {
       );
     }
   }, 120_000);
+
+  it('captures linear HDR from the current producer attachment', async () => {
+    const capture = await captureBrowser(sceneCase);
+    const observation = capture.observations?.linearHdr;
+
+    expect(observation?.status).toBe('ready');
+    expect(observation?.format).toBe('rgba16float');
+    expect(observation?.bytes?.byteLength).toBeGreaterThan(0);
+    expect(observation?.rawHash).toMatch(/^[0-9a-f]{8,}$/);
+    expect(observation?.frameId).toBeTypeOf('number');
+    expect(observation?.pipelineId).toBe('forgeax::standard');
+    expect(observation?.backendId).toBeTypeOf('string');
+    expect(capture.config.readback?.linearReadback).toBe(true);
+    expect(capture.config.readback?.namedAttachment).toBe(true);
+  });
 
   it('keeps the 96B DirectLightSlot raw channel/kind/tile bits through the browser pack transport', () => {
     const layout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;

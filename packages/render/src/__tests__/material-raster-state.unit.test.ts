@@ -1,6 +1,13 @@
+import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import { createMaterialShaderProgram } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { materialDepthStencil, supportsGpuShadowRenderState } from '../material-render-state';
+import {
+  effectiveStandardShadowReception,
+  materialAbiRasterConstants,
+  materialVertexConstants,
+} from '../material-stage-constants';
 import { Materials } from '../materials';
 import { buildPipelineForMaterialShader, type PipelineBuilderContext } from '../pipeline-builder';
 import { buildPipelineDescriptor, type PipelineSpec, renderStateHash } from '../pipeline-spec';
@@ -172,4 +179,18 @@ describe('material raster state', () => {
       );
     }
   });
+});
+
+it('keeps shadow reception fragment-only and leaves old programs unchanged', () => {
+  const artifact = (source: string) =>
+    ({ program: createMaterialShaderProgram(source) }) as MaterialShaderArtifact;
+  const declaring = artifact('@id(64002) override standardShadowReception: u32 = 1u;');
+  expect(effectiveStandardShadowReception(declaring, false)).toBe(0);
+  expect(effectiveStandardShadowReception(declaring, true)).toBe(1);
+  expect(effectiveStandardShadowReception(artifact('synthetic'), false)).toBeUndefined();
+  expect(effectiveStandardShadowReception(undefined, false)).toBeUndefined();
+  const fragment = materialAbiRasterConstants(5, 0, 0);
+  expect(fragment).toEqual({ '64000': 5, '64001': 0, '64002': 0 });
+  expect(materialVertexConstants(fragment)).toEqual({ '64000': 5 });
+  expect(fragment).toEqual({ '64000': 5, '64001': 0, '64002': 0 });
 });

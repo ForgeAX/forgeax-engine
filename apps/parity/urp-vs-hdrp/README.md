@@ -22,9 +22,10 @@ no pipeline registry or install step is involved.
 The two independent hosts initialize concurrently, then each World completes
 its first scene picture before the peer submits. This keeps a cold GPU frame
 from holding the other host's pending barrier behind native compilation.
-Startup logs identify host preparation, World preparation and completed-frame boundaries. Both
-ready completion receipts are required before either capture hook is published.
-The Browser startup deadline remains 30 seconds, each ready-frame deadline
+Startup logs identify host preparation, World preparation and completed-frame boundaries.
+Both capture hooks are published immediately and await the same initialization promise;
+both ready completion receipts are required before either hook draws or reads pixels.
+The Browser hook-availability deadline remains 30 seconds, each ready-frame deadline
 remains 15 seconds and the regression case remains bounded at 90 seconds.
 Both renderers, snapshots and pixel comparisons retain the ordinary scene path.
 

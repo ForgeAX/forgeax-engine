@@ -180,6 +180,31 @@ describe('existing shadow culling readback producer receipt', () => {
     f.scene.dispose();
   });
 
+  it('skips the counts-only copy while no owner will read it, without a stale observation', async () => {
+    const f = await fixture(true);
+    const mapped = mappedCounters(f.view);
+    f.view._setCullingReadbackDemand(false);
+    expect(f.encode()).toBe(0);
+    // Nothing was copied, so nothing is readable or mapped.
+    expect(await f.view.readCullingCounts()).toBeUndefined();
+    expect(mapped.mapAsync).not.toHaveBeenCalled();
+    f.view._setCullingReadbackDemand(true);
+    expect(f.encode()).toBe(1);
+    const pending = f.view.readCullingCounts();
+    mapped.settle();
+    expect(await pending).toMatchObject({ texelCulled: 6, cameraCulled: 8 });
+    f.view.dispose();
+    f.scene.dispose();
+  });
+
+  it('keeps complete-readback copies regardless of counts-only demand', async () => {
+    const f = await fixture();
+    f.view._setCullingReadbackDemand(false);
+    expect(f.encode()).toBe(3);
+    f.view.dispose();
+    f.scene.dispose();
+  });
+
   it('keeps default copies/maps and legacy counters unchanged without diagnostic decoding', async () => {
     const f = await fixture();
     const mapped = mappedCounters(f.view);

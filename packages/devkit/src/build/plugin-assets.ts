@@ -223,9 +223,9 @@ async function hasUnboundedFilesystemReads(
     if (!/\.[cm]?[jt]sx?$/.test(path)) continue;
     const source = await snapshot.readText(path);
     if (
-      ts
-        .preProcessFile(source, true, true)
-        .importedFiles.some(({ fileName }) => /^(?:node:)?fs(?:\/promises)?$/.test(fileName)) ||
+      (await snapshot.imports(path, { includeTypeOnly: true })).some((specifier) =>
+        /^(?:node:)?fs(?:\/promises)?$/.test(specifier),
+      ) ||
       /\b(?:readFile(?:Sync)?|readdir(?:Sync)?|createReadStream)\s*\(/.test(source)
     )
       return true;

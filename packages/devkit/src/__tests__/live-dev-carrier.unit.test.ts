@@ -125,7 +125,9 @@ const fixtures = vi.hoisted(() => {
     return child;
   });
   const createBrowserCapture = vi.fn(() => browser);
-  const readLiveProjectInputs = vi.fn(async () => 'fixture-inputs');
+  const readLiveProjectInputs = vi.fn(
+    async (_root?: string, _paths?: readonly string[]) => 'fixture-inputs',
+  );
   return {
     target,
     page,
@@ -145,7 +147,8 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: fixtures.spawn,
 }));
 vi.mock('../browser-capture.js', () => ({ createBrowserCapture: fixtures.createBrowserCapture }));
-vi.mock('../live-project-inputs.js', () => ({
+vi.mock('../live-project-inputs.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../live-project-inputs.js')>()),
   readLiveProjectInputs: fixtures.readLiveProjectInputs,
 }));
 
@@ -241,6 +244,38 @@ beforeEach(() => {
 });
 
 describe('live DevKit borrowed carrier boundary', () => {
+  it('applies the project preparation deadline to the backend child before browser startup', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-preparation-budget-'));
+    const port = await freePort();
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({
+        name: 'preparation-budget',
+        type: 'module',
+        forgeax: { startupTimeoutMs: 50 },
+      }),
+    );
+    // The child remains alive but never publishes readiness.
+    fixtures.spawn.mockImplementationOnce(() => {
+      fixtures.child.exitCode = null;
+      return fixtures.child;
+    });
+    const daemon = runLiveDevDaemon(root, port);
+    try {
+      await vi.waitFor(async () => {
+        expect(await request(port, '/status', 'GET')).toMatchObject({
+          ok: true,
+          value: { phase: 'failed', error: 'live project backend build timed out' },
+        });
+      });
+      expect(fixtures.browser.open).not.toHaveBeenCalled();
+    } finally {
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('fails runtime verification for faults, blocked observation and replaced executions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-verify-'));
     const port = await freePort();
@@ -985,6 +1020,153 @@ describe('live observation diagnostics', () => {
 });
 
 describe('live readiness waiting', () => {
+  it.each([
+    'covered',
+    'newer',
+    'explicit',
+  ] as const)('reconciles pending input work at compiler readiness (%s)', async (reason) => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-covered-input-'));
+    const port = await freePort();
+    fixtures.browser.open.mockImplementation(async () => {
+      // A real first frame follows page bridge attachment, not the mock's
+      // immediate waitForFunction completion before the socket can connect.
+      await vi.waitFor(async () =>
+        expect(await request(port, '/status', 'GET')).toMatchObject({
+          value: { bridgeConnected: true },
+        }),
+      );
+      return fixtures.session;
+    });
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.page.evaluate.mockResolvedValue('2');
+    let changed = false;
+    let observedChange = false;
+    let publishReady: (() => void) | undefined;
+    let readyStatus: unknown;
+    fixtures.readLiveProjectInputs.mockImplementation(async (_root, paths) => {
+      if (paths !== undefined) return reason === 'newer' ? 'newer-inputs' : 'accepted-inputs';
+      if (changed) {
+        observedChange = true;
+        return 'changed-broad-inputs';
+      }
+      return 'fixture-inputs';
+    });
+    fixtures.spawn.mockImplementationOnce((_command, args) => {
+      publishReady = () =>
+        fixtures.child.stdout.emit(
+          'data',
+          `${JSON.stringify({
+            ready: true,
+            generation: Number(args[3]),
+            url: fixtures.project.url,
+            inputPaths: [join(root, 'assets/plugin.ts')],
+            inputVersion: 'accepted-inputs',
+          })}\n`,
+        );
+      return fixtures.child;
+    });
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax/session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+      onReady: (status) => {
+        readyStatus = status;
+      },
+    });
+    const bridge = reconnectingBridge(port, (message) =>
+      message.type === 'status' ? { worldIdentity: 'covered-world' } : {},
+    );
+    try {
+      await vi.waitFor(() => expect(publishReady).toBeDefined());
+      changed = true;
+      // The input change is observed before the successful compiler publishes
+      // its accepted scope/version; that readiness already covers the request.
+      await vi.waitFor(() => expect(observedChange).toBe(true), { timeout: 3000 });
+      const explicit = reason === 'explicit' ? request(port, '/reload', 'POST') : undefined;
+      // Let the HTTP request enter the owner before publishing the child.
+      if (explicit) await new Promise((resolve) => setImmediate(resolve));
+      publishReady?.();
+      await vi.waitFor(() => expect(readyStatus).toBeDefined());
+      await vi.waitFor(async () =>
+        expect(await request(port, '/status', 'GET')).toMatchObject({ value: { phase: 'ready' } }),
+      );
+      await explicit;
+      expect(fixtures.spawn).toHaveBeenCalledTimes(reason === 'covered' ? 1 : 2);
+    } finally {
+      bridge.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('does not rebuild unchanged input when a pending broad scan finishes after compiler scope adoption (rejected: %s)', async (rejected) => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-scope-adoption-'));
+    const port = await freePort();
+    await mkdir(join(root, '.forgeax'), { recursive: true });
+    fixtures.page.evaluate.mockResolvedValue('2');
+    let hold = false;
+    let release: ((value: string) => void) | undefined;
+    let rejectScan: ((error: Error) => void) | undefined;
+    let publishReady: (() => void) | undefined;
+    let readyStatus: unknown;
+    fixtures.readLiveProjectInputs.mockImplementation(async (_root, paths) => {
+      if (paths !== undefined) return 'scoped-inputs';
+      if (hold)
+        return new Promise<string>((resolve, reject) => {
+          release = resolve;
+          rejectScan = reject;
+        });
+      return 'fixture-inputs';
+    });
+    fixtures.spawn.mockImplementationOnce((_command, args) => {
+      hold = true;
+      publishReady = () =>
+        fixtures.child.stdout.emit(
+          'data',
+          `${JSON.stringify({
+            ready: true,
+            generation: Number(args[3]),
+            url: fixtures.project.url,
+            inputPaths: [join(root, 'assets/plugin.ts')],
+            inputVersion: 'scoped-inputs',
+          })}\n`,
+        );
+      return fixtures.child;
+    });
+    const daemon = runLiveDevDaemon(root, port, join(root, '.forgeax/session.json'), {
+      carrier: {} as BrowserCarrierAdapter,
+      onReady: (status) => {
+        readyStatus = status;
+      },
+    });
+    const bridge = reconnectingBridge(port, (message) =>
+      message.type === 'status' ? { worldIdentity: 'scope-world' } : {},
+    );
+    try {
+      await vi.waitFor(() => expect(publishReady).toBeDefined());
+      const observation = request(port, '/status', 'GET');
+      await vi.waitFor(() => expect(release).toBeDefined());
+      publishReady?.();
+      if (rejected) rejectScan?.(new Error('obsolete broad-scope file was removed'));
+      else release?.('fixture-inputs');
+      await observation;
+      await vi.waitFor(() => expect(readyStatus).toBeDefined());
+      await vi.waitFor(async () =>
+        expect(await request(port, '/status', 'GET')).toMatchObject({ value: { phase: 'ready' } }),
+      );
+      expect(fixtures.spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      release?.('fixture-inputs');
+      fixtures.readLiveProjectInputs.mockImplementation(async () => 'fixture-inputs');
+      bridge.close();
+      await request(port, '/stop', 'POST');
+      await daemon;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('runs commands against the rebuilt runtime instead of rejecting transient states', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-live-ready-wait-'));
     const port = await freePort();

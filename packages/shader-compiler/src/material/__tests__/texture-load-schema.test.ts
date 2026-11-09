@@ -34,7 +34,7 @@ it.each([
 #import forgeax_material::parameters::{baseColorTexture}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   let color = textureLoad(baseColorTexture, vec2<i32>(0), 0);
-  return SurfaceData(color.rgb, input.vertexNormalWS, 0.0, 0.95, vec3<f32>(0.0), 1.0, color.a, 0.0);
+  return SurfaceData(color.rgb, input.vertexNormalWS, 0.0, 0.95, vec3<f32>(0.0), 1.0, color.a, 0.0, 0.0);
 }`,
   };
   const material: MaterialAsset = {

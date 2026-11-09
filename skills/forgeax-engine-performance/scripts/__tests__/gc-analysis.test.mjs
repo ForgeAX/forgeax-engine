@@ -270,6 +270,26 @@ test('natural observation excludes terminal/crossing events and retains whole tr
   assert.equal(result.profiles[0].boundaryCounters.allocatedBytes, null);
 });
 
+test('natural GC rejects owned object-statistics instrumentation, including crossing scopes', () => {
+  const window = { startTime: 15, endTime: 1000015 };
+  for (const stats of [
+    event('V8.GC_OBJECT_DUMP_STATISTICS', 30, 10),
+    event('V8.GC_OBJECT_DUMP_STATISTICS', 5, 20),
+    event('V8.GC_Objects_Stats', 30, 0, { ph: 'I' }),
+  ]) {
+    const t = trace();
+    t.traceEvents.push(stats);
+    assert.throws(() => summarizeNativeGc(t, [marker], window), /object statistics/i);
+    assert.equal(summarizeNativeGc(t, [marker]).profiles[0].major.count, 2);
+  }
+  const t = trace();
+  t.traceEvents.push(
+    event('V8.GC_OBJECT_DUMP_STATISTICS', 30, 10, { tid: 7 }),
+    event('V8.GC_OBJECT_DUMP_STATISTICS', 2000000, 10),
+  );
+  assert.equal(summarizeNativeGc(t, [marker], window).profiles[0].major.count, 1);
+});
+
 test('native GC ambiguous ownership and malformed clocks stay invalid', () => {
   for (const change of [
     (t) => t.traceEvents.push(t.traceEvents[0]),

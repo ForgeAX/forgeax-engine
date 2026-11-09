@@ -99,6 +99,8 @@ export interface ShowOptions {
   readonly disc?: MaterialHandle;
   /** Logical render target authoring of the realm (the Renderer, or the Worker Host bridge). */
   readonly renderTargets?: RenderTargetAuthoring;
+  /** Authored planar target size; defaults to the 960x540 presentation preset. */
+  readonly reflectionSize?: { readonly width: number; readonly height: number };
 }
 
 /** Package of show.pack.ts and the source key of its polished disc (planar mirroring is cooked). */
@@ -520,8 +522,8 @@ export function createShow(world: World, assets: AssetRegistry, options: ShowOpt
   if (mirrored) {
     const created = (options.renderTargets as RenderTargetAuthoring).createRenderTarget({
       shape: '2d',
-      width: 960,
-      height: 540,
+      width: options.reflectionSize?.width ?? 960,
+      height: options.reflectionSize?.height ?? 540,
       format: 'rgba16float',
       sampleCount: 1,
       mipLevels: 1,

@@ -878,7 +878,9 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       const attachment = pass.pass.descriptor.colorAttachments.find(
         (candidate) => candidate.view === access.resource,
       );
-      return attachment?.loadOp === 'load' ? READ_WRITE_ACCESS_MODE : base;
+      return attachment?.loadOp === 'load' || typeof attachment?.loadOp === 'function'
+        ? READ_WRITE_ACCESS_MODE
+        : base;
     }
     if (access.usage === 'depth-stencil-write') {
       const attachment = pass.pass.descriptor.depthStencilAttachment;

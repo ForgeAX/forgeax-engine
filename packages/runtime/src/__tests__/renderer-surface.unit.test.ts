@@ -289,9 +289,9 @@ describe('M3 backend admission and fallback truthfulness', () => {
   });
 
   it.each([
-    ['pcssMedium', 'pcf3'],
-    ['pcssHigh', 'pcf5'],
-  ] as const)('maps WebGL2 %s to fixed effective %s', async (requested, effective) => {
+    'pcssMedium',
+    'pcssHigh',
+  ] as const)('admits WebGL2 %s through shader depth comparisons', async (requested) => {
     await expect(
       resolveDirectionalShadowAdmission({
         backendKind: 'wgpu-webgl2',
@@ -300,9 +300,9 @@ describe('M3 backend admission and fallback truthfulness', () => {
       }),
     ).resolves.toMatchObject({
       requested,
-      effective,
-      status: 'fallback',
-      fallbackReason: 'webgl2-unsupported',
+      effective: requested,
+      status: 'accepted',
+      lastKnownGood: false,
       pixelEvidence: 'available',
     });
   });
@@ -345,9 +345,11 @@ describe('M3 backend admission and fallback truthfulness', () => {
     const result = await resolveDirectionalShadowAdmission({
       backendKind: 'wgpu-webgl2',
       requested: 'pcssMedium',
-      candidate: 'accepted',
+      candidate: 'failed',
+      lastKnownGood: 'pcf3',
     });
-    expect(result.fallbackReason).toBe('webgl2-unsupported');
+    expect(result.fallbackReason).toBe('candidate-failed');
+    expect(result.status).toBe('rejected');
     expect(result.effective).toBe('pcf3');
     expect(result).not.toMatchObject({ effective: 'pcssMedium' });
   });

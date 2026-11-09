@@ -46,11 +46,13 @@ async function fixture() {
     runtime: {
       device,
       deviceScope: DeviceScope.create(1, 'deferred-program-owner'),
-      standardDeferredShaders: {
-        unclustered: 'fit',
-        unclusteredLut: 'lut',
-        clustered: 'cluster',
-        clusteredLut: 'cluster-lut',
+      standardSceneShaders: {
+        deferred: {
+          unclustered: 'fit',
+          unclusteredLut: 'lut',
+          clustered: 'cluster',
+          clusteredLut: 'cluster-lut',
+        },
       },
       shaderModuleFactory: {
         createShaderModule: (desc: Parameters<typeof createShaderModuleImmediate>[1]) =>
@@ -189,10 +191,10 @@ it('separates target formats, fragment entries, cluster/LUT contracts and curren
     ];
     distinct.push(f.build()());
     f.frame.validatedOrdered = [];
-    f.frame.runtime.standardDeferredShaders.unclustered = 'replacement';
+    f.frame.runtime.standardSceneShaders.deferred.unclustered = 'replacement';
     distinct.push(f.build()());
     expect(new Set([base, ...distinct]).size).toBe(7);
-    f.frame.runtime.standardDeferredShaders.unclustered = 'fit';
+    f.frame.runtime.standardSceneShaders.deferred.unclustered = 'fit';
     expect(f.build()()).toBe(base);
     expect(f.makePipeline).toHaveBeenCalledTimes(7);
   } finally {

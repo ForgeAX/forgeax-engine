@@ -6,8 +6,9 @@
 
 #define_import_path forgeax_hdrp::cluster_forward
 
-#import forgeax_pbr::lighting_punctual::{evalPoint, evalSpot, evalSpotShadowed}
+#import forgeax_pbr::lighting_punctual::{evalPoint, evalSpot, evalSpotShadowed, punctualRangeReaches, spotConeReaches}
 #import forgeax_pbr::lighting_attenuation::{projectSpotUv}
+#import forgeax_pbr::brdf::{prepareDirectMultiScatterView, DirectMultiScatterView, directLightingAlpha}
 #import forgeax_view::common::{view}
 #ifdef PROJECTOR_AVAILABLE
 #import forgeax_view::common::{projectorTexture, projectorSampler}
@@ -119,6 +120,7 @@ fn evaluate_cluster_light(
   alpha_sq   : f32,
   f0         : vec3<f32>,
   pixel: vec2<f32>,
+  ms: DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -126,6 +128,11 @@ fn evaluate_cluster_light(
 ) -> vec3<f32> {
   // The low byte is the closed kind; Spot packs its PCF width above it.
   let kind = light.kind_and_shadow.x & 0xffu;
+  // Exact-zero gates shared with the Standard cluster loop.
+  if ((kind == KIND_POINT || kind == KIND_SPOT)
+      && !punctualRangeReaches(light.position.xyz, world_pos, light.position.w)) {
+    return vec3<f32>(0.0);
+  }
   if (kind == KIND_POINT) {
 #ifdef POINT_SHADOW_AVAILABLE
     let layer = bitcast<i32>(light.kind_and_shadow.y);
@@ -137,7 +144,7 @@ fn evaluate_cluster_light(
         bitcast<f32>(light.kind_and_shadow.z),
         bitcast<f32>(light.kind_and_shadow.w),
         0.08, 0.6 * 2.0 / 512.0, vec4<f32>(3.0, 0.0, 1.0, 6.0), light.position.xyz, pixel,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -147,13 +154,18 @@ fn evaluate_cluster_light(
     return evalPoint(
       light.position.xyz, light.color.xyz, light.position.w, light.color.w,
       world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
     );
   }
   if (kind == KIND_SPOT) {
+    if (!spotConeReaches(
+      light.position.xyz, light.direction.xyz, light.color.w, light.direction.w, world_pos,
+    )) {
+      return vec3<f32>(0.0);
+    }
     let tile = bitcast<i32>(light.kind_and_shadow.y);
     if (tile >= 0) {
       let projector = sampleClusterSpotProjector(view.spotLightViewProj[tile], world_pos);
@@ -166,7 +178,7 @@ fn evaluate_cluster_light(
         view.spotLightViewProj[tile], tile, 0.00001, 0.05,
         vec4<f32>(max(1.0, bitcast<f32>(light.kind_and_shadow.w)), 0.0, 6.0, 1.0),
         clamp(bitcast<f32>(light.kind_and_shadow.z), 0.0, 1.0), pixel,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -178,7 +190,7 @@ fn evaluate_cluster_light(
         light.position.xyz, light.direction.xyz, light.color.xyz,
         light.color.w, light.direction.w, light.position.w,
         world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -188,7 +200,7 @@ fn evaluate_cluster_light(
       light.position.xyz, light.direction.xyz, light.color.xyz,
       light.color.w, light.direction.w, light.position.w,
       world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, vec3<f32>(0.0),
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -219,6 +231,14 @@ fn evaluate_cluster_lights(
   let far = cluster_uniform.near_far_log.y;
   let log_far = cluster_uniform.near_far_log.z;
   var total_radiance = vec3<f32>(0.0);
+  // Per-pixel view terms of the direct multi-scatter lobe, hoisted out of
+  // the light loop.
+  let ms = prepareDirectMultiScatterView(directLightingAlpha(alpha_sq), max(dot(normal, view_dir), 1e-5), f0,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  );
 
 #if STORAGE_BUFFER_AVAILABLE == true
   let cluster_idx = ndc_position_to_cluster(ndc, view_z, gx, gy, gz, near, far, log_far);
@@ -231,7 +251,7 @@ fn evaluate_cluster_lights(
     total_radiance += evaluate_cluster_light(
       light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
       (ndc.xy * vec2<f32>(0.5, -0.5) + 0.5) * vec2<f32>(view.viewportWidth, view.viewportHeight),
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -246,7 +266,8 @@ fn evaluate_cluster_lights(
     total_radiance += evaluate_cluster_light(
       light_data_uniform[i], world_pos, normal, view_dir,
       base_color, metallic, alpha_sq, f0,
-    useDirectDfgLut,
+      (ndc.xy * vec2<f32>(0.5, -0.5) + 0.5) * vec2<f32>(view.viewportWidth, view.viewportHeight),
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif

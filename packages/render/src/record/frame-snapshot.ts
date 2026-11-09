@@ -554,7 +554,9 @@ export interface RenderFrameState {
   /** Final-submit Standard IBL binding-chain receipt for this frame. */
   iblBindingInspection?: IblBindingInspection;
   /** Physical AO region requested inside the no-storage Cluster texture. */
-  standardClusterAoExtent?: { readonly width: number; readonly height: number } | undefined;
+  standardClusterTextureExtent?:
+    | import('../pipeline/standard-lighting/texture').StandardClusterTextureExtent
+    | undefined;
   /** Renderer-internal conformance selection; never populated from authored pipeline data. */
   gtaoExecutionOverride?: 'fragment' | 'compute' | undefined;
   /** Current selected view's Standard surface producer admission for stock graph validation. */
@@ -760,6 +762,8 @@ export interface RenderFrameState {
    */
   warnedMultiSkylight: boolean;
   warnedMultiSkybox: boolean;
+  /** Once-warn latch for castShadow DirectionalLights beyond the CSM owner. */
+  warnedIgnoredDirectionalShadow: boolean;
   /** feat-20260531-skybox-env-background M3 / w20: once-warn when camera
    * tonemap is 'none' but a SkyboxBackground entity exists. Skybox needs
    * the HDR render target allocated by the tonemap path; without it the
@@ -951,6 +955,12 @@ export interface RenderFrameState {
    * shadow-casting spots means zero spot shadow passes (AC-03).
    */
   spotShadowSnapshots: readonly SpotLightSnapshot[];
+  /**
+   * Shadow views whose light emits zero radiance this frame (point atlas
+   * layers, spot tiles). Their casters are not rastered while dark; the view
+   * re-rasters in full on the first frame it emits again.
+   */
+  darkShadowViews?: { readonly point: ReadonlySet<number>; readonly spot: ReadonlySet<number> };
   /**
    * The shadow params buffer and the retained light roster arrays its last
    * accepted write came from; an unchanged roster skips the rewrite.

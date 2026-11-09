@@ -9,7 +9,7 @@ export default defineFeature({
   catalog: 'Directional CSM/PCSS',
   kind: 'visual',
   summary:
-    'The sun renders 4 cascades with the pcssHigh filter: tall pillars cast long shadows whose penumbra widens with distance from the caster.',
+    'WebGPU and WebGL2 render 4 cascades with the pcssHigh filter: tall pillars cast long shadows whose penumbra widens with distance from the caster.',
   expect:
     'ON: dark shadows stretch from the colored pillars across the floor, sharp at the base and soft at the tip. OFF: castShadow = false and every shadow disappears. Checks: status accepted, effective pcssHigh, 4 cascades.',
   setup({ world, app }) {

@@ -167,6 +167,12 @@ const SHADOW_CAMERA_CULL_SLABS = 8;
 const CAMERA_CULLED_COUNTER_OFFSET = OCCLUSION_CULLED_COUNTER_OFFSET + 1;
 const COUNTER_WORDS = CAMERA_CULLED_COUNTER_OFFSET + 1;
 const COUNTER_STRIDE = COUNTER_WORDS * 4;
+/** Per 64-candidate tile: level counts, level prefixes and 64 four-word records. */
+const ORDER_TILE_WORDS = 2 * LOD_ROW_CAPACITY + 64 * 4;
+const ORDER_SCAN_LANES = 256;
+/** Batch bases plus one tile block per 64 candidates. */
+const orderScratchWords = (batchCapacity: number, candidateCapacity: number): number =>
+  batchCapacity * LOD_ROW_CAPACITY + Math.ceil(candidateCapacity / 64) * ORDER_TILE_WORDS;
 const INDIRECT_COMMAND_BYTES = GPU_DRIVEN_INDIRECT_COMMAND_BYTES;
 
 export type GpuLodLane = 'gpu' | 'cpu';
@@ -270,6 +276,8 @@ struct ViewConstants {
   suppressionBase: u32,
   resourceRoot: u32,
   capsuleDirectional: u32,
+  // First counters word of the visible-order scratch (see orderTileBase).
+  orderBase: u32,
   // A shadow view sets lod.clamp: its casters never raster coarser than SHADOW_LOD_COARSEST.
   lod: LodViewConstants,
   occlusion: OcclusionConstants,
@@ -551,28 +559,40 @@ fn primitiveHeight(primitive: PrimitiveRecord, rootWorld: mat4x4<f32>) -> f32 {
   );
 }
 
-// Append one visible item to the batch's per-level segment; each segment is an
+// Visible items are placed in candidate order, never in atomic arrival order:
+// with discard-free opaque programs the rasterizer resolves equal-depth and
+// overlapping fragments by submission order, so an arrival-ordered segment
+// changes pixels from frame to frame. The cull records each admitted
+// candidate and counts it per 64-candidate tile; scanVisibleOrder turns the
+// tile counts into per-level prefixes, and placeVisibleOrder writes every
+// item at its batch-local rank.
+//
+// Scratch layout after the counters' other regions: eight batch bases per
+// batch, then one block per tile of [8 counts, 8 prefixes, 64 records of
+// (flags, instance, material, fade)]. Flags: bit 0 admitted, bits 1-4 level,
+// bit 5 paired with level + 1, bits 6+ batch index.
+fn orderBatchBase(batchIndex: u32, level: u32) -> u32 {
+  return view.orderBase + batchIndex * ${LOD_ROW_CAPACITY}u + level;
+}
+fn orderTileBase(tile: u32) -> u32 {
+  return view.orderBase + view.batchCapacity * ${LOD_ROW_CAPACITY}u + tile * ${ORDER_TILE_WORDS}u;
+}
+fn orderRecord(candidateIndex: u32) -> u32 {
+  return orderTileBase(candidateIndex >> 6u) + ${2 * LOD_ROW_CAPACITY}u + (candidateIndex & 63u) * 4u;
+}
+fn clearOrderRecord(candidateIndex: u32) {
+  if (candidateIndex >= view.candidateCount) { return; }
+  atomicStore(&counters[orderRecord(candidateIndex)], 0u);
+}
+
+// Count one visible item of the batch's per-level segment; each segment is an
 // independent indirect command sized by the batch's visible capacity.
-fn appendVisible(
-  batchIndex: u32,
-  segmentBase: u32,
-  visibleCapacity: u32,
-  level: u32,
-  item: vec4<u32>,
-  late: bool,
-) {
+fn countVisible(batchIndex: u32, candidateIndex: u32, level: u32) {
   let localVisible = atomicAdd(&counters[levelVisibleIndex(batchIndex, level)], 1u);
-  if (localVisible >= visibleCapacity) {
+  if (localVisible >= batchWord(batchIndex, 1u)) {
     atomicStore(&counters[overflowIndex(batchIndex)], 1u);
-    return;
   }
-  visibleIndices[segmentBase + localVisible] = item;
-  if (late) {
-    // Late appends continue after the early prefix finalizeView stored, so
-    // the mirror index is the item's rank within the late suffix.
-    let early = atomicLoad(&counters[earlyVisibleIndex(batchIndex, level)]);
-    visibleIndices[view.occlusion.lateVisibleBase + segmentBase + localVisible - early] = item;
-  }
+  atomicAdd(&counters[orderTileBase(candidateIndex >> 6u) + level], 1u);
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
@@ -618,7 +638,6 @@ fn appendCandidate(
   candidate: CandidateRecord,
   instanceIndex: u32,
   lod: LodCrossfade,
-  late: bool,
 ) {
   let level = lod.level;
   var work = batchLod(candidate.batchIndex, level).indexCount;
@@ -640,30 +659,16 @@ fn appendCandidate(
   );
   var materialIndex = 0u;
   if (materialAddress != 0u) { materialIndex = sceneInputs[materialAddress + ${GPU_MATERIAL_DESCRIPTOR.payload}u]; }
-  let item = vec4<u32>(
-    instanceIndex,
-    materialIndex,
-    candidateIndex,
-    bitcast<u32>(lod.fade),
+  let record = orderRecord(candidateIndex);
+  atomicStore(&counters[record + 1u], instanceIndex);
+  atomicStore(&counters[record + 2u], materialIndex);
+  atomicStore(&counters[record + 3u], bitcast<u32>(lod.fade));
+  atomicStore(
+    &counters[record],
+    1u | (level << 1u) | select(0u, 32u, lod.paired) | (candidate.batchIndex << 6u),
   );
-  appendVisible(
-    candidate.batchIndex,
-    batchWord(candidate.batchIndex, 0u) + level * batchWord(candidate.batchIndex, 8u),
-    batchWord(candidate.batchIndex, 1u),
-    level,
-    item,
-    late,
-  );
-  if (lod.paired) {
-    appendVisible(
-      candidate.batchIndex,
-      batchWord(candidate.batchIndex, 0u) + (level + 1u) * batchWord(candidate.batchIndex, 8u),
-      batchWord(candidate.batchIndex, 1u),
-      level + 1u,
-      vec4<u32>(item.xyz, bitcast<u32>(-lod.fade)),
-      late,
-    );
-  }
+  countVisible(candidate.batchIndex, candidateIndex, level);
+  if (lod.paired) { countVisible(candidate.batchIndex, candidateIndex, level + 1u); }
 }
 
 struct EarlyCandidate {
@@ -711,12 +716,12 @@ fn appendEarly(candidateIndex: u32, early: EarlyCandidate) {
     early.candidate,
     early.instanceIndex,
     early.lod,
-    false,
   );
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn cullView(@builtin(global_invocation_id) id: vec3<u32>) {
+  clearOrderRecord(id.x);
   var early: EarlyCandidate;
   if (admitEarly(id.x, &early)) { appendEarly(id.x, early); }
 }
@@ -822,6 +827,7 @@ fn screenRectOccluded(
 fn cullViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
   let candidateIndex = id.x;
   if (candidateIndex >= view.candidateCount) { return; }
+  clearOrderRecord(candidateIndex);
   let candidate = candidateAt(candidateIndex);
   if (batchWord(candidate.batchIndex, 1u) == 0u) { return; }
   let primitive = candidatePrimitive(candidate, candidateIndex);
@@ -848,8 +854,142 @@ fn cullViewLate(@builtin(global_invocation_id) id: vec3<u32>) {
     candidate,
     instanceIndex,
     candidateLod(candidate, primitive, rootWorld),
-    true,
   );
+}
+
+var<workgroup> orderLaneSums: array<array<u32, ${LOD_ROW_CAPACITY}>, ${ORDER_SCAN_LANES}>;
+var<workgroup> orderLaneFlags: array<u32, ${WORKGROUP_SIZE}>;
+
+// One workgroup: tile counts become exclusive per-level prefixes over every
+// candidate before the tile, and each batch records the prefix at its first
+// candidate. Counts are cleared for the next phase.
+@compute @workgroup_size(${ORDER_SCAN_LANES})
+fn scanVisibleOrder(@builtin(local_invocation_index) lane: u32) {
+  let tiles = (view.candidateCount + 63u) / 64u;
+  let span = (tiles + ${ORDER_SCAN_LANES - 1}u) / ${ORDER_SCAN_LANES}u;
+  let first = min(lane * span, tiles);
+  let end = min(first + span, tiles);
+  var sums: array<u32, ${LOD_ROW_CAPACITY}>;
+  for (var tile = first; tile < end; tile += 1u) {
+    let base = orderTileBase(tile);
+    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
+      sums[level] += atomicLoad(&counters[base + level]);
+    }
+  }
+  orderLaneSums[lane] = sums;
+  workgroupBarrier();
+  var running: array<u32, ${LOD_ROW_CAPACITY}>;
+  for (var other = 0u; other < lane; other += 1u) {
+    let counted = orderLaneSums[other];
+    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) { running[level] += counted[level]; }
+  }
+  for (var tile = first; tile < end; tile += 1u) {
+    let base = orderTileBase(tile);
+    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
+      let count = atomicLoad(&counters[base + level]);
+      atomicStore(&counters[base + ${LOD_ROW_CAPACITY}u + level], running[level]);
+      atomicStore(&counters[base + level], 0u);
+      running[level] += count;
+    }
+  }
+  storageBarrier();
+  workgroupBarrier();
+  for (var batchIndex = lane; batchIndex < view.batchCount; batchIndex += ${ORDER_SCAN_LANES}u) {
+    let start = batchWord(batchIndex, 7u);
+    if (start >= view.candidateCount) { continue; }
+    let tileBase = orderTileBase(start >> 6u);
+    var base: array<u32, ${LOD_ROW_CAPACITY}>;
+    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
+      base[level] = atomicLoad(&counters[tileBase + ${LOD_ROW_CAPACITY}u + level]);
+    }
+    for (var candidateIndex = start & ~63u; candidateIndex < start; candidateIndex += 1u) {
+      let flags = atomicLoad(&counters[orderRecord(candidateIndex)]);
+      if ((flags & 1u) == 0u) { continue; }
+      let level = min((flags >> 1u) & 15u, ${LOD_ROW_CAPACITY - 1}u);
+      base[level] += 1u;
+      if ((flags & 32u) != 0u) { base[min(level + 1u, ${LOD_ROW_CAPACITY - 1}u)] += 1u; }
+    }
+    for (var level = 0u; level < ${LOD_ROW_CAPACITY}u; level += 1u) {
+      atomicStore(&counters[orderBatchBase(batchIndex, level)], base[level]);
+    }
+  }
+}
+
+// Late items follow the early prefix finalizeView stored; the mirror index is
+// the item's rank within the late suffix.
+fn placeVisible(
+  batchIndex: u32,
+  candidateIndex: u32,
+  lane: u32,
+  level: u32,
+  item: vec4<u32>,
+  late: bool,
+) {
+  var rank =
+    atomicLoad(&counters[orderTileBase(candidateIndex >> 6u) + ${LOD_ROW_CAPACITY}u + level]) -
+    atomicLoad(&counters[orderBatchBase(batchIndex, level)]);
+  for (var other = 0u; other < lane; other += 1u) {
+    let flags = orderLaneFlags[other];
+    if ((flags & 1u) == 0u) { continue; }
+    let otherLevel = (flags >> 1u) & 15u;
+    if (otherLevel == level || ((flags & 32u) != 0u && otherLevel + 1u == level)) { rank += 1u; }
+  }
+  var slot = rank;
+  if (late) { slot += atomicLoad(&counters[earlyVisibleIndex(batchIndex, level)]); }
+  if (slot >= batchWord(batchIndex, 1u)) { return; }
+  let segmentBase = batchWord(batchIndex, 0u) + level * batchWord(batchIndex, 8u);
+  visibleIndices[segmentBase + slot] = item;
+  if (late) { visibleIndices[view.occlusion.lateVisibleBase + segmentBase + rank] = item; }
+}
+
+// Visible item ABI: x = GPU Scene instance row, y = scene material row,
+// z = the view candidate row for every deformation,
+// w = bitcast LOD crossfade. Submeshes share an instance row, so per-draw
+// tables (Surface frame rows) key by the candidate row.
+fn placeVisibleItems(candidateIndex: u32, lane: u32, late: bool) {
+  var flags = 0u;
+  if (candidateIndex < view.candidateCount) {
+    flags = atomicLoad(&counters[orderRecord(candidateIndex)]);
+  }
+  orderLaneFlags[lane] = flags;
+  workgroupBarrier();
+  if ((flags & 1u) == 0u) { return; }
+  let batchIndex = flags >> 6u;
+  let level = (flags >> 1u) & 15u;
+  let record = orderRecord(candidateIndex);
+  let item = vec4<u32>(
+    atomicLoad(&counters[record + 1u]),
+    atomicLoad(&counters[record + 2u]),
+    candidateIndex,
+    atomicLoad(&counters[record + 3u]),
+  );
+  placeVisible(batchIndex, candidateIndex, lane, level, item, late);
+  if ((flags & 32u) != 0u) {
+    placeVisible(
+      batchIndex,
+      candidateIndex,
+      lane,
+      level + 1u,
+      vec4<u32>(item.xyz, bitcast<u32>(-bitcast<f32>(item.w))),
+      late,
+    );
+  }
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn placeVisibleOrder(
+  @builtin(global_invocation_id) id: vec3<u32>,
+  @builtin(local_invocation_index) lane: u32,
+) {
+  placeVisibleItems(id.x, lane, false);
+}
+
+@compute @workgroup_size(${WORKGROUP_SIZE})
+fn placeVisibleOrderLate(
+  @builtin(global_invocation_id) id: vec3<u32>,
+  @builtin(local_invocation_index) lane: u32,
+) {
+  placeVisibleItems(id.x, lane, true);
 }
 
 override INDIRECT_FIRST_INSTANCE: bool = false;
@@ -1072,6 +1212,7 @@ fn lightSlabHidden(
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
 fn cullViewShadowCamera(@builtin(global_invocation_id) id: vec3<u32>) {
+  clearOrderRecord(id.x);
   var early: EarlyCandidate;
   if (!admitEarly(id.x, &early)) { return; }
   if (shadowReceiversHidden(early.primitive, early.world)) {
@@ -1166,6 +1307,63 @@ export interface GpuDrivenCullingObservation {
 type ViewTelemetrySubmit = GpuDrivenLodSubmitIdentity & {
   readonly cullingProducer?: GpuDrivenCullingProducerReceipt;
 };
+
+/**
+ * One view's selection dispatches, offered to a caller that encodes several
+ * views' selections in one compute pass.
+ */
+export interface GpuDrivenSelectionWork<FrameCtx extends RenderGraphFrame> {
+  readonly name: string;
+  readonly accesses: NonNullable<ComputeGraphPass<FrameCtx>['accesses']>;
+  readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
+  readonly encode: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']>;
+}
+
+/**
+ * Collects selection work instead of declaring a compute pass per view. The
+ * collector must declare its shared selection pass before it calls `after`,
+ * which declares this view's passes that read the selection.
+ */
+export interface GpuDrivenSelectionBatch<FrameCtx extends RenderGraphFrame> {
+  add(work: GpuDrivenSelectionWork<FrameCtx>, after: () => Result<void, RenderGraphError>): void;
+}
+
+/** Late occlusion keeps its own early pass; other batched views share one. */
+function isSelectionBatched<FrameCtx extends RenderGraphFrame>(
+  batch: GpuDrivenSelectionBatch<FrameCtx> | undefined,
+  lateOcclusion: boolean,
+): boolean {
+  return batch !== undefined && !lateOcclusion;
+}
+
+/** Declares one view's selection work as its own compute pass. */
+function addSelectionWorkPass<FrameCtx extends RenderGraphFrame>(
+  builder: RenderGraphBuilder<FrameCtx>,
+  work: GpuDrivenSelectionWork<FrameCtx>,
+) {
+  return builder.addComputePass(work.name, {
+    accesses: work.accesses,
+    ...(work.executeIf === undefined ? {} : { executeIf: work.executeIf }),
+    encodeDirect: work.encode,
+  });
+}
+
+/**
+ * Declares a view's early readback. A batched selection defers it until the
+ * batch has declared its shared selection pass; otherwise it is declared now.
+ */
+function addEarlyReadback<FrameCtx extends RenderGraphFrame>(
+  batch: GpuDrivenSelectionBatch<FrameCtx> | undefined,
+  work: GpuDrivenSelectionWork<FrameCtx> | undefined,
+  addReadback: () => Result<unknown, RenderGraphError>,
+): Result<unknown, RenderGraphError> {
+  if (batch === undefined || work === undefined) return addReadback();
+  batch.add(work, () => {
+    const readback = addReadback();
+    return readback.ok ? ok(undefined) : readback;
+  });
+  return ok(undefined);
+}
 
 export interface GpuDrivenViewGraphResources {
   readonly visibleSurfaceRows?: GraphBuffer;
@@ -1635,6 +1833,8 @@ export class GpuDrivenView {
   private telemetryPending: LodTelemetryCopy | undefined;
   /** Receipt identity for the copy pass encoded by the current frame. */
   private telemetrySubmit: ViewTelemetrySubmit | undefined;
+  /** Counts-only views copy their counters only while an owner will read them. */
+  private cullingReadbackDemand = true;
   /** Coalesce observers while the readback buffer is map-pending. */
   private lodSelectionReadback:
     | {
@@ -1675,6 +1875,9 @@ export class GpuDrivenView {
     private readonly shadowCameraCullEligible: boolean,
     private readonly viewModule: ShaderModule,
     private readonly readback: 'complete' | 'culling-counts',
+    private readonly orderScanPipeline: ComputePipeline,
+    private readonly orderPlacePipeline: ComputePipeline,
+    private readonly lateOrderPlacePipeline: ComputePipeline,
   ) {}
 
   /**
@@ -1748,6 +1951,21 @@ export class GpuDrivenView {
   /** Physical task output, captured by raster bindings until GPU completion. */
   skinTaskBinding(): SkinTaskBinding | undefined {
     return this.skinActive ? this.skinRasterBinding : undefined;
+  }
+
+  /**
+   * @internal Whether the next executed cull of a `culling-counts` view is
+   * read back. When false its graph skips the telemetry copy (no GPU copy and
+   * no pending observation); the cull and raster work are unchanged. Views
+   * with complete readback always copy, so inspection stays available.
+   */
+  _setCullingReadbackDemand(demand: boolean): void {
+    this.cullingReadbackDemand = demand;
+  }
+
+  /** A counts-only view whose owner will not read this frame's counters. */
+  private cullingReadbackSkipped(): boolean {
+    return this.readback === 'culling-counts' && !this.cullingReadbackDemand;
   }
 
   setTelemetrySubmit(identity: GpuDrivenLodSubmitIdentity | undefined): void {
@@ -1848,6 +2066,12 @@ export class GpuDrivenView {
     if (!finalize.ok) return finalize;
     const lateFinalize = createPipeline('finalizeViewLate');
     if (!lateFinalize.ok) return lateFinalize;
+    const orderScan = createPipeline('scanVisibleOrder');
+    if (!orderScan.ok) return orderScan;
+    const orderPlace = createPipeline('placeVisibleOrder');
+    if (!orderPlace.ok) return orderPlace;
+    const lateOrderPlace = createPipeline('placeVisibleOrderLate');
+    if (!lateOrderPlace.ok) return lateOrderPlace;
     const pyramidLayout = device.createBindGroupLayout({
       label: `${labelPrefix}-occlusion-bgl`,
       entries: [
@@ -1888,6 +2112,9 @@ export class GpuDrivenView {
         input.shadowCameraCull === true,
         module.value,
         input.readback ?? 'complete',
+        orderScan.value,
+        orderPlace.value,
+        lateOrderPlace.value,
       ),
     );
   }
@@ -2176,6 +2403,7 @@ export class GpuDrivenView {
     viewU32[28] = this.suppressionBase() / 4;
     viewU32[29] = resourceRoot;
     viewU32[30] = capsuleDirectional ? 1 : 0;
+    viewU32[31] = this.orderBase();
   }
 
   /**
@@ -2842,6 +3070,7 @@ export class GpuDrivenView {
     shadowCameraPyramid?: GraphTextureView,
     resolveDrawResources?: () => void,
     computePassMode: 'separate' | 'combined' = 'separate',
+    selectionBatch?: GpuDrivenSelectionBatch<FrameCtx>,
   ): Result<GpuDrivenViewGraphResources, RenderGraphError> {
     const buffers = this.buffers;
     const bindGroup = this.bindGroup;
@@ -3070,6 +3299,17 @@ export class GpuDrivenView {
     let lateRecorded = false;
     const cameraCull = this.shadowCameraCullEligible ? shadowCameraPyramid : undefined;
     this.cameraCullBound = cameraCull !== undefined;
+    // Place the cull's admitted candidates at their candidate-order ranks.
+    const encodeVisibleOrder = (
+      pass: Parameters<NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']>>[0],
+      place: ComputePipeline,
+    ): void => {
+      pass.setPipeline(this.orderScanPipeline);
+      pass.setBindGroup(0, liveBindGroup());
+      pass.dispatchWorkgroups(1);
+      pass.setPipeline(place);
+      pass.dispatchWorkgroups(Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE));
+    };
     const resetSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (pass) => {
       pass.setPipeline(this.resetPipeline);
       pass.setBindGroup(0, liveBindGroup());
@@ -3093,6 +3333,7 @@ export class GpuDrivenView {
         );
       }
       pass.dispatchWorkgroups(Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE));
+      encodeVisibleOrder(pass, this.orderPlacePipeline);
     };
     const finalizeSelection: NonNullable<ComputeGraphPass<FrameCtx>['encodeDirect']> = (pass) => {
       pass.setPipeline(this.finalizePipeline);
@@ -3112,19 +3353,29 @@ export class GpuDrivenView {
         ? []
         : [{ resource: cameraCull, usage: 'sampled-read' as const }]),
     ];
+    // A batch encodes this selection in a shared pass; late occlusion keeps
+    // its own early pass because its late phase follows the camera pyramid.
+    const batched = isSelectionBatched(selectionBatch, lateOcclusion);
+    let batchedWork: GpuDrivenSelectionWork<FrameCtx> | undefined;
     // Physical pass declaration is independent from the selection kernels,
     // Skin program and readback/late-occlusion graph lifetime.
     const declareSelection = (): Result<void, RenderGraphError> => {
       if (computePassMode === 'combined') {
-        const selection = builder.addComputePass(`${labelPrefix}.view-selection`, {
+        const work: GpuDrivenSelectionWork<FrameCtx> = {
+          name: `${labelPrefix}.view-selection`,
           accesses: [...compactAccesses, { resource: indirect.value, usage: 'storage-read-write' }],
-          ...(executeIf === undefined ? {} : { executeIf }),
-          encodeDirect: (pass, frame, resources) => {
+          executeIf,
+          encode: (pass, frame, resources) => {
             resetSelection(pass, frame, resources);
             compactSelection(pass, frame, resources);
             finalizeSelection(pass, frame, resources);
           },
-        });
+        };
+        if (batched) {
+          batchedWork = work;
+          return ok(undefined);
+        }
+        const selection = addSelectionWorkPass(builder, work);
         if (!selection.ok) return selection;
       } else {
         const reset = builder.addComputePass(`${labelPrefix}.view-reset`, {
@@ -3178,6 +3429,7 @@ export class GpuDrivenView {
           // pending/mapped buffer; skip only this telemetry copy and keep the
           // raster/indirect work intact. RhiNull has no runtime mapState, so its
           // undefined value remains structurally executable.
+          if (this.cullingReadbackSkipped()) return;
           const current = currentBuffers();
           const mapState = current.lodReadback.mapState;
           if (mapState !== undefined && mapState !== 'unmapped') return;
@@ -3241,7 +3493,7 @@ export class GpuDrivenView {
       overflow: counters.value,
     };
     if (!lateOcclusion) {
-      const readback = addReadback(false);
+      const readback = addEarlyReadback(selectionBatch, batchedWork, () => addReadback(false));
       if (!readback.ok) return readback;
       return ok(resources);
     }
@@ -3269,6 +3521,7 @@ export class GpuDrivenView {
           pass.dispatchWorkgroups(
             Math.ceil(Math.max(1, submitted().candidateCount) / WORKGROUP_SIZE),
           );
+          encodeVisibleOrder(pass, this.lateOrderPlacePipeline);
           // The region this phase writes becomes next frame's history.
           this.visibilityParity ^= 1;
           this.visibilityHistoryKey = this.occlusionCamera?.historyKey;
@@ -3366,8 +3619,12 @@ export class GpuDrivenView {
   private skinDispatchBase(): number {
     return (this.indirectCapacity * INDIRECT_COMMAND_BYTES * 2) / 4;
   }
+  /** Visible-order scratch follows the Skin counters. */
+  private orderBase(): number {
+    return this.skinCounterBase() + (this.skinLayout?.counterWords ?? 0);
+  }
   private countersBytes(): number {
-    return (this.skinCounterBase() + (this.skinLayout?.counterWords ?? 0)) * 4;
+    return (this.orderBase() + orderScratchWords(this.batchCapacity, this.candidateCapacity)) * 4;
   }
   private visibleBytes(): number {
     return (
@@ -3647,7 +3904,8 @@ export class GpuDrivenView {
         size:
           nextBatch * COUNTER_STRIDE +
           nextSuppression * 2 * 4 +
-          (skinLayout?.counterWords ?? 0) * 4,
+          (skinLayout?.counterWords ?? 0) * 4 +
+          orderScratchWords(nextBatch, nextCandidate) * 4,
         usage: storage | GPU_BUFFER_USAGE_COPY_DST,
         storage: true,
       },

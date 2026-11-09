@@ -1,7 +1,7 @@
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { UiGpuFrame, UiGpuShaders } from '@forgeax/engine-types';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SurfaceUiFailureCode } from '../../world/surface-ui';
 import { createUiCompositor } from '../ui-compositor';
 
@@ -32,7 +32,7 @@ const shaders = {
 } as unknown as UiGpuShaders;
 
 const prepare = (c: Awaited<ReturnType<typeof compositor>>, frame = 7) =>
-  c.prepare(frame, 0, 4, 4, true, 'srgb', false);
+  c.prepare(frame, 0, 4, 4, 'srgb', false);
 
 function code(outcome: { kind: string; code?: SurfaceUiFailureCode }): string {
   return outcome.kind === 'failed' ? (outcome.code as string) : outcome.kind;
@@ -49,9 +49,41 @@ describe('UI compositor prepare outcome', () => {
     expect(first).toMatchObject({ kind: 'painted', frame: 1 });
     const second = prepare(c, 2);
     expect(second).toMatchObject({ kind: 'retained', frame: 2 });
-    const encoded = c.encode(2, undefined as never, undefined as never);
+    const encoded = c.encode(2, undefined as never, undefined as never, true);
     expect(encoded.kind).toBe('failed');
     c.dispose();
+  });
+
+  it('retains its prepared output when presentation switches between clear and load', async () => {
+    const owner = await device();
+    const textures = vi.spyOn(owner, 'createTexture');
+    const surface = owner
+      .createTexture({ size: [4, 4], format: 'rgba8unorm', usage: 0x10 })
+      .unwrap();
+    const paint = vi.fn(() => new Uint8Array(4 * 4 * 4));
+    const c = await createUiCompositor({
+      source: { kind: 'rgba', paint },
+      device: owner,
+      format: 'rgba8unorm',
+      retire: (_device, release) => release(),
+      createShaderModule: async (target, source) =>
+        (await rhi.createShaderModule(target, { code: source })).unwrap(),
+    });
+    c.prepare(1, 0, 4, 4, 'srgb', true);
+    const output = c.output;
+    expect(output).toBeDefined();
+    const preparedTextures = textures.mock.calls.length;
+    for (const [index, clear] of [true, false, true].entries()) {
+      c.prepare(index + 2, 0, 4, 4, 'srgb', true);
+      const encoder = owner.createCommandEncoder().unwrap();
+      expect(c.encode(index + 2, encoder, surface, clear).kind).toBe('encoded');
+      owner.queue.submit([encoder.finish().unwrap()]).unwrap();
+      expect(c.output).toBe(output);
+      expect(textures).toHaveBeenCalledTimes(preparedTextures);
+    }
+    expect(paint).toHaveBeenCalledTimes(4);
+    c.dispose();
+    owner.destroyTexture(surface).unwrap();
   });
 
   it('returns ui-paint-invalid-bytes instead of throwing', async () => {
@@ -90,7 +122,7 @@ describe('UI compositor prepare outcome', () => {
 
   it('returns ui-raster-failed when encoding before any prepare', async () => {
     const c = await compositor({ kind: 'rgba', paint: () => null });
-    expect(c.encode(3, undefined as never, undefined as never)).toMatchObject({
+    expect(c.encode(3, undefined as never, undefined as never, true)).toMatchObject({
       kind: 'failed',
       code: 'ui-raster-failed',
       frame: 3,

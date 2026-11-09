@@ -241,6 +241,11 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     if (!constructed.ok) throw constructed.error;
     const runtimeHost = constructed.value;
     renderer = runtimeHost.renderer;
+    let diagnosticErrorCount = 0;
+    renderer.subscribe((event) => {
+      if (event.kind === 'error' && diagnosticErrorCount++ < 8)
+        console.error('surface renderer failure:', JSON.stringify(event.error));
+    });
     const assets = runtimeHost.assets;
     assets.configureRuntimeBinding(runtimeBinding);
     const catalog = (await loadSurfaceCatalog(

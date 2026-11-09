@@ -18,7 +18,7 @@
 
 #import forgeax_view::common::{applyLodCoverage, View, Mesh, InstanceData, view, sampleMaterialTexture, transformNormal}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneIndexMorphNormal, sceneIndexMorphTangent, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
 #else
 #import forgeax_view::common::{meshes, instances}
 #endif
@@ -120,6 +120,12 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
   // visible = (scene instance row, material row, candidate row, LOD fade).
   let visible = visibleItems[idx];
   in.position = sceneIndexMorphPosition(visible.x, vertex, in.position);
+  in.normal = sceneIndexMorphNormal(visible.x, vertex, in.normal);
+#ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  in.tangent = sceneIndexMorphTangent(visible.x, vertex, in.tangent);
+#endif
+#endif
   let materialIndex = visible.y;
   let lodFadeBits = visible.w;
   let sceneDraw = sceneIndexDraw(visible.x);
@@ -324,9 +330,22 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
 }
 
 fn alphaTestShadowSurface(surface : SurfaceData) {
+#if ALPHA_MASK == true
+  // The stock Surface raises the clip threshold only when the material declares
+  // alphaCutoff; without it (hash-only or coverage-only) the cutoff test is
+  // absent from the source. A custom Surface keeps the generic gate.
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
     discard;
   }
+#endif
+#else
+  if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
+    discard;
+  }
+#endif
+#endif
 }
 
 // The depth-only pass has no color target; alpha clipping still runs through

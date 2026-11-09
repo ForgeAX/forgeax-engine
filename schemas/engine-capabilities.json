@@ -306,6 +306,10 @@
       "form": "opt-in"
     },
     {
+      "name": "Temporal super resolution",
+      "form": "opt-in"
+    },
+    {
       "name": "TAAU dynamic resolution",
       "form": "opt-in"
     },
@@ -558,6 +562,10 @@
       "form": "opt-in"
     },
     {
+      "name": "Native Terrain",
+      "form": "opt-in"
+    },
+    {
       "name": "Sprite",
       "form": "built-in"
     },
@@ -619,6 +627,10 @@
     },
     {
       "name": "RHI capability model",
+      "form": "built-in"
+    },
+    {
+      "name": "Depth texture load admission",
       "form": "built-in"
     },
     {
@@ -924,6 +936,10 @@
     {
       "name": "Load progress and timeline",
       "form": "built-in"
+    },
+    {
+      "name": "Project startup presentation",
+      "form": "opt-in"
     },
     {
       "name": "Explicit Worker World rebuild",

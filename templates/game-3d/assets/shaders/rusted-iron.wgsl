@@ -58,5 +58,6 @@ fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
     1.0,
     1.0,
     0.0,
+    0.0,
   );
 }

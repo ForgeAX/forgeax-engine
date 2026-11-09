@@ -596,3 +596,37 @@ it.each(
     f.dispose();
   }
 });
+
+it('keeps an omitted color pass pending until its owned pipeline is compiled', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const entry = f.add({ entity: 1, submeshes: 1 });
+  entry.source.material.adopt({
+    ...entry.source.material.snapshot,
+    materialShaderId: 'test::pending-color',
+  });
+  const prepare = vi.fn().mockReturnValue(null);
+  Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: prepare });
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    f.record(pass);
+    expect(f.receipts).toEqual([]);
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+    expect(f.c.frameState.pipelinePreparationPendingReason).toMatchObject({
+      code: 'material-pipeline-preparation',
+      entity: 1,
+      pass: 'forward',
+    });
+    delete f.c.frameState.pipelinePreparationPending;
+    delete f.c.frameState.pipelinePreparationPendingReason;
+    prepare.mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
+    f.record(pass);
+    expect(f.receipts).toEqual([{ entity: 1, submesh: 0 }]);
+    expect(f.c.frameState.pipelinePreparationPending).toBeUndefined();
+    expect(f.errors).toEqual([]);
+  } finally {
+    pass.end();
+    f.dispose();
+  }
+});

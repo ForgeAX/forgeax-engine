@@ -47,6 +47,34 @@ import { requireViewField } from './view-field';
 export const RENDER_FEATURE_VIEWS_SYSTEM = 'render-feature-views';
 /** RenderPrepare system planning each recording view's motion blur Feature input. */
 export const RENDER_MOTION_BLUR_PLAN_SYSTEM = 'render-motion-blur-plan';
+/** RenderPrepare system staging the Feature views of capture faces (see capture-face-feature-systems). */
+export const RENDER_CAPTURE_FACE_INPUTS_SYSTEM = 'render-capture-face-inputs';
+
+/** World resource key of the capture-face Feature inputs staged for one Renderer frame. */
+export const CaptureFaceInputsKey = Object.freeze({ name: 'RenderCaptureFaceInputs' });
+
+/** Capture faces' Feature frame inputs for `frame`; merged into the open Feature frame. */
+export interface CaptureFaceInputs {
+  frame: number;
+  inputs: readonly RenderFeatureFrameInput[];
+}
+
+function captureFaceInputsOf(world: World): readonly RenderFeatureFrameInput[] {
+  if (!world.hasResource(CaptureFaceInputsKey)) return [];
+  const staged = world.getResource<CaptureFaceInputs>(CaptureFaceInputsKey);
+  return staged.frame === renderSubmission(world).frame ? staged.inputs : [];
+}
+
+/** Stage the capture faces' Feature inputs of this frame. */
+export function stageCaptureFaceInputs(
+  world: World,
+  inputs: readonly RenderFeatureFrameInput[],
+): void {
+  const staged: CaptureFaceInputs = { frame: renderSubmission(world).frame, inputs };
+  if (world.hasResource(CaptureFaceInputsKey)) {
+    Object.assign(world.getResource<CaptureFaceInputs>(CaptureFaceInputsKey), staged);
+  } else world.insertResource(CaptureFaceInputsKey, staged);
+}
 /** RenderPrepare system opening the Renderer's Feature frame over every view's input. */
 export const RENDER_FEATURE_OPEN_SYSTEM = 'render-feature-open';
 /** RenderPrepare system sealing the Feature frame after every installed Feature joined it. */
@@ -296,7 +324,11 @@ export function bindRenderFeatureFrame(
     .addSystem(RenderPrepare, {
       commands: 'none',
       name: RENDER_FEATURE_OPEN_SYSTEM,
-      after: [RENDER_FEATURE_VIEWS_SYSTEM, RENDER_MOTION_BLUR_PLAN_SYSTEM],
+      after: [
+        RENDER_FEATURE_VIEWS_SYSTEM,
+        RENDER_MOTION_BLUR_PLAN_SYSTEM,
+        RENDER_CAPTURE_FACE_INPUTS_SYSTEM,
+      ],
       queries: [{ read: [ViewFeatureInput] }],
       fn: (world, [rows]) => {
         const inputs: RenderFeatureFrameInput[] = [];
@@ -316,6 +348,7 @@ export function bindRenderFeatureFrame(
           const motionBlur = view.motionBlur?.frame === frame ? view.motionBlur.input : undefined;
           inputs.push(motionBlur === undefined ? input : { ...input, motionBlur });
         });
+        inputs.push(...captureFaceInputsOf(world));
         openFeatureFrame(state, frame, inputs);
       },
     })

@@ -68,6 +68,10 @@ export function createForwardGtaoScene(world: World, width = 128, height = 128) 
         emissive: [0.08, 0.03, 0.015],
         metallic: 0,
         roughness: 1,
+        // Environment specular takes its own (specular) occlusion, which the
+        // CPU reference does not model; a purely diffuse receiver keeps the
+        // linear-lighting comparison exact.
+        specular: 0,
         normalTexture: { texture: normalTexture },
         normalScale: [1, 1],
         alphaTexture: { texture: alphaTexture },

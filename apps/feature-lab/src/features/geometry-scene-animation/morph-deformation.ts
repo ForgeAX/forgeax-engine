@@ -26,11 +26,11 @@ function withMorph(base: MeshAsset): MeshAsset {
 }
 
 export default defineFeature({
-  title: 'Morph target GPU deformation',
+  title: 'Morph target deformation',
   catalog: 'Morph/BlendShape GPU deformation',
   kind: 'visual',
   summary:
-    'A MeshAsset with morphTargets plus a MorphWeights component is deformed in the GPU-driven vertex stage from per-row weights, so entities sharing the Mesh draw in one batch.',
+    'MorphWeights deforms MeshAsset target channels in the GPU-driven vertex stage or the CPU-prepared WebGL2 stream. Position, normal and tangent targets retain the same surface contract for color, AO and SSR.',
   expect:
     'ON: weights [1, 1] - the green sphere is stretched into a wide egg with a raised top. OFF: weights [0, 0] - a plain round sphere.',
   setup({ world, hud }) {

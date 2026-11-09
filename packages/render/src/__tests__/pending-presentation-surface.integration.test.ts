@@ -1,12 +1,19 @@
 import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import type { RenderPipelineDescriptor, RhiCanvasContext, RhiDevice } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
-import { ok } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { createRenderer, exposeRenderer } from '../assembly/factory';
-import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../components';
+import {
+  Camera,
+  DirectionalLight,
+  MeshFilter,
+  MeshRenderer,
+  PlanarReflection,
+} from '../components';
 import { ANTIALIAS_NONE, BLOOM_DISABLED } from '../components/camera';
 import { Materials } from '../materials';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
@@ -14,15 +21,23 @@ import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 // A WebGPU canvas texture acquired in a frame that encodes nothing presents as
 // transparent black, replacing the last picture with the page background. A
 // frame that only submits the preparation barrier must leave the surface alone.
-it('keeps the canvas surface untouched while scene pipelines are still compiling', async () => {
+it.each(
+  (['ready', 'compile-failed', 'disposed'] as const).flatMap((scenario) =>
+    (['display', 'planar'] as const).map((domain) => ({ scenario, domain })),
+  ),
+)('keeps $domain preparation pending until its actual owner settles: $scenario', async ({
+  scenario,
+  domain,
+}) => {
   const device: RhiDevice = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const releases: (() => void)[] = [];
-  let hold = true;
+  let hold = domain === 'display';
+  let compileFailure: RhiError | undefined;
   const create = device.createRenderPipeline.bind(device);
   device.createRenderPipelineAsync = vi.fn(async (descriptor: RenderPipelineDescriptor) => {
     const result = create(descriptor);
     if (hold) await new Promise<void>((resolve) => releases.push(resolve));
-    return result;
+    return compileFailure === undefined ? result : err(compileFailure);
   });
   let acquisitions = 0;
   const host = await createRenderer(
@@ -81,9 +96,9 @@ it('keeps the canvas surface untouched while scene pipelines are still compiling
         },
       )
       .unwrap();
-    world
+    const camera = world
       .spawn(
-        { component: Transform, data: { pos: [0, 0, 8] } },
+        { component: Transform, data: { pos: [0, 2, 8] } },
         {
           component: Camera,
           data: {
@@ -119,15 +134,52 @@ it('keeps the canvas surface untouched while scene pipelines are still compiling
       return receipt;
     };
 
+    if (domain === 'planar') {
+      let ready = false;
+      for (let frame = 0; frame < 30 && !ready; frame++) {
+        const receipt = await draw();
+        if (receipt.preparationCompleted !== undefined)
+          expect((await receipt.preparationCompleted).ok).toBe(true);
+        ready = receipt.presentation === 'ready';
+      }
+      expect(ready).toBe(true);
+      hold = true;
+      world.addComponent(camera, { component: PlanarReflection, data: {} }).unwrap();
+    }
+    const beforePending = acquisitions;
     const pending = await draw();
     expect(pending.presentation).toBe('pending');
     expect(pending.presentationPendingReason?.code).toMatch(/pipeline-preparation/);
-    expect(acquisitions).toBe(0);
+    expect(acquisitions).toBe(beforePending);
     expect((await draw()).presentation).toBe('pending');
-    expect(acquisitions).toBe(0);
+    expect(acquisitions).toBe(beforePending);
+    const preparation = pending.preparationCompleted;
+    expect(preparation).toBeDefined();
+    let preparationSettled = false;
+    void preparation?.then(() => {
+      preparationSettled = true;
+    });
+    await Promise.resolve();
+    expect(preparationSettled).toBe(false);
+    if (scenario === 'disposed') {
+      await renderer.dispose();
+      expect((await preparation)?.ok).toBe(false);
+      return;
+    }
+    if (scenario === 'compile-failed') {
+      compileFailure = new RhiError({
+        code: 'webgpu-runtime-error',
+        expected: 'compile succeeds',
+        hint: 'controlled native compile failure',
+      });
+    }
 
     hold = false;
     for (const resolve of releases.splice(0)) resolve();
+    const prepared = await preparation;
+    expect(prepared?.ok).toBe(scenario === 'ready');
+    expect(pending.presentation).toBe('pending');
+    if (scenario === 'compile-failed') return;
     let ready = false;
     for (let frame = 0; frame < 30 && !ready; frame++) {
       const before = acquisitions;

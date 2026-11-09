@@ -92,7 +92,9 @@ function sceneColorWork(model: ReturnType<typeof buildFrameModel>, renderPath: s
         : shader.entryPoint?.startsWith('fs_standard_deferred'),
     ),
   );
-  return required(renderPath === 'forward' ? works.at(-1) : works[0]);
+  // Preparation and the completed picture can share this bounded capture.
+  // Inspect the final scene output in either lane, after its geometry writes.
+  return required(works.at(-1));
 }
 
 function textureViews(tape: V7Tape) {

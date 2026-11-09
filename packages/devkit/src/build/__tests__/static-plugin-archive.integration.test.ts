@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -11,6 +12,10 @@ import { discoverPluginAssets } from '../plugin-assets.js';
 import { compileNodePluginPrograms } from '../plugin-programs-node.js';
 
 it('archives existing static plugins and tools, then mounts them in a fresh process without the source or compiler output', async () => {
+  const largeText = 'compiled-program-data-\ud800\u0000'.repeat(16384);
+  const largeTextSha256 = createHash('sha256')
+    .update(Buffer.from(largeText, 'utf16le'))
+    .digest('hex');
   const directory = await mkdtemp(resolve(tmpdir(), 'forgeax-static-archive-'));
   try {
     const project = resolve(directory, 'original');
@@ -47,6 +52,7 @@ it('archives existing static plugins and tools, then mounts them in a fresh proc
       export default { inject: ['world', 'toolApi', 'probe'], apply(ctx) {
         ctx.probe.sameEngineToken = Transform === ctx.probe.expected;
         ctx.probe.tag = Tag;
+        ctx.probe.largeText = ${JSON.stringify(largeText)};
         ctx.effect(() => { state.active++; return () => { state.active--; }; });
         ctx.effect(() => registerAssetTools(ctx));
       } };
@@ -122,6 +128,7 @@ it('archives existing static plugins and tools, then mounts them in a fresh proc
       inventory,
       temporary,
     );
+    expect(Buffer.byteLength(await readFile(compiled.entry, 'utf8'))).toBeLessThan(16 * 1024);
     const packageUrl = 'https://original.invalid/behavior.pack.json';
     const publication = createRuntimePackPublication({
       scopeId: 'original',
@@ -165,6 +172,7 @@ it('archives existing static plugins and tools, then mounts them in a fresh proc
       executions: 2,
       sameEngineToken: true,
       sameProjectToken: true,
+      largeTextSha256,
     });
     const saved = await readFile(archive, 'utf8');
     expect(saved).not.toContain(temporary);
@@ -178,6 +186,7 @@ it('archives existing static plugins and tools, then mounts them in a fresh proc
       executions: 2,
       sameEngineToken: true,
       sameProjectToken: true,
+      largeTextSha256,
     });
   } finally {
     await rm(directory, { recursive: true, force: true });

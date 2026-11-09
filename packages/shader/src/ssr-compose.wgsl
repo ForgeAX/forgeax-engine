@@ -42,6 +42,15 @@ fn sampleRoughSsr(uv : vec2<f32>, roughness : f32) -> vec4<f32> {
   return textureSampleLevel(radiance, radianceSampler, uv, lod);
 }
 
+// Unreal SSRTReflections.usf: OutColor.rgb *= rcp(1 - Luminance(OutColor.rgb)),
+// the inverse of the trace's per-ray ssrLuminanceWeight. Weighted luminance is
+// below one by construction; the floor is only the largest FP16 value below one
+// (1 - 2^-11), so the divide stays representable rather than clamping radiance.
+fn ssrLuminanceUnweight(rgb : vec3<f32>) -> vec3<f32> {
+  let luminance = max(0.0, dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722)));
+  return rgb / max(1.0 - luminance, 0.00048828125);
+}
+
 fn evaluateSsrCompose(in : ComposeVertex) -> vec4<f32> {
   let pixel = vec2<i32>(in.position.xy);
   // Fragment position already names the full-resolution pixel center.
@@ -68,13 +77,16 @@ fn evaluateSsrCompose(in : ComposeVertex) -> vec4<f32> {
   } else {
     filtered = sampleRoughSsr(uv, roughness);
   }
-  let sample = vec4<f32>(filtered.rgb / max(filtered.a, 1e-6), filtered.a);
+  let weighted = filtered.rgb / max(filtered.a, 1e-6);
+  // Undo the trace's per-ray 1 / (1 + luminance) weight after every filter.
+  let sample = vec4<f32>(ssrLuminanceUnweight(weighted), filtered.a);
   let materialResponse = textureLoad(response, pixel, 0).rgb;
   // Receiver admission is independent of the central mirror ray. A rough
   // lobe can contain a visible wall even when that one ray misses its edge.
   // Preserve the current material's cutoff instead of borrowing a neighbor's
   // roughness policy from the filtered reflection pyramid.
-  let receiverConfidence = 1.0 - smoothstep(roughnessLimit * 0.8, roughnessLimit, receiver.a);
+  // Same UE GetRoughnessFade as the trace: full SSR up to half the limit.
+  let receiverConfidence = min(2.0 - 2.0 * clamp(receiver.a, 0.0, 1.0) / max(roughnessLimit, 1e-5), 1.0);
   let confidence = clamp(min(receiverConfidence, sample.a), 0.0, 1.0) * environment.a;
   return vec4<f32>(confidence * (sample.rgb * materialResponse - environment.rgb), 0.0);
 }

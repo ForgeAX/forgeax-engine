@@ -768,6 +768,28 @@ export async function createWorkerExecutionApp(
       }),
     );
   };
+  const onNativeFrame = (): void => {
+    cancelHostFrame = undefined;
+    if (state !== 'running' || !platform.visible()) return;
+    const time = platform.now();
+    if (!time.ok) {
+      failPlatform(time.error);
+      return;
+    }
+    if (!pacer.due(time.value)) {
+      traceAdmission('host-tick-due', 'frame-rate-limit');
+      scheduleFrame();
+      return;
+    }
+    frameDue = true;
+    frameDueAt = time.value;
+    traceAdmission('host-tick-due', 'callback');
+    admitFrame();
+  };
+  const rescheduleNativeFrame = (): void => {
+    cancelHostFrame = undefined;
+    scheduleFrame();
+  };
   const scheduleFrame = (): void => {
     if (state !== 'running' || !platform.visible()) return;
     if (frameDue) {
@@ -775,24 +797,9 @@ export async function createWorkerExecutionApp(
       return;
     }
     if (cancelHostFrame !== undefined) return;
-    const requested = platform.requestFrame(() => {
-      cancelHostFrame = undefined;
-      if (state !== 'running' || !platform.visible()) return;
-      const time = platform.now();
-      if (!time.ok) {
-        failPlatform(time.error);
-        return;
-      }
-      if (!pacer.due(time.value)) {
-        traceAdmission('host-tick-due', 'frame-rate-limit');
-        scheduleFrame();
-        return;
-      }
-      frameDue = true;
-      frameDueAt = time.value;
-      traceAdmission('host-tick-due', 'callback');
-      admitFrame();
-    });
+    const nativeLease = session.requestFrame?.(onNativeFrame, rescheduleNativeFrame);
+    const requested =
+      nativeLease === undefined ? platform.requestFrame(onNativeFrame) : ok(nativeLease);
     if (requested.ok) cancelHostFrame = requested.value;
     else failPlatform(requested.error);
   };

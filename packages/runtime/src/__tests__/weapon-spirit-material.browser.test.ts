@@ -9,14 +9,94 @@ import {
   MeshRenderer,
   type Renderer,
 } from '@forgeax/engine-render';
+import { attachRecorder } from '@forgeax/engine-rhi-debug';
+import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { page } from 'vitest/browser';
+import { commands, page } from 'vitest/browser';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
 import { testAssets } from './helpers/runtime-assets';
+
+interface ShaderAttempt {
+  label: string | undefined;
+  characters: number;
+  createdAtMs: number;
+  infoRequests: number;
+  infoStartedAtMs?: number;
+  infoSettledAtMs?: number;
+  messages?: readonly string[];
+}
+
+interface PipelineAttempt {
+  label: string | undefined;
+  vertexEntry: string | undefined;
+  fragmentEntry: string | undefined;
+  kind: 'sync' | 'async';
+  startedAtMs: number;
+  settledAtMs?: number;
+  state: 'pending' | 'settled' | 'failed';
+}
+
+async function saveDiagnostic(name: string, value: unknown) {
+  await commands.writeFile(
+    `artifacts/ci-focus/weapon-spirit/${name}.json`,
+    JSON.stringify(value, null, 2),
+  );
+}
+
+async function saveTape(name: string, bytes: Uint8Array) {
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 8192)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+  await commands.writeFile(
+    `artifacts/ci-focus/weapon-spirit/${name}.rhitape`,
+    btoa(binary),
+    'base64',
+  );
+}
+
+async function saveFailureImage(canvas: HTMLCanvasElement, name: string, value: unknown) {
+  await saveDiagnostic(name, value);
+  const screenshot = await page.elementLocator(canvas).screenshot({ base64: true });
+  await commands.writeFile(
+    `artifacts/ci-focus/weapon-spirit/${name}.png`,
+    typeof screenshot === 'string' ? screenshot : screenshot.base64,
+    'base64',
+  );
+}
+
+function assertToonAndShadowPixels(shadowed: ImageData, unshadowed: ImageData) {
+  expect([unshadowed.width, unshadowed.height]).toEqual([shadowed.width, shadowed.height]);
+  for (const [startX, endX] of [
+    [0.29, 0.45],
+    [0.55, 0.71],
+  ] as const) {
+    let toonPixels = 0;
+    let shadowPixels = 0;
+    for (let y = 0; y < shadowed.height; y += 1) {
+      for (let x = Math.floor(shadowed.width * startX); x < shadowed.width * endX; x += 1) {
+        const offset = (y * shadowed.width + x) * 4;
+        const red = shadowed.data[offset] ?? 0;
+        const green = shadowed.data[offset + 1] ?? 0;
+        const blue = shadowed.data[offset + 2] ?? 0;
+        if (green > red + 10 && blue > red + 5) toonPixels += 1;
+        // Fixed camera receiver regions under the two Toon cubes exclude
+        // the Standard cube's shadow, so its success cannot mask either caster.
+        if (
+          y > shadowed.height * 0.75 &&
+          y < shadowed.height * 0.85 &&
+          (unshadowed.data[offset] ?? 0) > red + 20
+        )
+          shadowPixels += 1;
+      }
+    }
+    expect(toonPixels, `visible Toon pixels in region ${startX}`).toBeGreaterThan(30);
+    expect(shadowPixels, `shadow contribution in region ${startX}`).toBeGreaterThan(10);
+  }
+}
 
 async function readPresentedPixels(canvas: HTMLCanvasElement) {
   const shot = await page.elementLocator(canvas).screenshot({ base64: true });
@@ -42,14 +122,37 @@ it.each([
   document.body.append(canvas);
   const originalRequestAdapter = navigator.gpu.requestAdapter.bind(navigator.gpu);
   const validationErrors: string[] = [];
+  const errors: string[] = [];
   const pipelineEntries: string[] = [];
   const pipelineLabels: string[] = [];
   const shaderSources = new WeakMap<GPUShaderModule, string>();
   const shadowPipelineSources: string[] = [];
   const devices: GPUDevice[] = [];
+  const attempts: PipelineAttempt[] = [];
+  const shaderAttempts: ShaderAttempt[] = [];
+  const adapters: unknown[] = [];
+  const recorder = attachRecorder(webgpu).unwrap();
+  const beginPipeline = (descriptor: GPURenderPipelineDescriptor, kind: 'sync' | 'async') => {
+    const attempt: PipelineAttempt = {
+      label: descriptor.label,
+      vertexEntry: descriptor.vertex.entryPoint,
+      fragmentEntry: descriptor.fragment?.entryPoint,
+      kind,
+      startedAtMs: performance.now(),
+      state: 'pending',
+    };
+    attempts.push(attempt);
+    return attempt;
+  };
   navigator.gpu.requestAdapter = async (options) => {
     const adapter = await originalRequestAdapter(options);
     if (adapter === null) return adapter;
+    adapters.push({
+      vendor: adapter.info.vendor,
+      architecture: adapter.info.architecture,
+      device: adapter.info.device,
+      description: adapter.info.description,
+    });
     const requestDevice = adapter.requestDevice.bind(adapter);
     adapter.requestDevice = async (descriptor) => {
       const device = await requestDevice(descriptor);
@@ -59,7 +162,28 @@ it.each([
       );
       const createShaderModule = device.createShaderModule.bind(device);
       device.createShaderModule = (descriptor) => {
+        const attempt: ShaderAttempt = {
+          label: descriptor.label,
+          characters: descriptor.code.length,
+          createdAtMs: performance.now(),
+          infoRequests: 0,
+        };
+        shaderAttempts.push(attempt);
         const module = createShaderModule(descriptor);
+        const getCompilationInfo = module.getCompilationInfo.bind(module);
+        module.getCompilationInfo = async () => {
+          attempt.infoRequests++;
+          attempt.infoStartedAtMs = performance.now();
+          try {
+            const info = await getCompilationInfo();
+            attempt.messages = info.messages.map(
+              (message) => `${message.type}: ${message.message}`,
+            );
+            return info;
+          } finally {
+            attempt.infoSettledAtMs = performance.now();
+          }
+        };
         shaderSources.set(module, descriptor.code);
         return module;
       };
@@ -77,14 +201,32 @@ it.each([
         observeShadow(descriptor);
         pipelineLabels.push(descriptor.label ?? '<unlabelled>');
         pipelineEntries.push(descriptor.vertex.entryPoint ?? '<implicit>');
-        return createPipeline(descriptor);
+        const attempt = beginPipeline(descriptor, 'sync');
+        try {
+          return createPipeline(descriptor);
+        } catch (error) {
+          attempt.state = 'failed';
+          throw error;
+        } finally {
+          attempt.settledAtMs = performance.now();
+          if (attempt.state === 'pending') attempt.state = 'settled';
+        }
       };
       const createPipelineAsync = device.createRenderPipelineAsync.bind(device);
       device.createRenderPipelineAsync = async (descriptor) => {
         observeShadow(descriptor);
         pipelineLabels.push(descriptor.label ?? '<unlabelled>');
         pipelineEntries.push(descriptor.vertex.entryPoint ?? '<implicit>');
-        return createPipelineAsync(descriptor);
+        const attempt = beginPipeline(descriptor, 'async');
+        try {
+          return await createPipelineAsync(descriptor);
+        } catch (error) {
+          attempt.state = 'failed';
+          throw error;
+        } finally {
+          attempt.settledAtMs = performance.now();
+          if (attempt.state === 'pending') attempt.state = 'settled';
+        }
       };
       return device;
     };
@@ -92,15 +234,20 @@ it.each([
   };
   let renderer: Renderer | undefined;
   let unsubscribe: (() => void) | undefined;
+  let firstReadyFailed = false;
   try {
     const host = await constructRuntimeRendererHost(
       canvas,
-      {},
+      {
+        rhi: recorder.backend.rhi,
+        rhiInstrumentation: {
+          resolveSurfaceDevice: recorder.backend.unwrapDeviceForSurface,
+        },
+      },
       { shaderManifestUrl: '/shaders/manifest.json' },
     );
     if (!host.ok) throw host.error;
     renderer = host.value.renderer;
-    const errors: string[] = [];
     unsubscribe = renderer.subscribe((event) => {
       if (event.kind === 'error') errors.push(event.error.message);
     });
@@ -204,40 +351,58 @@ it.each([
       }
       await Promise.all(devices.map((device) => device.queue.onSubmittedWorkDone()));
     };
-    await drawFrames(60);
+    const preserveFirstReadyFailure = async (originalFailure: unknown): Promise<never> => {
+      firstReadyFailed = true;
+      const stage = engineShadow ? 'engine-shadow' : 'authored-shadow';
+      try {
+        await saveFailureImage(canvas, `${stage}-failure`, {
+          source: import.meta.env.VITE_FORGEAX_EVIDENCE_SOURCE_SHA,
+          failure: String(originalFailure),
+          inspection: renderer.inspect(),
+          adapters,
+          attempts,
+          shaderAttempts,
+          validationErrors,
+          errors,
+        });
+        // Capture only after the unchanged first-ready owner has failed. This
+        // extra submission cannot qualify or warm that original owner.
+        const pending = recorder.captureFrame();
+        (await recorder.frameBoundary()).unwrap();
+        const lease = renderer.attach(world).unwrap();
+        const receipt = renderer
+          .draw({ leases: [lease], camera: { lease }, environment: { lease } })
+          .unwrap();
+        const completed = await receipt.completed;
+        (await recorder.frameBoundary()).unwrap();
+        const captured = (await pending).unwrap();
+        await saveTape(`${stage}-after-failure`, captured.bytes);
+        await saveDiagnostic(`${stage}-after-failure`, {
+          frameId: receipt.frameId,
+          presentation: receipt.presentation,
+          reason: receipt.presentationPendingReason,
+          completed,
+          inspection: renderer.inspect(),
+          attempts,
+          shaderAttempts,
+        });
+      } catch (captureFailure) {
+        try {
+          await saveDiagnostic(`${stage}-capture-error`, { error: String(captureFailure) });
+        } catch {
+          // Preserve the original first-ready error if evidence storage also fails.
+        }
+      }
+      throw originalFailure;
+    };
+    await drawFrames(60).catch(preserveFirstReadyFailure);
     const shadowed = await readPresentedPixels(canvas);
     world.set(light, DirectionalLight, { castShadow: false }).unwrap();
     expect(world.get(light, DirectionalLight).unwrap().castShadow).toBe(false);
     await drawFrames(10);
     expect(renderer.inspect().perFramePassNames).not.toContain('shadowCascade0');
     const unshadowed = await readPresentedPixels(canvas);
-    expect([unshadowed.width, unshadowed.height]).toEqual([shadowed.width, shadowed.height]);
-    for (const [startX, endX] of [
-      [0.29, 0.45],
-      [0.55, 0.71],
-    ] as const) {
-      let toonPixels = 0;
-      let shadowPixels = 0;
-      for (let y = 0; y < shadowed.height; y += 1) {
-        for (let x = Math.floor(shadowed.width * startX); x < shadowed.width * endX; x += 1) {
-          const offset = (y * shadowed.width + x) * 4;
-          const red = shadowed.data[offset] ?? 0;
-          const green = shadowed.data[offset + 1] ?? 0;
-          const blue = shadowed.data[offset + 2] ?? 0;
-          if (green > red + 10 && blue > red + 5) toonPixels += 1;
-          // Fixed camera receiver regions under the two Toon cubes exclude
-          // the Standard cube's shadow, so its success cannot mask either caster.
-          if (
-            y > shadowed.height * 0.75 &&
-            y < shadowed.height * 0.85 &&
-            (unshadowed.data[offset] ?? 0) > red + 20
-          )
-            shadowPixels += 1;
-        }
-      }
-      expect(toonPixels, `visible Toon pixels in region ${startX}`).toBeGreaterThan(30);
-      expect(shadowPixels, `shadow contribution in region ${startX}`).toBeGreaterThan(10);
-    }
+    assertToonAndShadowPixels(shadowed, unshadowed);
     await Promise.all(devices.map((device) => device.queue.onSubmittedWorkDone()));
     expect(validationErrors, 'raw WebGPU validation messages').toEqual([]);
     expect(errors, 'renderer errors').toEqual([]);
@@ -249,10 +414,42 @@ it.each([
       shadowPipelineSources,
       'the published shadow program must reach a depth-only PSO',
     ).toContain(expectedShadowSource);
+    await saveDiagnostic(`success-${engineShadow}`, {
+      source: import.meta.env.VITE_FORGEAX_EVIDENCE_SOURCE_SHA,
+      adapters,
+      attempts,
+      shaderAttempts,
+      inspection: renderer.inspect(),
+    });
+  } catch (error) {
+    if (!firstReadyFailed) {
+      try {
+        await saveFailureImage(
+          canvas,
+          `${engineShadow ? 'engine-shadow' : 'authored-shadow'}-failure`,
+          {
+            source: import.meta.env.VITE_FORGEAX_EVIDENCE_SOURCE_SHA,
+            failure: String(error),
+            inspection: renderer?.inspect(),
+            adapters,
+            attempts,
+            shaderAttempts,
+            validationErrors,
+            errors,
+            pipelineEntries,
+            pipelineLabels,
+          },
+        );
+      } catch (captureError) {
+        console.warn('Unable to retain weapon-spirit failure evidence:', captureError);
+      }
+    }
+    throw error;
   } finally {
     navigator.gpu.requestAdapter = originalRequestAdapter;
     unsubscribe?.();
     renderer?.dispose();
+    (await recorder.dispose()).unwrap();
     for (const device of devices) device.destroy();
     canvas.remove();
   }

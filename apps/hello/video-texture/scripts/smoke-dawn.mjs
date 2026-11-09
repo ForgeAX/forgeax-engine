@@ -284,10 +284,14 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw(frameRequest);
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code} - ${r.error.hint}`);
-  }
+  // This is the unsupported-video structural control, not a picture oracle.
+  // No HTMLVideoElement can make its material resident on this native host.
+  const submitted = renderer.draw(frameRequest);
+  if (!submitted.ok) throw submitted.error;
+  const completed = await submitted.value.completed;
+  if (!completed.ok) throw completed.error;
+  const observed = await renderer.observe(submitted.value, { include: ['draws'] });
+  if (!observed.ok) throw observed.error;
   framesObserved++;
 }
 const device = sharedDevice;

@@ -15,13 +15,13 @@ import {
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
 import type { ManifestEntry } from '@forgeax/engine-types';
-import { atmosphereAvailable } from '../environment/capability';
+import { atmosphereAvailable, directionalPcssCapable } from '../environment/capability';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import type { GpuDrivenPbrProgram } from '../gpu-driven/pbr-program';
 import { setIblComposedShaders } from '../ibl/IblPipelineCache';
 import { assertStorageBufferCap } from '../light-buffer-layout';
 import { SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
-import type { StandardDeferredShaderSources } from '../pipeline/standard-deferred-lighting';
+import type { StandardSceneShaderSources } from '../pipeline/standard-deferred-lighting';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import { deriveExtendedLightingCapability } from '../prepare/extended-lighting/resources';
 import type { AtmosphereShaderSources } from '../render-contract';
@@ -109,8 +109,7 @@ export function deriveReadyDeviceCapabilities(device: RhiDevice): ReadyDeviceCap
     webgl2Downlevel,
     extendedLighting,
     atmosphere: atmosphereAvailable(storageBuffer, device.limits.maxSampledTexturesPerShaderStage),
-    directionalPcss:
-      device.caps.backendKind === 'webgpu' || device.caps.backendKind === 'wgpu-native',
+    directionalPcss: directionalPcssCapable(device.caps.backendKind),
     projector:
       (device.limits.maxSampledTexturesPerShaderStage ?? 0) >=
       STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
@@ -322,6 +321,10 @@ function isBootBaselineVariant(defines: VariantDefines): boolean {
   return (
     defines.COVERAGE_ONLY !== true &&
     defines.VISIBLE_SURFACE_AVAILABLE !== true &&
+    // Alpha-mask programs are an extra lane an alpha-cutout material selects.
+    defines.ALPHA_MASK !== true &&
+    defines.DIRECTIONAL_SHADOW_SIMPLE !== true &&
+    defines.LEAN_LIGHTING !== true &&
     // Scene-index variants bind only GPU Scene tables in slot 3.
     defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE !== true &&
     defines.PROBE_BLEND_AVAILABLE !== true &&
@@ -556,7 +559,10 @@ type CompileUtilityShader = (
   context: string,
 ) => Promise<ShaderModule>;
 
-const DEFERRED_COMPANION_PROGRAMS = [
+const STANDARD_COMPANION_PROGRAMS = [
+  ['forwardScreenPack', 'forgeax::engine-forward-screen-pack'],
+  ['forwardScreenCompose', 'forgeax::engine-forward-screen-compose'],
+  ['forwardContact', 'forgeax::engine-forward-contact-shadow'],
   ['shadowVariance', 'forgeax::engine-shadow-variance'],
   ['decalProject', 'forgeax::engine-decal-project'],
   ['decalApply', 'forgeax::engine-decal-apply'],
@@ -564,15 +570,21 @@ const DEFERRED_COMPANION_PROGRAMS = [
 ] as const;
 
 /** Deferred lighting variants plus their decal/subsurface companions, or undefined when absent. */
-export async function prewarmStandardDeferredPrograms(
+export async function prewarmStandardScenePrograms(
   registry: ShaderCatalog,
   compileUtility: CompileUtilityShader,
   seed: SeedShaderModule,
   caps: ReadyDeviceCapabilities,
-): Promise<StandardDeferredShaderSources | undefined> {
+): Promise<StandardSceneShaderSources | undefined> {
   const deferred = findMaterialShaderEntry(registry, 'forgeax::engine-standard-deferred-lighting');
-  if (deferred === undefined) return undefined;
+
   const resolve = async (clustered: boolean, directDfgLut = false): Promise<ShaderSource> => {
+    if (deferred === undefined)
+      throw new RhiError({
+        code: 'shader-compile-failed',
+        expected: 'published Deferred lighting',
+        hint: 'Rebuild the Engine shader manifest.',
+      });
     const variant = deferred.variants.find((candidate) =>
       isDeferredLightingVariant(candidate.defines, clustered, directDfgLut, caps),
     );
@@ -591,12 +603,16 @@ export async function prewarmStandardDeferredPrograms(
     return materialShaderSource(variant);
   };
   const companions: {
+    forwardScreenPack?: ShaderSource;
+    forwardScreenCompose?: ShaderSource;
+    forwardContact?: ShaderSource;
     shadowVariance?: ShaderSource;
     decalProject?: ShaderSource;
     decalApply?: ShaderSource;
     subsurface?: ShaderSource;
   } = {};
-  for (const [field, identifier] of DEFERRED_COMPANION_PROGRAMS) {
+  for (const [field, identifier] of STANDARD_COMPANION_PROGRAMS) {
+    if (!caps.storageBuffer && (field === 'shadowVariance' || field === 'subsurface')) continue;
     const entry = findMaterialShaderEntry(registry, identifier);
     if (entry === undefined) continue;
     const source = materialShaderSource(entry.variants[0] ?? entry);
@@ -609,10 +625,21 @@ export async function prewarmStandardDeferredPrograms(
   }
   return {
     ...companions,
-    clustered: await resolve(true),
-    unclustered: await resolve(false),
-    ...(deferred.variants.some((variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true)
-      ? { clusteredLut: await resolve(true, true), unclusteredLut: await resolve(false, true) }
+    ...(caps.storageBuffer && deferred !== undefined
+      ? {
+          deferred: {
+            clustered: await resolve(true),
+            unclustered: await resolve(false),
+            ...(deferred.variants.some(
+              (variant) => variant.defines.DIRECT_DFG_LUT_AVAILABLE === true,
+            )
+              ? {
+                  clusteredLut: await resolve(true, true),
+                  unclusteredLut: await resolve(false, true),
+                }
+              : {}),
+          },
+        }
       : {}),
   };
 }
@@ -628,8 +655,7 @@ function isDeferredLightingVariant(
     (defines.DIRECT_DFG_LUT_AVAILABLE ?? false) === directDfgLut &&
     (defines.ATMOSPHERE_AVAILABLE ?? false) === caps.atmosphere &&
     defines.EXTENDED_LIGHTING_AVAILABLE === caps.extendedLighting &&
-    defines.PROJECTOR_AVAILABLE === caps.projector &&
-    defines.DIRECTIONAL_PCSS_AVAILABLE === caps.directionalPcss
+    defines.PROJECTOR_AVAILABLE === caps.projector
   );
 }
 

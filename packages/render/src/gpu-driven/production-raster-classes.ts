@@ -6,7 +6,7 @@ import type {
 } from '@forgeax/engine-render-graph';
 import type { BindGroup, RenderPipeline, Result, TextureFormat } from '@forgeax/engine-rhi';
 import { ok, RhiError } from '@forgeax/engine-rhi';
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
+import { isSupportedVariantKey, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import type { MaterialRenderState, ResultOk } from '@forgeax/engine-types';
 import { materialArtifactProgramIdentity } from '../assembly/material/artifact-program-identity';
 import type { MeshGpuHandles } from '../device/gpu-residency';
@@ -23,7 +23,10 @@ import {
   variantSetForCoveragePass,
 } from '../record/main-pass-geometry';
 import type { RenderSystemInternals } from '../record/render-context';
-import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
+import {
+  STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY,
+  STANDARD_OPAQUE_FRAGMENT_ENTRY,
+} from '../record/standard-opaque-entry';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type { GpuDrivenBatch } from './batch-topology';
 import type { LiveRasterBatch } from './live-raster';
@@ -37,6 +40,7 @@ export type RasterPipelineFor = (
   formats: readonly TextureFormat[],
   formatKey?: string,
   preparation?: boolean,
+  sampleCount?: 1 | 4,
 ) => Result<RenderPipeline, RhiError>;
 
 export interface ProjectedRasterPipelines {
@@ -47,6 +51,7 @@ export interface ProjectedRasterPipelines {
   readonly gbufferPipelineFor: RasterPipelineFor;
   /** Forward entry for the unfogged base View slot; equals `pipelineFor` for authored entries. */
   readonly opaquePipelineFor: RasterPipelineFor;
+  readonly screenPipelineFor: RasterPipelineFor;
   readonly nearestPipelineFor?: RasterPipelineFor;
   readonly colorPipelineFor?: RasterPipelineFor;
 }
@@ -93,6 +98,7 @@ export interface RasterPipelineShape {
   readonly standardTextureMask: number | undefined;
   readonly preparationFactory: MaterialPipelineFactory | undefined;
   readonly visibleSurface: boolean;
+  readonly directionalShadowSimple?: boolean;
 }
 
 export function isSingleLayerMediumArtifact(artifact: MaterialShaderArtifact): boolean {
@@ -109,6 +115,7 @@ export function rasterPipelineShapeKey(shape: RasterPipelineShape): string | und
     shape.layoutProjection.arrayStride,
     shape.shaderUvSetCount,
     shape.topology,
+    shape.directionalShadowSimple === true,
     shape.stripIndexFormat ?? '',
     shape.renderState ?? null,
     shape.standardTextureMask ?? -1,
@@ -145,6 +152,21 @@ function fragmentArtifact(
   };
 }
 
+const SIMPLE_OFF = 'DIRECTIONAL_SHADOW_SIMPLE=false';
+
+/** Flip a published definesKey to the source-level one-cascade Vogel receiver. */
+function withDirectionalShadowSimple(artifact: MaterialShaderArtifact): MaterialShaderArtifact {
+  const key = artifact.variantSet;
+  if (key === undefined || !key.includes(SIMPLE_OFF)) return artifact;
+  // LEAN_LIGHTING is bound 1:1 to the simple receiver by the permutation rules.
+  const simple = key
+    .replace(SIMPLE_OFF, 'DIRECTIONAL_SHADOW_SIMPLE=true')
+    .replace('LEAN_LIGHTING=false', 'LEAN_LIGHTING=true');
+  // Only rows the shared permutation rules publish (no mask, visible surface,
+  // transmission, probe blend or no-storage lane) select the simple receiver.
+  return isSupportedVariantKey(simple) ? { ...artifact, variantSet: simple } : artifact;
+}
+
 function shapeRenderState(
   shape: RasterPipelineShape,
   selected: MaterialShaderArtifact,
@@ -167,30 +189,50 @@ function pipelineForFragment(
   forwardColorPass = false,
 ): RasterPipelineFor {
   let projectedPipelines: Map<string, ResultOk<RenderPipeline>> | undefined;
+  let generalArtifact: MaterialShaderArtifact | undefined;
   let selectedArtifact: MaterialShaderArtifact | undefined;
-  return (formats, formatKey, preparation = false) => {
-    const key = formatKey ?? formats.join(',');
-    const projected = projectedPipelines?.get(key);
-    if (projected !== undefined) return shape.rendererRecording ? projected : ok(projected.value);
-    // Unused G-buffer, temporal and coverage entries need no artifact copy.
-    selectedArtifact ??= fragmentArtifact(shape.artifact, fragmentEntry, coverageOnly);
+  const build = (
+    artifact: MaterialShaderArtifact,
+    formats: readonly TextureFormat[],
+    preparation: boolean,
+    sampleCount: 1 | 4,
+  ) => {
     const { prepared } = shape;
-    const selected = shape.raster.pipeline(
+    return shape.raster.pipeline(
       formats[0] ?? shape.format,
-      shape.sampleCount,
+      sampleCount,
       shape.layoutProjection ?? prepared.mesh.layoutProjection,
       // The producer receipt owns the selected shader's UV ABI.
       shape.shaderUvSetCount,
       shape.topology ?? prepared.batch.key.topology,
       shape.stripIndexFormat,
-      shapeRenderState(shape, selectedArtifact, coverageOnly),
-      selectedArtifact,
+      shapeRenderState(shape, artifact, coverageOnly),
+      artifact,
       formats.slice(1),
       shape.rendererRecording ? shape.standardTextureMask : prepared.standardTextureMask,
       forwardColorPass,
       preparation ? shape.preparationFactory : undefined,
       shape.standardSurfaceDiscards,
     );
+  };
+  return (formats, formatKey, preparation = false, sampleCount = shape.sampleCount) => {
+    const key = `${formatKey ?? formats.join(',')}|${sampleCount}`;
+    const projected = projectedPipelines?.get(key);
+    if (projected !== undefined) return shape.rendererRecording ? projected : ok(projected.value);
+    // Unused G-buffer, temporal and coverage entries need no artifact copy.
+    generalArtifact ??= fragmentArtifact(shape.artifact, fragmentEntry, coverageOnly);
+    selectedArtifact ??=
+      forwardColorPass && shape.directionalShadowSimple === true
+        ? withDirectionalShadowSimple(generalArtifact)
+        : generalArtifact;
+    const selected = build(selectedArtifact, formats, preparation, sampleCount);
+    // The simple receiver only specializes the general one. While its PSO
+    // builds, the frame draws with the general receiver instead of waiting;
+    // the fallback is not retained, so the simple PSO takes over once ready.
+    if (!selected.ok && selectedArtifact !== generalArtifact) {
+      const general = build(generalArtifact, formats, preparation, sampleCount);
+      if (general.ok) return shape.rendererRecording ? general : ok(general.value);
+    }
     if (selected.ok) {
       projectedPipelines ??= new Map();
       // Retain an owned result; an RHI result may observe value reads.
@@ -224,6 +266,10 @@ export function createRasterPipelines(shape: RasterPipelineShape): ProjectedRast
     pipelineFor,
     aoInputPipelineFor,
     opaquePipelineFor,
+    screenPipelineFor:
+      artifact.fragmentEntry === undefined || artifact.fragmentEntry === 'fs_main'
+        ? pipelineForFragment(shape, STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY, false, true)
+        : pipelineFor,
     gbufferPipelineFor,
     temporalPipelineFor,
     coveragePipelineFor,
@@ -253,6 +299,8 @@ export function selectRasterPipeline(
       return pipelines.nearestPipelineFor ?? pipelines.pipelineFor;
     case 'fs_color':
       return pipelines.colorPipelineFor ?? pipelines.pipelineFor;
+    case STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY:
+      return pipelines.screenPipelineFor;
     case STANDARD_OPAQUE_FRAGMENT_ENTRY:
       return pipelines.opaquePipelineFor;
     default:

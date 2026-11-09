@@ -23,6 +23,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -232,16 +233,19 @@ export async function verifyRendererReflections(
     environment: [0, 0, 0] as const,
   };
   const reflections = { maxRoughnessToTrace: 0.4, roughnessFadeLength: 0.1 };
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    });
-  const draw = async () => {
+  const request = {
+    leases: [lease],
+    camera: { lease },
+    environment: { lease },
+    geometryLane: 'direct' as const,
+  };
+  const submit = () => renderer.draw(request);
+  const advanceWorld = () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
+  };
+  const draw = async () => {
+    advanceWorld();
     const submitted = submit();
     if (!submitted.ok) throw new Error(JSON.stringify(submitted.error, null, 1));
     const receipt = submitted.value;
@@ -266,12 +270,15 @@ export async function verifyRendererReflections(
   };
   /** Mean linear HDR over `frames` consecutive ordinary frames (1 spp each). */
   const hdr = async (name: string, frames = 1) => {
-    assert(renderer.requestObservation);
     const sum = new Float64Array(SIZE * SIZE * 4);
     let last: Uint8Array | undefined;
     for (let frame = 0; frame < frames; frame++) {
-      renderValue(renderer.requestObservation(['linear-hdr']));
-      const receipt = await draw();
+      advanceWorld();
+      const receipt = await drawReadyFrame(renderer, request, ['linear-hdr']);
+      expect(
+        receipt.presentation,
+        `${name}: ${JSON.stringify(receipt.presentationPendingReason)}`,
+      ).toBe('ready');
       const result = renderValue(
         await renderer.observe(receipt, { include: ['linear-hdr'] }),
       ).observations?.find((item) => item.domain === 'linear-hdr');

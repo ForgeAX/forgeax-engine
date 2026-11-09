@@ -1267,6 +1267,24 @@ function readStructuralCandidates(world: World, scratch: Scratch): StructuralCan
   return { entities, relationLeftTransform };
 }
 
+/** Empty temporal reads need no collection; keep dirty membership local to this call. */
+function addHierarchyDirty(
+  dirty: Set<EntityHandle> | undefined,
+  entity: EntityHandle,
+): Set<EntityHandle> {
+  const next = dirty ?? new Set<EntityHandle>();
+  next.add(entity);
+  return next;
+}
+
+function readDirtyTransforms(scratch: Scratch): Set<EntityHandle> | undefined {
+  let dirty: Set<EntityHandle> | undefined;
+  for (const span of scratch.dirtyTransforms?.spans().unwrap() ?? [])
+    for (let row = 0; row < span.length; row++)
+      dirty = addHierarchyDirty(dirty, span.entities[row] as EntityHandle);
+  return dirty;
+}
+
 function propagateHierarchy(
   world: World,
   scratch: Scratch,
@@ -1295,20 +1313,17 @@ function propagateHierarchy(
     scratch.hierarchyValid = true;
     return ok(undefined);
   }
-  const dirty = new Set<EntityHandle>();
-  for (const span of scratch.dirtyTransforms?.spans().unwrap() ?? []) {
-    for (let row = 0; row < span.length; row++) dirty.add(span.entities[row] as EntityHandle);
-  }
+  let dirty = readDirtyTransforms(scratch);
   let rebuild = !scratch.hierarchyValid || structural.relationLeftTransform;
-  const structuralSet = new Set(structural.entities);
+  const structuralSet = structural.entities.length === 0 ? undefined : new Set(structural.entities);
   const edgeCursor = scratch.hierarchyResidualParentCursor;
   for (const span of scratch.dirtyParents?.spans().unwrap() ?? []) {
     for (let row = 0; row < span.length; row++) {
       const entity = span.entities[row] as EntityHandle;
-      dirty.add(entity);
+      dirty = addHierarchyDirty(dirty, entity);
       if (
         !rebuild &&
-        !structuralSet.has(entity) &&
+        !structuralSet?.has(entity) &&
         !parentEdgeMirrored(world, entity, transformWriter, edgeCursor)
       ) {
         rebuild = true;
@@ -1316,14 +1331,15 @@ function propagateHierarchy(
     }
   }
   for (const entity of structural.entities) {
-    if (world[worldRead].getFieldValue(entity, ChildOf, 'parent') !== undefined) dirty.add(entity);
+    if (world[worldRead].getFieldValue(entity, ChildOf, 'parent') !== undefined)
+      dirty = addHierarchyDirty(dirty, entity);
   }
-  for (const entity of globalEdited) dirty.add(entity);
-  for (const entity of flatRoots) dirty.add(entity);
-  if (!rebuild && dirty.size === 0) return ok(undefined);
+  for (const entity of globalEdited) dirty = addHierarchyDirty(dirty, entity);
+  for (const entity of flatRoots) dirty = addHierarchyDirty(dirty, entity);
+  if (!rebuild && dirty === undefined) return ok(undefined);
   let dirtyRoots: EntityHandle[] | undefined;
   if (!rebuild) {
-    dirtyRoots = highestDirtyEntities(world, dirty);
+    dirtyRoots = highestDirtyEntities(world, dirty as ReadonlySet<EntityHandle>);
   }
   if (dirtyRoots === undefined) {
     resetHierarchyBuffers(scratch, hierarchyBindings);

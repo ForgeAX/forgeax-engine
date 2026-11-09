@@ -3,6 +3,7 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Camera, Materials, MeshFilter, MeshRenderer } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { createRenderer } from '../createRenderer';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -66,10 +67,11 @@ it('boots and completes 60 native frames without expanding unselected WGSL in va
       try {
         for (let frame = 0; frame < 60; frame++) {
           world.update(1 / 60).unwrap();
-          const draw = native
-            .draw({ leases: [lease], camera: { lease, entityKey: camera }, environment: { lease } })
-            .unwrap();
-          (await draw.completed).unwrap();
+          const draw = await drawReadyFrame(native, {
+            leases: [lease],
+            camera: { lease, entityKey: camera },
+            environment: { lease },
+          });
           expect(draw.presentation).toBe('ready');
         }
         expect(errors).toEqual([]);

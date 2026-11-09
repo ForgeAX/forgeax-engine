@@ -1,3 +1,4 @@
+import { isTemporalAntialias } from '../components/camera';
 import { recordContext } from '../world/view-record-context';
 // Display-frame temporal state: the sample clock, the TAA / Motion Blur
 // temporal view with its reset reason, and the camera-owned post-process
@@ -105,7 +106,7 @@ function motionBlurFirstFrame(
 ): boolean {
   return (
     motionBlurDemand &&
-    camera.antialias !== 'taa' &&
+    !isTemporalAntialias(camera.antialias) &&
     (previous === undefined ||
       (previous.mode === 'off' && !previous.historyValid && previous.resetReason === undefined))
   );
@@ -179,7 +180,7 @@ function pendingTemporalCommitFor(
 ): TemporalCommitOutcome {
   if (cameraCount === 0 || !environmentReady || recordContext(internals).deviceScope === undefined)
     return { kind: 'none' };
-  return view.mode === 'taa' ? { kind: 'taa', view } : { kind: 'off', view };
+  return { kind: view.mode, view };
 }
 
 /** Resolve this frame's temporal view and stage its pending commit. */
@@ -254,7 +255,7 @@ export function resolveFrameTemporal(
   return {
     view,
     previous,
-    recordCamera: view.mode === 'taa' ? { ...camera, temporal: view } : camera,
+    recordCamera: view.mode !== 'off' ? { ...camera, temporal: view } : camera,
     deltaSeconds,
     motionBlurDemand,
     continuousGeometry:
@@ -321,7 +322,7 @@ function setDepthOfFieldParams(
     outputHeight: targetH,
     near: camera.near,
     far: camera.far,
-    useTemporalDepth: camera.antialias === 'taa',
+    useTemporalDepth: isTemporalAntialias(camera.antialias),
   });
   for (const id of [...DEPTH_OF_FIELD_POST_PROCESS_IDS, ...DEPTH_OF_FIELD_MSAA_POST_PROCESS_IDS]) {
     params.set(id, dofParams);

@@ -11,8 +11,8 @@
 // IMPORTANT: the custom material shader compiles its PSO asynchronously
 // (getMaterialShaderPipeline returns 'rhi-not-available' until the device
 // finishes the compile). A purely synchronous draw loop never lets that
-// resolve, so this harness awaits queue.onSubmittedWorkDone() between frames
-// to give the compile a chance to land before readback.
+// resolve. The shared ready-frame driver yields at frame cadence during
+// preparation and counts only GPU-completed scene pictures.
 //
 // Output literals (preserved for grep tooling):
 //   - `[learn-render-5-1-blinn-phong] backend=<backend>`
@@ -20,13 +20,14 @@
 //   - `[smoke] PASS`
 //   - `[smoke] FAIL`
 
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
-const WIDTH = 512;
-const HEIGHT = 512;
+const WIDTH = 256;
+const HEIGHT = 256;
 
 const hereDir = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(hereDir, '..');
@@ -298,18 +299,8 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
+  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   framesObserved++;
-  // Await each frame's GPU work so the custom material shader's async PSO
-  // compile resolves (a synchronous loop leaves it perpetually
-  // 'rhi-not-available' -> skip-draw -> black; see file header).
-  await device.queue.onSubmittedWorkDone();
 }
 const frameWall = Date.now() - frameStart;
 console.log(

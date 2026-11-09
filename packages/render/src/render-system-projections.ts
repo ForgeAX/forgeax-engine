@@ -1,6 +1,6 @@
 import type { World } from '@forgeax/engine-ecs';
 import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
-import { mat4, vec3 } from '@forgeax/engine-math';
+import type { Mat4 } from '@forgeax/engine-math';
 import type { LodOcclusionInspectionRow, LodOcclusionWorldInspection } from './inspection-types';
 import type { RenderResourceScope } from './publication/resource-scope';
 import { lodLevelHistogram } from './record/cpu-lod';
@@ -200,13 +200,28 @@ export function captureOnlyCameras(
 /** The selected display camera and its view basis as seen by render features. */
 export function featureCameraSelection(camera: CameraSnapshot | undefined) {
   if (camera === undefined) return {};
+  const sourcePosition = camera.position;
+  const count = sourcePosition.length;
+  const backing = new ArrayBuffer((count + 22) * 4);
+  const position = new Float32Array(backing, 0, count);
+  position.set(sourcePosition);
+  const right = new Float32Array(backing, count * 4, 3);
+  right[0] = camera.world[0] ?? 1;
+  right[1] = camera.world[1] ?? 0;
+  right[2] = camera.world[2] ?? 0;
+  const up = new Float32Array(backing, (count + 3) * 4, 3);
+  up[0] = camera.world[4] ?? 0;
+  up[1] = camera.world[5] ?? 1;
+  up[2] = camera.world[6] ?? 0;
+  // brand-cast-ok: this checked 16-float arena window preserves shared backing without a copy.
+  const viewProjection = new Float32Array(backing, (count + 6) * 4, 16) as Mat4;
   return {
     selectedCamera: camera,
     selectedView: {
-      position: new Float32Array(camera.position),
-      right: vec3.create(camera.world[0] ?? 1, camera.world[1] ?? 0, camera.world[2] ?? 0),
-      up: vec3.create(camera.world[4] ?? 0, camera.world[5] ?? 1, camera.world[6] ?? 0),
-      viewProjection: computeViewProjectionMatrix(camera, mat4.create()),
+      position,
+      right,
+      up,
+      viewProjection: computeViewProjectionMatrix(camera, viewProjection),
     },
   };
 }

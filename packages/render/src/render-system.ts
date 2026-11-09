@@ -84,6 +84,7 @@ import {
   TemporalViewHistory,
 } from './temporal/frame';
 import { releaseTemporalGpuStates } from './temporal/gpu';
+import { registerCaptureFaceFeatureSystem } from './world/capture-face-feature-systems';
 import { registerViewCaptureSystems } from './world/capture-systems';
 import { registerDebugOverlaySystems } from './world/debug-overlay-systems';
 import { registerEnvironmentAdmissionSystem } from './world/environment-systems';
@@ -366,6 +367,7 @@ function createRenderOwner(
     registerDebugOverlaySystems(renderWorldFor(internals));
     registerStandardLightingSystem(renderWorldFor(internals));
     registerFeatureViewsSystem(renderWorldFor(internals));
+    registerCaptureFaceFeatureSystem(renderWorldFor(internals));
     registerViewCaptureSystems(renderWorldFor(internals));
     registerTemporalStageSystems(renderWorldFor(internals));
     registerFeaturePlanSystems(renderWorldFor(internals));
@@ -553,6 +555,7 @@ function createRenderOwner(
     // once-warn latches for >1 Skylight / >1 SkyboxBackground (names winner).
     warnedMultiSkylight: false,
     warnedMultiSkybox: false,
+    warnedIgnoredDirectionalShadow: false,
     warnedSkyboxTonemapNone: false,
     // feat-20260520-2d-sprite-layer-mvp M-3 / w25 (AC-18 path 4): per-
     // handle warn-once anchor for the sprite-bucket missing-texture
@@ -618,6 +621,7 @@ function createRenderOwner(
     // shadow snapshot list so the spotShadowDepth caster pass renders zero
     // tiles until the first frame with a castShadow spot (AC-03).
     spotShadowSnapshots: [],
+    darkShadowViews: { point: new Set(), spot: new Set() },
   };
   const postProcessOwner = createPostProcessParamsOwner(internals, (id, moduleLabel) => {
     clearPostProcessPipelineCache(id);

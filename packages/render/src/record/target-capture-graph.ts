@@ -23,6 +23,7 @@ import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
 import type { TransmissionBackdropMipEncoder } from '../transmission/backdrop';
 import type { TypedShadowTargets } from '../typed-shadow-passes';
+import { addCaptureFaceFeaturePasses } from './capture-face-features';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import { encodeMainPass } from './main-pass';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
@@ -40,6 +41,14 @@ export interface CubeCaptureGraphWork {
   readonly layer: number;
   readonly physical: RenderTargetPhysical;
   readonly faceCamera: import('../render-contract').CameraSnapshot;
+  /** Feature work the face records after its scene passes; set by `render-capture-schedule`. */
+  feature?: CaptureFaceFeatureWork | undefined;
+}
+
+/** The sealed Feature plans of one capture face (see `capture/feature-policy`). */
+export interface CaptureFaceFeatureWork {
+  readonly executions: readonly import('../features/host').RenderFeaturePlanExecution[];
+  readonly plans: readonly import('../features/plan').RenderFeaturePlannedFrame[];
 }
 
 export interface CubeCaptureGraphState {
@@ -115,7 +124,7 @@ export function addTargetCaptureGraphPasses(
   lighting?: { readonly shadows: TypedShadowTargets; readonly accesses: readonly GraphAccess[] },
   view?: { readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined },
   encodeMip?: TransmissionBackdropMipEncoder,
-): Result<GraphTextureView | undefined, RenderGraphError> {
+): Result<GraphTextureView | undefined, RenderGraphError | import('../errors/render').RenderError> {
   const gpuDriven = view?.gpuDriven;
   if (
     state.atmosphere === true &&
@@ -439,7 +448,15 @@ export function addTargetCaptureGraphPasses(
         }
       },
     });
-    if (!added.ok) return added;
+    const featured = addCaptureFaceFeaturePasses(builder, added, {
+      work: initial,
+      color: color.value,
+      colorTexture: texture.value,
+      depth: depth.value,
+      depthTexture: depthTexture.value,
+      lighting,
+    });
+    if (!featured.ok) return featured;
     const mipped = addPlanarMipPasses(
       builder,
       `${label}.${slot}`,

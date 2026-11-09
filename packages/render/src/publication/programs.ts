@@ -424,7 +424,8 @@ export function publicationMaterialSchemaRebinder(registry: ShaderRegistry) {
       Object.keys(entryPoints).length > 0 &&
       !sameEntryPoints(rebound.materialEntryPoints, entryPoints)
     )
-      rebound = { ...rebound, materialEntryPoints: entryPoints };
+      rebound = { ...rebound, materialEntryPoints: Object.freeze(entryPoints) };
+    if (rebound !== material) rebound = Object.freeze(rebound);
     materials.set(material, rebound);
     return rebound;
   };

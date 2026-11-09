@@ -79,7 +79,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
       i % 7 === 0 ? Number.NaN : (i % 5) - 2,
     );
     for (let i = 0; i < capacity; i++) particles.set([i % 11, i % 3, capacity - i], i * 28);
-    const runtime = new Float32Array(76),
+    const runtime = new Float32Array(80),
       words = new Uint32Array(runtime.buffer);
     for (const start of [8, 44]) for (let i = 0; i < 4; i++) runtime[start + i * 5] = 1;
     const runtimeBuffer = buffer(runtime, true),

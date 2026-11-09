@@ -31,6 +31,12 @@ struct TaaResolveParams {
   hasSecondaryReactivity : u32,
   hasOutputTemporal : u32,
   hasSecondaryRows : u32,
+  // Unreal TSR flickering temporal analysis (r.TSR.ShadingRejection.Flickering).
+  flickerEnabled : u32,
+  // TotalVariationCountInvThreshold = 1 - (1 - 0.05)^FlickeringFramePeriod.
+  flickerInvThreshold : f32,
+  // 1 / (RefreshRateToFrameRateCap * MaxParallaxVelocity * width / 1920).
+  flickerInvMaxParallax : f32,
   // WebGL2 uniform bindings must span a 16-byte multiple.
   _pad1 : u32,
 };
@@ -39,6 +45,8 @@ struct TaaResolveOutput {
   @location(0) color : vec4<f32>,
   @location(1) temporal : vec4<f32>,
   @location(2) stability : f32,
+  // Flickering history: GCS luma, encoded gradient, total variation, count / 20.
+  @location(3) flicker : vec4<f32>,
 };
 
 @group(1) @binding(0) var currentColor : texture_2d<f32>;
@@ -54,6 +62,7 @@ struct TaaResolveOutput {
 @group(1) @binding(10) var secondaryReactivity : texture_2d<f32>;
 @group(1) @binding(11) var currentOutputTemporal : texture_2d<f32>;
 @group(1) @binding(12) var secondaryReactivitySource : texture_2d<f32>;
+@group(1) @binding(13) var historyFlicker : texture_2d<f32>;
 
 fn secondaryReactivityTap(pixel : vec2<i32>) -> f32 {
   let value = textureLoad(secondaryReactivity, pixel, 0).r;
@@ -278,6 +287,145 @@ fn taaNeighborhood(uv : vec2<f32>, current : vec3<f32>, settled : bool) -> TaaBo
   return bounds;
 }
 
+// ---------------------------------------------------------------------------
+// Flickering temporal analysis, ported from Unreal Engine 5 TSR
+// (Shaders/Private/TemporalSuperResolution/TSRShadingAnalysis.ush
+// ComputeMoireError, lines 213-491, and the StableFilteredBox in
+// MeasureRejection, lines 570-616). It runs on one luma channel in UE's
+// Shading Measurement Color Space (SMCS(L) = (L / (L + 0.17))^2, TSRColorSpace.ush)
+// and watches whether the history gradient flips sign over time. A pixel that
+// keeps flipping is a sub-pixel flicker (sun glints on a rough wet surface):
+// the clip box is then widened by the measured error so history may ghost
+// inside it instead of following every jitter phase.
+const FLICKER_MIN_BLEND : f32 = 0.05;
+const FLICKER_ENCODING_ERROR : f32 = 0.007874016; // 1 / 127
+const FLICKER_MAX_COUNT : f32 = 20.0;
+const FLICKER_QUANT_ERROR : f32 = 0.00048828125; // 0.5 / 1024 (10-bit backbuffer)
+const FLICKER_FILTER_WEIGHT : f32 = 0.25; // 1 / (1 + 4 * 0.5 + 4 * 0.25)
+const FLICKER_LUMA_TO_CHANNEL : f32 = 3.0; // kMoireLumaToChannel
+const FLICKER_PERCEPTION_ADD : f32 = 0.17; // kGCSPreceptionAdd
+
+fn flickerChannelToSmcs(linear : f32) -> f32 {
+  let g = max(linear, 0.0) / (max(linear, 0.0) + FLICKER_PERCEPTION_ADD);
+  return g * g;
+}
+
+fn flickerSmcsToLinear(smcs : f32) -> f32 {
+  let g = clamp(sqrt(max(smcs, 0.0)), 0.0, 0.995);
+  return FLICKER_PERCEPTION_ADD * g / (1.0 - g);
+}
+
+// kMoireSMCSWeights = 1/3 per channel.
+fn flickerSmcsLuma(rgb : vec3<f32>) -> f32 {
+  let linear = max(rgb, vec3<f32>(0.0));
+  let g = linear / (linear + vec3<f32>(FLICKER_PERCEPTION_ADD));
+  let s = g * g;
+  return (s.x + s.y + s.z) / 3.0;
+}
+
+// A fresh history: luma of the current sample, no gradient, no variation.
+fn taaFlickerReset(current : vec3<f32>) -> vec4<f32> {
+  return vec4<f32>(sqrt(flickerSmcsLuma(current)), 127.0 / 255.0, 0.0, 0.0);
+}
+
+struct TaaFlicker {
+  history : vec4<f32>,
+  error : f32,
+};
+
+fn taaFlickerAnalysis(
+  sourcePixel : vec2<i32>,
+  dimensions : vec2<i32>,
+  current : vec3<f32>,
+  previous : vec4<f32>,
+  isStatic : f32,
+) -> TaaFlicker {
+  let inputLuma = flickerSmcsLuma(current);
+  var lumaMin = inputLuma;
+  var lumaMax = inputLuma;
+  for (var y = -1; y <= 1; y++) {
+    for (var x = -1; x <= 1; x++) {
+      let tap = clamp(sourcePixel + vec2<i32>(x, y), vec2<i32>(0), dimensions - vec2<i32>(1));
+      let luma = flickerSmcsLuma(textureLoad(currentColor, tap, 0).rgb);
+      lumaMin = min(lumaMin, luma);
+      lumaMax = max(lumaMax, luma);
+    }
+  }
+  // Unpack history (GCS luma, gradient, total variation, count); the last two
+  // decay by (1 - MinBlendFinal) per frame and are dropped on moving pixels.
+  let prevLuma = previous.r * previous.r;
+  let prevGradient = previous.g * (255.0 / 127.0) - 1.0;
+  let prevVariation = previous.b * (1.0 - FLICKER_MIN_BLEND) * isStatic;
+  let prevCount = previous.a * FLICKER_MAX_COUNT * (1.0 - FLICKER_MIN_BLEND) * isStatic;
+
+  // Same heuristic as the colour clip below, on one channel: how far would the
+  // history have been clamped, and what blend would the resolve have used?
+  let boxSize = lumaMax - lumaMin;
+  let clampError = max(FLICKER_QUANT_ERROR, boxSize * FLICKER_FILTER_WEIGHT * 0.25) + FLICKER_QUANT_ERROR;
+  let clampedPrev = clamp(prevLuma, lumaMin - clampError, lumaMax + clampError);
+  let weightedBox = boxSize * FLICKER_FILTER_WEIGHT + FLICKER_QUANT_ERROR * 2.0 * FLICKER_FILTER_WEIGHT;
+  let delta = max(abs(inputLuma - prevLuma), weightedBox);
+  let rejection = saturate(1.0 - abs(clampedPrev - prevLuma) / delta);
+  let finalPrev = mix(clamp(prevLuma, lumaMin, lumaMax), prevLuma, rejection);
+  let finalBlend = max(1.0 - rejection, FLICKER_MIN_BLEND);
+  let finalHistory = inputLuma * finalBlend - finalPrev * (finalBlend - 1.0);
+  let ghostingHistory = inputLuma * FLICKER_MIN_BLEND - prevLuma * (FLICKER_MIN_BLEND - 1.0);
+  let gradient = finalHistory - ghostingHistory;
+
+  // A gradient that reverses sign beyond the 8-bit encoding error is a flicker.
+  let sameSign = gradient * prevGradient > 0.0;
+  let withinError = abs(gradient) < FLICKER_ENCODING_ERROR || abs(prevGradient) < FLICKER_ENCODING_ERROR;
+  let isFlicker = select(1.0, 0.0, sameSign || withinError);
+  let variation = min(abs(prevGradient), abs(gradient)) * isFlicker;
+  let newGradient = prevGradient * (FLICKER_MIN_BLEND - 1.0) * (isFlicker - 1.0) + gradient;
+  var totalVariation = prevVariation + variation;
+  let count = prevCount + isFlicker;
+  // Quantise the count to history bit depth so variation cannot drift.
+  let quantizedCount = floor(count * (255.0 / FLICKER_MAX_COUNT)) * (FLICKER_MAX_COUNT / 255.0);
+  totalVariation = totalVariation * quantizedCount / max(count, 1e-6);
+
+  let countFadeIn = saturate(count * params.flickerInvThreshold - 0.5);
+  let error = (abs(totalVariation / max(count, 1e-6)) + count * FLICKER_ENCODING_ERROR) * countFadeIn;
+  return TaaFlicker(
+    vec4<f32>(
+      sqrt(max(finalHistory, 0.0)),
+      saturate(newGradient * (127.0 / 255.0) + 127.0 / 255.0),
+      saturate(totalVariation),
+      quantizedCount / FLICKER_MAX_COUNT,
+    ),
+    // Moving pixels create little moire with jitter: keep them responsive.
+    saturate(error * isStatic),
+  );
+}
+
+// StableFilteredBox of MeasureRejection: let history ghost inside a luma
+// window of 3x the error (kMoireLumaToChannel) instead of clamping to the
+// 3x3 neighbourhood. Chroma is untouched.
+fn taaStabilizeBounds(bounds : TaaBounds, error : f32) -> TaaBounds {
+  if (error <= 0.0) { return bounds; }
+  let size = FLICKER_LUMA_TO_CHANNEL * error;
+  let boxMin = flickerChannelToSmcs(bounds.minimum.x);
+  let boxMax = flickerChannelToSmcs(bounds.maximum.x);
+  var stable = bounds;
+  let stableMin = min(boxMin, boxMax - size);
+  let stableMax = max(boxMax, boxMin + size);
+  if (stableMin < boxMin) { stable.minimum.x = flickerSmcsToLinear(stableMin); }
+  if (stableMax > boxMax) { stable.maximum.x = flickerSmcsToLinear(stableMax); }
+  return stable;
+}
+
+// IsMovingMask of TSRDilateVelocity.usf (333-365), from screen velocity:
+// the parallax term saturates at MaxParallaxVelocity, the world term at two
+// pixels of displacement; any reactive pixel counts as animated.
+fn taaFlickerIsStatic(velocityPixels : f32, reactive : f32) -> f32 {
+  var moving = max(
+    saturate(velocityPixels * 0.5 - 1.0),
+    saturate(velocityPixels * params.flickerInvMaxParallax - 0.5),
+  );
+  if (reactive > 0.0) { moving = 1.0; }
+  return 1.0 - moving;
+}
+
 fn clipTaaHistory(neighbors : TaaBounds, history : vec3<f32>) -> vec3<f32> {
   let clipMin = neighbors.minimum;
   let clipMax = neighbors.maximum;
@@ -392,6 +540,7 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
       vec4<f32>(roundTaaHistory(current.rgb, taaRoundingNoise(vec2<u32>(in.position.xy), params.temporalFrameIndex)), current.a),
       temporal,
       0.0,
+      taaFlickerReset(current.rgb),
     );
   }
   let history = sampleTaaHistory(historyUv);
@@ -399,7 +548,19 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
   let historyPixel = clamp(vec2<i32>(historyUv * vec2<f32>(historyDimensions)), vec2<i32>(0), historyDimensions - vec2<i32>(1));
   let priorStability = textureLoad(historyStability, historyPixel, 0).r;
   let stableAge = taaStableAge(priorStability, !rejected, temporal, previousTemporal.xy);
-  let clipped = clipTaaHistory(taaNeighborhood(currentUv, current.rgb, stableAge >= TAA_STABILITY_FRAMES), history.rgb);
+  var flickerHistory = taaFlickerReset(current.rgb);
+  var flickerError = 0.0;
+  if (params.flickerEnabled != 0u) {
+    let isStatic = taaFlickerIsStatic(length(temporal.xy * vec2<f32>(dimensions)), temporal.w);
+    let analysis = taaFlickerAnalysis(
+      sourcePixel, dimensions, current.rgb,
+      textureLoad(historyFlicker, historyPixel, 0), isStatic);
+    flickerHistory = analysis.history;
+    flickerError = analysis.error;
+  }
+  let bounds = taaStabilizeBounds(
+    taaNeighborhood(currentUv, current.rgb, stableAge >= TAA_STABILITY_FRAMES), flickerError);
+  let clipped = clipTaaHistory(bounds, history.rgb);
   let clipping = resolveTaaClipping(clipped, history.rgb, priorStability, stableAge);
   let clippedHistoryRgb = clipping.history;
   let reactiveFactor = 1.0 - clamp(temporal.w, 0.0, 1.0);
@@ -427,6 +588,7 @@ fn fs_taa_resolve(in : FullscreenOutput) -> TaaResolveOutput {
     vec4<f32>(roundTaaHistory(resolved, taaRoundingNoise(vec2<u32>(in.position.xy), params.temporalFrameIndex)), current.a),
     temporal,
     clipping.state,
+    flickerHistory,
   );
 }
 

@@ -317,20 +317,18 @@ export function worldUpdate(
     const order = update.sortedOrder;
     const anchor = order.indexOf(FIXED_ANCHOR_NAME);
     if (anchor < 0) {
-      runSchedule(
-        update,
-        world,
-        order.filter((name) => name !== FIXED_ANCHOR_NAME),
-      );
+      runSchedule(update, world);
       if (measured > 0) discardFixedOverflow(fixed, accumulator);
     } else {
-      const updateCommands = new Map<string, CommandBufferImpl>();
-      runSchedule(update, world, order.slice(0, anchor), updateCommands, false);
+      const updateCommands = update.deferredCommands
+        ? new Map<string, CommandBufferImpl>()
+        : undefined;
+      runSchedule(update, world, order, updateCommands, false, 0, anchor);
       if (measured > 0) runFixed(world, fixed, accumulator);
       // Downstream Update systems consume the final remainder even when no
       // fixed tick ran or catch-up discarded whole steps.
       fixed.overstep = accumulator.value;
-      runSchedule(update, world, order.slice(anchor + 1), updateCommands);
+      runSchedule(update, world, order, updateCommands, true, anchor + 1, order.length);
     }
   } catch (error) {
     if (error instanceof CommandFailedError || error instanceof SystemFailedError) {

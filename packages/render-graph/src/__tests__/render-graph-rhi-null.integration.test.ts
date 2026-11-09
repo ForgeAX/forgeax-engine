@@ -39,6 +39,50 @@ describe('RenderGraphBuilder RhiNull integration', () => {
     expect((await compiled.retire()).ok).toBe(true);
   });
 
+  it('resolves attachment load per execution without retaining the previous frame operation', async () => {
+    const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+    const output = device
+      .createTexture({ size: [1, 1], format: 'rgba8unorm', usage: 0x10 })
+      .unwrap();
+    const builder = new RenderGraphBuilder<{
+      readonly encoder: RhiCommandEncoder;
+      readonly clear: boolean;
+    }>();
+    const target = builder
+      .importTexture(
+        'surface',
+        { format: 'rgba8unorm', size: 'surface', usage: 0x10 },
+        () => output,
+      )
+      .unwrap();
+    const view = builder.view(target).unwrap();
+    builder
+      .addRasterPass('presentation', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [
+          { view, loadOp: (frame) => (frame.clear ? 'clear' : 'load'), storeOp: 'store' },
+        ],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    const compiled = builder.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    const encoder = device.createCommandEncoder().unwrap();
+    const begin = encoder.beginRenderPass.bind(encoder);
+    const operations: GPULoadOp[] = [];
+    encoder.beginRenderPass = (descriptor) => {
+      for (const attachment of descriptor.colorAttachments) {
+        const operation = attachment?.loadOp;
+        if (operation !== undefined) operations.push(operation);
+      }
+      return begin(descriptor);
+    };
+    for (const clear of [true, false, true]) compiled.execute({ encoder, clear }).unwrap();
+    expect(operations).toEqual(['clear', 'load', 'clear']);
+    encoder.finish().unwrap();
+    (await compiled.retire()).unwrap();
+    device.destroyTexture(output).unwrap();
+  });
+
   it('observes compute to indirect raster structure and command counts', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device = (await adapter.requestDevice()).unwrap();

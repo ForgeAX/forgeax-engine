@@ -24,6 +24,17 @@ test('accepts tracked ASCII FBX source', () => {
   assert.match(result.stdout, /zero binaries tracked/);
 });
 
+test('accepts tracked SVG vector source', () => {
+  const cwd = repositoryWith(
+    'brand.svg',
+    '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1z" /></svg>\n',
+  );
+  const result = spawnSync(process.execPath, [gate], { cwd, encoding: 'utf8' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /zero binaries tracked/);
+});
+
 test('rejects tracked binary FBX source', () => {
   const cwd = repositoryWith(
     'fixture.fbx',

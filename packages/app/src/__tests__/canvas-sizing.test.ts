@@ -1,4 +1,4 @@
-import type { Renderer } from '@forgeax/engine-render';
+import { type Renderer, setRenderAblation } from '@forgeax/engine-render';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   measureCanvasDrawingBuffer,
@@ -30,7 +30,10 @@ function budgetedSurface(width: number, height: number, renderWidth: number, ren
   return canvas;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setRenderAblation(undefined);
+});
 
 describe('device-safe browser drawing buffer', () => {
   it.each([
@@ -77,6 +80,33 @@ describe('device-safe browser drawing buffer', () => {
     syncCanvasDrawingBuffer(portrait);
     expect([portrait.width, portrait.height]).toEqual([1080, 1920]);
     expect([portrait.clientWidth, portrait.clientHeight]).toEqual([1080, 1920]);
+  });
+
+  it('applies the diagnostic render scale only when set, without layout feedback', () => {
+    vi.stubGlobal('devicePixelRatio', 1);
+    const styled = surface(1920, 1080);
+    expect(measureCanvasDrawingBuffer(styled)).toEqual({ width: 1920, height: 1080 });
+    setRenderAblation({ renderScale: 0.5 });
+    for (let frame = 0; frame < 3; frame++) syncCanvasDrawingBuffer(styled);
+    expect([styled.width, styled.height]).toEqual([960, 540]);
+
+    // An intrinsic canvas lays out at its buffer size; the scale must not compound.
+    setRenderAblation(undefined);
+    const intrinsic = { clientWidth: 1920, clientHeight: 1080, width: 1920, height: 1080 };
+    const followLayout = () => {
+      intrinsic.clientWidth = intrinsic.width;
+      intrinsic.clientHeight = intrinsic.height;
+    };
+    syncCanvasDrawingBuffer(intrinsic);
+    setRenderAblation({ renderScale: 0.5 });
+    for (let frame = 0; frame < 4; frame++) {
+      syncCanvasDrawingBuffer(intrinsic);
+      followLayout();
+    }
+    expect([intrinsic.width, intrinsic.height]).toEqual([960, 540]);
+    setRenderAblation(undefined);
+    syncCanvasDrawingBuffer(intrinsic);
+    expect([intrinsic.width, intrinsic.height]).toEqual([1920, 1080]);
   });
 
   it('does not reallocate an unchanged drawing buffer when device DPR changes', () => {

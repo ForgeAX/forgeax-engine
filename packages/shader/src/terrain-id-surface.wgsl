@@ -55,5 +55,5 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
     }
   }
   normal = select(vec3<f32>(0.0,0.0,1.0),normalize(normal),dot(normal,normal)>1e-8);
-  return SurfaceData(color.rgb,applyTBN(input.vertexNormalWS,input.tangentWS,normal)*select(-1.0,1.0,input.frontFacing),clamp(orm.z,0.0,1.0),clamp(orm.y,0.04,1.0),emission,clamp(orm.x,0.0,1.0),clamp(color.a,0.0,1.0),0.0);
+  return SurfaceData(color.rgb,applyTBN(input.vertexNormalWS,input.tangentWS,normal)*select(-1.0,1.0,input.frontFacing),clamp(orm.z,0.0,1.0),clamp(orm.y,0.04,1.0),emission,clamp(orm.x,0.0,1.0),clamp(color.a,0.0,1.0),0.0,0.0);
 }

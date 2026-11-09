@@ -38,6 +38,13 @@ closed structured error, never a fallback to `cwd` or `roots[0]`.
 > `cacheIdentity`; unidentifiable or externally read products build cold.
 > Cache hits still undergo the current publication's closure validation.
 
+The authored dev adapter declares its sink-free transport policy identity, so
+the same existing transport DDC also reuses the verified projection after a
+product hit. The runtime scope is rebound after that projection is restored;
+source, product, publication generation and policy identity still invalidate it.
+With `FORGEAX_WORKSPACE_TIMING=1`, `forgeax.pack-commit.timing` separates HTTP
+compression, Meta staging/commit and authored commit from product preparation.
+
 For production Meta imports, DevKit also supplies `producerIdentity` from its
 sealed build-program graph and plugin configuration. Custom hosts may supply
 the same evidence explicitly; it must change when importer code or configuration
@@ -77,7 +84,9 @@ entries with new bodies instead of mutating published bytes. Unrelated lazy
 publications retain both the accepted bytes and their prepared HTTP encodings.
 
 The Node-only `http-artifact` entry prepares gzip level-1 HTTP representations
-serially before dev readiness and generation commit. Representations are weakly
+before dev readiness and generation commit. One queue across callers admits at
+most four encoders and 4 MiB of raw inputs per window; larger bodies run alone.
+Representations are weakly
 owned by the accepted raw byte bodies; they do not replace Pack artifacts or
 their decoded-byte integrity. HTTP responses only select prepared bodies, honor
 `Accept-Encoding` quality values, merge `Vary`, and retain identity for HEAD and
@@ -95,6 +104,15 @@ artifact maps from the matching `current` DDC entry when the complete closure
 is present. This is a read-through cache warm-up only: an incomplete or
 non-current entry falls back to the declared producer, while `lastKnownGood`
 and `stale` entries remain unavailable for serving.
+
+Before a complete dev generation commits, equal accepted artifact bytes of the
+same MIME type share one immutable body across authored Packs and restored Meta.
+Sharing compares bytes after SHA-256 grouping and prefers the smallest existing
+backing, so a tiny equal subview cannot replace an exact private readback with a
+larger retained allocation. It allocates no new artifact backing. The temporary
+content index is discarded after the pass; routes retain the accepted bodies
+and reuse their existing weakly owned HTTP representations. Source edits,
+closure checks, current-head fences and encoding policy remain unchanged.
 
 Consumers should pass the same explicit `ddc` object to every plugin entry
 point. Do not add legacy, v1, compatibility, basename, or URL fallback paths.
@@ -157,8 +175,13 @@ keep their last accepted payload and recover in place.
 Repeated scoped Catalog reads reuse one serialized body per accepted projection
 and runtime binding. Lazy publications, changed diagnostics and scope changes
 invalidate that body; the request freshness barrier still runs before reuse.
+Scope projection preserves each producer's shared publication envelope within that
+response, including its scoped current/LKG locators and canonical source path.
+The wire table validates and encodes that complete output closure once per
+publication and source path. Distinct sources, replaced projections and different
+runtime bindings retain independent envelopes; no producer field is omitted.
 
-`pluginPack({ roots })` automatically inventories trusted `*.pack.ts` sources. The production defaults compose the standard output registry and a fixed staged generation; hosts inject roots, importers, native cookers, runtime binding, refresh, and DDC policy. A bounded authored build timeout is returned as the structured build-phase failure and the generation keeps its previous Catalog/Pack publication until a corrected source succeeds. Scanner/Catalog projection reads only the validated definition; explicit cook calls `build`, finalizes all outputs into one Pack v2 transaction, publishes one receipt per output GUID, and stores canonical Meta as `scriptable-pack.meta.json` in that package.
+`pluginPack({ roots })` automatically inventories trusted `*.pack.ts` sources. The production defaults compose the standard output registry and a fixed staged generation; hosts inject roots, importers, native cookers, runtime binding, refresh, and DDC policy. Initial authored publication uses the canonical production execution budget; a replacement of an accepted live source retains the original 15-second loader budget. A bounded authored build timeout is returned as the structured build-phase failure and the generation keeps its previous Catalog/Pack publication until a corrected source succeeds. Scanner/Catalog projection reads only the validated definition; explicit cook calls `build`, finalizes all outputs into one Pack v2 transaction, publishes one receipt per output GUID, and stores canonical Meta as `scriptable-pack.meta.json` in that package.
 
 > [!NOTE]
 > A host that already captured a `ScriptablePackSourceSnapshot` while preparing the same serve or build attempt may pass `takeInitialSourceSnapshot`. Pack calls it at most once for its first inventory, still traverses all configured roots, and verifies captured source and resolution inputs before publication. A failed candidate or later generation reads a fresh snapshot. The provider should release its reference when called. Production shares this snapshot and one validated inventory between buildStart and emission, then creates fresh preparation for a later build. CLI build discovery hands its own verified sources forward once for the same project; it is not a cross-command source cache.
@@ -168,7 +191,12 @@ same production session, so independent lazy publications retain each other's
 Catalog, Pack and artifact changes. Filesystem revision snapshots inspect at most
 eight paths concurrently, retain every configured root and drain the complete
 batch before propagating a failure. The construction-time synchronous baseline
-and subsequent freshness fences remain authoritative. Queued sibling GUID requests reuse a Meta
+and subsequent freshness fences remain authoritative. Each scoped HTTP request
+owns one fresh source fence. Dispatch rechecks scope identity, generation,
+availability and degradation synchronously after the resolution await; accepted
+artifact bytes are selected before another asynchronous yield. Independent
+requests still take their own source fence, including concurrent requests.
+Queued sibling GUID requests reuse a Meta
 publication once all its declared outputs are imported and current in the live
 accepted Catalog. Watcher invalidation removes that eligibility; rebuilds always
 run the producer again. Close aborts active work and drains queued

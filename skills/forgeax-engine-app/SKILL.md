@@ -42,6 +42,10 @@ infer GPU release from Worker termination.
 Recheck both together after asynchronous waits: loss clears the old queue before
 the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
+For picture acceptance, count `forgeax:frame-completed` events whose
+`presentation` is `ready` on that canvas and current World. The report
+`render.completedFrame` is a source publication identifier; subtracting
+identifiers does not count completed pictures or exclude preparation.
 `recover()` is single-flight, so concurrent calls share one Promise. A
 `faulted` renderer must be disposed and recreated; `disposed` is terminal.
 

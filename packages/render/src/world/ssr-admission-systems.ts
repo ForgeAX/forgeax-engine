@@ -206,7 +206,6 @@ function admitViewSsr(
   try {
     const sceneInputs =
       (reflectionFallbackCandidate || camera.screenSpaceReflection !== undefined) &&
-      (renderPath !== 'forward' || camera.antialias !== 'msaa') &&
       hasSsrSceneInputs(
         { renderables: input.renderables, dispatch, materialFrame: input.materials },
         reportedPath,

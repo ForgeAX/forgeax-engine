@@ -9,7 +9,7 @@ import {
 } from '@forgeax/engine-shader-compiler';
 import type { MaterialParticleInput, ParticleEffectAssetV3, Result } from '@forgeax/engine-types';
 import { err, ok, stripWgslComments, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
-import type { ParticleEmitterSourceV3 } from '@forgeax/engine-vfx';
+import type { ParticleEffectSourceV3, ParticleEmitterSourceV3 } from '@forgeax/engine-vfx';
 import {
   PARTICLE_CODE_DEFAULT_MODULE_ID,
   type ParticleAttributeRef,
@@ -65,6 +65,12 @@ struct VfxSpawnContext {
   seed: u32,
   playCycle: u32,
   particleId: u32,
+  time: f32,
+  time_whole: u32,
+  time_fract: f32,
+  world_time: f32,
+  world_time_whole: u32,
+  world_time_fract: f32,
 }
 
 struct VfxUpdateContext {
@@ -73,6 +79,12 @@ struct VfxUpdateContext {
   seed: u32,
   playCycle: u32,
   particleId: u32,
+  time: f32,
+  time_whole: u32,
+  time_fract: f32,
+  world_time: f32,
+  world_time_whole: u32,
+  world_time_fract: f32,
 }
 
 fn vfx_hash(value: u32) -> u32 {
@@ -97,6 +109,30 @@ fn vfx_random_spawn(ctx: VfxSpawnContext, sampleKey: u32) -> f32 {
 
 fn vfx_random_update(ctx: VfxUpdateContext, sampleKey: u32) -> f32 {
   return vfx_random_words(ctx.seed, ctx.particleId, ctx.tick, sampleKey);
+}
+
+// Lifetime for a particle that never expires (continuous effects). Prefer this
+// over an arbitrary huge literal; derive looping visuals from ctx.time via
+// vfx_loop_phase, not from particle.age.
+fn vfx_forever() -> f32 {
+  return 3.0e38;
+}
+
+// Exact looping phase fract(rate * t + offset) for t = whole + fract seconds.
+// rate is in cycles per second. The whole-second part is multiplied in u32
+// fixed point (wrapping), so the result stays exact after hours of play where
+// a plain f32 time loses frame resolution.
+fn vfx_loop_phase(whole: u32, frac: f32, rate: f32, offset: f32) -> f32 {
+  let rateWhole = floor(rate);
+  let rateFract = rate - rateWhole;
+  let fixed = u32(rateFract * 4294967296.0);
+  let wholePhase = f32((fixed * whole) >> 8u) / 16777216.0;
+  return fract(wholePhase + rate * frac + offset);
+}
+
+// Same as vfx_loop_phase, in radians (0 .. 2*pi), for sin/cos driven motion.
+fn vfx_loop_angle(whole: u32, frac: f32, rate: f32, offset: f32) -> f32 {
+  return vfx_loop_phase(whole, frac, rate, offset) * 6.283185307179586;
 }
 
 fn vfx_integrate(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {
@@ -282,6 +318,10 @@ struct ForgeaxVfxRuntime {
   textureSheet: vec4<f32>,
   cameraPosition: vec3<f32>,
   sorting: u32,
+  timeFract: f32,
+  timeWhole: u32,
+  worldTimeFract: f32,
+  worldTimeWhole: u32,
 }
 
 struct ForgeaxVfxCounters {
@@ -337,6 +377,12 @@ fn forgeax_vfx_spawn_main(@builtin(global_invocation_id) invocation: vec3<u32>) 
         forgeax_vfx_runtime.seed,
         forgeax_vfx_runtime.playCycle,
         particle.id,
+        f32(forgeax_vfx_runtime.timeWhole) + forgeax_vfx_runtime.timeFract,
+        forgeax_vfx_runtime.timeWhole,
+        forgeax_vfx_runtime.timeFract,
+        f32(forgeax_vfx_runtime.worldTimeWhole) + forgeax_vfx_runtime.worldTimeFract,
+        forgeax_vfx_runtime.worldTimeWhole,
+        forgeax_vfx_runtime.worldTimeFract,
       );
       vfx_spawn(ctx, &particle);
       forgeax_vfx_particles[index] = particle;
@@ -364,6 +410,12 @@ fn forgeax_vfx_update_main(@builtin(global_invocation_id) invocation: vec3<u32>)
     forgeax_vfx_runtime.seed,
     forgeax_vfx_runtime.playCycle,
     particle.id,
+    f32(forgeax_vfx_runtime.timeWhole) + forgeax_vfx_runtime.timeFract,
+    forgeax_vfx_runtime.timeWhole,
+    forgeax_vfx_runtime.timeFract,
+    f32(forgeax_vfx_runtime.worldTimeWhole) + forgeax_vfx_runtime.worldTimeFract,
+    forgeax_vfx_runtime.worldTimeWhole,
+    forgeax_vfx_runtime.worldTimeFract,
   );
   vfx_update(ctx, &particle);
   particle.age += forgeax_vfx_runtime.delta;
@@ -1180,7 +1232,7 @@ function createParticleManagedRuntimeV3(options: {
   const rendererAttributes = createParticleRendererAttributeRuntime(custom, options.renderers);
   const declarations = [
     options.parameters
-      ? '@group(0) @binding(10) var<uniform> forgeax_vfx_parameters: VfxParameters;'
+      ? '@group(0) @binding(10) var<uniform> forgeax_vfx_parameters: VfxParameters;\nfn vfx_parameters() -> VfxParameters { return forgeax_vfx_parameters; }'
       : '',
     custom === undefined || custom.stride === 0
       ? ''
@@ -1360,17 +1412,79 @@ function compileError(
   return { code, expected, hint, detail: { emitterId, ...detail } };
 }
 
+/** Render the effect-level `parameters` table as the managed `VfxParameters` struct block. */
+function synthesizeParametersBlock(
+  parameters: NonNullable<ParticleEffectSourceV3['parameters']>,
+): string {
+  const literal = (type: VfxValueType, value: unknown): string =>
+    Array.isArray(value) ? `${type}(${value.join(', ')})` : String(value);
+  const lines: string[] = ['', '// forgeax-managed: generated from the effect `parameters` table'];
+  const entries = Object.entries(parameters);
+  for (const [name, entry] of entries) {
+    if (entry.default !== undefined)
+      lines.push(`// forgeax-vfx-default ${name} = ${literal(entry.type, entry.default)}`);
+  }
+  lines.push('struct VfxParameters {');
+  for (const [name, entry] of entries) lines.push(`  ${name}: ${entry.type},`);
+  lines.push('}', '');
+  return lines.join('\n');
+}
+
+function declaredParametersConflict(
+  emitterId: string,
+  moduleId: string,
+  module: ParticleCodeModuleSet,
+  declared: readonly string[],
+): ParticleCodeCookError | undefined {
+  if (declared.length === 0) return undefined;
+  const hasHandWritten = (source: string): boolean =>
+    /\bstruct\s+VfxParameters\b/.test(stripWgslComments(source));
+  if (!hasHandWritten(module.entry) && !Object.values(module.imports ?? {}).some(hasHandWritten))
+    return undefined;
+  return compileError(
+    'vfx-reserved-surface-conflict',
+    emitterId,
+    'either the effect `parameters` table or a hand-written struct VfxParameters, not both',
+    'delete the struct VfxParameters from the module and declare the fields in the effect parameters table',
+    { module: moduleId },
+  );
+}
+
+function reservedImportConflict(
+  emitterId: string,
+  module: ParticleCodeModuleSet,
+): ParticleCodeCookError | undefined {
+  for (const [importId, source] of Object.entries(module.imports ?? {})) {
+    if (!RESERVED.test(stripWgslComments(source))) continue;
+    return compileError(
+      'vfx-reserved-surface-conflict',
+      emitterId,
+      'author imports without bindings, shader stages, or forgeax_vfx_* symbols',
+      `remove the reserved declaration from ${importId} and recook`,
+      { module: importId },
+    );
+  }
+  return undefined;
+}
+
+function resolveEmitterModule(
+  modules: Readonly<Record<string, ParticleCodeModuleSet>>,
+  moduleId: string,
+): ParticleCodeModuleSet | undefined {
+  if (modules[moduleId] !== undefined) return modules[moduleId];
+  return moduleId === PARTICLE_CODE_DEFAULT_MODULE_ID
+    ? { entry: PARTICLE_CODE_DEFAULT_MODULE }
+    : undefined;
+}
+
 async function compileEmitterV3(
   emitter: ParticleEmitterSourceV3,
   modules: Readonly<Record<string, ParticleCodeModuleSet>>,
   materials?: ParticleMaterialInputCatalog,
+  parameters?: ParticleEffectSourceV3['parameters'],
 ): Promise<Result<VfxGpuEmitterProgram, ParticleCodeCookError>> {
   const moduleId = emitter.program.module;
-  const module =
-    modules[moduleId] ??
-    (moduleId === PARTICLE_CODE_DEFAULT_MODULE_ID
-      ? { entry: PARTICLE_CODE_DEFAULT_MODULE }
-      : undefined);
+  const module = resolveEmitterModule(modules, moduleId);
   if (module === undefined) {
     return err(
       compileError(
@@ -1382,7 +1496,12 @@ async function compileEmitterV3(
       ),
     );
   }
-  const authoredEntryCode = module.entry;
+  const declared = parameters === undefined ? [] : Object.keys(parameters);
+  const parameterConflict = declaredParametersConflict(emitter.id, moduleId, module, declared);
+  if (parameterConflict !== undefined) return err(parameterConflict);
+  const parametersBlock =
+    parameters === undefined || declared.length === 0 ? '' : synthesizeParametersBlock(parameters);
+  const authoredEntryCode = module.entry + parametersBlock;
   const entryCode = stripWgslComments(authoredEntryCode);
   if (RESERVED.test(entryCode)) {
     return err(
@@ -1395,19 +1514,8 @@ async function compileEmitterV3(
       ),
     );
   }
-  for (const [importId, source] of Object.entries(module.imports ?? {})) {
-    if (RESERVED.test(stripWgslComments(source))) {
-      return err(
-        compileError(
-          'vfx-reserved-surface-conflict',
-          emitter.id,
-          'author imports without bindings, shader stages, or forgeax_vfx_* symbols',
-          `remove the reserved declaration from ${importId} and recook`,
-          { module: importId },
-        ),
-      );
-    }
-  }
+  const importConflict = reservedImportConflict(emitter.id, module);
+  if (importConflict !== undefined) return err(importConflict);
   const customRequested =
     /\bstruct\s+VfxCustom\b/.test(entryCode) ||
     Object.values(module.imports ?? {}).some((source) => /\bstruct\s+VfxCustom\b/.test(source));
@@ -1503,7 +1611,7 @@ async function compileEmitterV3(
           `    forgeax_vfx_particles[childParticleIndex] = child;\n    forgeax_vfx_custom[childParticleIndex] = VfxCustom(${custom.fields.map((field) => wgslDefault(field.type)).join(', ')});`,
         );
   const compiled = await compileParticleShader(
-    `${module.entry}\n${managed}\n${createParticleDataInterfaceRuntimeV3(dataInterfaces)}\n${createParticleStageManagedRuntime(stagePlan.value)}\n${eventRuntime}`,
+    `${authoredEntryCode}\n${managed}\n${createParticleDataInterfaceRuntimeV3(dataInterfaces)}\n${createParticleStageManagedRuntime(stagePlan.value)}\n${eventRuntime}`,
     {
       id: `forgeax_vfx_effect_v3::${emitter.id}`,
       imports: imports as Record<string, string>,
@@ -1657,7 +1765,7 @@ export async function cookParticleCodeProgram(
   if (!parsed.ok) return parsed;
   const emitters: VfxGpuEmitterProgram[] = [];
   for (const emitter of parsed.value.emitters) {
-    const compiled = await compileEmitterV3(emitter, modules, materials);
+    const compiled = await compileEmitterV3(emitter, modules, materials, parsed.value.parameters);
     if (!compiled.ok) return compiled;
     emitters.push(compiled.value);
   }
@@ -1779,7 +1887,16 @@ export function createParticleCodeNativeCooker(
         sourceMaterials = explicit.materials;
       }
       const cooked = await cookParticleCodeEffect(effect, sourceModules, sourceMaterials);
-      if (!cooked.ok) throw new Error(cooked.error.hint);
+      if (!cooked.ok) {
+        // Keep the structured fields on the thrown error so offline checks and
+        // the Pack failure route can report the code, causeCode and WGSL line.
+        throw Object.assign(new Error(cooked.error.hint), {
+          code: cooked.error.code,
+          expected: cooked.error.expected,
+          hint: cooked.error.hint,
+          detail: cooked.error.detail,
+        });
+      }
       return {
         guid,
         payload: cooked.value.asset,

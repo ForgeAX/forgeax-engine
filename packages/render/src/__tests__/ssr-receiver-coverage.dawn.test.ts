@@ -20,6 +20,14 @@ import {
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import { gbufferSource, writePackedNormals } from './standard-gbuffer.fixture';
 
+// The trace publishes reflection radiance weighted by 1 / (1 + luminance)
+// (Unreal SSRTReflections); compose inverts it after filtering. These probes
+// upload weighted radiance directly, so expectations apply the inverse.
+const unweightSsr = (rgb: readonly [number, number, number]): number[] => {
+  const luminance = Math.max(0, 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+  return rgb.map((value) => value / Math.max(1 - luminance, 2 ** -11));
+};
+
 async function composePixels(
   width: number,
   normals: number[],
@@ -236,10 +244,12 @@ it('keeps each full-resolution receiver on its own ray, including one-pixel face
     pixels.slice(68, 72).every((value) => value === 0),
     'wall face',
   ).toBe(true);
-  expect(pixels[0], 'red first row').toBeCloseTo(0.9, 3);
+  const red = unweightSsr([1, 0, 0])[0] ?? 0;
+  const green = unweightSsr([0, 1, 0])[1] ?? 0;
+  expect(pixels[0], 'red first row').toBeCloseTo(red - 0.1, 3);
   expect(pixels[1]).toBeCloseTo(-0.1, 3);
   expect(pixels[64], 'green second row').toBeCloseTo(-0.1, 3);
-  expect(pixels[65]).toBeCloseTo(0.9, 3);
+  expect(pixels[65]).toBeCloseTo(green - 0.1, 3);
 });
 
 it('keeps the rough reflected lobe beyond a mirror miss without admitting disabled receivers', async () => {
@@ -251,7 +261,7 @@ it('keeps the rough reflected lobe beyond a mirror miss without admitting disabl
   const confidence = 0.5 * (Math.round(0.75 * 255) / 255) ** 2;
   const fallback = 0.0999755859375;
   expect(pixels[4], 'rough lobe red at the missing central ray').toBeCloseTo(
-    confidence * (1 - fallback),
+    confidence * ((unweightSsr([1, 0, 0])[0] ?? 0) - fallback),
     4,
   );
   expect(pixels[5], 'weighted fallback replacement').toBeCloseTo(-confidence * fallback, 4);
@@ -285,7 +295,9 @@ it('samples the roughness pyramid at pixel centers without a half-pixel drift', 
   ];
   const normals = Array.from({ length: 16 }, () => [0.5, 1, 0.5, 0.75]).flat();
   const pixels = await composePixels(4, normals, radiance, { height: 4, mips });
-  const expected = mip1 - 0.0999755859375;
+  // Unreal GetRoughnessFade: full SSR up to half the roughness limit (1), then linear to zero.
+  const fade = Math.min(2 - (2 * (Math.round(0.75 * 255) / 255)) / 1, 1);
+  const expected = fade * ((unweightSsr([mip1, 0, 0])[0] ?? 0) - 0.0999755859375);
   expect(pixels[64 + 4]).toBeCloseTo(expected, 3);
   const shifted = source.replace(
     'let uv = in.position.xy /',

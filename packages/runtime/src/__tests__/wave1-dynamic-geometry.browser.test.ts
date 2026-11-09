@@ -26,6 +26,7 @@ import { err, type MeshAsset, ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import { boxPoints } from '../../../../scripts/test/convex-geometry-fixture.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createRenderer } from '../createRenderer';
 import { testAssets } from './helpers/runtime-assets';
@@ -85,10 +86,10 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
   const pipelines = vi.spyOn(GPUDevice.prototype, 'createRenderPipeline');
   const asyncPipelines = vi.spyOn(GPUDevice.prototype, 'createRenderPipelineAsync');
   const canvas = document.createElement('canvas');
-  canvas.width = 384;
-  canvas.height = 384;
-  canvas.style.width = '384px';
-  canvas.style.height = '384px';
+  canvas.width = testQuality.squareSize;
+  canvas.height = testQuality.squareSize;
+  canvas.style.width = `${canvas.width}px`;
+  canvas.style.height = `${canvas.height}px`;
   document.body.appendChild(canvas);
   const renderer = (
     await createRenderer(canvas, {}, { shaderManifestUrl: '/shaders/manifest.json' })
@@ -200,15 +201,12 @@ it('atomically publishes colored physics and PBR apertures with matching shadow 
     expect(centerHit()?.entity).toBe(parent);
     const draw = async (geometryLane?: 'direct') => {
       propagateTransforms(world).unwrap();
-      const receipt = renderer
-        .draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          ...(geometryLane === undefined ? {} : { geometryLane }),
-        })
-        .unwrap();
-      (await receipt.completed).unwrap();
+      const receipt = await drawReadyFrame(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+        ...(geometryLane === undefined ? {} : { geometryLane }),
+      });
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       return receipt;
     };

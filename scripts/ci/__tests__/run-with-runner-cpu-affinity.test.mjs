@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { parse } from 'yaml';
 
 import {
   constrainRunnerGpuThreads,
@@ -16,6 +18,33 @@ import {
   runnerGpuThreadAffinity,
   runnerKernelFingerprint,
 } from '../run-with-runner-cpu-affinity.mjs';
+
+test('directional CSM uses the existing quota-bound GPU process owner without changing its oracle', () => {
+  const workflow = parse(
+    readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+  );
+  const job = workflow.jobs['vitest-browser-shard'];
+  const step = job.steps.find(
+    (candidate) => candidate.name === 'Directional CSM Browser WebGPU smoke (M5 MVD)',
+  );
+  assert.match(
+    step.run,
+    /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+node scripts\/ci\/run-browser-gate-with-retry\.mjs/,
+  );
+  assert.match(step.run, /--mode=rhi-debug/);
+  assert.match(step.run, /xvfb-run -a env FORGEAX_BROWSER_HEADLESS=0/);
+  assert.match(step.run, /smoke:browser/);
+  assert.equal(step.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)");
+  assert.equal(step['timeout-minutes'], 30);
+  assert.equal(workflow.jobs['directional-csm-browser'], undefined);
+  const artifacts = readFileSync(
+    new URL('../build-artifact-contract.json', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(artifacts, /directional-csm-browser/);
+
+  assert.deepEqual(job.strategy.matrix.shard, [0, 1, 2, 3]);
+});
 
 test('CPU pressure keeps cgroup v2 counters separate from host contention', () => {
   const files = {

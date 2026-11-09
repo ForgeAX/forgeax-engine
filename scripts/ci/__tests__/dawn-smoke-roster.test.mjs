@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
 import {
   aggregateReports,
   buildShardReport,
@@ -525,10 +526,13 @@ test('aggregate fails closed for missing, duplicate, stale, skipped, and short-f
 
 test('the complete Bloom carrier and evidence move together to Smoke lane 1', () => {
   const ci = readFileSync('.github/workflows/ci.yml', 'utf8');
-  assert.match(ci, /- name: Hello-bloom headless smoke \(dawn-node\)\n\s+if: matrix\.group == 1\n/);
-  assert.match(
-    ci,
-    /- name: Upload Hello-bloom smoke evidence\n\s+if: failure\(\) && matrix\.group == 1\n/,
+  const steps = parse(ci).jobs['smoke-fleet'].steps;
+  const carrier = steps.find((step) => step.name === 'Hello-bloom headless smoke (dawn-node)');
+  const evidence = steps.find((step) => step.name === 'Upload Hello-bloom smoke evidence');
+  assert.equal(carrier.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 1)");
+  assert.equal(
+    evidence.if,
+    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.group == 1)",
   );
   assert.match(ci, /pnpm --filter @forgeax\/hello-bloom smoke:all/);
   assert.deepEqual(ciSmokeShardTailSeconds, [235, 240, 140, 250]);

@@ -167,8 +167,8 @@ it('finishes exclusive native material values without changing public receiver o
   if (material === undefined) throw new Error('Missing received material');
   expect(material.immutableValues).toBe(true);
   expect(accepted.frame.renderables.at(0)?.material.ownsValues(material)).toBe(true);
-  // Program metadata keeps its ordinary shape; the detached value subtree stays owned.
-  expect(Object.isFrozen(material)).toBe(false);
+  // A newly derived readonly snapshot keeps fixed native program facts and owned values.
+  expect(Object.isFrozen(material)).toBe(true);
   expect(material.materialParamSchema).toBe(
     f.assets.shaderRegistry.findMaterialArtifact('game::forward').unwrap().paramSchema,
   );
@@ -526,4 +526,34 @@ it.each([
   expect(owned).toEqual(schema);
   f.receiver.dispose();
   f.publisher.dispose();
+});
+
+it('detaches native program metadata without freezing aliases held by other consumers', () => {
+  const f = fixture([{ name: 'factor', type: 'f32', default: 0.75 }]);
+  try {
+    const first = f.packet.materials[0];
+    if (first === undefined) throw new Error('Expected material');
+    const passes = structuredClone(first.value.passes);
+    const message = encodeRenderPublication({
+      ...f.packet,
+      materials: [{ ...first, value: { ...first.value, passes } }],
+    });
+    const received = ownReceivedPublicationMaterials(message);
+    const owned = received.side?.materials?.[0]?.value;
+    expect(owned?.passes).toEqual(passes);
+    expect(Object.isFrozen(owned?.passes)).toBe(true);
+    expect(Object.isFrozen(passes)).toBe(false);
+    const pass = passes[0];
+    if (pass === undefined) throw new Error('Expected source Pass');
+    const original = pass.program.module;
+    Reflect.set(pass.program, 'module', 'game::mutated-alias');
+    expect(owned?.passes[0]?.program.module).toBe(original);
+    const accepted = f.receiver.accept(received, f.assets).unwrap();
+    expect(accepted.frame.renderables.at(0)?.material.snapshot.passes[0]?.program.module).toBe(
+      original,
+    );
+  } finally {
+    f.receiver.dispose();
+    f.publisher.dispose();
+  }
 });

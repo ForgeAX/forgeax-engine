@@ -7,6 +7,7 @@ import type {
   ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type { PassKind } from '@forgeax/engine-types';
+import { directionalPcssCapable } from '../../environment/capability';
 import { type GpuDrivenPbrProgram, resolveStandardPbrProgram } from '../../gpu-driven/pbr-program';
 import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../../pbr-pipeline';
 import { deriveExtendedLightingCapability } from '../../prepare/extended-lighting/resources';
@@ -216,7 +217,7 @@ export function findStandardPbrEntry(
     device.caps.storageBuffer,
     variantSet,
     deriveExtendedLightingCapability(device).admitted,
-    device.caps.backendKind === 'webgpu' || device.caps.backendKind === 'wgpu-native',
+    directionalPcssCapable(device.caps.backendKind),
     (device.limits.maxSampledTexturesPerShaderStage ?? 0) >= STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
   );
   if (noColorVariant !== undefined && noColorVariant.composedWgsl !== standardEntry.wgsl) {

@@ -33,6 +33,13 @@ native constructor table in `component.ts`. Managed families keep their own
 lifecycle flags while storing unsigned handles; fixed arrays and shared-memory
 columns retain the same numeric conversion and transient-view rules.
 
+Managed storage retains one borrowed byte window for each live logical extent.
+Successful extent changes replace that window; failed growth preserves it and
+slot retirement drops it before reuse. This trades live view headers and a slot
+index for fewer transient views. Pool numeric metadata statistics exclude JS
+containers; qualify live and drained storage separately. Component `array<T>`
+reads continue to materialize their transient typed windows.
+
 ## The smallest useful journey
 
 ```ts
@@ -83,6 +90,14 @@ each `get`/`mut` still returns its own shape record. Partial changed-row spans
 keep ordinary transient windows and do not displace the complete range.
 Size, backing or semantic-field changes produce another window. This does not
 extend the transient-view lifetime across structural changes.
+
+Scalar array codecs own one fixed eight-byte conversion buffer per realm and a
+finite set of native constructor windows derived from type metadata. Only numbers
+leave the synchronous codec; it retains no World, field backing or caller view.
+This fixed codec metadata is separate from World allocator capacity. Shared or
+foreign buffers and exceptional alignment/index/detachment paths keep ordinary
+native typed access, including shared integer no-tear semantics. Public array
+borrows retain their transient-view contract.
 
 ## Numeric memory services
 
@@ -433,6 +448,13 @@ each call. Read rows inside the callback; do not suspend or retain them. Callbac
 failure releases the cursor without advancing its observation. Reentry into that
 same Query is rejected; another Query has independent traversal state. Ordinary
 iterators retain independent cursors, including after an early `return()`.
+Span traversal also keeps independent cursors and detached `next`/`return`
+callbacks. Prototype traversal creates its bound callbacks only when requested;
+ordinary completion needs no early-close callback. Escaped span facades and
+nonterminal result records are never pooled or revived by another traversal.
+Run [`bench/query-span-traversal.mjs`](bench/query-span-traversal.mjs) with a built
+entry and private output to compare empty, dense, changed, partial and cold owners;
+its positive allocation control and empty-traversal budget detect closure churn.
 
 ```ts
 const query = world.query({ read: [Position] }).unwrap();
@@ -476,7 +498,7 @@ numeric writes leave projections current. Array, buffer and managed-field writes
 remain explicit publications: a fixed-array view may already have been edited
 through an alias before `set` is called.
 
-State consumers use `createStateProjection` from the projection subpath. Its current candidate exposes `hasStructuralChange(index)` over the existing per-index evidence, so consumers can refresh that identity after component removal without treating a global structural change as a change to every row. Read this predicate before accepting or superseding the candidate; those actions expire it. World
+State consumers use `createStateProjection` from the projection subpath. Construction captures its component vocabulary with its IDs. Full and empty `changedComponents` facts are shared immutable declarations. A projection also retains its last equal frozen partial roster; changed rosters leave held facts intact, while every candidate keeps independent commit authority. Its current candidate exposes `hasStructuralChange(index)` over the existing per-index evidence, so consumers can refresh that identity after component removal without treating a global structural change as a change to every row. Read this predicate before accepting or superseding the candidate; those actions expire it. World
 publishes writes into mutable max-epoch radix indices over stable entity slots.
 A consumer reads only changed index paths and retains its accepted membership
 and cursor. Component indices own the only changed epoch for each live component identity;
@@ -541,6 +563,12 @@ pending evidence (`derived-write-active`); plain input/parent reads remain valid
 Nested writers reject before execution. Unexpected producer failures poison the
 World; ordinary callback mutations/thenables are invalid numeric producers.
 
+Projection candidates remain independent commit capabilities. Shared prototype
+logic binds public callbacks only when requested; detached callbacks retain their
+identity and original candidate. The complete projection benchmark is
+[`bench/state-projection.mjs`](bench/state-projection.mjs), covering quiet,
+changing, discarded, held and cold candidates with separate CPU/allocation data.
+
 The optional third argument selects candidate component membership (any listed
 component); it defaults to the observed components. Sparse candidates conservatively
 include current tables. Consumers still inspect final component membership and
@@ -559,6 +587,14 @@ column storage stays live. Growth replaces the storage; every access resolves
 the entity's current row, including after migration or swap removal. Public
 component reads keep fresh wrappers, and variable arrays resolve their current
 pool slot and logical length. Borrowed windows remain transient.
+
+Owners with existing numeric scratch can call
+`world[worldRead].copyArray(entity, Component, field, target)`. It returns the
+current logical element count, or `undefined` without writing when the field is
+missing or the target is too small. Fixed inline arrays copy directly into the
+target without creating a row view. Variable arrays retain their ordinary live
+slot lookup. The target remains caller-owned; neither this read nor ordinary
+overlapping typed-array conversion publishes a component mutation.
 
 When an owner needs one scalar or one array element without materializing a row,
 import the capability explicitly and keep the probe read-only. Entity fields

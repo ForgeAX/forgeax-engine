@@ -37,6 +37,16 @@ const NO_SUBMISSION: CapsuleShadowSubmission = {
   tileOverflow: 0,
 };
 
+/** Sparse authored demand, shared by lighting transport and graph preparation. */
+export function hasCapsuleShadowDemand(
+  renderables: FrameList<RenderableSnapshot> | undefined,
+): boolean {
+  if (renderables === undefined) return false;
+  for (const source of sparseRowsOf(renderables, 'capsule'))
+    if (source.capsuleShadowRequested) return true;
+  return false;
+}
+
 /** Geometry stays on the entity; participation is read from this frame's accepted materials. */
 export function capsuleShadowParticipates(
   source: RenderableSnapshot,
@@ -56,7 +66,7 @@ export function capsuleShadowParticipates(
 export function inspectCapsuleShadow(
   renderables: FrameList<RenderableSnapshot>,
   materials: MaterialFrame | undefined,
-  deferred: boolean,
+  laneAdmitted: boolean,
   directionalShadow: boolean,
   submission: CapsuleShadowSubmission | undefined,
   demand: NonNullable<
@@ -74,7 +84,7 @@ export function inspectCapsuleShadow(
     if (state.status !== 'ready') reason = state.status;
     else if (!capsuleShadowParticipates(source, materials)) reason = 'no-shadow-caster-pass';
     else if (!directionalShadow) reason = 'no-directional-shadow';
-    else if (!deferred) reason = 'forward-path';
+    else if (!laneAdmitted) reason = 'forward-path';
     if (reason === undefined) admitted += 1;
     else fallbacks[reason] = (fallbacks[reason] ?? 0) + 1;
   }

@@ -27,7 +27,7 @@ describe('SMAA authoring and production programs', () => {
     propagateTransforms(world);
     expect(antialiasFromF32(ANTIALIAS_SMAA)).toBe('smaa');
     expect(extractCameraSnapshots(world)[0]?.antialias).toBe('smaa');
-    expect(() => antialiasFromF32(5)).toThrow();
+    expect(() => antialiasFromF32(6)).toThrow();
   });
   it('places SMAA after spatial effects and before the single output encoding', () => {
     const plan = createStandardOutputPlan({

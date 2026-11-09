@@ -56,8 +56,9 @@ import {
 } from './errors.js';
 import {
   digestShaderBytes,
+  hasDeferredReflection,
   manifestShaderSource,
-  readShaderManifestPublication,
+  readOwnedShaderManifestPublication,
 } from './manifest-publication.js';
 import {
   equalMaterialArtifactBytes,
@@ -71,13 +72,70 @@ import {
 import type { MaterialShaderManifestEntry } from './types.js';
 
 interface AdmittedManifest {
-  readonly textDigest: string;
+  // Reuse key only. A first admission computes it after load, off the startup path.
+  readonly textDigest: Promise<string>;
   readonly manifest: unknown;
 }
 
 // The cache needs complete content identity, not a second retained wire copy.
 // Native SHA hashes fixed 256 KiB UTF-16 chunks, preserving unpaired surrogates
 // without copying the complete wire text. The root binds their ordered digests.
+// First admission needs no digest to decide anything; compute the reuse key once the page
+// is idle so it never sits on the startup path. A failure yields a key that matches nothing.
+function manifestKeyWhenIdle(key: () => Promise<string>): Promise<string> {
+  const idle = (globalThis as { requestIdleCallback?: (cb: () => void, o?: object) => number })
+    .requestIdleCallback;
+  // Without an idle scheduler (Node, workers) hash now: a deferred closure would keep the
+  // whole decoded manifest text reachable until its timer fires.
+  if (typeof idle !== 'function') return settleManifestKey(key());
+  return deferManifestKey(idle, key);
+}
+
+// Kept apart from any closure that sees `key`: a handler sharing that context would
+// keep the decoded manifest text alive for as long as the native digest is pending.
+function settleManifestKey(pending: Promise<string>): Promise<string> {
+  return pending.catch(() => '');
+}
+
+function deferManifestKey(
+  idle: (cb: () => void, o?: object) => number,
+  key: () => Promise<string>,
+): Promise<string> {
+  return new Promise<string>((resolve) => {
+    idle.call(
+      globalThis,
+      () => {
+        key().then(resolve, () => resolve(''));
+      },
+      { timeout: 3000 },
+    );
+  });
+}
+
+// A fetched manifest is keyed by its wire bytes (1.7 MB zstd): one native digest.
+// Equal bytes decode to equal text, so a reuse hit is always correct; different
+// bytes that decode to the same text are merely not shared. Text read through a
+// host `readText` has no wire bytes and keeps the text digest above.
+async function manifestWireDigest(bytes: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return `wire:${bytesToHex(await digestShaderBytes(copy))}`;
+}
+
+// Each key closure captures only what it hashes, so a wire-keyed admission never
+// holds the decoded manifest text through its pending digest.
+function manifestReuseKey(text: string, wire: Uint8Array | undefined): () => Promise<string> {
+  return wire === undefined ? textManifestKey(text) : wireManifestKey(wire);
+}
+
+function wireManifestKey(wire: Uint8Array): () => Promise<string> {
+  return () => manifestWireDigest(wire);
+}
+
+function textManifestKey(text: string): () => Promise<string> {
+  return () => manifestTextDigest(text);
+}
+
 async function manifestTextDigest(text: string): Promise<string> {
   const digest = sha256.create();
   const characters = new Uint16Array(Math.min(131_072, text.length));
@@ -289,9 +347,15 @@ function markShaderManifestStage(
  * §S-10).
  */
 function materialEntrySource(entry: MaterialShaderEntry, source: string): ShaderSource {
-  const suppliedSource = new ShaderSource([source]);
   if (entry.sourceReference !== undefined && !ShaderSource.is(entry.sourceReference))
     throw new Error('ShaderRegistry: unadmitted source reference');
+  if (entry.sourceReference?.hasPublishedIdentity) {
+    // Published identity already binds the verified bytes; compare text, do not rehash.
+    if (!entry.sourceReference.matches(source))
+      throw new Error('ShaderRegistry: source reference does not match material source');
+    return entry.sourceReference;
+  }
+  const suppliedSource = new ShaderSource([source]);
   const sourceReference = entry.sourceReference ?? suppliedSource;
   if (sourceReference.identity !== suppliedSource.identity)
     throw new Error('ShaderRegistry: source reference does not match material source');
@@ -342,6 +406,59 @@ export class ShaderRegistry {
     return candidate;
   }
 
+  /** Fetch (or host-read) the manifest document; `wire` is set when the bytes came over fetch. */
+  async #fetchManifestText(
+    url: string,
+  ): Promise<ShaderResult<{ raw: string; wire: Uint8Array | undefined }, ShaderError>> {
+    let raw: string;
+    let wire: Uint8Array | undefined;
+    markShaderManifestStage('shader-manifest-fetch-start', { url: url });
+    try {
+      if (this.#readText !== undefined) {
+        raw = await this.#readText(url);
+      } else {
+        const response = await fetch(url);
+        markShaderManifestStage('shader-manifest-response', {
+          url: url,
+          status: response.status,
+          responseUrl: response.url,
+        });
+        if (!response.ok) {
+          markShaderManifestStage('shader-manifest-http-failed', {
+            url: url,
+            status: response.status,
+            responseUrl: response.url,
+            error: `HTTP ${response.status} ${response.statusText}`,
+          });
+          return err(
+            manifestMalformed({
+              message: `ShaderRegistry: manifest request returned HTTP ${response.status}`,
+              hint: 'verify the dev manifest middleware or production manifest asset is reachable',
+              reason: `${response.statusText || 'HTTP error'} at ${url}`,
+            }),
+          );
+        }
+        wire = new Uint8Array(await response.arrayBuffer());
+        const text = await decodeDocumentText(wire);
+        if (!text.ok) throw new Error(`shader manifest decode failed: ${text.error.code}`);
+        raw = text.value;
+      }
+    } catch (e) {
+      markShaderManifestStage('shader-manifest-fetch-failed', {
+        url: url,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return err(
+        manifestMalformed({
+          message: `ShaderRegistry: failed to fetch manifest at ${url}`,
+          hint: 'verify manifest URL is reachable; check bundler emitFile output path',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    }
+    return ok({ raw, wire });
+  }
+
   /**
    * Loads manifest.json and populates the hash → ManifestEntry index.
    *
@@ -374,66 +491,31 @@ export class ShaderRegistry {
       return ok(undefined);
     }
 
-    let raw: string;
-    markShaderManifestStage('shader-manifest-fetch-start', { url: this.#manifestUrl });
-    try {
-      if (this.#readText !== undefined) {
-        raw = await this.#readText(this.#manifestUrl);
-      } else {
-        const response = await fetch(this.#manifestUrl);
-        markShaderManifestStage('shader-manifest-response', {
-          url: this.#manifestUrl,
-          status: response.status,
-          responseUrl: response.url,
-        });
-        if (!response.ok) {
-          markShaderManifestStage('shader-manifest-http-failed', {
-            url: this.#manifestUrl,
-            status: response.status,
-            responseUrl: response.url,
-            error: `HTTP ${response.status} ${response.statusText}`,
-          });
-          return err(
-            manifestMalformed({
-              message: `ShaderRegistry: manifest request returned HTTP ${response.status}`,
-              hint: 'verify the dev manifest middleware or production manifest asset is reachable',
-              reason: `${response.statusText || 'HTTP error'} at ${this.#manifestUrl}`,
-            }),
-          );
-        }
-        const text = await decodeDocumentText(new Uint8Array(await response.arrayBuffer()));
-        if (!text.ok) throw new Error(`shader manifest decode failed: ${text.error.code}`);
-        raw = text.value;
-      }
-    } catch (e) {
-      markShaderManifestStage('shader-manifest-fetch-failed', {
-        url: this.#manifestUrl,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return err(
-        manifestMalformed({
-          message: `ShaderRegistry: failed to fetch manifest at ${this.#manifestUrl}`,
-          hint: 'verify manifest URL is reachable; check bundler emitFile output path',
-          reason: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    }
+    const fetched = await this.#fetchManifestText(this.#manifestUrl);
+    if (!fetched.ok) return err(fetched.error);
+    const { raw, wire } = fetched.value;
 
     const url = this.#manifestUrl;
-    let textDigest: string;
-    try {
-      textDigest = await manifestTextDigest(raw);
-    } catch (e) {
-      return err(
-        manifestMalformed({
-          message: 'ShaderRegistry: manifest content digest failed',
-          hint: 'verify the host crypto service is available',
-          reason: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    }
     let admitted = admittedManifests.get(url)?.deref();
-    if (admitted?.textDigest !== textDigest) {
+    if (admitted !== undefined) {
+      // A prior admission exists: the content key decides whether it can be shared.
+      let textDigest: string;
+      try {
+        textDigest = await (wire === undefined
+          ? manifestTextDigest(raw)
+          : manifestWireDigest(wire));
+      } catch (e) {
+        return err(
+          manifestMalformed({
+            message: 'ShaderRegistry: manifest content digest failed',
+            hint: 'verify the host crypto service is available',
+            reason: e instanceof Error ? e.message : String(e),
+          }),
+        );
+      }
+      if ((await admitted.textDigest) !== textDigest) admitted = undefined;
+    }
+    if (admitted === undefined) {
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw);
@@ -451,7 +533,7 @@ export class ShaderRegistry {
         );
       }
       try {
-        parsed = await readShaderManifestPublication(parsed);
+        parsed = await readOwnedShaderManifestPublication(parsed);
       } catch (e) {
         markShaderManifestStage('shader-manifest-publication-failed', {
           url: this.#manifestUrl,
@@ -465,7 +547,10 @@ export class ShaderRegistry {
           }),
         );
       }
-      admitted = { textDigest, manifest: parsed };
+      admitted = {
+        textDigest: manifestKeyWhenIdle(manifestReuseKey(raw, wire)),
+        manifest: parsed,
+      };
       const reference = new WeakRef(admitted);
       admittedManifests.set(url, reference);
       admittedManifestCleanup.register(admitted, { url, reference });
@@ -1167,7 +1252,7 @@ function isValidOptionalArtifactFacts(v: Record<string, unknown>): boolean {
     isValidOptionalHash(v.hash) &&
     isValidOptionalSourceDigest(v.sourceDigest) &&
     isValidOptionalCompilerProfile(v.compilerProfile) &&
-    isValidOptionalReflection(v.reflection)
+    (hasDeferredReflection(v) || isValidOptionalReflection(v.reflection))
   );
 }
 

@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { initBasisTranscoder } from '@forgeax/engine-codec';
 import { basisEncode } from '@forgeax/engine-codec/encode';
 import { ImportError } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -82,6 +83,33 @@ function context(source: string, bytes: Uint8Array) {
     sourceOverrides: { main: { colorSpace: 'linear' as const } },
   };
 }
+
+/** Count `delete()` calls on the transcoder singleton's file classes while `run` executes. */
+async function countFileDeletes(run: () => Promise<void>): Promise<Record<FileClass, number>> {
+  const mod = (await initBasisTranscoder()) as unknown as Record<
+    FileClass,
+    { prototype: { delete(): void } }
+  >;
+  const deletes: Record<FileClass, number> = { KTX2File: 0, BasisFile: 0 };
+  const originals = {
+    KTX2File: mod.KTX2File.prototype.delete,
+    BasisFile: mod.BasisFile.prototype.delete,
+  };
+  for (const name of FILE_CLASSES) {
+    mod[name].prototype.delete = function (this: unknown) {
+      deletes[name]++;
+      originals[name].call(this);
+    };
+  }
+  try {
+    await run();
+  } finally {
+    for (const name of FILE_CLASSES) mod[name].prototype.delete = originals[name];
+  }
+  return deletes;
+}
+const FILE_CLASSES = ['KTX2File', 'BasisFile'] as const;
+type FileClass = (typeof FILE_CLASSES)[number];
 
 describe.skipIf(!pkgBuilt)('KTX2/Basis source importer', () => {
   it('rejects an unsupported precompressed extension before image decoding', async () => {
@@ -171,5 +199,16 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis source importer', () => {
     expect(result.error.detail).toMatchObject({
       reason: expect.stringContaining('ktx2-parse'),
     });
+  });
+
+  it('deletes every transcoder file it opens', async () => {
+    const ktx2 = await makeKtx2();
+    const basis = await makeBasis();
+    const deletes = await countFileDeletes(async () => {
+      expect((await imageImporter.import(context('fixture.ktx2', ktx2))).ok).toBe(true);
+      expect((await imageImporter.import(context('fixture.basis', basis))).ok).toBe(true);
+    });
+    expect(deletes.KTX2File).toBeGreaterThan(0);
+    expect(deletes.BasisFile).toBeGreaterThan(0);
   });
 });

@@ -43,7 +43,11 @@ function projectAcceptedEntries(
   raw: readonly PackIndexEntry[],
   accepted: readonly PackIndexEntry[],
   appendMissing = false,
-): PackIndexEntry[] {
+): readonly PackIndexEntry[] {
+  // Authored publication handles all Packs once. Later declarations have no
+  // delta: retain the expanded catalog instead of walking and allocating it
+  // again for every already-published Pack.
+  if (accepted.length === 0) return raw;
   const acceptedByGuid = new Map(
     accepted.map((entry) => [entry.guid.toLowerCase(), entry] as const),
   );

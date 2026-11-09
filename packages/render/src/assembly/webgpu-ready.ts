@@ -118,7 +118,7 @@ import {
   prewarmFullscreenPostProcesses,
   prewarmPointsLinesProgram,
   prewarmShadowCasterModules,
-  prewarmStandardDeferredPrograms,
+  prewarmStandardScenePrograms,
   publishIblPrograms,
   type ResolvedEngineManifestEntries,
   resolveEngineManifestEntries,
@@ -431,8 +431,8 @@ export async function buildReadyWebGPU(
   setSsrShaderSources: (sources: SsrShaderSources, pyramid: DepthPyramidShaderSources) => void,
   /** Install manifest-owned atmosphere utility sources only after all modules compile. */
   setAtmosphereShaderSources: (sources: AtmosphereShaderSources) => void,
-  setStandardDeferredShaderSources: (
-    sources: import('../pipeline/standard-deferred-lighting').StandardDeferredShaderSources,
+  setStandardSceneShaderSources: (
+    sources: import('../pipeline/standard-deferred-lighting').StandardSceneShaderSources,
   ) => void,
   /** Which material variant module labels this build compiles eagerly. */
   admitsVariant: VariantPrewarmAdmission,
@@ -545,15 +545,13 @@ export async function buildReadyWebGPU(
       );
       if (sources !== undefined) setSsrShaderSources(sources.ssr, sources.pyramid);
     }
-    if (caps.storageBuffer) {
-      const deferred = await prewarmStandardDeferredPrograms(
-        registry,
-        compileUtilityShader,
-        seedShaderModule,
-        caps,
-      );
-      if (deferred !== undefined) setStandardDeferredShaderSources(deferred);
-    }
+    const scenePrograms = await prewarmStandardScenePrograms(
+      registry,
+      compileUtilityShader,
+      seedShaderModule,
+      caps,
+    );
+    if (scenePrograms !== undefined) setStandardSceneShaderSources(scenePrograms);
     const atmosphere = await prewarmAtmospherePrograms(
       manifestEntries,
       compileUtilityShader,

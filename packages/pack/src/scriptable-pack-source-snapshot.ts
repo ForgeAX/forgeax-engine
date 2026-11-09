@@ -63,6 +63,11 @@ export interface ScriptablePackSourceSnapshot {
     sourceText?: string,
     resolveImport?: ScriptablePackImportResolver,
   ): Promise<readonly ScriptablePackSourceClosureEntry[]>;
+  /** Import syntax from these captured bytes; raw imports retain type-only declarations. */
+  imports(
+    path: string,
+    options?: { readonly includeTypeOnly?: boolean },
+  ): Promise<readonly string[]>;
   readText(path: string): Promise<string>;
   digest(path: string): Promise<string>;
   moduleSources(sourcePath: string): Promise<{
@@ -78,6 +83,7 @@ interface SourceFile {
   readonly path: string;
   readonly bytes: Uint8Array;
   readonly digest: string;
+  syntax?: SourceSyntax;
 }
 
 function contentDigest(bytes: Uint8Array): string {
@@ -239,7 +245,7 @@ export function createScriptablePackSourceSnapshot(
         entries.push(Object.freeze({ path: file.path, digest: file.digest }));
         // JSON contributes captured bytes and revision evidence, never module imports.
         if (extname(file.path) === '.json') continue;
-        for (const specifier of sourceImports(file.bytes, file.digest)) {
+        for (const specifier of capturedSyntax(file).imports) {
           // Retain negative relative candidates even with a compiler resolver.
           // A resolver may cache a positive result until its watcher catches up.
           if (resolver !== resolveRelative && specifier.startsWith('.'))
@@ -249,6 +255,11 @@ export function createScriptablePackSourceSnapshot(
         }
       }
       return Object.freeze(entries.sort((a, b) => a.path.localeCompare(b.path)));
+    },
+    async imports(path, options) {
+      const file = await read(path);
+      const syntax = capturedSyntax(file);
+      return options?.includeTypeOnly ? syntax.allImports : syntax.imports;
     },
     async readText(path) {
       return new TextDecoder('utf-8', { ignoreBOM: true }).decode((await read(path)).bytes);
@@ -355,21 +366,31 @@ export function createScriptablePackSourceSnapshot(
   return snapshot;
 }
 
+// Keep syntax with its captured byte owner even if the shared LRU evicts it.
+function capturedSyntax(file: SourceFile): SourceSyntax {
+  file.syntax ??= sourceSyntax(file.bytes, file.digest);
+  return file.syntax;
+}
+
 // Syntax alone is reusable across generations. IO and resolution belong to the snapshot.
-const importsByDigest = new Map<
-  string,
-  { readonly imports: readonly string[]; readonly size: number }
->();
+interface SourceSyntax {
+  readonly imports: readonly string[];
+  readonly allImports: readonly string[];
+}
+const syntaxByDigest = new Map<string, SourceSyntax & { readonly size: number }>();
 let retainedSyntaxBytes = 0;
-function sourceImports(bytes: Uint8Array, digest: string): readonly string[] {
-  const cached = importsByDigest.get(digest);
+function sourceSyntax(bytes: Uint8Array, digest: string): SourceSyntax {
+  const cached = syntaxByDigest.get(digest);
   if (cached !== undefined) {
-    importsByDigest.delete(digest);
-    importsByDigest.set(digest, cached);
-    return cached.imports;
+    syntaxByDigest.delete(digest);
+    syntaxByDigest.set(digest, cached);
+    return cached;
   }
   const text = new TextDecoder().decode(bytes);
-  const imports = ts.preProcessFile(text, true, true).importedFiles.map((entry) => entry.fileName);
+  const allImports = ts
+    .preProcessFile(text, true, true)
+    .importedFiles.map((entry) => entry.fileName);
+  const imports = [...allImports];
   // `import type` / `export type ... from` declarations are always erased, so
   // their targets can never execute or change a Pack product. Omitting them
   // keeps unrelated runtime modules (and their edits) out of the source closure
@@ -385,24 +406,32 @@ function sourceImports(bytes: Uint8Array, digest: string): readonly string[] {
       const index = imports.indexOf(statement.moduleSpecifier.text);
       if (index >= 0) imports.splice(index, 1);
     }
-  // The cache retains the digest and import strings, never the source body.
-  // Budget UTF-16 text and 64-bit array slots; entry overhead is capped below.
+  // Detach scanner substrings and freeze public arrays before sharing the fact.
+  // Keep the existing bounded syntax owner; no source text or filesystem result is cached.
+  const retainedAll = Object.freeze(
+    allImports.map((specifier) => Buffer.from(specifier, 'utf16le').toString('utf16le')),
+  );
+  const retained =
+    imports.length === allImports.length
+      ? retainedAll
+      : Object.freeze(
+          imports.map((specifier) => Buffer.from(specifier, 'utf16le').toString('utf16le')),
+        );
+  const syntax = Object.freeze({ imports: retained, allImports: retainedAll });
   const size =
-    imports.length * 8 +
-    (digest.length + imports.reduce((total, specifier) => total + specifier.length, 0)) * 2;
+    (retained.length + retainedAll.length) * 8 +
+    (digest.length +
+      [...retained, ...retainedAll].reduce((total, value) => total + value.length, 0)) *
+      2;
   const maxSyntaxBytes = 16 * 1024 * 1024;
-  if (size > maxSyntaxBytes) return imports;
-  while (importsByDigest.size >= 512 || retainedSyntaxBytes + size > maxSyntaxBytes) {
-    const oldest = importsByDigest.entries().next().value;
+  if (size > maxSyntaxBytes) return syntax;
+  while (syntaxByDigest.size >= 512 || retainedSyntaxBytes + size > maxSyntaxBytes) {
+    const oldest = syntaxByDigest.entries().next().value;
     if (oldest === undefined) break;
-    importsByDigest.delete(oldest[0]);
+    syntaxByDigest.delete(oldest[0]);
     retainedSyntaxBytes -= oldest[1].size;
   }
-  // TypeScript's scanner can return substrings retaining the whole source string.
-  const retainedImports = imports.map((specifier) =>
-    Buffer.from(specifier, 'utf16le').toString('utf16le'),
-  );
-  importsByDigest.set(digest, { imports: retainedImports, size });
+  syntaxByDigest.set(digest, { ...syntax, size });
   retainedSyntaxBytes += size;
-  return retainedImports;
+  return syntax;
 }

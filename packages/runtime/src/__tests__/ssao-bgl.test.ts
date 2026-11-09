@@ -187,9 +187,8 @@ describe('HDRP GPU membership producer bind-group contract', () => {
     const desc = createHdrpClusterMembershipBindGroupLayoutDescriptor();
     expect(desc.entries?.map((entry) => entry.binding)).toEqual([0, 1, 2, 3]);
     expect(desc.entries?.every((entry) => entry.visibility === COMPUTE_VISIBILITY)).toBe(true);
-    expect(desc.entries?.find((entry) => entry.binding === 0)?.buffer?.type).toBe(
-      'read-only-storage',
-    );
+    // The exact-froxel cull writes each cell's kept count back to cluster_grid.
+    expect(desc.entries?.find((entry) => entry.binding === 0)?.buffer?.type).toBe('storage');
     expect(desc.entries?.find((entry) => entry.binding === 1)?.buffer?.type).toBe('storage');
     expect(desc.entries?.find((entry) => entry.binding === 2)?.buffer?.type).toBe('uniform');
     expect(desc.entries?.find((entry) => entry.binding === 3)?.buffer?.type).toBe(

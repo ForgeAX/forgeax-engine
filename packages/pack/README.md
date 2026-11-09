@@ -554,7 +554,10 @@ The filesystem authoring gateway requests metadata-only inventories: authoring o
 `createLazyScriptablePackDefinition()` reloads from the inventory's captured
 `ScriptablePackSourceSnapshot`, preserving its module bytes, parameters and source
 evidence without keeping an idle worker per declaration. It retains the default
-module/build deadlines, package identity fence and reader context. Later author
+module/build deadlines, package identity fence and reader context. A live host selects
+`executionBudget: 'interactive'` for a replacement of its already accepted source;
+that path retains the loader's original 15-second module/build bounds. First
+publication retains the standard 120-second production bounds. Later author
 edits do not replace the captured body; existing publication source fences still
 own whether the candidate can publish. The lazy path adds no per-build disk
 verification. A direct producer lacking the inventory snapshot captures and
@@ -570,8 +573,13 @@ runtime delivery may inject its bundler resolver for each literal dependency,
 so published JavaScript keeps its actual file and package resolution semantics.
 
 `createScriptablePackSourceSnapshot()` shares file bytes, content digests and
-resolution observations within one build. Its `inputs` and `paths` expose borrowed
-read-only digest and observation projections. `observeFile(path)` records both absence
+resolution observations within one build. `imports(path)` returns the captured
+runtime import list; `imports(path, { includeTypeOnly: true })` preserves the raw
+scanner list, including type-only imports, for conservative compiler analysis.
+Both use the same digest-keyed syntax fact as inventory. The captured file keeps
+that immutable fact for its lifetime even if the existing shared syntax LRU evicts
+it; publication still rereads source bytes and verifies resolution/membership.
+Its `inputs` and `paths` expose borrowed read-only digest and observation projections. `observeFile(path)` records both absence
 and existing bytes and returns whether the candidate is a file. `observePaths(subject,
 enumerate)` captures producer-owned discovery membership and re-enumerates it during
 verification without reevaluating authored code. JSON declarations and

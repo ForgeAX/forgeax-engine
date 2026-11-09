@@ -26,7 +26,6 @@ function prepareSurfaceUi(world: World): void {
       input.sampleTimeMs,
       input.width,
       input.height,
-      input.uiOnly,
       input.colorSpace,
       input.captureEncodedOutput,
     );
@@ -86,6 +85,7 @@ export function encodeSurfaceUi(
   internals: RenderSystemInternals | undefined,
   frame: number,
   encoder: RhiCommandEncoder,
+  sceneOutputEncoded: boolean,
 ): void {
   const ui = surfaceUi(world);
   if (ui === undefined || internals === undefined) return;
@@ -95,7 +95,7 @@ export function encodeSurfaceUi(
   if (output === undefined)
     throw new RendererContractFailureError('draw', 'screen UI needs a surface');
   if (!output.ok) throw output.error;
-  const encoded = ui.owner.encode(frame, encoder, output.value);
+  const encoded = ui.owner.encode(frame, encoder, output.value, !sceneOutputEncoded);
   if (encoded.kind === 'failed') throw new RendererContractFailureError('draw', encoded.detail);
   internals.framePassNames?.push('screen-ui-composite');
   if (ui.owner.output !== undefined) internals.framePassNames?.push('screen-ui-present');

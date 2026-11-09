@@ -50,7 +50,6 @@ apps/**/*.tsbuildinfo
 *.bmp
 *.tiff
 *.tif
-*.svg
 *.webp
 *.ico
 *.heic

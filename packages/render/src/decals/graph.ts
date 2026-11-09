@@ -116,21 +116,110 @@ function current(frame: RenderPipelineFrame, index: number) {
   return { decal, internal, scope };
 }
 
-/** Three blended DBuffer channels, followed by one packed G-buffer composition. */
-export function addProjectedDecalPasses(
+type State = {
+  pipeline: RenderPipeline;
+  layout: BindGroupLayout;
+  groups: WeakMap<object, unknown>;
+};
+
+export interface ProjectedDecalChannels {
+  readonly color: RenderPipelineTarget;
+  readonly normal: RenderPipelineTarget;
+  readonly roughness: RenderPipelineTarget;
+}
+
+/** The semantic normal surface is shared by AO, SSR and Forward lighting. */
+export function addProjectedDecalNormalPass(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  normal: RenderPipelineTarget,
+  channels: ProjectedDecalChannels,
+  size: GraphTextureDescriptor['size'],
+) {
+  const target = createRenderPipelineTarget(graph, 'decal-surface-normal', {
+    size,
+    format: normal.format,
+    usage: 1,
+  });
+  if (!target.ok) return target;
+  const inputs = [normal.view, channels.normal.view, channels.roughness.view];
+  let prepared: State | undefined;
+  const pass = graph.addRasterPass('decal-normal-apply', {
+    accesses: [
+      ...inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
+      { resource: target.value.view, usage: 'color-attachment' },
+    ],
+    colorAttachments: [{ view: target.value.view, loadOp: 'clear', storeOp: 'store' }],
+    encodeDirect: (pass, frame, resources) => {
+      const internal = frame as _InternalRenderPipelineContext;
+      const device = frame.runtime.device;
+      if (prepared === undefined) {
+        const source = internal.runtime.standardSceneShaders?.decalApply;
+        const factory = frame.runtime.shaderModuleFactory;
+        if (source === undefined || factory === undefined)
+          throw new ProjectedDecalInvalidError('shader', 'cooked decal surface normal shader');
+        const module = factory
+          .createShaderModule(shaderSourceDescriptor(source, 'forgeax::engine-decal-apply'))
+          .unwrap();
+        const layout = device
+          .createBindGroupLayout({
+            entries: inputs.map((_, i) => ({
+              binding: i === 0 ? 0 : i + 3,
+              visibility: GPU_SHADER_STAGE_FRAGMENT,
+              texture: {
+                sampleType: i === 0 ? ('uint' as const) : ('unfilterable-float' as const),
+                viewDimension: '2d' as const,
+              },
+            })),
+          })
+          .unwrap();
+        const pipeline = device
+          .createRenderPipeline({
+            label: 'decal-normal-apply',
+            layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
+            vertex: { module, entryPoint: 'vs_main', buffers: [] },
+            fragment: { module, entryPoint: 'fs_normal', targets: [{ format: normal.format }] },
+            primitive: { topology: 'triangle-list' },
+          })
+          .unwrap();
+        prepared = { pipeline, layout, groups: new WeakMap() };
+      }
+      const views = inputs.map((input) => resources.textureView(input).unwrap());
+      const layout = prepared.layout;
+      const group = getOrCreateFromChain(
+        prepared.groups,
+        views,
+        'decal-normal-apply',
+        () =>
+          device
+            .createBindGroup({
+              layout,
+              entries: views.map((value, i) => ({
+                binding: i === 0 ? 0 : i + 3,
+                resource: { kind: 'textureView' as const, value },
+              })),
+            })
+            .unwrap(),
+        internal.bindGroupCounts,
+      ) as BindGroup;
+      pass.setPipeline(prepared.pipeline);
+      pass.setBindGroup(0, group);
+      pass.draw(3);
+    },
+  });
+  return pass.ok ? ok(target.value) : pass;
+}
+
+/** Raster projection produces the same ordered DBuffer for Forward and Deferred. */
+export function addProjectedDecalChannels(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   topology: ProjectedDecalTopology,
   input: {
     depth: GraphTextureView;
     normal: RenderPipelineTarget;
-    albedo: RenderPipelineTarget;
-    f0: RenderPipelineTarget;
     size: GraphTextureDescriptor['size'];
   },
 ) {
-  if (topology.length === 0) return ok(input);
   const channels: RenderPipelineTarget[] = [];
-  const outputs: RenderPipelineTarget[] = [];
   for (const name of ['color', 'normal', 'roughness']) {
     const channel = createRenderPipelineTarget(graph, `decal-${name}`, {
       format: 'rgba16float',
@@ -138,14 +227,6 @@ export function addProjectedDecalPasses(
     });
     if (!channel.ok) return channel;
     channels.push(channel.value);
-  }
-  for (const name of ['normal', 'albedo', 'f0']) {
-    const output = createRenderPipelineTarget(graph, `decal-surface-${name}`, {
-      format: name === 'f0' ? 'rg32uint' : 'r32uint',
-      size: input.size,
-    });
-    if (!output.ok) return output;
-    outputs.push(output.value);
   }
   const uniforms = graph.createBuffer('decal-params', { size: topology.length * PARAM_STRIDE });
   if (!uniforms.ok) return uniforms;
@@ -201,11 +282,6 @@ export function addProjectedDecalPasses(
     },
   });
   if (!upload.ok) return upload;
-  type State = {
-    pipeline: RenderPipeline;
-    layout: BindGroupLayout;
-    groups: WeakMap<object, unknown>;
-  };
   let project: State | undefined;
   const projectViews = [
     input.depth,
@@ -229,7 +305,7 @@ export function addProjectedDecalPasses(
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       if (project === undefined) {
-        const source = internal.runtime.standardDeferredShaders?.decalProject;
+        const source = internal.runtime.standardSceneShaders?.decalProject;
         const factory = frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)
           throw new ProjectedDecalInvalidError('shader', 'cooked decal projection shader');
@@ -350,6 +426,38 @@ export function addProjectedDecalPasses(
     },
   });
   if (!projection.ok) return projection;
+  return ok({
+    color: channels[0] as RenderPipelineTarget,
+    normal: channels[1] as RenderPipelineTarget,
+    roughness: channels[2] as RenderPipelineTarget,
+  });
+}
+
+/** Deferred composes the shared DBuffer before its packed surface lighting. */
+export function addProjectedDecalPasses(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  topology: ProjectedDecalTopology,
+  input: {
+    depth: GraphTextureView;
+    normal: RenderPipelineTarget;
+    albedo: RenderPipelineTarget;
+    f0: RenderPipelineTarget;
+    size: GraphTextureDescriptor['size'];
+  },
+) {
+  if (topology.length === 0) return ok(input);
+  const projected = addProjectedDecalChannels(graph, topology, input);
+  if (!projected.ok) return projected;
+  const channels = [projected.value.color, projected.value.normal, projected.value.roughness];
+  const outputs: RenderPipelineTarget[] = [];
+  for (const name of ['normal', 'albedo', 'f0']) {
+    const output = createRenderPipelineTarget(graph, `decal-surface-${name}`, {
+      format: name === 'f0' ? 'rg32uint' : 'r32uint',
+      size: input.size,
+    });
+    if (!output.ok) return output;
+    outputs.push(output.value);
+  }
   let apply: State | undefined;
   const applyViews = [
     input.normal.view,
@@ -371,7 +479,7 @@ export function addProjectedDecalPasses(
       const internal = frame as _InternalRenderPipelineContext;
       const device = frame.runtime.device;
       if (apply === undefined) {
-        const source = internal.runtime.standardDeferredShaders?.decalApply;
+        const source = internal.runtime.standardSceneShaders?.decalApply;
         const factory = frame.runtime.shaderModuleFactory;
         if (source === undefined || factory === undefined)
           throw new ProjectedDecalInvalidError('shader', 'cooked decal composition shader');

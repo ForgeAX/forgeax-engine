@@ -307,7 +307,13 @@ describe('physical material smoke contract', () => {
   });
 
   it('rejects preparation that never produces a ready scene', async () => {
-    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValue(15_001);
+    // Advance through the real owner deadline; a frozen instant inside the
+    // budget would keep the immediate pending receipts spinning forever.
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
+      now += 1_000;
+      return now;
+    });
     try {
       await expect(runRenderPhase({
         phase: 'paired', frameCount: 1,

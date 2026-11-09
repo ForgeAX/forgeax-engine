@@ -27,6 +27,11 @@ flowchart LR
 > [!IMPORTANT]
 > Declaration order is the observable v1 execution order. An imported resource may be read first; a graph-created resource must be initialized before its first read.
 
+Each compiled graph retains its fixed resource order while imported resolvers
+observe the current frame on every execution. Recursive execution of that same
+graph is rejected before resource resolution, including calls from an imported
+resolver. A failed resolution releases admission so the next frame can retry.
+
 ## Primary API
 
 ```ts
@@ -66,6 +71,13 @@ compiled.execute({ encoder, particles }).unwrap();
 console.log(compiled.inspect());
 await compiled.retire();
 ```
+
+Color attachment `loadOp` may be a constant or a function of the execution frame.
+The compiled pass resolves it on every execution, including reused descriptors.
+A dynamic operation conservatively counts as read/write during compilation, so a
+graph-created attachment still needs initialization before a possible load.
+This lets presentation select clear/load from actual scene output without
+recompiling the graph or replacing its physical output.
 
 ### Allocation-explicit pass callbacks
 

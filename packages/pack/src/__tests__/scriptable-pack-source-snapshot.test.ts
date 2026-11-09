@@ -12,7 +12,17 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { err } from '@forgeax/engine-types';
+import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
+
+vi.mock('typescript', async (importOriginal) => {
+  const native = await importOriginal<{ default: typeof import('typescript') }>();
+  return {
+    ...native,
+    default: { ...native.default, preProcessFile: vi.fn(native.default.preProcessFile) },
+  };
+});
+
 import type { PackAuthoringError } from '../pack-authoring.js';
 import { loadScriptablePack } from '../scriptable-pack-node.js';
 import { createScriptablePackSourceSnapshot } from '../scriptable-pack-source-snapshot.js';
@@ -193,4 +203,46 @@ it('rechecks producer discovery membership independently of byte identities', as
     ok: false,
     error: { detail: { reason: 'source discovery membership changed' } },
   });
+});
+
+it('shares raw and runtime import syntax with inventory without preprocessing again', async () => {
+  const { source } = await fixture();
+  const text =
+    "import type { Stats } from 'node:fs'; export { shape } from './shape.js'; // shared-source-syntax";
+  await writeFile(source, text);
+  const snapshot = createScriptablePackSourceSnapshot();
+  vi.mocked(ts.preProcessFile).mockClear();
+  await snapshot.inventory(source);
+  expect(await snapshot.imports(source)).toEqual(['./shape.js']);
+  expect(await snapshot.imports(source, { includeTypeOnly: true })).toEqual([
+    'node:fs',
+    './shape.js',
+  ]);
+  expect(vi.mocked(ts.preProcessFile).mock.calls.filter(([input]) => input === text)).toHaveLength(
+    1,
+  );
+  const captured = await snapshot.imports(source);
+  expect(Object.isFrozen(captured)).toBe(true);
+  await writeFile(source, "import 'node:fs/promises'; // changed-source-syntax");
+  expect(await snapshot.imports(source)).toEqual(['./shape.js']);
+  expect((await snapshot.verify()).ok).toBe(false);
+  expect(await createScriptablePackSourceSnapshot().imports(source)).toEqual(['node:fs/promises']);
+});
+
+it('keeps captured syntax after the shared syntax LRU evicts its digest', async () => {
+  const { source, root } = await fixture();
+  const text = 'export const retainedSyntaxOwner = 1307;';
+  await writeFile(source, text);
+  const snapshot = createScriptablePackSourceSnapshot();
+  vi.mocked(ts.preProcessFile).mockClear();
+  await snapshot.inventory(source);
+  for (let index = 0; index < 513; index++) {
+    const path = join(root, `fill-${index}.ts`);
+    await writeFile(path, `export const sourceSyntaxEviction = ${index};`);
+    await snapshot.imports(path);
+  }
+  expect(await snapshot.imports(source, { includeTypeOnly: true })).toEqual([]);
+  expect(vi.mocked(ts.preProcessFile).mock.calls.filter(([input]) => input === text)).toHaveLength(
+    1,
+  );
 });

@@ -140,7 +140,10 @@ struct View {
   // bounded range/validity so every receiver can sample by world position.
   cloudShadowOrigin : vec4<f32>, // xyz projection origin, w cloud base height
   cloudShadowRight : vec4<f32>, // xyz projection right, w cloud thickness
-  cloudShadowUp : vec4<f32>,
+  cloudShadowUp : vec3<f32>,
+  // Sun disc sin(half angle) = sin(0.5 * radians(DirectionalLight.sourceAngle)); 0 = point light.
+  // Reuses the former cloudShadowUp.w padding lane (float 251), layout unchanged.
+  sunSourceRadius : f32,
   cloudShadowProjection : vec4<f32>,
   clippingPlanes : array<vec4<f32>, 6>,
   clippingControl : vec4<f32>,
@@ -504,25 +507,60 @@ struct InstanceData {
 // budget.
 @group(3) @binding(6) var<storage, read> scenePrimitives : array<GpuScenePrimitive>;
 // Shared GPU Scene inputs. A morphed instance row names its descriptor here:
-// (vertexCount, targetCount, deltas address, weights...); zero is no morph.
+// (vertexCount, targetCount, deltas address, channel mask, weights...); zero is no morph.
 @group(3) @binding(8) var<storage, read> sceneMorphInputs : array<u32>;
 
-// position + sum_t weight[t] * delta[t][vertex], the morph producer's arithmetic.
-fn sceneIndexMorphPosition(instanceRow : u32, vertex : u32, position : vec3<f32>) -> vec3<f32> {
+// Channel bits: position=1, normal=2, tangent XYZW=4. Selected channels
+// are packed target-major then vertex-major, in bit order; missing deltas are zero.
+fn sceneIndexMorphChannelCount(mask : u32) -> u32 {
+  // The closed position/normal/tangent mask has exactly three available bits.
+  // Keep shared raster source legal on GLSL ES 3.0 without bitCount intrinsics.
+  return (mask & 1u) + ((mask >> 1u) & 1u) + ((mask >> 2u) & 1u);
+}
+
+fn sceneIndexMorphAttribute(instanceRow : u32, vertex : u32, channel : u32, value : vec3<f32>) -> vec3<f32> {
   let row = sceneInstances[instanceRow].customDataStart;
-  if (row == 0u) { return position; }
+  if (row == 0u) { return value; }
   let vertexCount = sceneMorphInputs[row];
-  if (vertex >= vertexCount) { return position; }
+  let mask = sceneMorphInputs[row + 3u];
+  if (vertex >= vertexCount || (mask & channel) == 0u) { return value; }
   let targetCount = sceneMorphInputs[row + 1u];
   let deltas = sceneMorphInputs[row + 2u];
-  var morphed = position;
+  let channels = sceneIndexMorphChannelCount(mask);
+  let stride = channels * 3u + select(0u, 1u, (mask & 4u) != 0u);
+  let lane = sceneIndexMorphChannelCount(mask & (channel - 1u));
+  var morphed = value;
   for (var t = 0u; t < targetCount; t += 1u) {
-    let weight = bitcast<f32>(sceneMorphInputs[row + 3u + t]);
-    let at = deltas + (t * vertexCount + vertex) * 3u;
+    let weight = bitcast<f32>(sceneMorphInputs[row + 4u + t]);
+    let at = deltas + (t * vertexCount + vertex) * stride + lane * 3u;
     morphed += weight * bitcast<vec3<f32>>(vec3<u32>(
       sceneMorphInputs[at], sceneMorphInputs[at + 1u], sceneMorphInputs[at + 2u]));
   }
   return morphed;
+}
+
+fn sceneIndexMorphPosition(instanceRow : u32, vertex : u32, position : vec3<f32>) -> vec3<f32> {
+  return sceneIndexMorphAttribute(instanceRow, vertex, 1u, position);
+}
+
+fn sceneIndexMorphNormal(instanceRow : u32, vertex : u32, normal : vec3<f32>) -> vec3<f32> {
+  return sceneIndexMorphAttribute(instanceRow, vertex, 2u, normal);
+}
+
+fn sceneIndexMorphTangent(instanceRow : u32, vertex : u32, tangent : vec4<f32>) -> vec4<f32> {
+  let xyz = sceneIndexMorphAttribute(instanceRow, vertex, 4u, tangent.xyz);
+  let row = sceneInstances[instanceRow].customDataStart;
+  if (row == 0u) { return tangent; }
+  let count = sceneMorphInputs[row];
+  let mask = sceneMorphInputs[row + 3u];
+  if (vertex >= count || (mask & 4u) == 0u) { return tangent; }
+  let stride = sceneIndexMorphChannelCount(mask) * 3u + 1u;
+  var w = tangent.w;
+  for (var t = 0u; t < sceneMorphInputs[row + 1u]; t++) {
+    let at = sceneMorphInputs[row + 2u] + (t * count + vertex + 1u) * stride - 1u;
+    w += bitcast<f32>(sceneMorphInputs[row + 4u + t]) * bitcast<f32>(sceneMorphInputs[at]);
+  }
+  return vec4<f32>(xyz, w);
 }
 
 // Scene-index draws carry the composed world, so their instance-local factor

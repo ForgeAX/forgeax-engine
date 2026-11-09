@@ -25,18 +25,20 @@ const checkerBlobSha256 = createHash('sha256')
   .update(await readFile(new URL(import.meta.url)))
   .digest('hex');
 
-function expectedCountsFromOracle(wireText, rebuiltPublication) {
+function expectedCountsFromOracle(wireText, rebuiltPublicationRef) {
   const publication = JSON.parse(wireText);
   assert.equal(publication.schemaVersion, SHADER_MANIFEST_PUBLICATION_VERSION);
   assert.ok(Array.isArray(publication.materialShaders));
   if (diagnosticHeapSnapshot) {
     diagnosticOracleRefs = [
-      ['rebuilt-publication', rebuiltPublication],
-      ['publication', publication],
-      ['materialShaders', publication.materialShaders],
-      ['sources', publication.sources],
-      ['fragments', publication.fragments],
-    ].map(([label, value]) => [label, new WeakRef(value)]);
+      ['rebuilt-publication', rebuiltPublicationRef],
+      ...[
+        ['publication', publication],
+        ['materialShaders', publication.materialShaders],
+        ['sources', publication.sources],
+        ['fragments', publication.fragments],
+      ].map(([label, value]) => [label, new WeakRef(value)]),
+    ];
   }
   return {
     materialCount: publication.materialShaders.length,
@@ -50,18 +52,31 @@ function sha256(bytes) {
 
 async function loadRegistryFromOracle(containerPath, profile) {
   const containerBytes = await readFile(containerPath);
-  const container = decodePackagedProfiles(containerBytes);
+  // Each checker-side copy (container, rebuilt publication, wire text, oracle
+  // parse tree) is released before the registry parses, so the transient peak
+  // measures admission rather than the checker's own scaffolding. The checks and
+  // the heap budget are unchanged.
+  let container = decodePackagedProfiles(containerBytes);
   assert.ok(container, `obsolete packaged profile container: ${containerPath}`);
-  const rebuilt = packagedProfilePublication(container, profile);
+  let rebuilt = packagedProfilePublication(container, profile);
+  container = null;
   assert.ok(rebuilt, `packaged profile is missing: ${profile}`);
-  const wireText = JSON.stringify(rebuilt);
-  const expectedCounts = expectedCountsFromOracle(wireText, rebuilt);
+  let wireText = JSON.stringify(rebuilt);
+  const rebuiltRef = diagnosticHeapSnapshot ? new WeakRef(rebuilt) : undefined;
+  rebuilt = null;
+  const expectedCounts = expectedCountsFromOracle(wireText, rebuiltRef);
   const wireBytes = Buffer.byteLength(wireText);
+  let wireBody = new TextEncoder().encode(wireText);
+  wireText = null;
   const registry = new ShaderRegistry({
     manifestUrl: 'https://shader-publication.invalid/manifest.json',
   });
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(wireText);
+  globalThis.fetch = async () => {
+    const response = new Response(wireBody);
+    wireBody = null;
+    return response;
+  };
   try {
     const loaded = await registry.loadManifest();
     assert.equal(loaded.ok, true, loaded.ok ? '' : JSON.stringify(loaded.error));

@@ -1277,19 +1277,18 @@ function captureMaterialResources(
   material: MaterialSnapshot,
   world: RenderResourceScope,
   store: GpuResidencyCache,
-  prepared: ReadonlyMap<
-    string,
-    ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>
-  >,
+  prepared:
+    | ReadonlyMap<string, ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>>
+    | undefined,
 ): MaterialBgAssemblyCacheEntry['materialResources'] {
   const textures = new Set(
     [...(material.textureHandles ?? [])]
-      .filter(([field]) => prepared.get(field) === undefined)
+      .filter(([field]) => prepared?.get(field) === undefined)
       .map(([, handle]) => handle),
   );
-  if (material.emissiveTexture !== undefined && prepared.get('emissiveTexture') === undefined)
+  if (material.emissiveTexture !== undefined && prepared?.get('emissiveTexture') === undefined)
     textures.add(material.emissiveTexture);
-  if (material.occlusionTexture !== undefined && prepared.get('occlusionTexture') === undefined)
+  if (material.occlusionTexture !== undefined && prepared?.get('occlusionTexture') === undefined)
     textures.add(material.occlusionTexture);
   return [
     ...[...textures].map((handle) => ({
@@ -1301,7 +1300,7 @@ function captureMaterialResources(
     ...[
       ...new Set(
         [...(material.samplerHandles ?? [])]
-          .filter(([field]) => prepared.get(field) === undefined)
+          .filter(([field]) => prepared?.get(field) === undefined)
           .map(([, handle]) => handle),
       ),
     ].map((handle) => ({
@@ -1410,10 +1409,9 @@ interface MaterialBgAssembly {
   readonly store: GpuResidencyCache;
   readonly runtime: RenderSystemRuntime;
   readonly pipelineState: PipelineState;
-  readonly preparedTextures: Map<
-    string,
-    ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>
-  >;
+  preparedTextures:
+    | Map<string, ReturnType<NonNullable<RenderSystemRuntime['preparedMaterialTexture']>>>
+    | undefined;
   resident: boolean;
   missingBaseColor: boolean;
 }
@@ -1517,7 +1515,7 @@ export function buildPerSubmeshMaterialBg(
           materialBindingResourcesCurrent(cached, materialWorld, store, runtime, submeshMaterial),
         transmissionBackdropView,
         sceneMaterialBuffer,
-        deps.surfaceRawDepthView,
+        surfaceMediumResources === undefined ? undefined : deps.surfaceRawDepthView,
         deps.planarReflectionView,
         pipelineState.viewUniformBuffer,
       )
@@ -1560,7 +1558,7 @@ export function buildPerSubmeshMaterialBg(
     store,
     runtime,
     pipelineState,
-    preparedTextures: new Map(),
+    preparedTextures: undefined,
     resident: true,
     missingBaseColor: false,
   };
@@ -2026,8 +2024,10 @@ function appendUserRegionPair(
 }
 
 function preparedMaterialTexture(assembly: MaterialBgAssembly, field: string | undefined) {
-  const { runtime, preparedTextures } = assembly;
+  const { runtime } = assembly;
   if (field === undefined || runtime.preparedMaterialTexture === undefined) return undefined;
+  assembly.preparedTextures ??= new Map();
+  const preparedTextures = assembly.preparedTextures;
   if (!preparedTextures.has(field))
     preparedTextures.set(field, runtime.preparedMaterialTexture(assembly.material, field));
   return preparedTextures.get(field);
@@ -2254,6 +2254,8 @@ function appendSharedMaterialTables(
   }
 }
 
+const NO_PREPARED_TEXTURES: MaterialBgAssemblyCacheEntry['preparedTextures'] = Object.freeze([]);
+
 /** Retain a fully resident, frame-independent assembly for cross-frame reuse. */
 function retainMaterialBgAssembly(
   deps: PerSubmeshMaterialBgDeps,
@@ -2287,11 +2289,14 @@ function retainMaterialBgAssembly(
         assembly.store,
         assembly.preparedTextures,
       ),
-      preparedTextures: [...assembly.preparedTextures].map(([parameter, source]) => ({
-        parameter,
-        textureView: source?.textureView,
-        sampler: source?.sampler,
-      })),
+      preparedTextures:
+        assembly.preparedTextures === undefined
+          ? NO_PREPARED_TEXTURES
+          : [...assembly.preparedTextures].map(([parameter, source]) => ({
+              parameter,
+              textureView: source?.textureView,
+              sampler: source?.sampler,
+            })),
       materialBgl: assembly.bgl,
       materialBuffer,
       ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),

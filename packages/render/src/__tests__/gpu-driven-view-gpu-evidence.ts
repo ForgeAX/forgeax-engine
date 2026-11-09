@@ -199,6 +199,105 @@ export async function runGpuDrivenViewLifecycleEvidence(
   };
 }
 
+/**
+ * One batch of instances spanning several 64-candidate tiles, every third one
+ * outside the frustum. Returns the drawn candidate rows of each repeated frame.
+ */
+export async function runGpuDrivenVisibleOrderEvidence(
+  computePassMode: 'separate' | 'combined',
+  instanceCount = 200,
+  frames = 4,
+): Promise<{ readonly instanceCount: number; readonly rows: readonly (readonly number[])[] }> {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('GPU-driven order raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (
+    await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL, label: 'gpu-driven-order' })
+  ).unwrap();
+  const transforms = new Float32Array(instanceCount * 16);
+  for (let i = 0; i < instanceCount; i += 1) {
+    const world = mat4.identity(mat4.create());
+    world[12] = i % 3 === 2 ? 10 : ((i % 7) - 3) * 0.1;
+    transforms.set(world, i * 16);
+  }
+  const projection = new RenderScene();
+  const delta = projection.apply([
+    updateSnapshot({
+      ...snapshot(1, 0),
+      instances: { transforms, instanceCount, cacheKey: 1, archVersion: 1 },
+    }),
+  ]);
+  const sceneAvailability = GpuScene.create(device, instanceCount).unwrap();
+  if (sceneAvailability.status !== 'available') throw new Error('GPU Scene unavailable');
+  sceneAvailability.scene.sync(delta).unwrap();
+  const topology = new BatchTopology();
+  topology.apply(delta);
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  const plan = topology.query(topology.sourcePlan(), undefined);
+  updateGpuView(
+    view,
+    plan,
+    sceneAvailability.scene,
+    frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+  ).unwrap();
+  const batch = plan.batches.at(0);
+  if (batch === undefined || plan.batches.length !== 1) throw new Error('order batch unavailable');
+  const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+  view
+    .addPasses(
+      graph,
+      'gpu-driven',
+      true,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      undefined,
+      computePassMode,
+    )
+    .unwrap();
+  const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+  view._commitResourceReplacement();
+  const visible = view.visibleBuffer;
+  const indirect = view.indirectBuffer;
+  if (visible === undefined || indirect === undefined) throw new Error('order buffers unavailable');
+  const rows: number[][] = [];
+  for (let frame = 0; frame < frames; frame += 1) {
+    const readback = device
+      .createBuffer({
+        label: `gpu-driven-order-readback-${frame}`,
+        size: 16 + instanceCount * 16,
+        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+      })
+      .unwrap();
+    const encoder = device.createCommandEncoder({ label: `gpu-driven-order-${frame}` }).unwrap();
+    compiled.execute({ encoder }).unwrap();
+    encoder.copyBufferToBuffer(indirect, batch.indirectOffset, readback, 0, 16);
+    encoder.copyBufferToBuffer(visible, batch.visibleBase * 16, readback, 16, instanceCount * 16);
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+    const words = new Uint32Array(mapped.getMappedRange().unwrap().slice(0));
+    mapped.unmap();
+    device.destroyBuffer(readback);
+    const drawn = words[1] ?? 0;
+    rows.push(Array.from({ length: drawn }, (_, item) => words[4 + item * 4 + 2] ?? -1));
+  }
+  await device.queue.onSubmittedWorkDone();
+  await compiled.retire();
+  const validationError = await rawDevice.popErrorScope();
+  if (validationError !== null) {
+    throw new Error(`GPU-driven order validation failed: ${validationError.message}`);
+  }
+  view.dispose();
+  sceneAvailability.scene.dispose();
+  return { instanceCount, rows };
+}
+
 function lodEvidenceCamera(height: number): LodViewCamera {
   const span = (2 * 0.25 * Math.sqrt(3)) / height;
   return {

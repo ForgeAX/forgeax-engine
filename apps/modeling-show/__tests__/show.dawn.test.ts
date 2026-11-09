@@ -78,12 +78,16 @@ describe('modeling Show (C-111) on the real Renderer', () => {
         pose,
         disc,
         renderTargets: stage.renderTargets,
+        // Keep reflection raster work proportional to this complete Show carrier.
+        reflectionSize: { width: WIDTH, height: HEIGHT },
       });
       const cues: object[] = [];
+      const frameFacts: unknown[] = [];
       const at = async (segment: number, u: number) => {
         show?.command({ kind: 'pause' });
         show?.command({ kind: 'seek', segment, u });
         const rgba = await stage.frame(0, 3);
+        if (process.env.FORGEAX_SHOW_FAILURE_DIR !== undefined) frameFacts.push({ segment, u, state: show?.state(), frame: stage.inspectFrame() });
         expect(show?.state().segment).toBe(segment);
         if (OUT !== undefined && !held) {
           mkdirSync(join(OUT, 'cues'), { recursive: true });
@@ -120,6 +124,14 @@ describe('modeling Show (C-111) on the real Renderer', () => {
       const panels = await at(6, 0);
       checks.panels = difference(panels, turn0);
       checks.offStage = difference(panels, panelsFirst);
+      const failureDirectory = process.env.FORGEAX_SHOW_FAILURE_DIR;
+      if (failureDirectory !== undefined && checks.offStage >= 0.0005) {
+        mkdirSync(failureDirectory, { recursive: true });
+        writeFileSync(join(failureDirectory, 'panels-first.png'), encodePng(WIDTH, HEIGHT, panelsFirst));
+        writeFileSync(join(failureDirectory, 'panels-revisited.png'), encodePng(WIDTH, HEIGHT, panels));
+        writeFileSync(join(failureDirectory, 'frame-facts.json'), JSON.stringify({ width: WIDTH, height: HEIGHT, checks, frames: frameFacts }, null, 2));
+      }
+
       console.log(JSON.stringify({ checks, firstStep, lastStep }, null, 1));
       // A beat whose owner does nothing compares exactly equal (0); intact beats measure 0.005-0.015 at 320x180.
       expect(checks.turntable).toBeGreaterThan(0.002);

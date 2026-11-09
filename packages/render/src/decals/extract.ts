@@ -7,9 +7,9 @@ import { ChildOf, GlobalTransform } from '@forgeax/engine-scene';
 import type { AssetHandle, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
 import { Visibility } from '../components/visibility';
 import {
+  createEnvironmentQuery,
   noteEnvironmentInputs,
   noteEnvironmentPose,
-  queryEnvironment,
 } from '../extract/environment-gate';
 import { worldRenderResources } from '../publication/resource-scope';
 import { deriveRenderDataTexture } from '../render-data';
@@ -22,6 +22,8 @@ import {
   resolveMaterialSnapshot,
 } from '../render-system-extract';
 import { ProjectedDecal, ProjectedDecalInvalidError } from './component';
+
+const extractProjectedDecalsQuery = createEnvironmentQuery({ read: [ProjectedDecal] });
 
 export const MAX_PROJECTED_DECALS = 64;
 export const DECAL_TEXTURE_FIELDS = [
@@ -79,7 +81,7 @@ export function extractProjectedDecals(
   context: PreparedExtractContext,
 ): ProjectedDecalSnapshot[] {
   const result: ProjectedDecalSnapshot[] = [];
-  const query = queryEnvironment(world, { read: [ProjectedDecal] }).unwrap();
+  const query = extractProjectedDecalsQuery(world).unwrap();
   for (const batch of query.batches().unwrap()) {
     noteEnvironmentInputs(world, [Visibility, ChildOf]);
     const entities = batch.entities;

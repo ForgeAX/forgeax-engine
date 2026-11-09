@@ -9,6 +9,7 @@ import {
   readlink,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -34,7 +35,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture() {
+async function fixture(options: { externalEngine?: boolean } = {}) {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-sdk-install-test-'));
   roots.push(root);
   const sdk = resolve(root, 'carrier');
@@ -103,7 +104,9 @@ async function fixture() {
       'for (const entry of await readdir(source)) {',
       '  await cp(resolve(source, entry), resolve(target, entry), { recursive: true });',
       '}',
-      "await cp(resolve(source, '../engine'), resolve(args[prefixIndex + 1], 'node_modules/@forgeax/engine'), { recursive: true });",
+      options.externalEngine
+        ? "await symlink(resolve(source, '../engine'), resolve(args[prefixIndex + 1], 'node_modules/@forgeax/engine'), process.platform === 'win32' ? 'junction' : 'dir');"
+        : "await cp(resolve(source, '../engine'), resolve(args[prefixIndex + 1], 'node_modules/@forgeax/engine'), { recursive: true });",
       "await link(resolve(target, 'bin/forgeax.mjs'), resolve(target, 'bin/forgeax-linked.mjs'));",
       "if (process.platform !== 'win32') await symlink('forgeax.mjs', resolve(target, 'bin/forgeax-alias.mjs'));",
     ].join('\n')}\n`,
@@ -124,6 +127,32 @@ async function fixture() {
 }
 
 describe('sdkInstallCommand', () => {
+  it('installs through a parent directory alias without widening the download boundary', async () => {
+    const root = await fixture();
+    const alias = resolve(root, 'parent-alias');
+    await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const target = resolve(alias, 'installed-sdk');
+    expect(await sdkInstallCommand({ root: target, version: '1.2.3' })).toMatchObject({
+      ok: true,
+      value: { root: target, sdkVersion: '1.2.3', next: { cwd: target } },
+    });
+    expect(
+      await readFile(resolve(target, 'source/engine/packages/math/dist/index.mjs'), 'utf8'),
+    ).toBe('export const value = 137;\n');
+    expect((await readdir(root)).filter((name) => name.includes('forgeax-sdk-'))).toEqual([]);
+  });
+
+  it('rejects an Engine package redirected outside the private download', async () => {
+    const root = await fixture({ externalEngine: true });
+    const target = resolve(root, 'installed-sdk');
+    expect(await sdkInstallCommand({ root: target, version: '1.2.3' })).toMatchObject({
+      ok: false,
+      error: { code: 'sdk-install-failed', detail: { reason: 'sdk-carrier-engine-path' } },
+    });
+    expect(await readdir(root)).not.toContain('installed-sdk');
+    expect((await readdir(root)).filter((name) => name.includes('forgeax-sdk-'))).toEqual([]);
+  });
+
   it('loads the SDK installer without importing the full DevKit command bundle', async () => {
     const root = await fixture();
     const target = resolve(root, 'installed-sdk');

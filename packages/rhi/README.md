@@ -8,6 +8,13 @@ submission/write bounds. Backends retain their detection, native diagnostic
 payloads and Result-versus-throw channel; availability and native failures remain
 backend-owned.
 
+Adapter requests include the standard `featureLevel` option alongside
+`powerPreference` and `forceFallbackAdapter`. Omitting it retains WebGPU's core
+default. A compatibility request can resolve to a core adapter on a provider
+that does not implement that feature level. Only the admitted device's features
+and limits establish its execution contract; requesting a mode is not evidence
+that it ran. Optional Renderer effects retain their own feature/limit admission.
+
 ## Charter propositions (顶部命题 / AI users read AGENTS.md §RHI first)
 
 | Proposition | This package's contract |
@@ -35,6 +42,12 @@ snapshot. Diagnostic `collect()` retains the current and subsequent graph until 
 returned scope is disposed; ordinary runtime use has no history retainer. See the
 [backend contract](../rhi-webgpu/README.md#device-pipeline-library) for the failure,
 readback and dependency-lifetime rules.
+
+The optional internal `pendingRuntimeCompilation()` signal borrows existing
+native compilation records. It snapshots outstanding runtime demands, including
+a demanded warmup recipe, and does not include later requests or undemanded
+background work. Render combines this with its shader-module and graphics
+preparation owners before exposing a generation-fenced receipt completion.
 
 ## Pipeline compilation inspection
 
@@ -146,6 +159,11 @@ markers when they need an encoder-level copy envelope.
 ### ExplicitUndefined<> 桥接
 
 The descriptor projections above are wrapped by an internal `ExplicitUndefined<T>` mapped type that converts every `?: T` optional field into `?: T | undefined`. This is the **shape bridge** between `@webgpu/types` (W3C spec form) and the forgeax RHI surface.
+
+The published declarations retain a type-only reference to this package's declared
+`@webgpu/types` dependency. Consumers with an explicit `compilerOptions.types`
+list still receive the native declarations used by these projections. A field
+such as `featureLevel` remains optional even when the bundled DOM library predates it.
 
 | Concern | spec form (`@webgpu/types`) | forgeax form (this package) |
 |:--|:--|:--|
@@ -306,6 +324,17 @@ A bind group layout entry `{ externalTexture: {} }` (WGSL `texture_external`,
 copy fallback and borrowed textures share the same layout and shader. rhi-null
 admits both methods structurally (`caps.textureImport` and `caps.externalTexture`
 are `true`) so renderer lifecycle is unit-testable; it produces no pixels.
+
+## Multisample render receipt
+
+`probeMultisampleRenderCapability(device, createModule, generation)` qualifies
+the fixed four-sample RGBA16F/D32FS8 raster and resolve profile through opaque
+RHI handles. Its readback requires exact partial coverage and rejects Null
+evidence. `createModule` is the synchronous shader-module factory. The pending
+probe and its result are scoped to one physical device;
+`multisampleRenderCapability(device)` reads the completed result. Failure uses
+`rhi-texture-format-capability-unavailable` with the failing stage and generation.
+`resolvedCoverage` preserves the exact binary16 red-channel bit patterns in row order.
 
 ## r32float-mip-sampled-render receipt
 
@@ -534,3 +563,17 @@ The WebGPU and wgpu adapter shells share `projectAdapterCapabilities` to snapsho
 feature sets and numeric enumerable limits, including inherited native accessors.
 Absent facts yield empty collections; device request and error handling stay with
 the backend shells.
+
+## Buffer upload semantics
+
+`RhiQueue.writeBuffer` uses bytes for the destination offset, TypedArray elements
+for source `dataOffset/size`, and bytes for ArrayBuffer/DataView source ranges.
+Omitted size means the remaining source view; explicit zero stays zero. The
+resulting byte count must be a multiple of four. `bufferWriteRange` is the pure
+shared conversion authority used by backends and Debug; it rejects invalid
+source ranges without clipping. Source subviews retain their own byte offset.
+
+Buffer-copy shorthand expands to the stable full native signature. An omitted
+size uses the source buffer size; explicit zero and complete-form offsets remain
+unchanged. See [CI compatibility](../../scripts/ci/README.md#pinned-webgpu-compatibility)
+for the all-interface change gate and real GPU assertions.

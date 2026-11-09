@@ -11,7 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHostWebSocketClient } from '@forgeax/engine-host/transport';
@@ -24,6 +24,22 @@ import {
 import { WebSocket } from 'ws';
 import { logBackendStartup, traceBackendStartup } from './backend-startup.js';
 import { isValidStartupTimeoutMs } from './project.js';
+
+const BACKEND_HEAP_MIB_DEFAULT = 8192;
+
+/**
+ * V8 heap flag for the detached backend. The startup cook (shader compile, material and
+ * particle producers) can pass Node's default old-space limit on large projects and die
+ * with "JavaScript heap out of memory". Raise the limit to 8 GiB, capped at half the
+ * machine memory, unless the caller already chose one through NODE_OPTIONS. It travels in NODE_OPTIONS, not
+ * execArgv, because worker threads reject --max-old-space-size inherited as an exec flag.
+ */
+export function backendHeapEnv(env: NodeJS.ProcessEnv, totalBytes: number): NodeJS.ProcessEnv {
+  if (/--max-old-space-size/.test(env.NODE_OPTIONS ?? '')) return env;
+  const halfMib = Math.floor(totalBytes / 2 / (1024 * 1024));
+  const flag = `--max-old-space-size=${String(Math.min(BACKEND_HEAP_MIB_DEFAULT, halfMib))}`;
+  return { ...env, NODE_OPTIONS: [env.NODE_OPTIONS, flag].filter(Boolean).join(' ') };
+}
 
 export const DEFAULT_BACKEND_STARTUP_TIMEOUT_MS = 120_000;
 
@@ -286,7 +302,7 @@ export async function startDevKitBackend(
       {
         detached: true,
         stdio: ['ignore', log, log],
-        env: process.env,
+        env: backendHeapEnv(process.env, totalmem()),
       },
     );
     logBackendStartup(

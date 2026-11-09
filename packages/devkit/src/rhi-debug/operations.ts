@@ -13,7 +13,6 @@ import {
   depthImage,
   extractTile,
   type FrameSummary,
-  type FrameTiming,
   type ImageLayout,
   type ImageStats,
   type InspectField,
@@ -41,6 +40,18 @@ import {
   projectSummary,
   type RhiPassesSummary,
 } from './offline-views.js';
+import {
+  RHI_TIMING_OPTION_PROPERTIES,
+  type RhiTimingInput,
+  type RhiTimingOutput,
+} from './timing.js';
+import type {
+  HostLoadPhase,
+  HostLoadSample,
+  ReplayAdapterInfo,
+  TimestampQuantization,
+} from './timing-environment.js';
+import { runTimingOperation } from './timing-run.js';
 
 export const RHI_TAPE_ARTIFACT_KIND = 'rhi-tape' as const;
 
@@ -143,10 +154,18 @@ export interface RhiReadOutput {
 
 export const RHI_READ_LIMIT = 64;
 
-export interface RhiTimingOutput {
-  readonly artifact: ArtifactRef;
-  readonly timing: FrameTiming;
-}
+export type { RhiTimingInput, RhiTimingOutput } from './timing.js';
+export type {
+  HostLoadPhase,
+  HostLoadSample,
+  ReplayAdapterInfo,
+  TimedTape,
+  TimestampQuantization,
+  TimingCheck,
+  TimingCheckName,
+  TimingEnvironment,
+  TimingPreflight,
+} from './timing-environment.js';
 
 export type RhiDebugOperationName =
   | 'rhi.capture'
@@ -159,7 +178,8 @@ export type RhiDebugOperationInput =
   | RhiCaptureInput
   | RhiSummaryInput
   | RhiInspectInput
-  | RhiReadInput;
+  | RhiReadInput
+  | RhiTimingInput;
 
 export interface RhiSummaryOutput {
   readonly artifact: ArtifactRef;
@@ -189,9 +209,21 @@ export type RhiDebugOperationOutput =
 /** A replay backend the operation owns; `release` ends the fresh device after replay. */
 export interface ReplayBackendLease extends ReplayBackend {
   readonly release: () => void;
+  /** The adapter behind `device`, for the `rhi.timing` environment block. */
+  readonly adapterInfo?: ReplayAdapterInfo;
+  /** Whether the provider rounds timestamps; `rhi.timing` marks the result invalid when `enabled`. */
+  readonly timestampQuantization?: TimestampQuantization;
 }
 
-export interface RhiDebugOperationContext {
+/** `rhi.timing` hooks a host may provide: host load samples and the engine build identity. */
+export interface RhiTimingHostHooks {
+  readonly sampleHostLoad?: (phase: HostLoadPhase) => Promise<HostLoadSample>;
+  readonly buildIdentity?: () => Promise<Readonly<
+    Record<string, string | number | boolean>
+  > | null>;
+}
+
+export interface RhiDebugOperationContext extends RhiTimingHostHooks {
   readonly captureFrame: (
     input?: RhiCaptureInput,
   ) => Promise<Result<CapturedRhiTape, RhiDebugError>>;
@@ -201,7 +233,7 @@ export interface RhiDebugOperationContext {
   readonly writeFile?: (path: string, bytes: Uint8Array) => Promise<CommandResult<string>>;
 }
 
-export interface RhiDebugOperationHost {
+export interface RhiDebugOperationHost extends RhiTimingHostHooks {
   readonly captureFrame: (
     input?: RhiCaptureInput,
   ) => Promise<Result<RhiCaptureFrameValue, RhiDebugError>>;
@@ -230,6 +262,8 @@ export function createRhiDebugOperationContext(
       ? {}
       : { createReplayBackend: host.createReplayBackend }),
     ...(host.writeFile === undefined ? {} : { writeFile: host.writeFile }),
+    ...(host.sampleHostLoad === undefined ? {} : { sampleHostLoad: host.sampleHostLoad }),
+    ...(host.buildIdentity === undefined ? {} : { buildIdentity: host.buildIdentity }),
   };
 }
 
@@ -502,10 +536,14 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
     {
       name: 'rhi.timing',
       summary:
-        'Replay one ArtifactRef once with replay-owned timestamps and report GPU nanoseconds per pass.',
+        'Replay one ArtifactRef warmup+repeat times with replay-owned timestamps (steady GPU-copy restore, pipelined readback); report per-pass and whole-frame (sum, union, envelope) GPU p50/p95/min with 95% intervals and drift, optionally isolated, with passes/draws skipped for an interleaved cost delta, or against a `compare` baseline tape; preflight checks GPU idle, timestamp-query and quantization and mark the result invalid when they fail.',
       inputSchema: {
         type: 'object',
-        properties: { artifact: artifactRefSchema },
+        properties: {
+          artifact: artifactRefSchema,
+          compare: artifactRefSchema,
+          ...RHI_TIMING_OPTION_PROPERTIES,
+        },
         required: ['artifact'],
         additionalProperties: false,
       },
@@ -513,9 +551,16 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
         type: 'object',
         properties: {
           artifact: artifactRefSchema,
+          valid: { type: 'boolean' },
+          invalidReasons: { type: 'array', items: { type: 'string' } },
+          preflight: { type: 'object', additionalProperties: true },
+          environment: { type: 'object', additionalProperties: true },
           timing: { type: 'object', additionalProperties: true },
+          benchmark: { type: 'object', additionalProperties: true },
+          baseline: artifactRefSchema,
+          comparison: { type: 'object', additionalProperties: true },
         },
-        required: ['artifact', 'timing'],
+        required: ['artifact', 'valid', 'invalidReasons', 'preflight', 'environment'],
         additionalProperties: false,
       },
       recoveryCodes: [
@@ -523,7 +568,11 @@ export const RHI_DEBUG_OPERATION_MANIFEST: RhiDebugOperationManifest = {
         'tape-version-unsupported',
         'replay-capability-mismatch',
         'replay-event-failed',
+        'replay-position-invalid',
         'readback-failed',
+        'timing-timeout',
+        'timing-input-invalid',
+        'gpu-busy',
       ],
     },
   ],
@@ -545,7 +594,12 @@ export function renderRhiDebugHelp(): string {
     `  forgeax rhi read --artifact PATH --reads '[{"binding":{"group":0,"binding":2},"workIndex":N,"image":{"format":"rgba16float","width":W,"height":H,"tile":{"tileWidth":8,"tileHeight":8,"index":0},"png":"probe.png"}}]' --json`,
     `  forgeax rhi read --artifact PATH --reads '[{"output":"depth","workIndex":N,"image":{"depth":{"near":0.1,"far":100,"reverseZ":true},"range":"auto","png":"shadow.png"}}]' --json`,
     `  forgeax rhi read --artifact PATH --reads '[{"binding":{"group":0,"binding":3},"workIndex":N,"records":{"layout":{"stride":16,"fields":[{"name":"radiance","offset":0,"type":"f32","components":4}]},"first":0,"count":64}}]' --json`,
-    '  forgeax rhi timing --artifact PATH --json',
+    '  forgeax rhi timing PATH   (table: frame union p50 with 95% interval, drift, top passes, preflight; --json for the full result)',
+    '  forgeax rhi timing PATH --ci-ms 0.1 --max-repeat 200   (extend repeat until the union p50 interval is at most 0.1 ms)',
+    '  forgeax rhi timing CANDIDATE --compare BASELINE   (both tapes interleaved in ABBA chunks; candidate minus baseline with a bootstrap verdict)',
+    '  forgeax rhi timing PATH --restore reload --pipeline-depth 0   (old per-replay re-upload; clocks drift, compare only within a run)',
+    "  forgeax rhi timing --artifact PATH --skip 'shadow' --json   (base and ablated replays interleave; delta is a cost estimate, the ablated image is wrong)",
+    "  forgeax rhi timing --artifact PATH --skip-passes '[3]' --skip-works '[120,121]' --isolate --json   (isolate: submit+wait per pass, sum >= real frame)",
     'Records decode rows [first, first+count) of stride bytes inside the selected buffer window (binding range or subresource {offset,size}); a mappable staging buffer returns readback-unsupported, so read the buffer it was copied from.',
     'summary, and inspect with fields pipeline/bindings only, read the tape and need no replay; pixels, outputs, read and timing replay on Dawn, which macOS and Windows build from source (no prebuilt ships).',
     'Replay uses Dawn; a tape that builds acceleration structures needs FORGEAX_WEBGPU_NODE=wgpu-native from a contributor checkout with @forgeax/engine-rhi-wgpu-native built (otherwise replay-backend-unavailable).',
@@ -688,7 +742,7 @@ export function runRhiDebugOperation(
 ): Promise<CommandResult<RhiReadOutput>>;
 export function runRhiDebugOperation(
   name: 'rhi.timing',
-  input: RhiSummaryInput,
+  input: RhiTimingInput,
   context: RhiDebugOperationContext,
 ): Promise<CommandResult<RhiTimingOutput>>;
 export function runRhiDebugOperation(
@@ -725,20 +779,28 @@ export async function runRhiDebugOperation(
       return runInspect(input as RhiInspectInput, context, name);
     case 'rhi.read':
       return runRead(input as RhiReadInput, context);
-    case 'rhi.timing': {
-      const { artifact: ref } = input as RhiSummaryInput;
-      const artifact = validateArtifactRef(ref);
-      if (!artifact.ok) return artifact;
-      const opened = await openTapeReplay(ref, context, name);
-      if (!opened.ok) return opened;
-      try {
-        const timing = await opened.value.session.timePasses();
-        if (!timing.ok) return { ok: false, error: coreError(timing.error) };
-        return { ok: true, value: { artifact: artifact.value, timing: timing.value } };
-      } finally {
-        await opened.value.close();
-      }
-    }
+    case 'rhi.timing':
+      return runTimingOperation(input as RhiTimingInput, context, {
+        validateArtifactRef,
+        coreError,
+        async openTapeReplay(artifact) {
+          const opened = await openTapeReplay(artifact, context, name);
+          if (!opened.ok) return opened;
+          const { lease, byteLength, session, close } = opened.value;
+          return {
+            ok: true,
+            value: {
+              session,
+              byteLength,
+              close,
+              ...(lease.adapterInfo === undefined ? {} : { adapterInfo: lease.adapterInfo }),
+              ...(lease.timestampQuantization === undefined
+                ? {}
+                : { timestampQuantization: lease.timestampQuantization }),
+            },
+          };
+        },
+      });
   }
 }
 
@@ -840,6 +902,8 @@ async function openTapeReplay(
   CommandResult<{
     readonly tape: V7Tape;
     readonly session: OpenedReplay;
+    readonly lease: ReplayBackendLease;
+    readonly byteLength: number;
     readonly close: () => Promise<void>;
   }>
 > {
@@ -869,7 +933,16 @@ async function openTapeReplay(
       backend.value.release();
     }
   };
-  return { ok: true, value: { tape: decoded.value, session, close } };
+  return {
+    ok: true,
+    value: {
+      tape: decoded.value,
+      session,
+      lease: backend.value,
+      byteLength: bytes.value.byteLength,
+      close,
+    },
+  };
 }
 
 async function runRead(

@@ -392,7 +392,16 @@ function keyOf(
 interface LightKind {
   readonly value: number;
   readonly shadow: 'point' | 'spot' | undefined;
-  readonly declared: Map<number, { readonly entity: EntityHandle; seen: number }>;
+  readonly declared: Map<
+    number,
+    {
+      readonly entity: EntityHandle;
+      seen: number;
+      /** Source facts and shadow last written for this light; the same objects again are unchanged. */
+      facts: LightFacts;
+      shadow: PointShadowSnapshot | undefined;
+    }
+  >;
   /** Free atlas layers, lowest first. */
   readonly free: number[];
 }
@@ -735,7 +744,7 @@ export class RenderLights {
           },
         })
         .unwrap();
-      kind.declared.set(key, { entity, seen: frame });
+      kind.declared.set(key, { entity, seen: frame, facts, shadow });
       if (shadow !== undefined) this.writeShadow(entity, -1, shadow);
       return entity;
     }
@@ -743,11 +752,17 @@ export class RenderLights {
     declared.seen = frame;
     const casts = kind.shadow === 'point' ? shadow !== undefined : castsSpot(facts);
     if (!casts) this.release(kind, entity);
+    // Extraction keeps the snapshot of an unchanged light, so the very same
+    // objects as last time need no structural comparison against the stored
+    // copies; layer restamps preserve every compared key.
+    if (declared.facts === facts && declared.shadow === shadow) return entity;
     const layer = this.layerOf(entity);
     if (!sameValue(this.facts(entity), facts, LAYER_KEYS))
       this.writeFacts(entity, stamp(kind, layer, facts, shadow));
     if (!sameValue(this.pointShadow(entity), shadow, LAYER_KEYS))
       this.writeShadow(entity, layer, shadow);
+    declared.facts = facts;
+    declared.shadow = shadow;
     return entity;
   }
 

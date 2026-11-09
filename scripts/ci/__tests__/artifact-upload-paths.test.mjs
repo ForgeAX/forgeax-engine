@@ -90,3 +90,19 @@ test('the CLI emits one multiline path value for both the report guard and uploa
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('optional artifact guards provision pinned Node even in aggregate jobs', async () => {
+  const { parse } = await import('yaml');
+  const action = parse(
+    readFileSync(
+      new URL('../../../.github/actions/upload-optional-artifact/action.yml', import.meta.url),
+      'utf8',
+    ),
+  );
+  const steps = action.runs.steps;
+  const setup = steps.findIndex((step) => step.uses === 'actions/setup-node@v5');
+  const guard = steps.findIndex((step) => step.name === 'Resolve owned artifact paths');
+  assert.ok(setup >= 0 && setup < guard);
+  assert.equal(steps[setup].with['node-version-file'], '.nvmrc');
+  assert.equal(steps[setup].with['package-manager-cache'], false);
+});

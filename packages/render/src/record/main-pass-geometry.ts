@@ -3,6 +3,7 @@ import {
   geometryPipelineRequestContext,
   prepareGeometryPipelineRequests,
 } from './geometry-pipeline-requests';
+import { selectStandardForwardScreenEntry } from './standard-opaque-entry';
 
 export {
   authoredTransparentDepthWrite,
@@ -65,7 +66,7 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { createHdrpSkinUnifiedBindGroup, getOrCreateHdrpBuffers } from '../hdrp-buffers';
-import type { InstanceBufferCacheEntry } from '../instance-buffer-cache';
+import type { InstanceBufferCacheEntry, InstanceBufferChunkKey } from '../instance-buffer-cache';
 import {
   type InstanceCollectionFailureCode,
   instancePreviousPairing,
@@ -95,6 +96,7 @@ import type {
   MaterialSnapshot,
   RenderableSnapshot,
 } from '../render-system-extract';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import { PROBE_BLEND_RECORD_BYTE_SIZE, probeBlendRecordOffset } from '../scene/probe-blend-record';
 import { createFoldedDrawRecorder, resolveFoldInstanceBuffer } from './fold-instance-buffer';
 import {
@@ -136,6 +138,7 @@ type GeometryInstanceDraw = {
   readonly instanceCount: number;
   readonly firstInstanceOrdinal?: number;
   readonly firstInstance?: number;
+  readonly lodLevel?: number;
   readonly range?: import('../device/gpu-residency').MeshGpuRange;
   readonly surfaceFrameBase?: number;
   readonly surfaceMemberIds?: readonly string[];
@@ -325,6 +328,31 @@ interface DrawPipelineSelection {
   readonly shader: string | undefined;
 }
 
+/** Compare borrowed draw facts without allocating a per-draw key. */
+function matchesDrawPipelineSelection(
+  cached: DrawPipelineSelection,
+  flags: number,
+  entry: import('./frame-snapshot').ValidatedRenderable,
+  topology: PrimitiveTopology,
+  shaderId: string | undefined,
+  renderState: MaterialSnapshot['renderState'],
+  vertexEntry: string | undefined,
+  fragmentEntry: string | undefined,
+  variantSet: string | undefined,
+): boolean {
+  return (
+    cached.flags === flags &&
+    cached.layout === entry.mesh.layoutProjection &&
+    cached.indexFormat === entry.mesh.indexFormat &&
+    cached.topology === topology &&
+    cached.shaderId === shaderId &&
+    cached.renderState === renderState &&
+    cached.vertexEntry === vertexEntry &&
+    cached.fragmentEntry === fragmentEntry &&
+    cached.variantSet === variantSet
+  );
+}
+
 function profileGeometrySegment<T>(
   c: _InternalRenderPipelineContext,
   passKind: PassKind,
@@ -430,7 +458,7 @@ export function geometrySkinBindGroup(
       ? getOrCreateHdrpBuffers(
           runtime,
           frameState.installedPipelineConfig?.clusterGrid,
-          frameState.standardClusterAoExtent,
+          frameState.standardClusterTextureExtent,
         )
       : null;
   if (contract === 'skin-cluster' && hdrpBuffers === null) return null;
@@ -635,15 +663,17 @@ export function recordGeometryDraws(
     if (candidates !== undefined)
       for (const cached of candidates)
         if (
-          cached.flags === flags &&
-          cached.layout === entry.mesh.layoutProjection &&
-          cached.indexFormat === entry.mesh.indexFormat &&
-          cached.topology === smTopology &&
-          cached.shaderId === selectedShaderId &&
-          cached.renderState === selectedRenderState &&
-          cached.vertexEntry === vertexEntry &&
-          cached.fragmentEntry === fragmentEntry &&
-          cached.variantSet === authoredVariantSet
+          matchesDrawPipelineSelection(
+            cached,
+            flags,
+            entry,
+            smTopology,
+            selectedShaderId,
+            selectedRenderState,
+            vertexEntry,
+            fragmentEntry,
+            authoredVariantSet,
+          )
         ) {
           pipelineSelection.pipeline = cached.pipeline;
           pipelineSelection.material = cached.material;
@@ -1129,6 +1159,13 @@ export function recordGeometryDraws(
       lastViewOffset = viewOffset;
     }
     if (smPipelineHandle === null) {
+      markPipelinePreparationPending(c.frameState, {
+        code: 'material-pipeline-preparation',
+        worldId: entry.source.worldId,
+        entity: entry.source.entityKey,
+        pass: passKind,
+        ...(smMaterialShaderId === undefined ? {} : { shader: smMaterialShaderId.slice(0, 256) }),
+      });
       return;
     }
     const instanceDraws = submeshInstanceDraws(entry, smIdx, submeshMaterial, probeBlendAvailable);
@@ -1169,7 +1206,9 @@ export function recordGeometryDraws(
     // not its authored Forward entry points or color outputs.
     const vertexEntry = passKind === 'temporal' ? undefined : selectedPass?.vertexEntry;
     let fragmentEntry =
-      passKind === 'temporal' ? undefined : (fragmentEntryPoint ?? selectedPass?.fragmentEntry);
+      passKind === 'temporal'
+        ? undefined
+        : selectStandardForwardScreenEntry(fragmentEntryPoint, selectedPass?.fragmentEntry);
     const selectedShaderId =
       selectedPass === undefined ? submeshMaterial.materialShaderId : selectedPass.materialShaderId;
     const selectedRenderState =
@@ -1620,7 +1659,7 @@ function instanceChunksForOwner(c: InstanceBufferContext, ownerKey: number) {
   if (owners === undefined) return undefined;
   let chunks = owners.get(ownerKey);
   if (chunks === undefined) {
-    chunks = new Map<number, InstanceBufferCacheEntry>();
+    chunks = new Map<InstanceBufferChunkKey, InstanceBufferCacheEntry>();
     owners.set(ownerKey, chunks);
   }
   return chunks;
@@ -1631,13 +1670,14 @@ function clearInstanceChunksForOwner(c: InstanceBufferContext, ownerKey: number)
   const chunks = owners?.get(ownerKey);
   if (chunks === undefined) return;
   for (const [start, entry] of chunks) {
+    if (typeof start === 'string') continue;
     if (!entry.buffer.isDestroyed) {
       const destroyed = entry.buffer.destroy();
       if (!destroyed.ok) c.runtime.errorRegistry.fire(destroyed.error);
     }
     chunks.delete(start);
   }
-  owners?.delete(ownerKey);
+  if (chunks.size === 0) owners?.delete(ownerKey);
 }
 
 export function resolveStorageInstanceChunks(
@@ -1780,16 +1820,7 @@ export function resolveStorageInstanceChunks(
       firstInstanceOrdinal: start,
     });
   }
-  if (chunks !== undefined) {
-    for (const [key, stale] of chunks.entries()) {
-      if (activeKeys.has(key)) continue;
-      if (!stale.buffer.isDestroyed) {
-        const destroyed = stale.buffer.destroy();
-        if (!destroyed.ok) runtime.errorRegistry.fire(destroyed.error);
-      }
-      chunks.delete(key);
-    }
-  }
+  retireNumericInstanceChunks(c, chunks, activeKeys);
   reportInstanceResidency(c, inst, {
     lane: 'chunked-storage',
     requestedBytes: inst.instanceCount * strideBytes,
@@ -1835,6 +1866,19 @@ export function resolveGeometryInstanceBuffer(
   // A present, empty Instances array means zero draws. Do not fall back to
   // the shared identity buffer, which would silently render one instance.
   if (inst.instanceCount === 0) return [];
+  // Uniform-only CPU LOD pages may reorder opaque instances within each page.
+  // Source ordinals remain the authority; blended collections retain their draw order.
+  if (
+    !c.runtime.device.caps.storageBuffer &&
+    entry.cpuInstanceLods !== undefined &&
+    entry.renderState?.blend === undefined &&
+    [entry.source.material, ...entry.source.materials].every(
+      (material) =>
+        material.snapshot.transparent !== true &&
+        material.snapshot.passes.every((pass) => pass.renderState?.blend === undefined),
+    )
+  )
+    return resolveUniformLodInstanceDraws(c, entry, inst, probeBinding);
   // feat-20260526-pbr-uniform-fallback-no-storage-buffer M3 / w13:
   // caps.storageBuffer===false -> uniform fallback with 128-instance
   // cap (128 * 64B = 8192B < WebGL2 min 16384B UBO limit).
@@ -1909,6 +1953,131 @@ function destroyInstanceBuffer(c: InstanceBufferContext, buffer: GpuBuffer): voi
 
 const UNIFORM_INSTANCE_STRIDE_BYTES = 16 * Float32Array.BYTES_PER_ELEMENT;
 
+/** Only a proven adjacent revision can narrow uploads to dirty source ordinals. */
+function lodPermutationNeedsUpload(
+  cached: InstanceBufferCacheEntry,
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  ordinals: readonly number[],
+  isNew: boolean,
+): boolean {
+  if (isNew) return true;
+  if (uploadedRevisionMatches(cached, inst.revision)) return false;
+  if (
+    inst.revision === undefined ||
+    cached.uploadedRevision === undefined ||
+    inst.revision !== cached.uploadedRevision + 1 ||
+    inst.dirtyRanges === undefined
+  )
+    return true;
+  return ordinals.some((ordinal) =>
+    inst.dirtyRanges?.some((range) => ordinal >= range.start && ordinal < range.end),
+  );
+}
+
+/** Retire ordinary resident pages without touching per-view LOD permutations. */
+function retireNumericInstanceChunks(
+  c: InstanceBufferContext,
+  chunks: Map<InstanceBufferChunkKey, InstanceBufferCacheEntry> | undefined,
+  activeKeys: ReadonlySet<number>,
+): void {
+  for (const [key, stale] of chunks ?? []) {
+    if (typeof key === 'string' || activeKeys.has(key)) continue;
+    destroyInstanceBuffer(c, stale.buffer);
+    chunks?.delete(key);
+  }
+}
+
+/** Acquire an upload candidate without retiring or publishing the previous resident. */
+function acquireLodPermutation(
+  c: InstanceBufferContext,
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  count: number,
+  previous: InstanceBufferCacheEntry | undefined,
+): InstanceBufferCacheEntry | null {
+  if (previous !== undefined && previous.uploadedArchVersion === inst.archVersion) return previous;
+  const created = c.runtime.device.createBuffer({
+    size: INSTANCE_UBO_FULL_ARRAY_BYTES,
+    usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
+  });
+  if (!created.ok) {
+    c.runtime.errorRegistry.fire(created.error);
+    return null;
+  }
+  return {
+    buffer: new GpuBuffer(c.runtime.device, created.value),
+    uploadedByteLength: count * UNIFORM_INSTANCE_STRIDE_BYTES,
+    uploadedArchVersion: inst.archVersion,
+  };
+}
+
+/** Camera permutations share immutable source pages, never buffers with different ordinal maps. */
+function resolveUniformLodInstanceDraws(
+  c: InstanceBufferContext,
+  entry: _InternalRenderPipelineContext['validatedOrdered'][number],
+  inst: NonNullable<RenderableSnapshot['instances']>,
+  probeBinding: InstanceProbeBinding,
+): readonly GeometryInstanceDraw[] | null {
+  const chunks = instanceChunksForOwner(c, instanceCollectionCacheKey(entry.source.worldId, inst));
+  const frame = c.frameState.frameNumber;
+  // Retain every permutation used by any view this frame. The following frame
+  // can still reuse it; older unused permutations retire with ordinary buffers.
+  for (const [key, cached] of chunks ?? []) {
+    if (typeof key !== 'string' || (cached.usedFrame ?? -Infinity) >= frame - 1) continue;
+    destroyInstanceBuffer(c, cached.buffer);
+    chunks?.delete(key);
+  }
+  const pages = [];
+  for (let first = 0; first < inst.instanceCount; first += MAX_UNIFORM_INSTANCES)
+    pages.push({
+      firstInstanceOrdinal: first,
+      instanceCount: Math.min(MAX_UNIFORM_INSTANCES, inst.instanceCount - first),
+    });
+  const draws: GeometryInstanceDraw[] = [];
+  let uploadedBytes = 0;
+  const uploadRanges: { start: number; end: number }[] = [];
+  for (const page of cpuInstanceLodDraws(entry, 0, pages, true)) {
+    const ordinals = page.instanceOrdinals;
+    if (ordinals === undefined || page.lodLevel === undefined) continue;
+    const key = ordinals.join(',');
+    const previous = chunks?.get(key);
+    let active = acquireLodPermutation(c, inst, ordinals.length, previous);
+    if (active === null) return null;
+    const isNew = active !== previous;
+    const changed = lodPermutationNeedsUpload(active, inst, ordinals, isNew);
+    if (changed) {
+      const packed = new Float32Array(ordinals.length * 16);
+      for (let index = 0; index < ordinals.length; index++) {
+        const ordinal = ordinals[index] as number;
+        packed.set(inst.transforms.subarray(ordinal * 16, (ordinal + 1) * 16), index * 16);
+      }
+      const written = c.runtime.device.queue.writeBuffer(active.buffer.handle, 0, packed);
+      if (!written.ok) {
+        if (isNew) destroyInstanceBuffer(c, active.buffer);
+        c.runtime.errorRegistry.fire(written.error);
+        return null;
+      }
+      uploadedBytes += packed.byteLength;
+      for (const ordinal of ordinals) uploadRanges.push({ start: ordinal, end: ordinal + 1 });
+    }
+    if (isNew && previous !== undefined) destroyInstanceBuffer(c, previous.buffer);
+    active = { ...withUploadedRevision(active, inst.revision, undefined), usedFrame: frame };
+    chunks?.set(key, active);
+    if (chunks === undefined) c.frameState.transientInstanceBuffers.push(active);
+    draws.push({
+      ...probeBoundInstanceDraw(c, active.buffer.handle, probeBinding, ordinals.length),
+      lodLevel: page.lodLevel,
+    });
+  }
+  reportInstanceResidency(c, inst, {
+    lane: 'chunked-uniform',
+    requestedBytes: inst.instanceCount * UNIFORM_INSTANCE_STRIDE_BYTES,
+    supportedBytes: MAX_UNIFORM_INSTANCES * UNIFORM_INSTANCE_STRIDE_BYTES,
+    uploadRanges,
+    uploadedBytes,
+  });
+  return draws;
+}
+
 /** Uniform-only devices split a large collection into 128-instance uniform chunks. */
 function resolveChunkedUniformInstanceDraws(
   c: InstanceBufferContext,
@@ -1930,13 +2099,7 @@ function resolveChunkedUniformInstanceDraws(
     if (active === null) return null;
     draws.push(probeBoundInstanceDraw(c, active.buffer.handle, probeBinding, count, start));
   }
-  if (chunks !== undefined) {
-    for (const [key, stale] of chunks.entries()) {
-      if (activeKeys.has(key)) continue;
-      destroyInstanceBuffer(c, stale.buffer);
-      chunks.delete(key);
-    }
-  }
+  retireNumericInstanceChunks(c, chunks, activeKeys);
   reportInstanceResidency(c, inst, {
     lane: 'chunked-uniform',
     requestedBytes: inst.instanceCount * UNIFORM_INSTANCE_STRIDE_BYTES,
@@ -1952,7 +2115,7 @@ function resolveUniformInstanceChunk(
   c: InstanceBufferContext,
   entry: _InternalRenderPipelineContext['validatedOrdered'][number],
   inst: NonNullable<RenderableSnapshot['instances']>,
-  chunks: Map<number, InstanceBufferCacheEntry> | undefined,
+  chunks: Map<InstanceBufferChunkKey, InstanceBufferCacheEntry> | undefined,
   start: number,
   uploaded: { ranges: { start: number; end: number }[]; bytes: number },
 ): InstanceBufferCacheEntry | null {
@@ -2010,7 +2173,7 @@ function resolveUniformInstanceChunk(
 function acquireUniformInstanceChunk(
   c: InstanceBufferContext,
   inst: NonNullable<RenderableSnapshot['instances']>,
-  chunks: Map<number, InstanceBufferCacheEntry> | undefined,
+  chunks: Map<InstanceBufferChunkKey, InstanceBufferCacheEntry> | undefined,
   start: number,
   previous: InstanceBufferCacheEntry | undefined,
 ): InstanceBufferCacheEntry | null {

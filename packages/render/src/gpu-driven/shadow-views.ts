@@ -48,6 +48,8 @@ import {
 import {
   type GpuDrivenCullingObservation,
   type GpuDrivenLodSubmitIdentity,
+  type GpuDrivenSelectionBatch,
+  type GpuDrivenSelectionWork,
   type GpuDrivenShadowCameraCull,
   GpuDrivenView,
   type GpuDrivenViewGraphResources,
@@ -221,6 +223,11 @@ interface ShadowViewRecord {
   cameraCull: boolean;
   cameraCulled: number | undefined;
   lastCullingObservation: GpuDrivenCullingObservation | undefined;
+  /**
+   * This publication's cull counters are read after submit. Decided before
+   * the graph executes, so an unread view encodes no telemetry copy.
+   */
+  cullingReadback: boolean;
   /** A partial static-layer miss: only these regions re-raster. */
   dirtyRects: readonly ShadowDirtyRect[] | undefined;
 }
@@ -314,6 +321,9 @@ function validateIdentity(identity: ShadowViewIdentity): RhiError | undefined {
 }
 
 const PLANE_FLOATS = 24;
+
+/** The one compute pass that selects every point-face view of a graph. */
+export const POINT_SELECTION_BATCH_PASS = 'gpu-driven.shadow.point-cube.view-selection';
 /**
  * A single projected texel bounds subpixel caster suppression in every layer. The
  * texel edge is exact for an orthographic light; a perspective light has no
@@ -1192,6 +1202,10 @@ function countRebuild(
  */
 export class ShadowViewStatePool {
   private readonly records = new Map<string, ShadowViewRecord>();
+  private readonly pointSelectionBatches = new WeakMap<
+    object,
+    ReadonlyMap<string, ShadowViewProjection>
+  >();
   /** Slots each projected plan draws; fixed projections publish theirs. */
   private drawnByPlan = new WeakMap<SubmissionPlan, ShadowDrawnSlots>();
   /** One plan object per projection; a replaced view takes a fresh one. */
@@ -1453,6 +1467,7 @@ export class ShadowViewStatePool {
         cameraCull: cameraCull !== undefined,
         cameraCulled: undefined,
         lastCullingObservation: undefined,
+        cullingReadback: false,
         dirtyRects,
       };
     } else {
@@ -1482,6 +1497,11 @@ export class ShadowViewStatePool {
       if (cameraCull === undefined) record.cameraCulled = undefined;
       record.dirtyRects = dirtyRects;
     }
+    // A Skin-task-only re-cull keeps the same candidates and view, so its
+    // texel count cannot change and does not deserve a readback.
+    const recount = record.texelCulled === undefined || invalidationReason !== 'skin-task-demand';
+    record.cullingReadback = (minCasterDiameter > 0 && recount) || record.cameraCull;
+    view._setCullingReadbackDemand(record.cullingReadback);
     this.records.set(key, record);
     this.pendingPublication.add(key);
     return ok({
@@ -1659,14 +1679,106 @@ export class ShadowViewStatePool {
     return undefined;
   }
 
+  /**
+   * With `batchPointFaces`, the first point-face projection on a builder
+   * declares one compute pass holding every active point-face view's
+   * selection, ahead of all point-face rasters, instead of a compute pass
+   * per face between rasters. Each view keeps its own dispatches, buffers,
+   * per-frame execution verdict and readback.
+   */
   project<FrameCtx extends RenderGraphFrame>(
     builder: RenderGraphBuilder<FrameCtx>,
     identity: ShadowViewIdentity,
     forceCompute = false,
     cameraPyramid?: GraphTextureView,
+    batchPointFaces = false,
   ): Result<ShadowViewProjection, RenderGraphError> {
     const record = this.records.get(identityKey(identity));
     if (record === undefined) return err(graphStateError(identity));
+    if (batchPointFaces && identity.kind === 'point' && cameraPyramid === undefined) {
+      const batched = this.projectPointSelectionBatch(builder, forceCompute);
+      if (!batched.ok) return batched;
+      const projected = batched.value.get(identityKey(identity));
+      if (projected !== undefined) return ok(projected);
+    }
+    return this.projectRecord(builder, record, forceCompute, cameraPyramid);
+  }
+
+  private projectPointSelectionBatch<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    forceCompute: boolean,
+  ): Result<ReadonlyMap<string, ShadowViewProjection>, RenderGraphError> {
+    const existing = this.pointSelectionBatches.get(builder);
+    if (existing !== undefined) return ok(existing);
+    const works: {
+      readonly work: GpuDrivenSelectionWork<FrameCtx>;
+      readonly after: () => Result<void, RenderGraphError>;
+    }[] = [];
+    const batch: GpuDrivenSelectionBatch<FrameCtx> = {
+      add: (work, after) => {
+        works.push({ work, after });
+      },
+    };
+    const projections = new Map<string, ShadowViewProjection>();
+    for (const key of [...this.activeKeys].sort((a, b) => a.localeCompare(b))) {
+      const record = this.records.get(key);
+      if (record === undefined || record.submission.identity.kind !== 'point') continue;
+      const projected = this.projectRecord(builder, record, forceCompute, undefined, batch);
+      if (!projected.ok) return projected;
+      projections.set(key, projected.value);
+    }
+    if (works.length > 0) {
+      const accesses: GraphAccess[] = [];
+      const seen = new Map<object, Set<string>>();
+      for (const { work } of works) {
+        for (const access of work.accesses) {
+          const usages = seen.get(access.resource) ?? new Set<string>();
+          if (usages.has(access.usage)) continue;
+          usages.add(access.usage);
+          seen.set(access.resource, usages);
+          accesses.push(access);
+        }
+      }
+      const executes = (work: GpuDrivenSelectionWork<FrameCtx>, frame: FrameCtx) =>
+        work.executeIf?.(frame) ?? true;
+      const added = builder.addComputePass(POINT_SELECTION_BATCH_PASS, {
+        accesses,
+        executeIf: (frame) => {
+          let any = false;
+          for (const { work } of works) any = executes(work, frame) || any;
+          return any;
+        },
+        encodeDirect: (pass, frame, resources) => {
+          for (const { work } of works) {
+            if (executes(work, frame)) work.encode(pass, frame, resources);
+          }
+        },
+      });
+      if (!added.ok) return added;
+      for (const { after } of works) {
+        const declared = after();
+        if (!declared.ok) return declared;
+      }
+      for (const [key, projection] of projections) {
+        if (projection.passNames.length === 0) continue;
+        projections.set(
+          key,
+          Object.freeze({ ...projection, passNames: Object.freeze([POINT_SELECTION_BATCH_PASS]) }),
+        );
+      }
+    }
+    this.pointSelectionBatches.set(builder, projections);
+    return ok(projections);
+  }
+
+  private projectRecord<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    record: ShadowViewRecord,
+    forceCompute: boolean,
+    cameraPyramid: GraphTextureView | undefined,
+    selectionBatch?: GpuDrivenSelectionBatch<FrameCtx>,
+  ): Result<ShadowViewProjection, RenderGraphError> {
+    const identity = record.submission.identity;
     const cacheHit = record.submission.cache === 'hit' && !record.invalidated;
     if (forceCompute && cacheHit) {
       const pending = record.frameInput;
@@ -1741,6 +1853,7 @@ export class ShadowViewStatePool {
       cameraPyramid,
       undefined,
       'combined',
+      selectionBatch,
     );
     if (!projected.ok) return projected;
     return ok({
@@ -1871,13 +1984,7 @@ export class ShadowViewStatePool {
       const record = this.records.get(key);
       if (record === undefined) continue;
       record.published = true;
-      // A Skin-task-only re-cull keeps the same candidates and view, so its
-      // texel count cannot change and does not deserve a readback.
-      const recount =
-        record.texelCulled === undefined || record.invalidationReason !== 'skin-task-demand';
-      if ((record.minCasterDiameter > 0 && recount) || record.cameraCull) {
-        void this.observeCulling(key, record);
-      }
+      if (record.cullingReadback) void this.observeCulling(key, record);
     }
     this.pendingPublication.clear();
     if (submittedGraphGeneration !== undefined) {

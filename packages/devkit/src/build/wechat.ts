@@ -26,6 +26,36 @@ import type { BuildOptions, ProjectFacts } from '../types.js';
 import { type PluginSourceInventory, pluginAssetClosure } from './plugin-assets.js';
 import { staticPackProgramsSource } from './static-pack-programs.js';
 
+const STARTUP_PRESENTATION_FILE = 'forgeax-wechat-startup.json';
+
+function nativeFailureDefault(appOptions: DevKitAppOptions): boolean {
+  const failure = appOptions.startupUi?.failure;
+  return failure === undefined || failure === 'default';
+}
+
+/** Consume the build plugin's derived policy before collecting package artifacts. */
+async function consumeStartupPresentation(outDir: string): Promise<boolean> {
+  const path = resolve(outDir, STARTUP_PRESENTATION_FILE);
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (cause) {
+    if ((cause as { code?: string }).code === 'ENOENT') return true;
+    throw cause;
+  }
+  const value: unknown = JSON.parse(text);
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('defaultFailure' in value) ||
+    typeof value.defaultFailure !== 'boolean'
+  ) {
+    throw new Error('Invalid WeChat startup presentation handoff');
+  }
+  await rm(path);
+  return value.defaultFailure;
+}
+
 /** Native package preparation consumes the same SDK-owned payloads as public source builds. */
 export async function prepareWechatBuild(
   facts: ProjectFacts,
@@ -90,6 +120,7 @@ import('@forgeax/engine/platform-wechat/standards').then(({ installWechatStandar
   const diagnostic = encoded === undefined ? String(error) : JSON.parse(encoded);
   const inspection = globalThis.__forgeaxGameInspection ?? entryInspection;
   if (inspection) { inspection.phase = 'failed'; inspection.error = diagnostic; }
+  if (!${nativeFailureDefault(appOptions)}) return;
   let reason = 'The game could not start.';
   for (let current = diagnostic, depth = 0; current != null && depth < 16; depth++) {
     if (typeof current === 'string') {
@@ -194,6 +225,13 @@ launch();`,
           source: await readFile(resolve(fontRoot, file)),
         });
     },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: STARTUP_PRESENTATION_FILE,
+        source: JSON.stringify({ defaultFailure: nativeFailureDefault(appOptions) }),
+      });
+    },
     async closeBundle() {
       await rm(staging, { recursive: true, force: true });
     },
@@ -207,6 +245,7 @@ export async function writeWechatProject(
   outDir: string,
 ) {
   await mkdir(outDir, { recursive: true });
+  const defaultFailure = await consumeStartupPresentation(outDir);
   const entries = await readdir(outDir);
   const payload = resolve(outDir, 'payload');
   const player = await prepareDist(
@@ -269,7 +308,7 @@ const task = wx.loadSubpackage({ name: 'payload', success() { if (inspection.pha
   inspection.phase = 'failed';
   inspection.error = { operation: 'wx.loadSubpackage', name: 'payload', message, cause: error };
   console.error('ForgeAX package failed', error);
-  wx.showModal({ title: 'Unable to load', content: message, showCancel: false });
+  if (${defaultFailure}) wx.showModal({ title: 'Unable to load', content: message, showCancel: false });
 } });
 try {
   packageLoad.progressAvailable = !!task && typeof task.onProgressUpdate === 'function';
@@ -557,7 +596,7 @@ async function boot(identity, reload) {
   releases.push(() => uiLifetime.abort());
   ui = await createBlitzUi({
     wasm: uiWasm ??= createWechatWasmHost(native, 'payload/wasm/ui.wasm.br').unwrap(),
-    html: ${JSON.stringify(hostStartupDocument(facts.name, loadingLabels, versions).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
+    html: ${JSON.stringify(hostStartupDocument(facts.name, loadingLabels, versions, appOptions.startupUi).replace('</head>', '<link rel="stylesheet" href="ui-fonts/index.css"></head>'))},
     width: canvas.width, height: canvas.height, pixelRatio: display.pixelRatio,
     font: new Uint8Array(await (await fetcher('https://forgeax.package/ui-fonts/files/noto-sans-sc-latin-wght-normal.woff2')).arrayBuffer()),
     fontFamily: 'Noto Sans SC Variable',
@@ -570,7 +609,7 @@ async function boot(identity, reload) {
   const host = { document: ui.document, events: ui.document, surface: () => canvas,
     now: () => platform.now().unwrap(), visible: () => platform.visible(),
     reducedMotion: false, reload };
-  startup = ${hostStartupScript(true, 'host', loadingLabels)};
+  startup = ${hostStartupScript(true, 'host', loadingLabels, undefined, appOptions.startupUi)};
   const input = createWechatInputBackend(wx, platform, { ui: ui.input, keyboard: wx,
     onError: error => console.warn('ForgeAX native input failed', error) }).unwrap();
   releases.push(() => input.detach());

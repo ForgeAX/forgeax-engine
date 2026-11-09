@@ -2,6 +2,36 @@ import { describe, expect, it } from 'vitest';
 import { BufferPool } from '../buffer-pool';
 
 describe('managed buffer slot ownership', () => {
+  it('keeps one live byte window and replaces it only after successful extent or owner changes', () => {
+    const pool = new BufferPool();
+    const allocated = pool.alloc(8).unwrap();
+    const { id, view } = allocated;
+    view.fill(7);
+    expect(pool.view(id)).toBe(view);
+    expect(pool.grow(id, 8).unwrap()).toBe(view);
+    expect(pool.setLogicalLength(id, 8).unwrap()).toBe(view);
+    expect(pool.grow(id, 1024, 0).ok).toBe(false);
+    expect(pool.view(id)).toBe(view);
+    const shorter = pool.setLogicalLength(id, 4).unwrap();
+    expect(shorter).not.toBe(view);
+    expect(pool.view(id)).toBe(shorter);
+    expect(Array.from(view)).toEqual([7, 7, 7, 7, 0, 0, 0, 0]);
+    const larger = pool.grow(id, 12).unwrap();
+    expect(larger).not.toBe(shorter);
+    expect(pool.view(id)).toBe(larger);
+    expect(Array.from(larger)).toEqual([7, 7, 7, 7, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const moved = pool.grow(id, 1024).unwrap();
+    expect(moved.buffer).not.toBe(larger.buffer);
+    expect(pool.view(id)).toBe(moved);
+    pool.release(id).unwrap();
+    expect(pool.view(id).length).toBe(0);
+    const replacement = pool.alloc(16).unwrap();
+    expect(replacement.id).toBe(id);
+    expect(replacement.view).not.toBe(larger);
+    expect(replacement.view).not.toBe(moved);
+    expect(pool.view(id)).toBe(replacement.view);
+  });
+
   it('cannot mutate a released slot or move a parked allocation to another bucket', () => {
     const pool = new BufferPool();
     const allocated = pool.alloc(12);

@@ -20,6 +20,11 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'surface-pipelines',
+    // Run 42325043736 completed ordinary-4 after 2,058 seconds, leaving
+    // this complete owner too little of the unchanged 40-minute step.
+    // Reserve ten minutes and start it before ordinary backfill; case,
+    // frame and step budgets remain unchanged.
+    placementReserveSeconds: 600,
     files: [
       'packages/runtime/src/__tests__/surface-standard-pipeline.dawn.test.ts',
       'packages/runtime/src/__tests__/standard-deferred-parity.dawn.test.ts',
@@ -133,6 +138,10 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-5',
+    // Run 42122803571 reached this complete journey at minute 37 and
+    // interrupted it at the unchanged step deadline. Reserve ten minutes
+    // and admit it before ordinary backfill; the test budgets stay fixed.
+    placementReserveSeconds: 600,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-residency.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-irradiance-field-multiview.dawn.test.ts',
@@ -154,43 +163,38 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 
 // Complete native owners share four lanes; ordinary files fill the remaining
 // time using the latest measured costs. Each process keeps its native lifetime.
+// Independent long capture journeys occupy separate lanes; one slow runner
+// must not amplify both Modeling captures before the same ordinary backfill.
 export const DAWN_GATE_SHARDS = Object.freeze([
-  Object.freeze(['ordinary-1', 'compact-2', 'rect-source', 'renderer']),
+  Object.freeze([
+    'ordinary-1',
+    'screen-probe',
+    'gi-2',
+    'compact-3',
+    'rect-source',
+    'shadow-fields',
+    'heavy-1',
+    'heavy-2',
+    'renderer',
+    'modeling-s6',
+    'gpu-timing',
+  ]),
   Object.freeze([
     'ordinary-2',
-    'gi-1',
-    'gi-5',
-    'gpu-timing',
     'heavy-3',
     'heavy-4',
     'shadow-quality',
     'specular-aa',
-    'gi-2',
-  ]),
-  Object.freeze([
-    'ordinary-3',
-    'compact-1',
-    'direct-light',
-    'gi-4',
-    'heavy-1',
-    'heavy-2',
-    'nested-discard',
-    'surface-pipelines',
-    'vfx-depth',
-    'gi-3',
-  ]),
-  Object.freeze([
-    'ordinary-4',
-    'modeling-s6',
-    'modeling-show',
-    'compact-3',
-    'feature-depth',
-    'screen-probe',
-    'shadow-fields',
-    'timing-lifecycle',
     'transmission',
+    'compact-1',
+    'feature-depth',
+    'timing-lifecycle',
     'gi-6',
+    'vfx-depth',
+    'nested-discard',
   ]),
+  Object.freeze(['ordinary-3', 'modeling-show', 'compact-2', 'direct-light', 'gi-4', 'gi-1']),
+  Object.freeze(['ordinary-4', 'surface-pipelines', 'gi-5', 'gi-3']),
 ]);
 
 export const DAWN_GATE_GROUPS = [
@@ -207,5 +211,13 @@ export const DAWN_GATE_GROUPS = [
     env: { FORGEAX_DAWN_COMPACT: '1' },
   })),
   ...DAWN_ISOLATED_GROUPS.map((group) => ({ ...group, env: { FORGEAX_DAWN_ISOLATED: '1' } })),
-  { id: 'direct-light', files: [DIRECT_LIGHT_DAWN_TEST_FILE], env: {} },
+  {
+    id: 'direct-light',
+    // Run 42388664877 reached this complete journey at minute 39. Admit it
+    // before ordinary backfill with its retained complete-owner placement forecast;
+    // retain every phase and its original native process/test deadlines.
+    placementReserveSeconds: 219.011,
+    files: [DIRECT_LIGHT_DAWN_TEST_FILE],
+    env: {},
+  },
 ];

@@ -140,6 +140,37 @@ describe('runtime renderer backend fallback boundary', () => {
     }
   });
 
+  it('falls back for the real RHI requestDevice rejection shape', async () => {
+    const requested = await requestAdapterFrom({
+      requestAdapter: async () => ({
+        requestDevice: async () => {
+          throw new TypeError('Cannot redefine property: lost');
+        },
+      }),
+    });
+    if (!requested.ok) throw requested.error;
+    const device = await requested.value.requestDevice();
+    if (device.ok) throw new Error('Expected rejected device');
+    const failure = new EngineEnvironmentError('no usable rendering backend', {
+      webgpuError: device.error,
+    });
+    const assets = new AssetRegistry();
+    mocks.loadBackendPack
+      .mockResolvedValueOnce({ ok: true, kind: 'webgpu', value: {} })
+      .mockResolvedValueOnce({ ok: true, kind: 'wgpu-webgl2', value: {} });
+    mocks.constructRendererHost
+      .mockResolvedValueOnce({ ok: false, error: failure })
+      .mockResolvedValueOnce({ ok: true, value: { assets } });
+    try {
+      const result = await constructRuntimeRendererHost(canvas());
+      expect(result.ok).toBe(true);
+      expect(mocks.loadBackendPack).toHaveBeenCalledTimes(2);
+      expect(mocks.constructRendererHost).toHaveBeenCalledTimes(2);
+    } finally {
+      assets.dispose();
+    }
+  });
+
   it('retains both channel causes when fallback initialization fails', async () => {
     const primary = environmentError('adapter-unavailable');
     const fallback = new RhiError({

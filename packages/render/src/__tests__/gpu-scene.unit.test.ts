@@ -2853,7 +2853,8 @@ it('publishes morph weights as per-row inputs beside shared Mesh deltas, uploadi
     expect(input(second).getUint32(8, true)).toBe(deltas);
     expect(input(deltas).getFloat32(0, true)).toBe(0.25);
     expect(input(deltas).getFloat32(vertexCount * 3 * 4, true)).toBe(-0.5);
-    expect(input(second).getFloat32(12, true)).toBeCloseTo(2 / count, 6);
+    expect(input(second).getUint32(12, true)).toBe(1);
+    expect(input(second).getFloat32(16, true)).toBeCloseTo(2 / count, 6);
 
     // A weight edit rewrites one row's weights: no table rows, no delta upload.
     queue.writes.length = 0;
@@ -2861,7 +2862,7 @@ it('publishes morph weights as per-row inputs beside shared Mesh deltas, uploadi
     scene.sync({ ...projection.apply([updateSnapshot(morphed(3, [0.75, 0]))]), meshes }).unwrap();
     flush();
     expect(scene.inputs.uploadBytes - beforeUpload).toBeLessThanOrEqual(5 * 4);
-    expect(input(second).getFloat32(12, true)).toBe(0.75);
+    expect(input(second).getFloat32(16, true)).toBe(0.75);
     expect(morphRow(2)).toBe(second);
 
     // Removing a morph releases its row and leaves the shared deltas to the rest.

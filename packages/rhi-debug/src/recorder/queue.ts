@@ -2,6 +2,7 @@
 
 import {
   type Buffer,
+  bufferWriteRange,
   type CommandBuffer,
   type RhiQueue,
   textureCopyOrigin,
@@ -99,8 +100,10 @@ export function createQueueProxy(s: RecorderInternal, realQueue: RhiQueue): RhiQ
       const raw = ArrayBuffer.isView(data)
         ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
         : new Uint8Array(data as ArrayBuffer);
-      const sz = size ?? raw.byteLength - (dataOffset ?? 0);
-      const slice = raw.slice(dataOffset ?? 0, (dataOffset ?? 0) + sz);
+      const range = bufferWriteRange(data, dataOffset, size);
+      if (!range.ok) return range;
+      const sz = range.value.byteLength;
+      const slice = raw.slice(range.value.byteOffset, range.value.byteOffset + sz);
       const result = realQueue.writeBuffer(buffer, bufferOffset, data, dataOffset, size);
       if (!result.ok) return result;
       if (shadowId !== undefined && s.indexBufferShadow.has(shadowId)) {

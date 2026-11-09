@@ -66,6 +66,23 @@ function fixture(profile: boolean) {
   };
 }
 
+it('charges only the submitting thread while retaining native worker CPU diagnostics', async () => {
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  vi.spyOn(process, 'cpuUsage').mockImplementation((previous) =>
+    previous === undefined ? { user: 0, system: 0 } : { user: 10_000, system: 2_000 },
+  );
+  const thread = vi.spyOn(process, 'threadCpuUsage').mockImplementation((previous) =>
+    previous === undefined ? { user: 0, system: 0 } : { user: 120, system: 30 },
+  );
+  const { captureCondition } = await import(SCRIPT);
+  const captured = await captureCondition(fixture(false), 'treatment', 'baseline-treatment');
+  expect(thread).toHaveBeenCalled();
+  expect(captured.facts.cpuSamples.every((sample: Record<string, unknown>) =>
+    sample.userUs === 120 && sample.systemUs === 30 &&
+    sample.processUserUs === 10_000 && sample.processSystemUs === 2_000,
+  )).toBe(true);
+});
+
 it.each([
   false,
   true,

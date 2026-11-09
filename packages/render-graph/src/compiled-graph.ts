@@ -83,14 +83,17 @@ function resolveRasterColors<FrameCtx>(
       typeof attachment.clearValue === 'function'
         ? attachment.clearValue(frame)
         : attachment.clearValue;
+    const loadOp =
+      typeof attachment.loadOp === 'function' ? attachment.loadOp(frame) : attachment.loadOp;
     // Optional members are assigned, not spread: spreads allocate a
     // temporary object per member on every executed pass.
     const color: Writable<RenderPassColorAttachment> = colorAttachments[colorIndex] ?? {
       view: view.value,
-      loadOp: attachment.loadOp,
+      loadOp,
       storeOp: attachment.storeOp,
     };
     color.view = view.value;
+    color.loadOp = loadOp;
     if (resolveTarget !== undefined) color.resolveTarget = resolveTarget.value;
     if (clearValue === undefined) delete color.clearValue;
     else color.clearValue = clearValue;
@@ -321,6 +324,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   implements CompiledRenderGraph<FrameCtx>
 {
   private retired = false;
+  private resolving = false;
   private retireResult: Promise<Result<void, RenderGraphError>> | undefined;
   private readonly allocationLedger: RenderGraphAllocationLedger;
   private inspection: CompiledRenderGraphInfo | undefined;
@@ -341,6 +345,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     }
   >();
   private readonly importedViews = new Map<number, { texture: Texture; view: TextureView }>();
+  /** The compiler owns fixed membership; mutable resolution values stay with their records. */
+  private readonly resourceOrder: readonly CompiledResource<FrameCtx>[];
+  private readonly viewOrder: readonly CompiledView<FrameCtx>[];
 
   constructor(
     private readonly generation: number,
@@ -353,6 +360,8 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     private readonly colorTargetDescriptors: ReadonlyMap<string, ResolvedColorTargetDescriptor>,
   ) {
     compiledGraphs.add(this);
+    this.resourceOrder = [...resources.values()];
+    this.viewOrder = [...views.values()];
     const infoByLabel = new Map(info.resources.map((resource) => [resource.label, resource]));
     const entries: AllocationEntry[] = [];
     let importedResourceCount = 0;
@@ -964,13 +973,25 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   }
 
   private resolveFrameResources(frame: FrameCtx): Result<FrameResources, RenderGraphError> {
+    if (this.retired || this.resolving || executingGraphs.has(this))
+      return this.subgraphError('execution', 'a live, non-recursive compiled graph');
+    this.resolving = true;
+    try {
+      return this.resolveFrameResourceValues(frame);
+    } finally {
+      this.resolving = false;
+    }
+  }
+
+  private resolveFrameResourceValues(frame: FrameCtx): Result<FrameResources, RenderGraphError> {
     const frameResources = this.frameResources;
     // Keys are the compiled graph's static resolved-resource ids, so each
     // frame overwrites the same entries; clearing would shrink and regrow the
     // hash tables every frame.
     const { buffers, textures, views, accelerationStructures } = frameResources;
 
-    for (const compiled of this.resources.values()) {
+    for (let index = 0; index < this.resourceOrder.length; index++) {
+      const compiled = this.resourceOrder[index] as CompiledResource<FrameCtx>;
       if (!isResolved(compiled)) continue;
       try {
         if (compiled.record.kind === 'texture') {
@@ -993,7 +1014,8 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       }
     }
 
-    for (const compiledView of this.views.values()) {
+    for (let index = 0; index < this.viewOrder.length; index++) {
+      const compiledView = this.viewOrder[index] as CompiledView<FrameCtx>;
       if (this.resources.get(compiledView.record.textureId)?.usage === 0) continue;
       if (compiledView.record.resolve !== undefined) {
         try {

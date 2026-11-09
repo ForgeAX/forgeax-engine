@@ -13,6 +13,7 @@ import { propagateTransforms } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { required } from '../../../ui-blitz/src/__tests__/fixture.js';
 import { compareUiRaster } from '../../../ui-blitz/src/__tests__/gpu-parity-fixture.js';
 import { createBlitzUi, gpuShaders, type UiWasmHost } from '../../../ui-blitz/src/index.js';
@@ -67,6 +68,15 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
 }, async () => {
   const recorder = attachRecorder(webgpu).unwrap();
   const surface = offscreenCanvas(size);
+  const context = surface.canvas.getContext();
+  const configure = context.configure;
+  let native: GPUDevice | undefined;
+  context.configure = (options: GPUCanvasConfiguration) => {
+    native = options.device;
+    configure(options);
+  };
+  const canvas = { ...surface.canvas, getContext: () => context };
+  let restorePipelines = () => {};
   const errors: unknown[] = [];
   const ui = await createBlitzUi({
     wasm,
@@ -78,7 +88,7 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
   let transferred = 0;
   const host = value(
     await constructRuntimeRendererHost(
-      surface.canvas,
+      canvas,
       {
         rhi: recorder.backend.rhi,
         ui: {
@@ -96,17 +106,36 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
   );
   value(await host.initialization);
   const renderer = host.renderer;
-  const scene = createDisplayP3Scene(renderer, errors);
+  const device = required(native);
+  const createPipeline = device.createRenderPipelineAsync;
+  let releasePipelines!: () => void;
+  const pipelinesHeld = new Promise<void>((resolve) => {
+    releasePipelines = resolve;
+  });
+  let asyncRequests = 0;
+  device.createRenderPipelineAsync = async (descriptor) => {
+    asyncRequests++;
+    const pipeline = await createPipeline.call(device, descriptor);
+    await pipelinesHeld;
+    return pipeline;
+  };
+  restorePipelines = () => {
+    device.createRenderPipelineAsync = createPipeline;
+    releasePipelines();
+  };
+  const scene = createDisplayP3Scene(renderer, errors, {
+    renderState: { depthWriteEnabled: false },
+  });
   const replayDevices: GPUDevice[] = [];
   try {
     propagateTransforms(scene.world);
-    const before = await readUiFrame(renderer, scene.world);
+    let before = await readUiFrame(renderer, scene.world);
     expect(transferred).toBe(1);
     let dynamicPixels: Uint8Array | undefined;
-    for (const mode of ['dynamic', 'unchanged'] as const) {
+    for (const mode of ['preparing', 'dynamic', 'unchanged'] as const) {
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      if (mode === 'dynamic') required(ui.document.querySelector('main')).style.opacity = '.5';
+      if (mode !== 'unchanged') required(ui.document.querySelector('main')).style.opacity = '.5';
       const live = await readUiFrame(renderer, scene.world);
       (await recorder.frameBoundary()).unwrap();
       const capture = (await pending).unwrap();
@@ -128,14 +157,18 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
         uiWorks.find((work) => label(work.pipeline.descriptor) === 'screen-ui-composite'),
       );
       const final = required(uiWorks.at(-1));
-      expect(transferred).toBe(2);
-      if (mode === 'dynamic') {
+      expect(transferred).toBe(mode === 'preparing' ? 2 : 4);
+      if (mode === 'preparing') {
+        expect(asyncRequests).toBeGreaterThan(0);
+        expect(live.receipt.presentation).toBe('pending');
+      } else expect(live.receipt.presentation).toBe('ready');
+      if (mode !== 'unchanged') {
         expect(raster.length).toBeGreaterThan(0);
         expect(raster.some((work) => label(work.pipeline.descriptor) === 'ui-raster-filter')).toBe(
           true,
         );
         expect(compareUiRaster(before.rgba, live.rgba).maxError).toBeGreaterThan(0.05);
-        dynamicPixels = live.rgba;
+        if (mode === 'dynamic') dynamicPixels = live.rgba;
       } else {
         expect(raster).toHaveLength(0);
         expect(equalBytes(live.rgba, dynamicPixels)).toBe(true);
@@ -257,10 +290,24 @@ it('captures actual Blitz GPU UI draws and replays dynamic and retained composit
       } finally {
         (await replay.dispose()).unwrap();
       }
+      if (mode === 'preparing') {
+        restorePipelines();
+        const lease = value(renderer.attach(scene.world));
+        await drawReadyFrame(renderer, {
+          leases: [lease],
+          camera: { lease },
+          environment: { lease },
+          sampleTimeSeconds: 1,
+        });
+        required(ui.document.querySelector('main')).style.opacity = '.75';
+        before = await readUiFrame(renderer, scene.world);
+        expect(before.receipt.presentation).toBe('ready');
+      }
     }
-    expect(new Set(replayDevices).size).toBe(2);
+    expect(new Set(replayDevices).size).toBe(3);
     expect(errors).toEqual([]);
   } finally {
+    restorePipelines();
     scene.dispose();
     value(await renderer.dispose());
     ui.dispose();

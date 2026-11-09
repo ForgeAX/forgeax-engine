@@ -179,7 +179,7 @@ interface MorphRowAllocation {
   deltas: MeshMorphDeltas;
 }
 
-const MORPH_ROW_HEADER_WORDS = 3;
+const MORPH_ROW_HEADER_WORDS = 4;
 
 interface MeshAllocation {
   readonly logicalSlot: number;
@@ -1209,25 +1209,28 @@ export class GpuScene {
     materialRows: Map<MaterialSnapshot, Uint8Array>,
     temporalResolver: GpuSceneTemporalResolver | undefined,
   ): void {
-    const contentUpdatedSlotIds = new Set<number>();
-    for (const record of delta.contentUpdatedSlots) contentUpdatedSlotIds.add(record.slot);
-    const instanceUpdatedSlotIds = new Set<number>();
-    for (const record of delta.instanceUpdatedSlots) instanceUpdatedSlotIds.add(record.slot);
-    const newSlots = new Set<number>();
-    for (const record of delta.createdSlots) newSlots.add(record.slot);
-    for (const record of delta.recreatedSlots) newSlots.add(record.slot);
+    const contentUpdatedSlotIds =
+      delta.contentUpdatedSlots.length === 0 ? undefined : new Set<number>();
+    for (const record of delta.contentUpdatedSlots) contentUpdatedSlotIds?.add(record.slot);
+    const instanceUpdatedSlotIds =
+      delta.instanceUpdatedSlots.length === 0 ? undefined : new Set<number>();
+    for (const record of delta.instanceUpdatedSlots) instanceUpdatedSlotIds?.add(record.slot);
+    const newSlots =
+      delta.createdSlots.length + delta.recreatedSlots.length === 0 ? undefined : new Set<number>();
+    for (const record of delta.createdSlots) newSlots?.add(record.slot);
+    for (const record of delta.recreatedSlots) newSlots?.add(record.slot);
     // Preserve create/update/recreate order without concatenating the full row population.
     for (let group = 0; group < 3; group++) {
       const publications =
         group === 0 ? delta.createdSlots : group === 1 ? delta.updatedSlots : delta.recreatedSlots;
       for (const record of publications) {
-        const reset = newSlots.has(record.slot) || allocationResets.has(record.slot);
-        if (reset || contentUpdatedSlotIds.has(record.slot) || resized.has(record.slot)) {
+        const reset = newSlots?.has(record.slot) === true || allocationResets.has(record.slot);
+        if (reset || contentUpdatedSlotIds?.has(record.slot) || resized.has(record.slot)) {
           this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
           continue;
         }
         const temporal = temporalResolver?.(record);
-        if (instanceUpdatedSlotIds.has(record.slot))
+        if (instanceUpdatedSlotIds?.has(record.slot))
           this.writeInstanceTransforms(record, writesByTable, temporal);
         this.writeRootTransform(record, false, writesByTable);
         this.writeTemporalFlags(
@@ -1839,6 +1842,7 @@ export class GpuScene {
     if (morph === undefined || deltas === undefined || morph.targetCount !== deltas.targetCount)
       return 0;
     const words = MORPH_ROW_HEADER_WORDS + deltas.targetCount;
+    const initial = row === undefined;
     if (row === undefined) {
       row = {
         descriptor: this.inputs.arena.allocateDescriptor(words),
@@ -1853,10 +1857,17 @@ export class GpuScene {
     if (this.morphScratch.byteLength < words * 4)
       this.morphScratch = new DataView(new ArrayBuffer(words * 8));
     const scratch = this.morphScratch;
-    this.writeMorphHeader(scratch, deltas);
+    // Existing rows retain their immutable Mesh header; only weights change.
+    if (initial) this.writeMorphHeader(scratch, deltas);
+    const firstWeight = initial ? MORPH_ROW_HEADER_WORDS : 0;
     for (let target = 0; target < deltas.targetCount; target++)
-      scratch.setFloat32((MORPH_ROW_HEADER_WORDS + target) * 4, morph.weights[target] ?? 0, true);
-    this.inputs.arena.writeDescriptor(row.descriptor, scratch, words);
+      scratch.setFloat32((firstWeight + target) * 4, morph.weights[target] ?? 0, true);
+    this.inputs.arena.writeDescriptor(
+      row.descriptor,
+      scratch,
+      words,
+      initial ? 0 : MORPH_ROW_HEADER_WORDS,
+    );
     return row.descriptor;
   }
 
@@ -1864,6 +1875,7 @@ export class GpuScene {
     scratch.setUint32(0, deltas.vertexCount, true);
     scratch.setUint32(4, deltas.targetCount, true);
     scratch.setUint32(8, (this.morphDeltas.get(deltas) as MorphDeltaAllocation).descriptor, true);
+    scratch.setUint32(12, deltas.channels, true);
   }
 
   private acquireMorphDeltas(deltas: MeshMorphDeltas): void {

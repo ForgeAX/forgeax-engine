@@ -152,6 +152,16 @@ export class ShadowDepthLayers {
     this.arrays.get(label)?.pending.add(layer);
   }
 
+  /**
+   * Record that the staged frame leaves `layer` of `label` behind its view,
+   * so the next raster decision rebuilds it whether or not the submit lands.
+   */
+  discard(label: string, layer: number): void {
+    const array = this.arrays.get(label);
+    array?.retained.delete(layer);
+    array?.pending.delete(layer);
+  }
+
   /** @internal Promote staged rasters after a successful submit. */
   _commit(): void {
     for (const array of this.arrays.values()) {

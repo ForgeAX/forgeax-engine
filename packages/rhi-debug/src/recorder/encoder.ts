@@ -8,6 +8,7 @@ import type {
   RhiCommandEncoder,
   TlasBuildEntry,
 } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import type { HandleId, RecordedBlasBuild, RecordedTlasBuild } from '../types';
 import type { RecorderInternal } from './core';
 import {
@@ -275,7 +276,17 @@ export function createCommandEncoderProxy(
         const sourceId = getHandleId(s, args[0] as object, 'buffer');
         const destinationId = getHandleId(s, args[1] as object, 'buffer');
         invalidateIndexBufferShadow(s, args[1] as object);
-        const size = args[2] as number | undefined;
+        const declaredSize = s.descriptorTable.get(sourceId)?.size;
+        const size =
+          (args[2] as number | undefined) ??
+          (typeof declaredSize === 'number' ? declaredSize : undefined);
+        if (size === undefined) {
+          throw new RhiError({
+            code: 'rhi-descriptor-invalid',
+            expected: 'a recorded source buffer size for an omitted copy size',
+            hint: 'create the buffer through the recording device or provide an explicit size',
+          });
+        }
         pushEvent(s, {
           kind: 'copyBufferToBuffer',
           cmdHandleId: cmdHId,
@@ -283,7 +294,7 @@ export function createCommandEncoderProxy(
           sourceOffset: 0,
           destinationHandleId: destinationId,
           destinationOffset: 0,
-          size: (size ?? 0) as number,
+          size,
         });
         realEnc.copyBufferToBuffer(args[0] as Buffer, args[1] as Buffer, size);
       }

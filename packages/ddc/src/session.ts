@@ -1,4 +1,4 @@
-import { type DdcEntry, DdcEntryStore, DdcStoreError, type StagedDdcEntry } from './entry-store.js';
+import { type DdcEntryInput, DdcEntryStore, type StagedDdcEntry } from './entry-store.js';
 import type {
   DdcCommitResult,
   DdcHead,
@@ -90,7 +90,7 @@ export class DdcGenerationSession {
     return candidate;
   }
 
-  public async stageEntry(entry: DdcEntry): Promise<DdcGenerationEntryCandidate> {
+  public async stageEntry(entry: DdcEntryInput): Promise<DdcGenerationEntryCandidate> {
     this.assertOpen();
     const candidate = (await this.beginCandidate(
       entry.guid,
@@ -142,16 +142,7 @@ export class DdcGenerationSession {
   ): Promise<DdcCommitResult> {
     const registered = this.assertCandidate(candidate);
     try {
-      const published = await this.entries.publish(candidate.staged);
-      if (published.result === 'conflict') {
-        throw new DdcStoreError({
-          code: 'ddc-entry-conflict',
-          detail: `immutable DDC entry ${published.key} conflicts with the staged candidate`,
-          expected: 'the existing DDC entry to have the same validated output',
-          actual: { key: published.key },
-        });
-      }
-      return await this.commitRegistered(registered, validatedKey);
+      return await this.commitRegistered(registered, validatedKey, candidate.staged);
     } catch (error) {
       this.stopHeartbeat(registered.lease.attempt);
       const fence = await this.lifecycle.fail(registered.lease, {
@@ -235,8 +226,9 @@ export class DdcGenerationSession {
   private async commitRegistered(
     candidate: MutableDdcGenerationCandidate,
     validatedKey: string,
+    staged?: StagedDdcEntry,
   ): Promise<DdcCommitResult> {
-    const result = await this.lifecycle.commit(candidate.lease, validatedKey);
+    const result = await this.lifecycle.commit(candidate.lease, validatedKey, staged);
     if (result.result === 'current' || result.result === 'invalid')
       this.restoreFences.set(candidate, result.restoreFence);
     if (result.result === 'invalid') this.counters.corruptCount += 1;

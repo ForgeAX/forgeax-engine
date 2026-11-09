@@ -52,6 +52,13 @@ not duplicate per-case status values.
 > Raw byte differences remain diagnostic; finite analytic/ROI fallback budgets
 > are still enforced, with no empirical gamma, multiplier, or blend correction.
 
+## Transparency capture readiness
+
+Both authored transparency pictures wait for the Engine receipt's preparation
+and GPU completion signals before canvas readback. The shared ready-frame owner
+retains its fifteen-second bound, pixel metrics and independent Three reference;
+two submissions alone do not establish picture readiness.
+
 ## Direct-light capture workload
 
 The native WebGPU single-receiver fixtures disable optional GPU occlusion: one

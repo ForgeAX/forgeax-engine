@@ -296,6 +296,24 @@ export default definePack({
       } finally {
         await warm.closeBundle();
       }
+      const dev = pluginPack(options);
+      try {
+        dev.configureServer({ middlewares: { use() {} }, ws: { send() {} } });
+        await dev.ready();
+        expect(imports).toBe(1);
+        const devRow = dev.catalogSnapshot().find((entry) => entry.guid === GUID);
+        expect(devRow?.publication?.outputs).toEqual([
+          expect.objectContaining({
+            guid: GUID,
+            sourceKey: 'fixture/main',
+            kind: 'fixture-mesh',
+            refs: [],
+          }),
+        ]);
+        expect(devRow?.publication?.current.packageUrl).toMatch(/^\/__forgeax-ddc\//);
+      } finally {
+        await dev.closeBundle();
+      }
     } finally {
       process.chdir(previousCwd);
     }

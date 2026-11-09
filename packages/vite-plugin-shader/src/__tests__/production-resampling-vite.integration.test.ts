@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { decodeDocumentText } from '@forgeax/engine-codec';
 import {
   LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
@@ -80,14 +81,17 @@ it('emits and admits production resampling entries through Vite buildStart and g
     if (manifestAsset?.type !== 'asset') {
       throw new Error('Vite generateBundle did not emit shaders/manifest.json');
     }
-    const wireText =
+    // The build emits a zstd frame; the registry decodes it from the wire bytes.
+    const wireBytes =
       typeof manifestAsset.source === 'string'
-        ? manifestAsset.source
-        : Buffer.from(manifestAsset.source).toString('utf8');
-    const publication = JSON.parse(wireText) as PublishedManifest;
+        ? new TextEncoder().encode(manifestAsset.source)
+        : manifestAsset.source;
+    const decoded = await decodeDocumentText(wireBytes);
+    if (!decoded.ok) throw new Error('emitted manifest did not decode');
+    const publication = JSON.parse(decoded.value) as PublishedManifest;
 
     globalThis.fetch = async () =>
-      new Response(wireText, { headers: { 'content-type': 'application/json' } });
+      new Response(new Uint8Array(wireBytes), { headers: { 'content-type': 'application/json' } });
     const registry = new ShaderRegistry({
       manifestUrl: 'https://production-resampling.invalid/shaders/manifest.json',
     });

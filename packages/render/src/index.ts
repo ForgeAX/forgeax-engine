@@ -96,6 +96,12 @@ export type {
   CubeCameraFaceViewInput,
 } from './capture/cube-views.js';
 export { buildCubeCameraFaceViews } from './capture/cube-views.js';
+export {
+  type CaptureFaceKind,
+  DEFAULT_CAPTURE_POLICY,
+  featureRecordsInCapture,
+  type RenderFeatureCapturePolicy,
+} from './capture/feature-policy.js';
 export { buildPlanarReflectionView, type PlanarReflectionViewInput } from './capture/planar-view';
 export {
   buildCloudDensityCache,
@@ -219,6 +225,7 @@ export {
   ANTIALIAS_NONE,
   ANTIALIAS_SMAA,
   ANTIALIAS_TAA,
+  ANTIALIAS_TSR,
   BLOOM_DISABLED,
   BLOOM_ENABLED,
   CAMERA_BLOOM_INTENSITY_MAX,
@@ -377,6 +384,16 @@ export {
   visibilityStateFromU32,
 } from './components/visibility.js';
 export { ProjectedDecal, ProjectedDecalInvalidError } from './decals/component';
+export {
+  installRenderAblationDevtools,
+  parseRenderAblation,
+  type RenderAblation,
+  type RenderAblationDevtools,
+  type RenderAblationInvalidDetail,
+  RenderAblationInvalidError,
+  renderAblation,
+  setRenderAblation,
+} from './diagnostics/render-ablation.js';
 export type {
   DynamicGeometryCandidate,
   DynamicGeometryCandidateState,

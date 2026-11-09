@@ -14,7 +14,10 @@ import {
 } from '../record/main-pass-geometry';
 import { isMediumMaterial } from '../record/material-pass-selection';
 import type { RenderSystemInternals } from '../record/render-context';
-import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
+import {
+  STANDARD_OPAQUE_FRAGMENT_ENTRY,
+  selectStandardForwardScreenEntry,
+} from '../record/standard-opaque-entry';
 import type { FramePresentationPendingReason } from '../render-contract';
 import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
 import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
@@ -311,8 +314,8 @@ export function collectGpuDrivenMaterialArtifacts({
       variants = new Map();
       selectedArtifacts.set(read.shader, variants);
     }
-    const { pass, deformation, vertexColorAvailable } = read.request;
-    variants.set(`${pass}/${deformation}/${vertexColorAvailable}`, read.artifact);
+    const { pass, deformation, vertexColorAvailable, alphaMask } = read.request;
+    variants.set(`${pass}/${deformation}/${vertexColorAvailable}/${alphaMask}`, read.artifact);
   }
   const selectArtifact: BatchArtifactResolver = (shader, request) => {
     let variants = selectedArtifacts.get(shader);
@@ -321,7 +324,7 @@ export function collectGpuDrivenMaterialArtifacts({
       selectedArtifacts.set(shader, variants);
     }
     // This resolver's address is always scene-index; the other request fields vary.
-    const key = `${request.pass}/${request.deformation}/${request.vertexColorAvailable}`;
+    const key = `${request.pass}/${request.deformation}/${request.vertexColorAvailable}/${request.alphaMask}`;
     if (!variants.has(key)) {
       const resolved = {
         ...request,
@@ -610,7 +613,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         prepared.identity.deformation === 'skin' &&
         input.visibleSurface
           ? SKIN_UNCOVERED_GBUFFER_ENTRY
-          : input.fragmentEntry;
+          : selectStandardForwardScreenEntry(input.fragmentEntry, artifact.fragmentEntry);
       const selectedArtifact =
         fragment === undefined
           ? artifact

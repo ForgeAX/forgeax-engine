@@ -7,8 +7,8 @@ import { ok } from '@forgeax/engine-types';
 import { afterEach, expect, it } from 'vitest';
 import type { RunImportMeta } from '../import-runner.js';
 import { ImporterRegistry } from '../importer-registry.js';
-import { createPackBuildProductCache } from '../scriptable-pack-product-cache.js';
 import { produceSourcePackage } from '../source-package.js';
+import { createSourcePackageBuildDdc } from '../source-package-build-product.js';
 
 const GUID = '01900000-0000-7000-8000-0000000000f1';
 const roots: string[] = [];
@@ -67,6 +67,7 @@ async function fixture(material = false, inheritedFs = false) {
   const nativeIdentity = native?.cacheIdentity;
   if (material && nativeIdentity === undefined) throw new Error('material cooker identity missing');
   let cookerRevision = 'native-v1';
+  let nextCookerRevision: string | undefined;
   const cookers: NativeCooker[] =
     native === undefined
       ? []
@@ -78,6 +79,10 @@ async function fixture(material = false, inheritedFs = false) {
               : { cacheIdentity: async () => `${cookerRevision}:${await nativeIdentity()}` }),
             async cook(input) {
               counts.cooker++;
+              if (nextCookerRevision !== undefined) {
+                cookerRevision = nextCookerRevision;
+                nextCookerRevision = undefined;
+              }
               return native.cook(input);
             },
           },
@@ -98,22 +103,19 @@ async function fixture(material = false, inheritedFs = false) {
   };
   const fs: typeof capabilities = inheritedFs ? Object.create(capabilities) : capabilities;
   const run = async (overrides: Partial<RunImportMeta> = {}) => {
-    const products = await createPackBuildProductCache({
+    const ddc = await createSourcePackageBuildDdc({
       root: cacheRoot,
       identityRoot: root,
-      outputVersions: { meta: '1' },
+      producerIdentity: producer,
       cookers,
     });
+    if (ddc === undefined) throw Error('missing fixture product DDC');
     const result = await produceSourcePackage({
       meta: { ...meta, ...overrides },
       registry,
       fs,
       cookers,
-      ddc: {
-        products,
-        producerIdentity: `${producer}:${products.producerIdentity}`,
-        identityRoot: root,
-      },
+      ddc,
     });
     if (!result.ok) throw result.error;
     return result.value;
@@ -130,6 +132,9 @@ async function fixture(material = false, inheritedFs = false) {
     },
     setCookerRevision(value: string) {
       cookerRevision = value;
+    },
+    changeCookerDuringNextCook(value: string) {
+      nextCookerRevision = value;
     },
   };
 }
@@ -221,3 +226,14 @@ it('does not reimport or recook a real material after its Meta Pack hits existin
   await f.run();
   expect(f.counts).toEqual({ importer: 3, cooker: 3 });
 }, 60_000);
+
+it('does not persist a Meta product under a native identity that changed during production', async () => {
+  const f = await fixture(true);
+  f.changeCookerDuringNextCook('native-during-cook');
+  await f.run();
+  f.setCookerRevision('native-v1');
+  await f.run();
+  expect(f.counts).toEqual({ importer: 2, cooker: 2 });
+  await f.run();
+  expect(f.counts).toEqual({ importer: 2, cooker: 2 });
+});

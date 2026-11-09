@@ -268,6 +268,7 @@ function pendingViewWork(
   return {
     presentation: 'pending',
     isCurrent: () => recordContext(internals).deviceScope.generation === generation,
+    beforeSubmit: internals.beforeSubmit,
     reportError: (error) => internals.errorRegistry.fire(error),
   };
 }
@@ -310,14 +311,32 @@ export function encodeFramePresentation(
   world: World,
   input: RenderRecordInputState,
   encoder: RhiCommandEncoder,
+  sceneOutputEncoded: boolean,
 ): void {
   let session: RecorderSession | undefined;
   try {
     session = input.rendererInternals?.profiler?.activeSession();
   } catch {}
   profiled(session, 'submission/presentation', () =>
-    encodeSurfaceUi(world, input.rendererInternals, input.frameId, encoder),
+    encodeSurfaceUi(world, input.rendererInternals, input.frameId, encoder, sceneOutputEncoded),
   );
+}
+
+/** A preparation barrier has not initialized the surface behind its UI. */
+function hasEncodedSurfaceView(world: World, frame: number): boolean {
+  for (const view of viewComposition(world).recorded) {
+    if (view.target !== undefined) continue;
+    const slot = readViewField(world, view.entity, ViewGraphSeal, 'state');
+    if (slot === undefined) continue;
+    const seal = world.resolveUniqueRef<ViewGraphSealState>(slot).unwrap();
+    if (
+      seal.frame === frame &&
+      seal.encoding?.kind === 'encoded' &&
+      seal.encoding.value.kind === 'display'
+    )
+      return true;
+  }
+  return false;
 }
 
 /** All required presentation products must exist before the physical submit owner runs. */
@@ -384,7 +403,10 @@ export function registerFrameSubmitSystems(world: World): void {
         const state = frameSubmitOutcome(world);
         if (state.composite === 'pending') return;
         try {
-          encodeFramePresentation(world, input, encoder.encoder);
+          const sceneOutputEncoded =
+            state.composite === 'encoded' ||
+            (renderSubmission(world).open && hasEncodedSurfaceView(world, input.frameId));
+          encodeFramePresentation(world, input, encoder.encoder, sceneOutputEncoded);
         } catch (cause) {
           state.failures.push(cause);
         }

@@ -102,7 +102,6 @@ for (const probe of probes) {
       : []),
   ]);
 }
-steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 // Retain both language producers and cold reopening of each saved publication.
 for (const language of ['js', 'ts'])
   for (const cold of [false, true]) {
@@ -125,15 +124,17 @@ for (const language of ['js', 'ts'])
       },
     ]);
   }
+// Keep the complete Modeling journey last so no later replay inherits its GPU work.
+steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
 // Keep complete owners and each language's live/cold chain on four processes.
-// Run 39969751546 measured 768 s + 310 s in Game 3D; its former contracts/TS
-// lane hit the 30-minute job bound. Keep the two Game 3D steps contiguous, then
-// run the standalone Modeling browser owner on that lane's remaining capacity.
+// Run 42130885413 spent 1294 s in the complete Game 3D owner before Modeling
+// reached the 30-minute job cap. Contracts/plugin/TS completed in 506 s; move
+// Modeling to that lane after its live/cold chain. Diagnostics retain their lane.
 const shards = [
-  ['contracts', 'plugin', 'runtime-ts'],
+  ['contracts', 'plugin', 'runtime-ts', 'modeling'],
   ['lifecycle', 'workspace', 'engine-only', 'runtime-js'],
-  ['game3d', 'modeling'],
+  ['game3d'],
   ['diagnostics'],
 ];
 if (process.argv.includes('--list-shards')) {

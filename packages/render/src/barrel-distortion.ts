@@ -1,3 +1,4 @@
+import type { Mat4 } from '@forgeax/engine-math';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   type BarrelDistortionData,
@@ -81,6 +82,34 @@ export function attachBarrelDistortionCameraFrame(
       projectionMatrix: camera.projectionMatrix,
     },
   });
+}
+
+/** Detach a computed private matrix; no iterable or caller callback participates. */
+function freezeComputedMatrix(matrix: Mat4): readonly number[] {
+  const values = new Array<number>(matrix.length);
+  for (let index = 0; index < values.length; index++) values[index] = matrix[index] as number;
+  return Object.freeze(values);
+}
+
+/** @internal Publish the record owner's private computed scratch, never borrowed camera inputs. */
+export function attachComputedBarrelDistortionCameraFrame(
+  mapping: BarrelDistortionMapping,
+  camera: Pick<BarrelDistortionCameraFrame, 'projection' | 'far'> & {
+    readonly viewMatrix: Mat4;
+    readonly projectionMatrix: Mat4;
+  },
+): BarrelDistortionMapping {
+  const fixed = Object.freeze({
+    ...mapping,
+    camera: Object.freeze({
+      projection: camera.projection,
+      far: camera.far,
+      viewMatrix: freezeComputedMatrix(camera.viewMatrix),
+      projectionMatrix: freezeComputedMatrix(camera.projectionMatrix),
+    }),
+  });
+  ownedMappings.add(fixed);
+  return fixed;
 }
 
 /** Continuous output-viewport pixel coordinate. */

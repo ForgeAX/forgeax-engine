@@ -176,6 +176,7 @@ export class RhiNullDevice implements RhiDevice {
       firstInstanceIndirect: true,
       storageBuffer: true,
       storageTexture: true,
+      depthTextureLoad: true,
       rgba16floatRenderable: true,
       rg11b10ufloatRenderable: true,
       float32Filterable: true,

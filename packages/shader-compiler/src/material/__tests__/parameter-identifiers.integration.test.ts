@@ -15,7 +15,7 @@ it('cooks numeric suffixes and colliding compiler spellings through direct and s
 #import forgeax_material::parameters::{material}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(material.rainShelter0.xyz + material.rainShelter0_.xyz, input.geometricNormalWS, 0.0, 0.5, vec3f(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(material.rainShelter0.xyz + material.rainShelter0_.xyz, input.geometricNormalWS, 0.0, 0.5, vec3f(0.0), 1.0, 1.0, 0.0, 0.0);
 }`,
     );
     const source: MaterialAsset = {

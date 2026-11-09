@@ -13,7 +13,11 @@ import { recordGeometryDraws } from '../main-pass-geometry';
 import { prepareShadowMaterialPipelines } from '../shadow-pass';
 import { CPU_SETUP_SHADER, cpuSetupFixture } from './main-pass-cpu-setup-fixture';
 
-const artifactFor = (program: MaterialShaderArtifact['program']): MaterialShaderArtifact => ({
+const artifactFor = (
+  program: MaterialShaderArtifact['program'],
+  variantSet = 'LOD_DITHER=false+CLIPPING_PLANES=false',
+): MaterialShaderArtifact => ({
+  variantSet,
   material: 'test::prepared',
   pass: 'Forward',
   program,
@@ -213,7 +217,10 @@ it('specializes unreachable direct Surface discards and observes clipping and pr
   let program = createMaterialShaderProgram(
     `${CPU_SETUP_SHADER}\n@id(64001) override standardSurfaceDiscards: u32 = 3u;`,
   );
-  Object.assign(f.c.runtime, { getMaterialShaderArtifact: () => artifactFor(program) });
+  let declares = true;
+  Object.assign(f.c.runtime, {
+    getMaterialShaderArtifact: () => artifactFor(program, declares ? undefined : ''),
+  });
   f.entry.source.material.adopt({ ...f.entry.source.material.snapshot, standardTextureMask: 5 });
   try {
     f.encode();
@@ -231,6 +238,7 @@ it('specializes unreachable direct Surface discards and observes clipping and pr
     f.encode();
     expect(lookup.mock.calls[2]?.[21]?.[STANDARD_SURFACE_DISCARDS_OVERRIDE]).toBe(0);
     program = createMaterialShaderProgram(CPU_SETUP_SHADER);
+    declares = false;
     f.encode();
     expect(lookup.mock.calls[3]?.[21]).toEqual({ [STANDARD_TEXTURE_MASK_OVERRIDE]: 5 });
   } finally {
@@ -273,7 +281,82 @@ it('prepares only authored ShadowCaster passes through validated module readines
   }
 });
 
-it('separates receiver and nonreceiver PSOs sharing a program during preparation', async () => {
+it('prepares visible residual authored casters before recording their shadow views', async () => {
+  const f = await setup();
+  f.entry.source.material.adopt({
+    ...f.entry.source.material.snapshot,
+    passes: [
+      {
+        name: 'ShadowCaster',
+        program: { module: 'test::prepared', vertexEntry: 'vertex', fragmentEntry: 'fragment' },
+        renderState: { tags: { LightMode: 'ShadowCaster' }, cullMode: 'none' },
+      },
+    ],
+    materialProgramKeys: { ShadowCaster: 'test::prepared' },
+  });
+  Object.assign(f.entry.source, { authorVisible: true, pipelinePreparation: undefined });
+  Object.assign(f.c, { validatedOrdered: [f.entry], pipelinePreparationEntries: [] });
+  f.acceptMaterials();
+  const lookup = vi.fn().mockReturnValue(null);
+  Object.assign(f.c.runtime, { prepareMaterialShaderPipelineEntry: lookup });
+  try {
+    // No declared shadow view means no native preparation demand.
+    prepareShadowMaterialPipelines(f.c);
+    expect(lookup).not.toHaveBeenCalled();
+    Object.assign(f.c, {
+      shadowViewPlanesByView: new Map([['directional:0', new Float32Array(24)]]),
+    });
+    // An explicitly empty residual roster must not fall back to main-pass rows.
+    Object.assign(f.c, { shadowValidatedOrdered: [] });
+    prepareShadowMaterialPipelines(f.c);
+    expect(lookup).not.toHaveBeenCalled();
+    Object.assign(f.c, { shadowValidatedOrdered: [f.entry] });
+    prepareShadowMaterialPipelines(f.c);
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(lookup.mock.calls[0]?.[6]).toBe('shadow-caster');
+    expect(lookup.mock.calls[0]?.[14]).toBe('validated');
+    expect(lookup.mock.calls[0]?.[18]).toBe('vertex');
+    expect(f.c.frameState.pipelinePreparationPending).toBe(true);
+    f.c.frameState.pipelinePreparationPending = false;
+    lookup.mockClear().mockReturnValue({ pipeline: f.pipeline, group2Contract: 'mesh' });
+    Object.assign(f.c, {
+      shadowValidatedOrdered: Array.from({ length: 240 }, (_, index) => ({
+        ...f.entry,
+        source: { ...f.entry.source, entityKey: index + 1 },
+      })),
+    });
+    prepareShadowMaterialPipelines(f.c);
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(f.c.frameState.pipelinePreparationPending).toBe(false);
+    expect(f.entry.source.authorVisible).toBe(true);
+    expect(f.receipts).toEqual([]);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('specializes a proven shadow-free View and restores reception when its demand changes', async () => {
+  const f = await setup();
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  Object.assign(f.c.runtime, {
+    getMaterialShaderArtifact: () =>
+      artifactFor(
+        createMaterialShaderProgram('@id(64002) override standardShadowReception: u32 = 1u;'),
+      ),
+  });
+  try {
+    Object.assign(f.c, { viewShadows: false });
+    f.encode();
+    expect(lookup.mock.calls.at(-1)?.[21]?.['64002']).toBe(0);
+    Object.assign(f.c, { viewShadows: true });
+    f.encode();
+    expect(lookup.mock.calls.at(-1)?.[21]?.['64002']).toBe(1);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('shares one PSO between receiver and nonreceiver draws of a program during preparation', async () => {
   const f = await setup();
   const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
   const nonreceiver = f.add({ entity: 2, submeshes: 1 });
@@ -288,14 +371,14 @@ it('separates receiver and nonreceiver PSOs sharing a program during preparation
   });
   Object.assign(f.c, { pipelinePreparationEntries: [f.entry, nonreceiver] });
   Object.assign(f.c.runtime, {
-    getMaterialShaderArtifact: () =>
-      artifactFor(
-        createMaterialShaderProgram('@id(64002) override standardShadowReception: u32 = 1u;'),
-      ),
+    // Reception is a per-draw Mesh flag, never a pipeline constant.
+    getMaterialShaderArtifact: () => artifactFor(createMaterialShaderProgram('synthetic'), ''),
   });
   try {
     f.encode();
-    expect(lookup.mock.calls.map((call) => call[21])).toEqual([{ '64002': 1 }, { '64002': 0 }]);
+    const constants = lookup.mock.calls.map((call) => call[21]);
+    expect(constants.length).toBeGreaterThan(0);
+    expect(constants.every((value) => value === undefined)).toBe(true);
     expect(f.receipts).toEqual([]);
   } finally {
     f.dispose();

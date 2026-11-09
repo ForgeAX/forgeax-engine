@@ -12,6 +12,7 @@ import type {
   ExecutionRenderErrorMessage,
   HostToEngineMessage,
 } from './protocol';
+import { type FrameNotice, WorkerFrameSource } from './worker-frame-source';
 import { shutdownWorker } from './worker-shutdown';
 
 /** Bind the Worker realm to this page's load progress, when the page has one. */
@@ -25,6 +26,7 @@ export interface EngineWorkerSession {
   readonly ready: ExecutionReadyMessage;
   post(message: HostToEngineMessage, transfer?: Transferable[]): void;
   listen(listener: (message: EngineToHostMessage) => void): () => void;
+  requestFrame?(callback: () => void, unavailable: () => void): (() => void) | undefined;
   dispose(): Promise<Result<void, AppErrorType>>;
 }
 
@@ -115,9 +117,12 @@ export async function startEngineWorker(
   let retired = false;
   const retireKernels = (): void => {
     retired = true;
+    frameSource.connect(undefined);
     for (const cleanup of kernelCleanups.values()) cleanup();
   };
   // Render notices arrive on a per-session port; a replacement session closes the old one.
+  const frameSource = new WorkerFrameSource();
+  frameSource.connect(worker);
   let renderHostPort: MessagePort | undefined;
   const closeRenderHostPort = (): void => {
     if (renderHostPort === undefined) return;
@@ -229,8 +234,12 @@ export async function startEngineWorker(
     if (!firstListenerInstalled && message.kind === 'host-control')
       pendingHostControl = { sequence: nextNoticeSequence++, message };
   };
-  worker.onmessage = (event: MessageEvent<EngineToHostMessage>) => {
+  worker.onmessage = (event: MessageEvent<EngineToHostMessage | FrameNotice>) => {
     const message = event.data;
+    if (message.kind === 'native-frame-ready' || message.kind === 'native-frame') {
+      frameSource.receive(worker, message);
+      return;
+    }
     if (message.kind === 'kernel-worker') {
       adoptKernelWorker(message);
       return;
@@ -340,6 +349,7 @@ export async function startEngineWorker(
   return ok({
     worker,
     ready: ready.value,
+    requestFrame: (callback, unavailable) => frameSource.request(callback, unavailable),
     post(message, transfer = []): void {
       worker.postMessage(message, transfer);
     },
@@ -373,6 +383,7 @@ export async function startEngineWorker(
       omittedRenderErrors = 0;
       disposal ??= shutdownWorker(worker, 10_000).finally(() => {
         retireKernels();
+        closeRenderHostPort();
         video.dispose();
       });
       return disposal;

@@ -8,10 +8,11 @@ import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { Children, GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
+import { planarCaptureDemanded } from '../capture/planar-material';
 import { MeshFilter } from '../components/mesh-filter';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
-import { EnvironmentGate } from '../extract/environment-gate';
+import { EnvironmentFrameGate } from '../extract/environment-frame-gate';
 import { renderMaterialContext } from '../extract/material-context';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import {
@@ -23,7 +24,6 @@ import { renderFeatureCameraView } from '../features/view';
 import { MaterialResource } from '../material-resource';
 import {
   type DispatchEntry,
-  type EnvironmentFrameGate,
   type MaterialSnapshot,
   type MaterialSnapshotCachesByWorld,
   type RenderableSnapshot,
@@ -139,6 +139,18 @@ interface MaterialReferences {
   readonly key: string;
 }
 
+/** Cold per-preparation facts, admitted only when a row needs template construction. */
+function createTemplateWorkspace() {
+  return {
+    valueIds: new Map<object, number>(),
+    tokens: new Map<object, { readonly field: string; readonly token: string }>(),
+    structuralIds: new Map<string, number>(),
+    templateBuckets: new Map<string, { index: number; dependencies: readonly number[] }[]>(),
+    values: new Map<string, number>(),
+    templateIds: new Map<string, { index: number; dependencies: readonly number[] }>(),
+  };
+}
+
 function sameList(a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   if (a.length !== b.length) return false;
@@ -236,6 +248,8 @@ export function createRenderPublisher(
   const source = createRenderSourceState(world);
   const transforms = createGlobalTransformChangeQuery(world);
   const caches: MaterialSnapshotCachesByWorld = new WeakMap();
+  // PlanarReflection demand at the last extraction; a flip re-routes cached receivers.
+  let planarDemand: boolean | undefined;
   const members = new Set<number>();
   const publishedPrograms = new Set<string>();
   const publishedMaterialProjections = new PublishedMaterialProjections();
@@ -287,7 +301,7 @@ export function createRenderPublisher(
   // Metadata of the last accepted publication; the next message omits unchanged entries.
   let acceptedMetadata: RenderPublicationMetadata | undefined;
   // Camera, light and environment entries re-extract only when their inputs change.
-  const environmentGate: EnvironmentFrameGate = new EnvironmentGate(true);
+  const environmentGate = new EnvironmentFrameGate();
   const record = (bytes: number): ArrayBuffer => {
     let value = storage ?? new ArrayBuffer(0);
     // A baseline-sized record must not keep crossing the Worker boundary: every
@@ -350,20 +364,9 @@ export function createRenderPublisher(
     // Dispatch entries share their material's parameter snapshot. Intern
     // both so each pass/entity does not serialize that same payload again.
     // The value table lives only for this preparation.
-    private readonly valueIds = new Map<object, number>();
-    private readonly tokens = new Map<object, { readonly field: string; readonly token: string }>();
-    private readonly structuralIds = new Map<string, number>();
+    private templateWork: ReturnType<typeof createTemplateWorkspace> | undefined;
     private recentReferences: MaterialReferences | undefined;
-    private readonly templateBuckets = new Map<
-      string,
-      { index: number; dependencies: readonly number[] }[]
-    >();
-    private readonly values = new Map<string, number>();
     private readonly templates: RenderPublicationTemplate[] = [];
-    private readonly templateIds = new Map<
-      string,
-      { index: number; dependencies: readonly number[] }
-    >();
     private readonly upserts: number[] = [];
     private readonly programs = new Map<string, RenderPublication['programs'][number]>();
     private readonly programMaterials = new Set<MaterialSnapshot>();
@@ -401,6 +404,11 @@ export function createRenderPublisher(
       observation?.fact('invalidated', this.invalidated.size);
       observation?.fact('matrixRows', this.matrixRows.size);
       for (const entity of this.changed) pending.add(entity);
+    }
+
+    private templateWorkspace(): ReturnType<typeof createTemplateWorkspace> {
+      this.templateWork ??= createTemplateWorkspace();
+      return this.templateWork;
     }
 
     private collectSourceChanges(): void {
@@ -474,17 +482,15 @@ export function createRenderPublisher(
     }
 
     private collectTransformRows(): void {
-      for (const span of transforms.spans().unwrap()) {
-        for (let row = 0; row < span.entities.length; row++) {
-          const entity = span.entities[row] as EntityHandle;
-          skinJoints.mark(entity);
-          if (members.has(entity) && !this.removed.has(entity)) {
-            const matrix = readPresentationWorldMatrix(world, entity);
-            if (matrix !== undefined) this.matrixRows.set(entity, matrix);
-            pending.add(entity);
-          }
+      transforms.forEach((row) => {
+        const entity = row.entity;
+        skinJoints.mark(entity);
+        if (members.has(entity) && !this.removed.has(entity)) {
+          const matrix = readPresentationWorldMatrix(world, entity);
+          if (matrix !== undefined) this.matrixRows.set(entity, matrix);
+          pending.add(entity);
         }
-      }
+      });
     }
 
     private readonly keyValue = (key: string, value: unknown): unknown =>
@@ -493,15 +499,15 @@ export function createRenderPublisher(
         : publicationKeyValue(key, value);
 
     private valueId(object: object, parameters = false): number {
-      const cached = this.valueIds.get(object);
+      const cached = this.templateWorkspace().valueIds.get(object);
       if (cached !== undefined) return cached;
       const value = JSON.stringify(object, parameters ? publicationKeyValue : this.keyValue);
-      let id = this.values.get(value);
+      let id = this.templateWorkspace().values.get(value);
       if (id === undefined) {
-        id = this.values.size;
-        this.values.set(value, id);
+        id = this.templateWorkspace().values.size;
+        this.templateWorkspace().values.set(value, id);
       }
-      this.valueIds.set(object, id);
+      this.templateWorkspace().valueIds.set(object, id);
       return id;
     }
 
@@ -610,6 +616,7 @@ export function createRenderPublisher(
       });
       observation?.phase('templates');
       observation?.fact('renderables', frame.renderables.length);
+      this.invalidatePlanarRouting();
       this.republishInvalidatedMaterials();
       const unsupported = this.addRenderableTemplates(frame);
       if (unsupported !== undefined) return fail('unsupported', unsupported);
@@ -760,6 +767,21 @@ export function createRenderPublisher(
       });
     }
 
+    /**
+     * Adding or removing a PlanarReflection capture changes no entity or
+     * asset, yet planar receivers drop or regain their Deferred pass with it.
+     * Republish every cached receiver routed for the other demand.
+     */
+    private invalidatePlanarRouting(): void {
+      const demanded = planarCaptureDemanded(world);
+      if (planarDemand === demanded) return;
+      planarDemand = demanded;
+      for (const { cache } of caches.get(worldRenderResources(world))?.values() ?? [])
+        for (const [handle, cached] of cache)
+          if (cached.planarRouted !== undefined && cached.planarRouted !== demanded)
+            this.invalidated.add(handle);
+    }
+
     private republishInvalidatedMaterials(): void {
       for (const handle of this.invalidated) {
         for (const { cache, geometry, vertexColor } of caches
@@ -862,7 +884,10 @@ export function createRenderPublisher(
       // extractFrames owns these plain source-row envelopes. Compare the exact
       // publication fields before constructing another envelope on a hit.
       const bucketKey = shareable ? `${row.assetHandle}|${references.key}` : undefined;
-      const bucket = bucketKey === undefined ? undefined : this.templateBuckets.get(bucketKey);
+      const bucket =
+        bucketKey === undefined
+          ? undefined
+          : this.templateWorkspace().templateBuckets.get(bucketKey);
       let snapshot: RenderPublicationTemplate['snapshot'] | undefined;
       let known =
         bucket === undefined
@@ -891,7 +916,7 @@ export function createRenderPublisher(
         template = { snapshot, dispatch: strippedDispatch(rowDispatch) };
         if (shareable) {
           key = this.templateKey(template);
-          known = this.templateIds.get(key);
+          known = this.templateWorkspace().templateIds.get(key);
         }
       }
       if (known !== undefined && bucketKey !== undefined && bucket?.includes(known) !== true)
@@ -906,7 +931,7 @@ export function createRenderPublisher(
           ].map((resource) => resource.snapshot),
         );
         known = { index, dependencies: renderableAssetRoots(row) };
-        if (key !== undefined) this.templateIds.set(key, known);
+        if (key !== undefined) this.templateWorkspace().templateIds.set(key, known);
         if (bucketKey !== undefined) this.addTemplateBucket(bucketKey, known);
       }
       if (known === undefined) throw new Error('renderable template was not published');
@@ -981,8 +1006,8 @@ export function createRenderPublisher(
       bucketKey: string,
       known: { index: number; dependencies: readonly number[] },
     ): void {
-      const bucket = this.templateBuckets.get(bucketKey);
-      if (bucket === undefined) this.templateBuckets.set(bucketKey, [known]);
+      const bucket = this.templateWorkspace().templateBuckets.get(bucketKey);
+      if (bucket === undefined) this.templateWorkspace().templateBuckets.set(bucketKey, [known]);
       else if (bucket.length < TEMPLATE_BUCKET_LIMIT) bucket.push(known);
     }
 
@@ -1144,7 +1169,7 @@ export function createRenderPublisher(
           return `x${this.leafId(field, value as object)}`;
       }
       if (value === null) return 'z';
-      const cached = this.tokens.get(value);
+      const cached = this.templateWorkspace().tokens.get(value);
       if (cached !== undefined && cached.field === field) return cached.token;
       let token: string;
       const prototype = Object.getPrototypeOf(value);
@@ -1170,14 +1195,14 @@ export function createRenderPublisher(
           token += '}';
         }
         // Intern the content so enclosing tokens stay short.
-        let id = this.structuralIds.get(token);
+        let id = this.templateWorkspace().structuralIds.get(token);
         if (id === undefined) {
-          id = this.structuralIds.size;
-          this.structuralIds.set(token, id);
+          id = this.templateWorkspace().structuralIds.size;
+          this.templateWorkspace().structuralIds.set(token, id);
         }
         token = `@${id}`;
       } else token = `#${this.leafId(field, value)}`;
-      this.tokens.set(value, { field, token });
+      this.templateWorkspace().tokens.set(value, { field, token });
       return token;
     }
 

@@ -15,6 +15,7 @@ import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import { addAtmosphereIbl, type GraphEnvironment } from './ibl';
 import { addAtmosphereLuts } from './luts';
+import { addAtmosphereSkyLuts } from './sky-tables';
 import { atmosphereStorage, stageAtmospherePublish } from './storage';
 import { writeAtmosphereUniform } from './uniform';
 import {
@@ -82,6 +83,7 @@ export function addAtmosphereBackground(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   color: RenderPipelineTarget,
   visibility: AtmosphereVisibility = {},
+  mode: 'full' | 'sky' = 'full',
 ): Result<GraphEnvironment, RenderGraphError> {
   const cube = graph.importTexture(
     'atmosphere-sky',
@@ -126,6 +128,7 @@ export function addAtmosphereBackground(
     | undefined;
   const frameOf = (frame: RenderPipelineFrame) => frame as _InternalRenderPipelineContext;
   const dirty = (frame: RenderPipelineFrame) =>
+    (mode === 'full' || frameOf(frame).skylight !== undefined) &&
     frameOf(frame).frameState.environmentFrame?.environmentSignature !==
       atmosphereStorage(frame).submittedSignature &&
     atmosphereStorage(frame).recordedEncoder !== frame.encoder;
@@ -170,7 +173,10 @@ export function addAtmosphereBackground(
     },
   });
   if (!upload.ok) return upload;
-  const tables = addAtmosphereLuts(graph, params.value, dirty, visibility);
+  const full =
+    mode === 'full' ? addAtmosphereLuts(graph, params.value, dirty, visibility) : undefined;
+  if (full !== undefined && !full.ok) return full;
+  const tables = full ?? addAtmosphereSkyLuts(graph, { parameters: params.value, dirty });
   if (!tables.ok) return tables;
   const ensureState = (frame: RenderPipelineFrame) => {
     if (state !== undefined) return state;
@@ -356,5 +362,7 @@ export function addAtmosphereBackground(
       pass.draw(3);
     },
   });
-  return background.ok ? ok({ ...ibl.value, atmosphere: tables.value }) : background;
+  return background.ok
+    ? ok({ ...ibl.value, ...(full === undefined ? {} : { atmosphere: full.value }) })
+    : background;
 }

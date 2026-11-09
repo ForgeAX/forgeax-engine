@@ -1,3 +1,4 @@
+import { initBasisTranscoder } from '@forgeax/engine-codec';
 import { type AssetDecoderInput, ok, type TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type {
@@ -81,6 +82,33 @@ async function decode(
   return textureContribution.decoder.decode(input);
 }
 
+/** Count `delete()` calls on the transcoder singleton's file classes while `run` executes. */
+async function countFileDeletes(run: () => Promise<void>): Promise<Record<FileClass, number>> {
+  const mod = (await initBasisTranscoder()) as unknown as Record<
+    FileClass,
+    { prototype: { delete(): void } }
+  >;
+  const deletes: Record<FileClass, number> = { KTX2File: 0, BasisFile: 0 };
+  const originals = {
+    KTX2File: mod.KTX2File.prototype.delete,
+    BasisFile: mod.BasisFile.prototype.delete,
+  };
+  for (const name of FILE_CLASSES) {
+    mod[name].prototype.delete = function (this: unknown) {
+      deletes[name]++;
+      originals[name].call(this);
+    };
+  }
+  try {
+    await run();
+  } finally {
+    for (const name of FILE_CLASSES) mod[name].prototype.delete = originals[name];
+  }
+  return deletes;
+}
+const FILE_CLASSES = ['KTX2File', 'BasisFile'] as const;
+type FileClass = (typeof FILE_CLASSES)[number];
+
 describe('Image owner Basis decoding', () => {
   it.each([
     'basis',
@@ -96,6 +124,15 @@ describe('Image owner Basis decoding', () => {
       mips: { kind: 'packed', levelCount: 3 },
     });
     expect(texture.data).toBe(bytes);
+  });
+  it('deletes every transcoder file it opens', async () => {
+    const ktx2 = await makeBasis(true, true);
+    const basis = await makeBasis(false, true);
+    const deletes = await countFileDeletes(async () => {
+      (await decode(ktx2, 'ktx2')).unwrap();
+      (await decode(basis, 'basis')).unwrap();
+    });
+    expect(deletes).toEqual({ KTX2File: 1, BasisFile: 1 });
   });
   it('rejects a declared color space that disagrees with the actual KTX2 transfer function', async () => {
     const bytes = await makeBasis(true);

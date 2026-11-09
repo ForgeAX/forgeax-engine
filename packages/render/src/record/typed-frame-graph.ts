@@ -1,6 +1,7 @@
 import type { RecordedView } from '../assembly/frame-recording';
 import type { RendererFrameStageResult } from '../assembly/renderer-frame-transaction';
 import { isCaptureViewPipeline } from '../capture/capture-view';
+import { isTemporalAntialias } from '../components/camera';
 import { projectedDecalTopology } from '../decals/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import { recordAtmosphereCaptureBackground } from '../environment/capture';
@@ -26,11 +27,7 @@ import {
   sceneDataTopologyFields,
   standardAoSceneDataUnavailable,
 } from '../temporal/standard-scene-data-admission';
-import {
-  type TerrainShadowReceiver,
-  terrainShadowLayoutMatches,
-  terrainShadowTopology,
-} from '../terrain/shadow-family';
+import { type TerrainShadowReceiver, terrainShadowTopology } from '../terrain/shadow-family';
 import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
 import { EMPTY_VIEW_FEATURE_PLAN, type ViewFeaturePlan } from '../world/feature-plan-systems';
 import { recordViewFeatureGraph } from '../world/feature-systems';
@@ -39,7 +36,7 @@ import type { ViewLights } from '../world/render-lights';
 import { renderSubmission, renderWorldFor } from '../world/render-world';
 import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
 import { recordContext } from '../world/view-record-context';
-import { serializeFrameGraphKey } from './frame-graph-key';
+import { retainedFrameGraphPolicyMatches, serializeFrameGraphKey } from './frame-graph-key';
 import { resolveSpotShadowMapSize } from './frame-targets';
 import { createTimingInstrumentation } from './gpu-pass-timing-instrumentation';
 import { executeGraphTargetReplay } from './graph-target-pass-replay';
@@ -77,7 +74,7 @@ import type {
   TextureFormat,
   TextureView,
 } from '@forgeax/engine-rhi';
-import { RhiError } from '@forgeax/engine-rhi';
+import { multisampleRenderCapability, RhiError } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
@@ -160,6 +157,7 @@ import {
   temporalWriteIndex,
 } from '../temporal/gpu';
 import { createTargetCoverageAttachment } from '../temporal/target-coverage-attachment';
+import { usesTsrCompute } from '../tsr/capabilities';
 import { hasVolumetricFogCapability } from '../volume/capability';
 import { deriveVolumetricFogExtent, deriveVolumetricFogResolvedExtent } from '../volume/resources';
 import {
@@ -225,10 +223,13 @@ export function shadowCameraCullAdmitted(roster: ShadowSamplerRoster): boolean {
 function importTemporalHistoryTarget(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   label: string,
-  kind: 'color' | 'temporal' | 'stability',
+  kind: 'color' | 'temporal' | 'stability' | 'flicker',
   role: 'read' | 'write',
+  algorithm: 'taa' | 'tsr',
+  compute: boolean,
 ): import('../render-pipeline').RenderPipelineTarget {
-  const format = TEMPORAL_HISTORY_FORMATS[kind];
+  const format =
+    algorithm === 'tsr' && kind === 'stability' ? 'rgba8unorm' : TEMPORAL_HISTORY_FORMATS[kind];
   const resolveSurface = (frame: RenderPipelineFrame) => {
     const internal = frame as import('./render-context')._InternalRenderPipelineContext;
     const state = getTemporalGpuState(
@@ -237,12 +238,16 @@ function importTemporalHistoryTarget(
       recordContext(internal.runtime).deviceScope,
       frame.targetW,
       frame.targetH,
+      false,
+      frame.camera,
     );
     const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
-    return state[kind][index];
+    const pair = state[kind];
+    if (pair === undefined) throw new Error(`temporal ${kind} history resolved for ${algorithm}`);
+    return pair[index];
   };
   const texture = graph.importTexture(
-    label,
+    algorithm === 'tsr' ? label.replace('taa-', 'tsr-') : label,
     {
       format,
       size: 'surface',
@@ -250,7 +255,8 @@ function importTemporalHistoryTarget(
         GPU_TEXTURE_USAGE_COPY_SRC |
         GPU_TEXTURE_USAGE_COPY_DST |
         GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
-        GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+        GPU_TEXTURE_USAGE_TEXTURE_BINDING |
+        (algorithm === 'tsr' && compute ? GPU_TEXTURE_USAGE_STORAGE_BINDING : 0),
     },
     (frame) => resolveSurface(frame).texture,
   );
@@ -266,41 +272,80 @@ function importTemporalHistoryTarget(
 
 function importTemporalHistoryTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
+  algorithm: 'taa' | 'tsr',
+  compute: boolean,
 ): NonNullable<
   import('../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>['taaHistory']
 > {
   return {
-    currentColor: importTemporalHistoryTarget(graph, 'taa-history-current-color', 'color', 'write'),
+    currentColor: importTemporalHistoryTarget(
+      graph,
+      'taa-history-current-color',
+      'color',
+      'write',
+      algorithm,
+      compute,
+    ),
     currentStability: importTemporalHistoryTarget(
       graph,
       'taa-history-current-stability',
       'stability',
       'write',
+      algorithm,
+      compute,
     ),
     previousStability: importTemporalHistoryTarget(
       graph,
       'taa-history-previous-stability',
       'stability',
       'read',
+      algorithm,
+      compute,
     ),
     previousColor: importTemporalHistoryTarget(
       graph,
       'taa-history-previous-color',
       'color',
       'read',
+      algorithm,
+      compute,
     ),
     currentTemporal: importTemporalHistoryTarget(
       graph,
       'taa-history-current-temporal',
       'temporal',
       'write',
+      algorithm,
+      compute,
     ),
     previousTemporal: importTemporalHistoryTarget(
       graph,
       'taa-history-previous-temporal',
       'temporal',
       'read',
+      algorithm,
+      compute,
     ),
+    ...(algorithm === 'taa'
+      ? {
+          currentFlicker: importTemporalHistoryTarget(
+            graph,
+            'taa-history-current-flicker',
+            'flicker',
+            'write',
+            algorithm,
+            compute,
+          ),
+          previousFlicker: importTemporalHistoryTarget(
+            graph,
+            'taa-history-previous-flicker',
+            'flicker',
+            'read',
+            algorithm,
+            compute,
+          ),
+        }
+      : {}),
   };
 }
 
@@ -346,6 +391,7 @@ function importCloudHistoryTarget(
       frame.targetW,
       frame.targetH,
       true,
+      frame.camera,
     );
     const index = role === 'read' ? temporalReadIndex(state) : temporalWriteIndex(state);
     return cloudHistorySurface(state, kind, index);
@@ -530,7 +576,7 @@ export function shouldUseTemporalFrameTransaction(
   antialias: CameraSnapshot['antialias'],
   temporalDemand = false,
 ): boolean {
-  return antialias === 'taa' || temporalDemand;
+  return isTemporalAntialias(antialias) || temporalDemand;
 }
 
 export function isMotionBlurTemporalDemand(
@@ -1664,6 +1710,9 @@ function cameraTopologyOf(
 ): RenderPipelineTopology['camera'] {
   const depthOfField = depthOfFieldTopology(camera.depthOfField);
   return {
+    ...(camera.dynamicResolution === undefined
+      ? {}
+      : { dynamicResolution: camera.dynamicResolution }),
     tonemap: camera.tonemap,
     antialias: camera.antialias,
     // Bloom intensity is a frame parameter, not a graph identity. Fold
@@ -1830,6 +1879,42 @@ function gpuDrivenTopologySignatureOf(
     : gpuDriven.topologySignature();
 }
 
+function forwardContactDemand(
+  clearOnly: boolean,
+  lighting: StandardTopologyInputValue | undefined,
+): boolean {
+  return !clearOnly && (lighting?.prepared.directional?.contactShadowLength ?? 0) > 0;
+}
+
+/** Fail closed before a requested MSAA graph can retain single-sample attachments. */
+function admitMultisampleTopology(
+  internals: RenderSystemInternals,
+  camera: CameraSnapshot,
+): Result<boolean, RhiError> {
+  if (internals.device.caps.backendKind !== 'wgpu-webgl2') return ok(true);
+  const multisample = multisampleRenderCapability(internals.device);
+  if (camera.antialias !== 'msaa' || multisample?.ok === true) return ok(multisample?.ok === true);
+  return err(
+    multisample?.ok === false
+      ? multisample.error
+      : new RhiError({
+          code: 'rhi-texture-format-capability-unavailable',
+          expected: 'a completed Standard MSAA4 HDR/depth resolve probe',
+          hint: 'Wait for renderer readiness or recover the device before requesting MSAA.',
+        }),
+  );
+}
+
+/** Project both atmosphere modes from the same prepared environment source. */
+function atmosphereTopologyOf(frame: RenderFrameState, clearOnly: boolean) {
+  const source = frame.environmentFrame?.source;
+  const atmosphere = source?.kind === 'atmosphere';
+  return {
+    atmosphere: !clearOnly && atmosphere,
+    atmosphereBackgroundOnly: atmosphere && source.atmosphere.backgroundOnly,
+  };
+}
+
 function topologyOf(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
@@ -1854,6 +1939,7 @@ function topologyOf(
   subsurface?: RenderPipelineTopology['subsurface'],
   stockRecording = false,
   unfoggedOpaque = false,
+  forwardCapsuleShadows = false,
 ): Result<RenderPipelineTopology, RhiError> {
   const directional = directionalTopologyOf(internals, lights, shadowMapSize, terrainReceivers);
   if (!directional.ok) return directional;
@@ -1862,6 +1948,8 @@ function topologyOf(
   const fullscreenEffects = featureFullscreenEffects(internals, featureGraphCandidate);
   const config = featurePostEffectConfig(internals, frameState, featureGraphCandidate);
   const standardProfile = frameState.cameraStandardProfile ?? internals.standardProfile;
+  const multisample = admitMultisampleTopology(internals, camera);
+  if (!multisample.ok) return multisample;
   return ok({
     pipelineId: STANDARD_PIPELINE_ID,
     ...sceneDataTopologyFields(
@@ -1869,6 +1957,8 @@ function topologyOf(
       featureGraphCandidate?.sceneDataBindings,
     ),
     ...(subsurface === undefined ? {} : { subsurface }),
+    forwardContactShadows: forwardContactDemand(clearOnly, standardLighting),
+    forwardCapsuleShadows: !clearOnly && forwardCapsuleShadows,
     projectedDecals: projectedDecalTopology(clearOnly ? [] : (camera.projectedDecals ?? [])),
     standardProfile,
     config,
@@ -1886,21 +1976,19 @@ function topologyOf(
       profile: surfaceProfile.value,
     },
     camera: cameraTopologyOf(camera, clearOnly),
-    atmosphere: !clearOnly && frameState.environmentFrame?.source.kind === 'atmosphere',
-    atmosphereBackgroundOnly:
-      frameState.environmentFrame?.source.kind === 'atmosphere' &&
-      frameState.environmentFrame.source.atmosphere.backgroundOnly,
+    ...atmosphereTopologyOf(frameState, clearOnly),
     output: outputTopologyOf(camera, frameState, clearOnly),
     temporal: {
-      taa: camera.antialias === 'taa',
+      taa: isTemporalAntialias(camera.antialias),
       motionBlur: isMotionBlurTemporalDemand(camera.motionBlur),
     },
     shadow: shadowTopologyOf(internals, lights, directional.value),
     volumetricFog: volumetricFogTopologyOf(internals, lights, volumetricFog, width, height),
     lane: {
       compute: internals.device.caps.compute,
+      storageTexture: internals.device.caps.storageTexture,
       storageBuffer: internals.device.caps.storageBuffer,
-      multisample: internals.device.caps.backendKind !== 'wgpu-webgl2',
+      multisample: multisample.value,
       maxColorAttachments: internals.device.caps.maxColorAttachments,
       primitiveIndex: internals.device.features.has('primitive-index'),
       maxColorAttachmentBytesPerSample: internals.device.limits.maxColorAttachmentBytesPerSample,
@@ -2344,7 +2432,13 @@ function importStandardGraphInputs(
 ): Result<StandardGraphInputs, RenderGraphError> {
   const standardOutput = importStandardOutputInputs(builder, frameState, topology);
   if (!standardOutput.ok) return standardOutput;
-  const taaHistory = camera.antialias === 'taa' ? importTemporalHistoryTargets(builder) : undefined;
+  const taaHistory = isTemporalAntialias(camera.antialias)
+    ? importTemporalHistoryTargets(
+        builder,
+        camera.antialias === 'tsr' ? 'tsr' : 'taa',
+        usesTsrCompute(topology.lane),
+      )
+    : undefined;
   const cloudHistory = cloudHistoryDemand ? importCloudHistoryTargets(builder) : undefined;
   const targetCoverage =
     camera.dynamicResolution === undefined || topology.extent === undefined
@@ -2513,6 +2607,7 @@ export interface GraphCompileInput {
   readonly subsurface?: RenderPipelineTopology['subsurface'] | undefined;
   readonly rendererRecording?: boolean | undefined;
   readonly unfoggedOpaque?: boolean | undefined;
+  readonly forwardCapsuleShadows?: boolean | undefined;
   /** Renderer-owned shadow layers; the caller ensures them before compile. */
   readonly shadowDepthLayers: ShadowDepthLayers;
 }
@@ -2642,6 +2737,7 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
     subsurface,
     rendererRecording = false,
     unfoggedOpaque = false,
+    forwardCapsuleShadows = false,
     shadowDepthLayers,
   } = input;
   // `render-feature-plan` planned the Feature candidate compile reads (fullscreen
@@ -2659,7 +2755,11 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
     const directional = directionalTopologyOf(internals, lights, shadowMapSize, terrainReceivers);
     return installed !== null &&
       directional.ok &&
-      terrainShadowLayoutMatches(installed.topologyKey, directional.value) &&
+      retainedFrameGraphPolicyMatches(
+        installed.topologyKey,
+        directional.value,
+        forwardCapsuleShadows,
+      ) &&
       !hasSubmissionSensitiveFeatures(getRenderFeatureGraphState(internals).plans) &&
       cubeCaptureState?.planar?.current() === undefined &&
       !installed.graph
@@ -2761,6 +2861,7 @@ function compileViewGraphStages(input: GraphCompileInput, frame: number): ViewGr
     subsurface,
     stockRecording,
     unfoggedOpaque,
+    forwardCapsuleShadows,
   );
   const topologyAdmission = admitStandardGraphTopology(
     { internals, frameState, camera, stockRecording },
@@ -3608,7 +3709,12 @@ function admitStandardGraphTopology(
   }
 > {
   if (!result.ok)
-    return err({ code: 'topology-failed', error: result.error, fallback: 'topology' });
+    return err({
+      code: 'topology-failed',
+      error: result.error,
+      fallback:
+        result.error.code === 'rhi-texture-format-capability-unavailable' ? 'none' : 'topology',
+    });
   const error = standardAoUnavailableForGraph({
     ...input,
     topology: result.value,

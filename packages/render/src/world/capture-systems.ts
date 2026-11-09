@@ -8,6 +8,7 @@ import { preparePlanarCapture } from '../record/frame';
 import type { CubeCaptureGraphWork } from '../record/target-capture-graph';
 import type { CameraSnapshot, RendererError } from '../render-contract';
 import { projectAuxiliaryCamerasForView } from '../render-system-extract';
+import { planarFaceFeatureWork } from './capture-face-feature-systems';
 import {
   featureFrameOutcome,
   RENDER_FEATURE_BATCH_SYSTEM,
@@ -160,7 +161,19 @@ function prepareViewCaptures(
           displayCamera,
           physicalOf: (target) => internals.getRenderTargetPhysical?.(target),
         });
+  attachPlanarFaceFeatures(world, faces, displayCamera);
   return { ...route, auxiliaryCameras, faces };
+}
+
+/** The planar face records the Feature plans its Feature view sealed. */
+function attachPlanarFaceFeatures(
+  world: World,
+  faces: readonly CaptureFace[],
+  displayCamera: CameraSnapshot | undefined,
+): void {
+  const face = faces.find((candidate) => candidate.key.kind === 'planar');
+  if (face === undefined) return;
+  face.work.feature = planarFaceFeatureWork(world, displayCamera);
 }
 
 interface StagedCaptureView {

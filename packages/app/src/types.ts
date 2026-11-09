@@ -262,6 +262,13 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly assetBudgetBytes?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
+  /**
+   * Diagnostic GPU-cost ablation (pixels change; never a quality setting), as an
+   * object or the query form `shadow-raster=0,shadow-sampling=0,lights=0.5,post=0,scale=0.5`.
+   * Realm-wide; also installs `globalThis.__forgeaxRenderAblation` for devtools.
+   * Default off: unset costs one undefined check per hook.
+   */
+  readonly renderAblation?: import('@forgeax/engine-render').RenderAblation | string;
   /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
   readonly shadowWorkload?: boolean;
   /** Exact source/tree/lock/build identity binding for the renderer-owned SSR seam. */

@@ -26,7 +26,7 @@ const surface = `#define_import_path game::surface
 fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
   let width = filterWidth(input.uv0, input.uvFootprint0);
   return SurfaceData(vec3<f32>(0.5), normalize(input.vertexNormalWS), 0.0,
-    clamp(width, 0.1, 0.9), vec3<f32>(0.0), 1.0, 1.0, 0.0);
+    clamp(width, 0.1, 0.9), vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }
 `;
 const filter = `#define_import_path game::filter

@@ -50,18 +50,12 @@ export function terrainShadowTopology(
   return ok({ ...directional, terrainReceivers: receivers });
 }
 
-/** Read the existing graph key; no second retained mapping is introduced. */
+/** Compare the accepted directional family without reparsing the graph owner key. */
 export function terrainShadowLayoutMatches(
-  topologyKey: string,
+  previous: DirectionalTopology | undefined,
   requested: DirectionalTopology,
 ): boolean {
   const roots = requested === 'disabled' ? [] : (requested.terrainReceivers ?? []);
-  let previous: DirectionalTopology;
-  try {
-    previous = JSON.parse(topologyKey).topology.shadow.directional;
-  } catch {
-    return roots.length === 0;
-  }
   if (previous === undefined) return roots.length === 0;
   const oldRoots = previous === 'disabled' ? [] : (previous.terrainReceivers ?? []);
   if (roots.length === 0 && oldRoots.length === 0) return true;

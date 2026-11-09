@@ -385,5 +385,22 @@
     "timing-lifecycle": 21.264107,
     "transmission": 199.123619,
     "vfx-depth": 96.318568
+  },
+  "reservedFiles": {
+    "packages/render/src/__tests__/tsr-feedback.dawn.test.ts": 3.826859999999999,
+    "packages/render/src/__tests__/tsr-program.dawn.test.ts": 3.6293838383838395,
+    "packages/rhi-webgpu/src/__tests__/buffer-compatibility.dawn.test.ts": 3.207463,
+    "packages/runtime/src/__tests__/forward-contact-shadow.dawn.test.ts": 29.651233,
+    "packages/runtime/src/__tests__/forward-decals.dawn.test.ts": 21.94,
+    "packages/runtime/src/__tests__/morph-surface.dawn.test.ts": 28.41,
+    "packages/runtime/src/__tests__/physical-sky-ibl.dawn.test.ts": 33.133922,
+    "packages/runtime/src/__tests__/portable-pcss.dawn.test.ts": 32.308463,
+    "packages/runtime/src/__tests__/tsr-quality.dawn.test.ts": 62.424851063829784,
+    "packages/runtime/src/__tests__/tsr-renderer.dawn.test.ts": 24.38884210526316
+  },
+  "fileForecast": {
+    "sourceHead": "9d67578ad93a06b4883e20b6998485ac540a2a8f",
+    "source": "Retained file maxima admitted before run 42369476147; frozen for files absent from this historical cohort",
+    "fileCount": 10
   }
 }

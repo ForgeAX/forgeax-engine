@@ -14,6 +14,7 @@ import {
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -256,13 +257,14 @@ export async function renderFogFrames(
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const last = index === frames - 1;
-      if (last) unwrap(renderer.requestObservation?.([domain]));
       const pending = last ? options.recorder?.captureFrame() : undefined;
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
-      const frame = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      const frame = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        last ? [domain] : undefined,
       );
-      unwrap(await frame.completed);
+      expect(frame.presentation, JSON.stringify(frame.presentationPendingReason)).toBe('ready');
       let tape: EncodedTape | undefined;
       if (pending !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();

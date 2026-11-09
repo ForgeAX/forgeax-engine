@@ -136,14 +136,13 @@ it('retains an odd normalized boundary source texel in both reducer cells', asyn
 
 type Probe = {
   readonly uv: readonly [number, number];
-  readonly start: readonly [number, number];
-  readonly delta: readonly [number, number];
-  readonly coarseMip: number;
+  /** Coarsest trace level whose cell must still hold the probed pixel's depth. */
+  readonly coarseLevel: number;
 };
 
 type SeedReduceProbeResult = {
   readonly levels: readonly Float32Array[];
-  readonly rescue: readonly Float32Array[];
+  readonly traceLevels: readonly Float32Array[];
 };
 
 type Device = Awaited<ReturnType<typeof createDevice>>;
@@ -220,22 +219,24 @@ function createSeedPipeline(device: Device, code: string) {
   return { layout, pipeline };
 }
 
+// Each probe reads the trace's own depth hierarchy at trace levels 0..3 (level 0
+// is scene depth, level n is pyramid level n - 1). Hi-Z descent only reaches a
+// pixel when every coarser cell covering it holds that pixel's depth.
 function createTraceProbeCode(fullSize: DepthPyramidExtent, probes: readonly Probe[]): string {
   const calls = probes
     .map(
       (probe, index) => `
-  let candidate${index} = locateSsrPyramidCandidate(
-    vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), ${probe.coarseMip}u, fullSize,
-    vec2<f32>(${probe.start[0]}, ${probe.start[1]}),
-    vec2<f32>(${probe.delta[0]}, ${probe.delta[1]}), 0.0, 1.0);
-  rescueProbe[${index}] = vec4<f32>(select(0.0, 1.0, candidate${index}.valid),
-    vec2<f32>(candidate${index}.pixel), candidate${index}.fraction);`,
+  levelProbe[${index}] = vec4<f32>(
+    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), 0u),
+    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), min(1u, maxLevel)),
+    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), min(2u, maxLevel)),
+    sampleSsrTraceDepth(vec2<f32>(${probe.uv[0]}, ${probe.uv[1]}), min(3u, maxLevel)));`,
     )
     .join('');
   return `
-@group(1) @binding(0) var<storage, read_write> rescueProbe: array<vec4<f32>>;
-@compute @workgroup_size(1) fn probe_rescue() {
-  let fullSize = vec2<u32>(${fullSize.width}u, ${fullSize.height}u);${calls}
+@group(1) @binding(0) var<storage, read_write> levelProbe: array<vec4<f32>>;
+@compute @workgroup_size(1) fn probe_levels() {
+  let maxLevel = min(maxSsrTraceLevel(vec2<u32>(${fullSize.width}u, ${fullSize.height}u)), ssrDepthPyramidLevelCount());${calls}
 }`;
 }
 
@@ -268,7 +269,7 @@ function createTracePipeline(device: Device, code: string) {
       layout: device
         .createPipelineLayout({ bindGroupLayouts: [inputLayout, outputLayout] })
         .unwrap(),
-      compute: { module, entryPoint: 'probe_rescue' },
+      compute: { module, entryPoint: 'probe_levels' },
     })
     .unwrap();
   return { inputLayout, outputLayout, pipeline };
@@ -477,11 +478,11 @@ async function runSeedReduceProbe(input: {
       }
       return result;
     });
-    const rescueBase = traceOffset / 4;
-    const rescue = input.probes.map((_, index) =>
-      values.slice(rescueBase + index * 4, rescueBase + index * 4 + 4),
+    const traceBase = traceOffset / 4;
+    const traceLevels = input.probes.map((_, index) =>
+      values.slice(traceBase + index * 4, traceBase + index * 4 + 4),
     );
-    return { levels, rescue };
+    return { levels, traceLevels };
   } finally {
     device.destroyTexture(depth).unwrap();
     device.destroyTexture(pyramid).unwrap();
@@ -489,26 +490,31 @@ async function runSeedReduceProbe(input: {
   }
 }
 
-it('keeps the trailing 6x2 source texel through the real seed-to-reduce-rescue chain', async () => {
+function expectTraceDescends(
+  levels: Float32Array | undefined,
+  expected: number,
+  coarseLevel: number,
+): void {
+  for (let level = 0; level <= Math.min(coarseLevel, 3); level += 1) {
+    expect(levels?.[level]).toBeCloseTo(expected, 5);
+  }
+}
+
+it('keeps the trailing 6x2 source texel through the real seed-to-reduce-trace chain', async () => {
   const result = await runSeedReduceProbe({
     fullSize: { width: 6, height: 2 },
     validPixel: [5, 0],
     probes: [
       {
         uv: [5.5 / 6, 0.25],
-        start: [0, 0],
-        delta: [1, 0],
-        coarseMip: 2,
+        coarseLevel: 2,
       },
     ],
   });
   const expected = (1 * 10) / (10 - 0.25 * (10 - 1));
   expect(result.levels[0]?.[2]).toBeCloseTo(expected, 5);
   expect(result.levels[1]?.[0]).toBeCloseTo(expected, 5);
-  expect(result.rescue[0]?.[0]).toBe(1);
-  expect(result.rescue[0]?.[1]).toBe(5);
-  expect(result.rescue[0]?.[2]).toBe(0);
-  expect(result.rescue[0]?.[3]).toBeCloseTo(5.5 / 6, 5);
+  expectTraceDescends(result.traceLevels[0], expected, 2);
 });
 
 it('keeps real seed overlap and rejects the neighboring empty cell', async () => {
@@ -516,23 +522,24 @@ it('keeps real seed overlap and rejects the neighboring empty cell', async () =>
     fullSize: { width: 5, height: 2 },
     validPixel: [2, 0],
     probes: [
-      { uv: [0.49, 0.25], start: [0, 0], delta: [1, 0], coarseMip: 1 },
-      { uv: [0.51, 0.25], start: [0, 0], delta: [1, 0], coarseMip: 1 },
+      { uv: [0.49, 0.25], coarseLevel: 1 },
+      { uv: [0.51, 0.25], coarseLevel: 1 },
     ],
   });
   const expected = (1 * 10) / (10 - 0.25 * 9);
   expect(valid.levels[0]?.[0]).toBeCloseTo(expected, 5);
   expect(valid.levels[0]?.[1]).toBeCloseTo(expected, 5);
-  expect(valid.rescue[0]?.slice(0, 3)).toEqual(new Float32Array([1, 2, 0]));
-  expect(valid.rescue[1]?.slice(0, 3)).toEqual(new Float32Array([1, 2, 0]));
+  expectTraceDescends(valid.traceLevels[0], expected, 1);
+  expectTraceDescends(valid.traceLevels[1], expected, 1);
 
   const trailing = await runSeedReduceProbe({
     fullSize: { width: 5, height: 2 },
     validPixel: [4, 0],
-    probes: [{ uv: [0.49, 0.25], start: [0, 0], delta: [1, 0], coarseMip: 1 }],
+    probes: [{ uv: [0.49, 0.25], coarseLevel: 1 }],
   });
   expect(trailing.levels[0]?.[0]).toBeGreaterThan(1e30);
-  expect(trailing.rescue[0]?.[0]).toBe(0);
+  expect(trailing.traceLevels[0]?.[0]).toBeGreaterThan(1e30);
+  expect(trailing.traceLevels[0]?.[1]).toBeGreaterThan(1e30);
 });
 
 it('preserves the trailing Y row and two odd descent levels', async () => {
@@ -542,16 +549,14 @@ it('preserves the trailing Y row and two odd descent levels', async () => {
     probes: [
       {
         uv: [0.25, 5.5 / 6],
-        start: [0, 0],
-        delta: [0, 1],
-        coarseMip: 2,
+        coarseLevel: 2,
       },
     ],
   });
   const expected = (1 * 10) / (10 - 0.25 * 9);
   expect(transposed.levels[0]?.[2]).toBeCloseTo(expected, 5);
   expect(transposed.levels[1]?.[0]).toBeCloseTo(expected, 5);
-  expect(transposed.rescue[0]?.slice(0, 3)).toEqual(new Float32Array([1, 0, 5]));
+  expectTraceDescends(transposed.traceLevels[0], expected, 2);
 
   const multiLevel = await runSeedReduceProbe({
     fullSize: { width: 14, height: 6 },
@@ -559,14 +564,12 @@ it('preserves the trailing Y row and two odd descent levels', async () => {
     probes: [
       {
         uv: [13.5 / 14, 5.5 / 6],
-        start: [0, 0],
-        delta: [1, 0],
-        coarseMip: 3,
+        coarseLevel: 3,
       },
     ],
   });
   expect(multiLevel.levels[0]?.[20]).toBeCloseTo(expected, 5);
   expect(multiLevel.levels[1]?.[2]).toBeCloseTo(expected, 5);
   expect(multiLevel.levels[2]?.[0]).toBeCloseTo(expected, 5);
-  expect(multiLevel.rescue[0]?.slice(0, 3)).toEqual(new Float32Array([1, 13, 5]));
+  expectTraceDescends(multiLevel.traceLevels[0], expected, 3);
 });

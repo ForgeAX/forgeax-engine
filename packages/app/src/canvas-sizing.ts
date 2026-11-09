@@ -1,4 +1,4 @@
-import type { Renderer } from '@forgeax/engine-render';
+import { type Renderer, renderAblation } from '@forgeax/engine-render';
 
 type CanvasSurface = Pick<
   HTMLCanvasElement,
@@ -193,7 +193,14 @@ function measurement(
     clientWidth === canvas.width &&
     clientHeight === canvas.height;
   const ratio = drawingBufferPixelRatio(pixelRatio, intrinsic);
-  return { cssWidth, cssHeight, intrinsic, ...boundedSize(canvas, cssWidth, cssHeight, ratio) };
+  // Diagnostic render-scale ablation scales the layout-derived buffer only.
+  const scale = renderAblation()?.renderScale ?? 1;
+  return {
+    cssWidth,
+    cssHeight,
+    intrinsic,
+    ...boundedSize(canvas, cssWidth, cssHeight, ratio * scale),
+  };
 }
 
 function drawingBufferPixelRatio(pixelRatio: number | undefined, intrinsic: boolean): number {

@@ -1,4 +1,6 @@
 import { expect, it, vi } from 'vitest';
+import type { FramePresentation } from '../../render-contract';
+import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { ViewRecorder, ViewSubmission } from '../render-views';
 import {
   beginRenderFrame,
@@ -28,11 +30,18 @@ function fixture() {
       { component: ViewRecorder, data: { state: world.allocUniqueRef('ViewRecorder', recorder) } },
     )
     .unwrap();
+  adoptViewRecordHistory(world, view);
   const completion = Promise.resolve();
-  const frame = (submission: { accepted: boolean; scene: boolean }) => {
+  const frame = (
+    submission: { accepted: boolean; scene: boolean },
+    presentation: FramePresentation = 'ready',
+  ) => {
     beginRenderFrame(world, 1);
     renderSubmission(world).completion = completion;
     world.set(view, ViewSubmission, { attempt: 1, temporal: false, ...submission }).unwrap();
+    const history = viewRecordHistory(world, view);
+    if (history === undefined) throw new Error('Missing view record history');
+    history.presentation = presentation;
     endRenderFrame(world);
   };
   return { world, skin, fire, frame, completion };
@@ -51,6 +60,20 @@ it('an accepted submission tracks its completion, then completes with the scene 
   frame({ accepted: true, scene: true });
   expect(skin.trackSubmittedWork).toHaveBeenCalledWith(completion);
   expect(skin.complete).toHaveBeenCalledWith(true);
+});
+
+it('a pending picture retains physical completion without advancing pose history', () => {
+  const { skin, frame, completion } = fixture();
+  frame({ accepted: true, scene: true }, 'pending');
+  expect(skin.trackSubmittedWork).toHaveBeenCalledWith(completion);
+  expect(skin.complete).toHaveBeenCalledWith(false);
+});
+
+it('an accepted fallback without scene work cannot advance pose history', () => {
+  const { skin, frame, completion } = fixture();
+  frame({ accepted: true, scene: false });
+  expect(skin.trackSubmittedWork).toHaveBeenCalledWith(completion);
+  expect(skin.complete).toHaveBeenCalledWith(false);
 });
 
 it('a rejected submit tracks nothing and completes as not accepted', () => {

@@ -590,3 +590,26 @@ it('does not inspect an unowned previous camera while publishing current facts',
   expect(next).toEqual(accepted);
   expect(next === borrowed).toBe(false);
 });
+
+it('keeps custom iterable behavior on the public borrowed-camera route', () => {
+  const matrix = {
+    0: 99,
+    length: 1,
+    *[Symbol.iterator]() {
+      yield 42;
+    },
+  };
+  const camera = {
+    projection: 'perspective' as const,
+    far: 100,
+    viewMatrix: matrix,
+    projectionMatrix: matrix,
+  };
+  const base = createBarrelDistortionMapping(640, 360, undefined).unwrap();
+  const attached = attachBarrelDistortionCameraFrame(base, camera);
+  const received = freezeBarrelDistortionMapping({ ...base, camera });
+  expect(attached.camera?.viewMatrix).toEqual([42]);
+  expect(attached.camera?.projectionMatrix).toEqual([42]);
+  expect(received.camera?.viewMatrix).toEqual([42]);
+  expect(Object.isFrozen(received.camera?.viewMatrix)).toBe(true);
+});

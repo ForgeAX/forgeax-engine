@@ -31,6 +31,41 @@ const viewPlan = (...args) =>
       encoding: 'utf8',
     }),
   );
+test('complete View owner receipts retain setup headroom inside four original jobs', async () => {
+  const receipt = JSON.parse(
+    await readFile(new URL('./fixtures/view-completed-42130885413.json', import.meta.url), 'utf8'),
+  );
+  assert.equal(Object.hasOwn(receipt.completedOwnerSeconds, 'modeling'), false);
+  const full = viewPlan('--dry-run').filter(([owner]) => owner !== 'prepare');
+  const shards = Array.from({ length: 4 }, (_value, index) =>
+    viewPlan('--shard', String(index), '--dry-run').filter(([owner]) => owner !== 'prepare'),
+  );
+  assert.deepEqual(shards.flat().map(JSON.stringify).sort(), full.map(JSON.stringify).sort());
+  const owners = shards.map((steps) => [...new Set(steps.map(([owner]) => owner))]);
+  assert.equal(new Set(owners.flat()).size, owners.flat().length);
+  for (const owner of owners.flat())
+    assert.ok(
+      Object.hasOwn(receipt.completedOwnerSeconds, owner) ||
+        Object.hasOwn(receipt.retainedOwnerSeconds, owner),
+      `complete owner requires a measured or retained forecast: ${owner}`,
+    );
+  const finishes = owners.map((groups) =>
+    groups.reduce(
+      (sum, owner) =>
+        sum +
+        Math.max(
+          receipt.completedOwnerSeconds[owner] ?? 0,
+          receipt.retainedOwnerSeconds[owner] ?? 0,
+        ),
+      receipt.prepareSeconds + receipt.setupAndTransferReserveSeconds,
+    ),
+  );
+  assert.ok(
+    Math.max(...finishes) <= receipt.jobBudgetSeconds,
+    `complete owners must fit the unchanged 30-minute jobs: ${finishes}`,
+  );
+});
+
 test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner', () => {
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run'),
@@ -43,23 +78,23 @@ test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner'
     { owner: 'diagnostics', shard: 3 },
   ]);
   assert.deepEqual(groupOwner('tools/view-plugins/integration/verify-modeling.mjs'), [
-    { owner: 'modeling', shard: 2 },
+    { owner: 'modeling', shard: 0 },
   ]);
   assert.equal(
     shards[3].filter(([owner]) => owner === 'diagnostics')[0][2][0],
     'tools/view/scripts/verify-diagnostic-pages-integration.mjs',
     'the live RHI replay must start before the other GPU diagnostic owners',
   );
-  const game3dFinished = Math.max(
-    ...shards[2].flatMap(([, , args], index) =>
-      args[0] === 'tools/forgeax-mcp/test/app-browser.mjs' ||
-      args[0] === 'tools/view/scripts/verify-game3d-workspace.mjs'
-        ? [index]
-        : [],
-    ),
+  assert.deepEqual(
+    shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
+    ['game3d', 'game3d'],
+    'the complete Game 3D chain stays contiguous',
   );
-  const modelingStarts = shards[2].findIndex(([owner]) => owner === 'modeling');
-  assert.ok(modelingStarts > game3dFinished, 'keep Game 3D work contiguous before Modeling');
+  assert.equal(
+    shards[0].at(-1)[0],
+    'modeling',
+    'Modeling runs after the complete live/cold language chain',
+  );
   assert.ok(viewPlan('--list-groups').includes('modeling'));
   assert.deepEqual(viewPlan('--list-shards'), [0, 1, 2, 3]);
 });

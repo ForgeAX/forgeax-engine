@@ -1,4 +1,6 @@
 /** biome-ignore-all lint/suspicious/noConsole: Case progress identifies bounded native capture and replay work. */
+
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { attachRecorder } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { afterAll, it } from 'vitest';
@@ -8,7 +10,10 @@ import { IES_TEST_SIZE, verifyLocalIes } from './ies-local-lights.fixture';
 import { verifyLocalIesReplay } from './ies-local-lights-replay.fixture';
 import { renderValue } from './standard-gbuffer-replay.fixture';
 
-async function createIesHost(publicationSource?: { source: string; epoch: number }) {
+async function createIesHost(
+  path: 'forward' | 'deferred',
+  publicationSource?: { source: string; epoch: number },
+) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = IES_TEST_SIZE;
   document.body.append(canvas);
@@ -16,6 +21,7 @@ async function createIesHost(publicationSource?: { source: string; epoch: number
   const host = renderValue(
     await constructRuntimeRendererHost(canvas, {
       rhi: recorder.backend.rhi,
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: path, ibl: false },
       ...(publicationSource === undefined ? {} : { publicationSource }),
     }),
   );
@@ -53,9 +59,9 @@ export function registerLocalIesBrowserCases(owner: 'ordinary' | 'publication'):
       console.info('[ies-progress]', JSON.stringify({ stage: 'case-start', path, kind, combined }));
       const identity = { source: `ies-${kind}`, epoch: 1 };
       let fixture: IesHost;
-      if (combined) fixture = await createIesHost(identity);
+      if (combined) fixture = await createIesHost(path, identity);
       else {
-        ordinaryHost ??= createIesHost();
+        ordinaryHost ??= createIesHost(path);
         fixture = await ordinaryHost;
       }
       const { canvas, recorder, host } = fixture;

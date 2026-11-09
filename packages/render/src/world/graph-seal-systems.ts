@@ -122,6 +122,7 @@ export function stagePreparedViewGraph(prepared: PreparedFrameGraph): void {
       clearOnly: prepared.cameras.length === 0,
       subsurfaceClass: subsurfaceCaptureClass(cubeCapture, prepared.captureOnly),
       rendererRecording: prepared.rendererRecording,
+      forwardCapsuleShadows: prepared.forwardCapsuleShadows,
       shadowDepthLayers: ensureShadowDepthLayers(frameState, internals.device),
     });
   let state = stateOf(world, entity);
@@ -161,6 +162,22 @@ export function viewGraphEncodingOutcome(
       cause: graphSealFailure('No current graph encode product').error,
     }
   );
+}
+
+/** Every display waits for pending capture work before any surface is acquired. */
+function deferPendingViews(states: readonly ViewGraphSealState[], frame: number): void {
+  const pending = states.find(
+    (state) => state.frame === frame && state.prepared?.frameState.pipelinePreparationPending,
+  );
+  if (pending?.prepared === undefined) return;
+  const reason = pending.prepared.frameState.pipelinePreparationPendingReason ?? {
+    code: 'scene-pipeline-preparation' as const,
+  };
+  for (const state of states) {
+    if (state.frame !== frame || state.prepared === undefined) continue;
+    markPipelinePreparationPending(state.prepared.frameState, reason);
+    if (state.captures?.kind === 'ready') state.captures = { kind: 'pending' };
+  }
 }
 
 export function registerGraphSealSystems(world: World): void {
@@ -238,17 +255,7 @@ export function registerGraphSealSystems(world: World): void {
         // One physical frame cannot publish a mixture of prepared and pending
         // views. Keep every view at its preparation barrier before any capture
         // or scene work is encoded into the shared command encoder.
-        const pending = states.find(
-          (state) => state.frame === frame && state.prepared?.frameState.pipelinePreparationPending,
-        );
-        if (pending?.prepared !== undefined) {
-          const reason = pending.prepared.frameState.pipelinePreparationPendingReason ?? {
-            code: 'scene-pipeline-preparation' as const,
-          };
-          for (const state of states)
-            if (state.frame === frame && state.prepared !== undefined)
-              markPipelinePreparationPending(state.prepared.frameState, reason);
-        }
+        deferPendingViews(states, frame);
         for (const state of states) {
           if (
             state.frame !== frame ||
@@ -262,6 +269,7 @@ export function registerGraphSealSystems(world: World): void {
             state.encoding = { kind: 'failed', cause };
           }
         }
+        deferPendingViews(states, frame);
       },
     })
     .unwrap();

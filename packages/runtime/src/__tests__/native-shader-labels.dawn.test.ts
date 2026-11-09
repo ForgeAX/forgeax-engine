@@ -1,4 +1,5 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
+import type { RenderPipelineDescriptor } from '@forgeax/engine-rhi';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
@@ -22,8 +23,7 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
           const deviceResult = await requestDevice(...deviceArgs);
           if (deviceResult.ok) {
             const device = deviceResult.value;
-            const createPipeline = device.createRenderPipeline.bind(device);
-            device.createRenderPipeline = (descriptor) => {
+            const observePipeline = (descriptor: RenderPipelineDescriptor) => {
               const label = descriptor.label ?? '';
               if (/^pbr-pipeline-standard(?:-hdr)?$/.test(label))
                 bootstrapStandardPipelines.push(label);
@@ -33,8 +33,18 @@ it.skipIf(process.env.FORGEAX_WEBGPU_NODE !== 'wgpu-native')(
                   descriptor.fragment?.targets.map((target) => target?.format ?? 'unattached') ??
                     [],
                 );
+            };
+            const createPipeline = device.createRenderPipeline.bind(device);
+            device.createRenderPipeline = (descriptor) => {
+              observePipeline(descriptor);
               return createPipeline(descriptor);
             };
+            const createPipelineAsync = device.createRenderPipelineAsync?.bind(device);
+            if (createPipelineAsync !== undefined)
+              device.createRenderPipelineAsync = (descriptor) => {
+                observePipeline(descriptor);
+                return createPipelineAsync(descriptor);
+              };
           }
           return deviceResult;
         };

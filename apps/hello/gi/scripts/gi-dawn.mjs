@@ -1,4 +1,5 @@
 import { useBuiltAssetSource, useImportedAssetSource } from '../../../shared/scripts/source-publication.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { AssetGuid, PackageId } from '@forgeax/engine-pack/guid';
 import { halfFloat } from '@forgeax/engine/math';
 // Node/Dawn harness shared by the hello-gi smoke and the reference tool. The
@@ -388,25 +389,18 @@ export function directProfile(original) {
 /** Frame driver: World update, transform propagation, one Renderer submission. */
 export async function createFrameDriver({ renderer, world, lease }) {
   const { propagateTransforms } = await import('@forgeax/engine-scene');
-  const submit = () =>
-    renderer.draw({
+  const draw = async (domains) => {
+    world.update(1 / 60).unwrap();
+    propagateTransforms(world).unwrap();
+    return drawReadyFrame(renderer, {
       leases: [lease],
       camera: { lease },
       environment: { lease },
       geometryLane: 'direct',
-    });
-  const draw = async () => {
-    world.update(1 / 60).unwrap();
-    propagateTransforms(world).unwrap();
-    const receipt = submit();
-    if (!receipt.ok) throw new Error(`draw failed: ${JSON.stringify(receipt.error)}`);
-    const completed = await receipt.value.completed;
-    if (!completed.ok) throw new Error(`frame failed: ${JSON.stringify(completed.error)}`);
-    return receipt.value;
+    }, domains);
   };
   const observe = async (domains, include = domains) => {
-    renderer.requestObservation(domains).unwrap();
-    const receipt = await draw();
+    const receipt = await draw(domains);
     const observed = await renderer.observe(receipt, { include });
     if (!observed.ok) throw new Error(`observe failed: ${JSON.stringify(observed.error)}`);
     return { receipt, observed: observed.value };

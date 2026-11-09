@@ -350,9 +350,10 @@ export function tonemapToU32(mode: Tonemap): number {
  *              jitter and successful-submit history contract.
  *
  * MSAA and FXAA are orthogonal: MSAA resolves geometry-edge aliasing, FXAA
- * resolves shading/high-frequency aliasing. TAA is mutually exclusive with both.
+ * resolves shading/high-frequency aliasing. TAA and TSR each select one temporal
+ * resolver and are mutually exclusive with the spatial modes.
  */
-export type Antialias = 'none' | 'fxaa' | 'msaa' | 'taa' | 'smaa';
+export type Antialias = 'none' | 'fxaa' | 'msaa' | 'taa' | 'smaa' | 'tsr';
 
 /** Numeric encoding of anti-alias disabled (schema value for `antialias`). */
 export const ANTIALIAS_NONE = 0;
@@ -364,6 +365,13 @@ export const ANTIALIAS_MSAA = 2;
 export const ANTIALIAS_TAA = 3;
 /** SMAA 1x Medium: spatial color edges, area weights, linear neighborhood blend. */
 export const ANTIALIAS_SMAA = 4;
+/** Temporal super resolution; shares view/submit ownership with TAA. */
+export const ANTIALIAS_TSR = 5;
+
+/** The shared scene-data and jitter demand of the two temporal resolvers. */
+export function isTemporalAntialias(value: Antialias | undefined): value is 'taa' | 'tsr' {
+  return value === 'taa' || value === 'tsr';
+}
 
 /**
  * Map a `camera.antialias` numeric value to the closed `Antialias`
@@ -375,11 +383,12 @@ export function antialiasFromF32(value: number): Antialias {
   if (value === ANTIALIAS_MSAA) return 'msaa';
   if (value === ANTIALIAS_TAA) return 'taa';
   if (value === ANTIALIAS_SMAA) return 'smaa';
+  if (value === ANTIALIAS_TSR) return 'tsr';
   throw cameraError(
     'camera-antialias-invalid',
     'antialias',
     value,
-    `${ANTIALIAS_NONE}, ${ANTIALIAS_FXAA}, ${ANTIALIAS_MSAA}, ${ANTIALIAS_TAA}, or ${ANTIALIAS_SMAA}`,
+    `${ANTIALIAS_NONE}, ${ANTIALIAS_FXAA}, ${ANTIALIAS_MSAA}, ${ANTIALIAS_TAA}, ${ANTIALIAS_SMAA}, or ${ANTIALIAS_TSR}`,
     'select a supported Camera antialias mode',
   );
 }
@@ -441,8 +450,12 @@ export const BLOOM_ENABLED = 1;
 /** Bloom intensity is a linear HDR add-back multiplier. */
 export const CAMERA_BLOOM_INTENSITY_MIN = 0;
 export const CAMERA_BLOOM_INTENSITY_MAX = 8;
-/** Bloom threshold is expressed in scene-linear Rec.709 luminance. */
-export const CAMERA_BLOOM_THRESHOLD_MIN = 0;
+/**
+ * Bloom threshold is expressed in scene-linear Rec.709 luminance. A negative
+ * value disables thresholding entirely (Unreal's `BloomThreshold = -1`
+ * default); `-1` is the lowest accepted value, matching Unreal's range.
+ */
+export const CAMERA_BLOOM_THRESHOLD_MIN = -1;
 export const CAMERA_BLOOM_THRESHOLD_MAX = 65504;
 /** Absolute luminance interval above the threshold used by the smooth highpass. */
 export const CAMERA_BLOOM_SMOOTH_WIDTH_MIN = 0;
@@ -614,6 +627,9 @@ export const Camera = defineComponent('Camera', {
   colorLut: { type: 'asset<texture>', default: 0 as never },
   colorLutStrength: { type: 'f32', default: 1 },
   antialias: { type: 'f32', default: 0 },
+  // TAA only: 1 enables the Unreal TSR flickering temporal analysis
+  // (r.TSR.ShadingRejection.Flickering, default on); 0 disables it.
+  taaFlickering: { type: 'f32', default: 1 },
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },

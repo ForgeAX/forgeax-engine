@@ -1,11 +1,9 @@
-import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import { createMaterialShaderProgram } from '@forgeax/engine-shader';
 import type { MaterialRenderState } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { materialDepthStencil, supportsGpuShadowRenderState } from '../material-render-state';
 import {
-  effectiveStandardShadowReception,
   materialAbiRasterConstants,
+  materialProgramRasterConstants,
   materialVertexConstants,
 } from '../material-stage-constants';
 import { Materials } from '../materials';
@@ -19,6 +17,35 @@ const source = `@vertex fn vs_main() -> @builtin(position) vec4<f32> { return ve
 @fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }`;
 
 describe('material raster state', () => {
+  it('omits Standard ABI constants from an authored shadow program without those declarations', () => {
+    const constants = { '64000': 5, '64001': 2 };
+    expect(materialProgramRasterConstants(constants, { overrideIds: [] })).toBeUndefined();
+    expect(constants).toEqual({ '64000': 5, '64001': 2 });
+    const authored = { ...constants, authoredScale: 3 };
+    expect(materialProgramRasterConstants(authored, { overrideIds: ['authoredScale'] })).toEqual({
+      authoredScale: 3,
+    });
+    // Unknown authored keys still reach native descriptor validation.
+    expect(materialProgramRasterConstants(authored, { overrideIds: [] })).toEqual({
+      authoredScale: 3,
+    });
+  });
+
+  it('retains declared specialization values without allocating a replacement', () => {
+    const constants = { '64000': 5, '64001': 2 };
+    expect(materialProgramRasterConstants(constants, { overrideIds: ['64000', '64001'] })).toBe(
+      constants,
+    );
+    expect(materialProgramRasterConstants(constants, { overrideIds: ['64000'] })).toEqual({
+      '64000': 5,
+    });
+    expect(materialProgramRasterConstants(constants, { overrideIds: ['64001'] })).toEqual({
+      '64001': 2,
+    });
+    expect(materialProgramRasterConstants(undefined, { overrideIds: [] })).toBeUndefined();
+    expect(materialProgramRasterConstants(constants, undefined)).toBe(constants);
+  });
+
   it('admits generated shadow raster state without admitting unsupported pass state', () => {
     expect(supportsGpuShadowRenderState()).toBe(true);
     expect(supportsGpuShadowRenderState({ cullMode: 'none', frontFace: 'cw', depthBias: 2 })).toBe(
@@ -181,16 +208,10 @@ describe('material raster state', () => {
   });
 });
 
-it('keeps shadow reception fragment-only and leaves old programs unchanged', () => {
-  const artifact = (source: string) =>
-    ({ program: createMaterialShaderProgram(source) }) as MaterialShaderArtifact;
-  const declaring = artifact('@id(64002) override standardShadowReception: u32 = 1u;');
-  expect(effectiveStandardShadowReception(declaring, false)).toBe(0);
-  expect(effectiveStandardShadowReception(declaring, true)).toBe(1);
-  expect(effectiveStandardShadowReception(artifact('synthetic'), false)).toBeUndefined();
-  expect(effectiveStandardShadowReception(undefined, false)).toBeUndefined();
-  const fragment = materialAbiRasterConstants(5, 0, 0);
-  expect(fragment).toEqual({ '64000': 5, '64001': 0, '64002': 0 });
+it('keeps shadow reception out of pipeline constants', () => {
+  // Reception is a per-draw Mesh flag; receiving and non-receiving draws share one PSO.
+  const fragment = materialAbiRasterConstants(5, 0);
+  expect(fragment).toEqual({ '64000': 5, '64001': 0 });
   expect(materialVertexConstants(fragment)).toEqual({ '64000': 5 });
-  expect(fragment).toEqual({ '64000': 5, '64001': 0, '64002': 0 });
+  expect(fragment).toEqual({ '64000': 5, '64001': 0 });
 });

@@ -8,6 +8,43 @@ description: >-
 
 # forgeax-engine-debug
 
+For CI repairs, qualify the final candidate locally and on the user's designated
+Linux test host before publication, then qualify the final PR checks and obtain
+protected review. Use same-PR successful-check reuse in every explicitly declared CI-repair
+iteration, including engine, performance, dependency and build implementation
+changes made to fix CI. Purpose governs eligibility; runtime changes or file
+categories alone do not invalidate successes. Preserve original run/job/source
+provenance; failed, cancelled, missing and new checks and required artifact
+dependencies still execute. Follow
+[CI-repair success reuse](../../scripts/ci/README.md#explicit-pr-ci-repair-success-reuse).
+
+When placement changes check membership, list every affected successful check
+in `CI-Repair-Rerun` before pushing. They execute fresh; unrelated passed checks
+retain their original evidence. Keep the execution deadlines and file roster.
+After adding reuse, update workflow contract assertions to include its guard
+while preserving lane, prerequisite-order and failure-evidence requirements.
+An explicitly fresh coverage or smoke aggregate needs every producer to execute,
+even after a fully green baseline suite. Preserve the exact artifact count; do
+not mix a reused producer without current artifacts into a fresh aggregate.
+Never bypass merge protection or disable rulesets. Use the
+user's exact SSH tuple and keep cancelled or failed attempts in the evidence.
+For artifact-runtime preflight failures, retain the upload/install admission
+guard and its canonical parenthesized status condition, such as
+`steps.ci-repair.outputs.reused != 'true' && (failure())`. Run the complete
+`artifact-policy-runtime` Node contracts; do not weaken their runtime check.
+
+For readiness-related pixel or capture failures, separate physical preparation
+submissions from completed scene pictures. A first ready native GPU completion
+after signalled pipeline preparation shares the original settlement budget;
+pending/steady fences retain 15 seconds. Close a recording at each physical
+submission, re-arm exact-frame observations, and let timeout-control clocks
+advance through the current owner budget. Follow
+[readiness-aware test drivers](../../scripts/ci/README.md#readiness-aware-test-drivers).
+Publication submitters return the receipt before awaiting GPU completion, so
+the readiness driver sees its preparation signal. Recycle the packet only after
+physical completion and await recycling in `onCompleted`. Keep bounded failure
+evidence and the original owner deadlines.
+
 For green main pushes with skipped runtime owners, inspect post-merge
 qualification. Reuse requires identical Git trees and the latest matching PR
 CI success; unchanged main alone is insufficient after an early admin merge.
@@ -15,16 +52,102 @@ Pending/failed/cancelled runs and missing API evidence retain full CI. Follow
 [post-merge qualification reuse](../../scripts/ci/README.md#post-merge-qualification-reuse).
 
 For failed PR matrices, inspect the first failed child before cancelled siblings.
-PR matrices release their remaining runner capacity on failure; push/manual
-runs retain complete diagnostic results. Interrupted owners provide no timing
+Ordinary PR matrices release remaining runner capacity on failure. Explicit
+CI-repair iterations and push/manual runs retain independent sibling results for
+reuse or diagnosis. Interrupted owners provide no timing
 samples. Recover the original owner with `ci:focus`, then complete the full
 workflow including all cancelled siblings before qualification. See
 [failed PR matrix admission](../../scripts/ci/README.md#failed-pr-matrix-admission).
+
+For a file-discovery CLI oracle, compose the canonical owner with the existing
+shared Vitest policy instead of importing the root entry and then replacing its
+project list. The latter still constructs discarded Browser/Dawn projects.
+Keep the real CLI collection, file assertions and original test/child deadlines;
+qualify the complete instrumented coverage child on local and Linux hosts.
+
+For a Dawn ordinary child that consumes its native tail's window, retain complete
+process overhead in all four children and replay their whole-file shares in the
+existing sequencer. Preserve older snapshots, uncompleted-owner forecasts and
+the 2,200-second replay bound; do not extend forty-minute steps. Ordinary membership
+changes require all four fresh native lanes. Follow
+[Dawn execution](../../scripts/ci/README.md#dawn-gates).
+For a compact-owner exchange, use Linux Focus to execute both complete compact
+groups and the interrupted native journey. A green placement replay alone does
+not qualify the new native execution.
+For partial ordinary cohorts, record explicit inherited file forecasts separately
+from complete process observations. Freeze missing-file forecasts in older
+snapshots before admitting later measurements; retain global maxima for capacity.
+Check forecast provenance, full-file conservation and every original replay window.
+
+For a coverage lane timeout before its serial tail drains, replay completed child
+costs from all four jobs. Update only complete observations, retain inherited
+reservations and keep interrupted/unstarted owners at their admitted forecasts;
+follow [coverage execution](../../scripts/ci/README.md#coverage-execution).
+When pair and three-group moves strand a retained window, qualify the existing
+search's four-group cycle with complete replay contracts and Linux Focus. Keep
+the same whole-group admission, search bounds and historical measurements.
+Compare complete child times across unrelated owners before attributing a
+uniform slow cohort to the changed runtime. Admit that run as its own scenario;
+never replace its unfinished owners with cancellation durations or erase the
+preceding complete cohort's source identity. Membership changes require every
+affected lane to execute fresh.
+Record a partial run as its own replay; preserve the admitted complete cohort's
+observations and source identity. Raise underestimated reservations without
+restamping that cohort, and retain all older replay headroom bounds.
+Record an explicit fallback for every missing owner; a job-limit cancellation
+supplies no completed-child timing sample. Repeated slow waves remain separate
+scenarios; retain larger forecasts for interrupted or unstarted owners. A late
+subdivision cancellation does not prove a subdivision regression when the
+preceding complete wave consumed its window.
+If measured work exceeds ideal lane capacity, stop tuning placement alone.
+Modeling file workers may use bounded heavy-runner admission; keep V8, file
+isolation, full cases and heap/deadline limits. Measure complete children and
+resident memory; a plain or shared-module pass does not qualify that route.
+
+For multi-camera Browser process timeouts, retain the complete World,
+publication and published-VFX owners in separate exclusive processes. Keep their
+180-second cases,300-second process bounds and existing frame/pixel/recovery
+controls; use the Browser gate guide rather than retrying a slow combined file.
+
+For cold material-output readiness failures, inspect actual first-frame pass
+timings and native pipeline requests. Reuse generation-owned asynchronous PSO
+preparation; missing required pipelines or material entries keep presentation
+pending. Preserve sixty completed frames, reference/replay controls and original
+bounds; follow [Browser gates](../../scripts/ci/README.md#browser-gates).
+For CSM capture preparation timeouts, verify the maintained runner-affinity
+wrapper also owns the Browser's GPU worker threads. Preserve the first error,
+original readiness bound and complete scene; no tape exists before admission.
+
+For LOD CPU admission beside improved GPU timestamps, inspect both clocks in
+version 5 evidence: submitting-thread CPU owns the synchronous draw gate;
+process CPU also includes native workers and remains a raw diagnostic. Preserve
+the 20% CPU limit, both sample orders, complete windows and all GPU/falsifier gates.
+Use `ci:focus --kind performance --select hello-lod-occlusion` for the real
+Linux producer. Its separate `hello-lod-occlusion-profile` selector enables the
+existing bounded phase captures; those instrumented samples do not qualify
+ordinary performance admission. Retain failed raw evidence and full PR metrics.
+
+For GI off/dark byte mismatches after pipeline preparation changes, inspect the
+baseline image's receipt before changing shading. Image oracles use the shared
+ready-frame driver without advancing World during retries; preserve exact pixels,
+volume state and replay controls. Follow [native acceptance](../../scripts/ci/README.md#test-work-and-cost-regression-checks).
+
+For a direct-light attachment-provenance timeout, distinguish its two completed
+scene frames from the spot-shadow convergence captures. Preserve the 15-second
+case bound, all attachment assertions and the complete eight-case Browser file;
+follow [Browser gates](../../scripts/ci/README.md#browser-gates).
 
 For a primary manual-override stance failure, inspect the named workflow field
 and run `node apps/hello/triangle/scripts/ac-08-grep-gate.mjs` on the exact source.
 Keep its rule unchanged. Native publication follows strict job failure policy;
 core preflight rejects policy drift before expensive preparation and matrices.
+For its 30-second process timeout, inspect source enumeration and token filtering
+before changing test placement. Preserve symlink coverage, all rules and the
+original deadline; run the source-inventory regression and complete stance gate. Share physical
+reads and lexing across the existing source rules without retaining the whole
+source tree. Run the complete owner locally and on Linux with
+`ci:focus --kind node --select scripts/ci/__tests__/rapier-release-payload.test.mjs`;
+`node` uses the file's real Node runner, not an empty Vitest selection.
 
 For Rapier setup cache `ECONNRESET` followed by source rebuilding, use the
 source-keyed release fallback before optional cache transfer. The unchanged
@@ -53,9 +176,37 @@ For public-source `export-source-missing` naming `packages/modeling`, prepare
 that exact gitlink in the screening checkout before export; follow [Modeling
 source preparation](../../scripts/ci/README.md#modeling-source-preparation).
 
+For cold ready-picture failures, inspect receipt preparation and capture-view
+program readiness before adding settling sleeps. Preserve positive picture counts
+and independent physical/missing-draw controls. SDK run acceptance uses `run verify`;
+`run capture` can correctly show an unfinished startup cover.
+An unread-observation admission failure in a retained thumbnail carrier belongs
+to its retry driver: await preparation and GPU completion, consume the pending
+receipt's actual observation domains, then rearm. Keep the Renderer queue bound.
+
+For a managed-material fixture rejected as non-operational on its first draw,
+await the concrete host initialization before exposing the public Renderer
+facade. For native image probes, queue completion alone does not establish
+scene readiness; retain their ready-picture count and original pixels.
+
+For SVG source rejected by the zero-binary gate, inspect the file's actual bytes
+and follow [text vector source assets](../../scripts/ci/README.md#text-vector-source-assets).
+Keep binary media and NUL-content rejection active. A startup module imported
+from a data URL has no filesystem directory: embed its vector source at build
+time and run `tools/forgeax-mcp/test/runtime-acceptance.mjs` for the complete
+portable-document and failure-observation gate. Native default-screen failures
+also retain the UI CSS validator, SVG decoder and painter: qualify the real
+Blitz startup Logo pixels and the complete WeChat recovery owner. Do not relax
+the portable CSS profile to admit browser-only ellipsis.
+
 Package READMEs and AGENTS.md own design contracts. Diagnose current source and
 actual failure evidence; historical lane numbers and old run narratives are not
 operating instructions.
+
+For a ready first WebGL2 frame stalled at GPU completion, capture its actual
+works and inspect shadow-reception specialization. Follow the
+[shadow-free first-frame route](../../scripts/ci/README.md#webgl2-shadow-free-first-frame);
+retain the completion bounds and real receiving-shadow controls.
 
 For Nightly coverage cancellation at the job deadline after successful Dawn,
 follow [Nightly Linux ownership](../../scripts/ci/README.md#nightly-linux-ownership).
@@ -93,6 +244,34 @@ adoption from actual draw/readback. A backend-specific fixture target needs
 portable-producer parity and complete native pixel controls. Keep fresh consumer
 state and original frames, assertions and bounds; phase timing is diagnosis.
 
+For an App capture with no scene work, distinguish a preparing receipt from a
+completed ready picture. Positive shared-verifier owners use `waitForAppScene`
+and the Engine's current World/device frame-completed event instead of a fixed
+warmup. Raw RHI capture remains available for failure diagnosis. For Skin/history
+changes, rebuild the actual Render carrier before native acceptance; source-only
+unit success does not certify a stale native consumer.
+
+For a pinned Ubuntu stable compatibility-scene failure, reproduce the complete
+carrier with `ci:focus --kind compatibility --select stable`; generic Browser
+Focus can select a different executable and policy. Keep the verified sandbox,
+actual limits and all native/archive/pixel/fallback controls. Inspect quota-owned
+GPU workers before changing rendering or readiness bounds. Preserve the failed
+phase and screenshot; zero completed pictures supply no scene pixel acceptance.
+The full Browser roster must select the maintained scene project, retaining its
+120-second case owner and the separate 15-second readiness stage bounds.
+
+For directional CSM Browser failures, inspect its serial child in Browser shard
+1 after Runtime Pack Worker. Keep Dawn normalization after the Worker gate.
+Distinguish a job cancellation after completed Vitest children from a CSM
+rendering failure; rebalance using complete child costs and existing tail
+reservations, preserving interrupted owners' earlier forecasts. List all changed
+Browser lanes in `CI-Repair-Rerun`. Reuse verified inputs and retain the
+four-cascade resolution, tape and live/replay controls. Cold preparation waits
+on the Engine signal inside the owner's startup budget; GPU submission and
+completion retain their short bounds. A readiness failure before recorder
+admission cannot supply a frame tape. Follow
+[Browser gates](../../scripts/ci/README.md#browser-gates).
+
 For `runtime-tool-*`, `runtime-host-*` or `runtime-test-export`, fix
 the named owner using the [runtime boundary contracts](../../scripts/ci/README.md#runtime-and-tool-boundary-contracts).
 Run `pnpm check:runtime-boundaries`, `pnpm test:runtime-boundaries` and the dist
@@ -114,7 +293,17 @@ For an instrumented coverage child failure, use `ci:focus --kind coverage`
 with its exact maintained child label or isolated file. Keep all cases and V8
 instrumentation; ordinary unit success is insufficient. The four-shard merge
 still owns full-roster thresholds and final-head acceptance. Prepare the pinned
-real asset checkout before full local coverage. For same-size watcher fixture
+real asset checkout before full local coverage. Before the Engine build, validate
+WASM through each producer's `ensure-wasm.mjs` and the Codec no-dynamic-Function
+gate; existing ignored `pkg/` files do not prove the current native contract.
+For raw-glue provenance mismatch after CI restore, compare the core and shared
+compiler fingerprints, not only their source content keys. Follow
+[shared-input recovery](../../scripts/ci/README.md): adopting the verified shared
+compiler must derive its matching raw glue in normal and partial recovery.
+Keep source, byte and fingerprint validation intact.
+Rehydrate through the producer rather than editing generated glue. A Node tooling
+test must run through Node's test runner, outside its package's Vitest runtime
+roster; preserve its assertions in the required CI owner. For same-size watcher fixture
 failures, inspect stat timestamps; establish a distinct initial fixture timestamp
 before observing instead of adding sleeps or extending deadlines.
 
@@ -173,11 +362,18 @@ four-job run, including current groups without earlier samples. Keep larger
 `reservedSeconds` and source forecasts while recording the latest observation
 separately. A tighter replay bound does not certify the job's execution target;
 include setup, transfer and cleanup in final-head acceptance.
+Retain a recorded coverage window's typecheck mode; a separate preflight must
+not silently add lane-zero work to that replay. Keep its original cost window.
 Freeze completed receipts in replay regressions, so a live timing-table refresh
 cannot replace the failure oracle. An interrupted compiler supplies no sample;
 retain its source forecast and all original job, file and assertion bounds.
 Keep local single-job coverage usable: placement cannot move work to a peer job
 when none exists; its execution barriers still serialize every exclusive owner.
+For an individual Modeling test timeout inside an ordinary coverage partition,
+use one exclusive V8 coverage owner for the complete file when neighboring
+coverage work can contend with its case. Keep the original case deadline and
+exclude the file from every ordinary partition; failed children are not timing
+samples.
 
 For dual-host Standard parity capture preparation deadlines, keep its complete
 pixel/compositor/falsifier owner in the existing short-bootstrap exclusive lane.
@@ -203,6 +399,16 @@ within their individual deadlines; the Browser work guard enforces eleven
 device requests. Follow the
 [CI fixture budgets](../../scripts/ci/README.md#test-work-and-cost-regression-checks).
 
+For multi-camera and Three alpha-shadow replay process deadlines, inspect the
+readback phase and overlapping native devices. Qualify both complete files in
+the existing exclusive admission lane, retaining cases, pixels and deadlines.
+
+For weapon-spirit `draw-entity-missing`, inspect the retained pre-disposal
+canvas, Renderer state and asynchronous PSO facts in
+`artifacts/ci-focus/weapon-spirit/`. A passing same-head Focus does not explain
+the original failure or qualify full CI; keep the original budgets and use
+RHI Debug evidence before editing the rendering owner.
+
 For independent-view readiness or Three texture/flat-shading deadlines beside
 another native/replay owner, reproduce the complete file with the same-head
 CI-profile Linux Focus diagnostic. These owners drain competing Browser groups
@@ -218,19 +424,49 @@ declaration keep their original constants. Retain clipping pixel controls,
 sixty completed frames and original bounds. Qualify the complete Linux CI-profile
 file and full Browser gate; local replay timing alone is insufficient.
 
+For a Toon first-ready `draw-entity-missing`, keep its original failure, inspect
+its adapter identity, shader-info and pipeline timestamps, then read its post-failure RHI
+tape. Match Focus's CI profile and pinned Lavapipe driver before comparing;
+a successful diagnostic frame cannot qualify the earlier failed owner.
+
 For IES Browser process deadlines, inspect retained case screenshots before
 assigning a startup stall. Ordinary and publication owners run separately with
-all four cases, 19 independent live/replay devices, original deadlines and
-exclusive admission. Follow the [Browser gates](../../scripts/ci/README.md#browser-gates).
+all four cases, 19 independent live/replay devices, original case/process
+deadlines and exclusive admission. Construct the selected cold profile directly.
+The shared settlement owner bounds multiple completed preparation waves and a
+ready picture separately from each 15-second submit/pending-or-steady-GPU/ordinary-compile wait;
+a completed ready GPU picture after legitimate preparation waves must not be
+reported as a missing compilation signal. Follow the [Browser gates](../../scripts/ci/README.md#browser-gates).
+
+For full-source shader production failing at parent-side `ValueDeserializer`,
+inspect retained input/output bodies before changing heap limits. Worker replies
+transport their immutable WGSL body once; the roster owner interns equal bodies
+while preserving every variant and independent metadata. Compare complete
+publication bytes and use the actual Node heap/worker profile. A JS heap failure
+and a Naga internal panic remain distinct evidence; neither is a transport retry.
+
+For native select-oracle mismatches, inspect both state/event receipts and actual
+popup screenshots. CDP DOM focus does not prove an OS popup remains open: another
+page activation can dismiss it and commit later keyboard navigation. Native UI
+oracle groups use the existing exclusive admission and a single foreground
+window. Preserve all assertions and deadlines; requalify all four Browser shards
+when this changes their cost-weighted placement. See the [CI operating guide](../../scripts/ci/README.md).
 
 For native or coverage parent timeouts after successful children, compare all
 four ordinary Dawn ledgers or all sixteen Modeling partitions before changing
 placement. Completed children retain their full file costs even when a later
 GI owner reaches the parent deadline; exclude interrupted owners. Rotate the
 latest complete snapshot into the previous slot when admitting a new window.
+Spread long capture owners across native lanes while retaining each startup
+reserve before ordinary backfill; move complete owners without splitting cases.
+Preserve independently admitted snapshots as separate replays and the first
+cost-ranked ordinary wave on distinct lanes; interrupted owners keep forecasts.
 Freeze outgoing replay fixtures so timing refreshes cannot erase the failure
 oracle. Retain larger costs, complete owners, four jobs and original deadlines. Follow the [Dawn placement ledger](../../scripts/ci/README.md#dawn-gates)
-and coverage execution owners below.
+and coverage execution owners below. Preserve complete coverage child receipts
+through parent cancellation; append a partial cohort with inherited unfinished
+reservations instead of restamping it as the latest complete cohort. See
+[complete-run placement scenarios](../../scripts/ci/README.md#complete-run-placement-scenarios).
 
 For a coverage lane stranded behind isolated source production, compare its
 ordinary project forecast with the actual excluded files. Charge the moved
@@ -247,10 +483,19 @@ enforce the broad-partition ceiling across projects as well as within each
 project. Use completed slow-lane samples; equal CPU quotas do not establish equal
 elapsed time. Keep the original job bound and qualify final-head CI.
 
-For a coverage job deadline after uneven Modeling partitions, refresh file costs
-from complete successful child receipts, including skipped-file overhead, and
-derive partition reservations from the same retained table. Preserve every file,
-exclusive owner and deadline; a planning replay still requires final-head CI.
+For the 1024 mip-padding bake oracle, preserve the complete three-bake quality
+and falsifier workload under its sixty-second case bound. It uses the existing
+public four-Worker row executor; retain the independent serial/Worker byte-parity
+gate and complete V8 file ownership. Do not substitute smaller textures, a longer
+timeout or an uninstrumented replacement. Failed children supply no timing sample;
+rebalance only with completed child receipts through the existing coverage ledger.
+
+For a coverage job deadline after uneven Modeling partitions, first compare
+complete-child receipts across all four jobs. Admit partial runs as distinct
+replays, preserving inherited maxima; interrupted children supply no sample.
+Refresh file costs when file placement needs repair, including skipped-file
+overhead. Preserve every file, exclusive owner and deadline; planning replays
+still require final-head CI. Follow [coverage execution](../../scripts/ci/README.md#coverage-execution).
 
 For live-daemon recovery or ordinary App Worker build timeouts under coverage,
 qualify the complete files in exclusive CPU children before changing deadlines.
@@ -271,6 +516,34 @@ keep the originating failure and recover an actual capture before shader edits.
 Synthetic native recording contexts must carry the required camera snapshot,
 even when their witness shader does not consume View uniforms. Use the existing
 frame-snapshot producer; preserve native depth, material Pass and clipping assertions.
+
+For a cold scene-material regression, verify Forward/Deferred async preparation
+at the main-geometry producer, separately from Feature, shadow and temporal
+getters; do not change the global getter policy. GPU-driven async admission belongs
+to registered preparation and its pending barrier, including builtin Unlit. Normal
+encode lookups keep synchronous readiness for cube/offscreen captures. Qualify the
+complete multi-camera Browser owner and real delayed-PSO UI replay after changing this boundary. Ordinary missing draws use submitted-draw
+evidence; do not mark the whole frame as a non-drawing preparation barrier. Preserve
+the before-submit hook for pending-view work. If a pending-scene UI tape contains only UI work and differs from live pixels,
+check whether the compositor loaded a surface that no scene pass initialized.
+Resolve clear/load from actual encoded surface work at Record, retaining the
+prepared graph/output; verify a real native pipeline-delivery gate and fresh
+replay for pending, dynamic and retained UI. Static image oracles retry the same
+World snapshot with the shared ready-frame driver and retain their original pixels,
+frame count and capture/replay checks. Rebuild Engine before a direct native test:
+source-map paths alone do not prove that its public dist contains the edited source.
+
+Core native smokes must count ready scene pictures, not completed preparation
+barriers. Reuse the same World snapshot during retries and await its Engine-owned
+`preparationCompleted` signal for shader/native compilation, then require a new
+completed ready receipt. Do not infer preparation readiness from a sleep. A uniform black frame
+must fail against sampled background pixels. Before changing material shaders,
+capture the failing frame and isolate shadow participation from a flat-normal
+oracle. Prepare positive capture frames before arming; submission readback hooks
+must not draw again. See [Core smoke scene readiness](../../scripts/ci/README.md#core-smoke-scene-readiness).
+Paused recovery captures keep the World snapshot fixed, including physical input.
+Structural unsupported-video controls retain completed submissions rather than
+requiring a picture that their native host cannot produce.
 
 For Bevy completed-frame smoke failures, distinguish preparation receipts, the
 first ready GPU completion and later ready frames. Cold native pipeline work has
@@ -299,6 +572,14 @@ For the directional Three shadow owner, keep the baseline, authored-filter and
 layer/variance phases sequential in one renderer so the sixty-frame warmup and
 fresh replay roster remain shared while each phase retains the original case
 deadline.
+For a Spot shadow timeout beside another GPU group, qualify its complete
+native/reference/replay journey alone before assigning exclusive admission.
+Retain the single 240-second case, sixty-frame warmup and fresh replay devices;
+repartitioned Browser lanes require fresh final-head qualification.
+For a job deadline after successful Browser children, compare complete file
+ledgers across all four jobs before changing placement. Retain larger historical
+costs, charge startup/cleanup once and reserve completed serial smoke phases.
+Interrupted later work supplies no cost sample; keep every case and deadline.
 
 For a cold Preview template Catalog stall, separate source cooking from browser
 readiness using its named preparation timings. Long watcher-snapshot diagnostics
@@ -355,7 +636,11 @@ completed ordinary child's process overhead. Follow
 [GI coverage and material publication](../../scripts/ci/README.md#gi-coverage-and-material-publication).
 An interrupted later owner does not invalidate an earlier successful ordinary
 child. Refresh its measured file costs in `scripts/ci/dawn-file-seconds.json`
-while retaining larger inherited forecasts and the complete native roster.
+while retaining larger inherited forecasts and the complete native roster. If
+completed capture owners finish well below their placement reserves, replay all
+four ordinary file shares and complete native-owner receipts against the same
+lane bound before moving those reserves. Preserve first-in-lane capture
+admission and verify the exact discovery-to-lane partition.
 
 For large GPU snapshot or reference-oracle costs, inspect actual matcher traversal
 before changing native work. Follow [native payload and startup work](../../scripts/ci/README.md#native-payload-and-startup-work);
@@ -391,7 +676,7 @@ For Modeling Dawn collection or stale-frame guards, retain the self-contained de
 
 For a Modeling `R-internal-C` failure, rename the marked internal member and its typed callers in the kernel owner, run the complete candidate gate, merge the kernel PR, then bump the Engine pin. Preserve the naming gate; [source preparation](../../scripts/ci/README.md#modeling-source-preparation) describes candidate admission.
 
-For a Modeling coverage long tail, check the eight native project partitions across four jobs and their exact manifest membership. Preserve every test, aggregate threshold and deadline. For C-410 region-query timeouts, retain the complete brute-force connectivity oracle and original geometry falsifiers. For S7 playback timeouts, profile label inspection and preserve the complete animation case and its 600-second bound. For capture heap mismatches, verify the budgeted Node host: inherited V8 flags override Worker resource limits. See [coverage execution](../../scripts/ci/README.md#coverage-execution).
+For a Modeling coverage long tail, check the sixteen native project partitions across four jobs and their exact manifest membership. Preserve every test, aggregate threshold and deadline. For C-410 region-query timeouts, retain the complete brute-force connectivity oracle and original geometry falsifiers. For S7 playback timeouts, profile label inspection and preserve the complete animation case and its 600-second bound. For capture heap mismatches, verify the budgeted Node host: inherited V8 flags override Worker resource limits. See [coverage execution](../../scripts/ci/README.md#coverage-execution).
 
 For declared-material publication timeouts in an already exclusive coverage
 child, check whether a file-wide spy setting disabled the normal Node material
@@ -408,7 +693,7 @@ to retry a failed measurement. See the [tier contract](../../scripts/ci/README.m
 For a first-picture preparation timeout, correlate the pending receipt with
 native pipeline requests and queue completion. A pending reason names that
 receipt's first blocker, not necessarily the longest later operation. Keep the
-shared ready-frame driver at frame cadence rather than flooding the GPU queue;
+shared ready-frame driver and its Engine compilation completion signal rather than flooding the GPU queue;
 retain its readiness bound and every required completed picture. Dense IES
 capture/replay uses the existing exclusive Browser admission route, with its
 complete file and original deadlines.
@@ -494,6 +779,16 @@ For the directional journey, retain its existing exclusive admission when
 reproducing the complete native/reference/replay timeout; follow the CI guide.
 The managed-material runtime pixel owner retains its original short case bound
 and uses the existing exclusive bootstrap process set to drain neighboring work.
+For compatibility scene/archive readiness, run its complete three-case owner in
+its exclusive bootstrap process after shader preparation. Retain both native
+sixty-frame windows, the automatic WebGL2 window and every pixel control. Retain
+the actual archive initialization signal in the existing cold settlement budget;
+ordinary submission and steady GPU stages remain 15 seconds. Separate compilation
+pressure from device evidence;
+a focused Linux pass still requires complete final-head Browser CI.
+For shadow-alpha process timeouts, run both complete Basic and Standard material
+owners in their separate exclusive Browser processes through the shared fixture.
+Retain each original case/process bound, all pixels and fresh replay devices.
 The complete 24-case Three material-output owner also drains neighboring Browser
 groups after run `39457755532` exhausted its original process bound beside a
 long GPU group. Keep its measured receipt, cases, pixels and deadlines intact.
@@ -678,7 +973,10 @@ a fallback page screenshot is healthy.
 For a full Browser gate failure that passes CI Focus, select `browser_profile=ci`
 in the maintained workflow before attributing the difference to renderer code.
 Its default local workload differs from the full gate; keep the original
-lifecycle, pixel assertions and deadlines. See the [CI guide](../../scripts/ci/README.md).
+lifecycle, pixel assertions and deadlines. For a native Focus publication rejected
+before Renderer creation, inspect inherited Browser-only policy inputs. Leave
+unselected optional policies absent; do not export an empty string or relax the
+owning validator. See the [CI guide](../../scripts/ci/README.md).
 For SSR recovery compilation near its 20-second deadline, inspect the actual
 pipeline labels and admitted specs. Standard uses the material cache and exact
 LKG recovery requests; do not reintroduce the generic bootstrap matrix or widen
@@ -770,6 +1068,18 @@ For a Dawn lane canceled at the job deadline, inspect complete process receipts,
 exact file rosters and the GitHub job annotation: even a native `PASS` can exceed the job budget
 during cleanup. Preserve the failed gate and use completed children only for cost
 observations; final-head CI must still pass after a placement refresh.
+Run `42147390301` reached lane 4's `screen-probe` after 39 minutes and interrupted
+it at the unchanged 40-minute step deadline. Keep its previous forecast and
+redistribute completed owner work across the same four lanes; see the
+[Dawn placement ledger](../../scripts/ci/README.md#complete-run-placement-scenarios).
+Run `42156059037` then timed out lanes three and four at the same 40-minute step:
+lane four's ordinary shard alone took 1773 seconds before its native owners, and
+lane three timed out during `direct-light`. Keep the four lanes and deadline;
+move `surface-pipelines` and `heavy-1/2` to lane one, `vfx-depth` and
+`nested-discard` to lane two, and place `gi-5` with `ordinary-4` so its retained
+600-second reserve participates in ordinary-file balancing. Distribute the
+completed lane-four owners across lanes one and two in `dawn-gate-roster.mjs`.
+The interrupted `direct-light` and `gi-6` groups supply no completion sample.
 Refresh only `dawn-file-seconds.json` placement forecasts. An interrupted
 owner contributes no completion sample. Keep the four-lane sequencer and original
 native deadlines; a cost refresh alone is not proof of a faster complete gate.
@@ -961,6 +1271,23 @@ share of native process overhead and each fixed owner's complete child-process
 and cleanup costs. Nearly equal file counts can hide unequal work when many
 new files receive the maximum-file fallback. Report measured-cost coverage
 alongside the replay before attributing the entire delay to runner variation.
+For a View parent timeout, compare complete owner receipts across all four
+shards before changing placement. Keep Game 3D stages contiguous, language
+live/cold chains intact and the diagnostic replay first on its independent
+shard. Put the complete Modeling journey last on an existing lane with measured
+headroom; an interrupted journey keeps its earlier complete forecast. Preserve
+every command and the original four jobs and 30-minute cap; follow
+[Modeling window verification](../../scripts/ci/README.md#modeling-window-verification).
+
+For a complete GI journey reached near the native-step deadline, use the
+existing placement-reserve admission before ordinary backfill. Spread independent
+long capture journeys across existing lanes when a slow runner amplifies both
+Modeling owners before the same ordinary backfill. Keep interrupted
+work out of measured costs, retain all earlier replay scenarios, and prove the
+journey still starts early without changing its tests or original deadline.
+A coverage parent cancelled during artifact upload remains unqualified even
+when all children passed; replay complete children with typecheck and transfer
+headroom before another full final-head run.
 A completed ordinary process from a cancelled job remains a cost observation;
 the interrupted owner and unstarted tail do not. Verify complete file identity
 when a process-start line is absent before admitting an emitted file set.
@@ -1358,12 +1685,20 @@ If identical work is much slower in a full shard than in Focus, compare
 over those phase windows. Preserve unavailable counters; cumulative throttling
 totals and host pressure alone cannot assign a cause. Test partitioning is not
 evidence that the complete original journey became faster.
-Shadow phases must drain their own replay slots before passing. A successful
-live/reference phase with queued replays is incomplete validation; leaving all
-drains to the 60-second teardown can fail after every phase appears green.
+Each shadow case must drain its replay slots before passing. Separate public
+phase cases keep independent completion barriers. A single complete case may
+pipeline its internal live phases through the same two immutable-capture slots,
+then drain every fresh replay before returning. Keep all controls and original
+case/process bounds; teardown cannot supply missing case acceptance.
 For Nested Discard cost, retain its shared ordinary pixel assembly and bounded
 shadow declaration. Temporal captures and replays stay independently owned; the
 fixture's actual device and shadow inspections guard those boundaries.
+
+For `build-shared-app-inputs.mjs` heap exhaustion after a shared archive timeout,
+check the recovery child's Node launch flags. It needs the same bounded 4 GiB
+parent heap as the normal shader producer, separately from compiler worker
+admission. Retain verified core inputs, the complete shader publication and
+original transfer/recovery deadlines; follow [Build inputs](../../scripts/ci/README.md#build-inputs).
 
 For native Host failures, follow the CI guide's
 [build-input](../../scripts/ci/README.md#cross-platform-host-build-inputs),
@@ -1493,13 +1828,32 @@ fast cohort. Keep complete four-way waves, broad halves and source isolation;
 numeric modulo-rank spread is not an additional workload constraint. Verify all
 retained windows locally before pushing, with the original job deadlines,
 concurrency, coverage ownership and thresholds unchanged.
+For Dawn placement headroom failures after adding files, check their measured
+entries before changing sharding. Admit complete ordinary-child costs, including
+skipped-file overhead, through the [placement ledger](../../scripts/ci/README.md#dawn-gates).
+Retain existing forecasts, snapshots, lanes and deadlines.
+Run 42388664877 is a complete ordinary cohort with an interrupted Direct Light
+owner. Retain its full forecast and all older replays when updating file costs;
+rerun every changed ordinary lane.
+Run 42394605381 supplies another complete ordinary cohort with 22 completed
+native owners. Preserve it separately from all sixteen earlier scenarios; its
+interrupted GPU Timing and six unstarted owners retain their admitted forecasts.
+Move complete native owners into existing headroom, replay all seventeen windows
+and rerun all four affected lanes. Do not add a runtime solver or copy a generated
+ordinary file assignment into source; the existing sequencer owns whole-file
+placement with the same retained maxima, first-wave spread and deadlines.
+
 For a Dawn step timeout, compare each complete native owner and ordinary child
 with its lane forecast. A final owner starting near the step deadline indicates
 placement exhaustion; refresh the completed-child receipts before rerunning.
 Retain complete startup/import/cleanup overhead across ordinary files, including
-skipped files, and every older independent snapshot. An interrupted multi-phase owner keeps its
-full forecast even when an early phase passed; add no partial timing sample.
-Require the same local red/green placement replay and final-head native execution.
+skipped files, and every older independent snapshot. Derive file shares only from
+complete ordinary processes and conserve their elapsed time. An interrupted
+multi-phase owner keeps its full forecast even when an early phase passed; add
+no partial timing sample. Reserve its complete journey before ordinary backfill
+and balance complete owners across the existing lanes.
+Require local red/green placement replay, final-head Linux `ci:focus` for affected
+native owners, and complete final-head PR CI before merging.
 
 If a Standard nonreceiver stalls in its first native GPU completion, retain the
 actual failing tape and inspect its declared shadow reception before changing

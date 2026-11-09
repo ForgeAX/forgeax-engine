@@ -259,6 +259,12 @@ fn ${stage.entryPoint}(@builtin(global_invocation_id) invocation: vec3<u32>) {
     forgeax_vfx_runtime.seed,
     forgeax_vfx_runtime.playCycle,
     particle.id,
+    f32(forgeax_vfx_runtime.timeWhole) + forgeax_vfx_runtime.timeFract,
+    forgeax_vfx_runtime.timeWhole,
+    forgeax_vfx_runtime.timeFract,
+    f32(forgeax_vfx_runtime.worldTimeWhole) + forgeax_vfx_runtime.worldTimeFract,
+    forgeax_vfx_runtime.worldTimeWhole,
+    forgeax_vfx_runtime.worldTimeFract,
   );
   var iteration = 0u;
   loop {

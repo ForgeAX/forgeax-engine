@@ -94,7 +94,6 @@ const STANDARD_PBR_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.PROBE_BLEND_AVAILABLE === false &&
     defines.EXTENDED_LIGHTING_AVAILABLE === false &&
     defines.TRANSMISSION_AVAILABLE === false &&
-    defines.DIRECTIONAL_PCSS_AVAILABLE === false &&
     defines.PROJECTOR_AVAILABLE === false,
 );
 const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
@@ -108,7 +107,6 @@ const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.PROBE_BLEND_AVAILABLE === false &&
     defines.EXTENDED_LIGHTING_AVAILABLE === false &&
     defines.TRANSMISSION_AVAILABLE === false &&
-    defines.DIRECTIONAL_PCSS_AVAILABLE === false &&
     defines.PROJECTOR_AVAILABLE === false,
 );
 const STANDARD_PBR_COLORED_RECEIPT = createStandardPbrArtifactReceipt(false, true);
@@ -1181,7 +1179,7 @@ function expectAlphaMaskPasses(compiled: CompiledRenderGraph<RenderPipelineFrame
       'gpu-driven.frustum-compact',
       'gpu-driven.finalize-indirect',
       'gpu-driven.shadow.directional-cascade-0.static.view-selection',
-      'gpu-driven.shadow.point-cube-face-0-0.static.view-selection',
+      'gpu-driven.shadow.point-cube.view-selection',
       'gpu-driven.shadow.spot-atlas-0.static.view-selection',
       'gpu-driven.alpha-mask.opaque',
       'gpu-driven.alpha-mask.discarded',

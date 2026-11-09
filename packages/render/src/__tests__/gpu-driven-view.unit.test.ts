@@ -129,14 +129,20 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('primitiveHeight(primitive, rootWorld)');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('lodCrossfade(height, rows');
     expect(GPU_DRIVEN_VIEW_WGSL).toMatch(
-      /appendVisible\(\s*candidate\.batchIndex,\s*batchWord\(candidate\.batchIndex, 0u\) \+ \(level \+ 1u\) \* batchWord\(candidate\.batchIndex, 8u\),[\s\S]*bitcast<u32>\(-lod\.fade\)/,
+      /if \(lod\.paired\) \{ countVisible\(candidate\.batchIndex, candidateIndex, level \+ 1u\); \}/,
+    );
+    expect(GPU_DRIVEN_VIEW_WGSL).toMatch(
+      /placeVisible\(\s*batchIndex,\s*candidateIndex,\s*lane,\s*level \+ 1u,\s*vec4<u32>\(item\.xyz, bitcast<u32>\(-bitcast<f32>\(item\.w\)\)\)/,
     );
     expect(GPU_DRIVEN_VIEW_WGSL).not.toMatch(/lodHeights|projectedHeights/);
   });
 
   it('projects compact visible items as scene instance, material, candidate and fade rows', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toMatch(
-      /vec4<u32>\(\s*instanceIndex,\s*materialIndex,\s*candidateIndex,\s*bitcast<u32>\(lod\.fade\),/,
+      /atomicStore\(&counters\[record \+ 1u\], instanceIndex\);\s*atomicStore\(&counters\[record \+ 2u\], materialIndex\);\s*atomicStore\(&counters\[record \+ 3u\], bitcast<u32>\(lod\.fade\)\);/,
+    );
+    expect(GPU_DRIVEN_VIEW_WGSL).toMatch(
+      /vec4<u32>\(\s*atomicLoad\(&counters\[record \+ 1u\]\),\s*atomicLoad\(&counters\[record \+ 2u\]\),\s*candidateIndex,\s*atomicLoad\(&counters\[record \+ 3u\]\),/,
     );
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('materialIndex = sceneInputs[materialAddress + 0u]');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('bitcast<f32>(sceneInputs[materialAddress + 1u])');
@@ -145,9 +151,37 @@ describe('GPU-driven batch topology and CPU oracle', () => {
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('if (isSuppressed(candidate.sourceSlot))');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('instance.customDataStart');
     expect(GPU_DRIVEN_VIEW_WGSL).not.toContain('0x80000000u');
-    expect(GPU_DRIVEN_VIEW_WGSL).toContain('visibleIndices[segmentBase + localVisible]');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('visibleIndices[segmentBase + slot] = item');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('atomicStore(&counters[overflowIndex(batchIndex)], 1u)');
     expect(GPU_DRIVEN_VIEW_WGSL).toContain('visibleCount = 0u');
+  });
+
+  it('places visible items in candidate order, never in atomic arrival order', () => {
+    // Discard-free opaque programs resolve overlapping fragments by submission
+    // order, so an arrival-ordered segment changes pixels between frames.
+    const writes =
+      GPU_DRIVEN_VIEW_WGSL.match(/visibleIndices\[[^\]]*segmentBase[^\]]*\] = /g) ?? [];
+    expect(writes).toEqual([
+      'visibleIndices[segmentBase + slot] = ',
+      'visibleIndices[view.occlusion.lateVisibleBase + segmentBase + rank] = ',
+    ]);
+    const place = GPU_DRIVEN_VIEW_WGSL.slice(
+      GPU_DRIVEN_VIEW_WGSL.indexOf('fn placeVisible('),
+      GPU_DRIVEN_VIEW_WGSL.indexOf('fn placeVisibleItems('),
+    );
+    expect(place).not.toContain('atomicAdd');
+    expect(place).toContain('orderLaneFlags[other]');
+    // Both cull phases and the shadow camera cull rank through the same scan.
+    for (const entry of ['cullView', 'cullViewLate']) {
+      const body = GPU_DRIVEN_VIEW_WGSL.slice(GPU_DRIVEN_VIEW_WGSL.indexOf(`fn ${entry}(`));
+      expect(body.slice(0, body.indexOf('\n}\n'))).toContain('clearOrderRecord(');
+    }
+    const camera = GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL.slice(
+      GPU_DRIVEN_VIEW_SHADOW_CAMERA_WGSL.indexOf('fn cullViewShadowCamera('),
+    );
+    expect(camera).toContain('clearOrderRecord(id.x)');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('fn scanVisibleOrder(');
+    expect(GPU_DRIVEN_VIEW_WGSL).toContain('fn placeVisibleOrderLate(');
   });
 
   it('fits the portable limit of eight storage buffers per compute stage', () => {

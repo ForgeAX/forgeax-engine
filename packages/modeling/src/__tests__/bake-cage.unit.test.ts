@@ -1,6 +1,7 @@
+import { bakeWorkers } from '@forgeax/engine-modeling/tools';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
-import { type BakeOptions, bakeMaps, bakeSources } from '../bake';
+import { type BakeOptions, bakeMaps, bakeMapsParallel, bakeSources } from '../bake';
 import { MATERIAL_ID_PALETTE, tsBakeBackend } from '../compute/bake-ts';
 import { type BakeDirection, type BakeJobParams, runComputeJob } from '../compute/job';
 import { type Model, model } from '../model';
@@ -499,22 +500,28 @@ describe('bake padding (U36, V4): mip-aware island spacing and a full gutter (ga
 
   it('1024 texels padded for mip 3 bleed into no 8 x 8 block; half the padding or a short gutter bleeds (falsifier)', {
     timeout: 60000,
-  }, () => {
+  }, async () => {
+    const executor = bakeWorkers({ workers: 4 });
+    const run = async (options: BakeOptions) => {
+      const result = await bakeMapsParallel(options, executor);
+      if (!result.ok) throw result.error;
+      return result.value;
+    };
     expect(defaultProtectMip(1024)).toBe(3);
     expect(paddingTexels({ mips: 3 })).toBe(16);
     const base = atlas({ mips: 3 }, 1024);
-    const r = bake({ base, detail: base, maps: ['normal'], resolution: 1024 });
+    const r = await run({ base, detail: base, maps: ['normal'], resolution: 1024 });
     expect(r.report.metrics.protectMip).toBe(3);
     expect(r.provenance.bleed.slice(0, 3)).toEqual([0, 0, 0]);
     expect(r.report.metrics.protectedBleed).toBe(0);
     expect(r.issues).toEqual([]);
     const tight = atlas({ mips: 2 }, 1024);
-    const bleeding = bake({ base: tight, detail: tight, maps: ['normal'], resolution: 1024 });
+    const bleeding = await run({ base: tight, detail: tight, maps: ['normal'], resolution: 1024 });
     expect(bleeding.provenance.bleed[2]).toBeGreaterThan(0);
     expect(bleeding.issues.find((i) => i.code === 'mip-bleed')?.detail).toMatchObject({
       protectMip: 3,
     });
-    const short = bake({ base, detail: base, maps: ['normal'], resolution: 1024, gutter: 4 });
+    const short = await run({ base, detail: base, maps: ['normal'], resolution: 1024, gutter: 4 });
     expect(short.provenance.bleed[2]).toBeGreaterThan(0);
   });
 

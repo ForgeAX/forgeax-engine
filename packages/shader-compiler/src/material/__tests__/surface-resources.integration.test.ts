@@ -28,7 +28,7 @@ ${helper ? '#import test::sample_layers::{sample_layers}' : sampling.replace('#d
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   let color = sample_layers(input.uv0, i32(round(input.uv1.x)));
   let normal = textureSample(normalTexture, normalTexture_sampler, input.uv0).rgb;
-  return SurfaceData(color.rgb, normalize(input.vertexNormalWS + normal * 0.1), 0.0, 0.5, vec3<f32>(0.0), 1.0, color.a, 0.5);
+  return SurfaceData(color.rgb, normalize(input.vertexNormalWS + normal * 0.1), 0.0, 0.5, vec3<f32>(0.0), 1.0, color.a, 0.5, 0.0);
 }`,
     );
     const source: MaterialAsset = {
@@ -120,7 +120,7 @@ it.each([
 #import forgeax_material::parameters::{${texture}, ${texture}_sampler}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   let color = textureSample(${texture}, ${texture}_sampler, input.uv0);
-  return SurfaceData(color.rgb, input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, color.a, 0.0);
+  return SurfaceData(color.rgb, input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, color.a, 0.0, 0.0);
 }`,
       );
       const source: MaterialAsset = {

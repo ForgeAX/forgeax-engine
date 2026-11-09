@@ -7,7 +7,9 @@ it.each([
   'ids',
 ] as const)('renders native Terrain edits without rebinding (%s)', async (encoding) => {
   const url = URL.createObjectURL(
-    new Blob([JSON.stringify(await buildEngineShaderManifest())], { type: 'application/json' }),
+    new Blob([JSON.stringify(await buildEngineShaderManifest({ pointShadows: true }))], {
+      type: 'application/json',
+    }),
   );
   try {
     await verifyRuntimeTerrain(encoding, url);

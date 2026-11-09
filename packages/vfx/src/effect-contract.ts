@@ -81,7 +81,8 @@ function zeroValue(type: VfxValueType): VfxValue {
   return length === 1 ? 0 : Array.from({ length }, () => 0);
 }
 
-function valueMatches(type: VfxValueType, value: unknown): boolean {
+/** Whether `value` is a finite, range-checked WGSL value of `type`. */
+export function vfxValueMatches(type: VfxValueType, value: unknown): boolean {
   const length = WGSL_NUMERIC_LAYOUT[type].size / 4;
   if (length === 1)
     return (
@@ -173,7 +174,7 @@ export function validateVfxEffectReflection(
         alignment > struct.alignment
       )
         return invalid(`${name}.${field.name}`);
-      if (field.defaultValue !== undefined && !valueMatches(field.type, field.defaultValue))
+      if (field.defaultValue !== undefined && !vfxValueMatches(field.type, field.defaultValue))
         return invalid(`${name}.${field.name}.defaultValue`);
       names.add(field.name);
       end = field.offset + field.size;
@@ -263,7 +264,7 @@ function validateMapAgainstFields<Values extends VfxValueMap>(
         values[name],
       );
     }
-    if (!valueMatches(field.type, values[name])) {
+    if (!vfxValueMatches(field.type, values[name])) {
       return fail(
         'vfx-value-type-mismatch',
         name,

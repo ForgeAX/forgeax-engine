@@ -32,7 +32,7 @@
 //   - evalSpot(lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter,
 //              invRangeSquared, ...) -> vec3<f32>
 
-#import forgeax_pbr::brdf::{standardOpaqueBrdf}
+#import forgeax_pbr::brdf::{standardOpaqueBrdfFromView, DirectMultiScatterView, halfVectorTerms, directLightingAlpha}
 #import forgeax_pbr::lighting_spot_modifiers::{spotModifierProduct}
 
 // extendedLighting is one closed resource topology for IES, Cookie, and
@@ -84,6 +84,41 @@ fn evalVolumeSpot(
   );
 }
 
+// Exact-zero reach gates for per-light loops (clustered Standard / HDRP).
+// A cluster list is conservative: it holds every light whose bounding volume
+// touches the cluster, so most fragments in a cluster sit outside most of the
+// listed lights' range or cone. These predicates are true unless the shared
+// evaluators would return exactly zero, so callers may skip the BRDF, the
+// spot modifiers and the shadow fetches without changing a single output bit.
+// The comparisons are written NaN-preserving (`!(x >= 1)`), so a degenerate
+// input still reaches the evaluator and keeps its existing behaviour.
+//
+// Range: evalDistanceAttenuation's window is clamp(1 - x * x, 0, 1) with
+// x = max(d^2, 1e-4) * invRangeSquared; x >= 1 gives x * x >= 1 in f32, so
+// the window, and every decay branch built on window * window, is exactly 0.
+fn punctualRangeReaches(
+  lightPos        : vec3<f32>,
+  worldPos        : vec3<f32>,
+  invRangeSquared : f32,
+) -> bool {
+  let toLight = lightPos - worldPos;
+  let dSquared = max(dot(toLight, toLight), 1e-4);
+  return !(dSquared * invRangeSquared >= 1.0);
+}
+
+// Cone: the same normalize(toLight) and evalSpotCone call evalSpot makes, so
+// a zero here is the zero evalSpot would multiply its body by.
+fn spotConeReaches(
+  lightPos : vec3<f32>,
+  lightDir : vec3<f32>,
+  cosInner : f32,
+  cosOuter : f32,
+  worldPos : vec3<f32>,
+) -> bool {
+  let l = normalize(lightPos - worldPos);
+  return !(evalSpotCone(cosInner, cosOuter, dot(l, -lightDir)) == 0.0);
+}
+
 // Shared punctual BRDF body returning brdf *
 // colorTimesIntensity * nDotL * attenuation. Cone factor is applied by the
 // caller (evalSpot only). `transmission` is the diffuse-transmission albedo
@@ -104,6 +139,7 @@ fn evalPunctualBody(
   alphaSq             : f32,
   F0                  : vec3<f32>,
   transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -112,22 +148,33 @@ fn evalPunctualBody(
   let toLight = lightPos - worldPos;
   let dSquared = max(dot(toLight, toLight), 1e-4);
   let l = toLight / sqrt(dSquared);
-  let h = normalize(viewDir + l);
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
-  let nDotV = max(dot(normal, viewDir), 1e-5);
-  let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(viewDir, h), 0.0);
-  let brdf = standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,
+  let signedNDotV = dot(normal, viewDir);
+  // nDotV and the view-dependent multi-scatter terms are per pixel: the caller
+  // prepares them once (prepareDirectMultiScatterView, with the direct-lighting
+  // roughness floor) outside the light loop.
+  // Unreal BRDF.ush:24-31: N.H / V.H from dot products, no normalised half vector.
+  let halfTerms = halfVectorTerms(signedNDotL, signedNDotV, dot(viewDir, l));
+  let nDotH = halfTerms.x;
+  let vDotH = halfTerms.y;
+  // Unreal's View.MinRoughness: direct lighting only (SceneView.cpp:2921).
+  let directAlpha = directLightingAlpha(alphaSq);
+  let brdf = standardOpaqueBrdfFromView(baseColor, metallic, directAlpha, F0, ms, nDotL, nDotH, vDotH,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
   let attenuation = evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4);
+#ifdef DIFFUSE_TRANSMISSION_AVAILABLE
   let transmitted = transmission * (max(-signedNDotL, 0.0) / 3.14159265);
   return brdf * colorTimesIntensity * nDotL * attenuation
     + transmitted * colorTimesIntensity * attenuation;
+#else
+  // Without the transmission contract every caller passes zero.
+  return brdf * colorTimesIntensity * nDotL * attenuation;
+#endif
 }
 
 // Unshadowed directional light carried as a Cluster slot (every
@@ -145,26 +192,37 @@ fn evalDirectionalSlot(
   alphaSq             : f32,
   F0                  : vec3<f32>,
   transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> vec3<f32> {
   let l = normalize(-lightDir);
-  let h = normalize(viewDir + l);
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
-  let nDotV = max(dot(normal, viewDir), 1e-5);
-  let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(viewDir, h), 0.0);
-  let brdf = standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,
+  let signedNDotV = dot(normal, viewDir);
+  // nDotV and the view-dependent multi-scatter terms are per pixel: the caller
+  // prepares them once (prepareDirectMultiScatterView, with the direct-lighting
+  // roughness floor) outside the light loop.
+  // Unreal BRDF.ush:24-31: N.H / V.H from dot products, no normalised half vector.
+  let halfTerms = halfVectorTerms(signedNDotL, signedNDotV, dot(viewDir, l));
+  let nDotH = halfTerms.x;
+  let vDotH = halfTerms.y;
+  // Unreal's View.MinRoughness: direct lighting only (SceneView.cpp:2921).
+  let directAlpha = directLightingAlpha(alphaSq);
+  let brdf = standardOpaqueBrdfFromView(baseColor, metallic, directAlpha, F0, ms, nDotL, nDotH, vDotH,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
+#ifdef DIFFUSE_TRANSMISSION_AVAILABLE
   let transmitted = transmission * (max(-signedNDotL, 0.0) / 3.14159265);
   return brdf * colorTimesIntensity * nDotL + transmitted * colorTimesIntensity;
+#else
+  return brdf * colorTimesIntensity * nDotL;
+#endif
 }
 
 // Omnidirectional point light: no cone factor.
@@ -181,6 +239,7 @@ fn evalPoint(
   alphaSq             : f32,
   F0                  : vec3<f32>,
   transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -189,7 +248,7 @@ fn evalPoint(
   return evalPunctualBody(
     lightPos, colorTimesIntensity, invRangeSquared, decay,
     worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -274,6 +333,7 @@ fn evalPointShadowed(
   shadowControls      : vec4<f32>,
   shadowPosition      : vec3<f32>,
   pixel               : vec2<f32>,
+  ms                  : DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -282,11 +342,14 @@ fn evalPointShadowed(
   let lit = evalPunctualBody(
     lightPos, colorTimesIntensity, invRangeSquared, decay,
     worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
+  // Unlit (out of range, back-facing without transmission): the shadow
+  // factor in [0, 1] can only scale zero, so skip the cube taps.
+  if (all(lit == vec3<f32>(0.0))) { return lit; }
   // Bevy fetch_point_shadow: bias the receiver in world space. The normal
   // offset is normalBias cube texels at this distance (the host pre-scales it
   // by the face texel angle), pushed toward the lit hemisphere so a
@@ -345,6 +408,7 @@ fn evalSpot(
   alphaSq             : f32,
   F0                  : vec3<f32>,
   transmission        : vec3<f32>,
+  ms                  : DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -353,13 +417,14 @@ fn evalSpot(
   let body = evalPunctualBody(
     lightPos, colorTimesIntensity, invRangeSquared, 2.0,
     worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
+  // Same incident direction evalPunctualBody derives (no extra normalize).
   let toLight = lightPos - worldPos;
-  let l = normalize(toLight);
+  let l = toLight / sqrt(max(dot(toLight, toLight), 1e-4));
   let cone = evalSpotCone(cosInner, cosOuter, dot(l, -lightDir));
   return body * spotModifierProduct(1.0, 1.0, cone, 1.0, 1.0, 1.0);
 }
@@ -411,6 +476,7 @@ fn evalSpotShadowed(
   shadowControls      : vec4<f32>,
   shadowIntensity     : f32,
   pixel               : vec2<f32>,
+  ms                  : DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
@@ -419,11 +485,15 @@ fn evalSpotShadowed(
   let body = evalSpot(
     lightPos, lightDir, colorTimesIntensity, cosInner, cosOuter, invRangeSquared,
     worldPos, normal, viewDir, baseColor, metallic, alphaSq, F0, transmission,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
   );
+
+  // A zero body (outside range or cone, or back-facing without
+  // transmission) stays zero under any shadow factor; skip the PCF taps.
+  if (all(body == vec3<f32>(0.0))) { return body; }
 
   // normalBias is a world-space offset, independent of the shadow camera.
   // Fold the normal toward the light for transmitting back-lit surfaces.
@@ -441,9 +511,8 @@ fn evalSpotShadowed(
     return body;
   }
 
-  // Each shadow-casting spot owns layer `shadowAtlasTile` of the array.
-  let layerDims = vec2<f32>(textureDimensions(spotShadowMap, 0));
-  let texel = vec2<f32>(1.0, 1.0) / layerDims;
+  // Each shadow-casting spot owns layer `shadowAtlasTile` of the array. The
+  // texel size is read only by the filters that use it (soft and PCF).
 
   let aspect = max(shadowControls.w, 0.000001);
   let viewportScale = vec2<f32>(min(1.0, aspect), min(1.0, 1.0 / aspect));
@@ -454,8 +523,10 @@ fn evalSpotShadowed(
   } else if (shadowControls.z == 8.0) {
     shadowFactor = sample_shadow_variance(uv, shadowAtlasTile + 4, depthRef + depthBias, viewportScale, true);
   } else if (shadowControls.z == 7.0) {
+    let texel = vec2<f32>(1.0, 1.0) / vec2<f32>(textureDimensions(spotShadowMap, 0));
     shadowFactor = sample_shadow_2d_soft(spotShadowMap, shadowSampler, uv, shadowAtlasTile, texel, depthRef + depthBias, viewportScale);
   } else {
+    let texel = vec2<f32>(1.0, 1.0) / vec2<f32>(textureDimensions(spotShadowMap, 0));
     shadowFactor = sample_shadow_2d_punctual(
       spotShadowMap, shadowSampler, uv, shadowAtlasTile, texel * vec2<f32>(1.0, 1.0 / aspect), depthRef + depthBias,
       shadowControls.x, pixel, viewportScale,

@@ -7,10 +7,10 @@
   "wasmBindgen": "0.2.129",
   "paint": "vello_gpu@0.3.0/portable; anyrender_vello_cpu@0.18.0/reference",
   "profile": "release",
-  "sourceDigest": "96c762c45667563e26d512af5b04f91e20a888a0c2c7abc5eb4992221519128e",
+  "sourceDigest": "4c928bb10c5895a0be851ddd8b18035cc26e8bd92b8f9d1e2e032d7dbf03237d",
   "inputs": {
-    "packages/ui-blitz/Cargo.lock": "3a9346a23cb4616ac6967fcbf41d34c7d034a107693c1acac656db99e707d817",
-    "packages/ui-blitz/Cargo.toml": "4d384538a114de44a0e853de270434f1dac82ed4d6762c4eb409853c0b4f20e7",
+    "packages/ui-blitz/Cargo.lock": "6dd8de56b7822694db88cc4cdb8bae4678347e50328bf3f1863e5b6d8daace0f",
+    "packages/ui-blitz/Cargo.toml": "e64df485b0d0898a72e7fbe28eceb96cd2f9e53d71848e214f3b9da3a9ce42c4",
     "packages/ui-blitz/rust/control_tests.rs": "f6dca194ef5391447897736303bd67789248b5b28da62d81796a80a1d52b13ee",
     "packages/ui-blitz/rust/focus_tests.rs": "edb3359f2b921a6f032c64aa924759479a472e24a84a4825b30b66a8bff9ec52",
     "packages/ui-blitz/rust/form_tests.rs": "29f0e6be07dcea666437a24d5396e81e7a94ca0952e7b5e33507b0180363001b",
@@ -651,6 +651,18 @@
       ]
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#anyrender_svg@0.15.0",
+      "features": [
+        "default",
+        "image",
+        "image_format_gif",
+        "image_format_jpeg",
+        "image_format_png",
+        "image_format_webp",
+        "text"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#anyrender_vello_cpu@0.18.0",
       "features": [
         "filters"
@@ -665,6 +677,10 @@
         "serde",
         "serde_serialization"
       ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#arrayref@0.3.9",
+      "features": []
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#arrayvec@0.7.8",
@@ -682,6 +698,15 @@
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#autocfg@1.5.1",
       "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#base64@0.23.1",
+      "features": [
+        "alloc",
+        "default",
+        "simd-unsafe",
+        "std"
+      ]
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.2",
@@ -755,6 +780,10 @@
         "default",
         "std"
       ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#color_quant@1.1.0",
+      "features": []
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#core_detect@1.0.0",
@@ -925,6 +954,12 @@
       ]
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#float-cmp@0.9.0",
+      "features": [
+        "std"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#fnv@1.0.7",
       "features": [
         "default",
@@ -941,6 +976,21 @@
       "id": "registry+https://github.com/rust-lang/crates.io-index#font-types@0.12.6",
       "features": [
         "bytemuck",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fontconfig-parser@0.5.8",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#fontdb@0.24.0",
+      "features": [
+        "fontconfig",
+        "fontconfig-parser",
+        "fs",
+        "memmap",
+        "memmap2",
         "std"
       ]
     },
@@ -981,6 +1031,15 @@
       ]
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#gif@0.14.2",
+      "features": [
+        "color_quant",
+        "default",
+        "raii_no_panic",
+        "std"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#glifo@0.4.0",
       "features": [
         "default",
@@ -994,6 +1053,7 @@
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#harfrust@0.12.0",
       "features": [
+        "default",
         "std"
       ]
     },
@@ -1113,6 +1173,7 @@
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#image@0.25.10",
       "features": [
+        "gif",
         "jpeg",
         "png",
         "webp"
@@ -1121,6 +1182,39 @@
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#image-webp@0.2.4",
       "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#imagesize@0.15.0",
+      "features": [
+        "aesprite",
+        "astc",
+        "atc",
+        "bmp",
+        "dds",
+        "default",
+        "eac",
+        "etc2",
+        "exr",
+        "farbfeld",
+        "gif",
+        "hdr",
+        "heif",
+        "ico",
+        "ilbm",
+        "jpeg",
+        "jxl",
+        "ktx2",
+        "mod",
+        "png",
+        "pnm",
+        "psd",
+        "pvrtc",
+        "qoi",
+        "tga",
+        "tiff",
+        "vtf",
+        "webp"
+      ]
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#indexmap@2.14.2",
@@ -1409,6 +1503,13 @@
       ]
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#pico-args@0.5.0",
+      "features": [
+        "default",
+        "eq-separator"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#pin-project-lite@0.2.17",
       "features": []
     },
@@ -1480,6 +1581,22 @@
       "features": [
         "default",
         "userspace"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#roxmltree@0.20.0",
+      "features": [
+        "default",
+        "positions",
+        "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#roxmltree@0.21.2",
+      "features": [
+        "default",
+        "positions",
+        "std"
       ]
     },
     {
@@ -1585,6 +1702,13 @@
       ]
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#simplecss@0.2.2",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#siphasher@1.0.4",
       "features": [
         "default",
@@ -1642,6 +1766,14 @@
       "features": []
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#strict-num@0.1.1",
+      "features": [
+        "approx-eq",
+        "default",
+        "float-cmp"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#string_cache@0.11.0",
       "features": [
         "default",
@@ -1694,6 +1826,13 @@
         "servo",
         "stylo_atoms",
         "url"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#svgtypes@0.16.2",
+      "features": [
+        "default",
+        "std"
       ]
     },
     {
@@ -1777,10 +1916,24 @@
       "features": []
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tiny-skia-path@0.12.0",
+      "features": [
+        "default",
+        "std"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#tinystr@0.8.4",
       "features": [
         "alloc",
         "zerovec"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#tinyvec@1.13.3",
+      "features": [
+        "alloc",
+        "default"
       ]
     },
     {
@@ -1836,11 +1989,27 @@
       "features": []
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-bidi@0.3.18",
+      "features": [
+        "default",
+        "hardcoded-data",
+        "std"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-ident@1.0.26",
       "features": []
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-script@0.5.9",
+      "features": []
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-segmentation@1.13.3",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#unicode-vo@0.1.0",
       "features": []
     },
     {
@@ -1849,6 +2018,26 @@
         "default",
         "serde",
         "std"
+      ]
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#usvg@0.48.1",
+      "features": [
+        "base64",
+        "default",
+        "flate2",
+        "fontdb",
+        "harfrust",
+        "memmap-fonts",
+        "skrifa",
+        "svgz",
+        "system-fonts",
+        "text",
+        "unicode-bidi",
+        "unicode-script",
+        "unicode-vo",
+        "writer",
+        "xmlwriter"
       ]
     },
     {
@@ -1906,6 +2095,14 @@
       "features": []
     },
     {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#weezl@0.1.12",
+      "features": [
+        "alloc",
+        "default",
+        "std"
+      ]
+    },
+    {
       "id": "registry+https://github.com/rust-lang/crates.io-index#winapi-util@0.1.11",
       "features": []
     },
@@ -1946,6 +2143,10 @@
     },
     {
       "id": "registry+https://github.com/rust-lang/crates.io-index#xml5ever@0.40.0",
+      "features": []
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#xmlwriter@0.1.0",
       "features": []
     },
     {
@@ -2016,8 +2217,8 @@
   ],
   "outputs": {
     "ui_blitz_bg.wasm": {
-      "bytes": 15695399,
-      "sha256": "856b65ec4d79270c4518d37ac80be60e9897aeb08edd34e4e6b888dbbccd8434"
+      "bytes": 17035120,
+      "sha256": "fa276ba25c91786b6db51c765f6f2ee75362530bf4eaa829ed7e84a8988f9851"
     },
     "ui_blitz_bg.wasm.d.ts": {
       "bytes": 8798,
@@ -2033,7 +2234,7 @@
     },
     "ui-native.mjs": {
       "bytes": 44084,
-      "sha256": "614028c6993894ea86374e5553469a2c58a4ddaf605ca3744b6c09d2630d72b1"
+      "sha256": "5f6312192017710acacd9baeaaaf335627813c507f66632c99d29644957ad97e"
     },
     "ui-native.d.mts": {
       "bytes": 5281,

@@ -29,6 +29,7 @@ import {
 } from '@forgeax/engine-vfx';
 import { createVfxRuntimeHost } from '@forgeax/engine-vfx-render';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
@@ -211,10 +212,10 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
     : undefined;
   let acknowledgements = 0;
   let frameNumber = 0;
-  const draw = async (update = true) => {
+  const draw = async (update = true, sampleTimeSeconds?: number) => {
     if (update) world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const candidate = publisher?.prepare(++frameNumber / 60).unwrap();
+    const candidate = publisher?.prepare(sampleTimeSeconds ?? ++frameNumber / 60).unwrap();
     const packet =
       candidate === undefined
         ? undefined
@@ -264,14 +265,19 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
     }
   };
-  try {
-    for (let i = 0; i < (options.warmupFrames ?? 60); i++) {
+  const drawReady = async () => {
+    world.update(1 / 60).unwrap();
+    const sampleTimeSeconds = ++frameNumber / 60;
+    return completeReadyFrame(async () => {
       const before = acknowledgements;
-      await draw();
-      // First-use material preparation can defer simulation; once admitted,
-      // each Renderer submission may acknowledge the feature at most once.
+      const receipt = await draw(false, sampleTimeSeconds);
+      // Retries republish one World/clock snapshot and retain per-submit ACK admission.
       if (publisher !== undefined) expect(acknowledgements - before).toBeLessThanOrEqual(1);
-    }
+      return receipt;
+    });
+  };
+  try {
+    for (let i = 0; i < (options.warmupFrames ?? 60); i++) await drawReady();
     if (runtime.snapshot().length > 0) {
       const pendingFailure = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
@@ -316,6 +322,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         (await recorder.frameBoundary()).unwrap();
         const tape = (await pendingStage).unwrap();
         const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
+        await options.save(`vfx-${name}.rhitape`, compactTape(tape).bytes);
         const pixels = required(
           required(
             renderValue(await renderer.observe(completed, { include: ['final-display'] }))
@@ -383,14 +390,14 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         const offset = 32 * hidden.pixels.metadata.bytesPerRow + x * 4;
         expect(Array.from(hidden.pixels.bytes.subarray(offset, offset + 3))).toEqual([0, 0, 0]);
       }
-      expect(new Set(stages.map((stage) => stage.graphGeneration)).size).toBe(1);
-      expect(new Set(stages.map((stage) => stage.deviceGeneration)).size).toBe(1);
-      expect(runtime.snapshot()).toHaveLength(0);
-      expect(errors).toEqual([]);
       await options.save(
         'vfx-visibility-transitions.json',
         new TextEncoder().encode(JSON.stringify(stages, null, 2)),
       );
+      expect(new Set(stages.map((stage) => stage.graphGeneration)).size).toBe(1);
+      expect(new Set(stages.map((stage) => stage.deviceGeneration)).size).toBe(1);
+      expect(runtime.snapshot()).toHaveLength(0);
+      expect(errors).toEqual([]);
     }
     failSubmit = true;
     const beforeFailure = acknowledgements;
@@ -617,9 +624,12 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) { (*p
         },
       })
       .unwrap();
-    for (let i = 0; i < 8; i++) await draw();
+    for (let i = 0; i < 8; i++) await drawReady();
     renderValue(required(renderer.requestObservation).call(renderer, ['final-display']));
     const recovered = await draw();
+    expect(recovered.presentation, JSON.stringify(recovered.presentationPendingReason)).toBe(
+      'ready',
+    );
     expect(recovered.deviceGeneration).toBeGreaterThan(receipt.deviceGeneration);
     const recoveredPixels = required(
       required(

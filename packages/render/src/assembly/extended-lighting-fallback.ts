@@ -3,10 +3,12 @@ import type {
   Result,
   RhiDevice,
   RhiError,
+  Sampler,
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
 import { LTC_TABLE_HEIGHT, LTC_TABLE_WIDTH, LTC_TABLES } from '@forgeax/engine-shader';
+import type { DeviceScope } from '../device/device-scope';
 import {
   GPU_TEXTURE_USAGE_COPY_DST,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
@@ -15,7 +17,10 @@ import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usag
 import {
   COOKIE_MATRIX_BYTES,
   COOKIE_MIP_LEVEL_COUNT,
+  COOKIE_SLICE_MIP_CHAIN_BYTES,
   COOKIE_SLICE_SIZE,
+  EXTENDED_LIGHTING_TOPOLOGY,
+  type ExtendedLightingResourceCandidate,
   IES_SLICE_HEIGHT,
   IES_SLICE_WIDTH,
 } from '../prepare/extended-lighting/resources';
@@ -226,5 +231,47 @@ export function createExtendedLightingFallbackResources(
       LTC_TABLES.lambert,
     ),
     ltcGgxTextureView: createLtcView(device, 'extended-lighting-ltc-ggx', LTC_TABLES.ggx),
+  };
+}
+
+/** Pipeline fields that carry the resident extended-lighting fallback set. */
+interface ExtendedLightingPipelineResources extends Partial<ExtendedLightingFallbackResources> {
+  readonly extendedLightingAvailable?: boolean;
+  readonly defaultSampler: Sampler;
+}
+
+/** The accepted-resource candidate for a pipeline whose fallback set is complete. */
+export function extendedLightingFallbackCandidate(
+  state: ExtendedLightingPipelineResources,
+  scope: DeviceScope,
+): ExtendedLightingResourceCandidate | undefined {
+  if (
+    state.extendedLightingAvailable !== true ||
+    state.iesProfileTexture === undefined ||
+    state.cookieTexture === undefined ||
+    state.cookieMatrixBuffer === undefined ||
+    state.iesProfileTextureView === undefined ||
+    state.cookieTextureView === undefined ||
+    state.ltcLambertTextureView === undefined ||
+    state.ltcGgxTextureView === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    topology: EXTENDED_LIGHTING_TOPOLOGY,
+    generation: scope.generation,
+    scope,
+    iesSliceCount: 0,
+    cookieSliceCount: 0,
+    cookieMatrices: 0,
+    sampler: state.defaultSampler,
+    iesTexture: state.iesProfileTexture,
+    cookieTexture: state.cookieTexture,
+    cookieMatrixBuffer: state.cookieMatrixBuffer,
+    descriptorBytes:
+      IES_SLICE_WIDTH * IES_SLICE_HEIGHT * 2 * 32 +
+      COOKIE_SLICE_MIP_CHAIN_BYTES * 32 +
+      COOKIE_MATRIX_BYTES,
+    uploadCount: 5,
   };
 }

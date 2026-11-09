@@ -23,7 +23,10 @@ import {
 } from '../render-system-record-attempt';
 import {
   createStandardSceneSurfaceAdmission,
+  type StandardSceneDataAdmissionInput,
+  type StandardSceneDataContributor,
   standardSceneDataContributorForDispatch,
+  standardSceneSurfaceContributorBaseline,
 } from '../temporal/standard-scene-data-admission';
 import {
   RENDER_FEATURE_VIEWS_SYSTEM,
@@ -148,7 +151,8 @@ function prepareFeatureFrameInput(
     frame.gpuOwned?.slots,
   );
   const profile = frameState.cameraStandardProfile ?? internals.standardProfile;
-  frameState.standardSceneSurfaceAdmission = createStandardSceneSurfaceAdmission({
+  const contributors: StandardSceneDataContributor[] = [];
+  const admission: StandardSceneDataAdmissionInput = {
     viewIdentity: featureViewIdentity(view.mode, camera),
     generation: recordContext(internals).featureHost?.preparedGeneration ?? 0,
     deviceGeneration: recordContext(internals).deviceScope.generation,
@@ -164,26 +168,29 @@ function prepareFeatureFrameInput(
       frameState.activePipeline === recordContext(internals).standardPipeline
         ? profile?.renderPath
         : undefined,
-    contributors: projection.dispatch.flatMap((dispatch) => {
-      const row = projection.renderables.at(dispatch.renderableIndex);
-      const sourceTuple = Object.freeze([
-        row?.worldId ?? -1,
-        row?.entityKey ?? -1,
-        dispatch.materialHandle,
-        dispatch.passIndex,
-      ] as const);
-      const contributor = standardSceneDataContributorForDispatch({
-        row,
-        sourceTuple,
-        materialHandle: dispatch.materialHandle,
-        materialShaderId: dispatch.materialShaderId,
-        tags: dispatch.tags,
-        lane: profile?.renderPath === 'deferred' ? 'deferred' : 'forward',
-        id: JSON.stringify(sourceTuple),
-      });
-      return contributor === undefined ? [] : [contributor];
-    }),
+    contributors,
+  };
+  const previousContributors = standardSceneSurfaceContributorBaseline(
+    frameState.standardSceneSurfaceAdmission,
+  );
+  let contributionIndex = 0;
+  projection.dispatch.forEach((dispatch) => {
+    const row = projection.renderables.at(dispatch.renderableIndex);
+    const contributor = standardSceneDataContributorForDispatch(
+      row,
+      dispatch,
+      profile?.renderPath === 'deferred' ? 'deferred' : 'forward',
+      previousContributors?.[contributionIndex],
+    );
+    if (contributor !== undefined) {
+      contributors.push(contributor);
+      contributionIndex++;
+    }
   });
+  frameState.standardSceneSurfaceAdmission = createStandardSceneSurfaceAdmission(
+    admission,
+    frameState.standardSceneSurfaceAdmission,
+  );
   const skylight = resolveFeatureSkylight(owner, pipelineState, frame, view.resourceWorld);
   if (recordContext(internals).featureHost === undefined) return { input: undefined, skylight };
   const generation = recordContext(internals).deviceScope.generation;

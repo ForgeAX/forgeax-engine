@@ -29,7 +29,7 @@ const input = (slot: number) => ({
   program: 'program',
   ranges: ranges(slot),
   entries: ['spawn', 'update'],
-  runtime: new Uint32Array(76).fill(slot + 1),
+  runtime: new Uint32Array(80).fill(slot + 1),
   customStride: 24,
 });
 it('copies current runtime rows and preserves independent nonzero whole-buffer bases', () => {
@@ -52,9 +52,9 @@ it('copies current runtime rows and preserves independent nonzero whole-buffer b
     table.data.byteLength / 4,
   );
   expect(words[0]).toBe(2);
-  expect(words[84]).toBe(3);
-  expect([...words.slice(76, 84)]).toEqual([256, 256, 256, 256, 256, 256, 256, 1]);
-  expect([...words.slice(160, 168)]).toEqual([512, 512, 512, 512, 512, 512, 512, 1]);
+  expect(words[88]).toBe(3);
+  expect([...words.slice(80, 88)]).toEqual([256, 256, 256, 256, 256, 256, 256, 1]);
+  expect([...words.slice(168, 176)]).toEqual([512, 512, 512, 512, 512, 512, 512, 1]);
   expect(passes[0]?.kind).toBe('compute');
   if (passes[0]?.kind === 'compute')
     expect(
@@ -108,7 +108,7 @@ it('grows a job table on demand while declaring one full slab table', () => {
       program: 'program',
       ranges: shared,
       entries,
-      runtime: new Uint8Array(new Uint32Array(76).fill(job + 1).buffer),
+      runtime: new Uint8Array(new Uint32Array(80).fill(job + 1).buffer),
       customStride: 24,
       tick: 0,
       reset: [],
@@ -117,12 +117,12 @@ it('grows a job table on demand while declaring one full slab table', () => {
   frame.finishFrame(resources, []);
   const table = resources.find((r) => r.kind === 'buffer' && r.name.endsWith('.table'));
   if (table?.kind !== 'buffer' || table.data === undefined) throw new Error('missing table');
-  expect(table.size).toBe(16 * 336);
-  expect(table.data.byteLength).toBe(5 * 336);
-  const words = new Uint32Array(table.data.buffer, table.data.byteOffset, (5 * 336) / 4);
+  expect(table.size).toBe(16 * 352);
+  expect(table.data.byteLength).toBe(5 * 352);
+  const words = new Uint32Array(table.data.buffer, table.data.byteOffset, (5 * 352) / 4);
   for (let job = 0; job < 5; job++) {
-    expect(words[job * 84]).toBe(job + 1);
-    expect([...words.slice(job * 84 + 76, job * 84 + 84)]).toEqual([
+    expect(words[job * 88]).toBe(job + 1);
+    expect([...words.slice(job * 88 + 80, job * 88 + 88)]).toEqual([
       256, 256, 256, 256, 256, 256, 256, 1,
     ]);
   }

@@ -78,7 +78,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
     const particles = new Uint32Array(4 * 28);
     particles[liveSlot * 28 + 24] = 99;
     particles[liveSlot * 28 + 25] = 1;
-    const runtime = new Uint32Array(76);
+    const runtime = new Uint32Array(80);
     runtime[4] = 4;
     runtime[7] = 1;
     runtime[61] = 2;

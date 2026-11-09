@@ -210,6 +210,7 @@ export {
   type ProducerReadinessResult,
   parseProducerReadiness,
   produceSourcePackage,
+  runSourcePackageImport,
   type SourcePackageClosureDetail,
   type SourcePackageClosureError,
   type SourcePackageProducerInput,
@@ -217,7 +218,10 @@ export {
   type SourcePackageProduct,
   sourcePackageAssetsByGuid,
 } from './source-package.js';
-export type { SourcePackageBuildDdc } from './source-package-build-product.js';
+export {
+  createSourcePackageBuildDdc,
+  type SourcePackageBuildDdc,
+} from './source-package-build-product.js';
 export {
   containsSourcePackageError,
   normalizeSourcePackageError,
@@ -235,7 +239,9 @@ export {
   type ImportPublicationError,
   type ImportPublicationInput,
   type ImportPublicationResult,
+  type ImportPublicationSnapshot,
   publishImportPublication,
+  readImportPublication,
   restoreImportPublication,
   type StagedImportPublication,
   type StagedImportPublicationResult,

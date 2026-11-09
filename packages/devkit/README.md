@@ -16,6 +16,15 @@ Fiber through the existing workspace provider and browser command transport.
 exact preview ownership; reads do not enter the ordered mutation queue. Source
 generation only composes the owner, never implements geometry or rotation math.
 Transparent thumbnails retain their canonical sphere and existing cache policy.
+The retained thumbnail carrier awaits Engine preparation and GPU completion.
+Before retrying a pending picture, it consumes that receipt's actual observation
+domains. Only ready pictures count toward the image or VFX window; pending
+captures must not occupy the bounded unread-observation queue across retries.
+Request reports use the live bridge's existing public-URL projection, removing
+its owner token while retaining ordinary dependency version queries. This applies
+to both notable requests and opt-in successful request timing; it does not change
+the actual request URL or browser module identity.
+
 ## Source-scoped diagnostics and platform HTML
 
 `forgeax asset import` derives single-output image and audio formats from each importer. HDR declares an Equirect identity; LUT/container images and buffered audio use their producer-owned topology and defaults. Repeating the command preserves authored GUIDs and settings. Successful registration is not a cook or native decode receipt.
@@ -25,6 +34,8 @@ Source authoring gateways scan `forge.json#assetRoots`. Unrelated staging is out
 `forgeax asset shader check --path assets/example.wgsl --json` compiles that source and its imported module closure, reports its digest and dependency paths, and does not build game code. Omit `--path` for the whole project build check. A raw Surface requiring generated material parameters still needs its material cook; a named-source success is not material or GPU acceptance.
 
 For browser/Tauri platform integrations, author an HTML head fragment and pass `forgeax project build --html-head platform-head.html --json`. Use inline content or absolute platform URLs; local relative files resolve from the generated host, not the fragment. DevKit includes it before Vite emits and `forgeax-dist.json` seals the output. Do not inject scripts into a sealed `dist/index.html`. Integration tools must forward this build input; Engine does not rewrite their post-build hooks. WeChat has no HTML carrier and rejects this option.
+
+`forgeax project check` also dry-cooks every authored `*.pack.json` material and particle-effect entry with the real producers, offline and in seconds, so a mistake such as a `texture2d` parameter type fails with the pack, key and owner hint (`project-assets-invalid`) instead of after a full dev start. `*.pack.ts` packs are reported as skipped. `forgeax asset guid <packageId> <key> [--json]` prints the asset GUID derived for a pack key (UUIDv5 over the package id and key), the same value the cook assigns.
 
 Doctor validates the installed dependency closure, package-manager evidence and Engine binding without traversing mutable project output. Starting a run still captures and rechecks the complete project input tree.
 
@@ -94,6 +105,17 @@ Pack authoring activates one gateway per client and preserves request-id
 deduplication. The package ships the CLI's dynamic chunks under `dist` together
 with the public entry, so SDK/archive consumers follow the same path. Generated Node program tables load the shipped internal `pack-program-host.mjs` artifact directly; restoring their module closure does not import the DevKit facade or activate Vite/Playwright.
 
+Exact `dev start/status/stop/reload` commands dispatch directly to the built-in
+live owner without a preliminary project tool inventory. Start and reload keep
+the serving owner's complete source validation and publication. Help, including
+`dev start --help`, and project extension paths retain command discovery.
+
+The private generated Node loader reads its sealed program graph and tables as
+JSON in the same disposable compiler directory. Graph data is not compiled a
+second time as a large JavaScript literal. Producer identity, captured source
+fences, module linking and archive bytes retain their existing owners; this is
+not another persistent cache or a browser delivery format.
+
 ## Create behavior assets
 
 ```sh
@@ -128,6 +150,11 @@ input scope excludes that Host-owned generated directory. Retiring a failed Host
 therefore preserves its original startup failure instead of triggering another
 reload; edits to authored files and observed external dependencies still invalidate
 the session.
+
+Concurrent input checks share work only within the same compiler input scope.
+When backend readiness adopts its observed scope, an older broad scan is
+rechecked under that scope before its result or error can drive a reload.
+Scope adoption alone therefore does not restart an unchanged project.
 
 ## Independent backend startup
 
@@ -182,6 +209,14 @@ ownership only when the recorded PID and endpoint still belong to that live
 child. Ordinary `dev status` requests retain their five-second limit. The project startup override also reaches these waits; `null` disables
 them. A visible Engine fatal ends first-frame waiting immediately and reports
 failure even when page/console error lists are empty. It is never a waiting bridge.
+
+With `FORGEAX_WORKSPACE_TIMING=1`, successful browser capture reports also retain
+request entries with browser network phase offsets and accumulated source-fence
+`freshnessMs`. A phase offset of `-1` remains unobserved. Pack emits actual
+`forgeax.dev-watch.timing` snapshot spans with stat/directory-read counts. Join
+these observations to the first-frame interval; concurrent request durations
+overlap and must not be summed as elapsed startup time. Ordinary reports remain
+compact, and diagnostics do not change startup or rendering acceptance.
 
 Generated browser realms have no startup deadline by default. A positive
 `package.json#forgeax.startupTimeoutMs` sets one shared deadline for frontend
@@ -646,9 +681,11 @@ actual `LoadSubpackageTask`: progress availability, event count/time, percentage
 and written/expected bytes. Invalid fields and observer failures remain explicit;
 late progress after the loading phase cannot mutate the retained facts. This
 observes the existing native task and changes no download, timeout or retry policy.
-Earlier initialization failures
-retire partial resources and show a native modal with the most specific available
-cause message, bounded to 160 characters, followed by Reload/reopen guidance.
+Earlier initialization failures retire partial resources. With default failure
+presentation they show a native modal with the most specific available cause
+message, bounded to 160 characters, followed by Reload/reopen guidance. Custom
+or disabled failure presentation suppresses that modal, including subpackage
+transport failures.
 Complete structured causes and cleanup failures remain JSON-safe in the current
 `__forgeaxGameInspection.error`; the original error is also logged. Both Reload
 controls use the same serialized Host replacement, retaining the first display
@@ -1785,6 +1822,100 @@ Cover text comes from `devkitAppOptions.loadingLabels` (`lang`, `phases`,
 validates it as strings and emits it into the HTML, the native WeChat cover and
 the generated module.
 
+### Project-owned loading and failure screens
+
+Set `devkitAppOptions.startupUi` in the build root plugin. Each screen is independent:
+
+| Value | Presentation |
+|:--|:--|
+| Omitted or `'default'` | Built-in screen; loading keeps the game title centered and ForgeAX branding in the left quarter of the bottom row, progress text in the right three quarters, and the progress bar below. Only detail text truncates; activity and elapsed time stay visible. |
+| `'none'` | No screen markup; the empty canvas starts black, and any rendered game content remains visible. |
+| `{ html, css?, script? }` | Complete project-owned content, styles and interaction inside a full-screen Host root. No Engine branding or built-in controls are inserted into the custom content. |
+
+```ts
+ctx.devkitAppOptions = {
+  startupUi: { loading: 'none', failure: 'none' },
+};
+```
+
+For a solid black cover until readiness (or on failure), use an empty template:
+
+```ts
+ctx.devkitAppOptions = {
+  startupUi: { loading: { html: '' }, failure: { html: '' } },
+};
+```
+
+A complete custom example:
+
+```ts
+ctx.devkitAppOptions = {
+  startupUi: {
+    loading: {
+      html: '<main><h1>My Game</h1><p></p></main>',
+      css: '#forgeax-loading { background: #101820; color: white; font: 18px system-ui; }',
+      script: `
+        const status = screen.root.querySelector('p');
+        screen.subscribe(state => {
+          status.textContent = state.progress.activity + ' ' + state.progress.percent + '%';
+        });
+      `,
+    },
+    failure: {
+      html: '<main><h1>Could not continue</h1><pre></pre><button>Try again</button></main>',
+      css: '#forgeax-fatal { background: #181010; color: white; }',
+      script: `
+        screen.subscribe(state => {
+          screen.root.querySelector('pre').textContent = state.message + '\\n' + state.diagnostics;
+        });
+        const button = screen.root.querySelector('button');
+        button.addEventListener('click', screen.reload);
+        return () => button.removeEventListener('click', screen.reload);
+      `,
+    },
+  },
+};
+```
+
+`html` is a body fragment, `css` is appended after the default styles, and `script`
+is a classic JavaScript function body with `screen: StartupUiScreen` in scope.
+Types are exported from `@forgeax/engine/devkit/plugin-build`. Keep Host IDs
+(`app`, `app-shell`, `game-ui`, and the `forgeax-` prefix) reserved; use project
+IDs inside your fragment. The script is compiled
+statically into the Host bootstrap, without `eval` or `Function`; put code in
+`script`, not HTML script tags. Syntax errors fail project preparation. Read files
+from the build plugin if desired, and inline images/fonts as data URIs so the
+screen is available before Engine modules and Pack assets. Relative external
+resources require the project's own delivery route; these fields do not copy files.
+
+| `screen` member | Contract |
+|:--|:--|
+| `kind`, `root`, `document` | Screen kind, full-screen element (`#forgeax-loading` or `#forgeax-fatal`) and the active Host document. |
+| `subscribe(listener)` | Immediately delivers an immutable snapshot; returns unsubscribe. State includes `phase`, `progress` (`percent/activity/detail/elapsed`), `slow`, `message`, `diagnostics`, `recovery` and `copyStatus`. |
+| `reload()` | Retires the Host and requests reload. |
+| `copyDiagnostics()` | Copies retained summary and diagnostic text without requiring built-in DOM; resolves to success and updates `copyStatus`. |
+| Script return value | Optional cleanup function for timers/listeners. Subscriptions retire automatically with the template. |
+
+The loading script mounts only on game pages, and retires after the ready-frame
+fade or a terminal failure (after any automatic cache retry). The failure script mounts before game modules so it can display module-load
+failures and later runtime faults. Both retire on Host destruction. During an
+automatic cache retry, `recovery` becomes `'retrying'`; a final result publishes
+`'exhausted'` or `'failed'` with updated diagnostics. Template exceptions are logged
+and do not admit gameplay input or replace the original game failure.
+
+> [!IMPORTANT]
+> Presentation never controls readiness, input gating, frame/session validation or
+> cache recovery. Disabling failure UI still records the failure in the console and
+> Host diagnostics. No mandatory error UI or branding appears when both are disabled.
+
+Dev, Browser builds, Tauri, Editor Play and WeChat use the same generated template
+and state contract. Native WeChat supports its Host DOM/CSS implementation and
+platform APIs; arbitrary browser-only APIs are not made portable by this option.
+Early WeChat faults retain console/inspection diagnostics. The emergency native
+modal is used only for default failure presentation; custom and `'none'` modes
+suppress it. An error before the UI runtime exists cannot render an HTML template.
+Shared Host-port tests are not a substitute for native device acceptance.
+
 Startup observes nonbubbling App receipts through the stable page capture path. Render Worker recovery can replace the transferred canvas; receipts from a retired or unrelated canvas cannot enter the game or reuse an old submission. Replacing the presenting canvas element during the fade (observed on its parent) restores preparation and closes input at once, which also releases any pointer lock; a new device generation or session does the same. Input reopens with the replacement's first ready frame. The App Host carries the closed input gate and the author pointer-lock policy onto the replacement canvas's input backend. `data-forgeax-input="open"` is the readiness signal for scripted real input: it is set only while startup admits gameplay input and is `closed` on loading, preparation, fatal and destroyed pages; waiting for the fade to finish is not required.
 
 The same startup input state projects `#game-ui.inert` in browser and native
@@ -2644,6 +2775,10 @@ It uses a real browser compositor with a flat-canvas fixture: observation preser
 black pixels and runtime diagnostics, validation still fails, and an absent
 checkpoint cannot become a successful observation. `dev capture` selects observation;
 project/Preview capture keeps validation by default.
+Validated composition waits for the Host startup cover to become hidden within
+the existing capture deadline. A ready canvas beneath its cosmetic fade does
+not yet qualify unobscured DOM/Shadow DOM pixels; observation and fatal
+diagnostics retain the current surface.
 The same real WebGPU fixture submits one frame and suspends its page animation callbacks:
 capture must still return non-flat compositor pixels, without asking the game to tick again.
 
@@ -2826,3 +2961,22 @@ Project cooker cache identities cross the build-process boundary as callbacks,
 executed in the original owner process on demand. Unversioned cookers remain
 uncacheable; identity failures propagate to the caller so DDC admission can fall
 back without inventing a producer version.
+
+With `FORGEAX_WORKSPACE_TIMING=1`, `forgeax.dev-startup.timing` records wall/CPU
+intervals for owner readiness, input scans, host import, Vite configuration/server
+preparation, Pack readiness, browser opening/navigation and first-frame admission.
+Detached owners retain these intervals in `.forgeax/dev-startup.log`; their
+project child keeps existing producer diagnostics in `.forgeax/dev.log`.
+Intervals include `pid` and `startedUnixMs` for cross-process alignment; nested or
+overlapping intervals must not be summed. Timing records omit URLs, bridge tokens
+and exception contents. They do not change existing startup budgets or acceptance.
+
+Live startup distinguishes pending input work from an explicit reload. A child
+that has already accepted the latest compiler scope/version consumes that input
+request after a fresh check; a newer edit or explicit reload still replaces the
+runtime. Opt-in `forgeax.live-inputs.timing` records requests, compiler adoption
+and covered requests in the detached owner's existing timing log.
+
+Compiler filesystem analysis reuses the source snapshot's raw import syntax,
+including type-only imports. The existing filesystem-call pattern and conservative
+source fence remain unchanged; only duplicate TypeScript preprocessing is removed.

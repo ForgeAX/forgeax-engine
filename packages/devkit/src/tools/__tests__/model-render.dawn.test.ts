@@ -207,10 +207,12 @@ describe('model.render on the real renderer', () => {
     expect(plain.artifacts.map((a) => a.mediaType)).toEqual(Array(4).fill('image/png'));
     expect(plain.value.sheet).toMatchObject({ width: 2 * 160 + 4, height: 2 * 160 + 4 });
     expect(magenta(await pixels(plain.value, 'front'))).toBe(0);
-    // The Dawn carrier in this suite runs on Lavapipe (VK_ICD_FILENAMES=lvp_icd.json).
+    // Linux CI selects Lavapipe explicitly; macOS exercises its native hardware adapter.
     expect(plain.value.renderer.backend).toBe('webgpu');
     expect(Object.values(plain.value.renderer.adapter).join('').length).toBeGreaterThan(0);
-    expect(plain.value.renderer.software).toBe(true);
+    expect(typeof plain.value.renderer.software).toBe('boolean');
+    const selectedIcd = process.env.VK_DRIVER_FILES ?? process.env.VK_ICD_FILENAMES;
+    if (selectedIcd?.includes('lvp_icd')) expect(plain.value.renderer.software).toBe(true);
 
     const highlighted = await render({
       source: crate,

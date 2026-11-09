@@ -72,7 +72,7 @@ export interface VfxGpuProgramReflection {
  * program remains the fallback for devices or emitters outside this ABI. */
 export interface VfxGpuInstanceComputeProgram {
   readonly format: 'forgeax-vfx-instance-compute-1';
-  readonly jobBytes: 336;
+  readonly jobBytes: 352;
   readonly wgsl: string;
   readonly bindings: readonly BindGroupLayoutDescriptor[];
 }

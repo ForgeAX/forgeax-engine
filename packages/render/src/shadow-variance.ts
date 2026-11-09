@@ -150,7 +150,7 @@ export function addVarianceShadowPasses(
           const internal = frame as _InternalRenderPipelineContext;
           const device = frame.runtime.device;
           if (program === undefined) {
-            const source = internal.runtime.standardDeferredShaders?.shadowVariance;
+            const source = internal.runtime.standardSceneShaders?.shadowVariance;
             const factory = frame.runtime.shaderModuleFactory;
             if (source === undefined || factory === undefined)
               throw new RhiError({

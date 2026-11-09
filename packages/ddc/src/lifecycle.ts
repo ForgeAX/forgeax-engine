@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { type DdcEntry, DdcEntryStore } from './entry-store.js';
+import { type DdcEntry, DdcEntryStore, type StagedDdcEntry } from './entry-store.js';
 import { DdcStoreError } from './errors.js';
+import { canonicalDdcJson } from './key.js';
 
 export type DdcLifecycleState = 'missing' | 'cooking' | 'current' | 'stale' | 'failed';
 
@@ -302,12 +303,18 @@ export class DdcLifecycle {
   /** Read the accepted entry for a GUID without making callers reconstruct head paths. */
   public async readCurrentEntry(guid: string): Promise<DdcCurrentEntry> {
     const record = await this.read(guid);
-    const head = await this.projectHead(guid, record?.desiredKey ?? '', record);
-    const entry =
-      head.currentKey === undefined || head.state !== 'current'
-        ? null
-        : await this.entries.read(head.currentKey);
-    return { head, entry };
+    const checked =
+      record?.currentKey === undefined ? null : await this.entries.readChecked(record.currentKey);
+    const head = this.projectValidatedHead(guid, record?.desiredKey ?? '', record, checked);
+    const entry = head.state === 'current' && checked?.ok === true ? checked.value : null;
+    if (entry === null) return { head, entry: null };
+    // Integrity owns the complete immutable read. Fence its head after that work,
+    // without rereading the same artifact closure or acquiring a publication lease.
+    return withDdcLock(this.root, `head-${guid}`, async () =>
+      canonicalDdcJson(await this.read(guid)) === canonicalDdcJson(record)
+        ? { head, entry }
+        : { head: { ...head, state: 'stale' }, entry: null },
+    );
   }
 
   /** Begin a lease and capture the accepted rollback snapshot under one head lock. */
@@ -351,10 +358,17 @@ export class DdcLifecycle {
     return (await this.beginWithSnapshot(guid, desiredKey)).lease;
   }
 
-  public async commit(lease: DdcLease, validatedKey: string): Promise<DdcCommitResult> {
+  public async commit(
+    lease: DdcLease,
+    validatedKey: string,
+    staged?: StagedDdcEntry,
+  ): Promise<DdcCommitResult> {
     // Immutable bytes can be validated without holding the mutable head lock.
     // Keep heartbeats runnable, then fence the live head after all expensive work.
-    const entry = await this.entries.read(validatedKey);
+    const entry =
+      staged === undefined
+        ? await this.entries.read(validatedKey)
+        : await this.entries.publishForCommit(staged);
     return withDdcLock(this.root, `head-${lease.guid}`, async () => {
       const current = await this.read(lease.guid);
       const active = current?.active;
@@ -721,6 +735,18 @@ export class DdcLifecycle {
     record: HeadRecord | null,
     includeActive = true,
   ): Promise<DdcHead> {
+    const checked =
+      record?.currentKey === undefined ? null : await this.entries.readChecked(record.currentKey);
+    return this.projectValidatedHead(guid, desiredKey, record, checked, includeActive);
+  }
+
+  private projectValidatedHead(
+    guid: string,
+    desiredKey: string,
+    record: HeadRecord | null,
+    currentEntry: Awaited<ReturnType<DdcEntryStore['readChecked']>> | null,
+    includeActive = true,
+  ): DdcHead {
     if (record === null) {
       return {
         guid,
@@ -735,8 +761,6 @@ export class DdcLifecycle {
       record.failure?.desiredKey === desiredKey
         ? { code: record.failure.code, detail: record.failure.detail }
         : undefined;
-    const currentEntry =
-      record.currentKey === undefined ? null : await this.entries.readChecked(record.currentKey);
     const entryFailure =
       currentEntry !== null && !currentEntry.ok
         ? { code: currentEntry.error.code, detail: currentEntry.error.detail }
@@ -763,11 +787,7 @@ export class DdcLifecycle {
       lastKnownGoodKey: record.lastKnownGoodKey,
       revision: record.revision,
       ...(record.generation === undefined ? {} : { generation: record.generation }),
-      ...(includeActive && record.active === undefined
-        ? {}
-        : includeActive && record.active !== undefined
-          ? { activeLease: record.active }
-          : {}),
+      ...(includeActive && record.active !== undefined ? { activeLease: record.active } : {}),
       ...(failure === undefined ? {} : { failure }),
     };
   }

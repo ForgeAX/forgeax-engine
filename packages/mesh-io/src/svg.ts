@@ -69,7 +69,7 @@ export async function svgWorker(
       segments: curveSegments,
       dom: pathToFileURL(require.resolve('linkedom')).href,
       loader: pathToFileURL(require.resolve('three/addons/loaders/SVGLoader.js')).href,
-      three: pathToFileURL(require.resolve('three')).href,
+      three: import.meta.resolve('three'),
     },
   });
   const result = await runMeshWorker<{

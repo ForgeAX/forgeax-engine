@@ -1,5 +1,6 @@
 import {
   err,
+  ok,
   type PipelineLayout,
   type PipelineRecipeState,
   type RenderPipeline,
@@ -18,6 +19,7 @@ type Flight = {
   readonly vertex?: ShaderModule;
   readonly fragment?: ShaderModule;
   result?: Result<RenderPipeline, RhiError>;
+  completion?: Promise<Result<void, RhiError>>;
 };
 
 /** Only a completed backend result can be consumed by the existing PSO publication owner. */
@@ -39,6 +41,17 @@ export class PreparedRenderPipelineOwner {
 
   isPending(result: Result<RenderPipeline, RhiError>): boolean {
     return result === this.pending;
+  }
+
+  /** Borrow only the existing generation-owned compilation flights. */
+  pendingCompletion(): Promise<Result<void, RhiError>> | undefined {
+    const pending = [...this.flights.values()].flatMap((flight) =>
+      flight.result === undefined && flight.completion !== undefined ? [flight.completion] : [],
+    );
+    if (pending.length === 0) return undefined;
+    return Promise.all(pending).then(
+      (results) => results.find((result) => !result.ok) ?? ok(undefined),
+    );
   }
 
   has(key: string): boolean {
@@ -158,6 +171,7 @@ export class PreparedRenderPipelineOwner {
     this.flights.set(key, flight);
     const complete = (result: Result<RenderPipeline, RhiError>): void => {
       if (this.isAlive() && this.flights.get(key) === flight) flight.result = result;
+      delete flight.completion;
     };
     try {
       // forgeax-async-whitelist: dom-native - backend pipeline compilation completion.
@@ -165,9 +179,13 @@ export class PreparedRenderPipelineOwner {
         complete(completion);
         return flight.result ?? this.pending;
       }
-      void completion.then(complete, (cause: unknown) =>
-        complete(
-          err(
+      flight.completion = completion.then(
+        (result) => {
+          complete(result);
+          return result.ok ? ok(undefined) : err(result.error);
+        },
+        (cause: unknown) => {
+          const result = err(
             cause instanceof RhiError
               ? cause
               : new RhiError({
@@ -175,8 +193,10 @@ export class PreparedRenderPipelineOwner {
                   expected: 'backend pipeline compilation to complete',
                   hint: cause instanceof Error ? cause.message : String(cause),
                 }),
-          ),
-        ),
+          );
+          complete(result);
+          return result;
+        },
       );
     } catch (cause) {
       complete(

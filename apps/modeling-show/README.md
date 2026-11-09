@@ -31,6 +31,9 @@ Every `AnimationPlayer` in a subject's scenes follows the same transformation pa
 u, each over its own clip duration. The camera frames the subject's bounds over the whole
 path.
 
+`reflectionSize` authors the planar target dimensions; omission keeps 960x540.
+The Dawn carrier selects its drawing-buffer dimensions for that target.
+
 ## F1 mech-gt showcase
 
 `mech-gt/` is a second Show project with the `mech-gt` program (`assets/show/mech-gt.ts`): the

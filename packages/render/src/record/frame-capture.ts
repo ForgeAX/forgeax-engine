@@ -9,6 +9,7 @@ import { stageAtmospherePublish } from '../environment/storage';
 import { RendererOperationError } from '../errors/render';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { DirectionalLightSnapshot } from '../render-system-extract';
+import { markPipelinePreparationPending } from '../render-system-presentation';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
 import type { ViewLights } from '../world/render-lights';
 import type { CubeCaptureFrameInput } from './frame';
@@ -272,10 +273,16 @@ function executeCaptureFrame(
     capturedAtmosphere: capture.capturedAtmosphere,
     pipelineState: capture.pipeline,
     camera: capture.work.faceCamera,
+    // The face records only its own Feature plans, never the display view's.
+    featureExecutions: (capture.work as CubeCaptureGraphWork).feature?.executions ?? [],
     shadowViewPlanesByView: shadowViewPlanesByView(capture.lights.shadowViews),
     frameState: capture.frameState,
     standardLighting: capture.lighting,
+    // Auxiliary capture graphs keep mesh cascades until they request their own
+    // capsule surface/transport; display-view admission cannot suppress them.
+    capsuleShadowDirectional: false,
   };
+  delete context.capsuleShadowLight;
   delete context.gpuDrivenShadowViews;
   delete context.shadowDirectRequired;
   delete context.directionalShadowCascadeMiss;
@@ -296,12 +303,25 @@ function executeCaptureFrame(
     lightTextureResamples.push(...pendingResamples);
     delete capture.frameState.pendingLightTextureResamples;
   }
-  const executed = capture.graph.execute(
-    context,
-    undefined,
-    timing === undefined ? undefined : createPassTimingInstrumentation(timing),
-  );
-  if (!executed.ok) throw executed.error;
+  const execute = () => {
+    const executed = capture.graph.execute(
+      context,
+      undefined,
+      timing === undefined ? undefined : createPassTimingInstrumentation(timing),
+    );
+    if (!executed.ok) throw executed.error;
+  };
+  // Only the program owner can distinguish a pending native compile from a
+  // valid fallback or an unsupported request. Never infer it from a null draw.
+  const pending = () =>
+    markPipelinePreparationPending(frameState, { code: 'scene-pipeline-preparation' });
+  if (capture.runtime.withPipelinePreparationErrors === undefined) execute();
+  else capture.runtime.withPipelinePreparationErrors(execute, pending);
+  if (capture.frameState.pipelinePreparationPending)
+    markPipelinePreparationPending(
+      frameState,
+      capture.frameState.pipelinePreparationPendingReason ?? { code: 'scene-pipeline-preparation' },
+    );
   flushMeshDrawUploads(internals.device.queue, capture.pipeline.meshStorageBuffer);
   const publishCapture = capture.frameState.pendingAtmospherePublish;
   if (publishCapture !== undefined) stageAtmospherePublish(frameState, publishCapture);

@@ -16,6 +16,7 @@
 //            cyclic probe, so the probes observe order-dependent compositing;
 //        (e) no renderer error events.
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -129,17 +130,14 @@ let framesObserved = 0;
 async function drawFrame(sample) {
   world.update(1 / 60).unwrap();
   propagateTransforms(world).unwrap();
-  if (sample) {
-    const requested = renderer.requestObservation?.(['linear-hdr']);
-    if (requested !== undefined && !requested.ok) throw new Error(JSON.stringify(requested.error));
-  }
-  const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!drawn.ok) throw new Error(`draw failed: ${JSON.stringify(drawn.error)}`);
-  const completed = await drawn.value.completed;
-  if (!completed.ok) throw new Error(`frame failed: ${JSON.stringify(completed.error)}`);
+  const receipt = await drawReadyFrame(
+    renderer,
+    { leases: [lease], camera: { lease }, environment: { lease } },
+    sample ? ['linear-hdr'] : undefined,
+  );
   framesObserved++;
   if (!sample) return undefined;
-  const observed = await renderer.observe(drawn.value, { include: ['linear-hdr'] });
+  const observed = await renderer.observe(receipt, { include: ['linear-hdr'] });
   if (!observed.ok) throw new Error(`observe failed: ${JSON.stringify(observed.error)}`);
   const observation = observed.value.observations?.find((entry) => entry.domain === 'linear-hdr');
   if (observation === undefined) throw new Error('missing linear-hdr observation');

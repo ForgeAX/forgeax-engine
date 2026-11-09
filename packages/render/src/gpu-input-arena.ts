@@ -43,6 +43,7 @@ export interface GpuInputUpload {
 }
 
 const COALESCE_GAP_WORDS = 64;
+type DirtyRange = { start: number; end: number };
 
 /** Renderer-owned CPU numbers and range identity, independent of any GPU incarnation. */
 export class GpuInputArena {
@@ -50,7 +51,7 @@ export class GpuInputArena {
   private readonly ranges = new StableRangeAllocator(1 << 19);
   private words = new Uint32Array(256);
   private floats = new Float32Array(this.words.buffer);
-  private readonly pending = new Map<number, number>();
+  private readonly pending = new Map<number, DirtyRange>();
   private pendingOrder = new Uint32Array(0);
   private active: GpuInputUpload | undefined;
   private revision = 0;
@@ -80,9 +81,14 @@ export class GpuInputArena {
     for (const address of this.pending.keys()) this.pendingOrder[count++] = address;
     return this.pendingOrder.subarray(0, count).sort();
   }
-  private changed(address: number, words: number): void {
+  private changed(address: number, words: number, index = 0): void {
     this.revision++;
-    if (this.active !== undefined) this.pending.set(address, words);
+    if (this.active === undefined) return;
+    // Keep allocation identity for retirement while uploading only its dirty suffix.
+    const range = this.pending.get(address) ?? { start: address + index, end: address + words };
+    range.start = Math.min(range.start, address + index);
+    range.end = Math.max(range.end, address + words);
+    this.pending.set(address, range);
   }
   allocateDescriptor(wordCount: number): number {
     this.assertLive();
@@ -140,7 +146,7 @@ export class GpuInputArena {
       this.words[address + i] = value;
       changed = true;
     }
-    if (changed) this.changed(address, wordCount);
+    if (changed) this.changed(address, wordCount, index);
   }
   writeDescriptorWord(address: number, wordCount: number, index: number, value: number): void {
     this.assertLive();
@@ -248,12 +254,14 @@ export class GpuInputArena {
           // gap from the authoritative CPU words is cheaper than another queue
           // write, so nearby ranges share one call in address order.
           const addresses = this.sortedPending();
-          let start = addresses[0] as number;
-          let end = start + (this.pending.get(start) as number);
+          const first = this.pending.get(addresses[0] as number) as DirtyRange;
+          let start = first.start;
+          let end = first.end;
           for (let index = 1; index <= addresses.length; index++) {
             const address = addresses[index];
-            if (address !== undefined && address <= end + COALESCE_GAP_WORDS) {
-              end = Math.max(end, address + (this.pending.get(address) as number));
+            const next = address === undefined ? undefined : this.pending.get(address);
+            if (next !== undefined && next.start <= end + COALESCE_GAP_WORDS) {
+              end = Math.max(end, next.end);
               continue;
             }
             const uploaded = queue.writeBuffer(
@@ -265,9 +273,9 @@ export class GpuInputArena {
             );
             if (!uploaded.ok) return uploaded;
             uploadedBytes += (end - start) * 4;
-            if (address === undefined) break;
-            start = address;
-            end = address + (this.pending.get(address) as number);
+            if (next === undefined) break;
+            start = next.start;
+            end = next.end;
           }
         }
         if (active && revision === this.revision) this.pending.clear();

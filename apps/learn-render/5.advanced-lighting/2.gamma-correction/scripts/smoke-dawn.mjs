@@ -11,6 +11,7 @@
 //   - `[smoke] PASS`
 //   - `[smoke] FAIL`
 
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -375,13 +376,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < PER_STATE_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw(frameRequest);
-  if (!r.ok) {
-    console.error(`[smoke] draw correct frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
+  await drawReadyFrame(renderer, frameRequest);
   framesObserved++;
 }
 
@@ -393,13 +388,7 @@ if (!modeResult.ok) throw modeResult.error;
 
 for (let i = 0; i < PER_STATE_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw(frameRequest);
-  if (!r.ok) {
-    console.error(`[smoke] draw wrong frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
+  await drawReadyFrame(renderer, frameRequest);
   framesObserved++;
 }
 const frameWall = Date.now() - frameStart;

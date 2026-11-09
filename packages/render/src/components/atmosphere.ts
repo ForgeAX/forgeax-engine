@@ -2,7 +2,7 @@ import { defineComponent } from '@forgeax/engine-ecs';
 
 /** Spherical atmosphere: public lengths are meters, coefficients are inverse meters. */
 export const Atmosphere = defineComponent('Atmosphere', {
-  /** Explicit sky background only; no aerial perspective, solar attenuation or sky IBL. */
+  /** Raster physical sky and optional Skylight IBL; no aerial perspective or surface solar attenuation. */
   backgroundOnly: { type: 'bool', default: false },
   planetRadius: { type: 'f32', default: 6_360_000 },
   atmosphereHeight: { type: 'f32', default: 60_000 },

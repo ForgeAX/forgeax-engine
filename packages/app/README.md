@@ -754,6 +754,11 @@ releases from the failed receiver.
 | `render.epoch` | Current Render Worker generation; stale messages cannot advance it |
 | `render.lastLoss` | Epoch and serialized cause of the most recent recoverable Renderer loss |
 
+`render.completedFrame` identifies the completed source publication; differences
+between identifiers do not count pictures. For visible-frame acceptance, count
+`forgeax:frame-completed` events with `presentation: 'ready'` on the current
+canvas and World. Reattach the listener after canvas replacement.
+
 Two publication slots bound both transferred storage and simulation lead. Logic N+1
 can overlap rendering N, but the Host admits N+2 only after N's GPU receipt completes.
 The Host requests the next browser tick when it admits a frame. If Worker credit
@@ -761,6 +766,10 @@ is still occupied at that tick, it retains one due demand without polling or
 queueing more ticks. The matching completion can consume that demand immediately,
 sampling current input and elapsed time without waiting for another refresh.
 Pause/resume discards the old demand and starts from a new browser tick.
+When rendering runs in its own Worker, the Engine Worker can carry the requested
+native animation tick over its existing Host channel. No clock Worker or timer
+is created. Host time, input, visibility and admission remain authoritative; unsupported or replaced
+Engine providers fall back to the owning Window.
 After submitting N, the Render Worker can prepare and submit N+1 while N remains
 in flight. CPU draws stay serial; GPU completion no longer blocks the next draw.
 The two slots cover the entire source-to-GPU pipeline, including queued and

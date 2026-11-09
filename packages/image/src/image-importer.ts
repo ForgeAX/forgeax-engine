@@ -373,6 +373,7 @@ async function inspectKtx2Source(
     }
   } finally {
     file.close();
+    file.delete();
   }
 }
 
@@ -541,6 +542,7 @@ async function importBasisSource(
     }
   } finally {
     file.close();
+    file.delete();
   }
   if (inspection.imageCount !== 1) {
     return {

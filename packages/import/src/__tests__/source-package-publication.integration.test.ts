@@ -8,6 +8,7 @@ import {
   commitImportPublication,
   discardImportPublication,
   type ImportPublicationInput,
+  readImportPublication,
   stageImportPublication,
 } from '../source-package-publication.js';
 
@@ -71,6 +72,138 @@ describe('source package publication concurrency', () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
+  it('restores an unchanged publication without a lease, staging or sidecar writes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-reuse-'));
+    roots.push(root);
+    const candidateBytes = new Uint8Array(ARTIFACT_BYTES);
+    const pack = {
+      ...closurePack(),
+      scopeId: 'dev',
+      generation: 1,
+      digest: 'same-content',
+      outputSetDigest: 'same-outputs',
+    };
+    const publicationInput = {
+      ...input(root),
+      pack,
+      transport: {
+        path: join(root, `${GUID}.pack.json`),
+        body: JSON.stringify(pack),
+        artifacts: [{ ...validArtifact, bytes: candidateBytes }],
+      },
+    };
+    const staged = await stageImportPublication(publicationInput);
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    const published = await commitImportPublication(staged.candidate);
+    expect(published.ok).toBe(true);
+    const before = await readFile(join(root, 'heads', `${GUID}.json`), 'utf8');
+    await rm(publicationInput.transport.path);
+    const stage = vi.spyOn(DdcEntryStore.prototype, 'stage');
+    const begin = vi.spyOn(DdcLifecycle.prototype, 'beginWithSnapshot');
+    const checked = vi.spyOn(DdcEntryStore.prototype, 'readChecked');
+    const readCurrent = DdcLifecycle.prototype.readCurrentEntry;
+    vi.spyOn(DdcLifecycle.prototype, 'readCurrentEntry').mockImplementationOnce(async function (
+      this: DdcLifecycle,
+      guid,
+    ) {
+      const current = await readCurrent.call(this, guid);
+      // A producer retaining its buffers cannot rewrite the restored route across an await.
+      candidateBytes.fill(0);
+      return current;
+    });
+
+    const restored = await readImportPublication({
+      ...publicationInput,
+      pack: { ...pack, generation: 9 },
+      // Restoration adopts validated DDC bytes, never this discarded sidecar body.
+      transport: { ...publicationInput.transport, body: 'discarded untrusted transport' },
+    });
+
+    expect(restored).toMatchObject({ key: KEY, head: { state: 'current', revision: 1 } });
+    expect(restored?.pack).toEqual({ ...pack, generation: 9 });
+    expect(restored?.artifacts[ARTIFACT_PATH]?.bytes).toEqual(ARTIFACT_BYTES);
+    expect(stage).not.toHaveBeenCalled();
+    expect(begin).not.toHaveBeenCalled();
+    expect(checked).toHaveBeenCalledExactlyOnceWith(KEY);
+    expect(await readFile(join(root, 'heads', `${GUID}.json`), 'utf8')).toBe(before);
+    expect(await readFile(publicationInput.transport.path).catch(() => undefined)).toBeUndefined();
+    expect(await readdir(join(root, 'staging'))).toEqual([]);
+  });
+
+  it('keeps changed, corrupt and actively leased publications on the ordinary path', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-reuse-controls-'));
+    roots.push(root);
+    const pack = closurePack();
+    const publicationInput = {
+      ...input(root),
+      pack,
+      transport: {
+        path: join(root, `${GUID}.pack.json`),
+        body: JSON.stringify(pack),
+        artifacts: [validArtifact],
+      },
+    };
+    const staged = await stageImportPublication(publicationInput);
+    expect(staged.ok).toBe(true);
+    if (!staged.ok) return;
+    expect(await commitImportPublication(staged.candidate)).toMatchObject({ ok: true });
+    expect(
+      await readImportPublication({ ...publicationInput, desiredKey: 'b'.repeat(64) }),
+    ).toBeUndefined();
+    expect(
+      await readImportPublication({ ...publicationInput, pack: { ...pack, changed: true } }),
+    ).toBeUndefined();
+    expect(
+      await readImportPublication({
+        ...publicationInput,
+        transport: { ...publicationInput.transport, artifacts: [] },
+      }),
+    ).toBeUndefined();
+    const lifecycle = new DdcLifecycle(root);
+    const lease = await lifecycle.begin(GUID, KEY);
+    expect(await readImportPublication(publicationInput)).toBeUndefined();
+    await lifecycle.discard(lease);
+    const artifactFile = Buffer.from(ARTIFACT_PATH).toString('base64url');
+    await writeFile(
+      join(root, 'entries', KEY, 'artifacts', `${artifactFile}.bin`),
+      new Uint8Array([0]),
+    );
+    expect(await readImportPublication(publicationInput)).toBeUndefined();
+    expect(await lifecycle.inspect(GUID, KEY)).toMatchObject({ state: 'failed' });
+  });
+
+  it('enables publication timing only from an explicit host input', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-source-timing-'));
+    roots.push(root);
+    const previous = process.env.FORGEAX_WORKSPACE_TIMING;
+    process.env.FORGEAX_WORKSPACE_TIMING = '1';
+    const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const records = () =>
+      writes.mock.calls
+        .map(([line]) => String(line))
+        .filter((line) => line.startsWith('[forgeax.meta-publication.timing]'));
+    try {
+      const quiet = await stageImportPublication(input(root));
+      expect(quiet.ok).toBe(true);
+      if (quiet.ok) await discardImportPublication(quiet.candidate);
+      expect(records()).toEqual([]);
+      process.env.FORGEAX_WORKSPACE_TIMING = '0';
+      const traced = await stageImportPublication({ ...input(root), traceTiming: true });
+      expect(traced.ok).toBe(true);
+      if (traced.ok) await discardImportPublication(traced.candidate);
+      expect(records().map((line) => JSON.parse(line.slice(line.indexOf('{'))).stage)).toEqual([
+        'artifact-closure',
+        'immutable-payload',
+        'ddc-stage',
+      ]);
+    } finally {
+      writes.mockRestore();
+      if (previous === undefined) delete process.env.FORGEAX_WORKSPACE_TIMING;
+      else process.env.FORGEAX_WORKSPACE_TIMING = previous;
+    }
+  });
+
   it('returns the accepted head without rereading the committed artifact closure', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-source-publication-'));
     roots.push(root);
@@ -104,7 +237,7 @@ describe('source package publication concurrency', () => {
       revision: { digest: KEY, rootId: root },
       transportPersisted: true,
     });
-    expect(read).toHaveBeenCalledExactlyOnceWith(KEY);
+    expect(read).not.toHaveBeenCalled();
     expect(readChecked).not.toHaveBeenCalled();
     expect(await readFile(join(root, 'runtime', `${GUID}.pack.json`), 'utf8')).toBe(
       JSON.stringify(pack),
@@ -133,8 +266,9 @@ describe('source package publication concurrency', () => {
       this: DdcLifecycle,
       lease,
       key,
+      entry,
     ) {
-      const result = await commit.call(this, lease, key);
+      const result = await commit.call(this, lease, key, entry);
       if (result.result === 'current' && key === KEY) {
         // Another producer wins after this CAS, before Import receives its result.
         const next = await stageImportPublication(input(root, nextKey));

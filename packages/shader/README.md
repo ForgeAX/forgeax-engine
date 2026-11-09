@@ -36,12 +36,20 @@ references and shared ABI receipt and entry-read tables. Equal entry-read arrays
 are published once; direct entries, materials and variants retain their exact
 `entryPointsIndex`. Missing facts remain distinct from an empty read set. The
 reader validates every reference and owns one immutable copy per table row.
+After detaching reflection facts, admission shares structurally equal immutable
+subtrees within that publication. The temporary pool is discarded after admission;
+separate publications remain independent. Complete values, own field order,
+optional absence, array multiplicity and signed zero remain distinct. Non-plain
+or cyclic extension data retains the ordinary detached-copy route. This changes
+neither the wire format nor reference/variant validation.
 The ordered-fragment source digest remains v4 because source identity is unchanged. `ShaderRegistry.loadManifest()`
 hashes each pooled UTF-8 fragment once, then checks each source's domain-separated
 digest of its ordered fragment hashes before validating every entry, variant and
 receipt for atomic admission. It never joins complete sources for verification;
 composed strings are borrowed only when a consumer requests them. Selected sources
-share immutable fragment owners without memoizing expanded bodies; ABI receipts are shared immutable facts.
+share one publication-local lazy owner per digest without memoizing expanded bodies.
+Rows retain detached enumerable getter capabilities; source ownership does not retain
+other selected sources through a publication-wide closure. ABI receipts are shared immutable facts.
 Failed validation leaves the registry unchanged. The runtime does not compile
 WGSL. Digest verification runs in bounded batches and never skips unselected
 sources. Older compact profiles must be rebuilt by their producer.
@@ -267,6 +275,7 @@ Changes to the engine-owned input ABI require re-cooking authored materials.
 | 6 | `occlusion: f32` | Ambient occlusion factor |
 | 7 | `opacity: f32` | Surface opacity |
 | 8 | `alphaClipThreshold: f32` | Alpha-test threshold |
+| 9 | `reactive: f32` | Temporal responsiveness in [0, 1] (Responsive AA); 0 keeps the default history. Read on the deferred G-buffer lane |
 
 ```wgsl
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
@@ -274,7 +283,7 @@ Changes to the engine-owned input ABI require re-cooking authored materials.
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   return SurfaceData(
     vec3<f32>(0.45, 0.18, 0.06), input.vertexNormalWS, 0.8, 0.42,
-    vec3<f32>(0.0), 1.0, 1.0, 0.5,
+    vec3<f32>(0.0), 1.0, 1.0, 0.5, 0.0,
   );
 }
 ```
@@ -408,12 +417,9 @@ The same word's bit 0 independently selects a draw-local Sprite atlas rectangle;
 Sprite consumers mask that bit explicitly. Both rigid and skinned Standard
 receivers honor the flag; shadow casting remains a separate source decision.
 
-Rigid Standard exposes fragment override `64002` (`standardShadowReception`),
-defaulting to one. A direct draw that declares no shadow reception may set it to
-zero, allowing native compilation to remove the unreachable sampling functions.
-Receiving draws, unselected GPU batches and programs without the override keep
-the Mesh-flag contract. It does not change shadow casting, bind-group layouts,
-material values or the skinned template.
+Shadow reception is a per-draw value, not a pipeline constant: there is no
+reception override, and receiving and non-receiving draws share one pipeline. The
+flag does not change shadow casting, bind-group layouts or material values.
 
 When storage buffers are unavailable, the same 96-byte light records, grid
 offset/count pairs and complete membership list use one `rgba32uint` texture at
@@ -443,13 +449,18 @@ surface factors make fragment control flow non-uniform.
 
 Geometric specular anti-aliasing is part of that shared evaluation, not a material
 parameter or render setting. `src/specular-aa.wgsl`
-(`forgeax_pbr::specular_aa`) widens GGX roughness by the pixel's interpolated-normal
-spread: the three.js `getGeometryRoughness` measure at half weight (UE
+(`forgeax_pbr::specular_aa`) widens GGX roughness by the pixel's normal spread: the
+three.js `getGeometryRoughness` measure at half weight (UE
 `NormalCurvatureToRoughness` and Tokuyoshi-Kaplanyan filter the same screen
-derivatives). Forward direct and IBL lighting, clearcoat, and the roughness
+derivatives), taken on both the interpolated normal and the material's shading
+normal and keeping the larger. The shading term is what catches normal maps and
+procedural normals on flat receivers, where the interpolated normal has no spread
+and a glossy lobe under a punctual light otherwise turns single pixels into
+fireflies. Forward direct and IBL lighting, clearcoat, and the roughness
 packed into the Deferred G-buffer all consume the filtered value, so both render
 paths agree. The spread is sampled at the top of each fragment entry because
-derivatives need uniform control flow. Flat surfaces are unchanged bit for bit.
+derivatives need uniform control flow. Flat surfaces without a perturbed shading
+normal are unchanged bit for bit.
 `packages/runtime/src/__tests__/specular-aa.dawn.test.ts` gates the effect against
 an 8x supersampled truth rendered without the filter. It also replays the captured
 Deferred G-buffer on a fresh device with and without the filter.
@@ -470,6 +481,10 @@ retain the same contract. `src/__tests__/ibl-prefilter.dawn.test.ts` compares th
 shipped entry to the frozen 1024-sample predecessor over all six cube faces,
 oblique directions, camera-cube orientation and roughness endpoints on a real
 GPU. A one-sample falsifier at nonzero roughness must fail that radiance oracle.
+
+The fixed 256-square, 1024-sample BRDF bake evaluates Schlick's fifth power with
+products and reuses its view/half-vector dot product and pixel roughness squared.
+Its sample domain and binding contract stay with `src/ibl-brdf-lut.wgsl`.
 
 Specular IBL conserves rough-metal energy with the table-free multiple-scattering
 term of Fdez-Aguera (JCGT 2019), the same form as three.js
@@ -792,7 +807,7 @@ a binding-contract change so runtime and shader layouts agree.
 
 ## Surface authoring checklist
 
-- [x] Import `forgeax_material::surface_v1` and return the eight-field `SurfaceData`.
+- [x] Import `forgeax_material::surface_v1` and return the nine-field `SurfaceData`.
 - [x] Read generated material parameters through `forgeax_material::parameters`.
 - [x] Keep vertex, light, BRDF, pass, binding, and output ownership in Engine modules.
 - [x] Let the root parameter contract determine physical layers and pass admission.
@@ -1066,3 +1081,11 @@ Both embed `auto-exposure-common.wgsl` at build time; native and fragment entry
 files own only transport and execution. Shared classification and adaptation retain
 the V1 histogram semantics. Raw WGSL files are embedded by the package build;
 runtime imports neither a file loader nor the build-time compiler.
+
+TSR embeds package-owned analysis and reconstruction functions into both compute
+and fragment programs. Compute keeps its cooperative tile caches and exact row
+reductions; fragment gathers the same neighborhoods directly and returns three
+MRT outputs. One reconstruction coordinate tuple feeds both cache population and
+evaluation, including f32 phase boundaries. No workgroup memory, barriers, atomics
+or storage-texture declarations enter the fragment modules. Runtime selects the
+execution lane without interpreting macros or importing a compiler.

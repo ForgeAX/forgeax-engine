@@ -70,7 +70,8 @@ try {
     return { text };
   `]);
   console.error('Evaluation', JSON.stringify(evaluated));
-  const capture = await call('capture', ['--revision', revision, '--require-ui', 'true']);
+  // Runtime qualification waits for the Engine picture; capture alone observes the current startup state.
+  const capture = await call('verify', ['--revision', revision, '--require-ui', 'true']);
   const evidenceRoot = process.env.FORGEAX_INDEPENDENT_EVIDENCE_ROOT;
   if (evidenceRoot) {
     await mkdir(evidenceRoot, { recursive: true });

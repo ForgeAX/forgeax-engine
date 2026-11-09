@@ -3,7 +3,11 @@ import {
   STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
   STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING,
 } from '@forgeax/engine-shader';
-import { getAdmittedParamSchemaInterface, type ParamSchemaEntry } from '@forgeax/engine-types';
+import {
+  getAdmittedParamSchemaInterface,
+  type MaterialPass,
+  type ParamSchemaEntry,
+} from '@forgeax/engine-types';
 import { GPU_SHADER_STAGE_FRAGMENT } from '../gpu-stage';
 import {
   PLANAR_REFLECTION_DISABLED_UNIFORM_OFFSET,
@@ -64,4 +68,44 @@ export function planarReflectionMaterialEntries(
       },
     },
   ];
+}
+
+/**
+ * Planar receivers keep their authored Deferred pass so that, wherever no
+ * PlanarReflection capture is published, they enter the G-buffer like any
+ * other opaque Standard surface and receive screen-space reflections. A
+ * world that publishes a capture this frame routes them forward only, where
+ * the mirror projection is bound. The extract stage owns this per-world fact;
+ * material preparation reads it and the snapshot caches key on it.
+ */
+const planarCaptureWorlds = new WeakSet<object>();
+
+export function setPlanarCaptureDemand(world: object, demanded: boolean): void {
+  if (demanded) planarCaptureWorlds.add(world);
+  else planarCaptureWorlds.delete(world);
+}
+
+export function planarCaptureDemanded(world: object | undefined): boolean {
+  return world !== undefined && planarCaptureWorlds.has(world);
+}
+
+function passLightMode(pass: MaterialPass): string {
+  return String(
+    (pass.renderState?.tags as Record<string, unknown> | undefined)?.LightMode ?? pass.name,
+  );
+}
+
+/**
+ * The passes a material contributes in `world` this frame. Returns `routed`
+ * for a planar receiver (so caches can key on it) and the input array
+ * otherwise.
+ */
+export function planarRoutedPasses(
+  passes: readonly MaterialPass[],
+  parameters: readonly { readonly name: string; readonly type: string }[] | undefined,
+  world: object | undefined,
+): { readonly passes: readonly MaterialPass[]; readonly routed: boolean | undefined } {
+  if (!materialUsesPlanarReflection(parameters)) return { passes, routed: undefined };
+  if (!planarCaptureDemanded(world)) return { passes, routed: false };
+  return { passes: passes.filter((pass) => passLightMode(pass) !== 'Deferred'), routed: true };
 }

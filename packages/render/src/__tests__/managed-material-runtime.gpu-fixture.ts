@@ -9,7 +9,8 @@ import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset, MeshAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
-import { createRenderer } from '../assembly/factory';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { createRenderer, exposeRenderer } from '../assembly/factory';
 import { samplerContribution } from '../assets/asset-decoders';
 import { Camera, MeshFilter, MeshRenderer, SpriteRegionOverride } from '../components';
 import { Materials, SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '../materials';
@@ -60,6 +61,7 @@ export async function verifyRuntimeMaterial(
   renderer.onError((error) => failures.push(error));
   const initialized = await renderer.initialization;
   assert(initialized.ok, initialized.ok ? undefined : initialized.error.message);
+  const publicRenderer = exposeRenderer(renderer);
   const assets = renderer.assetRegistry;
   assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   const world = new World({ assets });
@@ -206,11 +208,11 @@ export async function verifyRuntimeMaterial(
   const read = async () => {
     for (let frame = 0; frame < (structural ? 15 : 3); frame++) {
       world.update().unwrap();
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-      if (!drawn.ok) expect(failures).toEqual([]);
-      assert(drawn.ok, drawn.ok ? undefined : drawn.error.message);
-      if (device === undefined) throw new Error('Missing configured GPU device');
-      await device.queue.onSubmittedWorkDone();
+      await drawReadyFrame(publicRenderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
     }
     if (device === undefined || target === undefined)
       throw new Error('Missing configured GPU target');

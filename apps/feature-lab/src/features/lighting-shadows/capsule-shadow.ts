@@ -12,7 +12,7 @@ import { spawnCamera, spawnGround } from '../../lab/stage';
 import { spawnSkinnedCharacter } from './support/scene';
 
 const APP_OPTIONS: CreateAppOptions = {
-  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
 };
 
 export default defineFeature({
@@ -21,7 +21,7 @@ export default defineFeature({
   kind: 'visual',
   appOptions: APP_OPTIONS,
   summary:
-    'A procedural single-joint skinned character tagged with CapsuleShadow leaves the directional cascades; its skeleton shadow capsule is tile-binned and evaluated inline by Deferred lighting.',
+    'A procedural single-joint skinned character tagged with CapsuleShadow leaves the directional cascades; its skeleton shadow capsule is tile-binned and evaluated by the Forward screen-data consumer, including WebGL2.',
   expect:
     'ON: a soft, rounded capsule-shaped shadow falls from the character across the floor. OFF: the tag is removed and the material drops its ShadowCaster pass, so the character casts nothing. Checks: while ON 1 entity requested and admitted, 1 capsule; after OFF no entity requested.',
   setup({ world, app }) {

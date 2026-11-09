@@ -183,9 +183,39 @@ test('Rapier release publication stays on main and preserves all runtime gates',
   );
 });
 
-test('native publication satisfies the unchanged engineering stance gate', () => {
-  execFileSync(process.execPath, ['apps/hello/triangle/scripts/ac-08-grep-gate.mjs'], {
-    encoding: 'utf8',
-    timeout: 30_000,
-  });
+test('native publication satisfies the unchanged engineering stance gate', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-stance-work-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const observer = join(root, 'observe-source-reads.mjs');
+  const output = join(root, 'source-reads.json');
+  const subjects = [
+    resolve('packages/ddc/src/canonical-json.ts'),
+    resolve('packages/runtime/src/index.ts'),
+  ];
+  writeFileSync(
+    observer,
+    `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const counts = Object.fromEntries(${JSON.stringify(subjects)}.map(path => [path, 0]));
+    const original = fs.readFileSync;
+    fs.readFileSync = function(path, ...args) {
+      if (Object.hasOwn(counts, String(path))) counts[String(path)]++;
+      return original.call(this, path, ...args);
+    };
+    syncBuiltinESMExports();
+    process.once('exit', () => fs.writeFileSync(${JSON.stringify(output)}, JSON.stringify(counts)));
+  `,
+  );
+  execFileSync(
+    process.execPath,
+    ['--import', observer, 'apps/hello/triangle/scripts/ac-08-grep-gate.mjs'],
+    {
+      encoding: 'utf8',
+      timeout: 30_000,
+    },
+  );
+  const counts = JSON.parse(readFileSync(output, 'utf8'));
+  for (const source of subjects)
+    assert.equal(counts[source], 1, 'shared source rules must read each ordinary source only once');
 });

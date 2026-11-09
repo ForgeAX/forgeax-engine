@@ -6,6 +6,7 @@ export {
 export {
   type DdcArtifact,
   type DdcEntry,
+  type DdcEntryInput,
   DdcEntryStore,
   type DdcReceipt,
   DdcStoreError,

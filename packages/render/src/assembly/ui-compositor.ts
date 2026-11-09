@@ -83,7 +83,7 @@ export async function createUiCompositor(options: {
   let pixels: Uint8Array | undefined;
   let uploaded = false;
   const pipelines = new Map<OutputColorSpace, RenderPipeline>();
-  type Frame = { encoder: RhiCommandEncoder; output: Texture };
+  type Frame = { encoder: RhiCommandEncoder; output: Texture; clear: boolean };
   let graph: CompiledRenderGraph<Frame> | undefined;
   let graphKey = '';
   let output: Texture | undefined;
@@ -221,8 +221,8 @@ export async function createUiCompositor(options: {
     return changed !== null;
   }
 
-  function prepareGraph(clear: boolean, colorSpace: OutputColorSpace, capture: boolean): void {
-    const nextKey = `${width}:${height}:${clear}:${colorSpace}:${texture !== undefined}:${capture}`;
+  function prepareGraph(colorSpace: OutputColorSpace, capture: boolean): void {
+    const nextKey = `${width}:${height}:${colorSpace}:${texture !== undefined}:${capture}`;
     if (graph === undefined || graphKey !== nextKey) {
       discardGraph();
       const builder = new RenderGraphBuilder<Frame>();
@@ -348,7 +348,7 @@ export async function createUiCompositor(options: {
           colorAttachments: [
             {
               view: targetView,
-              loadOp: clear ? 'clear' : 'load',
+              loadOp: (frame) => (frame.clear ? 'clear' : 'load'),
               storeOp: 'store',
               clearValue: { r: 0, g: 0, b: 0, a: 1 },
             },
@@ -448,7 +448,6 @@ export async function createUiCompositor(options: {
       timeMs: number,
       nextWidth: number,
       nextHeight: number,
-      clear: boolean,
       colorSpace: OutputColorSpace,
       capture: boolean,
     ): SurfaceUiOutcome {
@@ -460,14 +459,19 @@ export async function createUiCompositor(options: {
           : paintRgba(source, frame, timeMs, nextWidth, nextHeight);
       if (typeof painted !== 'boolean') return painted;
       try {
-        prepareGraph(clear, colorSpace, capture);
+        prepareGraph(colorSpace, capture);
       } catch (cause) {
         return fail(frame, 'ui-device-operation-failed', failureDetail(cause));
       }
       const generation = graph?.inspect().generation ?? 0;
       return { kind: painted ? 'painted' : 'retained', frame, generation };
     },
-    encode(frame: number, encoder: RhiCommandEncoder, surface: Texture): SurfaceUiEncodeOutcome {
+    encode(
+      frame: number,
+      encoder: RhiCommandEncoder,
+      surface: Texture,
+      clear: boolean,
+    ): SurfaceUiEncodeOutcome {
       if (graph === undefined)
         return {
           kind: 'failed',
@@ -477,7 +481,7 @@ export async function createUiCompositor(options: {
         };
       try {
         raster?.encode(encoder);
-        value(graph.execute({ encoder, output: surface }));
+        value(graph.execute({ encoder, output: surface, clear }));
       } catch (cause) {
         return { kind: 'failed', frame, code: 'ui-raster-failed', detail: failureDetail(cause) };
       }

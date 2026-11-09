@@ -285,11 +285,13 @@ export async function verifyClippingPlanes(
       await save(`${name}.rhitape`, compactTape(captured).bytes);
       const tape = decodeTape(captured.bytes).unwrap();
       const model = buildFrameModel(tape);
+      // Unclipped cases compile the discard-free Standard program (no
+      // clippedByPlanes), so find the draw by its Standard surface entry.
       const geometry = model.works.find((work) =>
         work.pipeline.shaders.some(
           (shader) =>
             (shader.entryPoint === 'fs_main' || shader.entryPoint === 'fs_opaque') &&
-            shader.source?.includes('clippedByPlanes'),
+            shader.source?.includes('evaluateStandardSurface'),
         ),
       );
       const shadows = model.works.filter((work) =>

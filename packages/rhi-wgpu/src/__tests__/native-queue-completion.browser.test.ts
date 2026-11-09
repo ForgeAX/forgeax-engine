@@ -100,6 +100,74 @@ it('rejects pending native completion after actual WebGL context loss', async ()
   }
 });
 
+it('notifies the device loss observer once after actual WebGL context loss', async () => {
+  const f = await fixture();
+  try {
+    const losses: { reason: string; message: string }[] = [];
+    f.device.registerLostCallback((reason: string, message: string) => {
+      losses.push({ reason, message });
+    });
+    const extension = f.gl.getExtension('WEBGL_lose_context');
+    if (!extension) throw new Error('Context loss extension is required');
+    extension.loseContext();
+    await expect.poll(() => losses.length, { timeout: 1000 }).toBe(1);
+    expect(losses[0]).toMatchObject({ reason: 'unknown' });
+    expect(losses[0]?.message).toMatch(/context lost/i);
+    extension.loseContext();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(losses).toHaveLength(1);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('reports explicit idle device destruction through the native callback', async () => {
+  const f = await fixture();
+  try {
+    const losses: string[] = [];
+    f.device.registerLostCallback((reason: string) => losses.push(reason));
+    f.device.destroy();
+    await expect.poll(() => losses).toEqual(['destroyed']);
+    f.device.destroy();
+    expect(losses).toEqual(['destroyed']);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('delivers a loss that preceded observer registration', async () => {
+  const f = await fixture();
+  try {
+    const extension = f.gl.getExtension('WEBGL_lose_context');
+    if (!extension) throw new Error('Context loss extension is required');
+    const lost = new Promise<void>((resolve) => {
+      f.canvas.addEventListener('webglcontextlost', () => resolve(), { once: true });
+    });
+    extension.loseContext();
+    await lost;
+    const losses: string[] = [];
+    f.device.registerLostCallback((reason: string) => losses.push(reason));
+    expect(losses).toEqual(['unknown']);
+  } finally {
+    f.dispose();
+  }
+});
+
+it('removes the context listener when the raw device is freed', async () => {
+  const f = await fixture();
+  const losses: string[] = [];
+  f.device.registerLostCallback((reason: string) => losses.push(reason));
+  const extension = f.gl.getExtension('WEBGL_lose_context');
+  if (!extension) throw new Error('Context loss extension is required');
+  f.dispose();
+  const lost = new Promise<void>((resolve) => {
+    f.canvas.addEventListener('webglcontextlost', () => resolve(), { once: true });
+  });
+  extension.loseContext();
+  await lost;
+  expect(losses).toEqual([]);
+});
+
 it('settles earlier buffer mapping before queue completion', async () => {
   const f = await fixture();
   const readback = f.device.createBuffer({ size: 4, usage: 0x01 | 0x08 });

@@ -8,7 +8,6 @@
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #pragma variant_axis CLUSTER_FORWARD_AVAILABLE
 #pragma variant_axis EXTENDED_LIGHTING_AVAILABLE
-#pragma variant_axis DIRECTIONAL_PCSS_AVAILABLE
 #pragma variant_axis PROJECTOR_AVAILABLE
 
 // Retain the full declared material ABI in reflection, including inactive inputs.

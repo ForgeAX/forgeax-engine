@@ -9,7 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setupGpuShim } from '../../triangle/scripts/smoke-helpers.mjs';
 
-export const GPU_FRAME_SAMPLES_SCHEMA = 'forgeax::hello-lod-occlusion::gpu-frame-samples::v4';
+export const GPU_FRAME_SAMPLES_SCHEMA = 'forgeax::hello-lod-occlusion::gpu-frame-samples::v5';
 export const WARMUP_SUBMITS = 32;
 export const RETAINED_SAMPLES_PER_ORDER = 64;
 export const RETAINED_SAMPLES = RETAINED_SAMPLES_PER_ORDER * 2;
@@ -248,14 +248,20 @@ export function worldReorderAttributionIsValid(input) {
   return worldReorderAttributionFailure(input) === undefined;
 }
 
+function validCpuCounters(user, system) {
+  return Number.isSafeInteger(user) && user >= 0 &&
+    Number.isSafeInteger(system) && system >= 0 &&
+    Number.isSafeInteger(user + system);
+}
+
 function validateCpuObservations(evidence) {
   const cpu = evidence.cpu;
   if (
-    cpu?.metric !== 'process.cpuUsage' ||
+    cpu?.metric !== 'process.threadCpuUsage' ||
     cpu.timeUnit !== 'microseconds' ||
     !Array.isArray(cpu.samples)
   ) {
-    throw new Error('CPU evidence requires raw process.cpuUsage observations in microseconds');
+    throw new Error('CPU evidence requires raw process.threadCpuUsage observations in microseconds');
   }
   const perWindow = RETAINED_SAMPLES_PER_ORDER / 2;
   if (cpu.samples.length !== perWindow * 6) {
@@ -273,14 +279,11 @@ function validateCpuObservations(evidence) {
       sample.frame >= WARMUP_SUBMITS + perWindow ||
       !Number.isSafeInteger(sample.frameId) ||
       sample.frameId < 0 ||
-      !Number.isSafeInteger(sample.userUs) ||
-      sample.userUs < 0 ||
-      !Number.isSafeInteger(sample.systemUs) ||
-      sample.systemUs < 0 ||
-      !Number.isSafeInteger(sample.userUs + sample.systemUs)
+      !validCpuCounters(sample.userUs, sample.systemUs) ||
+      !validCpuCounters(sample.processUserUs, sample.processSystemUs)
     ) {
       throw new Error(
-        'CPU observation requires a retained frame, receipt and non-negative process counters',
+        'CPU observation requires a retained frame, receipt and non-negative thread/process counters',
       );
     }
     if (
@@ -1160,24 +1163,27 @@ export async function captureCondition(
       profileSession = started.value;
     }
     selected.world.update().unwrap();
-    // Measure CPU consumption, not elapsed wall time: runner scheduling and
-    // async observation latency must not become a false CPU regression.
+    // Charge the synchronous submitting thread. Process-wide counters also
+    // include Dawn's concurrent native workers; retain those as diagnostics.
     let cpuElapsed;
+    let processElapsed;
     const receipt = await completeReadyFrame(() => {
-      const cpuStart = process.cpuUsage();
+      const processStart = process.cpuUsage();
+      const cpuStart = process.threadCpuUsage();
       const drawn = fixture.renderer.draw({ leases: [selected.lease], camera: { lease: selected.lease }, environment: { lease: selected.lease } });
-      cpuElapsed = process.cpuUsage(cpuStart);
+      cpuElapsed = process.threadCpuUsage(cpuStart);
+      processElapsed = process.cpuUsage(processStart);
       if (!drawn.ok) throw new Error(`renderer draw failed: ${drawn.error.code}: ${drawn.error.hint ?? drawn.error.expected ?? ''} ${JSON.stringify(drawn.error.detail ?? {})} events=${JSON.stringify(fixture.rendererErrors.slice(-3))}`);
       assertNoRendererErrors(fixture, `draw:${condition}`);
       return drawn.value;
     });
     const cpuFrameUs = cpuElapsed.user + cpuElapsed.system;
     if (retainTiming) {
-      // Keep the original process-wide draw span. Save the raw counters before
-      // observation so a failed read still leaves the completed CPU sample.
+      // Save both clocks before observation so failed reads retain the raw span.
       facts.cpuSamples.push({
         condition, order, frame, frameId: receipt.frameId,
         userUs: cpuElapsed.user, systemUs: cpuElapsed.system,
+        processUserUs: processElapsed.user, processSystemUs: processElapsed.system,
         captureGpuTimings: retainTiming, observeTimings: retainTiming,
         profileCapture: profileSession !== undefined,
       });
@@ -1322,10 +1328,10 @@ async function captureGroupInspection(fixture, condition) {
   const totalFrames = SETTLE_SUBMITS;
   logProducerPhase(`group:${condition}`, 'start', { totalFrames });
   for (let frame = 0; frame < SETTLE_SUBMITS; frame += 1) {
-    // Keep group diagnostics on the same process-time clock as A/B frames.
-    const cpuStart = process.cpuUsage();
+    // Keep group diagnostics on the same submitting-thread clock as A/B frames.
+    const cpuStart = process.threadCpuUsage();
     const { inspection } = await drawAndObserve(fixture, [condition]);
-    const cpuElapsed = process.cpuUsage(cpuStart);
+    const cpuElapsed = process.threadCpuUsage(cpuStart);
     facts.cpuFrameUs.push(cpuElapsed.user + cpuElapsed.system);
     const gpu = inspectLodOcclusion(fixture).gpuDriven;
     facts.frames += 1;
@@ -1800,7 +1806,7 @@ export function writeUnavailableEvidence(
     warmupSubmits: WARMUP_SUBMITS,
     retainedSamples: RETAINED_SAMPLES,
     samples: captured.samples ?? [],
-    cpu: { metric: 'process.cpuUsage', timeUnit: 'microseconds', samples: captured.cpuSamples ?? [] },
+    cpu: { metric: 'process.threadCpuUsage', timeUnit: 'microseconds', samples: captured.cpuSamples ?? [] },
     metrics: {
       timestampAvailable: false,
       reason,
@@ -1915,7 +1921,7 @@ async function producePerformanceEvidence(exactBuild) {
       retainedSamples: RETAINED_SAMPLES,
       samples,
       cpu: {
-        metric: 'process.cpuUsage', timeUnit: 'microseconds',
+        metric: 'process.threadCpuUsage', timeUnit: 'microseconds',
         samples: Object.values(conditionFacts).flatMap((facts) => facts.cpuSamples),
       },
       metrics: {

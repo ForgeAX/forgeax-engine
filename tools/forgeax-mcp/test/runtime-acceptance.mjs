@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
@@ -9,11 +9,16 @@ import { assertNoRuntimeFailure, assertScenePixels } from './app/acceptance.mjs'
 const evidence = resolve(process.argv[2] ?? 'artifacts/view-integration/runtime-acceptance');
 const source = await build({
   entryPoints: [resolve(import.meta.dirname, '../../../packages/devkit/src/host/startup-source.ts')],
-  bundle: true, write: false, format: 'esm', platform: 'node',
+  bundle: true, write: false, format: 'esm', platform: 'node', loader: { '.svg': 'text' },
 });
 const { hostStartupDocument, hostStartupScript } = await import(
   `data:text/javascript;base64,${Buffer.from(source.outputFiles[0].text).toString('base64')}`
 );
+// Bootstrap modules also run from data URLs; vector bytes must travel with the code.
+const logo = hostStartupDocument('Logo transport').match(/id="forgeax-loading-logo" src="data:image\/svg\+xml;base64,([^"]+)"/)?.[1];
+assert.ok(logo, 'the default Host document must carry its SVG logo');
+assert.equal(Buffer.from(logo, 'base64').toString('utf8'), await readFile(
+  resolve(import.meta.dirname, '../../../packages/devkit/src/host/forgeax-logo.svg'), 'utf8'));
 const context = new Context();
 let browser;
 try {
@@ -75,14 +80,15 @@ try {
   await mkdir(evidence, { recursive: true });
   await page.screenshot({ path: resolve(evidence, 'fatal-after-60-frames.png') });
   await frame.locator('#forgeax-fatal').evaluate(node => { node.style.display = 'none'; });
-  await assertNoRuntimeFailure(frame, 'Hidden placeholder', errors, consoleErrors);
+  await assert.rejects(() => assertNoRuntimeFailure(frame, 'Hidden retained failure', errors, consoleErrors),
+    /Call initialize\(\) before using vag-platform-sdk/);
   await frame.locator('html').evaluate(() => console.error('RendererOperationError: device-operation-failed'));
   await page.waitForFunction(() => true);
   assert.equal(consoleErrors.length, 1);
   await assert.rejects(() => assertNoRuntimeFailure(frame, 'Console failure', errors, consoleErrors),
     /no browser console errors/);
   const summary = { ok: true, positive, retainedFrameCount: 60,
-    rejected: ['visible native fatal with empty browser errors', 'black PNG', 'white PNG', 'runtime console error'],
+    rejected: ['visible native fatal with empty browser errors', 'hidden retained startup failure', 'black PNG', 'white PNG', 'runtime console error'],
     boundary: 'Actual native child failure in a sandboxed iframe, generated startup DOM and decoded 2D pixels; no GPU qualification' };
   await writeFile(resolve(evidence, 'result.json'), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary));

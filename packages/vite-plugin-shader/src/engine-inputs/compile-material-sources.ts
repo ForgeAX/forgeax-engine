@@ -6,6 +6,7 @@ import {
   type compileShader,
   createShaderProgramCompiler,
 } from '@forgeax/engine-shader-compiler';
+import { ok } from '@forgeax/engine-types';
 import type { EngineShaderFile } from './load-engine-shader-entries.js';
 import { lowerEngineSurfaceEntry } from './prepare-engine-shader-source.js';
 
@@ -44,7 +45,11 @@ import('node:worker_threads').then(({ parentPort, workerData }) => {
       const prepared = lowerEngineSurfaceEntry(message.file, message.options.imports ?? {}, workerData.fallbackImports, message.options.defines);
       const result = await compileShader(prepared.source, { ...message.options, imports: prepared.imports });
       if (result.ok) {
-        parentPort.postMessage({ id: message.id, result: { ok: true, value: result.value } });
+        // The public result owns one WGSL body at two fields. Strings are copied by
+        // value across isolates, so send it once and restore the alias in the parent.
+        parentPort.postMessage({ id: message.id, result: { ok: true, value: {
+          ...result.value, manifestEntry: { ...result.value.manifestEntry, wgsl: '' }
+        } } });
         return;
       }
       const error = result.error;
@@ -133,6 +138,16 @@ export async function compileMaterialSources(
       ? requestedWorkers
       : Math.max(1, availableParallelism() - 1),
   );
+  // Only this roster owns the table; equal programs share their immutable body
+  // while every variant retains independently mutable metadata and result order.
+  const sources = new Map<string, string>();
+  const retain = (result: MaterialCompileResult): MaterialCompileResult => {
+    if (!result.ok) return result;
+    const value = result.value;
+    const source = sources.get(value.wgsl) ?? value.wgsl;
+    sources.set(source, source);
+    return ok({ ...value, wgsl: source, manifestEntry: { ...value.manifestEntry, wgsl: source } });
+  };
   if (workerCount <= 1) {
     const compileShader = createShaderProgramCompiler();
     const results: MaterialCompileResult[] = [];
@@ -144,7 +159,7 @@ export async function compileMaterialSources(
         job.options.defines,
       );
       results.push(
-        await compileShader(prepared.source, { ...job.options, imports: prepared.imports }),
+        retain(await compileShader(prepared.source, { ...job.options, imports: prepared.imports })),
       );
     }
     return results;
@@ -167,10 +182,8 @@ export async function compileMaterialSources(
   let nextJob = 0;
   const tasks = workers.map(async (worker) => {
     for (let jobIndex = nextJob++; jobIndex < jobs.length; jobIndex = nextJob++) {
-      results[jobIndex] = await runShaderCompileWorkerJob(
-        worker,
-        jobIndex,
-        jobs[jobIndex] as MaterialCompileJob,
+      results[jobIndex] = retain(
+        await runShaderCompileWorkerJob(worker, jobIndex, jobs[jobIndex] as MaterialCompileJob),
       );
     }
   });

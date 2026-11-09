@@ -84,12 +84,16 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
       '#pragma variant_axis PROBE_BLEND_AVAILABLE',
       '#pragma variant_axis EXTENDED_LIGHTING_AVAILABLE',
       '#pragma variant_axis TRANSMISSION_AVAILABLE',
-      '#pragma variant_axis DIRECTIONAL_PCSS_AVAILABLE',
       '#pragma variant_axis PROJECTOR_AVAILABLE',
       '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
       '#pragma variant_axis REFLECTION_FALLBACK_AVAILABLE',
       '#pragma variant_axis COVERAGE_ONLY',
       '#pragma variant_axis VISIBLE_SURFACE_AVAILABLE',
+      '#pragma variant_axis ALPHA_MASK',
+      '#pragma variant_axis DIRECTIONAL_SHADOW_SIMPLE',
+      '#pragma variant_axis LEAN_LIGHTING',
+      '#pragma variant_axis LOD_DITHER',
+      '#pragma variant_axis CLIPPING_PLANES',
     ]);
   });
 
@@ -102,6 +106,7 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
       '#pragma variant_axis COVERAGE_ONLY',
       '#pragma variant_axis SKINNING_DISABLED',
       '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
+      '#pragma variant_axis LOD_DITHER',
     ]);
   });
 });

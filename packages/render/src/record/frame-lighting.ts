@@ -3,6 +3,7 @@ import type { AssetHandle, ManifestEntry } from '@forgeax/engine-types';
 import { fnv1a32 } from '@forgeax/engine-types';
 import { meshSsboBuffer } from '../assembly/mesh-ssbo-grow';
 import { standardBloomAdmitted } from '../bloom-admission';
+import { hasCapsuleShadowDemand } from '../capsule-shadow/inspection';
 import {
   type AtmosphereViews,
   atmosphereBindings,
@@ -31,6 +32,8 @@ import {
   LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
 } from '@forgeax/engine-shader';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { spotBinningSphere } from '../cluster-binner';
+import { ablateLocalLights } from '../diagnostics/render-ablation';
 import {
   PointShadowAtlasBoundsViolationError,
   PointShadowAtlasUninitializedError,
@@ -256,7 +259,7 @@ export function buildPerFrameBindGroups(
     ? getOrCreateHdrpBuffers(
         internals,
         frameState.installedPipelineConfig?.clusterGrid,
-        frameState.standardClusterAoExtent,
+        frameState.standardClusterTextureExtent,
       )
     : null;
   const currentMembership =
@@ -642,6 +645,7 @@ export function prepareFrameLighting(
     | 'standardClusterAbi'
     | 'pbrPipelineLayout'
   >,
+  renderables?: FrameList<RenderableSnapshot>,
 ): Result<
   {
     light: DirectionalLightSnapshot;
@@ -665,6 +669,7 @@ export function prepareFrameLighting(
     color: vec3.create(0, 0, 0),
     intensity: 0,
     contactShadowLength: 0,
+    sourceAngle: 0,
   };
   const totalLightCount =
     (directionalLight !== undefined ? 1 : 0) +
@@ -679,6 +684,7 @@ export function prepareFrameLighting(
     camera,
     directionalLight,
     pipelineState,
+    renderables,
   );
   if (!standard.ok) return standard;
   return ok({
@@ -715,6 +721,7 @@ function prepareFrameShadowSnapshots(
   // a graph-owned typed target, not a runtime ShadowAtlas, so graph compilation
   // owns the depth texture lifetime.
   frameState.spotShadowSnapshots = lights.spot;
+  frameState.darkShadowViews = darkShadowViews(lights, frameState.darkShadowViews);
   if (lights.pointShadow.length > 0) {
     if (frameState.pointShadowAtlas === null) {
       const firstSnap = lights.pointShadow[0];
@@ -739,47 +746,166 @@ function prepareFrameShadowSnapshots(
   }
 }
 
-function createStandardLocalLights(lights: ViewLights): StandardLocalLightInput[] {
+/**
+ * An `invRangeSquared` whose range window is zero at every receiver: the
+ * punctual evaluators floor `d^2` at 1e-4, so `x = 1e-4 * 1e5 = 10` and the
+ * window `clamp(1 - x * x, 0, 1)` is exactly 0 with f32 margin. `range = 0`
+ * extracts as 1e8 (`computeInvRangeSquared`), well past it.
+ */
+const PUNCTUAL_NO_REACH_INV_RANGE_SQUARED = 1e5;
+
+/**
+ * Whether a local light contributes exactly zero radiance this frame, so it can
+ * stay out of Cluster membership. The extract pre-multiplies `color` by
+ * intensity, and every surface / volume evaluator is linear in that product;
+ * a punctual light whose range is zero (`range = 0` extracts as 1e8) has a
+ * zero range window everywhere. NaN inputs are kept so degenerate lights keep
+ * their existing behaviour. The light keeps its slot, so light counts, slot
+ * indices and the published shader variant never change when it toggles.
+ */
+export function standardLocalLightEmitsNothing(
+  kind: StandardLocalLightInput['kind'],
+  source: { readonly color: ArrayLike<number>; readonly invRangeSquared?: number },
+): boolean {
+  const color = source.color;
+  if (color[0] === 0 && color[1] === 0 && color[2] === 0) return true;
+  return (
+    (kind === 'point' || kind === 'spot') &&
+    source.invRangeSquared !== undefined &&
+    source.invRangeSquared >= PUNCTUAL_NO_REACH_INV_RANGE_SQUARED
+  );
+}
+
+/** A dark light keeps its slot but bins nowhere (`bin` culls `range <= 0`). */
+function binningRange(
+  kind: StandardLocalLightInput['kind'],
+  source: { readonly color: ArrayLike<number>; readonly invRangeSquared?: number },
+  range: number,
+): number {
+  return standardLocalLightEmitsNothing(kind, source) ? 0 : range;
+}
+
+const NO_DARK_VIEWS: ReadonlySet<number> = new Set();
+
+/** Shadow views of dark lights; the previous sets are kept while unchanged. */
+function darkShadowViews(
+  lights: ViewLights,
+  previous: RenderFrameState['darkShadowViews'],
+): NonNullable<RenderFrameState['darkShadowViews']> {
+  let point: Set<number> | undefined;
+  for (const light of lights.point) {
+    const layer = light.shadowAtlasLayer;
+    if (layer === undefined || layer < 0 || !standardLocalLightEmitsNothing('point', light))
+      continue;
+    point ??= new Set();
+    point.add(layer);
+  }
+  let spot: Set<number> | undefined;
+  for (const light of lights.spot) {
+    if (!light.castShadow || light.shadowAtlasTile < 0) continue;
+    if (!standardLocalLightEmitsNothing('spot', light)) continue;
+    spot ??= new Set();
+    spot.add(light.shadowAtlasTile);
+  }
+  if (previous === undefined) return { point: point ?? NO_DARK_VIEWS, spot: spot ?? NO_DARK_VIEWS };
+  const samePoint = sameMembers(previous.point, point);
+  const sameSpot = sameMembers(previous.spot, spot);
+  if (samePoint && sameSpot) return previous;
+  return {
+    point: samePoint ? previous.point : (point ?? NO_DARK_VIEWS),
+    spot: sameSpot ? previous.spot : (spot ?? NO_DARK_VIEWS),
+  };
+}
+
+function sameMembers(a: ReadonlySet<number>, b: ReadonlySet<number> | undefined): boolean {
+  if (b === undefined) return a.size === 0;
+  if (a.size !== b.size) return false;
+  for (const value of b) if (!a.has(value)) return false;
+  return true;
+}
+
+export function createStandardLocalLights(lights: ViewLights): StandardLocalLightInput[] {
   return [
     ...lights.point.map((source) => ({
       kind: 'point' as const,
       shadowed: source.shadowAtlasLayer !== undefined && source.shadowAtlasLayer >= 0,
       position: source.position,
-      range:
+      range: binningRange(
+        'point',
+        source,
         Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
           : Number.POSITIVE_INFINITY,
+      ),
       source,
     })),
-    ...lights.spot.map((source) => ({
-      kind: 'spot' as const,
-      shadowed:
-        source.castShadow && source.shadowAtlasTile >= 0 && source.lightViewProj !== undefined,
-      position: source.position,
-      range:
+    ...lights.spot.map((source) => {
+      const range =
         Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
-          : Number.POSITIVE_INFINITY,
-      source,
-    })),
+          : Number.POSITIVE_INFINITY;
+      // Bin the spot's lit sector, not its whole range sphere.
+      const center = vec3.create(0, 0, 0);
+      const radius = spotBinningSphere(
+        source.position,
+        source.direction,
+        source.cosOuter,
+        range,
+        center,
+      );
+      return {
+        kind: 'spot' as const,
+        shadowed:
+          source.castShadow && source.shadowAtlasTile >= 0 && source.lightViewProj !== undefined,
+        position: center,
+        range: binningRange('spot', source, radius),
+        cone: {
+          apex: source.position,
+          direction: source.direction,
+          cosOuter: source.cosOuter,
+          range,
+        },
+        source,
+      };
+    }),
     ...lights.rect.map((source) => ({
       kind: 'rect-area' as const,
       shadowed: false,
       position: source.position,
-      range:
+      range: binningRange(
+        'rect-area',
+        source,
         (Number.isFinite(source.invRangeSquared) && source.invRangeSquared > 0
           ? Math.sqrt(1 / source.invRangeSquared)
           : Number.POSITIVE_INFINITY) + Math.hypot(source.halfWidth, source.halfHeight),
+      ),
       source,
     })),
     ...(lights.additionalDirectional ?? []).map((source) => ({
       kind: 'directional' as const,
       shadowed: false,
       position: ORIGIN,
-      range: Number.POSITIVE_INFINITY,
+      range: binningRange('directional', source, Number.POSITIVE_INFINITY),
       source,
     })),
   ];
+}
+
+function standardScreenTransportDemand(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  camera: CameraSnapshot | undefined,
+  directionalLight: DirectionalLightSnapshot | undefined,
+  renderables?: FrameList<RenderableSnapshot>,
+): boolean {
+  if (frameState.installedPipelineConfig?.ssao?.enabled === true) return true;
+  if ((frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath === 'deferred')
+    return false;
+  return (
+    (directionalLight?.contactShadowLength ?? 0) > 0 ||
+    (camera?.projectedDecals?.length ?? 0) > 0 ||
+    hasCapsuleShadowDemand(renderables)
+  );
 }
 
 function prepareStandardLightingTopology(
@@ -797,10 +923,17 @@ function prepareStandardLightingTopology(
         | 'pbrPipelineLayout'
       >
     | undefined,
+  renderables?: FrameList<RenderableSnapshot>,
 ): Result<StandardTopologyInputValue, RenderError> {
   const clusterGrid = frameState.installedPipelineConfig?.clusterGrid ?? DEFAULT_CLUSTER_GRID;
-  const local = camera === undefined ? [] : createStandardLocalLights(lights);
-  const needsClusterAo = frameState.installedPipelineConfig?.ssao?.enabled === true;
+  const local = camera === undefined ? [] : ablateLocalLights(createStandardLocalLights(lights));
+  const needsClusterAo = standardScreenTransportDemand(
+    internals,
+    frameState,
+    camera,
+    directionalLight,
+    renderables,
+  );
   const reflectedAbi = pipelineState?.standardClusterAbi ?? internals.standardClusterAbi;
   const requiresCluster =
     standardLightingPipelineDemand(
@@ -1253,7 +1386,7 @@ function resolveClusterWriteResources(
   const hdrpBuffers = getOrCreateHdrpBuffers(
     internals,
     prepared.layout.grid,
-    frameState.standardClusterAoExtent,
+    frameState.standardClusterTextureExtent,
   );
   if (hdrpBuffers === null) {
     return err(
@@ -1352,6 +1485,16 @@ function buildClusterUniformPayload(
         ? { aoLayout: hdrpBuffers.layout.ao }
         : {}),
       directLightingStrength: clusterDirectAoStrength,
+      ...(frameState.standardClusterTextureExtent?.screen === undefined
+        ? {}
+        : {
+            screen: {
+              ...frameState.standardClusterTextureExtent.screen,
+              ...(hdrpBuffers.kind === 'texture'
+                ? { baseWord: hdrpBuffers.layout.screen?.baseWord ?? 0 }
+                : {}),
+            },
+          }),
       reflectedAbi,
       ...(hdrpBuffers.kind === 'texture'
         ? {
@@ -1663,7 +1806,7 @@ export function clusteredMeshSlotBindGroup(
   const buffers = getOrCreateHdrpBuffers(
     runtime,
     frameState.installedPipelineConfig?.clusterGrid,
-    frameState.standardClusterAoExtent,
+    frameState.standardClusterTextureExtent,
   );
   if (buffers === null) {
     throw new RhiError({

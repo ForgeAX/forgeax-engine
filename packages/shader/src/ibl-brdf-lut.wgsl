@@ -56,6 +56,7 @@ fn brdfLutBake_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
   let denom = f32(BRDF_LUT_SIZE);
   let NdotV = clamp(pos.x / denom, 0.0, 1.0);
   let roughness = clamp(pos.y / denom, 0.0, 1.0);
+  let alpha = roughness * roughness;
 
   // Reconstruct V from NdotV in canonical frame: N = (0, 0, 1).
   let V = vec3<f32>(
@@ -71,18 +72,22 @@ fn brdfLutBake_fs(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
   for (var i: u32 = 0u; i < BRDF_LUT_SAMPLE_COUNT; i = i + 1u) {
     let Xi = hammersley(i, BRDF_LUT_SAMPLE_COUNT);
     let H = importanceSampleGGX(Xi, N, roughness);
-    let L = normalize(2.0 * dot(V, H) * H - V);
+    let VdotHUnclamped = dot(V, H);
+    let L = normalize(2.0 * VdotHUnclamped * H - V);
 
     let NdotL = max(L.z, 0.0);
     if (NdotL > 0.0) {
       let NdotH = max(H.z, 0.0);
-      let VdotH = max(dot(V, H), 0.0);
+      let VdotH = max(VdotHUnclamped, 0.0);
 
       // Match Standard and Three.js: correlated Smith visibility V = G/(4 NoL NoV).
       // Multiplying by the GGX sampling Jacobian cancels NoV analytically.
-      let visibility = v_smith(NdotV, NdotL, roughness * roughness);
+      let visibility = v_smith(NdotV, NdotL, alpha);
       let GVis = 4.0 * NdotL * visibility * VdotH / max(NdotH, 1e-5);
-      let Fc = pow(max(1.0 - VdotH, 0.0), 5.0);
+      let fresnelComplement = max(1.0 - VdotH, 0.0);
+      let fresnelComplement2 = fresnelComplement * fresnelComplement;
+      // Schlick's fixed fifth power needs no general logarithm/exponent path.
+      let Fc = fresnelComplement2 * fresnelComplement2 * fresnelComplement;
 
       A += (1.0 - Fc) * GVis;
       B += Fc * GVis;

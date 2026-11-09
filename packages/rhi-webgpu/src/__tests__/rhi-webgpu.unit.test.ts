@@ -1833,6 +1833,18 @@ import { createMockGpu, type MockCapture, makeShaderError } from './__mocks__/gp
       }
     });
 
+    it('mapState tracks a map/unmap cycle after an unmapped read was observed', async () => {
+      const buf = await makeBuffer({ size: 16, usage: USAGE_MAP_WRITE });
+      expect(buf.mapState).toBe('unmapped');
+      expect(buf.mapState).toBe('unmapped');
+      expect((await buf.mapAsync(MAP_WRITE)).ok).toBe(true);
+      expect(buf.mapState).toBe('mapped');
+      buf.unmap();
+      expect(buf.mapState).toBe('unmapped');
+      expect((await buf.mapAsync(MAP_WRITE)).ok).toBe(true);
+      expect(buf.mapState).toBe('mapped');
+    });
+
     it('F-8 row 2: getMappedRange after unmap returns webgpu-runtime-error (detach guard)', async () => {
       const buf = await makeBuffer({ size: 16, usage: USAGE_MAP_WRITE });
       const m1 = await buf.mapAsync(MAP_WRITE);

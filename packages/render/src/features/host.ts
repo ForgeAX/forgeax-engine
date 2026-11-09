@@ -1,8 +1,8 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { Buffer, RhiCaps, Sampler, TextureFormat, TextureView } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { featureRecordsInCapture } from '../capture/feature-policy';
 import {
   type RenderError,
   RenderFeatureCapabilityMissingError,
@@ -195,6 +195,8 @@ export interface RenderFeatureFrameInput {
   readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
   readonly identity: string;
   readonly render: boolean;
+  /** Set on capture-face views; Features whose `capture` policy excludes the kind see the view held. */
+  readonly captureKind?: import('../capture/feature-policy').CaptureFaceKind;
   readonly motionBlur?: import('./motion-blur/motion-blur-feature').MotionBlurFeatureInput;
   readonly worlds: readonly import('@forgeax/engine-ecs').World[];
   readonly owner: number;
@@ -2368,7 +2370,7 @@ class FeatureFramePreparation {
       frameNumber: input.frameNumber,
       caps: input.caps,
       ...this.batch.materialContext,
-      views: this.batch.extractViews,
+      views: this.admittedViews(this.batch.extractViews),
       ...(input.visibilitySnapshots === undefined
         ? {}
         : { visibilitySnapshots: input.visibilitySnapshots }),
@@ -2376,11 +2378,25 @@ class FeatureFramePreparation {
     });
   }
 
+  /** Whether this Feature's `capture` policy admits the view; capture-face views it excludes are never shown to it. */
+  private admitsView(view: RenderFeatureFrameInput): boolean {
+    return (
+      view.captureKind === undefined ||
+      featureRecordsInCapture(this.feature.capture, view.captureKind)
+    );
+  }
+
+  private admittedViews<V>(views: readonly V[]): readonly V[] {
+    const inputs = this.batch.inputs;
+    return views.filter((_, index) => this.admitsView(inputs[index] as RenderFeatureFrameInput));
+  }
+
   private planViews(): RenderFeaturePlanContext['views'] {
     const inputs = this.batch.inputs;
     const views = this.batch.planViews;
     const planned: RenderFeaturePlanView[] = [];
     for (let index = 0; index < views.length; index++) {
+      if (!this.admitsView(inputs[index] as RenderFeatureFrameInput)) continue;
       const view = views[index] as (typeof views)[number];
       planned.push({
         ...view,

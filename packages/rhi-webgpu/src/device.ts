@@ -75,6 +75,7 @@ import type {
   TextureViewDescriptor,
 } from '@forgeax/engine-rhi';
 import {
+  bufferWriteRange,
   commandEncoderFinished,
   createQueueCompletionHold,
   err,
@@ -401,6 +402,7 @@ function deriveCaps(
   rawDevice: GPUDevice,
   features: GPUSupportedFeatures,
   limits: GPUSupportedLimits,
+  depthTextureLoad: boolean,
 ): RhiCaps {
   const has = (name: string): boolean => features.has(name as GPUFeatureName);
   // Texture-compression three-way caps (M4 w26): derived from adapter.features
@@ -439,8 +441,12 @@ function deriveCaps(
     // 4 new fields (D-P3 / R-03 §3.1):
     samplerAliasing: true, // spec mandatory on browser backends.
     firstInstanceIndirect: has('indirect-first-instance'),
-    storageBuffer: (limits.maxStorageBuffersPerShaderStage ?? 0) > 0,
+    storageBuffer:
+      (limits.maxStorageBuffersPerShaderStage ?? 0) > 0 &&
+      (limits.maxStorageBuffersInVertexStage ?? limits.maxStorageBuffersPerShaderStage ?? 0) > 0 &&
+      (limits.maxStorageBuffersInFragmentStage ?? limits.maxStorageBuffersPerShaderStage ?? 0) > 0,
     storageTexture: (limits.maxStorageTexturesPerShaderStage ?? 0) > 0,
+    depthTextureLoad,
     // HDR / filterable caps (feat-20260608 M1):
     ...hdrCaps,
     textureImport: true,
@@ -1053,10 +1059,16 @@ class WebGpuCommandEncoder implements RhiCommandEncoder {
       const rawDst = BUFFER_RAW_MAP.get(dst) ?? (dst as unknown as GPUBuffer);
       this.#rawEncoder.copyBufferToBuffer(rawSource, arg2, rawDst, arg4 ?? 0, arg5 ?? 0);
     } else {
-      // 3-arg shorthand
+      // Lower convenience syntax to the stable native signature.
       const dst = arg2 as Buffer;
       const rawDst = BUFFER_RAW_MAP.get(dst) ?? (dst as unknown as GPUBuffer);
-      this.#rawEncoder.copyBufferToBuffer(rawSource, rawDst, arg3 as number | undefined);
+      this.#rawEncoder.copyBufferToBuffer(
+        rawSource,
+        0,
+        rawDst,
+        0,
+        (arg3 as number | undefined) ?? rawSource.size,
+      );
     }
   }
   copyBufferToTexture(
@@ -1257,9 +1269,16 @@ function rangeError(args: { expected: string; hint: string }): Result<never, Rhi
  *     the native GPUBuffer, including pending, unmap and destroy transitions.
  */
 function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFlags): Buffer {
+  // Reading `raw.mapState` crosses into the browser on every access. Only this
+  // wrapper can start a mapping, so an observed 'unmapped' stays true until
+  // mapAsync below passes validation and delegates.
+  let knownUnmapped = false;
   const wrapper = {
     get mapState(): Buffer['mapState'] {
-      return raw.mapState;
+      if (knownUnmapped) return 'unmapped';
+      const state = raw.mapState;
+      if (state === 'unmapped') knownUnmapped = true;
+      return state;
     },
     async mapAsync(
       mode: GPUMapModeFlags,
@@ -1326,6 +1345,7 @@ function makeBufferWrapper(raw: GPUBuffer, size: number, usage: GPUBufferUsageFl
         });
       }
       // Delegate to raw GPUBuffer; raw rejection wraps as webgpu-runtime-error.
+      knownUnmapped = false;
       try {
         if (sizeArg === undefined && offset === undefined) {
           await raw.mapAsync(mode);
@@ -1425,7 +1445,7 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
           ? (rawBuffer as { size: number }).size
           : Number.MAX_SAFE_INTEGER;
       // 4-byte alignment validation (W3C WebGPU 23.2 writeBuffer).
-      if (bufferOffset % 4 !== 0) {
+      if (!Number.isSafeInteger(bufferOffset) || bufferOffset < 0 || bufferOffset % 4 !== 0) {
         return err(
           queueWriteBufferOutOfBounds({
             offset: bufferOffset,
@@ -1435,10 +1455,10 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
           }),
         );
       }
-      const dataByteLength =
-        data instanceof ArrayBuffer ? data.byteLength : (data as ArrayBufferView).byteLength;
+      const range = bufferWriteRange(data, dataOffset, size);
+      if (!range.ok) return range;
       const writeStart = dataOffset ?? 0;
-      const writeSize = size ?? dataByteLength - writeStart;
+      const writeSize = range.value.byteLength;
       // Bounds validation: bufferOffset + writeSize <= bufferSize.
       if (bufferOffset + writeSize > bufferSize) {
         return err(
@@ -1621,7 +1641,10 @@ function makeQueue(rawQueue: GPUQueue): RhiQueue {
  * dual-form fan-out is the engine layer's job; this package only exposes the
  * spec Promise). See plan-strategy 3 R2 mitigation.
  */
-export function makeRhiDevice(rawDevice: GPUDevice): {
+export function makeRhiDevice(
+  rawDevice: GPUDevice,
+  options: { readonly depthTextureLoad?: boolean } = {},
+): {
   device: RhiDevice;
   /** Exposed for createShaderModule and other shim entry points that need to
    *  bypass the createX Result wrapper. */
@@ -1629,7 +1652,12 @@ export function makeRhiDevice(rawDevice: GPUDevice): {
 } {
   const pipelineLibrary = new WebGpuPipelineLibrary(rawDevice);
   void rawDevice.lost?.then(() => pipelineLibrary.dispose());
-  const caps = deriveCaps(rawDevice, rawDevice.features, rawDevice.limits);
+  const caps = deriveCaps(
+    rawDevice,
+    rawDevice.features,
+    rawDevice.limits,
+    options.depthTextureLoad ?? true,
+  );
   const accelerationStructures = new WebGpuAccelerationStructures(
     caps.rayQuery,
     rawDevice,

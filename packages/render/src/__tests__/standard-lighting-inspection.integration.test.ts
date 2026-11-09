@@ -114,7 +114,15 @@ describe('Standard lighting inspection provenance', () => {
     expect(selected.ok).toBe(true);
     if (!selected.ok) return;
 
-    expect(inspectStandardClusterTransport(selected.value, preparedFrame)).toEqual({
+    const inspection = inspectStandardClusterTransport(selected.value, preparedFrame);
+    const { lightsPerCluster, ...facts } = inspection;
+    // Lazy occupancy diagnostic: the box view agrees with the prepared counts.
+    expect(lightsPerCluster?.box.entries).toBe(preparedFrame.membershipEntryCount);
+    expect(lightsPerCluster?.box.occupied).toBe(selected.value.occupiedClusterCount);
+    expect(lightsPerCluster?.exact?.entries ?? 0).toBeLessThanOrEqual(
+      preparedFrame.membershipEntryCount,
+    );
+    expect(facts).toEqual({
       renderPath: 'forward',
       transport: 'cpu-storage',
       producer: 'cpu',

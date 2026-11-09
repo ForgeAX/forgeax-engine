@@ -93,6 +93,27 @@ async function harness() {
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
+it('rejects a failed capsule-consumer switch instead of recording a graph with the old caster policy', async () => {
+  const h = await harness();
+  h.compile();
+  h.accept();
+  h.setFail(true);
+  const outcome = compileViewGraph({ ...h.input(), forwardCapsuleShadows: true });
+  expect(outcome.kind).toBe('rejected');
+});
+
+it('never retains a single-sample graph for an unqualified WebGL2 MSAA request', async () => {
+  const h = await harness();
+  h.compile();
+  h.accept();
+  Object.defineProperty(h.internals.device, 'caps', {
+    value: { ...h.internals.device.caps, backendKind: 'wgpu-webgl2' },
+  });
+  const input = h.input();
+  const outcome = compileViewGraph({ ...input, camera: { ...input.camera, antialias: 'msaa' } });
+  expect(outcome.kind).toBe('rejected');
+});
+
 /** Each fixture prepares the state its final compile observes and returns that compile's width. */
 const fixtures: Record<string, (h: Harness) => number> = {
   compiled: () => 1,

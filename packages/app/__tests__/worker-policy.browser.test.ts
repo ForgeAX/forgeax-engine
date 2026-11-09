@@ -114,7 +114,12 @@ it('poisons partial shared writes with split rendering, then rebuilds both owner
     const stopped = app.execution.report().frame.submitted;
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(app.execution.report().frame.submitted).toBe(stopped);
-    (await app.execution.rebuild()).unwrap();
+    const rebuilt = await app.execution.rebuild();
+    if (!rebuilt.ok) {
+      throw new Error(`Execution rebuild failed: ${JSON.stringify(app.execution.report().fault)}`, {
+        cause: rebuilt.error,
+      });
+    }
     expect(app.execution.report().world.identity).not.toBe(identity);
     expect(app.execution.report().render?.state).toBe('alive');
     app.start().unwrap();

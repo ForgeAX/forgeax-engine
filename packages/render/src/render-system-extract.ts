@@ -13,6 +13,7 @@ import {
   materialProgramContextForPass,
 } from '@forgeax/engine-pack/material-cook';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
+import { planarCaptureDemanded, planarRoutedPasses } from './capture/planar-material';
 import { buildPlanarReflectionView } from './capture/planar-view';
 import {
   captureMaterialSnapshot,
@@ -199,6 +200,7 @@ import type {
   FogSelectionFailure,
 } from './extract/environment';
 import {
+  createEnvironmentQuery,
   noteEnvironmentInputs,
   queryEnvironment,
   readEnvironmentPose,
@@ -242,6 +244,16 @@ import {
 import { extractVolumetricFog } from './volume/extract';
 import type { VolumeProjectorTuple } from './volume/temporal';
 
+const collectCubeCameraSnapshotsQuery = createEnvironmentQuery({
+  read: [CubeCamera],
+  with: [Transform, GlobalTransform],
+});
+const collectReflectionProbeFactsQuery = createEnvironmentQuery({
+  read: [ReflectionProbe],
+  with: [Transform, GlobalTransform],
+});
+const extractVolumeSnapshotQuery = createEnvironmentQuery({ read: [VolumetricFog] });
+
 /**
  * DirectionalLightSnapshot — sun-like infinite light variant of the
  * `LightSnapshot` discriminated union (M2 / w16 / AC-03). Host pre-multiplies
@@ -261,6 +273,8 @@ export interface DirectionalLightSnapshot {
   readonly intensity: number;
   /** Screen-space contact shadow ray length in meters; 0 disables it. */
   readonly contactShadowLength: number;
+  /** Apparent light-disc diameter in degrees; 0 is a point light. */
+  readonly sourceAngle?: number;
 }
 
 /** Resolved immutable IES asset and its composition-local GPU layer. */
@@ -572,16 +586,22 @@ export type LightSnapshot =
  * owner's adopted roster through a view's {@link ViewLights}. Cascades are
  * not a source fact: each view fits its own (see `world/render-lights.ts`).
  *
- * `directional` is the first directional light: it owns the View sun lane,
- * CSM shadows and the atmosphere. `additionalDirectional` holds every later
- * DirectionalLight; record packs them into the Standard Cluster as unshadowed
- * directional slots. `directionalCount` counts every DirectionalLight.
+ * `directional` is the sun-lane owner: the first DirectionalLight with
+ * castShadow, else the first one. It owns the View sun lane, CSM shadows and
+ * the atmosphere. `additionalDirectional` holds every other DirectionalLight;
+ * record packs them into the Cluster as unshadowed directional slots.
+ * `directionalCount` counts every DirectionalLight.
  */
 export interface LightRoster {
   readonly directional: DirectionalLightSnapshot | undefined;
   readonly directionalCount: number;
-  /** Unshadowed DirectionalLights after the first; absent means none. */
+  /** Unshadowed DirectionalLights besides the sun-lane owner; absent means none. */
   readonly additionalDirectional?: readonly DirectionalLightSnapshot[];
+  /**
+   * Entities of castShadow DirectionalLights that did not get the single CSM
+   * and render unshadowed; record warns once. Absent means none.
+   */
+  readonly ignoredDirectionalShadowCasters?: readonly EntityHandle[];
   readonly point: readonly PointLightSnapshot[];
   readonly spot: readonly SpotLightSnapshot[];
   readonly rect: readonly RectAreaDirectLightSnapshot[];
@@ -1138,6 +1158,8 @@ export interface MaterialSnapshotCacheEntry {
   readonly snapshot: MaterialSnapshot;
   readonly programSelections?: readonly MaterialProgramSelection[];
   readonly assetRevision: number;
+  /** A planar receiver's routing when prepared: true = forward only (a capture is published). */
+  readonly planarRouted?: boolean;
 }
 
 export type MaterialSnapshotCache = Map<number, MaterialSnapshotCacheEntry>;
@@ -2341,9 +2363,18 @@ export function readPersistentMaterialSnapshot(
   world: RenderResourceScope,
 ): MaterialSnapshotCacheEntry | undefined {
   const entry = cache?.get(handleRaw);
-  return entry !== undefined && renderAssetRevision(world, handleRaw) === entry.assetRevision
+  return entry !== undefined &&
+    renderAssetRevision(world, handleRaw) === entry.assetRevision &&
+    (entry.planarRouted === undefined || entry.planarRouted === planarCaptureDemanded(world.world))
     ? entry
     : undefined;
+}
+
+/** Planar routing recorded by preparation, keyed by the prepared snapshot. */
+const planarRoutingBySnapshot = new WeakMap<MaterialSnapshot, boolean>();
+
+function recordPlanarRouting(snapshot: MaterialSnapshot, routed: boolean | undefined): void {
+  if (routed !== undefined) planarRoutingBySnapshot.set(snapshot, routed);
 }
 
 export function storeMaterialSnapshot(
@@ -2358,10 +2389,12 @@ export function storeMaterialSnapshot(
   const resource = previous === undefined ? undefined : materialResource(previous.snapshot);
   if (resource === undefined) new MaterialResource(accepted);
   else resource.adopt(accepted);
+  const planarRouted = planarRoutingBySnapshot.get(snapshot);
   const entry: MaterialSnapshotCacheEntry = {
     snapshot: accepted,
     ...(programSelections === undefined ? {} : { programSelections }),
     assetRevision: renderAssetRevision(world, handleRaw) ?? 0,
+    ...(planarRouted === undefined ? {} : { planarRouted }),
   };
   cache.set(handleRaw, entry);
   return entry;
@@ -2398,7 +2431,10 @@ export function prepareMaterialSnapshot({
     colorSpace: programOwner.colorSpace,
     surface: programOwner.surface,
   };
-  const allPasses = resolved.passes;
+  // A planar receiver shades forward only while its world publishes a capture;
+  // otherwise its Deferred pass admits it to the G-buffer (and so to SSR).
+  const planarRouting = planarRoutedPasses(resolved.passes, resolved.parameters, world.world);
+  const allPasses = planarRouting.passes;
   const materialProgramKeys =
     programSelections === undefined
       ? undefined
@@ -2577,6 +2613,7 @@ export function prepareMaterialSnapshot({
     // their alpha=0 texels composite as black.
     transparent: allPasses[0]?.renderState?.blend !== undefined,
   };
+  recordPlanarRouting(snapshot, planarRouting.routed);
   return snapshot;
 }
 
@@ -2800,49 +2837,51 @@ export interface DirectionalCsmResult {
 /** Pages per directional cascade edge; a cascade center snaps to whole pages. */
 const DIRECTIONAL_SHADOW_PAGES = 16;
 
-/** Cascade calls may reenter through public camera getters. */
-function createSliceSphereScratch() {
-  return {
-    inverse: mat4.create(),
-    world: mat4.create(),
-    axis: vec3.create(),
-    forward: vec3.create(),
-    origin: vec3.create(),
-    right: vec3.create(),
-    up: vec3.create(),
+/** Five matrices and eleven vectors share one private, invocation-owned backing. */
+function createCsmScratch() {
+  const buffer = new ArrayBuffer((5 * 16 + 11 * 3) * Float32Array.BYTES_PER_ELEMENT);
+  let offset = 0;
+  function take(count: 16): Mat4;
+  function take(count: 3): Vec3;
+  function take(count: 3 | 16): Mat4 | Vec3 {
+    const view = new Float32Array(buffer, offset * Float32Array.BYTES_PER_ELEMENT, count);
+    offset += count;
+    // brand-cast-ok: exact-size arena windows share this invocation's backing without copying.
+    return view as Mat4 | Vec3;
+  }
+  const slice = {
+    inverse: take(16),
+    world: take(16),
+    axis: take(3),
+    forward: take(3),
+    origin: take(3),
+    right: take(3),
+    up: take(3),
   };
+  const scratch = {
+    slice,
+    sphere: { center: take(3), radius: 0 },
+    lightDirection: take(3),
+    lightOrigin: take(3),
+    lightUp: take(3),
+    lightView: take(16),
+    center: take(3),
+    ortho: take(16),
+    candidate: take(16),
+    coverCenter: take(3),
+  };
+  scratch.lightUp[1] = 1;
+  return scratch;
 }
-const sliceSphereFrames = [createSliceSphereScratch()];
-let sliceSphereDepth = 0;
+let freeCsmScratch: ReturnType<typeof createCsmScratch> | undefined;
 
-/**
- * World-space bounding sphere of the camera view slice between view depths
- * `near` and `far`. The radius derives only from the projection parameters,
- * so it is identical for every camera orientation and position.
- */
-function cascadeSliceSphere(
-  camera: CsmCameraData,
-  near: number,
-  far: number,
-): { readonly center: Vec3; readonly radius: number } {
-  let scratch = sliceSphereFrames[sliceSphereDepth];
-  if (scratch === undefined) {
-    scratch = createSliceSphereScratch();
-    sliceSphereFrames[sliceSphereDepth] = scratch;
-  }
-  sliceSphereDepth++;
-  try {
-    return computeSliceSphere(camera, near, far, scratch);
-  } finally {
-    sliceSphereDepth--;
-  }
-}
-
+/** Fill private invocation storage; only numeric facts leave this helper. */
 function computeSliceSphere(
   camera: CsmCameraData,
   near: number,
   far: number,
-  scratch: ReturnType<typeof createSliceSphereScratch>,
+  scratch: ReturnType<typeof createCsmScratch>['slice'],
+  sphere: { center: Vec3; radius: number },
 ): { readonly center: Vec3; readonly radius: number } {
   // A singular camera transform reads as identity, matching mat4.invert.
   // Every scratch below is fully overwritten before it is read.
@@ -2892,7 +2931,8 @@ function computeSliceSphere(
     scratch.up,
     vec3.set(scratch.axis, world[4] as number, world[5] as number, world[6] as number),
   );
-  const center = vec3.create(
+  vec3.set(
+    sphere.center,
     (origin[0] as number) +
       (forward[0] as number) * depth +
       (right[0] as number) * offsetX +
@@ -2906,7 +2946,12 @@ function computeSliceSphere(
       (right[2] as number) * offsetX +
       (up[2] as number) * offsetY,
   );
-  return { center, radius };
+  sphere.radius = radius;
+  return sphere;
+}
+
+function csmMatrixRowScale(matrix: ArrayLike<number>, row: number): number {
+  return Math.hypot(matrix[row] ?? 0, matrix[row + 4] ?? 0, matrix[row + 8] ?? 0);
 }
 
 /** Retain a page until its receiver sphere and upstream caster reach leave its guard band. */
@@ -2918,6 +2963,7 @@ function retainedCascadeCovers(
   mapSize: number,
   filterRadius: number,
   normalBiasWorld: number,
+  coverCenter: Vec3,
 ): retained is Float32Array {
   if (retained === undefined || retained.length !== 16) return false;
   // Equal linear terms prove the same light basis, resolution and depth span.
@@ -2925,17 +2971,15 @@ function retainedCascadeCovers(
   for (let index = 0; index < 12; index += 1) {
     if (retained[index] !== current[index]) return false;
   }
-  const center = mat4.transformVec3(vec3.create(), retained, sphere.center);
-  const scale = (row: number) =>
-    Math.hypot(retained[row] ?? 0, retained[row + 4] ?? 0, retained[row + 8] ?? 0);
+  const center = mat4.transformVec3(coverCenter, retained, sphere.center);
   // Keep the filter footprint inside the existing guard; no larger map/extent.
   const edge = 1 - (2 * (filterRadius + SHADOW_RASTER_GUARD_TEXELS)) / mapSize;
   const radius = sphere.radius + Math.abs(normalBiasWorld);
   return (
-    Math.abs(center[0] ?? Number.NaN) + radius * scale(0) <= edge &&
-    Math.abs(center[1] ?? Number.NaN) + radius * scale(1) <= edge &&
-    (center[2] ?? Number.NaN) - radius * scale(2) >= 0 &&
-    (center[2] ?? Number.NaN) + (radius + casterReach) * scale(2) <= 1
+    Math.abs(center[0] ?? Number.NaN) + radius * csmMatrixRowScale(retained, 0) <= edge &&
+    Math.abs(center[1] ?? Number.NaN) + radius * csmMatrixRowScale(retained, 1) <= edge &&
+    (center[2] ?? Number.NaN) - radius * csmMatrixRowScale(retained, 2) >= 0 &&
+    (center[2] ?? Number.NaN) + (radius + casterReach) * csmMatrixRowScale(retained, 2) <= 1
   );
 }
 
@@ -2963,21 +3007,47 @@ export function computeDirectionalCsm(
   retainedMatrices?: readonly Float32Array[],
   normalBiasWorld = DirectionalLight.fields.normalBias.default as number,
 ): DirectionalCsmResult | null {
-  const cascadeCount = Math.round(config.cascadeCount);
-  const quality = directionalShadowQualityFromF32(
+  const scratch = freeCsmScratch ?? createCsmScratch();
+  freeCsmScratch = undefined;
+  try {
+    return computeDirectionalCsmWithScratch(
+      direction,
+      config,
+      cameraData,
+      retainedMatrices,
+      normalBiasWorld,
+      scratch,
+    );
+  } finally {
+    freeCsmScratch ??= scratch;
+  }
+}
+
+function csmShadowQuality(config: DirectionalCsmConfig): DirectionalShadowQuality | undefined {
+  return directionalShadowQualityFromF32(
     config.shadowFilter ?? (DirectionalLight.fields.shadowFilter.default as number),
     config.shadowAngularRadius ?? (DirectionalLight.fields.shadowAngularRadius.default as number),
     config.maxPenumbraTexels ?? (DirectionalLight.fields.maxPenumbraTexels.default as number),
   );
+}
+
+function computeDirectionalCsmWithScratch(
+  direction: Vec3,
+  config: DirectionalCsmConfig,
+  cameraData: CsmCameraData | undefined,
+  retainedMatrices: readonly Float32Array[] | undefined,
+  normalBiasWorld: number,
+  scratch: ReturnType<typeof createCsmScratch>,
+): DirectionalCsmResult | null {
+  const cascadeCount = Math.round(config.cascadeCount);
+  const quality = csmShadowQuality(config);
   if (quality === undefined) return null;
   if (config.shadowViewProjection !== undefined) {
     const matrix = config.shadowViewProjection;
-    const rowLength = (row: number) =>
-      Math.hypot(matrix[row] ?? 0, matrix[row + 4] ?? 0, matrix[row + 8] ?? 0);
     const splitPlanes = new Float32Array(16);
     splitPlanes[0] = 3.4028234663852886e38;
-    splitPlanes[1] = 2 / rowLength(0) / config.mapSize;
-    splitPlanes[2] = 1 / rowLength(2);
+    splitPlanes[1] = 2 / csmMatrixRowScale(matrix, 0) / config.mapSize;
+    splitPlanes[2] = 1 / csmMatrixRowScale(matrix, 2);
     return {
       lightViewProj: [
         new Float32Array(matrix),
@@ -3000,10 +3070,9 @@ export function computeDirectionalCsm(
   // PSSM covers only the active camera frustum, capped by the light range.
   const splits = pssmSplit(sNear, sFar, cascadeCount, config.splitLambda);
   // Light view matrix: camera at origin, looking along the light direction.
-  const lightDirN = vec3.normalize(vec3.create(), direction);
-  const lightTarget = vec3.create(lightDirN[0] ?? 0, lightDirN[1] ?? 0, lightDirN[2] ?? 0);
-  const lightView = mat4.create();
-  mat4.lookAt(lightView, vec3.create(0, 0, 0), lightTarget, vec3.create(0, 1, 0));
+  const lightDirN = vec3.normalize(scratch.lightDirection, direction);
+  const lightView = scratch.lightView;
+  mat4.lookAt(lightView, scratch.lightOrigin, lightDirN, scratch.lightUp);
 
   // Camera view-projection for frustum-corner computation. Without a camera the
   // frustum cannot be fit — bail so the caller emits no matrices (undefined),
@@ -3011,9 +3080,17 @@ export function computeDirectionalCsm(
   if (cameraData === undefined) return null;
   const resultLightViewProjs: Float32Array[] = [];
   const cascadeFits: DirectionalShadowCascadeFit[] = [];
-  const full = cascadeSliceSphere(cameraData, sNear, sFar);
+  const fullRadius = computeSliceSphere(
+    cameraData,
+    sNear,
+    sFar,
+    scratch.slice,
+    scratch.sphere,
+  ).radius;
   const pageTexels = config.mapSize / DIRECTIONAL_SHADOW_PAGES;
   const usableTexels = config.mapSize - 2 * pageTexels;
+  const center = scratch.center;
+  const orthoProj = scratch.ortho;
 
   for (let cIdx = 0; cIdx < 4; cIdx++) {
     if (cIdx >= cascadeCount) {
@@ -3032,15 +3109,19 @@ export function computeDirectionalCsm(
     // margin on every side contains the sphere across any snap. The retained
     // shadow cache compares matrices exactly, so this stability is what lets
     // a moving camera reuse unchanged cascades.
-    const sphere = cascadeSliceSphere(cameraData, cascadeNear, cascadeFar);
-    const center = vec3.create();
+    const sphere = computeSliceSphere(
+      cameraData,
+      cascadeNear,
+      cascadeFar,
+      scratch.slice,
+      scratch.sphere,
+    );
     mat4.transformVec3(center, lightView, sphere.center);
     const texel = (2 * sphere.radius) / usableTexels;
     const page = pageTexels * texel;
-    const snap = (value: number) => Math.round(value / page) * page;
-    const centerX = snap(center[0] ?? 0);
-    const centerY = snap(center[1] ?? 0);
-    const centerZ = snap(center[2] ?? 0);
+    const centerX = Math.round((center[0] ?? 0) / page) * page;
+    const centerY = Math.round((center[1] ?? 0) / page) * page;
+    const centerZ = Math.round((center[2] ?? 0) / page) * page;
     const half = sphere.radius + page;
     const minX = centerX - half;
     const maxX = centerX + half;
@@ -3050,8 +3131,7 @@ export function computeDirectionalCsm(
     // A receiver's caster can sit behind the display camera, toward the light
     // beyond the receiver slice. Keep a stable finite depth fit; upstream
     // blockers beyond it use five-plane culling and VS near pancaking.
-    const nearZ = centerZ + half + 2 * full.radius;
-    const orthoProj = mat4.create();
+    const nearZ = centerZ + half + 2 * fullRadius;
     mat4.orthographicReverseZ(orthoProj, minX, maxX, maxY, minY, -nearZ, -minZ);
     // lightViewProj = orthoProj * lightView — pure clip-space [-1,1]. Atlas
     // tile placement is handled by the per-cascade viewport + fragment-side UV
@@ -3065,20 +3145,21 @@ export function computeDirectionalCsm(
       minZ,
       maxZ: nearZ,
     });
-    const matrix = new Float32Array(mat4.multiply(mat4.create(), orthoProj, lightView));
+    const matrix = mat4.multiply(scratch.candidate, orthoProj, lightView);
     const retained = retainedMatrices?.[cIdx];
     resultLightViewProjs.push(
       retainedCascadeCovers(
         retained,
         matrix,
         sphere,
-        2 * full.radius,
+        2 * fullRadius,
         config.mapSize,
         filterRadius,
         normalBiasWorld,
+        scratch.coverCenter,
       )
         ? retained
-        : matrix,
+        : new Float32Array(matrix),
     );
   }
 
@@ -3127,6 +3208,8 @@ export interface PreparedExtractContext {
   readonly resourceOwnerFog: FogFrame | null | undefined;
   readonly cull: 'self' | 'none' | 'external';
   readonly cullCameras: readonly CameraSnapshot[] | undefined;
+  /** For a composite non-owner world: whether its camera owner publishes a planar capture. */
+  readonly ownerPlanarCapture?: boolean;
   /** Explicit display-camera entity for this world's camera-owner extract. */
   readonly cameraEntityKey?: number;
   /** A composed view's resolved camera; it replaces the display camera selection. */
@@ -3162,10 +3245,7 @@ export interface PreparedExtractContext {
 }
 
 /** The change-driven environment owner of a source's extraction. */
-export type EnvironmentFrameGate = import('./extract/environment-gate').EnvironmentGate<
-  import('./render-system-extract-tail').WorldEnvironmentPart,
-  ReturnType<typeof import('./render-system-extract-tail').mergeEnvironment>
->;
+export type EnvironmentFrameGate = import('./extract/environment-frame-gate').EnvironmentFrameGate;
 
 const ALL_VISIBLE: VisibilitySnapshot = {
   diagnostics: [],
@@ -3177,11 +3257,8 @@ const ALL_VISIBLE: VisibilitySnapshot = {
 
 export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
   const snapshots: CubeCameraSnapshot[] = [];
-  const query = queryEnvironment(world, {
-    read: [CubeCamera],
-    with: [Transform, GlobalTransform],
-  }).unwrap();
-  for (const row of query) {
+  const query = collectCubeCameraSnapshotsQuery(world).unwrap();
+  query.forEach((row) => {
     const cameraTarget = world[worldRead].getFieldValue(
       row.entity,
       CubeCamera,
@@ -3205,9 +3282,9 @@ export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
       'faceBudget',
     ) as number;
     const target = resolveCameraTarget(world, cameraTarget);
-    if (target === undefined) continue;
+    if (target === undefined) return;
     const view = readEnvironmentPose(world, row.entity);
-    if (view === undefined) continue;
+    if (view === undefined) return;
     snapshots.push({
       entityKey: row.entity as number,
       target,
@@ -3218,17 +3295,14 @@ export function collectCubeCameraSnapshots(world: World): CubeCameraSnapshot[] {
       requestVersion: cameraRequestVersion,
       faceBudget: cameraFaceBudget,
     });
-  }
+  });
   return snapshots;
 }
 
 export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[] {
   const facts: ReflectionProbeFact[] = [];
-  const query = queryEnvironment(world, {
-    read: [ReflectionProbe],
-    with: [Transform, GlobalTransform],
-  }).unwrap();
-  for (const row of query) {
+  const query = collectReflectionProbeFactsQuery(world).unwrap();
+  query.forEach((row) => {
     const probePriority = world[worldRead].getFieldValue(
       row.entity,
       ReflectionProbe,
@@ -3258,7 +3332,7 @@ export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[]
     ) as number;
     const view = readEnvironmentPose(world, row.entity);
     if (view === undefined) {
-      continue;
+      return;
     }
     facts.push({
       worldId: 0,
@@ -3277,7 +3351,7 @@ export function collectReflectionProbeFacts(world: World): ReflectionProbeFact[]
       updateIntent: reflectionProbeUpdateIntentFromF32(probeUpdateIntent),
       invalidationVersion: probeInvalidationVersion,
     });
-  }
+  });
   return facts;
 }
 
@@ -3427,6 +3501,7 @@ export function prepareExtractContext(
     readonly resourceOwnerFog?: FogFrame | null;
     readonly cull?: 'self' | 'none' | 'external';
     readonly cullCameras?: readonly CameraSnapshot[];
+    readonly ownerPlanarCapture?: boolean;
     readonly cameraEntityKey?: number;
     readonly view?: ResolvedViewCamera;
     readonly renderables?: 'full' | 'none';
@@ -3460,6 +3535,9 @@ export function prepareExtractContext(
     resourceOwnerFog: options.resourceOwnerFog,
     cull: options.cull ?? 'self',
     cullCameras: options.cullCameras,
+    ...(options.ownerPlanarCapture === undefined
+      ? {}
+      : { ownerPlanarCapture: options.ownerPlanarCapture }),
     ...(options.cameraEntityKey === undefined ? {} : { cameraEntityKey: options.cameraEntityKey }),
     ...(options.view === undefined ? {} : { view: options.view }),
     renderables,
@@ -3502,7 +3580,7 @@ export function selectFogFrame(world: World): FogFrame | undefined {
     fogQuery = queryEnvironment(world, { read: [Fog] }).unwrap();
     fogQueries.set(world, fogQuery);
   }
-  for (const row of fogQuery) {
+  fogQuery.forEach((row) => {
     const valueDensity = world[worldRead].getFieldValue(row.entity, Fog, 'density') as number;
     const valueHeightFalloff = world[worldRead].getFieldValue(
       row.entity,
@@ -3527,7 +3605,7 @@ export function selectFogFrame(world: World): FogFrame | undefined {
       near: valueNear,
       far: valueFar,
     });
-  }
+  });
   const fogSelection = selectFog(fogCandidates);
   const state = fogState(world);
   if (fogSelection.ok) {
@@ -3555,7 +3633,7 @@ export function extractVolumeSnapshot(
 ): ExtractedVolumetricFog | undefined {
   const elapsed = world.getResource(Time).elapsed;
   const worldTimeSeconds = Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0;
-  const query = queryEnvironment(world, { read: [VolumetricFog] }).unwrap();
+  const query = extractVolumeSnapshotQuery(world).unwrap();
   const authorings: VolumetricFogAuthoring[] = [];
   const members: ExtractedVolumetricFog[] = [];
   let selectedLight:

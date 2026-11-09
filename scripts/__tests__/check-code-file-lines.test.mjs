@@ -123,6 +123,18 @@ describe('check-code-file-lines line counting', () => {
 });
 
 describe('check-code-file-lines scan and CLI contract', () => {
+  it('prioritizes implementation optimization and reuse before structural splitting', () => {
+    withGitRepo([['src/over.ts', makeLines(4097, 'lf')]], (root) => {
+      const result = runGate(root);
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stderr,
+        /first optimize the implementation.*remove duplication.*reuse.*If the file still exceeds.*split by owning responsibility/,
+      );
+      assert.match(result.stderr, /no baseline, whitelist, or suppress path/);
+    });
+  });
+
   it('enumerates a real tracked index above the child-process default buffer', () => {
     const prefix = Array.from({ length: 3 }, (_, index) => `${index}-${'a'.repeat(228)}`).join('/');
     const files = Array.from({ length: 1500 }, (_, index) => [`${prefix}/${index}.ts`, 'x\n']);

@@ -1,4 +1,9 @@
-import type { RenderGraphBuilder, RenderGraphError } from '@forgeax/engine-render-graph';
+import type {
+  GraphBuffer,
+  GraphTextureView,
+  RenderGraphBuilder,
+  RenderGraphError,
+} from '@forgeax/engine-render-graph';
 import {
   type BindGroupLayout,
   type RenderPipeline,
@@ -8,18 +13,39 @@ import {
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
-import { createAtmosphereBackgroundGroup, createAtmosphereBackgroundLayout } from './background';
+import type { RenderPipelineFrame } from '../render-pipeline';
+import type { GraphAtmosphere } from './luts';
 import { atmosphereMediumKey, atmosphereStorage, stageAtmospherePublish } from './storage';
 import { atmosphereVisibilityGroup, atmosphereVisibilityLayout } from './visibility';
 
 type State = { layout: BindGroupLayout; pipeline: RenderPipeline; sampler: Sampler };
 
-/** Explicit background-only atmosphere. It never publishes material AP or an IBL source. */
-export function addAtmosphereSkyBackground(
+/** Optional capture storage belongs to the existing atmosphere generation. */
+function importCaptureSky(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  color: RenderPipelineTarget,
-): Result<void, RenderGraphError> {
+  enabled: boolean,
+): Result<GraphTextureView | undefined, RenderGraphError> {
+  if (!enabled) return ok(undefined);
+  const capture = graph.importTexture(
+    'atmosphere-capture-sky',
+    { format: 'rgba16float', size: { width: 192, height: 208 }, usage: 0x14 },
+    (frame) => atmosphereStorage(frame).captureSky,
+  );
+  if (!capture.ok) return capture;
+  return graph.view(capture.value, { dimension: '2d' });
+}
+
+/** Two-dimensional atmosphere tables share the optical kernels and generation owner. */
+export function addAtmosphereSkyLuts(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  captureInput?: {
+    readonly parameters: GraphBuffer;
+    readonly dirty: (frame: RenderPipelineFrame) => boolean;
+  },
+): Result<
+  Pick<GraphAtmosphere, 'transmittance' | 'multipleScattering' | 'skyView' | 'captureSky'>,
+  RenderGraphError
+> {
   const view = graph.importBuffer(
     'atmosphere-sky-view-parameters',
     { size: VIEW_UNIFORM_BYTES, usage: 0x48 },
@@ -50,6 +76,9 @@ export function addAtmosphereSkyBackground(
   if (!sky.ok) return sky;
   const skyView = graph.view(sky.value, { dimension: '2d' });
   if (!skyView.ok) return skyView;
+  const captureResult = importCaptureSky(graph, captureInput !== undefined);
+  if (!captureResult.ok) return captureResult;
+  const captureView = captureResult.value;
   const mediumDirty = (frame: RenderPipelineFrame) => {
     const storage = atmosphereStorage(frame);
     return (
@@ -58,9 +87,29 @@ export function addAtmosphereSkyBackground(
     );
   };
   for (const stage of [
-    { name: 'transmittance', target: transView.value, inputs: [] },
-    { name: 'multiple_scattering', target: multiView.value, inputs: [transView.value] },
-    { name: 'sky_view', target: skyView.value, inputs: [transView.value, multiView.value] },
+    { name: 'transmittance', target: transView.value, inputs: [], captured: false },
+    {
+      name: 'multiple_scattering',
+      target: multiView.value,
+      inputs: [transView.value],
+      captured: false,
+    },
+    {
+      name: 'sky_view',
+      target: skyView.value,
+      inputs: [transView.value, multiView.value],
+      captured: false,
+    },
+    ...(captureView === undefined
+      ? []
+      : [
+          {
+            name: 'sky_view' as const,
+            target: captureView,
+            inputs: [transView.value, multiView.value],
+            captured: true,
+          },
+        ]),
   ] as const) {
     let state: State | undefined;
     let submittedSkyKey: string | undefined;
@@ -69,17 +118,22 @@ export function addAtmosphereSkyBackground(
         atmosphereStorage(frame).environment.environmentSignature,
         Array.from(frame.camera.position),
       ]);
-    const added = graph.addRasterPass(`atmosphere-${stage.name.replaceAll('_', '-')}-fragment`, {
+    const parameters =
+      stage.captured && captureInput !== undefined ? captureInput.parameters : view.value;
+    const label = stage.captured ? 'capture-sky-view' : stage.name.replaceAll('_', '-');
+    const added = graph.addRasterPass(`atmosphere-${label}-fragment`, {
       accesses: [
-        { resource: view.value, usage: 'uniform-read' },
+        { resource: parameters, usage: 'uniform-read' },
         ...stage.inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
         { resource: stage.target, usage: 'color-attachment' },
       ],
       colorAttachments: [{ view: stage.target, loadOp: 'clear', storeOp: 'store' }],
       executeIf:
-        stage.name === 'sky_view'
-          ? (frame: RenderPipelineFrame) => submittedSkyKey !== skyKey(frame)
-          : mediumDirty,
+        stage.captured && captureInput !== undefined
+          ? captureInput.dirty
+          : stage.name === 'sky_view'
+            ? (frame: RenderPipelineFrame) => submittedSkyKey !== skyKey(frame)
+            : mediumDirty,
       encodeDirect: (pass, frame, resources) => {
         const device = frame.runtime.device;
         if (state === undefined) {
@@ -139,7 +193,7 @@ export function addAtmosphereSkyBackground(
             sampler: device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap(),
           };
         }
-        const buffer = resources.buffer(view.value).unwrap();
+        const buffer = resources.buffer(parameters).unwrap();
         const group = device
           .createBindGroup({
             layout: state.layout,
@@ -166,7 +220,7 @@ export function addAtmosphereSkyBackground(
         if (stage.name === 'sky_view')
           pass.setBindGroup(1, atmosphereVisibilityGroup(frame, buffer, 0));
         pass.draw(3);
-        if (stage.name === 'sky_view') {
+        if (stage.name === 'sky_view' && !stage.captured) {
           const key = skyKey(frame);
           stageAtmospherePublish((frame as _InternalRenderPipelineContext).frameState, () => {
             submittedSkyKey = key;
@@ -184,70 +238,10 @@ export function addAtmosphereSkyBackground(
     });
     if (!added.ok) return added;
   }
-  let state: State | undefined;
-  const background = graph.addRasterPass('atmosphere-sky-background', {
-    accesses: [
-      { resource: view.value, usage: 'uniform-read' },
-      ...[skyView.value, transView.value, multiView.value].map((resource) => ({
-        resource,
-        usage: 'sampled-read' as const,
-      })),
-      { resource: color.view, usage: 'color-attachment' },
-    ],
-    colorAttachments: [{ view: color.view, loadOp: 'clear', storeOp: 'store' }],
-    encodeDirect: (pass, frame, resources) => {
-      const device = frame.runtime.device;
-      if (state === undefined) {
-        const source = frame.atmosphereShaders?.background;
-        const factory = frame.runtime.shaderModuleFactory;
-        if (source === undefined || factory === undefined)
-          throw new RhiError({
-            code: 'shader-compile-failed',
-            expected: 'published physical sky background',
-            hint: 'rebuild the engine shader manifest',
-          });
-        const module = factory
-          .createShaderModule(shaderSourceDescriptor(source, 'atmosphere_background'))
-          .unwrap();
-        const layout = createAtmosphereBackgroundLayout(device);
-        const pipeline = device
-          .createRenderPipeline({
-            label: 'atmosphere_sky_background',
-            layout: device
-              .createPipelineLayout({
-                bindGroupLayouts: [layout, atmosphereVisibilityLayout(device)],
-              })
-              .unwrap(),
-            vertex: { module, entryPoint: 'atmosphere_background_vs', buffers: [] },
-            fragment: {
-              module,
-              entryPoint: 'atmosphere_background_fs',
-              targets: [{ format: color.format }],
-            },
-            primitive: { topology: 'triangle-list' },
-            multisample: { count: color.sampleCount },
-          })
-          .unwrap();
-        state = {
-          layout,
-          pipeline,
-          sampler: device.createSampler({ minFilter: 'linear', magFilter: 'linear' }).unwrap(),
-        };
-      }
-      const buffer = resources.buffer(view.value).unwrap();
-      const group = createAtmosphereBackgroundGroup(device, state.layout, {
-        sky: resources.textureView(skyView.value).unwrap(),
-        sampler: state.sampler,
-        viewBuffer: buffer,
-        viewOffset: 0,
-        transmittance: resources.textureView(transView.value).unwrap(),
-        multiple: resources.textureView(multiView.value).unwrap(),
-      });
-      pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, group);
-      pass.setBindGroup(1, atmosphereVisibilityGroup(frame, buffer, 0));
-      pass.draw(3);
-    },
+  return ok({
+    transmittance: transView.value,
+    multipleScattering: multiView.value,
+    skyView: skyView.value,
+    captureSky: captureView ?? skyView.value,
   });
-  return background.ok ? ok(undefined) : background;
 }

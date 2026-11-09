@@ -51,3 +51,27 @@ it('borrows raw text without runtime fragmentation and hashes only on first iden
     read.mockRestore();
   }
 });
+
+it('uses a published digest as identity without rehashing the text', () => {
+  const read = vi.spyOn(ShaderSource.prototype, 'read');
+  const published = new ShaderSource(['fn a() {}\n'], 'abc123');
+  expect(published.identity).toBe('published:abc123');
+  expect(published.hasPublishedIdentity).toBe(true);
+  expect(read).not.toHaveBeenCalled();
+  const plain = new ShaderSource(['fn a() {}\n']);
+  expect(plain.hasPublishedIdentity).toBe(false);
+  expect(plain.identity).not.toBe(published.identity);
+  read.mockRestore();
+});
+
+it('compares published and content-hash sources of the same text as the same text', () => {
+  const text = 'fn main() {}';
+  const published = new ShaderSource([text], 'c'.repeat(64));
+  const content = new ShaderSource([text]);
+  expect(published.identity).not.toBe(content.identity);
+  expect(published.sameText(content)).toBe(true);
+  expect(content.sameText(published)).toBe(true);
+  expect(published.sameText(new ShaderSource([text], 'c'.repeat(64)))).toBe(true);
+  expect(published.sameText(new ShaderSource(['fn other() {}']))).toBe(false);
+  expect(content.sameText(new ShaderSource(['fn main() {} ']))).toBe(false);
+});

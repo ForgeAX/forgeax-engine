@@ -38,6 +38,14 @@ fn spotModifierFactors(
   metadata : vec4<u32>,
 ) -> vec4<f32> {
 #ifdef EXTENDED_LIGHTING_AVAILABLE
+  // Per-light constant gate before the per-pixel basis and roll trig: a spot
+  // without an IES slice and without a Cookie the projector does not own
+  // returns the identity both branches below would leave untouched.
+  let cookieSelected = metadata.w != 0xffffffffu &&
+    (metadata.y == 0xffffffffu || (metadata.y & PROJECTOR_FLAG) == 0u);
+  if (metadata.z == 0xffffffffu && !cookieSelected) {
+    return vec4<f32>(1.0);
+  }
   let toSurface = worldPos - lightPos;
   let distanceToSurface = length(toSurface);
   var ies = 1.0;
@@ -69,10 +77,7 @@ fn spotModifierFactors(
   // contains PROJECTOR_FLAG bits, so test the sentinel before interpreting
   // the lane as a projector marker; otherwise every non-shadow Cookie spot
   // silently takes the projector exclusion path.
-  if (
-    metadata.w != 0xffffffffu &&
-    (metadata.y == 0xffffffffu || (metadata.y & PROJECTOR_FLAG) == 0u)
-  ) {
+  if (cookieSelected) {
     if (depth <= 0.0) {
       cookie = vec3<f32>(0.0);
     } else {

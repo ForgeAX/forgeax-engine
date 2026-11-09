@@ -1,7 +1,7 @@
 import { halfFloat } from '@forgeax/engine-math';
 import { textureReadbackLayout } from '@forgeax/engine-rhi';
 import { capsuleConeHalfAngle } from '../capsule-shadow/frame';
-import { inspectCapsuleShadow } from '../capsule-shadow/inspection';
+import { hasCapsuleShadowDemand, inspectCapsuleShadow } from '../capsule-shadow/inspection';
 import { targetCaptureWork } from '../capture/faces';
 import { PlanarCaptureState } from '../capture/planar-state';
 import { planarReflectionLevels } from '../capture/planar-target';
@@ -42,6 +42,7 @@ import {
   shadowMeshInputCurrent,
   shadowMeshReadsForQuery,
 } from './directional-shadow-cache';
+import { directionalShadowSimpleRequest } from './directional-shadow-simple';
 import {
   buildDispatchPlan,
   cleanPerFrameCaches,
@@ -1183,6 +1184,23 @@ function pipelinePreparationSources(
   return sources;
 }
 
+function forwardViewShadowReception(
+  internals: RenderSystemInternals,
+  lights: ViewLights,
+  renderPath: 'forward' | 'deferred',
+  cloudShadow: boolean,
+  capsuleShadow: boolean,
+): boolean | undefined {
+  if (internals.device.caps.backendKind !== 'wgpu-webgl2' || renderPath !== 'forward')
+    return undefined;
+  return (
+    lights.shadowViews.length > 0 ||
+    (lights.directional?.contactShadowLength ?? 0) > 0 ||
+    cloudShadow ||
+    capsuleShadow
+  );
+}
+
 function capsuleShadowLightFor(
   capsuleShadowDirectional: boolean,
   lights: ViewLights,
@@ -1411,7 +1429,7 @@ function submittedFrameInspection(
       graph: frameState.compiledFrameGraph?.graph.inspect(),
       installedGraphGeneration: frameState.compiledFrameGraph?.targets.graphGeneration,
       deviceGeneration: recordContext(internals).deviceScope.generation,
-      clusterAoExtent: frameState.standardClusterAoExtent,
+      clusterAoExtent: frameState.standardClusterTextureExtent,
     }),
     pointShadow: inspectPointShadow(lights.pointShadow, SHADOW_ATLAS_DEFAULT_LAYERS),
     transparency,
@@ -1577,6 +1595,26 @@ function prepareFrameMaterialReads(input: {
   };
 }
 
+/** Caster suppression and Forward topology derive from the same cooked consumer. */
+function capsuleShadowPolicy(
+  internals: RenderSystemInternals,
+  standard: StandardTopologyInputValue,
+  lights: ViewLights,
+  renderables: FrameList<RenderableSnapshot>,
+) {
+  const capsuleShadowDirectional =
+    standard.prepared.renderPath === 'deferred' ||
+    (internals.standardSceneShaders?.forwardContact !== undefined &&
+      internals.standardSceneShaders.forwardScreenCompose !== undefined &&
+      internals.standardSceneShaders.forwardScreenPack !== undefined);
+  const forwardCapsuleShadows =
+    capsuleShadowDirectional &&
+    standard.prepared.renderPath === 'forward' &&
+    lights.cascades?.directionalShadowQuality !== undefined &&
+    hasCapsuleShadowDemand(renderables);
+  return { capsuleShadowDirectional, forwardCapsuleShadows };
+}
+
 /** CPU preparation before graph compilation; its product lives on the recording view. */
 export function prepareFrameGraphInputs(
   input: FrameRecordingInput,
@@ -1652,6 +1690,7 @@ export function prepareFrameGraphInputs(
   resetFrameAttemptOutputs(internals, frameState);
 
   const lightingPreparation = runRecordProfilePhase(profilePhase, 'record/scene-state', () => {
+    const shadowRenderables = shadowCasterProjection?.renderables ?? renderables;
     const foldBuckets = runRecordProfilePhase(
       profilePhase,
       'record/scene-state/fold-buckets',
@@ -1668,7 +1707,14 @@ export function prepareFrameGraphInputs(
 
     // `render-standard-lighting` prepared the view's lighting in RenderPrepare.
     const lighting = consumeViewStandardLighting(internals, frameState, pipelineState, () =>
-      prepareFrameLighting(internals, frameState, lights, cameras[0], pipelineState),
+      prepareFrameLighting(
+        internals,
+        frameState,
+        lights,
+        cameras[0],
+        pipelineState,
+        shadowRenderables,
+      ),
     );
     if (!lighting.ok) return lighting;
     const { light, standard } = lighting.value;
@@ -1677,13 +1723,17 @@ export function prepareFrameGraphInputs(
     if (!plans.ok) return plans;
     const { featurePlan, passPlan } = plans.value;
 
-    return { ok: true as const, value: { foldBuckets, light, standard, featurePlan, passPlan } };
+    return {
+      ok: true as const,
+      value: { foldBuckets, light, standard, featurePlan, passPlan, shadowRenderables },
+    };
   });
   if (!lightingPreparation.ok) {
     internals.errorRegistry.fire(lightingPreparation.error);
     return { kind: 'rejected' as const };
   }
-  const { foldBuckets, light, standard, featurePlan, passPlan } = lightingPreparation.value;
+  const { foldBuckets, light, standard, featurePlan, passPlan, shadowRenderables } =
+    lightingPreparation.value;
   const featureGraphCandidate = featurePlan.candidate;
   // Retain the picture and use the ordinary barrier while an authored image
   // prepares; no scene graph, history or draw receipt is promoted by it.
@@ -1704,9 +1754,12 @@ export function prepareFrameGraphInputs(
     return { kind: 'pending' as const, featurePlan };
   }
 
-  // Deferred lighting is the only lane that shades capsule shadows, so only
-  // there may admitted characters leave the directional cascades.
-  const capsuleShadowDirectional = standard.prepared.renderPath === 'deferred';
+  const { capsuleShadowDirectional, forwardCapsuleShadows } = capsuleShadowPolicy(
+    internals,
+    standard,
+    lights,
+    shadowRenderables,
+  );
 
   // 0 renderables is a legitimate scene: the frame falls through to encode
   // and submit a clear-pass-only render pass so the canvas is painted with
@@ -1732,7 +1785,7 @@ export function prepareFrameGraphInputs(
       worlds,
       camera,
       lights,
-      sourceRenderables: shadowCasterProjection?.renderables ?? renderables,
+      sourceRenderables: shadowRenderables,
       volumetricFog,
       cloudLayer,
       analyticFog,
@@ -2005,6 +2058,7 @@ export function prepareFrameGraphInputs(
     fixedMaterials,
     sourceRenderables,
     capsuleShadowDirectional,
+    forwardCapsuleShadows,
     light,
     analyticFog,
     shadowGeometryFixed,
@@ -2150,23 +2204,30 @@ function sealFrameHistory(
 }
 
 /** Seal selected graph resources, upload its view, resolve bindings and prepare native pipelines. */
-function standardClusterAoExtentForGraph(
+function standardClusterTextureExtentForGraph(
   internals: RenderSystemInternals,
   frameState: RenderFrameState,
   preflightGraph: CompiledFrameGraph,
   captureOnly: boolean,
-): RenderFrameState['standardClusterAoExtent'] {
+): RenderFrameState['standardClusterTextureExtent'] {
   const installedGraph = frameState.compiledFrameGraph;
-  const installedSsaoRaw = installedGraph?.targets.getColorTargetDescriptor('ssao-raw');
-  if (
-    captureOnly ||
-    internals.device.caps.storageBuffer ||
-    installedGraph?.graph !== preflightGraph ||
-    frameState.installedPipelineConfig?.ssao?.enabled !== true ||
-    installedSsaoRaw === undefined
-  )
-    return undefined;
-  return { width: installedSsaoRaw.size.width, height: installedSsaoRaw.size.height };
+  if (captureOnly || installedGraph?.graph !== preflightGraph) return undefined;
+  const atlas = installedGraph.targets.getColorTargetDescriptor('forward-screen-data');
+  const screen =
+    atlas === undefined
+      ? undefined
+      : { width: atlas.size.width / 2, height: atlas.size.height / 2 };
+  const ao =
+    !internals.device.caps.storageBuffer &&
+    frameState.installedPipelineConfig?.ssao?.enabled === true
+      ? installedGraph.targets.getColorTargetDescriptor('ssao-raw')
+      : undefined;
+  if (ao === undefined && screen === undefined) return undefined;
+  return {
+    width: ao?.size.width ?? 0,
+    height: ao?.size.height ?? 0,
+    ...(screen === undefined ? {} : { screen }),
+  };
 }
 
 export function sealFrameGraph(
@@ -2236,7 +2297,7 @@ export function sealFrameGraph(
     hasShadowViews,
     acceptedMaterialArtifacts,
   } = prepared;
-  frameState.standardClusterAoExtent = standardClusterAoExtentForGraph(
+  frameState.standardClusterTextureExtent = standardClusterTextureExtentForGraph(
     internals,
     frameState,
     preflightGraph,
@@ -2558,6 +2619,13 @@ export function sealFrameGraph(
     skybox,
     splitLdrSprite,
     viewFog: viewFogIsActive(analyticFog, frameState.environmentFrame),
+    viewShadows: forwardViewShadowReception(
+      internals,
+      lights,
+      standard.prepared.renderPath,
+      cloudShadowProjection !== undefined,
+      capsuleShadowLight !== undefined,
+    ),
     msaaActive,
     postProcessParams: framePostProcessParams,
     ...shaderSourcePassContext(internals),
@@ -2574,6 +2642,11 @@ export function sealFrameGraph(
     hdrpClusterBindGroup,
     hdrpClusterMembershipBindGroup,
     standardLighting: standard,
+    directionalShadowSimple: directionalShadowSimpleRequest(
+      lights,
+      frameState.environmentFrame?.source.kind,
+      cloudShadowProjection,
+    ),
     reflectionFallbackDemand: ssr.reflectionFallbackDemand,
     foldDispatchPlan: dispatchPlan.foldDispatchPlan,
     materialSlotIndices,
@@ -2684,6 +2757,7 @@ export function compileDirectPreparedGraph(prepared: PreparedFrameGraph): ViewGr
     clearOnly: cameras.length === 0,
     passPlan,
     unfoggedOpaque: fixedMaterials.hasUnfoggedOpaque,
+    forwardCapsuleShadows: prepared.forwardCapsuleShadows,
     volumetricFog: volume.graphFog,
     volumeTopologyCandidate: volume.topologyCandidate,
     standardLighting: standard,
@@ -2773,30 +2847,11 @@ export function encodePreparedFrameCaptures(
   prepared: PreparedFrameGraph,
   sealed: SealedFrameGraph,
 ): FrameCaptureEncodeOutcome {
-  const {
-    frameState,
-    pipelineState,
-    cubeCaptureWork,
-    profilePhase,
-    captureOnly,
-    volume,
-    cloudShadowProjection,
-    light,
-    bindGroupCounts,
-    captureViewWork,
-  } = prepared;
-  const { target, passCtx, clock, meshRows } = sealed;
+  const { frameState, volume, cloudShadowProjection, light, bindGroupCounts } = prepared;
+  const { passCtx, clock, meshRows } = sealed;
 
   const { internals, attempt } = prepared;
   if (frameState.pipelinePreparationPending) return { kind: 'pending' };
-  target.current = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
-    captureOnly || captureViewWork.length > 0
-      ? captureSwapTarget(captureOnly ? cubeCaptureWork : captureViewWork)
-      : acquireSwapChainTarget(internals, pipelineState),
-  );
-  if (target.current === null) {
-    return { kind: 'rejected' };
-  }
   markCaptureGraphsEncoded(internals);
   executeCaptureFrames(
     internals,
@@ -2812,7 +2867,7 @@ export function encodePreparedFrameCaptures(
     attempt.lightTextureResamples,
   );
 
-  return { kind: 'ready' };
+  return { kind: frameState.pipelinePreparationPending ? 'pending' : 'ready' };
 }
 
 export type PreparedViewEncoding =
@@ -2839,6 +2894,8 @@ export function encodePreparedViewGraph(
   const sealed = seal.value;
   const {
     frameState,
+    pipelineState,
+    captureViewWork,
     cubeCapture,
     cubeCaptureWork,
     profilePhase,
@@ -2852,6 +2909,7 @@ export function encodePreparedViewGraph(
     timingCapture,
   } = prepared;
   const {
+    target,
     passCtx,
     encoder,
     activeVolumetricFogContext,
@@ -2862,6 +2920,15 @@ export function encodePreparedViewGraph(
 
   const { internals, attempt } = prepared;
   if (frameState.pipelinePreparationPending) return { kind: 'pending' };
+  target.current = runRecordProfilePhase(profilePhase, 'record/swapchain', () =>
+    captureOnly || captureViewWork.length > 0
+      ? captureSwapTarget(captureOnly ? cubeCaptureWork : captureViewWork)
+      : acquireSwapChainTarget(internals, pipelineState),
+  );
+  if (target.current === null) {
+    return { kind: 'rejected' };
+  }
+
   if (captureOnly)
     return {
       kind: 'encoded',

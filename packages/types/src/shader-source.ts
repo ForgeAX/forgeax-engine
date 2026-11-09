@@ -6,12 +6,24 @@ export class ShaderSource {
   readonly #fragments: readonly string[];
   #identity: string | undefined;
 
-  constructor(fragments: readonly string[]) {
+  /**
+   * `publishedIdentity` is the build-time source digest of a manifest source whose
+   * bytes were already verified against it (the DDC-key idea): identity is then
+   * `published:<digest>` and the WGSL is never rehashed at runtime. Sources
+   * without a published digest keep the content-hash identity.
+   */
+  constructor(fragments: readonly string[], publishedIdentity?: string) {
     if (!Array.isArray(fragments) || !fragments.every((fragment) => typeof fragment === 'string'))
       throw new Error('Shader source requires immutable text fragments');
     this.#fragments = Object.freeze([...fragments]);
     this.length = fragments.reduce((length, fragment) => length + fragment.length, 0);
+    if (publishedIdentity !== undefined) this.#identity = `published:${publishedIdentity}`;
     Object.freeze(this);
+  }
+
+  /** True when identity comes from a verified build-time digest rather than a runtime hash. */
+  get hasPublishedIdentity(): boolean {
+    return this.#identity?.startsWith('published:') === true;
   }
 
   get identity(): string {
@@ -19,6 +31,16 @@ export class ShaderSource {
     // Hash complete UTF-8 text: producer fragments can split surrogate pairs.
     this.#identity ??= sha256(this.read());
     return this.#identity;
+  }
+
+  /**
+   * Same text. Published and content-hash identities are different key domains, so a
+   * published source and an unpublished copy of the same bytes compare by text.
+   */
+  sameText(other: ShaderSource): boolean {
+    if (this.hasPublishedIdentity === other.hasPublishedIdentity)
+      return this.identity === other.identity;
+    return other.length === this.length && this.matches(other.read());
   }
 
   static is(value: unknown): value is ShaderSource {

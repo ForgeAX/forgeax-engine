@@ -8,6 +8,7 @@ import {
   materialProgramSource,
   STANDARD_OPAQUE_FRAGMENT_ENTRY,
   selectForwardFragmentEntry,
+  selectStandardForwardScreenEntry,
 } from '../standard-opaque-entry';
 import { translucentViewOffset } from '../view-ubo';
 
@@ -76,4 +77,23 @@ describe('declaresStandardOpaqueEntry', () => {
     expect(declaresStandardOpaqueEntry('// calls fs_opaque elsewhere')).toBe(false);
     expect(declaresStandardOpaqueEntry(undefined)).toBe(false);
   });
+});
+
+it('keeps the opaque screen-data entry explicit and falls back for unlit or older programs', () => {
+  const entry = 'fs_forward_screen';
+  expect(selectForwardFragmentEntry({ ...OPAQUE, fragmentEntry: entry })).toBe(entry);
+  expect(declaredFragmentEntry(entry, '@fragment fn fs_forward_screen() {}')).toBe(entry);
+  expect(declaredFragmentEntry(entry, '@fragment fn fs_main() {}')).toBeUndefined();
+  expect(declaredFragmentEntry('fs_custom', '@fragment fn fs_main() {}')).toBe('fs_custom');
+});
+
+it('keeps authored fragment entries when admitting the Standard screen receiver', () => {
+  expect(selectStandardForwardScreenEntry('fs_forward_screen', 'fs_custom')).toBe('fs_custom');
+  expect(selectStandardForwardScreenEntry('fs_forward_screen', 'fs_main')).toBe(
+    'fs_forward_screen',
+  );
+  expect(selectStandardForwardScreenEntry('fs_forward_screen', undefined)).toBe(
+    'fs_forward_screen',
+  );
+  expect(selectStandardForwardScreenEntry(undefined, 'fs_custom')).toBe('fs_custom');
 });

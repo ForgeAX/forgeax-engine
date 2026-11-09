@@ -139,6 +139,9 @@ export function buildSpecularAaScene(world: World) {
         direction: direction.map((value) => value / length) as [number, number, number],
         intensity: 3,
         castShadow: false,
+        // A delta light keeps every highlight a pure normal-distribution
+        // response, so the comparison isolates normal variance.
+        sourceAngle: 0,
       },
     })
     .unwrap();

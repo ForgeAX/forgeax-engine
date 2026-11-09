@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   createMaterialShaderProgram,
+  STANDARD_SURFACE_DISCARD_CLIPPING_AXIS,
+  STANDARD_SURFACE_DISCARD_LOD_AXIS,
   STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
   STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
@@ -28,19 +30,23 @@ describe('Standard surface discard override', () => {
     expect(STANDARD_SURFACE_DISCARD_VIEW_CLIPPING).toBe(2);
   });
 
-  it('declares the override exactly once in the template, defaulting to both discards', () => {
-    expect(shader.match(/@id\(64001\)/g)).toHaveLength(1);
-    expect(shader).toContain('@id(64001) override standardSurfaceDiscards: u32 = 3u;');
+  it('declares the discards as one source axis and no pipeline override', () => {
+    expect(shader).not.toContain('@id(64001)');
+    expect(shader).toContain('#pragma variant_axis LOD_DITHER');
+    expect(shader).toContain('#pragma variant_axis CLIPPING_PLANES');
+    expect(STANDARD_SURFACE_DISCARD_LOD_AXIS).toBe('LOD_DITHER');
+    expect(STANDARD_SURFACE_DISCARD_CLIPPING_AXIS).toBe('CLIPPING_PLANES');
   });
 
-  it('gates only the shared surface LOD coverage and view clipping discards', () => {
+  it('keeps the shared surface LOD coverage and view clipping calls inside the source macro', () => {
     const body = evaluateStandardSurfaceBody(shader);
     expect(body).toMatch(
-      /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*if \(\(standardSurfaceDiscards & 1u\) != 0u\) \{\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*\}\s*#endif/,
+      /#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*#if LOD_DITHER == true\s*applyLodCoverage\(in\.clip\.xy, bitcast<f32>\(in\.materialAddress\.w\)\);\s*#endif\s*#endif/,
     );
     expect(body).toMatch(
-      /if \(\(standardSurfaceDiscards & 2u\) != 0u\) \{\s*applyViewClipping\(in\.worldPos, false\);\s*\}/,
+      /#if CLIPPING_PLANES == true\s*applyViewClipping\(in\.worldPos, false\);\s*#endif/,
     );
+    expect(body).not.toContain('standardSurfaceDiscards');
     // Material-local clipping is a per-material fact and stays unconditional.
     expect(body).toMatch(/#ifdef MATERIAL_CLIPPING_AVAILABLE\s*applyLocalClipping\(/);
   });
@@ -62,15 +68,15 @@ describe('Standard surface discard override', () => {
     expect(program.overrideIds).toEqual(['64000', '64001']);
     expect(Object.isFrozen(program.overrideIds)).toBe(true);
     expect(createMaterialShaderProgram('synthetic').overrideIds).toEqual([]);
-    expect(createMaterialShaderProgram(shader).overrideIds).toContain(
+    expect(createMaterialShaderProgram(shader).overrideIds).not.toContain(
       STANDARD_SURFACE_DISCARDS_OVERRIDE,
     );
   });
 });
 
-it('declares conservative shadow reception with a static nonreceiver gate', () => {
+it('reads shadow reception per draw, folding only a shadow-free View override', () => {
   expect(shader).toContain('@id(64002) override standardShadowReception: u32 = 1u;');
   expect(shader).toMatch(
-    /fn standardReceivesShadows\(in : VsOut\) -> bool \{\s*if \(standardShadowReception == 0u\) \{ return false; \}/,
+    /fn standardReceivesShadows\(in : VsOut\) -> bool \{\s*if \(standardShadowReception == 0u\) \{ return false; \}\s*#if GPU_DRIVEN_SCENE_INDEX_AVAILABLE == true\s*return \(in\.materialAddress\.x & STANDARD_NO_RECEIVE_BIT\) == 0u;/,
   );
 });

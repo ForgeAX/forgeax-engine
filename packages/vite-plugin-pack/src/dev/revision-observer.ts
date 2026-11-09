@@ -76,7 +76,12 @@ function snapshotEqual(left: StatFact | undefined, right: StatFact | undefined):
   );
 }
 
-async function collectSnapshot(roots: readonly string[]): Promise<Snapshot> {
+interface SnapshotIo {
+  statCalls: number;
+  directoryReads: number;
+}
+
+async function collectSnapshot(roots: readonly string[], io?: SnapshotIo): Promise<Snapshot> {
   const snapshot: Snapshot = new Map();
   for (const root of roots) {
     const absoluteRoot = resolve(root);
@@ -85,11 +90,13 @@ async function collectSnapshot(roots: readonly string[]): Promise<Snapshot> {
       for (let offset = 0; offset < pending.length; ) {
         const batch = pending.slice(offset, offset + SNAPSHOT_IO_CONCURRENCY);
         offset += batch.length;
+        if (io !== undefined) io.statCalls += batch.length;
         // Drain the whole bounded batch before propagating a failed stat. No
         // filesystem work may mutate this snapshot after it has been rejected.
         const inspected = await Promise.allSettled(
           batch.map(async (path) => {
             const entry = await lstat(path);
+            if (io !== undefined && entry.isDirectory()) io.directoryReads += 1;
             const children = entry.isDirectory()
               ? await readdir(path, { withFileTypes: true })
               : undefined;
@@ -188,6 +195,7 @@ function isCleanupFailure(error: unknown): boolean {
 }
 
 export function createRevisionObserver(options: RevisionObserverOptions): RevisionObserver {
+  const traceSnapshots = process.env.FORGEAX_WORKSPACE_TIMING === '1';
   const pendingSidecars = new Map<string, WatchedChange>();
   const pendingSources = new Map<string, WatchedChange>();
   const watchers: FSWatcher[] = [];
@@ -286,12 +294,29 @@ export function createRevisionObserver(options: RevisionObserverOptions): Revisi
   const reconcileNow = async (): Promise<number> => {
     if (disposed) throw cleanupFailure();
     const startedAt = Date.now();
-    let current: Snapshot;
+    const io = traceSnapshots ? { statCalls: 0, directoryReads: 0 } : undefined;
+    let current: Snapshot | undefined;
     try {
-      current = await collectSnapshot(options.roots);
+      current = await collectSnapshot(options.roots, io);
     } catch (error) {
       report(error, { phase: 'snapshot' });
       throw error;
+    } finally {
+      if (io !== undefined) {
+        console.error(
+          '[forgeax.dev-watch.timing]',
+          JSON.stringify({
+            stage: 'snapshot',
+            pid: process.pid,
+            startedUnixMs: startedAt,
+            elapsedMs: Date.now() - startedAt,
+            rootCount: options.roots.length,
+            ...io,
+            fileCount: current?.size,
+            completed: current !== undefined,
+          }),
+        );
+      }
     }
     lastSnapshotDurationMs = Math.max(0, Date.now() - startedAt);
     if (!slowSnapshotReported && lastSnapshotDurationMs > probeMs) {

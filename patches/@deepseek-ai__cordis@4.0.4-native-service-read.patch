@@ -1,5 +1,5 @@
 diff --git a/lib/index.js b/lib/index.js
-index 8f198c05e00abf8d0c542fdc68d2cb7d0deacd89..a40e51fc85d7c1f1d0e1a4b88993db413729c2c3 100644
+index 8f198c05e00abf8d0c542fdc68d2cb7d0deacd89..b9f8cf33e3c01aa82b1438e3e1722beb31e9eabe 100644
 --- a/lib/index.js
 +++ b/lib/index.js
 @@ -171,7 +171,8 @@ function createCallable(name, proto, tracker) {
@@ -12,7 +12,19 @@ index 8f198c05e00abf8d0c542fdc68d2cb7d0deacd89..a40e51fc85d7c1f1d0e1a4b88993db41
  		const lines = outerError.stack.split("\n");
  		lines.splice(1, Infinity, ...getOuterStack());
  		outerError.stack = lines.join("\n");
-@@ -961,6 +962,7 @@ function resolveConfig(runtime, config) {
+@@ -673,6 +674,11 @@ var ReflectService = class {
+ 		get: (target, prop, ctx) => {
+ 			if (isSpecialProperty(prop)) return Reflect.get(target, prop, ctx);
+ 			if (Reflect.has(target, prop)) return getTraceable(ctx, Reflect.get(target, prop, ctx));
++			const impl = ctx.fiber.runtime ? (ctx[symbols.shadow] ?? ctx).fiber.store?.[prop] : void 0;
++			if (impl) {
++				const events = getPropertyDescriptor(ctx, "events")?.value;
++				if (events instanceof EventsService && Object.getPrototypeOf(events) === EventsService.prototype && events.waterfall === EventsService.prototype.waterfall && !events._hooks["internal/get"]?.length) return getTraceable(ctx, impl.value);
++			}
+ 			const error = /* @__PURE__ */ new Error(`cannot get property "${prop}" without inject`);
+ 			try {
+ 				const def = target.reflect.props[prop];
+@@ -961,6 +967,7 @@ function resolveConfig(runtime, config) {
  	else return result.value;
  }
  const effectInertia = /* @__PURE__ */ new WeakMap();
@@ -20,7 +32,7 @@ index 8f198c05e00abf8d0c542fdc68d2cb7d0deacd89..a40e51fc85d7c1f1d0e1a4b88993db41
  function runDisposable(dispose) {
  	const result = dispose();
  	return effectInertia.get(dispose)?.() ?? result;
-@@ -1136,11 +1138,11 @@ var Fiber = class {
+@@ -1136,11 +1143,11 @@ var Fiber = class {
  		const oldEpoch = runner.epoch;
  		return composeError((info) => {
  			const safeCollect = (dispose) => {
@@ -34,7 +46,7 @@ index 8f198c05e00abf8d0c542fdc68d2cb7d0deacd89..a40e51fc85d7c1f1d0e1a4b88993db41
  			else if (isNullable(effect)) {} else if (!isObject(effect)) throw new TypeError("Invalid effect");
  			else if ("then" in effect) return effect.then(safeCollect);
  			else if (Symbol.iterator in effect) {
-@@ -1272,6 +1274,7 @@ var Fiber = class {
+@@ -1272,6 +1279,7 @@ var Fiber = class {
  			runner.epoch = false;
  			return finalizeDisposal(dispose);
  		};
@@ -82,6 +94,41 @@ index 6bb1caa7a5c66c0129cbd88b94e6d9a01025b455..f7c6b9ad892b8d40ddfc7354cfb51731
      wrapper.then = async (onFulfilled, onRejected) => {
        return Promise.resolve(task)
          .then(() => disposeAsync)
+diff --git a/src/reflect.ts b/src/reflect.ts
+index 7bbe1ae9919b930230844ec3d4365466a78e90a8..b263cfd1e366ae13e8fb175ac47cef35c56a86a7 100644
+--- a/src/reflect.ts
++++ b/src/reflect.ts
+@@ -1,7 +1,8 @@
+ import { defineProperty, isNullable } from '@deepseek-ai/cosmokit'
+ import type { Dict } from '@deepseek-ai/cosmokit'
+ import { Context } from './context.ts'
+-import { getTraceable, symbols, withProps } from './utils.ts'
++import { EventsService } from './events.ts'
++import { getPropertyDescriptor, getTraceable, symbols, withProps } from './utils.ts'
+ import { Fiber, FiberState } from './fiber.ts'
+ 
+ declare module './context.ts' {
+@@ -141,6 +142,20 @@ export class ReflectService {
+         return getTraceable(ctx, Reflect.get(target, prop, ctx))
+       }
+ 
++      // A current native store entry is a service implementation; accessors
++      // cannot share its name. Inspect only the native event roster, without
++      // constructing a caller-bound service view just to find it empty.
++      const impl = ctx.fiber.runtime ? (ctx[symbols.shadow] as Context ?? ctx).fiber.store?.[prop] : undefined
++      if (impl) {
++        const events = getPropertyDescriptor(ctx, 'events')?.value
++        if (events instanceof EventsService
++          && Object.getPrototypeOf(events) === EventsService.prototype
++          && events.waterfall === EventsService.prototype.waterfall
++          && !events._hooks['internal/get']?.length) {
++          return getTraceable(ctx, impl.value)
++        }
++      }
++
+       const error = new Error(`cannot get property "${prop}" without inject`)
+ 
+       try {
 diff --git a/src/utils.ts b/src/utils.ts
 index 024d21f5e025290b2fd01277ea83ad2128908bfa..32d0265ab3844fc261fc9df65e48cecf1e47d6d9 100644
 --- a/src/utils.ts

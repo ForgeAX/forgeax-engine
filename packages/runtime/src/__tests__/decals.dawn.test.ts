@@ -7,7 +7,7 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 import { verifyDecals } from './decals.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true }));
 it('verifies mesh and projected decals and real RHI Debug replay', {
   timeout: 120_000,
   retry: 0,

@@ -15,6 +15,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { GlobalTransform, MorphWeights } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { pickTriangle } from '../pick-triangle';
 import { morphScene } from './morph-scene.fixture';
 import { skinScene } from './skin-scene.fixture';
@@ -105,15 +106,12 @@ export async function verifySkinnedPicking(
       if (deformation !== 'skin')
         world.set(scene.entity, MorphWeights, { weights: new Float32Array([weight]) }).unwrap();
       for (let i = 0; i < poseFrames - 1; i++) {
-        const receipt = renderValue(
-          renderer.draw({
-            geometryLane: 'direct',
-            leases: [lease],
-            camera: { lease },
-            environment: { lease },
-          }),
-        );
-        renderValue(await receipt.completed);
+        await drawReadyFrame(renderer, {
+          geometryLane: 'direct',
+          leases: [lease],
+          camera: { lease },
+          environment: { lease },
+        });
         frames++;
       }
       renderValue(required(renderer.requestObservation?.(['linear-hdr'])));
@@ -132,6 +130,7 @@ export async function verifySkinnedPicking(
       (await recorder.frameBoundary()).unwrap();
       const captured = (await pending).unwrap();
       await save(`${name}.rhitape`, encodeTape(captured.tape, { compression: 'gzip' }).unwrap());
+      expect(receipt.presentation).toBe('ready');
       const observation = required(
         renderValue(
           await renderer.observe(receipt, { include: ['linear-hdr'] }),

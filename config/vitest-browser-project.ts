@@ -27,6 +27,7 @@ import { createMaterialPackCooker } from '../packages/shader-compiler/src/index'
 import { fixedFieldCommands } from '../packages/vfx-render/src/__tests__/force-fields-fixed-ticks.server';
 import { nativeBindingCommands } from '../packages/wgpu-wasm/scripts/__tests__/native-binding.commands.mjs';
 import { productionCspCommands } from '../packages/wgpu-wasm/scripts/__tests__/production-csp.commands.mjs';
+import { selectBrowserExecutable } from '../scripts/ci/browser-executable.mjs';
 import { browserFixtureInputs } from '../scripts/ci/browser-fixture-inputs.mjs';
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../scripts/ci/browser-process-cache.mjs';
@@ -132,6 +133,29 @@ const previewExternalRoots = [
   submoduleDejavuLegacyPackPath,
   submoduleSpriteAtlasDir,
 ];
+
+function browserLaunchOptions() {
+  const selectedLaunch = selectBrowserExecutable(browserLaunch);
+  return {
+    ...selectedLaunch,
+    args: [
+      ...selectedLaunch.args.flatMap((argument) => {
+        if (process.platform !== 'win32') return [argument];
+        if (argument.startsWith('--enable-features=Vulkan')) return [];
+        if (argument === '--use-vulkan=swiftshader') return ['--use-webgpu-adapter=swiftshader'];
+        return [argument];
+      }),
+      // CI deliberately selects software. Cold submissions can exceed
+      // Chromium's GPU watchdog; the unchanged test deadlines bound them.
+      ...(process.env.CI
+        ? [
+            ...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader']),
+            '--disable-gpu-watchdog',
+          ]
+        : []),
+    ],
+  };
+}
 
 export function createBrowserProject() {
   const runEntityVisibilityBrowserTest = process.env.FORGEAX_BROWSER_ENTITY_VISIBILITY === '1';
@@ -351,22 +375,7 @@ export function createBrowserProject() {
           ...diffuseGiCommands,
         },
         provider: playwrightWithBackgroundPages({
-          launchOptions: {
-            ...browserLaunch,
-            args: [
-              ...browserLaunch.args.flatMap((argument) => {
-                if (process.platform !== 'win32') return [argument];
-                if (argument.startsWith('--enable-features=Vulkan')) return [];
-                if (argument === '--use-vulkan=swiftshader')
-                  return ['--use-webgpu-adapter=swiftshader'];
-                return [argument];
-              }),
-              // Shared launch policy owns the software GPU watchdog setting.
-              ...(process.env.CI
-                ? [...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader'])]
-                : []),
-            ],
-          },
+          launchOptions: browserLaunchOptions(),
         }),
         instances: [{ browser: 'chromium' }],
         headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0' && !!process.env.CI,

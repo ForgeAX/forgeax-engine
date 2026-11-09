@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runnerResources, shaderCompileWorkers } from '../lib/runner-resources.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { selectDawnGroups } from './run-dawn-gate.mjs';
 import {
@@ -15,12 +16,28 @@ import {
   runShard,
   selectSmokeEntries,
 } from './run-dawn-smoke-roster.mjs';
-import { allProjectNames, buildGroupArgs, coverageGroups } from './run-split-vitest-coverage.mjs';
+import {
+  allProjectNames,
+  buildGroupArgs,
+  coverageGroupMaxWorkers,
+  coverageGroups,
+} from './run-split-vitest-coverage.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const vitest = 'scripts/ci/run-vitest-projects.mjs';
 
+function nodeFocusPlan(selector) {
+  if (
+    selector.includes('..') ||
+    !/^(packages|apps|scripts)\/.+\.test\.(?:mjs|js)$/.test(selector) ||
+    !existsSync(join(root, selector))
+  )
+    throw new Error(`unknown Node test file: ${selector}`);
+  return { args: ['--test', selector] };
+}
+
 function unitFocusPlan(kind, selector) {
+  if (kind === 'node') return nodeFocusPlan(selector);
   const projects = allProjectNames();
   if (projects.includes(selector))
     return {
@@ -64,7 +81,37 @@ function unitFocusPlan(kind, selector) {
   };
 }
 
-export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCount = 1 } = {}) {
+function performanceFocusPlan(selector) {
+  if (!['hello-lod-occlusion', 'hello-lod-occlusion-profile'].includes(selector))
+    throw new Error(`unknown performance selector: ${selector}`);
+  return {
+    apps: ['apps/hello/lod-occlusion'],
+    args: [
+      'scripts/ci/run-lod-performance-with-retry.mjs',
+      '--',
+      'pnpm',
+      '--filter',
+      '@forgeax/hello-lod-occlusion',
+      'bench:json',
+    ],
+    gpuLease: true,
+    ...(selector.endsWith('-profile') ? { env: { FORGEAX_LOD_PROFILE: '1' } } : {}),
+  };
+}
+
+function compatibilityFocusPlan(selector) {
+  if (selector !== 'stable') throw new Error(`unknown compatibility selector: ${selector}`);
+  return {
+    args: ['scripts/ci/run-webgpu-compatibility.mjs'],
+    env: { FORGEAX_COMPAT_BROWSER: 'stable' },
+  };
+}
+
+export function focusPlan(
+  kind,
+  selector,
+  { frames = 60, shardIndex = 0, shardCount = 1, resources = runnerResources() } = {},
+) {
   if (typeof selector !== 'string' || !selector || selector.startsWith('-'))
     throw new Error('an exact selector is required');
   if (kind === 'coverage') {
@@ -73,13 +120,28 @@ export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCo
       (group) => group.label === selector || group.files.includes(selector),
     );
     if (selected.length !== 1) throw new Error(`unknown or ambiguous coverage child: ${selector}`);
+    const maxWorkers = coverageGroupMaxWorkers(
+      selected[0],
+      { coverage: true, maxWorkers: 1, modelingMaxWorkers: 2 },
+      resources,
+      2,
+    );
     return {
+      env: {
+        FORGEAX_SHADER_COMPILE_WORKERS: String(
+          shaderCompileWorkers(
+            resources,
+            process.env.FORGEAX_SHADER_COMPILE_WORKERS,
+            (selected[0].files.length > 0 ? 1 : 2) * maxWorkers,
+          ),
+        ),
+      },
       gpuLease: selected[0].gpuLease,
       args: [
         ...buildGroupArgs({
           cliPath: vitest,
           group: selected[0],
-          maxWorkers: 1,
+          maxWorkers,
           coverage: true,
           coverageDir: 'artifacts/ci-focus/coverage',
           reportPath: 'artifacts/ci-focus/vitest.json',
@@ -105,6 +167,8 @@ export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCo
     selectDawnGroups(selector);
     return { args: ['scripts/ci/run-dawn-gate.mjs', '--group', selector] };
   }
+  if (kind === 'performance') return performanceFocusPlan(selector);
+  if (kind === 'compatibility') return compatibilityFocusPlan(selector);
   if (kind === 'browser') {
     // Discovery validates exact membership before any browser process starts.
     execFileSync(
@@ -146,7 +210,7 @@ export function focusPlan(kind, selector, { frames = 60, shardIndex = 0, shardCo
     if (!entry) throw new Error(`unknown smoke gate ID: ${selector}`);
     return { entry, apps: [dirname(entry.path)], frames };
   }
-  if (kind === 'unit' || kind === 'type') return unitFocusPlan(kind, selector);
+  if (['unit', 'type', 'node'].includes(kind)) return unitFocusPlan(kind, selector);
   throw new Error(`unknown focus kind: ${kind}`);
 }
 
@@ -162,7 +226,7 @@ export async function main(argv = process.argv.slice(2)) {
       options[arg.slice(2)] = argv[++i];
     else
       throw new Error(
-        'usage: run-ci-focus.mjs --kind unit|coverage|type|browser|dawn|smoke|view|allocation --select EXACT_SELECTOR [--dry-run]',
+        'usage: run-ci-focus.mjs --kind unit|node|coverage|type|browser|compatibility|performance|dawn|smoke|view|allocation --select EXACT_SELECTOR [--dry-run]',
       );
   }
   const frames = parseSmokeFrameBudget(options.frames ?? process.env.SMOKE_MIN_FRAMES);
@@ -187,10 +251,13 @@ export async function main(argv = process.argv.slice(2)) {
   rmSync(dirname(output), { recursive: true, force: true });
   mkdirSync(logs, { recursive: true });
   let commandIndex = 0;
-  const run = async (args, { nativeCoordinator = false, gpuLease = false } = {}) => {
+  const run = async (
+    args,
+    { nativeCoordinator = false, gpuLease = false, commandEnv = {} } = {},
+  ) => {
     const result = await runBrowserCommand([process.execPath, ...args], {
       cwd: root,
-      env,
+      env: { ...env, ...commandEnv },
       label: 'ci-focus',
       gpuLease,
       timeoutMs: 30 * 60_000,
@@ -209,6 +276,13 @@ export async function main(argv = process.argv.slice(2)) {
     for (const owner of ['wgpu-wasm', 'fbx', 'codec'])
       await run([`packages/${owner}/scripts/ensure-wasm.mjs`]);
     await run(['scripts/build.mjs', '--engine']);
+    if (options.kind === 'compatibility')
+      await run([
+        'scripts/forgeax/prepare-shader-release-inputs.mjs',
+        '--build',
+        '--profile',
+        'base-ssao',
+      ]);
     for (const app of plan.apps ?? [])
       await run([
         'scripts/build-apps.mjs',
@@ -251,8 +325,9 @@ export async function main(argv = process.argv.slice(2)) {
       }
     } else
       await run(plan.args, {
-        nativeCoordinator: ['browser', 'dawn', 'view'].includes(options.kind),
+        nativeCoordinator: ['browser', 'compatibility', 'dawn', 'view'].includes(options.kind),
         gpuLease: plan.gpuLease === true,
+        commandEnv: plan.env,
       });
     status = 'passed';
     return 0;

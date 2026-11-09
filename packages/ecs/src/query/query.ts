@@ -26,11 +26,16 @@ import {
 import { QueryBatchUnavailableError } from '../errors/query-batch-errors';
 import { worldPoisonedError } from '../errors/shared-kernel-errors';
 import type { WorldExecutionState } from '../execution/shared-kernel';
-import { DERIVED_WRITER } from '../internal';
+import { DERIVED_WRITER, QUERY_ITERATING } from '../internal';
 import { isRelationshipTarget, relationshipRole } from '../relationship-index';
 import { type Archetype, type ArchetypeId, archetypeHasComponent } from '../storage/archetype';
 import { sparseTagIndex } from '../storage/change-detection';
-import { columnWindow, type FieldView, type ManagedColumnReader } from '../storage/column';
+import {
+  type Column,
+  columnWindow,
+  type FieldView,
+  type ManagedColumnReader,
+} from '../storage/column';
 import type { Table } from '../storage/table';
 import { type WorldInternal, worldInternal } from '../world-internal';
 import { type BatchLease, IndexedBatch, type QueryBatch, RangeBatch } from './batch';
@@ -349,24 +354,41 @@ function buildColumnShape(
   const shape: Record<string, FieldView | ManagedColumnReader<string>> = {};
   const fields = table.storage.get(componentId(component))?.fields;
   if (fields === undefined) return shape;
-  for (const [fieldName, column] of fields) {
-    const start = rowStart * column.arity;
-    const end = start + rowCount * column.arity;
-    const fieldType =
-      componentSchema(component)[fieldName.endsWith(':count') ? fieldName.slice(0, -6) : fieldName];
-    const managed =
-      fieldType !== undefined && (isManagedField(fieldType) || fieldType.startsWith('array<asset<'))
-        ? fieldType
-        : undefined;
-    shape[fieldName] = columnWindow(
-      column,
-      start,
-      end,
-      managed,
-      rowStart === 0 && rowCount === table.size,
-    );
+  const definition = componentDefinition(component);
+  const schema = componentSchema(component);
+  const fullTable = rowStart === 0 && rowCount === table.size;
+  for (let index = 0; index < definition.fieldNames.length; index++) {
+    const fieldName = definition.fieldNames[index] as string;
+    const column = fields.get(fieldName);
+    if (column === undefined) continue;
+    const fieldType = schema[fieldName];
+    appendColumnShape(shape, fieldName, column, fieldType, rowStart, rowCount, fullTable);
+    const countField = column.countField;
+    if (countField !== undefined) {
+      const countColumn = fields.get(countField);
+      if (countColumn !== undefined)
+        appendColumnShape(shape, countField, countColumn, fieldType, rowStart, rowCount, fullTable);
+    }
   }
   return shape;
+}
+
+/** The declared field and its optional sidecar share the same managed access rule. */
+function appendColumnShape(
+  shape: Record<string, FieldView | ManagedColumnReader<string>>,
+  name: string,
+  column: Column,
+  fieldType: ComponentSchema[string] | undefined,
+  rowStart: number,
+  rowCount: number,
+  fullTable: boolean,
+): void {
+  const managed =
+    fieldType !== undefined && (isManagedField(fieldType) || fieldType.startsWith('array<asset<'))
+      ? fieldType
+      : undefined;
+  const start = rowStart * column.arity;
+  shape[name] = columnWindow(column, start, start + rowCount * column.arity, managed, fullTable);
 }
 
 class ExecutableQuery<
@@ -400,6 +422,10 @@ class ExecutableQuery<
 
   [Symbol.iterator](): Iterator<QueryRow<R, W, O>> {
     return this.rowIterator(false);
+  }
+
+  [QUERY_ITERATING](): boolean {
+    return this.active;
   }
 
   forEach(visit: (row: QueryRow<R, W, O>) => void): void {
@@ -575,101 +601,138 @@ class ExecutableQuery<
     return new QueryRowFacade<R, W, O>(this.world).bind(entity, archetype);
   }
 
+  private static readonly SpanIterator = class<
+    R extends readonly Component[],
+    W extends readonly Component[],
+    O extends readonly Component[],
+  > implements Iterator<QuerySpan<R, W>>
+  {
+    private readonly owner: WorldInternal;
+    private readonly structureEpoch: number;
+    private readonly upperBound: number;
+    private readonly changed: ChangedEntities | undefined;
+    private tableIndex = 0;
+    private changedIndex = 0;
+    private finished = false;
+    private advanceCallback: (() => IteratorResult<QuerySpan<R, W>>) | undefined;
+    private finishCallback: (() => IteratorResult<QuerySpan<R, W>>) | undefined;
+
+    constructor(private readonly query: ExecutableQuery<R, W, O>) {
+      query.beginIteration();
+      this.owner = query.world[worldInternal];
+      this.structureEpoch = this.owner.getStructureEpoch();
+      this.upperBound = this.owner.getMutationEpoch();
+      this.changed = query.changedEntityCandidates(this.upperBound);
+      if (this.changed === undefined) query.refreshMatches();
+    }
+
+    private close(commit: boolean): void {
+      if (this.finished) return;
+      this.finished = true;
+      this.query.active = false;
+      if (commit) {
+        this.query.assertReadableChanges();
+        this.query.lastObservedEpoch = this.upperBound;
+      }
+    }
+
+    // Callbacks stay detached capabilities. The ordinary completion path does
+    // not create an unused early-close callback or a separate close closure.
+    get next(): () => IteratorResult<QuerySpan<R, W>> {
+      this.advanceCallback ??= this.advance.bind(this);
+      return this.advanceCallback;
+    }
+
+    get return(): () => IteratorResult<QuerySpan<R, W>> {
+      this.finishCallback ??= this.finish.bind(this);
+      return this.finishCallback;
+    }
+
+    private finish(): IteratorResult<QuerySpan<R, W>> {
+      this.close(false);
+      return QUERY_DONE;
+    }
+
+    private advance(): IteratorResult<QuerySpan<R, W>> {
+      if (this.finished) return QUERY_DONE;
+      try {
+        this.query.assertReadableChanges();
+      } catch (cause) {
+        this.close(false);
+        throw cause;
+      }
+      if (this.owner.getStructureEpoch() !== this.structureEpoch) {
+        this.close(false);
+        throw new QueryIterationInvalidatedError(
+          this.structureEpoch,
+          this.owner.getStructureEpoch(),
+        );
+      }
+      if (this.changed !== undefined) return this.nextChanged(this.changed);
+      while (this.tableIndex < this.query.matchedTables.length) {
+        const table = this.query.matchedTables[this.tableIndex++];
+        if (table === undefined || table.size === 0) continue;
+        return {
+          done: false,
+          value: new QuerySpanFacade<R, W>(this.query.world, table, 0, table.size),
+        };
+      }
+
+      this.close(true);
+      return QUERY_DONE;
+    }
+
+    private nextChanged(changed: ChangedEntities): IteratorResult<QuerySpan<R, W>> {
+      const current =
+        this.owner.getMutationEpoch() === this.upperBound ||
+        !this.query.hasFutureChangedInput(this.upperBound);
+      while (this.changedIndex < changed.length) {
+        const entity = changed[this.changedIndex++] as EntityHandle;
+        const records = this.owner.getRecords();
+        const slot = entityIndex(entity);
+        const archetype = this.owner.getGraph().archetypes[records.archetypeId[slot] ?? -1];
+        const table =
+          archetype === undefined ? undefined : this.owner.getGraph().tables[archetype.tableId];
+        const start = archetype?.rows[records.archetypeRow[slot] ?? -1] ?? -1;
+        if (
+          table === undefined ||
+          (!current && !this.query.denseChangeMatches(entity, table, start, this.upperBound))
+        )
+          continue;
+        let count = 1;
+        while (this.changedIndex < changed.length) {
+          const next = changed[this.changedIndex] as EntityHandle;
+          const nextSlot = entityIndex(next);
+          const nextArchetype =
+            this.owner.getGraph().archetypes[records.archetypeId[nextSlot] ?? -1];
+          const nextRow = nextArchetype?.rows[records.archetypeRow[nextSlot] ?? -1] ?? -1;
+          if (
+            nextArchetype?.tableId !== table.id ||
+            nextRow !== start + count ||
+            (!current && !this.query.denseChangeMatches(next, table, nextRow, this.upperBound))
+          )
+            break;
+          this.changedIndex++;
+          count++;
+        }
+        return {
+          done: false,
+          value: new QuerySpanFacade<R, W>(this.query.world, table, start, count),
+        };
+      }
+      this.close(true);
+      return QUERY_DONE;
+    }
+  };
+
   spans(): Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError> {
-    // Availability is a descriptor fact and the iterable only re-enters this
-    // query, so one success Result serves every per-frame `spans()` call.
     if (this.spansResult !== undefined) return this.spansResult;
     const reason = this.spanUnavailableReason();
     if (reason !== undefined) return err(new QuerySpanUnavailableError(reason));
     const query = this;
     this.spansResult = ok({
       [Symbol.iterator](): Iterator<QuerySpan<R, W>> {
-        query.beginIteration();
-        const owner = query.world[worldInternal];
-        const structureEpoch = owner.getStructureEpoch();
-        const upperBound = owner.getMutationEpoch();
-        const changed = query.changedEntityCandidates(upperBound);
-        if (changed === undefined) query.refreshMatches();
-        let tableIndex = 0;
-        let changedIndex = 0;
-        let finished = false;
-        const close = (commit: boolean): void => {
-          if (finished) return;
-          finished = true;
-          query.active = false;
-          if (commit) {
-            query.assertReadableChanges();
-            query.lastObservedEpoch = upperBound;
-          }
-        };
-        return {
-          next(): IteratorResult<QuerySpan<R, W>> {
-            if (finished) return QUERY_DONE;
-            try {
-              query.assertReadableChanges();
-            } catch (cause) {
-              close(false);
-              throw cause;
-            }
-            if (owner.getStructureEpoch() !== structureEpoch) {
-              close(false);
-              throw new QueryIterationInvalidatedError(structureEpoch, owner.getStructureEpoch());
-            }
-            if (changed !== undefined) {
-              const current =
-                owner.getMutationEpoch() === upperBound || !query.hasFutureChangedInput(upperBound);
-              while (changedIndex < changed.length) {
-                const entity = changed[changedIndex++] as EntityHandle;
-                const records = owner.getRecords();
-                const slot = entityIndex(entity);
-                const archetype = owner.getGraph().archetypes[records.archetypeId[slot] ?? -1];
-                const table =
-                  archetype === undefined ? undefined : owner.getGraph().tables[archetype.tableId];
-                const start = archetype?.rows[records.archetypeRow[slot] ?? -1] ?? -1;
-                if (
-                  table === undefined ||
-                  (!current && !query.denseChangeMatches(entity, table, start, upperBound))
-                )
-                  continue;
-                let count = 1;
-                while (changedIndex < changed.length) {
-                  const next = changed[changedIndex] as EntityHandle;
-                  const nextSlot = entityIndex(next);
-                  const nextArchetype =
-                    owner.getGraph().archetypes[records.archetypeId[nextSlot] ?? -1];
-                  const nextRow = nextArchetype?.rows[records.archetypeRow[nextSlot] ?? -1] ?? -1;
-                  if (
-                    nextArchetype?.tableId !== table.id ||
-                    nextRow !== start + count ||
-                    (!current && !query.denseChangeMatches(next, table, nextRow, upperBound))
-                  )
-                    break;
-                  changedIndex++;
-                  count++;
-                }
-                return {
-                  done: false,
-                  value: new QuerySpanFacade<R, W>(query.world, table, start, count),
-                };
-              }
-            } else {
-              while (tableIndex < query.matchedTables.length) {
-                const table = query.matchedTables[tableIndex++];
-                if (table === undefined || table.size === 0) continue;
-                return {
-                  done: false,
-                  value: new QuerySpanFacade<R, W>(query.world, table, 0, table.size),
-                };
-              }
-            }
-            close(true);
-            return QUERY_DONE;
-          },
-          return(): IteratorResult<QuerySpan<R, W>> {
-            close(false);
-            return QUERY_DONE;
-          },
-        };
+        return new ExecutableQuery.SpanIterator(query);
       },
     });
     return this.spansResult;

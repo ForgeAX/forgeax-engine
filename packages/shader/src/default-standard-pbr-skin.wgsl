@@ -17,7 +17,7 @@
 #import forgeax_view::fog::{translucent_fog}
 #endif
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneInstances}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneIndexMorphNormal, sceneIndexMorphTangent, sceneInstances}
 #else
 #import forgeax_view::common::{meshes, instances, meshReceivesShadows}
 #endif
@@ -25,10 +25,11 @@
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_view::common::{spotModifierSampler, iesProfileTexture, cookieTexture, cookieMatrices}
 #endif
-#import forgeax_pbr::temporal::{projectPbrSceneTemporal, resolvePbrTemporalReactive}
+#import forgeax_pbr::temporal::{projectPbrSceneTemporal, resolvePbrTemporalReactive, surfaceTemporalReactive}
 #import forgeax_pbr::brdf::{standardOpaqueF0FromDielectric, standardDielectricF0, f_schlick, v_smith, d_ggx}
-#import forgeax_pbr::specular_aa::{geometricNormalSpread, specularAntiAliasedRoughness}
-#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblSpecular, sampleReflectionProbeSpecular}
+#import forgeax_pbr::ibl_shared::{standardSpecularOcclusion}
+#import forgeax_pbr::specular_aa::{geometricNormalSpread, shadingNormalSpread, specularAntiAliasedRoughness}
+#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblSpecular, sampleReflectionProbeSpecular, projectSpecularRadiance}
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal, applyTBN}
 #ifdef CLEARCOAT_AVAILABLE
 #import forgeax_pbr::clearcoat::{evaluateClearcoatLayer, evaluateClearcoatFresnel}
@@ -45,7 +46,7 @@
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactorAtPixel}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #ifdef CLUSTER_FORWARD_AVAILABLE
-#import forgeax_standard::cluster::{evaluateStandardClusterLights, get_ssao_direct_lighting_strength, sampleStandardAmbientOcclusion}
+#import forgeax_standard::cluster::{evaluateStandardClusterLights, get_ssao_direct_lighting_strength, sampleStandardAmbientOcclusion, sampleStandardContactShadow, sampleStandardScreenData, applyStandardScreenDecals}
 #endif
 
 #define_import_path forgeax_material::pbr-skin
@@ -59,11 +60,11 @@
 #pragma variant_axis PROBE_BLEND_AVAILABLE
 #pragma variant_axis EXTENDED_LIGHTING_AVAILABLE
 #pragma variant_axis TRANSMISSION_AVAILABLE
-#pragma variant_axis DIRECTIONAL_PCSS_AVAILABLE
 #pragma variant_axis PROJECTOR_AVAILABLE
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE
 #pragma variant_axis REFLECTION_FALLBACK_AVAILABLE
 #pragma variant_axis COVERAGE_ONLY
+#pragma variant_axis ALPHA_MASK
 
 
 
@@ -226,6 +227,10 @@ fn materialTextureFilteringWitness() {
   // The same filtering sampler also serves these shared IBL textures.
   let irradianceWitness = textureSample(irradianceMap, irradianceSampler, vec3<f32>(0.0, 0.0, 1.0));
   let brdfWitness = textureSample(brdfLut, irradianceSampler, vec2<f32>(0.0));
+#endif
+#ifdef ENV_BRDF_FIT
+  // The analytic environment BRDF never samples brdfLut; keep its filtering contract.
+  let envBrdfWitness = textureSample(brdfLut, irradianceSampler, vec2<f32>(0.0));
 #endif
 #ifdef BUMP_TEXTURE_AVAILABLE
   let bumpWitness = textureSample(bumpTexture, bumpTexture_sampler, vec2<f32>(0.0));
@@ -568,6 +573,10 @@ fn sceneIndexVertex(source : VsIn, idx : u32, vertex : u32) -> VsOut {
   // Morph precedes skinning, as in the per-entity morphed stream.
   var in = source;
   in.pos = sceneIndexMorphPosition(visible.x, vertex, in.pos);
+  in.normal = sceneIndexMorphNormal(visible.x, vertex, in.normal);
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  in.tangent = sceneIndexMorphTangent(visible.x, vertex, in.tangent);
+#endif
   _ = draw.world;
   // Scene material rows never reach bit 31; it carries the receive opt-out.
   var out = vs_main_impl(
@@ -816,10 +825,27 @@ fn finiteColor(value : vec3<f32>, fallback : vec3<f32>) -> vec3<f32> {
   );
 }
 
+// ALPHA_MASK is a compile-time variant: opaque pipelines contain no reachable
+// discard, so Apple TBDR keeps hidden-surface removal for the whole pass. A
+// runtime branch or override does not count; the compiler still sees the
+// discard and the GPU still disables early HSR for the pipeline.
 fn alphaTestSurface(surface : SurfaceData) {
+#if ALPHA_MASK == true
+  // The stock Surface raises the clip threshold only when the material declares
+  // alphaCutoff; without it (hash-only or coverage-only) the cutoff test is
+  // absent from the source. A custom Surface keeps the generic gate.
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
     discard;
   }
+#endif
+#else
+  if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
+    discard;
+  }
+#endif
+#endif
 }
 
 struct StandardPbrOutput {
@@ -828,6 +854,7 @@ struct StandardPbrOutput {
   // Linear HDR environment contribution from this same Standard BRDF callsite.
   // The detached producer names this second target S_fallback.
   @location(1) reflectionFallback : vec4<f32>,
+  @location(2) reflectionResponse : vec4<f32>,
 #endif
 };
 
@@ -844,6 +871,7 @@ struct StandardForwardLit {
 #endif
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   reflectionFallback : vec4<f32>,
+  reflectionResponse : vec4<f32>,
 #endif
 };
 
@@ -852,6 +880,7 @@ fn standardForwardOutput(lit : StandardForwardLit, color : vec3<f32>) -> Standar
   output.color = vec4<f32>(color, lit.alpha);
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   output.reflectionFallback = lit.reflectionFallback;
+  output.reflectionResponse = lit.reflectionResponse;
 #endif
   return output;
 }
@@ -919,7 +948,7 @@ fn standardSsrCoverage() -> f32 {
 }
 
 // Forward shading shared by the fs_main and fs_opaque entries.
-fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit {
+fn standardSkinForwardLit(in : VsOut, frontFacing : bool, screenReceiver : bool) -> StandardForwardLit {
   let _variantIdentity = standardSkinVariantIdentity();
   // Freeze actual triangle geometry before clipping or alpha discard. The
   // receiver plane and offset cannot follow a BA gradient or normal map.
@@ -927,7 +956,25 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
     in.worldNormal * select(-1.0, 1.0, frontFacing));
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
   var normalSpread = geometricNormalSpread(in.worldNormal);
-  let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+  var surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  if (screenReceiver) {
+#if STORAGE_BUFFER_AVAILABLE == true
+    let decalColor = sampleStandardScreenData(in.worldPos, view.worldViewProj, 1u, ssaoBlurredTexture);
+    let decalNormal = sampleStandardScreenData(in.worldPos, view.worldViewProj, 2u, ssaoBlurredTexture);
+    let decalRoughness = sampleStandardScreenData(in.worldPos, view.worldViewProj, 3u, ssaoBlurredTexture);
+#else
+    let decalColor = sampleStandardScreenData(in.worldPos, view.worldViewProj, 1u);
+    let decalNormal = sampleStandardScreenData(in.worldPos, view.worldViewProj, 2u);
+    let decalRoughness = sampleStandardScreenData(in.worldPos, view.worldViewProj, 3u);
+#endif
+    let painted = applyStandardScreenDecals(surface.baseColor, surface.normalWS, surface.roughness, decalColor, decalNormal, decalRoughness);
+    surface.baseColor = painted.baseColor;
+    surface.normalWS = painted.normalWS;
+    surface.roughness = painted.roughness;
+  }
+#endif
+  normalSpread = max(normalSpread, shadingNormalSpread(surface.normalWS));
 #ifdef FLAT_SHADING_AVAILABLE
   // Derivatives above precede discard; Surface has now selected the GPU Scene material row.
   normalSpread = select(normalSpread, 0.0, material.flatShading != 0u);
@@ -1173,8 +1220,6 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
   let ao = surface.occlusion;
   let specularEnvironmentScale = decodeSpecularEnvironmentScale(
     vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB), skylight.intensity);
-  var ambient = (environment.diffuse + environment.specular) * (vec3<f32>(1.0) - coatF) * ao;
-  var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * ao;
 #ifdef CLUSTER_FORWARD_AVAILABLE
   var screenAo = 1.0;
 #if STORAGE_BUFFER_AVAILABLE == true
@@ -1183,8 +1228,14 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
 #else
   screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
 #endif
-  ambient *= screenAo;
-  reflectionFallback *= screenAo;
+#else
+  let screenAo = 1.0;
+#endif
+  let specularAo = standardSpecularOcclusion(max(dot(physicalNormal, v), 0.0), ao * screenAo, iblRoughness);
+  var ambient = (environment.diffuse * ao * screenAo + environment.specular * specularAo) * (vec3<f32>(1.0) - coatF);
+  var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * specularAo;
+#ifdef REFLECTION_FALLBACK_AVAILABLE
+  var reflectionResponse = environment.response.rgb * (vec3<f32>(1.0) - coatF) * specularAo;
 #endif
   var color = ambient;
 #ifdef TRANSMISSION_AVAILABLE
@@ -1307,9 +1358,18 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
       in.clip.xy,
     );
   }
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  if (screenReceiver && receiveShadows && needsDirectionalShadow) {
+#if STORAGE_BUFFER_AVAILABLE == true
+    directionalShadow *= sampleStandardContactShadow(in.worldPos, view.worldViewProj, ssaoBlurredTexture);
+#else
+    directionalShadow *= sampleStandardContactShadow(in.worldPos, view.worldViewProj);
+#endif
+  }
+#endif
   var directRadiance = evaluateStandardDirect(in.worldPos, in.ndc.xyz, standardViewZ(in), in.clip.xy,
     physicalNormal, v, diffuseAlbedo, transmissionAlbedo, metallic, a, f0, directionalShadow,
-    receiveShadows, in.surfaceData.z, false,
+    receiveShadows, in.surfaceData.z,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, irradianceSampler,
@@ -1481,6 +1541,15 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
     dot(clearcoatNormalValue, v),
     clearcoatFactor,
   );
+  reflectionFallback += clearcoatEnvironment * clearcoatFactor;
+#ifdef REFLECTION_FALLBACK_AVAILABLE
+  var coatResponse = projectSpecularRadiance(vec3<f32>(1.0), clearcoatNormalValue, v,
+    clearcoatRoughnessValue, vec3<f32>(0.04), brdfLut, irradianceSampler) * ao;
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  coatResponse *= screenAo;
+#endif
+  reflectionResponse += coatResponse * clearcoatFactor;
+#endif
 #endif
   var lit : StandardForwardLit;
   lit.color = materialOutputColor(color, alpha, standardAlphaMode());
@@ -1491,19 +1560,31 @@ fn standardSkinForwardLit(in : VsOut, frontFacing : bool) -> StandardForwardLit 
 #endif
 #ifdef REFLECTION_FALLBACK_AVAILABLE
   lit.reflectionFallback = vec4<f32>(reflectionFallback, standardSsrCoverage());
+  lit.reflectionResponse = vec4<f32>(reflectionResponse, environment.response.a);
 #endif
   return lit;
 }
 
 @fragment
 fn fs_main(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
-  return standardForwardFogged(in, standardSkinForwardLit(standardParallaxInput(in), frontFacing));
+  return standardForwardFogged(in, standardSkinForwardLit(standardParallaxInput(in), frontFacing, false));
 }
 
 // See the rigid Standard fs_opaque: identical to fs_main on the unfogged slot.
 @fragment
 fn fs_opaque(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
-  let lit = standardSkinForwardLit(standardParallaxInput(in), frontFacing);
+  let lit = standardSkinForwardLit(standardParallaxInput(in), frontFacing, false);
+#ifdef TRANSMISSION_AVAILABLE
+  return standardForwardFogged(in, lit);
+#else
+  return standardForwardOutput(lit, lit.color);
+#endif
+}
+
+// Only the opaque pass selects the screen-surface entry; transparency keeps its own inputs.
+@fragment
+fn fs_forward_screen(in : VsOut, @builtin(front_facing) frontFacing : bool) -> StandardPbrOutput {
+  let lit = standardSkinForwardLit(standardParallaxInput(in), frontFacing, true);
 #ifdef TRANSMISSION_AVAILABLE
   return standardForwardFogged(in, lit);
 #else
@@ -1562,6 +1643,7 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
   let geometricNormal = receiverNormal * select(-1.0, 1.0, frontFacing);
   var normalSpread = geometricNormalSpread(in.worldNormal);
   let surface = evaluateStandardSurface(in, frontFacing, geometricNormal);
+  normalSpread = max(normalSpread, shadingNormalSpread(surface.normalWS));
 #ifdef FLAT_SHADING_AVAILABLE
   // Derivatives above precede discard; Surface has now selected the GPU Scene material row.
   normalSpread = select(normalSpread, 0.0, material.flatShading != 0u);
@@ -1606,6 +1688,10 @@ fn skinGBuffer(in : VsOut, frontFacing : bool) -> GBufferOutput {
 #ifdef ALPHA_HASH_AVAILABLE
   if (material.alphaHash > 0.5) { reactive = temporal.reactive; }
 #endif
+  // Unreal Responsive AA, per pixel: an animated Surface without geometric
+  // motion (rippling or scrolling normals) lowers its own color history.
+  // Max-combined so instance, LOD and coverage reactivity are never reduced.
+  reactive = max(reactive, surfaceTemporalReactive(surface.reactive));
   let currentClip = view.temporalCurrentViewProj * vec4<f32>(in.worldPos, 1.0);
   output.scene_temporal = packSceneTemporalV1WithValidity(
     currentClip, currentClip - in.clipDelta,

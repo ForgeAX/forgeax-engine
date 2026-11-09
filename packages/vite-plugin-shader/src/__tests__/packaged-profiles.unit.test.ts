@@ -67,6 +67,19 @@ describe('packaged engine shader profiles', () => {
     expect(packagedProfilePublication(container, 'base-ssao')).toBeUndefined();
   });
 
+  it('writes ASCII-only JSON so non-Latin-1 WGSL comments round-trip without a two-byte decode', () => {
+    const commented = {
+      'forgeax::module': '// URP only \u2014 per-light \u2192 cascade \u00b5s \u{1f600}\nfn f() {}',
+    };
+    const bytes = encodePackagedProfiles({
+      shaderSourceDigest: 'wgsl',
+      imports: commented,
+      publications: { 'base-ssao': base },
+    });
+    expect(gunzipSync(bytes).every((byte) => byte < 0x80)).toBe(true);
+    expect(decodePackagedProfiles(bytes)?.imports).toEqual(commented);
+  });
+
   it('rejects profiles that disagree on a shared source identity', () => {
     const conflicting = publication(['other'], { [digest('a')]: [0] }, 'point');
     expect(() =>

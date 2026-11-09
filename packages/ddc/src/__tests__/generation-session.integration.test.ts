@@ -1,10 +1,15 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type DdcEntry, DdcEntryStore, ddcOutputDigest } from '../entry-store.js';
 import { DdcLifecycle } from '../lifecycle.js';
 import { DdcGenerationSession } from '../session.js';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const native = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...native, readFile: vi.fn(native.readFile) };
+});
 
 const GUID = '019e3969-1d48-7c3b-ac24-6d68f457065f';
 const KEY = 'a'.repeat(64);
@@ -34,6 +39,44 @@ describe('DDC generation session integration', () => {
 
   afterEach(async () => {
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it('validates an existing publication once before fencing its head', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-session-'));
+    roots.push(root);
+    await new DdcEntryStore(root).write(entry());
+    const session = new DdcGenerationSession(root, { generation: 1 });
+    try {
+      const candidate = await session.stageEntry(entry());
+      vi.mocked(readFile).mockClear();
+      await expect(session.commitEntry(candidate, KEY)).resolves.toMatchObject({
+        result: 'current',
+      });
+      expect(
+        vi
+          .mocked(readFile)
+          .mock.calls.filter(
+            ([path]) => String(path) === join(root, 'entries', KEY, 'payload.json'),
+          ),
+      ).toHaveLength(1);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('rejects stored corruption after staging an existing publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-session-'));
+    roots.push(root);
+    await new DdcEntryStore(root).write(entry());
+    const session = new DdcGenerationSession(root, { generation: 1 });
+    try {
+      const candidate = await session.stageEntry(entry());
+      await writeFile(join(root, 'entries', KEY, 'payload.json'), '{"corrupt":true}');
+      await expect(session.commitEntry(candidate, KEY)).rejects.toThrow();
+      expect((await session.inspect(GUID, KEY)).state).not.toBe('current');
+    } finally {
+      await session.close();
+    }
   });
 
   it('accepts one validated candidate and keeps a later generation isolated', async () => {
@@ -314,14 +357,11 @@ describe('DDC generation session integration', () => {
 it('counts invalid entries through both candidate commit paths', async () => {
   const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-invalid-commit-'));
   const session = new DdcGenerationSession(root, { generation: 1 });
-  const publish = DdcEntryStore.prototype.publish;
+  // Inject an unreadable entry at the lifecycle's validated-publication boundary.
+  // Actual post-stage disk corruption is covered by the integration case above.
   const removeAfterPublish = vi
-    .spyOn(DdcEntryStore.prototype, 'publish')
-    .mockImplementation(async function (this: DdcEntryStore, staged) {
-      const result = await publish.call(this, staged);
-      await this.remove(staged.key);
-      return result;
-    });
+    .spyOn(DdcEntryStore.prototype, 'publishForCommit')
+    .mockResolvedValue(null);
   try {
     const candidate = await session.beginCandidate(GUID, KEY);
     expect((await session.commitCandidate(candidate, KEY)).result).toBe('invalid');

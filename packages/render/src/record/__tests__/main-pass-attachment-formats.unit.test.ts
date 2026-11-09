@@ -126,14 +126,18 @@ it('keeps absent, Standard fallback and authored output contracts distinct and r
   }
 });
 
-it('passes the complete Forward SSR fallback and response MRT to the CPU material pipeline', async () => {
+it.each([
+  'forgeax::default-standard-pbr',
+  'forgeax::pbr-skin',
+  'forgeax::default-standard-pbr-skin',
+])('passes the complete Forward SSR fallback and response MRT for %s', async (materialShaderId) => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
   const f = cpuSetupFixture(device, module);
   const standard = f.add({ entity: 1, submeshes: 1 });
   standard.source.material.adopt({
     ...standard.source.material.snapshot,
-    materialShaderId: 'forgeax::default-standard-pbr',
+    materialShaderId,
   });
   Object.assign(f.c, { reflectionFallbackColorFormat: 'rgba16float' });
   const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
@@ -154,6 +158,7 @@ it('passes the complete Forward SSR fallback and response MRT to the CPU materia
       ['rgba16float', 'rgba16float', 'rgba16float'],
     );
     expect(lookup.mock.calls[0]?.[17]).toEqual(['rgba16float', 'rgba16float']);
+    expect(lookup.mock.calls[0]?.[5]).toContain('REFLECTION_FALLBACK_AVAILABLE=true');
   } finally {
     pass.end();
     lookup.mockRestore();

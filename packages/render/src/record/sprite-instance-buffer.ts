@@ -121,7 +121,12 @@ function retireSpritePages(
   const pages = c.frameState.instanceBufferChunks?.get(worldEntityKey(worldId, snapshot.cacheKey));
   if (pages === undefined) return;
   for (const [start, resident] of pages) {
-    if (!c.runtime.device.caps.storageBuffer && start < snapshot.instanceCount) continue;
+    if (
+      !c.runtime.device.caps.storageBuffer &&
+      typeof start === 'number' &&
+      start < snapshot.instanceCount
+    )
+      continue;
     const destroyed = resident.buffer.destroy();
     if (!destroyed.ok) c.runtime.errorRegistry.fire(destroyed.error);
     pages.delete(start);

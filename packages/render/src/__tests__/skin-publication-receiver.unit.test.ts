@@ -75,6 +75,42 @@ function endpoint(missing = false) {
     },
   };
 }
+
+it('validates every continuously changing pose and retries duplicate or nonfinite packets', () => {
+  const f = endpoint();
+  try {
+    f.adopt();
+    for (let frame = 1; frame <= 16; frame++) {
+      f.world.set(f.firstJoint, Transform, { pos: [frame, 0, 0] }).unwrap();
+      f.world.set(f.first, Transform, { pos: [0, frame, 0] }).unwrap();
+      const packet = f.publish();
+      expect(packet.upserts).toHaveLength(0);
+      expect(packet.removed).toHaveLength(0);
+      expect(packet.transformEntities).toHaveLength(2);
+      const duplicate = structuredClone(packet);
+      duplicate.transformEntities[1] = required(duplicate.transformEntities[0]);
+      expect(f.receiver.accept(encodeRenderPublication(duplicate)).ok).toBe(false);
+      const nonfinite = structuredClone(packet);
+      nonfinite.transforms[0] = Number.NaN;
+      expect(f.receiver.accept(encodeRenderPublication(nonfinite)).ok).toBe(false);
+      const accepted = f.adopt(packet).prepared;
+      expect(accepted.operations).toHaveLength(0);
+      expect(accepted.skinJoints?.rows).toHaveLength(1);
+      expect(accepted.scene.delta?.updatedSlots).toHaveLength(1);
+      const pose = mat4.create();
+      const inverse = mat4.create();
+      const snapshot = f.skin.capture();
+      try {
+        expect(snapshot.matrix(Number(f.first), 0, pose, inverse)).toBe(true);
+        expect(pose[12]).toBe(frame);
+      } finally {
+        snapshot.release();
+      }
+    }
+  } finally {
+    f.dispose();
+  }
+});
 it('adopts one independent shared-joint row, no consumer operation or per-joint ArrayBuffer, while a previous root is held', () => {
   const f = endpoint();
   try {

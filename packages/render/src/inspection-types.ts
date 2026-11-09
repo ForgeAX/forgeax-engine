@@ -716,6 +716,12 @@ export type ShadowViewInvalidationReason =
   | 'view-clipping-changed'
   /** The view's static layer rastered, so the composed layer is rebuilt from it. */
   | 'static-layer-changed'
+  /**
+   * The static layer holds no depth because its light moved recently: the
+   * final layer rastered static and dynamic casters in one pass and skipped
+   * the cached static layer, which rebuilds once the light holds still.
+   */
+  | 'merged-static-layer'
   /** Map size, cascade count, filter quality, pipeline, or graph topology changed. */
   | 'configuration-changed'
   /** The shared scene, scene buffers, or physical view resources changed. */

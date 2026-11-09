@@ -210,6 +210,13 @@ try {
     // paused; the cycle draw itself must still leave this image untouched.
     const pausedBaseline = await capture(page, 'cycle-paused-baseline');
     const healthyCanvas = await captureCanvasScreenshot(page, 'cycle-healthy-canvas');
+    // A capture compares one paused World snapshot. Physical input arriving
+    // between probes must wait for the App to resume, not move this camera.
+    await page.evaluate(() => {
+      document.querySelector('#app')?.dispatchEvent(new PointerEvent('pointermove', {
+        pointerType: 'mouse', movementX: 37, movementY: 11, bubbles: true,
+      }));
+    });
     const cycle = await installAndCapture(page, 'installCyclePipeline', 'cycle-fault');
     const cycleCanvas = await captureCanvasScreenshot(page, 'cycle-fault-canvas');
     const repaired = await installAndCapture(page, 'installRepairedPipeline', 'cycle-repaired');

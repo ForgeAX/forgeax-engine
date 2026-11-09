@@ -43,5 +43,5 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
     occlusion+=orm[i].x*w[i]; roughness+=orm[i].y*w[i]; metallic+=orm[i].z*w[i]; emission+=emissions[i].xyz*w[i];
   }
   normal=select(vec3<f32>(0.0,0.0,1.0),normalize(normal),dot(normal,normal)>1e-8);
-  return SurfaceData(color.rgb,applyTBN(input.vertexNormalWS,input.tangentWS,normal)*select(-1.0,1.0,input.frontFacing),clamp(metallic,0.0,1.0),clamp(roughness,0.04,1.0),emission,clamp(occlusion,0.0,1.0),clamp(color.a,0.0,1.0),0.0);
+  return SurfaceData(color.rgb,applyTBN(input.vertexNormalWS,input.tangentWS,normal)*select(-1.0,1.0,input.frontFacing),clamp(metallic,0.0,1.0),clamp(roughness,0.04,1.0),emission,clamp(occlusion,0.0,1.0),clamp(color.a,0.0,1.0),0.0,0.0);
 }

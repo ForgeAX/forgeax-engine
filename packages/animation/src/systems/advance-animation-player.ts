@@ -54,11 +54,8 @@ import { sampleChannel } from '../sample-channel';
 
 import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
 import { defineSystem, defineSystemSet, ENTITY_NULL_RAW } from '@forgeax/engine-ecs';
-import {
-  createStateProjection,
-  readRenderArrayView,
-  type StateProjection,
-} from '@forgeax/engine-ecs/projection';
+import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTransformChannel } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
@@ -932,13 +929,17 @@ function transformValuesChanged(
   field: 'pos' | 'quat' | 'scale',
   values: number[],
 ): boolean {
-  const current = readRenderArrayView(world, target, Transform, field);
-  if (current === undefined || current.length !== values.length) return true;
+  const read = world[worldRead];
+  if (read.getArrayLength(target, Transform, field) !== values.length) return true;
   // Compare the f32 destination, including negative zero, so external author
   // writes are restored even when clip time has not moved.
   for (let index = 0; index < values.length; index++) {
     const value = values[index] as number;
-    if (Number.isNaN(value) || !Object.is(current[index], Math.fround(value))) return true;
+    if (
+      Number.isNaN(value) ||
+      !Object.is(read.getArrayElement(target, Transform, field, index), Math.fround(value))
+    )
+      return true;
   }
   return false;
 }

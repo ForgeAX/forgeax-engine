@@ -162,6 +162,7 @@ import {
   type WorldOptions,
 } from './time';
 import { type UniqueRefStore, UniqueRefStore as UniqueRefStoreImpl } from './unique-ref-store';
+import { copyWorldArray } from './world-array-read';
 import {
   spawnCore,
   worldAddChild,
@@ -422,6 +423,8 @@ export class World {
     getFieldValue: this.internalgetFieldValue.bind(this),
     getArrayLength: this.internalgetArrayLength.bind(this),
     getArrayElement: this.internalgetArrayElement.bind(this),
+    copyArray: (entity, component, fieldName, target) =>
+      copyWorldArray(this[worldInternal], entity, component, fieldName, target),
   };
   // ── Internal state ──
 

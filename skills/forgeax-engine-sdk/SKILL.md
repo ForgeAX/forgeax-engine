@@ -125,6 +125,12 @@ Successful `new` also performs a two-second, best-effort check of the configured
 
 ## SDK production and publication
 
+For SDK carrier path failures, compare canonical download and resolver-selected
+Engine roots at the existing containment owner. Qualify aliased parents and
+out-of-download package redirects through the same installer; retain version,
+digest, writable-output and empty-target checks. Follow
+[SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
+
 Both SDK transports include editable `source/engine/` with the same release's
 prebuilt package outputs. For a focused Engine change, install source dependencies,
 rebuild the changed owner and bind through `project engine use-local`; unchanged

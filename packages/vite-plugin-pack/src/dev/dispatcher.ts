@@ -7,6 +7,7 @@ export interface DispatcherRequest {
 export interface DispatcherResponse {
   statusCode: number;
   setHeader(name: string, value: string): void;
+  getHeader?(name: string): number | string | readonly string[] | undefined;
   end(chunk: string | Uint8Array): void;
 }
 

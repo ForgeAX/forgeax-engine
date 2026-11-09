@@ -240,7 +240,7 @@ async function drawUntilIblActive(
       return receipt;
     if (observeHdr && domains !== undefined && domains.length > 0)
       unwrap(await renderer.observe(receipt, { include: domains }));
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    if (receipt.preparationCompleted !== undefined) unwrap(await receipt.preparationCompleted);
   }
   throw new Error('IBL publication did not become active within 300 frames');
 }

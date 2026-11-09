@@ -28,6 +28,7 @@ import type * as webgpuBackend from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { halfToFloat } from './contact-shadow.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -410,15 +411,18 @@ async function drawObserved(
   if (readbacks !== 'none') unwrap(renderer.requestObservation?.(['linear-hdr']));
   const pending = recorder?.captureFrame();
   if (pending !== undefined) (await recorder?.frameBoundary())?.unwrap();
-  const frame = unwrap(
-    renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-  );
+  const input = { leases: [lease], camera: { lease }, environment: { lease } };
+  const frame =
+    readbacks === 'none' && recorder === undefined
+      ? await drawReadyFrame(renderer, input)
+      : unwrap(renderer.draw(input));
   unwrap(await frame.completed);
   let tape: EncodedTape | undefined;
   if (pending !== undefined) {
     (await recorder?.frameBoundary())?.unwrap();
     tape = (await pending).unwrap();
   }
+  expect(frame.presentation).toBe('ready');
   if (readbacks === 'none')
     return { volume: [], array: [], ...(tape === undefined ? {} : { tape }) };
   const observed = unwrap(

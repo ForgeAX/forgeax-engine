@@ -20,7 +20,7 @@ import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // and pixel readback.
 
 import { World } from '@forgeax/engine-ecs';
-import type { Renderer } from '@forgeax/engine-render';
+import type { FrameReceipt, Renderer } from '@forgeax/engine-render';
 import {
   ANTIALIAS_FXAA,
   ANTIALIAS_NONE,
@@ -39,6 +39,10 @@ import type {
 import type { Buffer } from '@forgeax/engine-rhi';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import {
+  completeReadyFrame,
+  drawReadyFrame,
+} from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 const LIGHTWEIGHT_DAWN = process.env.FORGEAX_DAWN_LIGHTWEIGHT === '1';
@@ -172,6 +176,24 @@ function prepareOutputTransformCapture(host: DebugDrawHost):
     },
   });
   return { buffer: buffer.value, bytesPerRow, width: WIDTH, height: HEIGHT };
+}
+
+async function drawOutputTransformFrame(
+  renderer: Renderer,
+  host: DebugDrawHost,
+  request: Parameters<Renderer['draw']>[0],
+) {
+  let capture: ReturnType<typeof prepareOutputTransformCapture>;
+  const receipt = await completeReadyFrame(() => {
+    // The preceding pending receipt has completed before this next attempt.
+    // Re-arm the same exact-frame observation instead of reading a barrier.
+    if (capture !== undefined) host.device.destroyBuffer(capture.buffer);
+    capture = prepareOutputTransformCapture(host);
+    const drawn = renderer.draw(request);
+    if (!drawn.ok) throw drawn.error;
+    return drawn.value;
+  });
+  return { receipt, capture };
 }
 
 async function readOutputTransformCapture(
@@ -446,12 +468,12 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     if (!attachment.ok) throw attachment.error;
     world.update(1 / 60).unwrap();
 
-    const drawn = renderer.draw({
+    const receipt = await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
-    expect(drawn.ok).toBe(true);
+    expect(receipt.presentation).toBe('ready');
     await device.queue.onSubmittedWorkDone();
 
     const pixels = await doReadPixels(device, renderTarget);
@@ -488,16 +510,15 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     expect(attachmentNone.ok).toBe(true);
     if (!attachmentNone.ok) throw attachmentNone.error;
     worldNone.update(1 / 60).unwrap();
-    const drawnNone = renderer.draw({
+    const drawnNone = await drawReadyFrame(renderer, {
       leases: [attachmentNone.value],
       camera: { lease: attachmentNone.value },
       environment: { lease: attachmentNone.value },
     });
-    expect(drawnNone.ok).toBe(true);
-    if (!drawnNone.ok) throw drawnNone.error;
+    expect(drawnNone.presentation).toBe('ready');
     await device.queue.onSubmittedWorkDone();
     const standardOutputNone = {
-      receiptFrameId: drawnNone.value.frameId,
+      receiptFrameId: drawnNone.frameId,
       target: 'not-present-on-no-fxaa-fast-path',
     } as const;
     const pixelsNone = await doReadPixels(device, renderTarget);
@@ -510,33 +531,30 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     expect(attachmentFxaa.ok).toBe(true);
     if (!attachmentFxaa.ok) throw attachmentFxaa.error;
     worldFxaa.update(1 / 60).unwrap();
-    const outputCapture = prepareOutputTransformCapture(debugDrawHost);
-    const drawnFxaa = renderer.draw({
-      leases: [attachmentFxaa.value],
-      camera: { lease: attachmentFxaa.value },
-      environment: { lease: attachmentFxaa.value },
-    });
-    expect(
-      drawnFxaa.ok,
-      drawnFxaa.ok
-        ? undefined
-        : `FXAA draw failed: ${JSON.stringify({ error: drawnFxaa.error, renderErrors })}`,
-    ).toBe(true);
-    if (!drawnFxaa.ok) throw drawnFxaa.error;
+    const { receipt: drawnFxaa, capture: outputCapture } = await drawOutputTransformFrame(
+      renderer,
+      debugDrawHost,
+      {
+        leases: [attachmentFxaa.value],
+        camera: { lease: attachmentFxaa.value },
+        environment: { lease: attachmentFxaa.value },
+      },
+    );
+    expect(drawnFxaa.presentation).toBe('ready');
     await device.queue.onSubmittedWorkDone();
     const standardOutputFxaa = await readOutputTransformCapture(
       debugDrawHost,
       outputCapture,
-      drawnFxaa.value.frameId,
+      drawnFxaa.frameId,
     );
     const pixelsFxaa = await doReadPixels(device, renderTarget);
     const inspectionFxaa = renderer.inspect();
     expect(standardOutputFxaa).toEqual(
       expect.objectContaining({
-        graphFrameId: drawnFxaa.value.frameId - 1,
+        graphFrameId: drawnFxaa.frameId - 1,
         graphGeneration: expect.any(Number),
         textureIdentity: expect.any(Number),
-        receiptFrameId: drawnFxaa.value.frameId,
+        receiptFrameId: drawnFxaa.frameId,
         format: 'rgba16float',
         size: { width: WIDTH, height: HEIGHT },
       }),
@@ -615,7 +633,7 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     removeErrorListener();
   });
 
-  it('keeps TAA + MotionBlur visible on the first no-yield Dawn draw', async () => {
+  it('settles no-yield TAA + MotionBlur preparation through the actual ready receipt', async () => {
     const { renderer, device, renderTarget } = await setupRenderer();
     const world = new World();
     const cube = spawnTemporalCubeScene(world);
@@ -623,8 +641,9 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
     expect(attachment.ok).toBe(true);
     if (!attachment.ok) throw attachment.error;
 
-    // Do not await between draws: temporal fullscreen PSOs must be seeded by
-    // renderer initialization, not by an accidental event-loop yield.
+    // Keep the cold no-yield submissions. A native PSO barrier is not a
+    // presented picture; it must expose its actual preparation completion.
+    let lastReceipt: FrameReceipt | undefined;
     for (let frame = 0; frame < 2; frame += 1) {
       world.set(cube, Transform, { pos: [Math.sin(frame * 0.08) * 0.2, 0, 0] }).unwrap();
       world.update(1 / 60).unwrap();
@@ -634,6 +653,21 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
         environment: { lease: attachment.value },
       });
       expect(drawn.ok).toBe(true);
+      if (!drawn.ok) throw drawn.error;
+      lastReceipt = drawn.value;
+    }
+    if (lastReceipt?.presentation === 'pending') {
+      expect(lastReceipt.presentationPendingReason?.code).toContain('pipeline-preparation');
+      expect(lastReceipt.preparationCompleted).toBeDefined();
+      expect((await lastReceipt.preparationCompleted)?.ok).toBe(true);
+      for (let frame = 0; frame < 2; frame += 1) {
+        world.update(1 / 60).unwrap();
+        await drawReadyFrame(renderer, {
+          leases: [attachment.value],
+          camera: { lease: attachment.value },
+          environment: { lease: attachment.value },
+        });
+      }
     }
     await device.queue.onSubmittedWorkDone();
     const pixels = await doReadPixels(device, renderTarget);
@@ -698,12 +732,12 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
       expect(directAttachment.ok).toBe(true);
       if (!directAttachment.ok) throw directAttachment.error;
       directWorld.update(1 / 60).unwrap();
-      const directDraw = renderer.draw({
+      const directDraw = await drawReadyFrame(renderer, {
         leases: [directAttachment.value],
         camera: { lease: directAttachment.value },
         environment: { lease: directAttachment.value },
       });
-      expect(directDraw.ok).toBe(true);
+      expect(directDraw.presentation).toBe('ready');
       await device.queue.onSubmittedWorkDone();
       directPixels.push(await doReadPixels(device, renderTarget));
 
@@ -713,20 +747,18 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
       expect(fxaaAttachment.ok).toBe(true);
       if (!fxaaAttachment.ok) throw fxaaAttachment.error;
       fxaaWorld.update(1 / 60).unwrap();
-      const capture = prepareOutputTransformCapture(debugDrawHost);
-      const fxaaDraw = renderer.draw({
-        leases: [fxaaAttachment.value],
-        camera: { lease: fxaaAttachment.value },
-        environment: { lease: fxaaAttachment.value },
-      });
-      expect(fxaaDraw.ok).toBe(true);
-      if (!fxaaDraw.ok) throw fxaaDraw.error;
-      await device.queue.onSubmittedWorkDone();
-      const output = await readOutputTransformCapture(
+      const { receipt: fxaaDraw, capture } = await drawOutputTransformFrame(
+        renderer,
         debugDrawHost,
-        capture,
-        fxaaDraw.value.frameId,
+        {
+          leases: [fxaaAttachment.value],
+          camera: { lease: fxaaAttachment.value },
+          environment: { lease: fxaaAttachment.value },
+        },
       );
+      expect(fxaaDraw.presentation).toBe('ready');
+      await device.queue.onSubmittedWorkDone();
+      const output = await readOutputTransformCapture(debugDrawHost, capture, fxaaDraw.frameId);
       expect(output?.captureWritten).toBe(true);
       expect(output?.center.every(Number.isFinite)).toBe(true);
       if (output === undefined) continue;
@@ -772,16 +804,14 @@ describe('feat-20260604 M2 w10: FullscreenPostProcessPass dawn tests', () => {
       expect(attachment.ok).toBe(true);
       if (!attachment.ok) throw attachment.error;
       world.update(1 / 60).unwrap();
-      const capture = prepareOutputTransformCapture(debugDrawHost);
-      const drawn = renderer.draw({
+      const { receipt: drawn, capture } = await drawOutputTransformFrame(renderer, debugDrawHost, {
         leases: [attachment.value],
         camera: { lease: attachment.value },
         environment: { lease: attachment.value },
       });
-      expect(drawn.ok).toBe(true);
-      if (!drawn.ok) throw drawn.error;
+      expect(drawn.presentation).toBe('ready');
       await device.queue.onSubmittedWorkDone();
-      const output = await readOutputTransformCapture(debugDrawHost, capture, drawn.value.frameId);
+      const output = await readOutputTransformCapture(debugDrawHost, capture, drawn.frameId);
       expect(output?.captureWritten).toBe(true);
       expect(output?.center.every(Number.isFinite)).toBe(true);
       outputs.push(output?.center[0] ?? Number.NaN);

@@ -5,6 +5,7 @@ import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import {
+  GPU_TEXTURE_USAGE_COPY_DST,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
@@ -17,9 +18,43 @@ import {
   GPU_BUFFER_USAGE_UNIFORM,
 } from '../gpu-usage';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-import { gbufferSource } from './standard-gbuffer.fixture';
+import { gbufferSource, writePackedNormals } from './standard-gbuffer.fixture';
 
-it('descends a real depth-pyramid seed and preserves all four non-center source texels', async () => {
+// The trace no longer promotes a pyramid candidate ("rescue") to a hit. A
+// closest-depth cell only proves that some texel in its footprint may be
+// crossed; the Hi-Z descent must reach the actual source texel at full
+// resolution and reject the empty texels that share its footprint.
+const SOURCES = [
+  [0, 0],
+  [3, 0],
+  [0, 3],
+  [2, 2],
+] as const;
+// Empty texels whose 2x2 footprint holds a source: (1,0) shares (0,0), (3,1) shares (3,0).
+const EMPTY = [
+  [1, 0],
+  [3, 1],
+] as const;
+const SOURCE_DEPTH = 0.5;
+// Reverse-Z, near 1, far 10: depth = (10 / viewDistance - 1) / 9.
+const SOURCE_VIEW_DISTANCE = 10 / (1 + 9 * SOURCE_DEPTH);
+// A receiver inside texel (1,1), at view distance 1.
+const ORIGIN = [-0.2, 0.2, -1] as const;
+
+function texelCenterWorld([x, y]: readonly [number, number]): [number, number, number] {
+  const ndcX = ((x + 0.5) / 4) * 2 - 1;
+  const ndcY = 1 - ((y + 0.5) / 4) * 2;
+  return [ndcX * SOURCE_VIEW_DISTANCE, ndcY * SOURCE_VIEW_DISTANCE, -SOURCE_VIEW_DISTANCE];
+}
+
+function directionTo(texel: readonly [number, number]): string {
+  const target = texelCenterWorld(texel);
+  const direction = target.map((value, axis) => value - (ORIGIN[axis] ?? 0));
+  const length = Math.hypot(...direction);
+  return `vec3<f32>(${direction.map((value) => (value / length).toFixed(8)).join(', ')})`;
+}
+
+it('descends a real depth-pyramid seed to each non-center source texel and rejects its empty footprint neighbors', async () => {
   const compiler = (await import(
     /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
   )) as {
@@ -35,47 +70,33 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
     'forgeax_pbr::gbuffer': gbufferSource,
     'forgeax_depth_pyramid::sample': shader('depth-pyramid-sample'),
   };
+  const rays = [...SOURCES, ...EMPTY]
+    .map(
+      (texel, index) => `
+  {
+    let hit = traceScreenRay(origin, ${directionTo(texel)}, 6.0, 0.2, fullSize,
+      coarsestDepth, maxTraceLevel);
+    traceProbe[${index}] = vec4<f32>(hit.hit, hit.uv, hit.thickness);
+  }`,
+    )
+    .join('');
   const trace = await compiler.compileShader(
     `${shader('ssr-trace')}
-@group(1) @binding(0) var<storage, read_write> rescueProbe: array<vec4<f32>>;
-@compute @workgroup_size(1) fn probe_rescue() {
+@group(1) @binding(0) var<storage, read_write> traceProbe: array<vec4<f32>>;
+@compute @workgroup_size(1) fn probe_trace() {
   let fullSize = vec2<u32>(4u, 4u);
-  let startUv = vec2<f32>(0.0);
-  let deltaUv = vec2<f32>(1.0);
-  let fallback = 0.0;
-  let endFraction = 1.0;
-  let a = locateSsrPyramidCandidate(vec2<f32>(0.25, 0.25), 1u, fullSize,
-    startUv, deltaUv, fallback, endFraction);
-  let b = locateSsrPyramidCandidate(vec2<f32>(0.75, 0.25), 1u, fullSize,
-    startUv, deltaUv, fallback, endFraction);
-  let c = locateSsrPyramidCandidate(vec2<f32>(0.25, 0.75), 1u, fullSize,
-    startUv, deltaUv, fallback, endFraction);
-  let d = locateSsrPyramidCandidate(vec2<f32>(0.75, 0.75), 1u, fullSize,
-    startUv, deltaUv, fallback, endFraction);
-  rescueProbe[0] = vec4<f32>(select(0.0, 1.0, a.valid), vec2<f32>(a.pixel), a.fraction);
-  rescueProbe[1] = vec4<f32>(select(0.0, 1.0, b.valid), vec2<f32>(b.pixel), b.fraction);
-  rescueProbe[2] = vec4<f32>(select(0.0, 1.0, c.valid), vec2<f32>(c.pixel), c.fraction);
-  rescueProbe[3] = vec4<f32>(select(0.0, 1.0, d.valid), vec2<f32>(d.pixel), d.fraction);
-  let valid = ssrRescueCandidateInRay(vec3<f32>(0.0, 0.0, -1.0),
-    vec3<f32>(0.0, 0.0, -1.0), 2.0, vec3<f32>(0.0, 0.0, -2.0),
-    vec3<f32>(0.0, 0.0, 1.0), fullSize, vec2<u32>(2u, 2u));
-  let behind = ssrRescueCandidateInRay(vec3<f32>(0.0, 0.0, -2.0),
-    vec3<f32>(1.0, 0.0, 0.0), 2.0, vec3<f32>(-1.0, 0.0, -2.0),
-    vec3<f32>(1.0, 0.0, 0.0), fullSize, vec2<u32>(1u, 2u));
-  let beyond = ssrRescueCandidateInRay(vec3<f32>(0.0, 0.0, -1.0),
-    vec3<f32>(0.0, 0.0, -1.0), 2.0, vec3<f32>(0.0, 0.0, -4.0),
-    vec3<f32>(0.0, 0.0, 1.0), fullSize, vec2<u32>(2u, 2u));
-  let silhouette = ssrRescueCandidateInRay(vec3<f32>(0.0, 0.0, -1.0),
-    vec3<f32>(0.0, 0.0, -1.0), 2.0, vec3<f32>(1.0, 0.0, -2.0),
-    vec3<f32>(0.0, 0.0, 1.0), fullSize, vec2<u32>(3u, 2u));
-  rescueProbe[4] = vec4<f32>(select(0.0, 1.0, valid), select(0.0, 1.0, behind),
-    select(0.0, 1.0, beyond), select(0.0, 1.0, silhouette));
+  // Same level bound and coarsest-depth gate as evaluateSsrTrace.
+  let coarsestLevel = ssrDepthPyramidLevelCount() - 1u;
+  let maxTraceLevel = min(maxSsrTraceLevel(fullSize), coarsestLevel + 1u);
+  let coarsestDepth = textureLoad(depthPyramid, vec2<i32>(0), i32(coarsestLevel)).r;
+  let origin = vec3<f32>(${ORIGIN.join(', ')});
+  traceProbe[${SOURCES.length + EMPTY.length}] = vec4<f32>(f32(maxTraceLevel), coarsestDepth, 0.0, 0.0);${rays}
 }`,
-    { id: 'forgeax_ssr::pyramid-rescue-trace', imports: common },
+    { id: 'forgeax_ssr::pyramid-descent-trace', imports: common },
   );
   if (!trace.ok || !trace.value) throw new Error(JSON.stringify(trace.error));
   const pyramid = await compiler.compileShader(shader('depth-pyramid-seed'), {
-    id: 'forgeax_depth_pyramid::rescue-seed',
+    id: 'forgeax_depth_pyramid::descent-seed',
     imports: common,
   });
   if (!pyramid.ok || !pyramid.value) throw new Error(JSON.stringify(pyramid.error));
@@ -87,6 +108,23 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
       format: 'depth32float',
       textureBindingViewDimension: '2d',
       usage: GPU_TEXTURE_USAGE_RENDER_ATTACHMENT | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+    })
+    .unwrap();
+  const normal = device
+    .createTexture({
+      size: { width: 4, height: 4, depthOrArrayLayers: 1 },
+      format: 'r32uint',
+      usage: GPU_TEXTURE_USAGE_STORAGE_BINDING | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+    })
+    .unwrap();
+  // Reflection fallback (coverage in alpha) and the temporal source share one
+  // fully covered, static texture.
+  const data = device
+    .createTexture({
+      size: { width: 4, height: 4, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      textureBindingViewDimension: '2d',
+      usage: GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING,
     })
     .unwrap();
   const pyramidTexture = device
@@ -127,6 +165,18 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
     payload.set([1, 10, 0, 0], 228);
     device.queue.writeBuffer(view, 0, payload).unwrap();
 
+    // Camera-facing, fully covered surfaces everywhere; only depth decides.
+    const surface = new Float32Array(Array.from({ length: 16 }, () => [0.5, 0.5, 1, 1]).flat());
+    writePackedNormals(device, normal, 4, 4, surface);
+    device.queue
+      .writeTexture(
+        { texture: data },
+        surface,
+        { bytesPerRow: 4 * 16, rowsPerImage: 4 },
+        { width: 4, height: 4, depthOrArrayLayers: 1 },
+      )
+      .unwrap();
+
     const depthSeed = createShaderModuleImmediate(device, {
       code: `
 @vertex fn seed_vertex(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -138,9 +188,8 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
   let y = u32(p.y);
   // One valid source occupies a different non-center position in every 2x2
   // full-resolution footprint; the other three positions remain sky.
-  let source = (x == 0u && y == 0u) || (x == 3u && y == 0u) ||
-    (x == 0u && y == 3u) || (x == 2u && y == 2u);
-  return select(0.0, 0.5, source);
+  let source = ${SOURCES.map(([x, y]) => `(x == ${x}u && y == ${y}u)`).join(' || ')};
+  return select(0.0, ${SOURCE_DEPTH}, source);
 }`,
     }).unwrap();
     const depthSeedPipeline = device
@@ -190,10 +239,15 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
             texture: { sampleType: 'depth', viewDimension: '2d' },
           },
           {
-            binding: 3,
+            binding: 1,
             visibility: GPU_SHADER_STAGE_COMPUTE,
-            texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
+            texture: { sampleType: 'uint', viewDimension: '2d' },
           },
+          ...[3, 6, 7].map((binding) => ({
+            binding,
+            visibility: GPU_SHADER_STAGE_COMPUTE,
+            texture: { sampleType: 'unfilterable-float' as const, viewDimension: '2d' as const },
+          })),
           { binding: 5, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
         ],
       })
@@ -210,11 +264,13 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
         layout: device
           .createPipelineLayout({ bindGroupLayouts: [traceInputLayout, traceOutputLayout] })
           .unwrap(),
-        compute: { module: traceModule, entryPoint: 'probe_rescue' },
+        compute: { module: traceModule, entryPoint: 'probe_trace' },
       })
       .unwrap();
 
     const depthView = device.createTextureView(depth, {}).unwrap();
+    const normalView = device.createTextureView(normal, {}).unwrap();
+    const dataView = device.createTextureView(data, {}).unwrap();
     const pyramidView = device.createTextureView(pyramidTexture, {}).unwrap();
     const pyramidSeedGroup = device
       .createBindGroup({
@@ -231,8 +287,11 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
         layout: traceInputLayout,
         entries: [
           { binding: 0, resource: { kind: 'textureView', value: depthView } },
+          { binding: 1, resource: { kind: 'textureView', value: normalView } },
           { binding: 3, resource: { kind: 'textureView', value: pyramidView } },
           { binding: 5, resource: { kind: 'buffer', value: { buffer: view } } },
+          { binding: 6, resource: { kind: 'textureView', value: dataView } },
+          { binding: 7, resource: { kind: 'textureView', value: dataView } },
         ],
       })
       .unwrap();
@@ -273,13 +332,28 @@ it('descends a real depth-pyramid seed and preserves all four non-center source 
     const values = new Float32Array(mapped.getMappedRange().unwrap().slice(0));
     mapped.unmap();
 
-    // Each result is [valid, source-x, source-y, ray-fraction]. The selected
-    // texel must be the actual seed owner, never the footprint center.
-    expect(Array.from(values).slice(0, 20)).toEqual([
-      1, 0, 0, 0.125, 1, 3, 0, 0.875, 1, 0, 3, 0.125, 1, 2, 2, 0.625, 1, 0, 0, 0,
-    ]);
+    // The trace walks the pyramid: one level above full resolution, and every
+    // pyramid cell holds its footprint's source.
+    const levels = (SOURCES.length + EMPTY.length) * 4;
+    expect(values[levels]).toBe(1);
+    expect(values[levels + 1]).toBeCloseTo(SOURCE_VIEW_DISTANCE, 4);
+    // Each result is [hit, u, v, thickness]. A source hit lands on its own
+    // texel center, never on the footprint center or a neighbor.
+    SOURCES.forEach(([x, y], index) => {
+      const [hit, u = NaN, v = NaN, thickness] = Array.from(values.slice(index * 4, index * 4 + 4));
+      expect(hit, `source (${x},${y}) is hit`).toBe(1);
+      expect(u * 4, `source (${x},${y}) u`).toBeCloseTo(x + 0.5, 3);
+      expect(v * 4, `source (${x},${y}) v`).toBeCloseTo(y + 0.5, 3);
+      expect(thickness).toBe(1);
+    });
+    EMPTY.forEach(([x, y], offset) => {
+      const index = SOURCES.length + offset;
+      expect(values[index * 4], `empty (${x},${y}) shares a source footprint but is sky`).toBe(0);
+    });
   } finally {
     device.destroyTexture(depth).unwrap();
+    device.destroyTexture(normal).unwrap();
+    device.destroyTexture(data).unwrap();
     device.destroyTexture(pyramidTexture).unwrap();
     for (const buffer of [view, output, readback]) device.destroyBuffer(buffer).unwrap();
   }

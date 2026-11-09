@@ -326,6 +326,22 @@ describe('pending material module request lifetime', () => {
     expect(compile).toHaveBeenCalledTimes(3);
   });
 
+  it('keeps a content-seeded module when the draw requests the published source of the same text', () => {
+    const { adapter, compile } = fixture();
+    const seeded = {} as ShaderModule;
+    const code = '@fragment fn fs_main() {}';
+    adapter.seedModule('module-forgeax::sprite', seeded, code);
+    const published = new ShaderSource([code], 'a'.repeat(64));
+    expect(adapter.createShaderModule(published.descriptor('module-forgeax::sprite'))).toEqual(
+      ok(seeded),
+    );
+    expect(compile).not.toHaveBeenCalled();
+    // Different text under the same label still retires the seeded module.
+    const other = new ShaderSource(['@fragment fn fs_other() {}'], 'b'.repeat(64));
+    expect(adapter.createShaderModule(other.descriptor('module-forgeax::sprite')).ok).toBe(false);
+    expect(compile).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a seed alias when its first request carries different source', () => {
     const { adapter, compile } = fixture();
     adapter.seedModule('reused-label', {} as ShaderModule, 'old source');

@@ -171,6 +171,9 @@ relative paths resolve against the project. `--checkpoint` waits for an exact
 game-provided ready marker; it is not an image label and is unnecessary for
 ordinary screenshots. The frame number confirms a submission before capture,
 not the exact frame represented by the PNG.
+Validated captures also wait for the startup cover to become hidden within
+the capture deadline before accepting DOM pixels. Observation keeps the current
+surface, including startup or failure diagnostics.
 A white or transparent canvas under a working HUD is usually a renderer error: the JSON
 then carries `rendererError` (`code`, `message`, `frame`, `framesAgo`, `count`),
 `pixels.rendered: false` with `pixels.reason: "renderer-error"` and a one-line `hint`; the
@@ -468,6 +471,15 @@ forgeax project build ./games/my-game \
 | --html-head | Project-relative HTML head fragment applied before Vite and distribution sealing; use for platform script integration instead of editing dist afterward. |
 | --out-dir | Dedicated derived directory, resolved relative to project and cleared before build. |
 | --json | Complete artifact/digest closure corresponding to forgeax-dist.json. |
+
+For loading/failure customization, set the build root's
+`ctx.devkitAppOptions.startupUi`; each of `loading` and `failure` accepts
+`'default'`, `'none'`, or `{ html, css?, script? }`. Use inline/data-URI resources
+before game modules load. Read the DevKit README "Project-owned loading and
+failure screens" for the `screen` state/actions and native portability boundary;
+keep readiness and input ownership in Host. Validate both disabled and custom
+paths with `packages/devkit/src/__tests__/startup-ui.unit.test.ts` plus generated
+Browser/WeChat Host checks.
 
 DevKit owns generated hosts, Vite, shader/Pack cooking, and dist manifests.
 `forge.json#roots` selects plugin assets; DevKit compiles static program tables and installs

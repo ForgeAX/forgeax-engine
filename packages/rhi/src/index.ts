@@ -1,3 +1,4 @@
+/// <reference types="@webgpu/types" preserve="true" />
 // @forgeax/engine-rhi - pure-interface RHI surface for forgeax-engine.
 //
 // Iron laws: spec-aligned (descriptor field names mirror Pick<GPUXxxDescriptor, ...>
@@ -1040,16 +1041,17 @@ export interface RhiCaps {
    */
   readonly firstInstanceIndirect: boolean;
   /**
-   * Whether storage buffer bindings are available
-   * (`device.limits.maxStorageBuffersPerShaderStage > 0`).
+   * Whether storage buffer bindings are available across graphics stages.
+   * The general limit and implemented vertex/fragment limits must be positive.
    *
    * @spec-anchor W3C WebGPU §3.6.2 GPUSupportedLimits.
    *   maxStorageBuffersPerShaderStage; `> 0` means the device supports the
    *   `storage` / `read-only-storage` binding types.
    * @note `false` on backends without storage buffer support.
-   * @hint AI users gate compute / large-buffer paths on
-   *   `caps.storageBuffer`; the per-stage numeric limit lives on
-   *   `device.limits.maxStorageBuffersPerShaderStage` for capacity planning
+   * @hint AI users gate portable graphics storage paths on `caps.storageBuffer`;
+   *   compute-only access and stage capacity remain available through the
+   *   numeric device limits. Older providers without stage-specific members
+   *   retain their general per-stage guarantee
    *   (charter proposition 4: `caps.X = false` is an explicit signal).
    */
   readonly storageBuffer: boolean;
@@ -1067,6 +1069,8 @@ export interface RhiCaps {
    *   4: `caps.X = false` is an explicit signal).
    */
   readonly storageTexture: boolean;
+  /** Depth textureLoad in supported shader stages; Compatibility Mode may reject it. */
+  readonly depthTextureLoad: boolean;
   /**
    * Whether the device can create `rgba16float` textures with `RENDER_ATTACHMENT`
    * usage, enabling the HDR cubemap path for IBL irradiance / specular prefilter
@@ -1243,7 +1247,7 @@ export type RhiLimits = Readonly<GPUSupportedLimits>;
  * underlying `navigator.gpu.requestAdapter(opts)` call.
  */
 export type RequestAdapterOptions = ExplicitUndefined<
-  Pick<GPURequestAdapterOptions, 'powerPreference' | 'forceFallbackAdapter'>
+  Pick<GPURequestAdapterOptions, 'powerPreference' | 'forceFallbackAdapter' | 'featureLevel'>
 >;
 
 /**
@@ -1840,7 +1844,12 @@ export interface RhiDevice {
 /** GPU command queue - writeBuffer / submit + M5 writeTexture /
  *  copyExternalImageToTexture / onSubmittedWorkDone. */
 export interface RhiQueue {
-  /** Direct write to a buffer (POD + ArrayBufferView, math-free). */
+  /**
+   * Direct buffer upload. `bufferOffset` is in bytes. For TypedArray input,
+   * `dataOffset` and `size` are element counts; for ArrayBuffer/DataView they
+   * are byte counts. Omitted size consumes the remaining source view, explicit
+   * zero writes no bytes. The resulting byte length must be a multiple of four.
+   */
   writeBuffer(
     buffer: Buffer,
     bufferOffset: number,
@@ -2528,6 +2537,12 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
+export { bufferWriteRange } from './buffer-write-range';
+export {
+  type MultisampleRenderCapability,
+  multisampleRenderCapability,
+  probeMultisampleRenderCapability,
+} from './capability/multisample-render-probe';
 export { probeR32FloatRenderCapability } from './capability/r32float-render-probe';
 export { PIPELINE_LIBRARY_LIMITS } from './pipeline-library';
 export {

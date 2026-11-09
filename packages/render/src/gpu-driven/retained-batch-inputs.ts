@@ -1,10 +1,18 @@
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuSceneResourceFrame, GpuSceneResourcePins } from '../gpu-scene';
+import { materialAlphaMask } from '../material-alpha-mask';
 import { renderStateSignature } from '../material-render-state';
 import type { BatchExecution } from './batch-execution';
 import type { GpuDrivenBatch } from './batch-topology';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
 import { type PreparedBatchRows, samePreparedBatchLod } from './production-raster-prepare';
+
+/** The closed admission lane a material's alpha cutoff or hash selects. */
+export function batchAdmission(
+  material: Extract<BatchExecution, { readonly route: 'gpu' }>['material'],
+): 'opaque' | 'alpha-mask' {
+  return materialAlphaMask(material.paramSnapshot) ? 'alpha-mask' : 'opaque';
+}
 
 /** Identity facts that let retained batch preparation and plan assembly skip unchanged work. */
 export function batchExecutionKey(
@@ -15,11 +23,7 @@ export function batchExecutionKey(
     preparedIdentity: capturedPreparedMaterialArtifactKey(execution.prepared) ?? '',
     pipelineClass: execution.prepared.identity.material,
     resourceIdentity: sourceBatch.key.materialResourceClass,
-    admission:
-      Number(execution.material.paramSnapshot?.alphaCutoff ?? 0) > 0 ||
-      Number(execution.material.paramSnapshot?.alphaHash ?? 0) > 0.5
-        ? ('alpha-mask' as const)
-        : ('opaque' as const),
+    admission: batchAdmission(execution.material),
     materialPass:
       execution.material.deferredPass === true ? ('deferred' as const) : ('forward-only' as const),
   };

@@ -18,6 +18,7 @@ import { executionWorkers, executionWorkersSchema } from '../execution-workers.j
 import { createOperationHistoryTools } from '../operation-history.js';
 import { readProjectStartupTimeoutMs } from '../project.js';
 import { RHI_INSPECT_INPUT_SCHEMA, RHI_READ_INPUT_SCHEMA } from '../rhi-debug/operations.js';
+import { RHI_TIMING_OPTION_PROPERTIES } from '../rhi-debug/timing.js';
 import { createWorkspaceLiveTools } from '../workspace-live-tools.js';
 import {
   assetInspectInputSchema,
@@ -169,6 +170,7 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
   'asset.inspect': assetInspectInputSchema,
   'asset.resolve': assetResolveInputSchema,
   'asset.verify': assetVerifyInputSchema,
+  'asset.guid': schema({ packageId: string, key: string, json: boolean }, ['packageId', 'key']),
   'asset.shader.check': schema({ ...root, path: string, json: boolean }),
   'asset.preview': schema(
     {
@@ -202,7 +204,17 @@ const commandSchemas: Readonly<Record<string, ToolJsonSchema>> = {
     { ...root, artifact: string, digest: string, passes: boolean, label: string, json: boolean },
     ['artifact'],
   ),
-  'rhi.timing': schema({ ...root, artifact: string, digest: string, json: boolean }, ['artifact']),
+  'rhi.timing': schema(
+    {
+      ...root,
+      ...RHI_TIMING_OPTION_PROPERTIES,
+      artifact: string,
+      digest: string,
+      compare: string,
+      json: boolean,
+    },
+    ['artifact'],
+  ),
   'rhi.inspect': schema(
     {
       ...root,
@@ -832,7 +844,10 @@ export function createUnifiedCommandContributions(
       'rhi.read',
       'Batch-reads resources or bindings at work indices as records, image stats, atlas tiles and PNGs.',
     ),
-    rhi('rhi.timing', 'Reports replay GPU nanoseconds per render and compute pass.'),
+    rhi(
+      'rhi.timing',
+      'Replays a tape (positional or --artifact) with steady GPU restore and pipelined timestamps; prints frame union p50 with a 95% interval, drift, top passes and a preflight (GPU idle, raw timestamps) table, --json for everything. --skip for a paired cost delta, --compare BASELINE for an interleaved A/B.',
+    ),
     profile('capture', 'Captures one bounded CPU profile from a live App host.'),
     profile('summary', 'Projects a profile ArtifactRef into an offline summary.'),
     profile('frame', 'Selects one frame from a profile ArtifactRef.'),
@@ -890,7 +905,7 @@ export function createUnifiedCommandContributions(
     project(
       'project.check',
       'Check project',
-      'Runs project diagnostics and reports the supported HTML/CSS authoring profile without starting a live instance.',
+      'Runs project diagnostics, dry-cooks authored material and particle-effect packs offline, and reports the supported HTML/CSS authoring profile without starting a live instance.',
       'doctorCommand',
     ),
     project('project.test', 'Test project', 'Runs the project test gate.', 'testCommand'),
@@ -976,6 +991,12 @@ export function createUnifiedCommandContributions(
       'Import asset',
       'Imports a source asset through the project asset authority.',
       'assetAddCommand',
+    ),
+    project(
+      'asset.guid',
+      'Derive asset guid',
+      'Prints the stable AssetGuid a Pack package id and sourceKey derive (UUIDv5), for example for material refs and effect renderer fields.',
+      'assetGuidCommand',
     ),
     project(
       'asset.shader-check',

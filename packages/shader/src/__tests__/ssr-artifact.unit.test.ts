@@ -114,7 +114,7 @@ describe('SSR built-in shader artifacts', () => {
     expect(SOURCES.pyramidSeed).toContain('linearizeViewDepth');
     expect(SOURCES.pyramidSeed).toContain('view.temporalProjection');
     expect(SOURCES.pyramidReduce).toContain('reduceDepthPyramidFootprint');
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_COARSE_STEPS');
+    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_HIZ_ITERATIONS');
     expect(SOURCES.trace).toContain('SSR_TRACE_MAX_REFINE_STEPS');
     expect(SOURCES.trace).toContain('traceScreenRay');
     expect(SOURCES.trace).toContain('textureLoad(depthPyramid');

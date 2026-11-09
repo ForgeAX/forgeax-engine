@@ -852,12 +852,16 @@ import {
         '#pragma variant_axis PROBE_BLEND_AVAILABLE',
         '#pragma variant_axis EXTENDED_LIGHTING_AVAILABLE',
         '#pragma variant_axis TRANSMISSION_AVAILABLE',
-        '#pragma variant_axis DIRECTIONAL_PCSS_AVAILABLE',
         '#pragma variant_axis PROJECTOR_AVAILABLE',
         '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
         '#pragma variant_axis REFLECTION_FALLBACK_AVAILABLE',
         '#pragma variant_axis COVERAGE_ONLY',
         '#pragma variant_axis VISIBLE_SURFACE_AVAILABLE',
+        '#pragma variant_axis ALPHA_MASK',
+        '#pragma variant_axis DIRECTIONAL_SHADOW_SIMPLE',
+        '#pragma variant_axis LEAN_LIGHTING',
+        '#pragma variant_axis LOD_DITHER',
+        '#pragma variant_axis CLIPPING_PLANES',
       ]);
     });
 
@@ -871,7 +875,17 @@ import {
         '#pragma variant_axis COVERAGE_ONLY',
         '#pragma variant_axis SKINNING_DISABLED',
         '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
+        '#pragma variant_axis LOD_DITHER',
       ]);
+    });
+
+    it('(b2) shadow_caster.wgsl keeps LOD coverage unconditional (no LOD_DITHER axis)', () => {
+      // The shadow pass is not on the discard-free lane; an axis there only
+      // multiplies published rows without a pass that requests it.
+      const src = stripComments(readWgsl('shadow_caster.wgsl'));
+      expect(src).not.toMatch(/#pragma\s+variant_axis\s+LOD_DITHER/);
+      expect(src).not.toMatch(/#if\s+LOD_DITHER/);
+      expect(src).toMatch(/applyLodCoverage\(in\.clip\.xy/);
     });
 
     it('(c) no shader introduces INSTANCE_STORAGE_AVAILABLE (OOS-6)', () => {

@@ -435,6 +435,7 @@ async function readArtifactSurface<P extends TextureAsset | EquirectAsset>(
       });
     } finally {
       file.close();
+      file.delete();
     }
   } catch (cause) {
     return invalid(

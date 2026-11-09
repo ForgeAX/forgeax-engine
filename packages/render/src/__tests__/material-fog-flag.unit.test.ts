@@ -33,7 +33,7 @@ describe('surfaceEmissionOnly', () => {
       /fn surfaceEmissionOnly\(input : SurfaceInput, emissive : vec3<f32>, opacity : f32\)/,
     );
     expect(src).toContain(
-      'SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0)',
+      'SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0, 0.0)',
     );
   });
 });

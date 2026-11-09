@@ -7,7 +7,7 @@
 // owning package share the exact query implementation without a private path
 // import or an untyped cast at each consumer.
 
-// Keep this entry limited to package-owner metadata and the derived writer.
+// Keep this entry limited to package-owner metadata and Query capabilities.
 // Raw World storage stays source-private; semantic World reads live behind the
 // separate `./world-read` entry.
 export {
@@ -28,6 +28,19 @@ import type { Query } from './query/query';
 export const DERIVED_WRITER: unique symbol = Symbol.for(
   'forgeax.ecs.query.derivedWriter',
 ) as unknown as typeof DERIVED_WRITER;
+
+/** Read-only owner observation; the Query remains the cursor authority. */
+export const QUERY_ITERATING: unique symbol = Symbol.for(
+  'forgeax.ecs.query.iterating',
+) as unknown as typeof QUERY_ITERATING;
+
+export function isQueryIterating<
+  R extends readonly Component[],
+  W extends readonly Component[],
+  O extends readonly Component[],
+>(query: Query<R, W, O>): boolean {
+  return (query as Query<R, W, O> & { [QUERY_ITERATING](): boolean })[QUERY_ITERATING]();
+}
 
 type DerivedWriterQuery<
   R extends readonly Component[],

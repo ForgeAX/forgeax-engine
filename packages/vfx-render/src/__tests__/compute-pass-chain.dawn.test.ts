@@ -139,6 +139,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
           reset: currentTick === 0,
           delta: (currentTick + 1) / 100,
           initialDelta: 0.01,
+          worldElapsed: 0,
           // Delta (k + 1) / 100 at phase k: the cycle has run sum(1..k+1) / 100 s.
           elapsed: ((currentTick + 1) * (currentTick + 2)) / 200,
           phaseTick: currentTick,

@@ -1,4 +1,4 @@
-import type { ExecutionApp } from '@forgeax/engine-app';
+import { type BrowserFrameCompleted, type ExecutionApp, FORGEAX_FRAME_COMPLETED_EVENT } from '@forgeax/engine-app';
 import { createApp } from '@forgeax/engine-app/browser';
 import type { CameraViewInspection } from '@forgeax/engine-render';
 import {
@@ -16,6 +16,8 @@ interface Picture {
   id: number;
   error?: unknown;
   frameId: number;
+  presentation: 'ready' | 'pending';
+  presentationPendingReason?: unknown;
   views: CameraViewInspection[];
   cut?: CameraViewInspection[];
   observation: {
@@ -127,18 +129,29 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
     const execution = app.execution!;
     const command = (kind: string) => request(source.port1, { id: ++id, kind });
     const observe = (kind = 'observe') => request<Picture>(channel, { id: ++id, kind });
-    const advance = async (frames: number) => {
-      const start = execution.report().render?.completedFrame ?? 0;
-      await expect
-        .poll(
-          () => {
-            if (app.lastError !== undefined) throw new Error(JSON.stringify(app.lastError));
-            return execution.report().render?.completedFrame ?? 0;
-          },
-          { timeout: 60_000 },
-        )
-        .toBeGreaterThanOrEqual(start + frames);
-    };
+    const advance = (frames: number) => new Promise<void>((resolve, reject) => {
+      const currentCanvas = app.canvas ?? canvas;
+      const worldIdentity = execution.report().world.identity;
+      let ready = 0;
+      let lastFrame = -1;
+      const finish = (error?: unknown) => {
+        clearTimeout(timer);
+        currentCanvas.removeEventListener(FORGEAX_FRAME_COMPLETED_EVENT, receive);
+        removeErrorListener();
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const receive = (event: Event) => {
+        const frame = (event as CustomEvent<BrowserFrameCompleted>).detail;
+        if (frame.worldIdentity !== worldIdentity || frame.presentation !== 'ready' || frame.frameId <= lastFrame) return;
+        lastFrame = frame.frameId;
+        if (++ready >= frames) finish();
+      };
+      const timer = setTimeout(() => finish(new Error(`Only ${ready}/${frames} ready pictures completed`)), 60_000);
+      const removeErrorListener = app.onError(finish);
+      currentCanvas.addEventListener(FORGEAX_FRAME_COMPLETED_EVENT, receive);
+      if (app.lastError !== undefined) finish(app.lastError);
+    });
     const inspect = async (code: string) => {
       const requestId = ++id;
       const response = await new Promise<ExecutionInspectResultMessage>((resolve, reject) => {
@@ -245,6 +258,8 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
               {
                 delta,
                 frameId: live.frameId,
+                presentation: live.presentation,
+                presentationPendingReason: live.presentationPendingReason,
                 workIndex: work.workIndex,
                 views: live.views,
                 report: execution.report(),
@@ -255,6 +270,7 @@ it('keeps multi-camera pixels, cadence and source ownership through actual Rende
           ),
         );
         expect(delta).toBeLessThanOrEqual(1);
+        expect(live.presentation).toBe('ready');
       } finally {
         (await replay.dispose()).unwrap();
       }

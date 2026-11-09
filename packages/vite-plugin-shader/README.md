@@ -37,7 +37,10 @@ Source compilation keeps the complete variant roster, but projects each variant'
 source and import catalog only when a compiler slot starts that job. The worker
 pool therefore retains prepared inputs for active jobs rather than the complete
 Cartesian roster. A single worker follows the same sequential admission rule;
-results retain their original order. After all jobs settle, the pool closes each
+results retain their original order. Worker replies transmit the shared WGSL
+body once, and the parent interns equal immutable bodies across completed
+variants. Each result keeps its own metadata while its public WGSL fields
+refer to the same canonical body. After all jobs settle, the pool closes each
 worker's message port and awaits its normal exit rather than interrupting native
 or WASM teardown with `terminate()`. Job errors retain precedence over shutdown
 errors, and a worker that exits before returning its job rejects that job.

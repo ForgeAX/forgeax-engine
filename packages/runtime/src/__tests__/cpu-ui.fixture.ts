@@ -137,7 +137,10 @@ export async function verifyCpuUiComposition(
       if (camera === undefined) throw new Error('CPU UI scene requires a Camera');
       scene.world.addComponent(camera, { component: CameraView, data: {} }).unwrap();
     }
-    for (let i = 0; i < 60; i++) value(await (await scene.draw()).completed);
+    const submissionsBeforeWarmup = submissions;
+    for (let i = 0; i < 60; i++) await scene.drawReady();
+    const warmupSubmissions = submissions - submissionsBeforeWarmup;
+    expect(warmupSubmissions).toBeGreaterThanOrEqual(60);
     const before = await readUiFrame(renderer, scene.world);
     expect(before.receipt.presentation).toBe('ready');
     await save('scene', before.rgba);
@@ -167,8 +170,8 @@ export async function verifyCpuUiComposition(
     expect(retired.receipt.presentation).toBe('pending');
     expect(retired.receipt.barrelDistortion).toBeUndefined();
     expect(equalBytes(retired.rgba, loading.rgba)).toBe(true);
-    expect(painted).toBe(67);
-    expect(submissions).toBe(67);
+    expect(painted).toBe(7 + warmupSubmissions);
+    expect(submissions).toBe(7 + warmupSubmissions);
     // Returning to a camera-free World preserves UI composition and normal completion.
     const cameraFree = await readUiFrame(renderer, boot);
     expect(cameraFree.receipt.presentation).toBe('ready');

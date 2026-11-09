@@ -2,13 +2,21 @@ import * as THREE from '@forgeax/engine/three';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  replayChecks,
+  SIZE,
+  verifyReplay,
+} from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
 
 export interface AuthoredShadowJourney {
   verifyBaseline(): Promise<void>;
   verifyAuthoredFilters(): Promise<void>;
   verifyLayersAndVariance(): Promise<void>;
+  verifyAll(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -44,29 +52,13 @@ export function createAuthoredShadowJourney(
   document.body.append(canvas);
   const renderer = new THREE.WebGPURenderer({ canvas });
   renderer.shadowMap.enabled = true;
-  const replaySlots: Promise<void>[] = [Promise.resolve(), Promise.resolve()];
-  const replayFailures: unknown[] = [];
+  const replays = replayChecks();
   let replayCount = 0;
   const verifyCapturedReplay = async (capture: THREE.ThreeFrameCapture, label: string) => {
-    if (replayCount === 0) {
-      replayCount++;
-      await verifyReplay(capture, label);
-      return;
-    }
-    const slot = replayCount++ % replaySlots.length;
-    replaySlots[slot] = (replaySlots[slot] as Promise<void>)
-      .then(async () => {
-        await verifyReplay(capture, label);
-      })
-      .catch((cause: unknown) => {
-        replayFailures.push(cause);
-      });
+    if (replayCount++ === 0) await verifyReplay(capture, label);
+    else replays.queue(capture, label);
   };
-  const verifyPendingReplays = async () => {
-    await Promise.all(replaySlots);
-    if (replayFailures.length > 0)
-      throw new AggregateError(replayFailures, 'Three authored shadow replay failed');
-  };
+  const verifyPendingReplays = replays.complete;
   const measure = async (name: string, frames = 1) => {
     const started = performance.now();
     const milestonesMs: Record<string, number> = {};
@@ -116,7 +108,6 @@ export function createAuthoredShadowJourney(
     camera.position.x = -4;
     camera.lookAt(0, 0.5, 0);
     await measure('camera-moved');
-    await verifyPendingReplays();
   };
   const verifyAuthoredFilters = async () => {
     if (!initialized) throw new Error('verify the baseline before authored shadow filters');
@@ -147,7 +138,6 @@ export function createAuthoredShadowJourney(
       renderer.shadowMap.type = THREE.PCFShadowMap;
       await measure('rectangular-vogel');
     }
-    await verifyPendingReplays();
   };
   const verifyLayersAndVariance = async () => {
     if (!initialized) throw new Error('verify the baseline before shadow layers and variance');
@@ -176,7 +166,13 @@ export function createAuthoredShadowJourney(
       sun.shadow.radius = 4;
       await measure('variance-wide');
     }
-    await verifyPendingReplays();
+  };
+  const withCompleteReplays = async (verify: () => Promise<void>) => {
+    try {
+      await verify();
+    } finally {
+      await verifyPendingReplays();
+    }
   };
   const dispose = async () => {
     if (disposed) return;
@@ -191,15 +187,25 @@ export function createAuthoredShadowJourney(
       canvas.remove();
     }
   };
-  return { verifyBaseline, verifyAuthoredFilters, verifyLayersAndVariance, dispose };
+  return {
+    verifyBaseline: () => withCompleteReplays(verifyBaseline),
+    verifyAuthoredFilters: () => withCompleteReplays(verifyAuthoredFilters),
+    verifyLayersAndVariance: () => withCompleteReplays(verifyLayersAndVariance),
+    verifyAll: () =>
+      withCompleteReplays(async () => {
+        await verifyBaseline();
+        await verifyAuthoredFilters();
+        await verifyLayersAndVariance();
+        expect(replayCount).toBe(kind === 'point' ? 13 : 18);
+      }),
+    dispose,
+  };
 }
 
 export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot') {
   const journey = createAuthoredShadowJourney(kind);
   try {
-    await journey.verifyBaseline();
-    await journey.verifyAuthoredFilters();
-    await journey.verifyLayersAndVariance();
+    await journey.verifyAll();
   } finally {
     await journey.dispose();
   }

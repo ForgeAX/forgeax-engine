@@ -146,15 +146,19 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     h.setGi(undefined);
     for (let i = 0; i < 4; i++) await h.draw();
     const off = await h.image();
+    expect(off.receipt.presentation).toBe('ready');
     expect(off.mean).toBe(0);
 
     h.setGi({ gather: 'baked', volume: DARK, resolution: 'half' });
     await h.settle(2);
-    expect(equalBytes((await h.image()).bytes, off.bytes)).toBe(true);
+    const dark = await h.image();
+    expect(dark.receipt.presentation).toBe('ready');
+    expect(equalBytes(dark.bytes, off.bytes)).toBe(true);
 
     h.setGi({ gather: 'baked', volume: LIT, resolution: 'half' });
     await h.settle(2);
     const lit = await h.image();
+    expect(lit.receipt.presentation).toBe('ready');
     expect(h.errors).toEqual([]);
     // White Lambert wall under D = 0.5 everywhere: outgoing radiance albedo * D.
     expect(lit.center).toBeGreaterThan(0.45);

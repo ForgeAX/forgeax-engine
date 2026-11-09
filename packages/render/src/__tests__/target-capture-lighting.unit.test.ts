@@ -298,7 +298,20 @@ describe('target capture lighting ownership', () => {
     const f = await fixture();
     const first = f.prepare(0);
     const second = f.prepare(1);
-    const write = vi.spyOn(f.gpu.queue, 'writeBuffer');
+    const payloads: Uint8Array[] = [];
+    const upload = f.gpu.queue.writeBuffer.bind(f.gpu.queue);
+    const write = vi.spyOn(f.gpu.queue, 'writeBuffer').mockImplementation((...args) => {
+      // Queue writes consume their source synchronously; inspect those bytes,
+      // rather than retaining a borrowed staging view after the call returns.
+      const data = args[2];
+      payloads.push(
+        (ArrayBuffer.isView(data)
+          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+          : new Uint8Array(data)
+        ).slice(),
+      );
+      return upload(...args);
+    });
     for (const capture of [first, second])
       writePointsLinesViewUbo(
         f.gpu.queue,
@@ -313,7 +326,8 @@ describe('target capture lighting ownership', () => {
     expect(b?.[0]).not.toBe(f.basePipeline.pointsLinesViewBuffer);
     expect(a?.[1]).toBe(0);
     expect(b?.[1]).toBe(0);
-    expect(a?.[2]).not.toEqual(b?.[2]);
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).not.toEqual(payloads[1]);
     expect(f.prepare(0).pipeline.pointsLinesViewBuffer).toBe(first.pipeline.pointsLinesViewBuffer);
     disposeTargetCaptureLighting(f.owner);
     await Promise.resolve();

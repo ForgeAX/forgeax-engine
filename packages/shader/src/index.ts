@@ -94,6 +94,8 @@ export {
   STANDARD_SHADOW_RECEPTION_OVERRIDE,
   STANDARD_SHARED_TRANSMISSION_DEFINE,
   STANDARD_SHARED_TRANSMISSION_SLOTS,
+  STANDARD_SURFACE_DISCARD_CLIPPING_AXIS,
+  STANDARD_SURFACE_DISCARD_LOD_AXIS,
   STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
   STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
   STANDARD_SURFACE_DISCARDS_OVERRIDE,
@@ -130,6 +132,13 @@ export {
   type MaterialShaderManifestEntry,
   type MaterialShaderManifestVariant,
 } from './types.js';
+export {
+  isSupportedVariantDefines,
+  isSupportedVariantKey,
+  VARIANT_PERMUTATION_RULES,
+  type VariantPermutationRule,
+  violatedVariantPermutationRules,
+} from './variant-permutation-rules.js';
 
 export const BUILTIN_MATERIAL_MODULES = {
   standard: 'forgeax_material::standard',
@@ -303,3 +312,13 @@ export {
 } from './material/ray-program';
 export { declaredMaterialVertexInputs } from './material/vertex-inputs.js';
 export { TONEMAP_PARAMS_LAYOUT, TONEMAP_SHADER_MODE } from './tonemap.js';
+
+/** Renderer-owned TSR analysis and reconstruction programs. */
+export {
+  TSR_ANALYZE_FRAGMENT_WGSL,
+  TSR_ANALYZE_WGSL,
+  TSR_OPAQUE_FRAGMENT_WGSL,
+  TSR_OPAQUE_WGSL,
+  TSR_RECONSTRUCT_FRAGMENT_WGSL,
+  TSR_RECONSTRUCT_WGSL,
+} from './tsr-source';

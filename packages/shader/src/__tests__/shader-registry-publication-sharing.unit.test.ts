@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { setFlagsFromString } from 'node:v8';
+import { runInNewContext } from 'node:vm';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ShaderRegistry, shaderSourceDigestInput } from '../index.js';
 
@@ -73,14 +75,14 @@ describe('ShaderRegistry publication sharing', () => {
     expect([...fallback.entries()][0]).toBe([...shortened.entries()][0]);
   });
 
-  it('reports a native digest failure without adopting manifest entries', async () => {
+  it('reports a native digest failure on re-admission without adopting manifest entries', async () => {
+    const readText = async () => '{"entries":[]}';
+    const first = new ShaderRegistry({ manifestUrl: '/digest-failure', readText });
+    expect((await first.loadManifest()).ok).toBe(true);
     vi.spyOn(globalThis.crypto.subtle, 'digest').mockRejectedValueOnce(
       new Error('crypto unavailable'),
     );
-    const registry = new ShaderRegistry({
-      manifestUrl: '/digest-failure',
-      readText: async () => '{"entries":[]}',
-    });
+    const registry = new ShaderRegistry({ manifestUrl: '/digest-failure', readText });
     const result = await registry.loadManifest();
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('manifest-malformed');
@@ -102,6 +104,67 @@ describe('ShaderRegistry publication sharing', () => {
     expect((await second.loadManifest()).ok).toBe(true);
     expect([...first.entries()][0]?.hash).toBe('\uD800');
     expect([...second.entries()][0]?.hash).toBe('\uD801');
+  });
+
+  it('reuses the admitted manifest for a second registry once the deferred text digest settles', async () => {
+    serve(() => publication('fn deferred() {}\n'));
+    const first = await loaded('/deferred/manifest.json');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = await loaded('/deferred/manifest.json');
+    expect(first.result.ok && second.result.ok).toBe(true);
+    expect([...second.registry.entries()][0]).toBe([...first.registry.entries()][0]);
+  });
+
+  it('keys a fetched manifest by its wire bytes: same bytes reuse, different bytes do not', async () => {
+    const text = JSON.stringify(publication('fn wire() {}\n'));
+    // Same decoded text, different wire bytes (extra JSON whitespace).
+    const padded = `${text} `;
+    let body = text;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(body));
+    const first = await loaded('/wire/manifest.json');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const same = await loaded('/wire/manifest.json');
+    expect([...same.registry.entries()][0]).toBe([...first.registry.entries()][0]);
+    body = padded;
+    const different = await loaded('/wire/manifest.json');
+    expect(different.result.ok).toBe(true);
+    expect([...different.registry.entries()][0]).not.toBe([...first.registry.entries()][0]);
+  });
+
+  it('digests the wire bytes, not a per-character copy of the decoded text', async () => {
+    const digest = vi.spyOn(globalThis.crypto.subtle, 'digest');
+    serve(() => publication('fn sized() {}\n'));
+    const wireLength = JSON.stringify(publication('fn sized() {}\n')).length;
+    await loaded('/sized/manifest.json');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const keyed = digest.mock.calls.filter(
+      (call) => (call[1] as ArrayBufferView).byteLength === wireLength,
+    );
+    expect(keyed.length).toBeGreaterThan(0);
+  });
+
+  it('does not keep the decoded manifest text alive while the wire reuse key is pending', async () => {
+    setFlagsFromString('--expose-gc');
+    const gc = runInNewContext('gc') as () => void;
+    // 48 MiB of trailing JSON whitespace: decoded into a one-byte string the
+    // parsed manifest never references, so only a leaked closure can retain it.
+    // The body is served as bytes, so the decoded text is the registry's only copy.
+    const body = new TextEncoder().encode(
+      `${JSON.stringify(publication('fn pending() {}\n'))}${' '.repeat(48 << 20)}`,
+    );
+    const native = globalThis.crypto.subtle.digest.bind(globalThis.crypto.subtle);
+    vi.spyOn(globalThis.crypto.subtle, 'digest').mockImplementation((algorithm, data) =>
+      (data as ArrayBufferView).byteLength === body.byteLength
+        ? new Promise<ArrayBuffer>(() => {})
+        : native(algorithm, data),
+    );
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(body));
+    gc();
+    const before = process.memoryUsage().heapUsed;
+    const { result } = await loaded('/pending-key/manifest.json');
+    expect(result.ok).toBe(true);
+    gc();
+    expect(process.memoryUsage().heapUsed - before).toBeLessThan(24 << 20);
   });
 
   it('shares one verified expansion across registries loading identical manifest text', async () => {

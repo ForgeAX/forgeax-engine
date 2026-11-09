@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { PackageId } from '@forgeax/engine-pack/guid';
+import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type { ScriptablePackSourceClosureEntry } from '@forgeax/engine-pack/source';
 import type { TerminalImportProduct } from './import-product.js';
 import type { ImportRunnerFs, RunImportMeta } from './import-runner.js';
@@ -8,12 +9,39 @@ import type {
   PackBuildCacheSubject,
   ScriptablePackBuildProductCache,
 } from './scriptable-pack-build-core.js';
+import { createPackBuildProductCache } from './scriptable-pack-product-cache.js';
 
 /** Meta uses the ordinary Pack product DDC, with the host's sealed producer identity. */
 export interface SourcePackageBuildDdc {
   readonly products: ScriptablePackBuildProductCache;
   readonly producerIdentity: string;
   readonly identityRoot: string;
+  readonly isCurrent?: () => Promise<boolean>;
+}
+
+/** Build and live dev use the same producer identity and Pack product store. */
+export async function createSourcePackageBuildDdc(options: {
+  readonly root: string | undefined;
+  readonly identityRoot: string;
+  readonly producerIdentity: string | undefined;
+  readonly cookers: readonly NativeCooker[] | undefined;
+}): Promise<SourcePackageBuildDdc | undefined> {
+  if (options.root === undefined || options.producerIdentity === undefined) return undefined;
+  const cacheOptions = {
+    root: options.root,
+    identityRoot: options.identityRoot,
+    outputVersions: { 'meta-source-package': '1' },
+    cookers: options.cookers ?? [],
+  };
+  const products = await createPackBuildProductCache(cacheOptions);
+  return {
+    products,
+    identityRoot: options.identityRoot,
+    producerIdentity: `${options.producerIdentity}:${products.producerIdentity}`,
+    isCurrent: async () =>
+      (await createPackBuildProductCache(cacheOptions)).producerIdentity ===
+      products.producerIdentity,
+  };
 }
 
 export async function prepareSourcePackageBuildProduct(
@@ -107,6 +135,7 @@ export async function persistSourcePackageBuildProduct(
 ): Promise<void> {
   if (ddc === undefined || prepared === undefined) return;
   try {
+    if ((await ddc.isCurrent?.()) === false) return;
     const subject = prepared.complete();
     await ddc.products.write(subject, {
       product,

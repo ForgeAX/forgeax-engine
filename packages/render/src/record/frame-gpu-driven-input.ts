@@ -12,6 +12,7 @@ import type { FrameList } from '../scene/frame-list';
 import { ShadowMaterialContent } from '../scene/material-shadow-content';
 import type { PersistentShadowCasterProjection } from '../scene/render-scene';
 import type { ViewLights } from '../world/render-lights';
+import { directionalShadowSimple } from './directional-shadow-simple';
 import type { GpuDrivenRecordInput } from './frame';
 import {
   prepareDeferredProbeBuffer,
@@ -42,6 +43,8 @@ export interface FrameGpuDrivenSources {
   readonly gpuDriven: GpuDrivenRecordInput;
   readonly profilePhase: RecordProfileRunner | undefined;
   readonly captureShadows?: boolean;
+  /** `leanLightingFrame` of this view, staged with the frame's environment and cloud layer. */
+  readonly leanLighting?: boolean;
 }
 
 /** Resident inputs shared by GPU preparation and the recording that consumes it. */
@@ -94,7 +97,6 @@ export function buildFrameGpuDrivenInput(
     };
   const artifacts = collectFrameGpuDrivenArtifacts(
     internals,
-    frameState,
     frame.scene,
     shadowCasterProjection?.materialPrograms,
     standard,
@@ -118,7 +120,6 @@ export function buildFrameGpuDrivenInput(
   );
   const request = gpuDrivenPrepareRequest(
     internals,
-    frameState,
     frame,
     artifacts,
     standard,
@@ -133,6 +134,7 @@ export function buildFrameGpuDrivenInput(
     shadowCasterProjection,
     sources.profilePhase,
     standard.prepared.renderPath === 'deferred',
+    directionalShadowSimple(sources.lights) && sources.leanLighting === true,
   );
   return {
     meshes,

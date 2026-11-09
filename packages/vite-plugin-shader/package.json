@@ -27,6 +27,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@forgeax/engine-codec": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-shader": "workspace:*",
     "@forgeax/engine-shader-compiler": "workspace:*",

@@ -4,6 +4,7 @@ import type {
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { isTemporalAntialias } from '../components/camera';
 import { SceneDataUnavailableError } from '../errors/render';
 import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
 import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
@@ -67,7 +68,7 @@ export function standardSceneTemporalDemand(
   const motionBlur = camera.motionBlur;
   return (
     sceneConsumer ||
-    camera.antialias === 'taa' ||
+    isTemporalAntialias(camera.antialias) ||
     (motionBlur !== undefined &&
       motionBlurTemporalDemand({
         ...motionBlur,

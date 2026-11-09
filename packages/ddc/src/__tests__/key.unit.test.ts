@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   canonicalDdcDigest,
   canonicalDdcReadbackDigest,
@@ -20,6 +20,33 @@ const baseInput = (): SemanticDdcInput => ({
 });
 
 describe('canonical DDC byte identity', () => {
+  it('bounds native JSON calls for complete shader binding and string tables', async () => {
+    const value = {
+      bindings: Array.from({ length: 2049 }, (_, binding) => ({ binding, group: binding % 4 })),
+      names: Array.from(
+        { length: 2049 },
+        (_, index) => ['position', '\ud800', '\u{1f600}', '"\\\n'][index % 4],
+      ),
+      options: { optional: false, source: null },
+    };
+    const expected = canonicalDdcJson(value);
+    const digest = createHash('sha256').update(expected).digest('hex');
+    for (const readback of [false, true]) {
+      const stringify = vi.spyOn(JSON, 'stringify');
+      let actual: string;
+      let calls: number;
+      try {
+        actual = readback ? await canonicalDdcReadbackDigest(value) : canonicalDdcDigest(value);
+        calls = stringify.mock.calls.length;
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(actual).toBe(digest);
+      // A table row must not pay one native call for each key and string.
+      expect(calls).toBeLessThan(value.bindings.length * 2);
+    }
+  });
+
   it.each([
     'canonical',
     'whitespace',

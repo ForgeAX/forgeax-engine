@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { composeShader } from '../../../naga/src/index';
+import { projectShaderConditionals } from '../../../shader-compiler/src/conditionals';
 
 const source = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
@@ -33,20 +34,34 @@ function directLightSlotDeclaration(text: string): string {
 }
 
 const productionCommon = source('common.wgsl');
+const productionView = productionCommon.match(
+  /struct AtmosphereMedium \{[\s\S]*?\n\};\nstruct View \{[\s\S]*?\n\};/,
+)?.[0];
+if (productionView === undefined) throw new Error('Missing production View declaration');
+// The lookup uses the fragment's own screen position over the 16x4 viewport
+// (written by the fragment entry); `projected` only mirrors the supplied
+// (interpolated) NDC, which must not pick the cell.
 const common = `
 #define_import_path forgeax_view::common
-struct View { spotLightViewProj: array<mat4x4<f32>, 4> }
-const view = View();
+${productionView}
+var<private> view : View;
 @group(0) @binding(0) var spotShadowMap: texture_depth_2d_array;
 @group(0) @binding(1) var shadowSampler: sampler_comparison;
 ${directLightSlotDeclaration(productionCommon)}
 ${productionCommon.match(/fn lightingChannelsMatch\([^}]+\}/)?.[0] ?? ''}
 `;
 
+// projected=true is the large-triangle regression: across a big perspective
+// triangle the interpolated NDC drifts into a neighbouring cell, so the shader
+// receives an NDC mirrored into the wrong cell. Cells hold only the lights the
+// membership producer culled to them, so a lookup that trusts that NDC drops
+// the fragment's lights; the projected world position must pick the cell.
 it.each([
-  true,
-  false,
-])('Standard cluster storage=%s preserves 0 → 2 → 0 pixels without empty lookups', async (storage) => {
+  [true, false],
+  [false, false],
+  [true, true],
+  [false, true],
+])('Standard cluster storage=%s projected=%s preserves 0 → 2 → 0 pixels without empty lookups', async (storage, projected) => {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('Dawn cluster regression requires a GPU adapter');
   const device = await adapter.requestDevice();
@@ -65,19 +80,24 @@ it.each([
     return result;
   };
   try {
+    const defines = { CLUSTER_FORWARD_AVAILABLE: true, STORAGE_BUFFER_AVAILABLE: storage };
     const code = await composeShader(
       `
 #import forgeax_standard::cluster::{evaluateStandardClusterLights, clusterLookupCount, cluster_uniform}
 #import forgeax_pbr::lighting_punctual::{evalPoint}
+#import forgeax_pbr::brdf::{prepareDirectMultiScatterView}
+#import forgeax_view::common::{view}
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
   return vec4(f32((i << 1u) & 2u)*2.0-1.0, 1.0-f32(i & 2u)*2.0, 0.0, 1.0);
 }
 struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32> }
 @fragment fn fs(@builtin(position) p: vec4<f32>) -> Output {
+  view.viewportWidth = 16.0;
+  view.viewportHeight = 4.0;
   let right = p.x >= 8.0;
   let far = p.y >= 2.0;
   let channels = select(1u, 2u, u32(p.y) % 2u != 0u);
-  let ndc = vec3((p.x / 16.0) * 2.0 - 1.0, 0.0, 0.5);
+  let ndc = vec3(${projected ? '-' : ''}((p.x / 16.0) * 2.0 - 1.0), 0.0, 0.5);
   let worldPos = vec3((p.x - 8.0) / 16.0, 0.0, 0.0);
   let normal = normalize(vec3(0.2, 0.0, 1.0));
   let viewDir = vec3(0.0, 0.0, 1.0);
@@ -91,28 +111,32 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
     // Independently selected cell membership and channels; real punctual BRDF.
     if (right && channels == 1u) {
       expected += evalPoint(vec3(-0.5,0.0,2.0), vec3(4.0,2.0,1.0), 0.01, 2.0,
-        worldPos, normal, viewDir, baseColor, 0.3, 0.25, f0, vec3(0.0), false);
+        worldPos, normal, viewDir, baseColor, 0.3, 0.25, f0, vec3(0.0),
+        prepareDirectMultiScatterView(0.25, max(dot(normal, viewDir), 1e-5), f0, false), false);
     }
     if (far && channels == 2u) {
       expected += evalPoint(vec3(0.5,0.0,3.0), vec3(1.0,3.0,5.0), 0.01, 2.0,
-        worldPos, normal, viewDir, baseColor, 0.3, 0.25, f0, vec3(0.0), false);
+        worldPos, normal, viewDir, baseColor, 0.3, 0.25, f0, vec3(0.0),
+        prepareDirectMultiScatterView(0.25, max(dot(normal, viewDir), 1e-5), f0, false), false);
     }
   }
   return Output(vec4(actual, f32(clusterLookupCount())), vec4(expected, 1.0));
 }`,
-      {
-        'forgeax_view::common': common,
-        'forgeax_standard::cluster': countedCluster(),
-        'forgeax_pbr::lighting_punctual': source('lighting-punctual.wgsl'),
-        'forgeax_pbr::lighting_spot_modifiers': source('lighting-spot-modifiers.wgsl'),
-        'forgeax_pbr::lighting_spot_projector': source('lighting-spot-projector.wgsl'),
-        'forgeax_pbr::lighting_ies_profile': source('lighting-ies-profile.wgsl'),
-        'forgeax_pbr::lighting_rect_area': source('lighting-rect-area.wgsl'),
-        'forgeax_pbr::lighting_attenuation': source('lighting-attenuation.wgsl'),
-        'forgeax_pbr::brdf': source('brdf.wgsl'),
-        'forgeax_pbr::shadow_pcf': source('shadow-pcf.wgsl'),
-      },
-      { CLUSTER_FORWARD_AVAILABLE: true, ...(storage ? { STORAGE_BUFFER_AVAILABLE: true } : {}) },
+      Object.fromEntries(
+        Object.entries({
+          'forgeax_view::common': common,
+          'forgeax_standard::cluster': countedCluster(),
+          'forgeax_pbr::lighting_punctual': source('lighting-punctual.wgsl'),
+          'forgeax_pbr::lighting_spot_modifiers': source('lighting-spot-modifiers.wgsl'),
+          'forgeax_pbr::lighting_spot_projector': source('lighting-spot-projector.wgsl'),
+          'forgeax_pbr::lighting_ies_profile': source('lighting-ies-profile.wgsl'),
+          'forgeax_pbr::lighting_rect_area': source('lighting-rect-area.wgsl'),
+          'forgeax_pbr::lighting_attenuation': source('lighting-attenuation.wgsl'),
+          'forgeax_pbr::brdf': source('brdf.wgsl'),
+          'forgeax_pbr::shadow_pcf': source('shadow-pcf.wgsl'),
+        }).map(([id, text]) => [id, projectShaderConditionals(text, defines, 'all')]),
+      ),
+      defines,
     );
     const module = device.createShaderModule({ code });
     expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(

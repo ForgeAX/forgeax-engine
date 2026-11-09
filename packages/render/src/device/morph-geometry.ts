@@ -14,6 +14,7 @@ import {
   GPU_BUFFER_USAGE_STORAGE,
   GPU_BUFFER_USAGE_VERTEX,
 } from '../gpu-usage';
+import { type MorphChannel, morphChannels, packMorphDeltas } from '../morph-attributes';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { worldEntityKey } from '../record/frame-snapshot';
 import type { MorphSnapshot } from '../render-system-extract';
@@ -28,9 +29,8 @@ const HEADER_WORDS = 4;
 const RETIRE_AFTER_SUBMISSIONS = 8;
 
 /**
- * vertices[v].position = source[v] + sum_t weight[t] * source[(t + 1) * count + v].
- * Only the position lane is written; every other attribute keeps the bytes the
- * output received from the Mesh once at creation.
+ * Each selected attribute is its authored value plus weighted target deltas.
+ * UVs and unselected attributes retain their seeded bytes.
  */
 export const MORPH_GEOMETRY_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read> params : array<u32>;
@@ -44,23 +44,31 @@ fn morphPositions(@builtin(global_invocation_id) id : vec3<u32>) {
   if (vertex >= count) { return; }
   let stride = params[1];
   let targets = params[2];
-  var position = vec3<f32>(source[vertex * 3u], source[vertex * 3u + 1u], source[vertex * 3u + 2u]);
-  for (var t = 0u; t < targets; t++) {
-    let weight = bitcast<f32>(params[${HEADER_WORDS}u + t]);
-    let at = ((t + 1u) * count + vertex) * 3u;
-    position += weight * vec3<f32>(source[at], source[at + 1u], source[at + 2u]);
+  let mask = params[3];
+  let channels = countOneBits(mask);
+  let hasTangent = (mask & 4u) != 0u;
+  let inputStride = channels * 3u + select(0u, 1u, hasTangent);
+  for (var channel = 0u; channel < channels; channel++) {
+    let components = select(3u, 4u, hasTangent && channel + 1u == channels);
+    for (var lane = 0u; lane < components; lane++) {
+      let start = vertex * inputStride + channel * 3u + lane;
+      var value = source[start];
+      for (var t = 0u; t < targets; t++) {
+        let weight = bitcast<f32>(params[${HEADER_WORDS}u + channels + t]);
+        let at = (t + 1u) * count * inputStride + start;
+        value += weight * source[at];
+      }
+      vertices[vertex * stride + params[${HEADER_WORDS}u + channel] + lane] = value;
+    }
   }
-  let out = vertex * stride;
-  vertices[out] = position.x;
-  vertices[out + 1u] = position.y;
-  vertices[out + 2u] = position.z;
 }
 `;
 
-/** Base positions followed by every target delta, uploaded once per Mesh version. */
+/** Selected base attributes followed by target deltas, once per Mesh version. */
 interface MorphSource {
   buffer: GpuBuffer | undefined;
   readonly vertexCount: number;
+  readonly channels: readonly MorphChannel[];
   holders: number;
 }
 
@@ -110,7 +118,7 @@ export interface MorphGeometryStats {
 
 /**
  * Renderer-owned morph deformation. Each morphed entity owns one vertex buffer
- * whose position lane is derived from per-Mesh target deltas and the entity's
+ * whose position/normal/tangent lanes derive from Mesh targets and the entity's
  * weights; draws bind it in place of the shared Mesh stream, so every material
  * program and lane consumes it as ordinary rigid geometry. Work is proportional
  * to weight changes: unchanged rows return their retained handles.
@@ -252,15 +260,20 @@ export class MorphGeometry {
     const vertexCount = deriveVertexCount(mesh.vertices, base.layoutProjection);
     if (vertexCount === undefined || vertexCount !== base.vertexCount || vertexCount <= 0)
       return undefined;
-    for (const target of targets) if (target.position?.length !== vertexCount * 3) return undefined;
+    const channels = morphChannels(mesh, base.layoutProjection, vertexCount);
+    if (channels === undefined) return undefined;
     const strideWords = base.layoutProjection.arrayStride / Float32Array.BYTES_PER_ELEMENT;
-    const source = this.acquireSource(base, vertexCount);
+    const source = this.acquireSource(base, vertexCount, channels);
     const vertexBytes = mesh.vertices.byteLength;
     const output = this.buffer(
       input,
       'morph-geometry-vbo',
       vertexBytes,
-      GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+      GPU_BUFFER_USAGE_VERTEX |
+        GPU_BUFFER_USAGE_COPY_DST |
+        (input.device.caps.compute && input.device.caps.storageBuffer
+          ? GPU_BUFFER_USAGE_STORAGE
+          : 0),
     );
     if (output === undefined) {
       this.releaseSource(base, source, input.reportError);
@@ -284,15 +297,19 @@ export class MorphGeometry {
     };
   }
 
-  /** Write the entity's weights, then deform on the GPU or, without compute, on the CPU. */
+  /** Write the entity's weights, then deform on the GPU or CPU. */
   private stage(input: MorphGeometryInput, entry: MorphEntry): void {
     const weights = entry.morph.weights;
     if (this.gpuBinding(input, entry) !== undefined && entry.params !== undefined) {
-      const words = new Uint32Array(HEADER_WORDS + weights.length);
+      const channels = entry.source.channels;
+      const words = new Uint32Array(HEADER_WORDS + channels.length + weights.length);
       words[0] = entry.source.vertexCount;
       words[1] = entry.strideWords;
       words[2] = weights.length;
-      new Float32Array(words.buffer, HEADER_WORDS * 4).set(weights);
+      words[3] = channels.reduce((mask, channel) => mask | channel.bit, 0);
+      for (const [index, channel] of channels.entries())
+        words[HEADER_WORDS + index] = channel.offset;
+      new Float32Array(words.buffer, (HEADER_WORDS + channels.length) * 4).set(weights);
       const written = input.device.queue.writeBuffer(entry.params.handle, 0, words);
       if (written.ok) {
         this.stats.weightUploads++;
@@ -306,28 +323,33 @@ export class MorphGeometry {
     const vertices = new Float32Array(source);
     const { vertexCount } = entry.source;
     for (let vertex = 0; vertex < vertexCount; vertex++) {
-      const out = vertex * entry.strideWords;
-      for (let lane = 0; lane < 3; lane++) {
-        let value = source[out + lane] as number;
-        for (let target = 0; target < weights.length; target++)
-          value +=
-            (weights[target] as number) *
-            ((targets[target]?.position?.[vertex * 3 + lane] ?? 0) as number);
-        vertices[out + lane] = value;
-      }
+      for (const channel of entry.source.channels)
+        for (let lane = 0; lane < channel.components; lane++) {
+          const out = vertex * entry.strideWords + channel.offset + lane;
+          let value = source[out] as number;
+          for (let target = 0; target < weights.length; target++)
+            value +=
+              (weights[target] as number) *
+              (targets[target]?.[channel.key]?.[vertex * channel.components + lane] ?? 0);
+          vertices[out] = value;
+        }
     }
     const written = input.device.queue.writeBuffer(entry.output.handle, 0, vertices);
     if (written.ok) this.stats.cpuDeformations++;
     else input.reportError(written.error);
   }
 
-  private acquireSource(base: MeshGpuHandles, vertexCount: number): MorphSource {
+  private acquireSource(
+    base: MeshGpuHandles,
+    vertexCount: number,
+    channels: readonly MorphChannel[],
+  ): MorphSource {
     const existing = this.sources.get(base);
     if (existing !== undefined) {
       existing.holders++;
       return existing;
     }
-    const source: MorphSource = { buffer: undefined, vertexCount, holders: 1 };
+    const source: MorphSource = { buffer: undefined, vertexCount, channels, holders: 1 };
     this.sources.set(base, source);
     return source;
   }
@@ -340,16 +362,16 @@ export class MorphGeometry {
     const { source, mesh, strideWords } = entry;
     const targets = mesh.morphTargets ?? [];
     if (source.buffer === undefined) {
-      const { vertexCount } = source;
-      const positions = new Float32Array((targets.length + 1) * vertexCount * 3);
-      for (let vertex = 0; vertex < vertexCount; vertex++) {
-        const at = vertex * strideWords;
-        positions[vertex * 3] = mesh.vertices[at] as number;
-        positions[vertex * 3 + 1] = mesh.vertices[at + 1] as number;
-        positions[vertex * 3 + 2] = mesh.vertices[at + 2] as number;
-      }
-      for (let target = 0; target < targets.length; target++)
-        positions.set(targets[target]?.position as Float32Array, (target + 1) * vertexCount * 3);
+      const { vertexCount, channels } = source;
+      const channelStride = channels.reduce((size, channel) => size + channel.components, 0);
+      const positions = new Float32Array((targets.length + 1) * vertexCount * channelStride);
+      for (let vertex = 0; vertex < vertexCount; vertex++)
+        for (const [index, channel] of channels.entries())
+          for (let lane = 0; lane < channel.components; lane++) {
+            const at = vertex * channelStride + index * 3 + lane;
+            positions[at] = mesh.vertices[vertex * strideWords + channel.offset + lane] as number;
+          }
+      positions.set(packMorphDeltas(mesh, vertexCount, channels), vertexCount * channelStride);
       const buffer = this.buffer(
         input,
         'morph-geometry-targets',
@@ -369,7 +391,7 @@ export class MorphGeometry {
     entry.params ??= this.buffer(
       input,
       'morph-geometry-weights',
-      (HEADER_WORDS + targets.length) * 4,
+      (HEADER_WORDS + source.channels.length + targets.length) * 4,
       GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     );
     if (entry.params === undefined) return undefined;

@@ -27,6 +27,7 @@ import { captureRenderFailure } from './capture-render-failure.js';
 import { executionHealth } from './execution-health.js';
 import { environmentExecutionWorkers } from './execution-workers.js';
 import { failureSummary } from './failure-summary.js';
+import type { StartupUiState } from './host/startup-ui.js';
 import { LIVE_BRIDGE_OWNER_PARAM, ownerPageUrl } from './live-bridge-url.js';
 import {
   acquireStartLock,
@@ -52,6 +53,7 @@ import { liveProjectReadyLogLine, readLiveProjectInputs } from './live-project-i
 import type { LuminanceObservation } from './luminance-heatmap.js';
 import { createRunSnapshot, runStateDirectory } from './run-snapshot.js';
 import { DEV_EXECUTION_TIMEOUT_MS, DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
+import { logLiveInputTiming, traceDevStartup } from './startup-timing.js';
 import type {
   BrowserCarrierAdapter,
   BrowserCarrierRunIdentity,
@@ -207,10 +209,15 @@ interface LiveDevDaemonState {
   projectProcess: ChildProcess | undefined;
   inputs: string | undefined;
   projectInputPaths: readonly string[] | undefined;
-  inputCheck: Promise<string> | undefined;
+  inputCheck:
+    | {
+        readonly paths: readonly string[] | undefined;
+        readonly result: Promise<string>;
+      }
+    | undefined;
   inputTimer: ReturnType<typeof setTimeout> | undefined;
   reloadInFlight: Promise<void> | undefined;
-  reloadRequested: boolean;
+  reloadRequested: false | 'inputs' | 'explicit';
   /** When the current page's App bridge closed without a reconnect yet. */
   bridgeLostAt?: number | undefined;
   /** Serializes session file writes so the last write carries the latest state. */
@@ -398,8 +405,16 @@ export async function waitForFirstFrame(
   try {
     observation = await realm.waitForFunction(
       () => {
+        const startup = (
+          Reflect.get(globalThis, '__forgeaxStartup') as { inspect?(): StartupUiState } | undefined
+        )?.inspect?.();
+        if (startup?.phase === 'failed' && startup.recovery !== 'retrying')
+          return (startup.diagnostics || startup.message || 'Engine startup failed').slice(
+            0,
+            16_384,
+          );
         const fatal = document.querySelector('#forgeax-fatal');
-        if (fatal?.checkVisibility())
+        if (startup === undefined && fatal?.checkVisibility())
           return (
             document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
             fatal.textContent?.trim() ||
@@ -1252,32 +1267,40 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
   };
   await writeSessionFile(state);
   try {
-    await replaceProjectProcess(state, state.status.generation);
+    await traceDevStartup('project-process-ready', () =>
+      replaceProjectProcess(state, state.status.generation),
+    );
     if (stopped()) return;
-    const { createBrowserCapture } = await import('./browser-capture.js');
+    const { createBrowserCapture } = await traceDevStartup(
+      'browser-module-import',
+      () => import('./browser-capture.js'),
+    );
     if (stopped()) return;
     // A reload opens its replacement page in the same warm browser.
     state.browser ??= createBrowserCapture(state.executionRoot, { retainBrowser: true });
     state.bridgeToken = randomUUID();
     // Only a bridge this new page opened and then lost is reopened.
     state.bridgeLostAt = undefined;
-    state.session = await state.browser.open({
-      backend: state.status.backendRequested,
-      headless: state.status.headless,
-      launchProfile: 'development',
-      ...ciCaptureViewport(),
-      outputDir: liveArtifactDirectory(revision),
-      ...(state.projectUrl === undefined
-        ? {}
-        : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken) }),
-      ...(state.carrier === undefined
-        ? {}
-        : {
-            carrier: state.carrier,
-            carrierGeneration: state.status.generation,
-            ...(state.carrierRun === undefined ? {} : { carrierRun: state.carrierRun }),
-          }),
-    });
+    const browser = state.browser;
+    state.session = await traceDevStartup('browser-open', () =>
+      browser.open({
+        backend: state.status.backendRequested,
+        headless: state.status.headless,
+        launchProfile: 'development',
+        ...ciCaptureViewport(),
+        outputDir: liveArtifactDirectory(revision),
+        ...(state.projectUrl === undefined
+          ? {}
+          : { serverUrl: ownerPageUrl(state.projectUrl, state.bridgeToken) }),
+        ...(state.carrier === undefined
+          ? {}
+          : {
+              carrier: state.carrier,
+              carrierGeneration: state.status.generation,
+              ...(state.carrierRun === undefined ? {} : { carrierRun: state.carrierRun }),
+            }),
+      }),
+    );
     if (stopped()) {
       await state.session.close();
       return;
@@ -1312,12 +1335,17 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
     const { readProjectStartupTimeoutMs } = await import('./project.js');
     const startupPolicy = await readProjectStartupTimeoutMs(state.executionRoot);
     if (!startupPolicy.ok) throw startupPolicy.error;
-    const firstFrame = await waitForFirstFrame(
-      state.session,
-      startupPolicy.value === undefined ? DEV_EXECUTION_TIMEOUT_MS : startupPolicy.value,
+    const session = state.session;
+    const firstFrame = await traceDevStartup('first-frame', () =>
+      waitForFirstFrame(
+        session,
+        startupPolicy.value === undefined ? DEV_EXECUTION_TIMEOUT_MS : startupPolicy.value,
+      ),
     );
     if (stopped()) return;
-    const connected = firstFrame && (await refreshBridgeStatus(state).catch(() => false));
+    const connected =
+      firstFrame &&
+      (await traceDevStartup('bridge-status', () => refreshBridgeStatus(state).catch(() => false)));
     if (stopped()) return;
     if (!connected) {
       const errors = state.session.report().pageErrors;
@@ -1347,7 +1375,7 @@ async function openSession(state: LiveDevDaemonState): Promise<void> {
       // plugins compiled) supersedes the failure. The surrounding reload loop
       // starts the latest inputs; publishing `failed` first would make callers
       // treat a self-resolving state as terminal.
-      state.reloadRequested = true;
+      state.reloadRequested ||= 'inputs';
       state.status = {
         ...state.status,
         phase: 'reloading',
@@ -1379,7 +1407,7 @@ async function inputsSuperseded(state: LiveDevDaemonState): Promise<boolean> {
 
 async function reloadSession(state: LiveDevDaemonState): Promise<void> {
   if (state.reloadInFlight !== undefined) {
-    state.reloadRequested = true;
+    state.reloadRequested = 'explicit';
     return state.reloadInFlight;
   }
   const operation = (async () => {
@@ -1397,7 +1425,9 @@ async function reloadSession(state: LiveDevDaemonState): Promise<void> {
 async function reloadSessionOwned(state: LiveDevDaemonState): Promise<void> {
   if (state.status.phase === 'stopped') return;
   try {
-    state.inputs = await checkProjectInputs(state);
+    state.inputs = await traceDevStartup('input-scan-before-reload', () =>
+      checkProjectInputs(state),
+    );
   } catch (error) {
     failProjectInputs(state, error);
     return;
@@ -1430,11 +1460,27 @@ async function reloadSessionOwned(state: LiveDevDaemonState): Promise<void> {
   const latestInputs = await checkProjectInputs(state);
   if (latestInputs !== state.inputs) {
     state.inputs = latestInputs;
-    state.reloadRequested = true;
+    state.reloadRequested ||= 'inputs';
     return;
   }
   await openSession(state);
-  await reconcileProjectInputs(state);
+  const current = await reconcileProjectInputs(state);
+  const accepted =
+    state.status.bridgeConnected &&
+    state.status.frameId !== undefined &&
+    state.status.error === undefined;
+  // Do not discharge an input request while compilation/browser startup is
+  // still pending or failed, even if an edit has reverted to the old baseline.
+  if (current && accepted && state.reloadRequested === 'inputs') {
+    logLiveInputTiming({
+      stage: 'input-reload-covered',
+      acceptedVersion: state.inputs,
+      inputPathCount: state.projectInputPaths?.length,
+    });
+    state.reloadRequested = false;
+  }
+  if (current && accepted && !state.reloadRequested && state.status.phase === 'reloading')
+    state.status = { ...state.status, phase: 'ready' };
   await writeSessionFile(state);
 }
 
@@ -1444,11 +1490,32 @@ function isStopped(state: LiveDevDaemonState): boolean {
 
 function checkProjectInputs(state: LiveDevDaemonState): Promise<string> {
   if (state.snapshot) return Promise.resolve(state.inputSnapshot?.version ?? 'snapshot-not-ready');
-  // Concurrent requests share one in-flight scan, never a cached successful check.
-  state.inputCheck ??= readLiveProjectInputs(state.root, state.projectInputPaths).finally(() => {
-    state.inputCheck = undefined;
-  });
-  return state.inputCheck;
+  const paths = state.projectInputPaths;
+  // Share only a scan of the same compiler scope. Backend readiness can adopt
+  // its narrower scope while a broad startup/status scan is still in flight.
+  if (state.inputCheck !== undefined && state.inputCheck.paths === paths)
+    return state.inputCheck.result;
+  const check: NonNullable<LiveDevDaemonState['inputCheck']> = {
+    paths,
+    result: (async () => {
+      try {
+        const version = await readLiveProjectInputs(state.root, paths);
+        if (paths === state.projectInputPaths) return version;
+      } catch (error) {
+        if (paths === state.projectInputPaths) throw error;
+      }
+      logLiveInputTiming({
+        stage: 'superseded-scan',
+        previousPathCount: paths?.length,
+        currentPathCount: state.projectInputPaths?.length,
+      });
+      return checkProjectInputs(state);
+    })().finally(() => {
+      if (state.inputCheck === check) state.inputCheck = undefined;
+    }),
+  };
+  state.inputCheck = check;
+  return check.result;
 }
 
 function failProjectInputs(state: LiveDevDaemonState, error: unknown): void {
@@ -1476,9 +1543,19 @@ async function reconcileProjectInputs(state: LiveDevDaemonState): Promise<boolea
     const inputs = await checkProjectInputs(state);
     if (isStopped(state)) return false;
     if (inputs === state.inputs) return true;
+    const phase = state.status.phase;
     state.status = { ...state.status, phase: 'reloading' };
-    if (state.reloadInFlight !== undefined) state.reloadRequested = true;
-    else void reloadSession(state).catch((error) => failProjectInputs(state, error));
+    if (state.reloadInFlight !== undefined) {
+      if (!state.reloadRequested)
+        logLiveInputTiming({
+          stage: 'input-reload-requested',
+          phase,
+          previousVersion: state.inputs,
+          observedVersion: inputs,
+          inputPathCount: state.projectInputPaths?.length,
+        });
+      state.reloadRequested ||= 'inputs';
+    } else void reloadSession(state).catch((error) => failProjectInputs(state, error));
   } catch (error) {
     failProjectInputs(state, error);
   }
@@ -1573,6 +1650,10 @@ export async function startOnPreferredPort<T>(
 }
 
 async function replaceProjectProcess(state: LiveDevDaemonState, generation: number): Promise<void> {
+  const { readProjectStartupTimeoutMs } = await import('./project.js');
+  const policy = await readProjectStartupTimeoutMs(state.executionRoot);
+  if (!policy.ok) throw policy.error;
+  const budget = policy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : policy.value;
   await stopProjectProcess(state);
   const projectPort = await replacementProjectPort(state.projectUrl);
   const child = spawn(
@@ -1616,17 +1697,20 @@ async function replaceProjectProcess(state: LiveDevDaemonState, generation: numb
     log.end();
   });
   await new Promise<void>((resolveReady, rejectReady) => {
-    // A cold SDK tree may need to build the shader and asset closure before Vite
-    // can publish its ready line. The persistent service owns that work, so a
-    // short CLI-style deadline would turn a healthy cold start into a false
-    // failed instance. Keep the bound finite while allowing one cold build.
-    const timer = setTimeout(() => {
-      // Keep an unterminated diagnostic fragment as evidence of the hang.
-      if (output.length > 0) log.write(`${output}\n`);
-      output = '';
-      rejectReady(new Error('live project backend build timed out'));
-    }, 300_000);
+    // The backend child shares the project's preparation policy with its
+    // Host and CLI owner. A separate fixed timer must not reject an admitted
+    // cold asset build; null explicitly disables this wait's deadline.
     let settled = false;
+    const timer =
+      budget === null
+        ? undefined
+        : setTimeout(() => {
+            settled = true;
+            // Keep an unterminated diagnostic fragment as evidence of the hang.
+            if (output.length > 0) log.write(`${output}\n`);
+            output = '';
+            rejectReady(new Error('live project backend build timed out'));
+          }, budget);
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
       output += chunk;
@@ -1658,6 +1742,14 @@ async function replaceProjectProcess(state: LiveDevDaemonState, generation: numb
           clearTimeout(timer);
           state.projectUrl = result.url;
           if (!state.snapshot && result.inputPaths && result.inputVersion) {
+            logLiveInputTiming({
+              stage: 'compiler-inputs-adopted',
+              previousVersion: state.inputs,
+              acceptedVersion: result.inputVersion,
+              previousPathCount: state.projectInputPaths?.length,
+              inputPathCount: result.inputPaths.length,
+              pendingReload: state.reloadRequested || 'none',
+            });
             state.projectInputPaths = result.inputPaths;
             state.inputs = result.inputVersion;
           }
@@ -1699,31 +1791,35 @@ export async function runLiveProjectProcess(
   const startedAt = Date.now();
   process.stderr.write('live project: loading DevKit host\n');
   const { readProjectFacts } = await import('./project.js');
-  const facts = await readProjectFacts(root);
+  const facts = await traceDevStartup('live-project-facts', () => readProjectFacts(root));
   let inputPaths: readonly string[] | undefined;
   const built = facts.ok
-    ? await import('./host.js').then(({ startDevProjectWithHost }) => {
-        process.stderr.write(
-          `live project: starting project backend after ${Date.now() - startedAt}ms\n`,
-        );
-        return startOnPreferredPort(projectPort, (port) =>
-          startDevProjectWithHost(
-            {
-              root,
-              json: true,
-              port,
-              // Children of one owner run one at a time; see startDevProjectWithHost.
-              reuse: {
-                generatedRoot: resolve(root, '.forgeax/generated/dev'),
-                viteCacheDir: resolve(root, '.forgeax/dev/vite'),
-              },
-            },
-            (paths) => {
-              inputPaths = paths;
-            },
-          ),
-        );
-      })
+    ? await traceDevStartup('host-module-import', () => import('./host.js')).then(
+        ({ startDevProjectWithHost }) => {
+          process.stderr.write(
+            `live project: starting project backend after ${Date.now() - startedAt}ms\n`,
+          );
+          return traceDevStartup('host-start-project', () =>
+            startOnPreferredPort(projectPort, (port) =>
+              startDevProjectWithHost(
+                {
+                  root,
+                  json: true,
+                  port,
+                  // Children of one owner run one at a time; see startDevProjectWithHost.
+                  reuse: {
+                    generatedRoot: resolve(root, '.forgeax/generated/dev'),
+                    viteCacheDir: resolve(root, '.forgeax/dev/vite'),
+                  },
+                },
+                (paths) => {
+                  inputPaths = paths;
+                },
+              ),
+            ),
+          );
+        },
+      )
     : facts;
   if (!built.ok) {
     process.stderr.write(`${JSON.stringify(built.error)}\n`);
@@ -1744,7 +1840,9 @@ export async function runLiveProjectProcess(
     Array.isArray(built.value.urls.local)
       ? built.value.urls.local[0]
       : undefined;
-  const inputVersion = await readLiveProjectInputs(root, inputPaths);
+  const inputVersion = await traceDevStartup('compiled-input-scan', () =>
+    readLiveProjectInputs(root, inputPaths),
+  );
   process.stdout.write(
     `${JSON.stringify({ ready: true, generation, url, inputPaths, inputVersion })}\n`,
   );
@@ -3633,10 +3731,12 @@ export async function startLiveDev(
     startupPolicy.value === undefined ? DEV_PREPARATION_TIMEOUT_MS : startupPolicy.value;
   const deadline = startupTimeout === null ? Infinity : Date.now() + startupTimeout;
   // Parallel starts for one project converge on one owner.
-  const release = await acquireStartLock(startLockPath(root, options.snapshot === true), deadline);
+  const release = await traceDevStartup('start-lock', () =>
+    acquireStartLock(startLockPath(root, options.snapshot === true), deadline),
+  );
   if (release === undefined) return startTimeout();
   try {
-    return await startLocked(root, options, deadline);
+    return await traceDevStartup('owner-ready', () => startLocked(root, options, deadline));
   } finally {
     await release();
   }
@@ -3775,7 +3875,16 @@ async function startDetached(
       String(port),
       options.snapshot ? 'snapshot' : 'live',
     ],
-    { detached: true, stdio: 'ignore', env: daemonEnvironment(options) },
+    {
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...daemonEnvironment(options),
+        ...(process.env.FORGEAX_WORKSPACE_TIMING === '1'
+          ? { FORGEAX_STARTUP_TIMING_LOG: resolve(root, '.forgeax/dev-startup.log') }
+          : {}),
+      },
+    },
   );
   child.unref();
   const file = sessionPath(root, options.snapshot);

@@ -459,3 +459,92 @@ it('reuses accepted semantic region facts until declaration or pose changes, and
     read.mockRestore();
   }
 });
+
+it('keeps cached regions through unrelated pose writes while source and listener routing stays live', () => {
+  const assets = new AssetRegistry();
+  assets.installDecoder(audioContribution.kind, audioContribution.decoder);
+  const world = new World({ assets });
+  const intents: audio.AudioIntent[] = [];
+  const backend = audio.createAudioIntentBackend({
+    emit: (intent) => {
+      intents.push(intent);
+    },
+  });
+  const clip = assets
+    .create({
+      kind: 'audio',
+      mediaType: 'audio/wav',
+      sourceKey: 'pose-invalidation',
+      bytes: Uint8Array.of(1),
+    })
+    .unwrap();
+  const region = world
+    .spawn(
+      { component: audio.AcousticRegion, data: { sourceBus: 'room', listenerWetBus: 'room' } },
+      { component: GlobalTransform, data: { world: identity() } },
+    )
+    .unwrap();
+  const source = world
+    .spawn(
+      { component: audio.AudioSource, data: { clip, playing: true } },
+      { component: GlobalTransform, data: { world: identity() } },
+    )
+    .unwrap();
+  const listener = world
+    .spawn(
+      { component: audio.AudioListener, data: {} },
+      { component: GlobalTransform, data: { world: identity() } },
+    )
+    .unwrap();
+  const unrelated = world
+    .spawn({ component: GlobalTransform, data: { world: identity() } })
+    .unwrap();
+  const tick = audio.createAcousticRegionSystem();
+  tick.update(world, backend).unwrap();
+  const query = vi.spyOn(world, 'query');
+  const regionCalls = () =>
+    query.mock.calls.filter(([declaration]) => declaration.read?.includes(audio.AcousticRegion))
+      .length;
+  try {
+    const outside = identity();
+    outside[12] = 10;
+    for (const entity of [source, listener, unrelated])
+      world.set(entity, GlobalTransform, { world: outside }).unwrap();
+    intents.length = 0;
+    tick.update(world, backend).unwrap();
+    expect(regionCalls()).toBe(0);
+    expect(intents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'set-acoustic-routes',
+          entityId: source,
+          routes: { fallback: 1, buses: [] },
+        }),
+        expect.objectContaining({ kind: 'set-acoustic-environment', environment: [] }),
+      ]),
+    );
+    world.set(region, GlobalTransform, { world: outside }).unwrap();
+    intents.length = 0;
+    tick.update(world, backend).unwrap();
+    expect(regionCalls()).toBe(1);
+    expect(intents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'set-acoustic-routes',
+          entityId: source,
+          routes: { fallback: 0, buses: [{ bus: 'room', gain: 1 }] },
+        }),
+        expect.objectContaining({
+          kind: 'set-acoustic-environment',
+          environment: expect.arrayContaining([expect.objectContaining({ bus: 'room' })]),
+        }),
+      ]),
+    );
+    world.despawn(region).unwrap();
+    tick.update(world, backend).unwrap();
+    expect(regionCalls()).toBe(2);
+    expect(intents.at(-1)).toMatchObject({ kind: 'set-acoustic-environment', environment: [] });
+  } finally {
+    query.mockRestore();
+  }
+});

@@ -67,7 +67,8 @@ export async function verifyTransparentSolarComposition(
   const rendererResult = await createRenderer(
     canvas,
     {
-      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath },
+      // Composition owns fog/TAA/transparent pixels; GPU occlusion has its own gates.
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, gpuOcclusion: false },
     },
     { shaderManifestUrl: '/shaders/manifest.json' },
   );
@@ -138,31 +139,6 @@ export async function verifyTransparentSolarComposition(
       { component: Transform, data: { pos: [0, 0, 1] } },
       { component: MeshFilter, data: { assetHandle: recipe.assets.successorHandle } },
       { component: MeshRenderer, data: { materials: [transparentMaterial, transparentMaterial] } },
-      { component: ShadowParticipation, data: { cast: false, receive: true } },
-    )
-    .unwrap();
-  // The Standard pipelines expose the dedicated transparent draw lane when
-  // the scene has transmission demand. Keep that demand off-screen so the
-  // visible authored unlit blend exercises the production lane without
-  // changing the camera fixture.
-  const transmissionTriggerMaterial = testAssets(world)
-    .create(
-      Materials.standard({
-        baseColor: [0, 0, 0, 0],
-        metallic: 0,
-        roughness: 1,
-        transmission: 1,
-      }),
-    )
-    .unwrap();
-  const transmissionTrigger = world
-    .spawn(
-      { component: Transform, data: { pos: TRANSPARENT_OFFSCREEN_POSITION } },
-      { component: MeshFilter, data: { assetHandle: recipe.assets.successorHandle } },
-      {
-        component: MeshRenderer,
-        data: { materials: [transmissionTriggerMaterial, transmissionTriggerMaterial] },
-      },
       { component: ShadowParticipation, data: { cast: false, receive: true } },
     )
     .unwrap();
@@ -422,8 +398,6 @@ export async function verifyTransparentSolarComposition(
     await renderer.dispose();
     world.despawn(transparent).unwrap();
     testAssets(world).release(transparentMaterial).unwrap();
-    world.despawn(transmissionTrigger).unwrap();
-    testAssets(world).release(transmissionTriggerMaterial).unwrap();
     world.despawn(fog).unwrap();
     testAssets(world).release(density).unwrap();
     recipe.dispose();

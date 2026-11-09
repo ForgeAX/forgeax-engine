@@ -137,6 +137,32 @@ Use these entry points:
 
 IES has no runtime source parser; cookies use the existing texture registry. Catalog is a projection, DDC is cache evidence, and Pack/Meta retain authored authority. Do not claim readiness without `accepted` or `verified` evidence.
 
+For slow Meta startup in builds or live dev, enable `FORGEAX_WORKSPACE_TIMING=1`
+and inspect `forgeax.pack-ddc.timing` in the owning log. Trace the adapter through
+shared source-package production before changing cache policy; Meta publication
+uses `DdcEntryInput` to derive its receipt digest from the staging capture, and the
+DDC lifecycle validates staged publication before its ordinary lease/head fence.
+Never pass an unchecked readback token or skip artifact closure checks. Both routes use
+[the existing Pack product DDC](../../packages/import/README.md).
+
+For unchanged live Meta publications, use `readImportPublication` and serve its
+returned Pack and artifact bytes with the restored Catalog revision. Prepare HTTP
+compression for those exact restored bodies. Require complete artifact and
+output-digest agreement plus the DDC head fence; product hits alone are insufficient.
+Misses, corruption, changed content and active writers keep ordinary publication.
+Do not use rollback's `restoreImportPublication` as a warm-read operation.
+
+For live resource transport, keep one fresh source fence per HTTP request and
+recheck scope identity, generation, session state and authority before dispatch.
+Reuse only the fence already completed by that request; do not share it across
+requests or weaken artifact integrity. Keep accepted-byte recovery separate from
+new production when a scope is degraded.
+When projecting a Catalog into its runtime scope, preserve each producer's shared
+publication envelope for that response and canonical source path. Per-row copies
+make wire-table validation and JSON encoding repeat its entire output closure.
+Keep current/LKG locators scoped and all receipt/failure fields intact; a new
+projection or binding must build its own scoped envelopes.
+
 > [!IMPORTANT]
 > Material assets follow one route inside the catalog: authored `MaterialAsset` with `passes` and `values` -> cook record and artifact -> `load(guid, 'material')` -> runtime asset handle. Keep `parent` references, texture references, module identifiers, and per-slot `coordinates` transforms in the same package graph. For recovery, repair the producer or cook output, then retry loading or explicitly reload the existing handle.
 
@@ -361,3 +387,8 @@ Transparent PNGs are disposable DDC outputs. Source publication dependencies,
 the Preview preset and producer bytes determine invalidation; inspect a failed
 row's structured error before retrying the owning asset pipeline. See
 [DevKit's thumbnail contract](../../packages/devkit/README.md#progressive-asset-thumbnails).
+
+When compiler filesystem analysis needs imports, use the captured source
+snapshot's `imports(path, { includeTypeOnly: true })` fact. Inventory owns runtime
+import filtering; compiler policy keeps its conservative raw-import interpretation.
+Always preserve current-byte and resolution verification at publication.

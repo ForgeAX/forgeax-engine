@@ -27,6 +27,7 @@ function caps(overrides: Partial<RhiDevice['caps']> = {}): RhiDevice['caps'] {
     compute: true,
     storageBuffer: true,
     storageTexture: true,
+    depthTextureLoad: true,
     timestampQuery: false,
     timestampPeriodNanoseconds: null,
     indirectDrawing: true,
@@ -458,6 +459,22 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     const result = graph.compile({ device: mockDevice(), surfaceSize: { width: 1, height: 1 } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('access-conflict');
+  });
+
+  it('requires initialization before a dynamic attachment can choose to load', () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const target = value(graph.createTexture('target', { format: 'rgba8unorm', size: 'surface' }));
+    const view = value(graph.view(target));
+    graph
+      .addRasterPass('dynamic', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: () => 'clear', storeOp: 'store' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    const result = graph.compile({ device: mockDevice(), surfaceSize: { width: 1, height: 1 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('uninitialized-read');
   });
 
   it('treats attachment load as a read while clear is a first write', () => {

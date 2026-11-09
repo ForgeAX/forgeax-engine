@@ -28,6 +28,7 @@ export interface ViewGraphCompileRequest {
   readonly clearOnly: boolean;
   readonly subsurfaceClass: SubsurfaceCaptureClass;
   readonly rendererRecording: boolean;
+  readonly forwardCapsuleShadows?: boolean;
   readonly shadowDepthLayers: GraphCompileInput['shadowDepthLayers'];
 }
 
@@ -114,6 +115,7 @@ export function readViewGraphInput(
     clearOnly: request.clearOnly,
     passPlan: pass.value,
     unfoggedOpaque: pass.value.unfoggedOpaque,
+    forwardCapsuleShadows: request.forwardCapsuleShadows,
     volumetricFog: inputs.volume.graphFog,
     volumeTopologyCandidate: inputs.volume.topologyCandidate,
     standardLighting: lighting.lighting.value.standard,

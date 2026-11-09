@@ -274,6 +274,7 @@ it.each([
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
     detach = () => lease.dispose();
+    const deadline = performance.now() + 90_000;
     const draw = async () => {
       world.update(1 / 60).unwrap();
       if (!renderer) throw new Error('Renderer missing');
@@ -287,6 +288,18 @@ it.each([
       const completed = await receipt.completed;
       if (!completed.ok) throw completed.error;
       return receipt.presentation;
+    };
+    const drawUntilPass = async (label: string) => {
+      const start = submissions.length;
+      let presentation = await draw();
+      while (
+        !submissions.slice(start).some((labels) => labels.includes(label)) &&
+        performance.now() < deadline
+      ) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        presentation = await draw();
+      }
+      return presentation;
     };
     if (mode === 'shared-capture-first') {
       const target = renderer.createRenderTarget({
@@ -315,7 +328,7 @@ it.each([
         )
         .unwrap();
       const beforeCapture = submissions.length;
-      await draw();
+      await drawUntilPass('cube-capture-face.0');
       expect(submissions.slice(beforeCapture).flat(), 'real capture must execute first').toContain(
         'cube-capture-face.0',
       );
@@ -340,10 +353,9 @@ it.each([
     };
     let projectionStart = submissions.length;
     if (firstImage) installEnvironment();
-    const deadline = performance.now() + 90_000;
     // The original startup can submit a fallback graph before the image POD
     // reaches residency. Exercise that same route instead of an empty history.
-    let baseline = await draw();
+    let baseline = await drawUntilPass('main');
     while (!firstImage && baseline !== 'ready' && performance.now() < deadline) {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       baseline = await draw();
@@ -434,7 +446,7 @@ it.each([
       if (mode === 'shared-view-first' || mode === 'shared-first') {
         canvas.width = canvas.height = 48;
         const resizedStart = submissions.length;
-        expect(await draw()).toBe('pending');
+        expect(await drawUntilPass('main')).toBe('pending');
         expect(
           submissions.slice(resizedStart).flat(),
           'a resized output must be written before presentation',
@@ -471,7 +483,7 @@ it.each([
         if (!recovered.ok) throw recovered.error;
         expect(renderer.inspect().frame.deviceGeneration).toBeGreaterThan(generation);
         const recoveredStart = submissions.length;
-        expect(await draw()).toBe('pending');
+        expect(await drawUntilPass('main')).toBe('pending');
         expect(
           submissions.slice(recoveredStart).flat(),
           'a new device cannot compose an unwritten CameraView output',

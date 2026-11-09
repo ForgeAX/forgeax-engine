@@ -88,6 +88,13 @@ type InstanceDrawWindow = {
   readonly instanceCount: number;
   readonly firstInstanceOrdinal?: number;
   readonly firstInstance?: number;
+  readonly lodLevel?: number;
+};
+
+type CpuInstanceLodDraw<T> = T & {
+  readonly range?: MeshGpuRange;
+  readonly lodLevel?: number;
+  readonly instanceOrdinals?: readonly number[];
 };
 
 /** Intersect existing resident pages with LOD runs, without moving matrices or identities. */
@@ -95,16 +102,23 @@ export function cpuInstanceLodDraws<T extends InstanceDrawWindow>(
   row: ValidatedRenderable,
   submesh: number,
   draws: readonly T[],
-): readonly (T & { readonly range?: MeshGpuRange })[] {
+  remap = false,
+): readonly CpuInstanceLodDraw<T>[] {
   const runs = row.cpuInstanceLods;
   if (runs === undefined) return draws;
-  const selected: (T & { readonly range?: MeshGpuRange })[] = [];
+  const selected: CpuInstanceLodDraw<T>[] = [];
   let cursor = 0;
   for (const draw of draws) {
+    if (draw.lodLevel !== undefined) {
+      const range = row.mesh.lodRanges?.[draw.lodLevel]?.[submesh];
+      if (range !== undefined) selected.push({ ...draw, range });
+      continue;
+    }
     const first = draw.firstInstanceOrdinal ?? 0;
     const end = first + draw.instanceCount;
     while (cursor < runs.length && (runs[cursor]?.first ?? 0) + (runs[cursor]?.count ?? 0) <= first)
       cursor++;
+    const buckets = new Map<number, number[]>();
     for (let index = cursor; index < runs.length; index++) {
       const run = runs[index];
       if (run === undefined || run.first >= end) break;
@@ -112,6 +126,15 @@ export function cpuInstanceLodDraws<T extends InstanceDrawWindow>(
       const stop = Math.min(end, run.first + run.count);
       const range = row.mesh.lodRanges?.[run.level]?.[submesh];
       if (stop <= start || range === undefined) continue;
+      if (remap) {
+        let ordinals = buckets.get(run.level);
+        if (ordinals === undefined) {
+          ordinals = [];
+          buckets.set(run.level, ordinals);
+        }
+        for (let ordinal = start; ordinal < stop; ordinal++) ordinals.push(ordinal);
+        continue;
+      }
       selected.push({
         ...draw,
         instanceCount: stop - start,
@@ -120,8 +143,31 @@ export function cpuInstanceLodDraws<T extends InstanceDrawWindow>(
         range,
       });
     }
+    appendRemappedLodDraws(selected, row.mesh, submesh, draw, buckets);
   }
   return selected;
+}
+
+/** Publish deterministic level buckets with their resident physical ranges. */
+function appendRemappedLodDraws<T extends InstanceDrawWindow>(
+  selected: CpuInstanceLodDraw<T>[],
+  mesh: MeshGpuHandles,
+  submesh: number,
+  draw: T,
+  buckets: ReadonlyMap<number, number[]>,
+): void {
+  for (const [level, ordinals] of [...buckets].sort((a, b) => a[0] - b[0])) {
+    const range = mesh.lodRanges?.[level]?.[submesh];
+    if (range === undefined) continue;
+    selected.push({
+      ...draw,
+      instanceCount: ordinals.length,
+      firstInstance: 0,
+      lodLevel: level,
+      instanceOrdinals: ordinals,
+      range,
+    });
+  }
 }
 
 /** Per-mesh level views, retired with their resident handles. */

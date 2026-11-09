@@ -34,6 +34,7 @@ import {
 import { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from '@forgeax/engine-render/authoring';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 const WIDTH = 256;
@@ -296,13 +297,13 @@ describe('feat-20260608 M2 m2-t5: sprite pipeline cullMode "none" lets H/V flipp
     expect(attachment.ok).toBe(true);
     if (!attachment.ok) throw attachment.error;
     worldFlip.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
+    const receipt = await drawReadyFrame(renderer, {
       leases: [attachment.value],
       camera: { lease: attachment.value },
       environment: { lease: attachment.value },
     });
     await device.queue.onSubmittedWorkDone();
-    expect(drawn.ok, 'H-flipped sprite draw').toBe(true);
+    expect(receipt.presentation, 'H-flipped sprite draw').toBe('ready');
 
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
     const pixels = await doReadPixels(device, renderTarget);
@@ -452,13 +453,13 @@ describe('feat-20260608 M2 m2-t5: sprite pipeline cullMode "none" lets H/V flipp
     expect(attachmentBoth.ok).toBe(true);
     if (!attachmentBoth.ok) throw attachmentBoth.error;
     worldFlipBoth.update(1 / 60).unwrap();
-    const drawn = renderer.draw({
+    const receipt = await drawReadyFrame(renderer, {
       leases: [attachmentBoth.value],
       camera: { lease: attachmentBoth.value },
       environment: { lease: attachmentBoth.value },
     });
     await device.queue.onSubmittedWorkDone();
-    expect(drawn.ok).toBe(true);
+    expect(receipt.presentation).toBe('ready');
 
     if (renderTarget === undefined) throw new Error('renderTarget not configured');
     const pixels = await doReadPixels(device, renderTarget);

@@ -7,11 +7,11 @@ import {
 } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
+import { isTemporalAntialias } from '../components/camera';
 import { addProjectedDecalPasses } from '../decals/graph';
 import { addDepthPyramidPasses, type DepthPyramidProjection } from '../depth-pyramid/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import type { GraphEnvironment } from '../environment/ibl';
-import { addAtmosphereSkyBackground } from '../environment/sky-background';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_STORAGE_BINDING,
@@ -65,6 +65,7 @@ import {
   standardTransmissionRoute,
 } from '../transmission/backdrop';
 import type { TransmissionDemand } from '../transmission/projection';
+import { addTsrOpaqueGuide } from '../tsr/opaque';
 import {
   addObservationCapturePass,
   addReflectionFallbackObservationPass,
@@ -221,6 +222,7 @@ function declareDeferredSceneTargets(
   const normalRoughness = target(graph, 'gbuffer-normal-roughness', {
     format: DEFERRED_COLOR_FORMATS[1],
     size,
+    usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });
   if (!normalRoughness.ok) return normalRoughness;
   const albedoMetallic = target(graph, 'gbuffer-albedo-metallic', {
@@ -328,7 +330,7 @@ function admitDeferredTemporal(
 > {
   const lane = topology.lane;
   const demand = aggregateTemporalDemand({
-    taa: topology.camera.antialias === 'taa',
+    taa: isTemporalAntialias(topology.camera.antialias),
     motionBlur: topology.temporal?.motionBlur === true,
     ssr: topology.ssr?.status === 'admitted',
     visibleSurface: visibleSurfaceEnabled,
@@ -425,8 +427,7 @@ function addDeferredBackground(
   cloudShadow: RenderPipelineTarget | undefined,
 ): Result<GraphEnvironment | undefined, RenderGraphError> {
   if (topology.atmosphere === true && topology.atmosphereBackgroundOnly === true) {
-    const sky = addAtmosphereSkyBackground(graph, scene);
-    return sky.ok ? ok(undefined) : sky;
+    return addAtmosphereBackground(graph, scene, {}, 'sky');
   }
   if (topology.atmosphere === true)
     return addAtmosphereBackground(graph, scene, { directional, cloud: cloudShadow?.view });
@@ -1292,6 +1293,15 @@ function addDeferredForwardStages(
   return sceneOutput;
 }
 
+function addDeferredTemporalInputs(...inputs: Parameters<typeof addDeferredSsr>) {
+  const [context, topology, targets] = inputs;
+  const opaqueGuide = addTsrOpaqueGuide(context.graph, topology, targets.scene);
+  if (!opaqueGuide.ok) return opaqueGuide;
+  const secondaryReactivity = addDeferredSsr(...inputs);
+  if (!secondaryReactivity.ok) return secondaryReactivity;
+  return ok({ opaqueGuide: opaqueGuide.value, secondaryReactivity: secondaryReactivity.value });
+}
+
 export function buildStandardDeferredLane(
   context: StandardPipelineBuildContext,
   topology: RenderPipelineTopology,
@@ -1389,7 +1399,7 @@ export function buildStandardDeferredLane(
     depthViews,
   );
   if (!sceneData.ok) return sceneData;
-  const secondaryReactivity = addDeferredSsr(
+  const temporalInputs = addDeferredTemporalInputs(
     context,
     topology,
     targets.value,
@@ -1398,7 +1408,7 @@ export function buildStandardDeferredLane(
     internalCopySize,
     depthViews,
   );
-  if (!secondaryReactivity.ok) return secondaryReactivity;
+  if (!temporalInputs.ok) return temporalInputs;
   const sceneOutput = addDeferredForwardStages(
     context,
     topology,
@@ -1416,8 +1426,9 @@ export function buildStandardDeferredLane(
     depth,
     surface.value,
     temporal.value.targets?.temporal,
-    secondaryReactivity.value,
+    temporalInputs.value.secondaryReactivity,
     context.targetCoverage?.coverage,
     context.targetCoverage?.depth,
+    temporalInputs.value.opaqueGuide,
   );
 }

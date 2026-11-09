@@ -18,6 +18,7 @@ const browserMocks = vi.hoisted(() => {
     const overlayHidden = options?.style?.includes('visibility: hidden') === true;
     return Buffer.from(canvasRendered || !overlayHidden ? 'canvas-rendered' : 'canvas-black');
   });
+  const waitForCover = vi.fn(async () => undefined);
   const page = {
     on: vi.fn(),
     off: vi.fn(),
@@ -30,6 +31,7 @@ const browserMocks = vi.hoisted(() => {
       options?.style ? canvasScreenshot(options) : Buffer.from('compositor-png'),
     ),
     locator: vi.fn((_selector?: string) => ({
+      waitFor: waitForCover,
       first: () => ({ boundingBox: async () => ({ x: 0, y: 0, width: 1280, height: 720 }) }),
     })),
     evaluate: vi.fn(async (callback: unknown) =>
@@ -64,6 +66,7 @@ const browserMocks = vi.hoisted(() => {
   return {
     page,
     canvasScreenshot,
+    waitForCover,
     browser,
     server,
     launch: vi.fn(async () => browser),
@@ -86,6 +89,7 @@ const browserMocks = vi.hoisted(() => {
         page.screenshot,
         page.locator,
         canvasScreenshot,
+        waitForCover,
         page.evaluate,
         browser.newPage,
         browser.version,
@@ -151,12 +155,22 @@ function pageHandler(event: string): PageHandler {
   if (call === undefined) throw new Error(`no ${event} listener`);
   return call[1];
 }
-function emitRequest(url: string, status: number | null): void {
+function emitRequest(
+  url: string,
+  status: number | null,
+  timing?: {
+    startTime: number;
+    requestStart: number;
+    responseStart: number;
+    responseEnd: number;
+  },
+) {
   const request = {
     url: () => url,
     resourceType: () => 'fetch',
     frame: () => undefined,
     failure: () => null,
+    ...(timing === undefined ? {} : { timing: () => timing }),
   };
   pageHandler('request')(request);
   if (status !== null)
@@ -164,7 +178,9 @@ function emitRequest(url: string, status: number | null): void {
       request: () => request,
       status: () => status,
       frame: () => undefined,
+      headers: () => ({ 'server-timing': 'forgeax-freshness;dur=1.125, forgeax-freshness;dur=2' }),
     });
+  return request;
 }
 
 describe('software browser session', () => {
@@ -450,7 +466,11 @@ describe('software browser session', () => {
     }
   });
 
-  it('keeps one page alive across ordered named checkpoint captures', async () => {
+  it.each([
+    false,
+    true,
+  ])('keeps one page alive across ordered named checkpoint captures (timing=%s)', async (timingEnabled) => {
+    vi.stubEnv('FORGEAX_WORKSPACE_TIMING', timingEnabled ? '1' : '0');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
     vi.stubEnv('DISPLAY', ':fixture');
     const root = await mkdtemp(resolve(tmpdir(), 'forgeax-software-session-'));
@@ -488,8 +508,18 @@ describe('software browser session', () => {
       }),
     );
 
-    emitRequest('http://127.0.0.1:43123/assets/ready.json', 200);
-    emitRequest('http://127.0.0.1:43123/assets/hung.bin', null);
+    const timing = { startTime: 1000, requestStart: 2, responseStart: 7, responseEnd: -1 };
+    const readyRequest = emitRequest(
+      'http://127.0.0.1:43123/assets/ready.json?v=fixture&forgeaxBridge=owner-fixture',
+      200,
+      timing,
+    );
+    timing.responseEnd = 12;
+    if (timingEnabled) pageHandler('requestfinished')(readyRequest);
+    emitRequest(
+      'http://127.0.0.1:43123/assets/hung.bin?forgeaxBridge=owner-fixture&v=fixture',
+      null,
+    );
     const first = await session.capture('spawn');
     expect(browserMocks.browser.close).not.toHaveBeenCalled();
     const second = await session.capture('boss-hit');
@@ -497,6 +527,14 @@ describe('software browser session', () => {
     // Per capture: canvas witness, compositor image, canvas witness after it.
     expect(browserMocks.page.screenshot).toHaveBeenCalledTimes(6);
     expect(browserMocks.canvasScreenshot).toHaveBeenCalledTimes(4);
+    expect(browserMocks.waitForCover).toHaveBeenCalledTimes(2);
+    expect(browserMocks.waitForCover.mock.invocationCallOrder[0]).toBeLessThan(
+      browserMocks.page.screenshot.mock.invocationCallOrder[1] as number,
+    );
+    expect(browserMocks.waitForCover).toHaveBeenCalledWith({
+      state: 'hidden',
+      timeout: expect.any(Number),
+    });
     expect(first.output).toMatch(/001-spawn\.png$/);
     expect(second.output).toMatch(/002-boss-hit\.png$/);
     expect(session.report().captures.map((capture) => capture.checkpoint)).toEqual([
@@ -508,7 +546,18 @@ describe('software browser session', () => {
     expect(browserMocks.browser.close).toHaveBeenCalledTimes(1);
     expect(browserMocks.server.close).toHaveBeenCalledTimes(1);
     const report = JSON.parse(await readFile(session.reportPath, 'utf8'));
-    expect(report.requests.entries).toBeUndefined();
+    expect(JSON.stringify(report)).not.toContain('owner-fixture');
+    if (timingEnabled) {
+      expect(report.requests.entries).toHaveLength(2);
+      expect(report.requests.entries[0]).toMatchObject({
+        url: 'http://127.0.0.1:43123/assets/ready.json?v=fixture',
+        timing,
+        freshnessMs: 3.125,
+      });
+      expect(report.requests.entries[1].timing).toBeUndefined();
+    } else {
+      expect(report.requests.entries).toBeUndefined();
+    }
     expect(report).toMatchObject({
       schemaVersion: '3.0.0',
       ok: true,
@@ -518,7 +567,9 @@ describe('software browser session', () => {
         failed: 0,
         resourceMisses: 0,
         pending: 1,
-        notable: [{ url: 'http://127.0.0.1:43123/assets/hung.bin', status: null, failed: false }],
+        notable: [
+          { url: 'http://127.0.0.1:43123/assets/hung.bin?v=fixture', status: null, failed: false },
+        ],
       },
       captures: [
         { index: 1, checkpoint: 'spawn', ok: true },
@@ -828,7 +879,7 @@ describe('software browser session', () => {
                 boundingBox: async () => ({ x: 120, y: 80, width: 320, height: 240 }),
               }),
             }
-          : { screenshot: frameSurfaceScreenshot },
+          : { screenshot: frameSurfaceScreenshot, waitFor: browserMocks.waitForCover },
       ),
       evaluate: vi.fn(async (callback: unknown) =>
         String(callback).includes('requestAdapter')

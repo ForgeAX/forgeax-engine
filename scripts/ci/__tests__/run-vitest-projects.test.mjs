@@ -9,6 +9,50 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const cli = path.join(root, 'scripts/ci/run-vitest-projects.mjs');
 
+test('Node contract files stay in their explicit runner while Vitest keeps its own suites', {
+  timeout: 30_000,
+}, async () => {
+  const { createVitest } = await import('vitest/node');
+  const { parse } = await import('yaml');
+  const workflow = parse(readFileSync(path.join(root, '.github/workflows/ci.yml'), 'utf8'));
+  const owner = workflow.jobs['primary-pnpm'].steps.find(
+    (step) => step.name === 'CI execution and process lifecycle regression',
+  );
+  for (const [name, nodeFiles, vitestControl] of [
+    [
+      'wgpu-wasm',
+      ['native-build', 'production-csp', 'source-key'],
+      'scripts/__tests__/provenance.test.mjs',
+    ],
+    ['rhi-wgpu-native', ['verify-conformance-report', 'windows-artifact']],
+  ]) {
+    const packageRoot = path.join(root, 'packages', name);
+    const context = await createVitest('test', {
+      config: path.join(packageRoot, 'vitest.config.ts'),
+      root: packageRoot,
+      run: true,
+      watch: false,
+      typecheck: { enabled: false },
+    });
+    try {
+      const files = (await context.globTestSpecifications()).map((spec) =>
+        path.relative(packageRoot, spec.moduleId).replaceAll('\\', '/'),
+      );
+      for (const name of nodeFiles) {
+        const file = `scripts/__tests__/${name}.test.mjs`;
+        assert.equal(files.includes(file), false, `Vitest must not import node:test ${file}`);
+        assert.ok(
+          owner.run.includes(`packages/${path.basename(packageRoot)}/${file}`),
+          `the explicit CI Node owner must execute ${file}`,
+        );
+      }
+      if (vitestControl) assert.ok(files.includes(vitestControl));
+    } finally {
+      await context.close();
+    }
+  }
+});
+
 test('workspace typecheck modes preserve real type errors, runtime failures, and coverage', () => {
   const fixture = mkdtempSync(path.join(os.tmpdir(), 'forgeax-vitest-projects-'));
   const runtimeFile = path.join(fixture, 'runtime.test.ts');

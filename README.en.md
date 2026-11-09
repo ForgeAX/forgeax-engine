@@ -2,7 +2,7 @@
 **Language**: **English** · [简体中文](README.md)
 
 <p align="center">
-  <img src="https://forgeax.github.io/logo.svg" width="96" alt="Tiangong ForgeAX Engine" />
+  <img src="packages/devkit/src/host/forgeax-logo.svg" width="96" alt="Tiangong ForgeAX Engine" />
 </p>
 
 <h1 align="center">ForgeAX Engine</h1>

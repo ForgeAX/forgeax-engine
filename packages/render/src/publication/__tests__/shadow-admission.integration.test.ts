@@ -111,6 +111,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
           typeof request === 'object' &&
             request.deformation &&
             request.pass &&
+            typeof request.alphaMask === 'boolean' &&
             request.address === 'scene-index',
         );
         return select(id, {
@@ -118,6 +119,7 @@ function fixture(materialAsset: MaterialAsset = Materials.standard({ baseColor: 
           pass: request.pass,
           address: request.address,
           vertexColorAvailable: request.vertexColorAvailable ?? false,
+          alphaMask: request.alphaMask,
         });
       },
       clustered: false,

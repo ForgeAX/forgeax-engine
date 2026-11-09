@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { encodePng } from '@forgeax/engine-image/png';
 import { samplerContribution } from '@forgeax/engine-render';
 // hello-sprite headless smoke (feat-20260520-2d-sprite-layer-mvp / M-4 /
@@ -462,15 +463,12 @@ const primitiveQuad = sceneAssets.create(createPrimitiveMesh('quad').unwrap()).u
   let framesObserved = 0;
   for (let i = 0; i < TARGET_FRAMES; i++) {
     world.update().unwrap();
-    const r = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [worldAttachment1.value],
       camera: { lease: worldAttachment1.value },
       environment: { lease: worldAttachment1.value },
     });
-    if (!r.ok) console.error(`[smoke] case ${scene}/${tonemap} draw frame ${i}: ${r.error.code}`);
-    else {
-      framesObserved++;
-    }
+    framesObserved++;
   }
 
   const device = sharedDevice;
@@ -751,12 +749,11 @@ const primitiveNineSliceQuad = sceneAssets.create(createPrimitiveMesh('nine-slic
     );
     for (let i = 0; i < ninesliceFrames; i++) {
       world.update().unwrap();
-      const r = renderer.draw({
+      await drawReadyFrame(renderer, {
         leases: [ninesliceAttachment.value],
         camera: { lease: ninesliceAttachment.value },
         environment: { lease: ninesliceAttachment.value },
       });
-      if (!r.ok) ninesliceDrawErrors++;
     }
     await sharedDevice?.queue.onSubmittedWorkDone();
   const ninesliceMetricsAfter = ninesliceMetrics?.snapshot() ?? {};

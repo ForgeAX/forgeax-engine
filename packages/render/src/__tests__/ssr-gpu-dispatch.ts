@@ -133,6 +133,15 @@ export function sourcesFromManifest(manifest: SsrShaderManifest): SsrProbeShader
   };
 }
 
+/** Inverse of the trace's 1/(1+luma) hit-colour weighting (Unreal SSRTReflections). */
+function ssrHitUnweight(words: readonly number[], p: number, half: (value: number) => number) {
+  const luma =
+    0.2126 * half(words[p] ?? 0) +
+    0.7152 * half(words[p + 1] ?? 0) +
+    0.0722 * half(words[p + 2] ?? 0);
+  return 1 / Math.max(1 - Math.max(0, luma), 2 ** -11);
+}
+
 /** Exact mirror/wall intersection independent of the production march. */
 export function ssrCoordinateErrors(words: readonly number[], recessedSource = false) {
   const half = (value: number) => {
@@ -187,10 +196,13 @@ export function ssrCoordinateErrors(words: readonly number[], recessedSource = f
         errors.push(Number.POSITIVE_INFINITY);
         continue;
       }
+      // The trace stores hit colour weighted by 1/(1+luma) (Unreal
+      // SSRTReflections); the compose pass inverts it, so do the same here.
+      const unweight = ssrHitUnweight(words, p, half);
       errors.push(
         Math.max(
-          Math.abs(half(words[p] ?? 0) - expectedU / coverage),
-          Math.abs(half(words[p + 1] ?? 0) - expectedV / coverage),
+          Math.abs(half(words[p] ?? 0) * unweight - expectedU / coverage),
+          Math.abs(half(words[p + 1] ?? 0) * unweight - expectedV / coverage),
         ),
       );
     }

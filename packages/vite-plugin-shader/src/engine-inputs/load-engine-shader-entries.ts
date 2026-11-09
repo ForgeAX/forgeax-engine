@@ -111,7 +111,14 @@ export async function loadEngineShaderEntries() {
         const composition = terrainProgramSource(identifier);
         if (composition === undefined)
           throw new Error(`Unknown Terrain composition: ${identifier}`);
-        const fixed = composition.defines;
+        // Terrain surfaces never alpha-test; only the shadow composition keeps
+        // the ALPHA_MASK axis it shares with the Standard shadow caster.
+        // Terrain keeps its unconditional discards (view clipping, temporal
+        // LOD coverage) instead of the Standard discard-source axes, as before
+        // those axes existed. Temporary until material static switches.
+        const fixed: Readonly<Record<string, boolean>> = shadow
+          ? composition.defines
+          : { ...composition.defines, ALPHA_MASK: false, LOD_DITHER: true, CLIPPING_PLANES: true };
         return {
           ...file,
           id: `${file.id}?terrain=${ids ? 'ids' : 'weights'}${shadow ? '-shadow' : ''}`,
@@ -224,6 +231,15 @@ export async function loadEngineShaderEntries() {
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
     ),
+    forwardScreenCompose: readEntry(
+      'forward-screen-compose.wgsl',
+      'forgeax::engine-forward-screen-compose',
+    ),
+    forwardScreenPack: readEntry('forward-screen-pack.wgsl', 'forgeax::engine-forward-screen-pack'),
+    forwardContact: readEntry(
+      'forward-contact-shadow.wgsl',
+      'forgeax::engine-forward-contact-shadow',
+    ),
     shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
     decalProject: readEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
     decalApply: readEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
@@ -250,6 +266,7 @@ export async function loadEngineShaderEntries() {
     'forgeax_material::standard_surface': readSource('standard-surface.wgsl'),
     'forgeax_clipping::planes': readSource('clipping.wgsl'),
     'forgeax_shadow::surface': readSource('shadow-surface.wgsl'),
+    'forgeax_shadow::capsule': readSource('capsule-shadow.wgsl'),
     'forgeax_view::common': readSource('common.wgsl'),
     'forgeax_view::output_encoding': readSource('output-encoding.wgsl'),
     'forgeax_view::tone_mapping': readSource('tone-mapping.wgsl'),
@@ -260,6 +277,7 @@ export async function loadEngineShaderEntries() {
     forgeax_scene_temporal: readSource('scene-temporal.wgsl'),
     'forgeax_view::fog': readSource('fog.wgsl'),
     'forgeax_cloud::layer': entries.cloudLayer.then((file) => file.source),
+    'forgeax_pbr::contact_shadow': readSource('contact-shadow.wgsl'),
     'forgeax_standard::cluster': readSource('standard-cluster.wgsl'),
     'forgeax_pbr::ibl_shared': readSource('ibl-shared.wgsl'),
     'forgeax_pbr::ibl_equirect_to_cube': readSource('ibl-equirect-to-cube.wgsl'),

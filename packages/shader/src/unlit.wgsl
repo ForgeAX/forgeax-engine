@@ -24,6 +24,7 @@
 #pragma variant_axis COVERAGE_ONLY
 #pragma variant_axis SKINNING_DISABLED
 #pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE
+#pragma variant_axis LOD_DITHER
 
 // @forgeax/engine-shader - unlit.wgsl (M5 feat-20260511-asset-system-v1;
 // refactored M5 T-18 feat-20260512-naga-oil-composition-hmr to pull View +
@@ -102,7 +103,9 @@ var<private> material : Material;
 
 fn selectSceneMaterial(address : vec2<u32>, position : vec2<f32>) {
   material = sceneMaterials[address.x];
+#if LOD_DITHER == true
   applyLodCoverage(position, bitcast<f32>(address.y));
+#endif
 }
 #else
 @group(1) @binding(0) var<uniform> material : Material;

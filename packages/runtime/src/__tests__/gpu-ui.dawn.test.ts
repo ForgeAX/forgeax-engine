@@ -4,6 +4,7 @@ import { propagateTransforms } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { beforeAll, expect, it } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { required } from '../../../ui-blitz/src/__tests__/fixture.js';
 import { createBlitzUi, gpuShaders, type UiWasmHost } from '../../../ui-blitz/src/index.js';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -51,6 +52,15 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
 }, async () => {
   const ui = await createUi();
   const surface = offscreenCanvas(64);
+  const context = surface.canvas.getContext();
+  const configure = context.configure;
+  let native: GPUDevice | undefined;
+  context.configure = (options: GPUCanvasConfiguration) => {
+    native = options.device;
+    configure(options);
+  };
+  const canvas = { ...surface.canvas, getContext: () => context };
+  let restorePipelines = () => {};
   let releaseManifest!: () => void;
   const deferred = new Promise<void>((resolve) => {
     releaseManifest = resolve;
@@ -60,7 +70,7 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
   let transferred = 0;
   const host = value(
     await constructRuntimeRendererHost(
-      surface.canvas,
+      canvas,
       {
         ui: {
           kind: 'sparse-strips',
@@ -119,26 +129,55 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
     const activating = await draw(null);
     expect(activating.receipt.presentation).toBe('pending');
     expect(equalBytes(activating.rgba, loading.rgba)).toBe(true);
-    ui.document.body.style.display = 'none';
-    scene = createDisplayP3Scene(renderer, []);
+    const device = required(native);
+    const createPipeline = device.createRenderPipelineAsync;
+    let releasePipelines!: () => void;
+    const pipelinesHeld = new Promise<void>((resolve) => {
+      releasePipelines = resolve;
+    });
+    let asyncRequests = 0;
+    device.createRenderPipelineAsync = async (descriptor) => {
+      asyncRequests++;
+      const pipeline = await createPipeline.call(device, descriptor);
+      await pipelinesHeld;
+      return pipeline;
+    };
+    restorePipelines = () => {
+      device.createRenderPipelineAsync = createPipeline;
+      releasePipelines();
+    };
+    scene = createDisplayP3Scene(renderer, [], { renderState: { depthWriteEnabled: false } });
     const lease = value(renderer.attach(scene.world));
+    required(ui.document.querySelector<HTMLElement>('#white')).style.background = 'blue';
+    const preparing = await draw(scene.world);
+    expect(asyncRequests).toBeGreaterThan(0);
+    expect(preparing.receipt.presentation).toBe('pending');
+    expect(pixelAt(preparing.rgba, [48, 16])).toEqual([0, 0, 255]);
+    required(ui.document.querySelector<HTMLElement>('#white')).style.background = 'white';
+    restorePipelines();
+    ui.document.body.style.display = 'none';
     for (let i = 0; i < 60; i++) {
-      const before = submissions;
       propagateTransforms(scene.world);
       scene.world.update(1 / 60).unwrap();
       // readUiFrame samples this static scene at one second. Use the same
       // Host clock while advancing the World, rather than resetting UI time
       // to the newly created World's elapsed time.
-      const receipt = value(
-        renderer.draw({
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          sampleTimeSeconds: 1,
-        }),
-      );
-      value(await receipt.completed);
-      expect(submissions, `3D frame ${i}`).toBe(before + 1);
+      await completeReadyFrame(async () => {
+        const before = submissions;
+        const receipt = value(
+          renderer.draw({
+            leases: [lease],
+            camera: { lease },
+            environment: { lease },
+            sampleTimeSeconds: 1,
+          }),
+        );
+        value(await receipt.completed);
+        expect(submissions - before, `3D frame ${i}`).toBeLessThanOrEqual(1);
+        if (receipt.presentation === 'ready')
+          expect(submissions, `ready 3D frame ${i}`).toBe(before + 1);
+        return receipt;
+      });
     }
     const background = await draw(scene.world);
     expect(background.receipt.presentation).toBe('ready');
@@ -186,6 +225,7 @@ it('keeps real GPU UI on one Renderer through UI-only, 3D composition and scene 
     await save('composition-failure', { cause, errors, submissions, paints, transferred });
     throw cause;
   } finally {
+    restorePipelines();
     releaseManifest();
     await host.initialization;
     scene?.dispose();

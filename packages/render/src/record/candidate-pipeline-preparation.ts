@@ -234,10 +234,7 @@ export class CandidatePipelinePreparationOwner {
           request.finish(err(unavailable('candidate World is absent from the current view')));
           continue;
         }
-        const clustered =
-          context.standardLighting?.kind === 'clustered' &&
-          (context.standardLighting.prepared.local.length > 0 ||
-            context.frameState.installedPipelineConfig?.ssao?.enabled === true);
+        const clustered = context.standardLighting?.kind === 'clustered';
         const reflectionFallback = context.reflectionFallbackDemand === true;
         let projection = request.projection;
         if (
@@ -265,6 +262,8 @@ export class CandidatePipelinePreparationOwner {
           frameState: state,
           materialFrame: materials,
           pipelinePreparationEntries: [entry],
+          // This material frame owns the candidate, not the current visible scene.
+          shadowValidatedOrdered: [],
           gpuDrivenShadowPreparationArtifacts: artifacts.shadowMaterialArtifacts,
         };
         let matched = false;
@@ -437,7 +436,7 @@ export class CandidatePipelinePreparationOwner {
     };
     const projection = this.project(request, graph, {
       worldId: view.worldId,
-      clustered: view.geometry.lightingKind === 'clustered' && (view.hasLocalLights || view.ssao),
+      clustered: view.geometry.lightingKind === 'clustered',
       reflectionFallback: view.reflectionFallbackDemand,
       shadowViews: view.hasShadowViews,
       runtime: lookup,

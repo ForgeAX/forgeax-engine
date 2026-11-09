@@ -54,8 +54,9 @@ Import components from `@forgeax/engine/render` and `Transform` from
   attachment byte budget select Deferred; otherwise Forward. Camera/effect
   changes do not choose this default. Recovery reselects on the new device;
   `renderer.inspect().profile.renderPath` reports the concrete choice. Explicit
-  `'forward'`/`'deferred'` retain existing admission. Contact shadows,
-  `CapsuleShadow` and diffuse GI need Deferred capabilities. Deferred retains
+  `'forward'`/`'deferred'` retain existing admission.
+  Diffuse GI needs Deferred capabilities. `CapsuleShadow` also supports Forward
+  on WebGL2 through its cooked screen-data consumer. Deferred retains
   its later pass for Forward-only opaque materials. Stock Deferred AO uses the
   GBuffer before those writers; full-scene SceneData consumers still require
   complete producer coverage.
@@ -65,14 +66,41 @@ Import components from `@forgeax/engine/render` and `Transform` from
 > [!IMPORTANT]
 > RenderPipeline.build declares typed graph topology only. Renderer exclusively owns compile, last-known-good replacement, execution, retirement, finish(), and one queue.submit() per frame.
 
+## WebGL2 Forward coverage and instances
+
+Select `Camera.antialias: ANTIALIAS_MSAA` for four-sample coverage. WebGL2
+must complete its real per-device HDR/depth resolve probe; inspect structured
+capability errors rather than falling back to a retained single-sample graph.
+AO, SSR, decals and screen shadows use independent single-sample surface data.
+See [MSAA readiness](../../packages/render/README.md#msaa-on-webgl2).
+
+Author instance transforms and Mesh LODs normally. Opaque uniform-only CPU
+collections batch each 128-instance page by resident level. Preserve source
+ordinals and transparent ordering; do not sort authored transform arrays.
+See [LOD routes](../../packages/render/README.md) for cache and fallback limits.
+
+## Native Terrain
+
+Use `Terrain` from `@forgeax/engine/terrain` with one managed heightfield asset
+and ordinary Transform. Author source heights, ordered material handles and
+weights through the asset owner; painting uses `assets.update` on that same
+handle. Render derives section draws and channel arrays. Capable devices use
+compute; WebGL2 writes selected array layers through four raster attachments.
+Both use the same WGSL arithmetic and retained input generations. Source bounds,
+material encodings and lifecycle live in the [Terrain contract](../../packages/terrain/README.md).
+Do not replace this path with hand-built meshes or per-fragment layer registries.
+
 ## Sky atmosphere and aerial perspective
 
 For a portable physical display sky, explicitly set `Atmosphere.backgroundOnly:
 true`. It reuses the shared optics through raster LUTs on WebGPU and WebGL2, but
-supplies no aerial perspective, surface solar attenuation or automatic sky IBL.
+supplies no aerial perspective or surface solar attenuation. Add `Skylight` without
+an equirect for physical sky IBL; its Transform fixes the capture origin.
 Cube, planar and environment captures require full Atmosphere. Verify both real
 Browser backends with `atmosphere-background.browser.test.ts` and every LUT channel
-with `atmosphere-tables.browser.test.ts`; retain native optical quality gates.
+with `atmosphere-tables.browser.test.ts`; use `physical-sky-ibl` Browser/Dawn
+fixtures for isolated diffuse/specular response and cube/filter coherence. Retain
+native optical quality gates.
 
 Use one default `Atmosphere` and one `DirectionalLight` for full outdoor air. Author distance
 in metres, coefficients in inverse metres, and solar intensity as outer-space
@@ -220,15 +248,29 @@ in `shadow-quality`; see the CI guide.
 
 For small-scale contact occlusion below cascade resolution (grass, foliage,
 feet), set DirectionalLight.contactShadowLength in meters (default 0, off;
-typical 0.1-0.5). It is an inline depth march in the Deferred lighting pass and
-does not add a pass. Forward ignores it, so pair it with
-`renderPath: 'deferred'`. It is independent of castShadow. See Screen-space
-contact shadows in the render README.
+typical 0.1-0.5). Deferred marches inline; Forward rasterizes the same visibility
+from semantic depth/normal, including WebGL2. It respects `ShadowParticipation.receive`
+and changes only directional lighting. It is independent of castShadow. See
+Screen-space contact shadows in the render README.
+
+Use `ProjectedDecal` for ordered color/normal/roughness projection onto opaque
+Standard surfaces in Forward or Deferred with single-sample depth. Forward
+updates the AO/SSR normal surface and modifies the material before BRDF evaluation;
+Forward MSAA uses separate single-sample surface inputs; Deferred MSAA remains
+an explicit `projected-decal-invalid` request. See render README
+"Projected decals" for material, display-camera and projector limits.
+
+`DirectionalLight.sourceAngle` (degrees, finite, >= 0, default 0.5357 = the
+sun's apparent diameter) gives the sun an angular size for direct specular: a
+smooth surface shows a sun-sized highlight instead of a sub-pixel glint (Unreal
+SphereMaxNoH + energy normalization). `0` restores the old point-light lobe
+bit-identically; diffuse and shadows are unchanged. Direct lighting also floors
+roughness at 0.02 (Unreal View.MinRoughness); environment reflections are not.
 
 For skinned characters, add the `CapsuleShadow` tag component to cast the
 directional shadow from `SkeletonAsset.shadowCapsules` (fitted at glTF/FBX
-import) instead of re-rasterizing the mesh into every cascade. It needs
-`renderPath: 'deferred'` and a `castShadow` DirectionalLight; read
+import) instead of re-rasterizing the mesh into every cascade. Use Forward
+(including WebGL2) or Deferred with a `castShadow` DirectionalLight; read
 `renderer.inspect().capsuleShadow.fallbacks` when an entity is not admitted.
 See Capsule character shadows in the render README.
 
@@ -250,9 +292,12 @@ POD uses the same field names as Render/Runtime READMEs: requested, effective,
 `status`, `fallbackReason`, `lastKnownGood`, `pixelEvidence`,
 `cascadeCount`, `mapSize`, `shadowMapBytes`, `writerPasses`, `blockerTaps`,
 filterTapUpperBound, seamTapUpperBound, deviceGeneration, and
-graphGeneration. effective is not an echo of the request: WebGL2 PCSS requests
-produce explicit PCF fallback; RhiNull produces rhi-null-structural. Neither
-is PCSS pixel evidence. not-run must remain not-run.
+graphGeneration. WebGL2 admits PCSS through the cooked no-storage variant:
+raw blocker reads and bilinear shader comparisons share one depth binding.
+Native variants retain hardware comparisons. Both keep the same Medium/High
+blocker, penumbra, bias and cascade policy. Inspect effective and candidate
+status; a requested label alone is not pixel evidence. RhiNull remains
+rhi-null-structural. not-run must remain not-run.
 
 For shadow cost, read renderer.inspect().shadowRaster: `passCount`, `drawCount`,
 and per-view `cache` plus `invalidationReason`. A static scene that keeps
@@ -877,10 +922,15 @@ Bloom is opt-in and independent of tone mapping. Defaults bloom only
 highlights: threshold 1, intensity 0.5, smooth width 0.01, radius 0 (WebGPU
 BloomNode uses threshold 0 and intensity 1, which blooms the whole frame). Use
 `bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
+`bloomThreshold < 0` (range `[-1, 65504]`, Unreal's `-1` = no BloomSetup) disables
+thresholding. Each level downsamples with Unreal's 4-tap HIGH (4x4) filter and the
+threshold reads that filtered half-res colour, so sub-pixel specular glints do not
+toggle the bloom frame to frame.
 The five Gaussian levels and their weighted composite share one Renderer graph.
 SSR is opt-in, full internal resolution, maxDistance 1, thickness 0.1 and
 maxRoughness 1; 1080p temporal descriptors need about 182 MiB in Deferred compute or 261 MiB in portable Forward, within the 320 MiB per-view cap. TAA motion uses
 input pixels / 128, with default current weights 0.05 (TAA) and 0.025 (TAAU).
+TAA flickering analysis (UE TSR port, `Camera.taaFlickering`, default on, 0 = off) widens the luma clip box where a 2-frame oscillation is detected; reactive/moving pixels still update. Costs an extra rgba8unorm history (TAA history 42 B/px).
 Point/Spot shadow near/far defaults are 0.5/500; a positive finite light range
 replaces far. RectAreaLight defaults to 10x10 with unlimited range.
 Directional/Spot shadow maps default off; set `castShadow: true` explicitly, as
@@ -903,10 +953,25 @@ The public WebGL2 World/Camera owner is
 `packages/runtime/src/__tests__/standard-effects-webgl2.browser.test.ts`: exposure,
 SSR and their GTAO combination retain 60 completed frames, actual fragment work,
 paired pixels and disable-to-baseline recovery. AO admits opaque/masked Unlit
-surface inputs; Forward SSR still requires built-in Standard receivers. GPU VFX
+surface inputs; Forward SSR still requires built-in Standard receivers. Standard
+Morph and Skin+Morph surface inputs consume the same position/normal/tangent
+deformation as color, with Morph before Skin. Do not clear Morph weights or
+substitute bind-pose geometry to admit an effect. GPU VFX
 retains its independent compute/indirect capability gate; route CPU-updated
 particle sprites through `Points` rather than treating them as GPU VFX fallback.
 
 Render benchmark evidence contracts under `bench/*/__tests__/*.test.mjs` use
 `node:test`; run them with the CI guide's bounded Node command. Keep them out of
 the package Vitest collector without dropping their CI owner.
+
+## Portable temporal antialiasing
+
+Use `ANTIALIAS_TAA` at native input size for TAA, or attach `DynamicResolution`
+for TAAU. `ANTIALIAS_TSR` selects the separate 1x-history TSR resolver at either
+native or reduced input size. TSR uses compute/storage textures when available
+and fragment/MRT on HDR devices with at least three color attachments, including
+WebGL2. It never silently changes algorithms. History, jitter, DRS changes,
+CameraView isolation and successful-submit advancement share one temporal owner.
+Inspect `renderer.inspect().temporal` and each view's temporal projection; a
+Browser test using WebGPU alone does not qualify the WebGL lane. See the
+TSR guide.

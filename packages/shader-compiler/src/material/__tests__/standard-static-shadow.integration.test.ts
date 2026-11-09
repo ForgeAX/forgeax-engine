@@ -34,6 +34,7 @@ describe('static Standard shadow coverage', () => {
       expect(compiled?.wgsl).toContain('applyViewClipping');
       expect(compiled?.wgsl).toContain('applyLocalClipping');
     }
+    // The shadow pass is not on the discard-free lane: its LOD coverage stays unconditional.
     expect(shadow.sceneCompile?.wgsl).toContain('applyLodCoverage');
     expect(forward.compile.wgsl).toContain('surfaceSample');
     expect(forward.compile.wgsl).not.toMatch(/\.alphaCutoff\b/);
@@ -91,4 +92,18 @@ describe('static Standard shadow coverage', () => {
     expect(cooked.shadow.abi.alphaMask).toEqual({ cutoff: '', source: '' });
     expect(cooked.forward.compile.wgsl).not.toMatch(/\.alphaCutoff\b/);
   });
+});
+
+it.each([
+  'mesh',
+  'skinned',
+] as const)('cooks tangent-free Morph position and normal inputs for %s', async (geometry) => {
+  const { forward } = await cookStaticShadow({
+    context: { geometry },
+    staticSwitches: { ...OPAQUE_SWITCHES, textures: false },
+  });
+  expect(forward.abi.vertexInputs.map((input) => input.semantic)).not.toContain('tangent');
+  expect(forward.sceneCompile).toBeDefined();
+  expect(forward.sceneCompile?.wgsl).toContain('sceneIndexMorphPosition');
+  expect(forward.sceneCompile?.wgsl).toContain('sceneIndexMorphNormal');
 });

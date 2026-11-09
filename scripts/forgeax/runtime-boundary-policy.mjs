@@ -4,6 +4,7 @@ export const TOOL_OWNERS = new Map([
   ['devkit', 'Node project build, development and CLI host'],
   ['dsh', 'Node AI CLI process host'],
   ['intelligence-dsh', 'Node AI CLI transport'],
+  ['mesh-io', 'Node-only source-format import and static mesh export workers'],
   ['shader-compiler', 'Offline shader compiler and cooker'],
   ['vfx-compiler', 'Offline VFX program compiler'],
   ['vite-plugin-pack', 'Explicit Vite asset adapter'],
@@ -38,7 +39,12 @@ export const NODE_SOURCE_SCOPES = new Map([
 ]);
 
 export const SOURCE_ASSET_PRODUCERS = new Map([
+  [
+    'packages/render/src/terrain/layer-bake.ts',
+    'Render tsup text loader owns Terrain WGSL inlining',
+  ],
   ['packages/shader/src/auto-exposure-source.ts', 'Shader tsup text loader owns WGSL inlining'],
+  ['packages/shader/src/tsr-source.ts', 'Shader tsup text loader owns TSR WGSL inlining'],
 ]);
 
 export const TOOL_SOURCE_SCOPES = new Map([

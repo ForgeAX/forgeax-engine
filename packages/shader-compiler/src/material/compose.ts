@@ -632,6 +632,7 @@ const SURFACE_DATA_FIELDS = [
   ['occlusion', 'f32'],
   ['opacity', 'f32'],
   ['alphaClipThreshold', 'f32'],
+  ['reactive', 'f32'],
 ] as const;
 
 const MEDIUM_SURFACE_INPUT_FIELDS = [

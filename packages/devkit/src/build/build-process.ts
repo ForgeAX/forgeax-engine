@@ -16,6 +16,7 @@ import { validateDynamicGeometryMeshBudget, validateRenderProfile } from '@forge
 import type { ToolRun, ToolRunOptions } from '@forgeax/engine-tool-runtime';
 import type { ImportContext, ImportProduct } from '@forgeax/engine-types';
 import { err, ok, type PluginAssetDefinition } from '@forgeax/engine-types';
+import { validateStartupUi } from '../host/startup-ui.js';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 
 /** Only serializable requests and producer outputs cross this process boundary. */
@@ -144,6 +145,7 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'renderPipelineCapacity',
   'renderTaskYield',
   'loadingLabels',
+  'startupUi',
   'wechat',
 ]);
 
@@ -226,6 +228,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
   }
   validateLoadingLabels(options.loadingLabels);
+  validateStartupUi(options.startupUi);
   if (options.dynamicGeometryMeshBudgetBytes !== undefined)
     validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
   if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);

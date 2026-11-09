@@ -1,4 +1,4 @@
-import { RAY_QUERY_FEATURE, type RhiAdapter, type RhiDevice } from '@forgeax/engine-rhi';
+import { RAY_QUERY_FEATURE, type RhiAdapter, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import {
   STANDARD_PARALLAX_DISPLACEMENT_BIT,
   type StandardSharedTransmissionHost,
@@ -17,6 +17,16 @@ const COMPRESSION_FEATURES: GPUFeatureName[] = [
   'texture-compression-etc2',
   'texture-compression-astc',
 ];
+
+/** Stock Renderer programs require depth loads; RHI-only compatibility work does not. */
+export function rendererDeviceAdmission(device: Pick<RhiDevice, 'caps'>): RhiError | undefined {
+  if (device.caps.depthTextureLoad) return undefined;
+  return new RhiError({
+    code: 'feature-not-enabled',
+    expected: 'stock Renderer shaders require caps.depthTextureLoad on the admitted device',
+    hint: 'use a core WebGPU device or allow Runtime to select the WebGL2 fallback; RHI Compatibility Mode alone does not qualify stock Renderer shaders',
+  });
+}
 
 // The Standard transmission fragment ABI needs 21 sampled textures across its
 // material, IBL, clustered-light, and SSAO bindings. Ordinary Standard draws

@@ -156,12 +156,13 @@ async function fixture(
       .unwrap(),
   });
   let pending: PreparedGpuDrivenFrame | undefined;
-  const prepare = () => {
+  const prepare = (directionalShadowSimple = false) => {
     pending?._abortResourceReplacement?.();
     const prepared = production
       .prepare(
         admitGpuFixture({
           ...inputs,
+          ...(directionalShadowSimple ? { directionalShadowSimple } : {}),
           materialArtifact: artifact,
           ...(mixedMedium ? { materialArtifacts, materialPipelineFactory } : {}),
           scene: {
@@ -460,6 +461,21 @@ it('does not reopen admitted material artifacts when a lazy mesh layout fails', 
     }
     prepared.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
     expect(f.copies()).toBe(before);
+  } finally {
+    f.close();
+  }
+});
+
+it('does not reuse the raster graph across a simple-receiver flip', async () => {
+  const f = await fixture(2, 'triangle-list');
+  try {
+    // The forward pipelines bake DIRECTIONAL_SHADOW_SIMPLE (+ LEAN_LIGHTING);
+    // an IES or cookie light arriving at runtime flips the frame off it.
+    const general = f.prepare().topologySignature();
+    const simple = f.prepare(true).topologySignature();
+    expect(simple).not.toBe(general);
+    expect(f.prepare(true).topologySignature()).toBe(simple);
+    expect(f.prepare().topologySignature()).toBe(general);
   } finally {
     f.close();
   }

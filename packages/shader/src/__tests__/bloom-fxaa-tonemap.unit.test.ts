@@ -117,6 +117,27 @@ describe('post shader color-domain contract', () => {
     expect(`${tonemap}\n${bloom}\n${fxaa}`).not.toContain('encodedDestinationBlend');
   });
 
+  it('follows Unreal PostProcessDownsample HIGH and BloomSetup ordering in the bloom input', () => {
+    const code = codeOnly(bloomHorizontal);
+    const down = functionBody(code, 'downsample4x4');
+    // Four bilinear taps at (+-1, +-1) source texels, averaged: a 4x4 filter.
+    expect(down.match(/sampleSource\(/g)).toHaveLength(4);
+    for (const dx of ['-1.0', '1.0']) {
+      for (const dy of ['-1.0', '1.0']) {
+        expect(down).toContain(`vec2<f32>(${dx}, ${dy})`);
+      }
+    }
+    expect(down).toContain('* 0.25');
+    expect(down).toContain('textureDimensions(src)');
+    const input = functionBody(code, 'bloomInput');
+    // Every level filters first; the threshold only ever sees the filtered colour.
+    expect(input.indexOf('downsample4x4(uv)')).toBeGreaterThanOrEqual(0);
+    expect(input.indexOf('downsample4x4(uv)')).toBeLessThan(input.indexOf('smoothstep'));
+    expect(input).toContain('params.threshold < 0.0');
+    // The old unfiltered half-texel clamp + single bilinear tap is gone.
+    expect(code).not.toContain('halfTexel');
+  });
+
   // Bloom's spatial response, threshold and gain are verified on real GPU output
   // against the pinned Three node by apps/parity/color-lighting/verify-render-defaults.
 

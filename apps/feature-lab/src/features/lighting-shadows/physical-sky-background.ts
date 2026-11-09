@@ -9,7 +9,7 @@ export default defineFeature({
   summary:
     'A background-only Rayleigh/Mie atmosphere driven by one sun, using raster LUTs on WebGPU and WebGL2.',
   expect:
-    'ON shows a daylight sky, bright horizon and solar disc; OFF restores the clear color. This mode supplies no aerial perspective, solar attenuation or sky IBL.',
+    'ON shows a daylight sky, bright horizon and solar disc; OFF restores the clear color. Skylight can also consume this sky for IBL; aerial perspective and surface solar attenuation stay disabled.',
   setup({ world }) {
     spawnCamera(world, {
       eye: [0, 1, 0],

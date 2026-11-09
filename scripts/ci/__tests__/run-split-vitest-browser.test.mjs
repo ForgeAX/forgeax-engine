@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
+import { parse } from 'yaml';
 import { runGroups } from '../../lib/run-bounded-groups.mjs';
 import hostFiles from '../browser-host-files.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../browser-process-cache.mjs';
@@ -44,6 +45,20 @@ test('browser host contracts never share a GPU owner group', () => {
       );
     }
   }
+});
+
+test('compatibility scene retains its native carrier policy and original 120-second owner', () => {
+  const file = 'packages/runtime/src/__tests__/compatibility-scene.browser.test.ts';
+  assert.equal(browserConfigForGroup([file]), 'config/vitest.webgpu-scene.config.ts');
+  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+  const config = readFileSync('config/vitest.webgpu-scene.config.ts', 'utf8');
+  assert.match(config, /compatibilityLaunch\(browserLaunch, 'scene'\)/);
+  assert.match(config, /testTimeout: 120_000/);
+  assert.match(config, /retry: 0/);
+  assert.equal(
+    browserConfigForGroup(['packages/runtime/src/__tests__/new-owner.browser.test.ts']),
+    'config/vitest.browser.config.ts',
+  );
 });
 
 test('render worker preload uses its pinned optimizer fixture in an exclusive process', () => {
@@ -128,9 +143,35 @@ test('Three authored-light shadow journeys retain three complete independent pro
   assert.match(directional, /afterAll\(async \(\) => journey\.dispose\(\), 120000\)/);
 });
 
-test('the complete directional shadow journey drains competing browser groups', () => {
-  const file = 'packages/three/src/__tests__/shadow-directional.browser.test.ts';
-  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+test('complete directional and spot shadow journeys drain competing browser groups', () => {
+  for (const kind of ['directional', 'spot']) {
+    const file = `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`;
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
+  }
+});
+
+test('both complete shadow alpha material journeys keep independent exclusive processes', () => {
+  const files = ['shadow-alpha', 'shadow-alpha-standard'].map(
+    (name) => `packages/three/src/__tests__/${name}.browser.test.ts`,
+  );
+  for (const file of files) {
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+    for (const size of [1, 8, 24]) {
+      assert.deepEqual(
+        dryRunGroups(size).filter((group) => group.includes(file)),
+        [[file]],
+      );
+    }
+  }
+  assert.match(readFileSync(files[0], 'utf8'), /testShadowAlpha\('basic'\)/);
+  assert.match(readFileSync(files[1], 'utf8'), /testShadowAlpha\('standard'\)/);
+  const fixture = readFileSync('packages/three/src/__tests__/shadow-alpha.fixture.ts', 'utf8');
+  assert.match(fixture, /timeout:\s*180000/);
+  assert.match(fixture, /measure\('opaque', 60\)/);
+  assert.match(fixture, /await verifyReplay\(capture, label\)/);
+  assert.match(fixture, /replays\.queue\(capture, label\)/);
+  assert.match(fixture, /expect\(replayCount\)\.toBe\(10\)/);
+  assert.match(fixture, /await replays\.complete\(\)/);
 });
 
 test('complete shadow quality matrices own exclusive browser processes', () => {
@@ -147,6 +188,43 @@ test('complete shadow quality matrices own exclusive browser processes', () => {
         [[file]],
       );
     }
+  }
+});
+
+test('native UI control oracles own the foreground without competing pages', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'forgeax-browser-focus-'));
+  const fixture = join(temporary, 'vitest.mjs');
+  writeFileSync(
+    fixture,
+    'console.log(JSON.stringify({args:process.argv.slice(2),background:process.env.FORGEAX_BROWSER_BACKGROUND}));',
+  );
+  const module = new URL('../run-split-vitest-browser.mjs', import.meta.url).href;
+  const program = `import { runGroup } from ${JSON.stringify(module)};
+    await runGroup({cliPath:process.argv[1],group:JSON.parse(process.argv[2]),groupIndex:1,groupCount:1,maxWorkers:2});`;
+  try {
+    for (const name of ['select-defaults', 'range']) {
+      const file = `packages/ui-blitz/src/__tests__/${name}.browser.test.ts`;
+      assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
+      const result = spawnSync(
+        process.execPath,
+        ['--input-type=module', '-e', program, fixture, JSON.stringify([file])],
+        {
+          encoding: 'utf8',
+          timeout: 5000,
+          env: { ...process.env, FORGEAX_LOCAL_GPU_LEASE: '0', FORGEAX_BROWSER_BACKGROUND: '1' },
+        },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const receipt = JSON.parse(result.stdout.trim());
+      assert.equal(receipt.background, '0');
+      assert.ok(receipt.args.includes('--maxWorkers=1'));
+      assert.ok(receipt.args.includes('--no-file-parallelism'));
+      const prefix = '[browser-gate] process-start ';
+      const line = result.stderr.split('\n').find((value) => value.startsWith(prefix));
+      assert.equal(JSON.parse(line.slice(prefix.length)).timeoutMs, 300_000);
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });
 
@@ -322,6 +400,8 @@ test('Preview child execution receives its documented preparation deadline', () 
     for (const [file, expected] of [
       ['apps/preview/__tests__/preview.browser.test.ts', 420_000],
       ['packages/runtime/src/__tests__/multi-camera.browser.test.ts', 300_000],
+      ['packages/runtime/src/__tests__/multi-camera-publication.browser.test.ts', 300_000],
+      ['packages/runtime/src/__tests__/multi-camera-vfx.browser.test.ts', 300_000],
       ['packages/runtime/src/__tests__/solar-atmosphere-calibration.browser.test.ts', 300_000],
       ['packages/runtime/src/__tests__/solar-atmosphere-fog-time.browser.test.ts', 300_000],
       ['packages/runtime/src/__tests__/solar-atmosphere-mesh-occlusion.browser.test.ts', 300_000],
@@ -478,6 +558,7 @@ test('the complete nine-light owner drains competing browser groups', () => {
 test('dense Renderer owners retain singleton groups with exclusive runner admission', () => {
   const groups = dryRunGroups();
   for (const file of [
+    'packages/runtime/src/__tests__/compatibility-scene.browser.test.ts',
     'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
     'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
     'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
@@ -492,6 +573,36 @@ test('dense Renderer owners retain singleton groups with exclusive runner admiss
     const owners = groups.filter((group) => group.includes(file));
     assert.deepEqual(owners, [[file]], 'retain the complete existing owner exactly once');
     assert.equal(browserGroupRequiresExclusiveRunner(owners[0]), true, file);
+  }
+});
+
+test('each complete multi-camera transport journey retains an exclusive native process', () => {
+  const groups = dryRunGroups();
+  for (const file of [
+    'packages/runtime/src/__tests__/multi-camera.browser.test.ts',
+    'packages/runtime/src/__tests__/multi-camera-publication.browser.test.ts',
+    'packages/runtime/src/__tests__/multi-camera-vfx.browser.test.ts',
+  ]) {
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
+    assert.deepEqual(
+      groups.filter((group) => group.includes(file)),
+      [[file]],
+      file,
+    );
+  }
+});
+
+test('multi-camera and alpha-shadow replay owners drain competing native devices', () => {
+  const groups = dryRunGroups();
+  for (const file of [
+    'packages/runtime/src/__tests__/multi-camera.browser.test.ts',
+    'packages/three/src/__tests__/shadow-alpha.browser.test.ts',
+  ]) {
+    assert.deepEqual(
+      groups.filter((group) => group.includes(file)),
+      [[file]],
+    );
+    assert.equal(browserGroupRequiresExclusiveRunner([file]), true, file);
   }
 });
 
@@ -814,6 +925,16 @@ test('mocked renderer construction owns a fresh browser process', () => {
   );
 });
 
+test('dynamic geometry keeps its complete journey in a fresh exclusive browser process', () => {
+  const file = 'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
+  const groups = dryRunGroups();
+  assert.deepEqual(
+    groups.filter((group) => group.includes(file)),
+    [[file]],
+  );
+  assert.equal(browserGroupRequiresExclusiveRunner([file]), true);
+});
+
 test('Wave 1 rendering owners fit within the ordinary browser group budget', () => {
   const groups = dryRunGroups();
   const wave1Files = [
@@ -961,7 +1082,7 @@ test('Render Worker groups own the runner after repeated cgroup OOM beside a nei
 test('before-consume catalog producers own the runner and are charged every lane', () => {
   const surface = ['packages/runtime/src/__tests__/surface-standard-pipeline.browser.test.ts'];
   const preview = ['apps/preview/__tests__/preview.browser.test.ts'];
-  const ordinary = ['packages/runtime/src/__tests__/multi-camera.browser.test.ts'];
+  const ordinary = ['packages/runtime/src/__tests__/wave1-rendering-p0.browser.test.ts'];
   for (const group of [surface, preview]) {
     assert.equal(browserProducerReadiness(group, 'on-demand'), 'before-consume');
     assert.equal(browserGroupRequiresExclusiveRunner(group), true);
@@ -994,10 +1115,14 @@ test('Surface provenance owns a singleton with its complete before-consume catal
   assert.match(readFileSync(target, 'utf8'), /timeout: 300_000/);
 });
 
-test('twelve shadow contact cases retain three independent four-filter processes', () => {
-  const targets = ['column', 'centimeter-1024', 'centimeter-2048'].map(
-    (name) => `packages/runtime/src/__tests__/shadow-contact-${name}.browser.test.ts`,
-  );
+test('twenty shadow contact cases retain five independent four-filter processes', () => {
+  const targets = [
+    'column',
+    'centimeter-1024',
+    'centimeter-2048',
+    'webgl2-column',
+    'webgl2-centimeter',
+  ].map((name) => `packages/runtime/src/__tests__/shadow-contact-${name}.browser.test.ts`);
   assert.deepEqual(
     dryRunGroups().filter((group) => group.some((file) => file.includes('/shadow-contact'))),
     targets.sort().map((target) => [target]),
@@ -1132,15 +1257,45 @@ test('CI tail reservations match the shards that run the serial tails', () => {
   );
   assert.match(job, /--shard-count=4\n/);
   assert.match(job, /shard: \[0, 1, 2, 3\]/);
-  assert.match(job, /- name: Verify actual browser test discovery\n\s+if: matrix\.shard == 0\n/);
-  assert.match(job, /- name: Preserve render browser failure evidence\n\s+if: failure\(\)\n/);
-  assert.match(
-    job,
-    /- name: Runtime Pack Worker dev\/build JS\/TS browser gate\n\s+if: matrix\.shard == 1\n/,
+  const steps = parse(ci).jobs['vitest-browser-shard'].steps;
+  const condition = (name) => steps.find((step) => step.name === name)?.if;
+  assert.equal(
+    condition('Directional CSM Browser WebGPU smoke (M5 MVD)'),
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
   );
-  assert.match(
-    job,
-    /- name: Mesh interchange Catalog and RHI replay browser gate\n\s+if: matrix\.shard == 2\n/,
+  assert.deepEqual(ciBrowserShardTailSeconds, [210, 530, 225, 0]);
+  assert.equal(
+    condition('Prepare Dawn device-limit normalization for CSM replay'),
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
+  );
+  assert.equal(
+    condition('Upload directional CSM pixel evidence on failure'),
+    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.shard == 1)",
+  );
+  const stepIndex = (name) => steps.findIndex((step) => step.name === name);
+  assert.ok(
+    stepIndex('Runtime Pack Worker dev/build JS/TS browser gate') <
+      stepIndex('Prepare Dawn device-limit normalization for CSM replay'),
+  );
+  assert.ok(
+    stepIndex('Prepare Dawn device-limit normalization for CSM replay') <
+      stepIndex('Directional CSM Browser WebGPU smoke (M5 MVD)'),
+  );
+  assert.equal(
+    condition('Verify actual browser test discovery'),
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 0)",
+  );
+  assert.equal(
+    condition('Preserve render browser failure evidence'),
+    "steps.ci-repair.outputs.reused != 'true' && (failure())",
+  );
+  assert.equal(
+    condition('Runtime Pack Worker dev/build JS/TS browser gate'),
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)",
+  );
+  assert.equal(
+    condition('Mesh interchange Catalog and RHI replay browser gate'),
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 2)",
   );
   assert.match(
     job,
@@ -1150,9 +1305,42 @@ test('CI tail reservations match the shards that run the serial tails', () => {
     job,
     /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+xvfb-run -a pnpm --filter @forgeax\/mesh-io-parity verify/,
   );
-  assert.match(
-    job,
-    /- name: Preserve Runtime Pack Worker evidence\n\s+if: failure\(\) && matrix\.shard == 1\n/,
+  assert.equal(
+    condition('Preserve Runtime Pack Worker evidence'),
+    "steps.ci-repair.outputs.reused != 'true' && (failure() && matrix.shard == 1)",
+  );
+});
+
+test('completed Browser cohort retains serial-tail headroom in all four jobs', () => {
+  const observed = JSON.parse(
+    readFileSync('scripts/ci/__tests__/fixtures/browser-cost-run-42300870201.json', 'utf8'),
+  );
+  assert.equal(observed.completeChildren, 147);
+  const groups = dryRunGroups();
+  const assignment = assignBrowserGroupsToShards(groups, 4, 'balanced', {
+    tailSeconds: ciBrowserShardTailSeconds,
+    concurrency: 2,
+  });
+  const seconds = groups.map((group) =>
+    group.reduce((sum, file) => sum + (observed.files[file] ?? browserGroupWeight([file])), 0),
+  );
+  const projected = Array.from({ length: 4 }, (_, shard) => {
+    const selected = groups.flatMap((_, index) => (assignment[index] === shard ? [index] : []));
+    const lanes = [0, 0];
+    for (const position of browserGroupRunOrder(groups, selected, 2)) {
+      const index = selected[position];
+      if (browserGroupRequiresExclusiveRunner(groups[index])) {
+        lanes.fill(Math.max(...lanes) + seconds[index]);
+      } else {
+        const lane = lanes[0] <= lanes[1] ? 0 : 1;
+        lanes[lane] += seconds[index];
+      }
+    }
+    return Math.max(...lanes) + ciBrowserShardTailSeconds[shard];
+  });
+  assert.ok(
+    projected.every((seconds) => seconds < 2200),
+    `completed cohort exhausts Browser headroom: ${projected}`,
   );
 });
 

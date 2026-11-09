@@ -21,7 +21,7 @@ const CHILD_GUID = '33333333-3333-4333-8333-333333333333';
 const SURFACE = `#define_import_path game_3d::rusted_iron_surface
 #import forgeax_material::surface_v1::{SurfaceData, SurfaceInput}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(vec3<f32>(0.4, 0.45, 0.47), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(0.4, 0.45, 0.47), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`;
 
 describe('Surface Pack publication', () => {

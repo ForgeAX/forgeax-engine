@@ -1,5 +1,6 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { defineComponent, Time, World } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { GlobalTransform, Transform, TransformInterpolation } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
@@ -94,6 +95,62 @@ function session() {
 }
 
 describe('change-driven source environment', () => {
+  it('keeps static light reads out of moving-camera extraction while admitting light changes', () => {
+    const s = session();
+    try {
+      const first = s.frame();
+      const read = vi.spyOn(s.world[worldRead], 'getFieldValue');
+      try {
+        for (let index = 1; index <= 3; index++) {
+          s.world.set(s.camera, Transform, { pos: [index, 0, 5] }).unwrap();
+          s.world.update(1 / 60).unwrap();
+          expect(s.frame().metadata.lights).toBe(first.metadata.lights);
+        }
+        expect(
+          read.mock.calls.filter(
+            ([, component]) => component === DirectionalLight || component === PointLight,
+          ),
+        ).toHaveLength(0);
+        s.world.set(s.lamp, PointLight, { intensity: 9 }).unwrap();
+        expect(s.frame().metadata.lights.point[0]?.intensity).toBe(9);
+        expect(first.metadata.lights.point[0]?.intensity).toBe(4);
+        s.world.removeComponent(s.lamp, PointLight).unwrap();
+        expect(s.frame().metadata.lights.point).toHaveLength(0);
+      } finally {
+        read.mockRestore();
+      }
+    } finally {
+      s.dispose();
+    }
+  });
+
+  it('retains stock Query instances while moving extraction keeps current membership and optional fields', () => {
+    const s = session();
+    try {
+      s.frame();
+      const queries = vi.spyOn(s.world, 'query');
+      for (let index = 1; index <= 3; index++) {
+        s.world.set(s.camera, Transform, { pos: [index, 0, 5] }).unwrap();
+        s.world.update(1 / 60).unwrap();
+        expect(s.frame().metadata.cameras).toHaveLength(1);
+      }
+      const stockQueries = queries.mock.calls.filter(
+        ([descriptor]) =>
+          descriptor.read?.includes(Camera) ||
+          descriptor.read?.includes(PointLight) ||
+          descriptor.read?.includes(DirectionalLight),
+      );
+      expect(stockQueries).toHaveLength(0);
+      s.world.addComponent(s.camera, { component: MotionBlur, data: { shutterAngle: 0 } }).unwrap();
+      expect(s.frame().metadata.cameras).toHaveLength(1);
+      s.world.removeComponent(s.lamp, PointLight).unwrap();
+      expect(s.frame().metadata.lights.point).toHaveLength(0);
+      queries.mockRestore();
+    } finally {
+      s.dispose();
+    }
+  });
+
   it('ignores unrelated writes while preserving published values', () => {
     const s = session();
     const Clock = defineComponent('EnvironmentUnrelatedClock', { value: 'f32' });
@@ -227,6 +284,75 @@ describe('change-driven source environment', () => {
 });
 
 describe('EnvironmentGate inputs', () => {
+  it('keeps a foreign-World nested observation conservative', () => {
+    const parentWorld = new World(),
+      childWorld = new World();
+    const Input = defineComponent('ForeignNestedInput', { value: 'f32' });
+    const entity = childWorld.spawn({ component: Input, data: { value: 1 } }).unwrap();
+    const outer = new EnvironmentGate<number>(true),
+      inner = new EnvironmentGate<number>(true);
+    outer.assetsChanged = inner.assetsChanged = false;
+    const read = () =>
+      outer.read(parentWorld, 'outer', () => ({
+        value: inner.read(childWorld, 'inner', () => {
+          queryEnvironment(childWorld, { read: [Input] }).unwrap();
+          return {
+            value: childWorld[worldRead].getFieldValue(entity, Input, 'value') as number,
+            timeDependent: false,
+          };
+        }),
+        timeDependent: false,
+      }));
+    expect(read()).toBe(1);
+    childWorld.set(entity, Input, { value: 2 }).unwrap();
+    expect(read()).toBe(2);
+  });
+
+  it('observes successful nested inputs on both child misses and cache hits', () => {
+    const world = new World();
+    const Input = defineComponent('NestedSuccessfulInput', { value: 'f32' });
+    const entity = world.spawn({ component: Input, data: { value: 1 } }).unwrap();
+    const outer = new EnvironmentGate<number>(true),
+      inner = new EnvironmentGate<number>(true);
+    outer.assetsChanged = inner.assetsChanged = false;
+    let key = 'first',
+      innerRuns = 0;
+    const read = () =>
+      outer.read(world, key, () => ({
+        value: inner.read(world, 'inner', () => {
+          innerRuns++;
+          queryEnvironment(world, { read: [Input] }).unwrap();
+          return {
+            value: world[worldRead].getFieldValue(entity, Input, 'value') as number,
+            timeDependent: false,
+          };
+        }),
+        timeDependent: false,
+      }));
+    expect(read()).toBe(1);
+    key = 'replacement';
+    expect(read()).toBe(1);
+    expect(innerRuns).toBe(1);
+    world.set(entity, Input, { value: 2 }).unwrap();
+    expect(read()).toBe(2);
+    expect(innerRuns).toBe(2);
+  });
+
+  it('propagates a nested time-dependent observation to its parent', () => {
+    const world = new World();
+    const outer = new EnvironmentGate<number>(true),
+      inner = new EnvironmentGate<number>(true);
+    outer.assetsChanged = inner.assetsChanged = false;
+    let runs = 0;
+    const read = () =>
+      outer.read(world, 'outer', () => ({
+        value: inner.read(world, 'inner', () => ({ value: ++runs, timeDependent: true })),
+        timeDependent: false,
+      }));
+    expect(read()).toBe(1);
+    expect(read()).toBe(2);
+  });
+
   it('conservatively observes every non-pose component for arbitrary extractors', () => {
     const world = new World();
     const Input = defineComponent('EnvironmentExplicitInput', { value: 'f32' });

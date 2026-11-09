@@ -123,39 +123,63 @@ export class HttpArtifactCompression {
   private tail: Promise<void> = Promise.resolve();
 
   async prepare(artifacts: Iterable<HttpArtifact>): Promise<void> {
-    for (const artifact of artifacts) {
-      const bytes = artifact.bytes;
-      if (this.prepared.has(bytes)) continue;
-      let pending = this.pending.get(bytes);
-      if (pending === undefined) {
-        pending = this.tail.then(async () => {
-          if (
-            bytes.byteLength < 1024 ||
-            !/^(?:application\/(?:x-forgeax-mesh|octet-stream)|text\/(?:wgsl|plain))$/i.test(
-              artifact.mimeType,
-            )
-          ) {
-            this.prepared.set(bytes, undefined);
-            return;
-          }
-          const encoded = await new Promise<Uint8Array | undefined>((resolve) => {
-            gzip(bytes, { level: 1 }, (error, body) => {
-              if (error !== null) {
-                console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
-                resolve(undefined);
-              } else resolve(body.byteLength < bytes.byteLength ? body : undefined);
-            });
-          }).catch((error: unknown) => {
-            console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
-            return undefined;
-          });
-          this.prepared.set(bytes, encoded);
-        });
-        this.pending.set(bytes, pending);
-        this.tail = pending;
+    // One queue across callers; small bodies overlap only within its bounded
+    // window. A second prepare never creates another set of encoder slots.
+    const pending = this.tail.then(() => this.prepareWindowed(artifacts));
+    this.tail = pending.catch(() => {});
+    await pending;
+  }
+
+  private async prepareWindowed(artifacts: Iterable<HttpArtifact>): Promise<void> {
+    let pending: Promise<void>[] = [];
+    let inputBytes = 0;
+    const drain = async (): Promise<void> => {
+      const active = pending;
+      pending = [];
+      inputBytes = 0;
+      await Promise.all(active);
+    };
+    try {
+      for (const artifact of artifacts) {
+        const bytes = artifact.bytes;
+        if (this.prepared.has(bytes) || this.pending.has(bytes)) continue;
+        // Keep large inputs exclusive, and bound temporary encoder/output
+        // storage independently of how many routes the publication contains.
+        if (pending.length > 0 && inputBytes + bytes.byteLength > 4 * 1024 * 1024) await drain();
+        const task = this.prepareArtifact(artifact);
+        this.pending.set(bytes, task);
+        pending.push(task);
+        inputBytes += bytes.byteLength;
+        if (pending.length === 4 || inputBytes >= 4 * 1024 * 1024) await drain();
       }
-      await pending;
+    } finally {
+      await drain();
     }
+  }
+
+  private async prepareArtifact(artifact: HttpArtifact): Promise<void> {
+    const bytes = artifact.bytes;
+    if (
+      bytes.byteLength < 1024 ||
+      !/^(?:application\/(?:x-forgeax-mesh|octet-stream)|text\/(?:wgsl|plain))$/i.test(
+        artifact.mimeType,
+      )
+    ) {
+      this.prepared.set(bytes, undefined);
+      return;
+    }
+    const encoded = await new Promise<Uint8Array | undefined>((resolve) => {
+      gzip(bytes, { level: 1 }, (error, body) => {
+        if (error !== null) {
+          console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
+          resolve(undefined);
+        } else resolve(body.byteLength < bytes.byteLength ? body : undefined);
+      });
+    }).catch((error: unknown) => {
+      console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
+      return undefined;
+    });
+    this.prepared.set(bytes, encoded);
   }
 
   /** Never encode in an HTTP request: unprepared or failed bodies remain identity. */

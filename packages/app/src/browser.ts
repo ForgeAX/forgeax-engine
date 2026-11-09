@@ -12,7 +12,11 @@ import type { Platform } from '@forgeax/engine-platform';
 import { createBrowserPlatform } from '@forgeax/engine-platform-browser';
 import type { Context, Fiber, Plugin } from '@forgeax/engine-plugin';
 import { createProfiler } from '@forgeax/engine-profiler';
-import type { Renderer } from '@forgeax/engine-render';
+import {
+  installRenderAblationDevtools,
+  type RenderAblation,
+  type Renderer,
+} from '@forgeax/engine-render';
 import type { RendererHostAssembly } from '@forgeax/engine-render/internal/construct-renderer';
 import { ownPipelineLibrary } from '@forgeax/engine-rhi';
 import type { CaptureFrameOptions, RecorderAttachment } from '@forgeax/engine-rhi-debug';
@@ -188,6 +192,8 @@ export async function createApp(
   // Before capability probing and backend selection, so every ambient WebGPU
   // reader in this realm observes the same stub.
   installCarriedGpuStub(opts);
+  // Diagnostic ablation is realm-wide and must apply before the first sizing.
+  applyRenderAblationOption(opts?.renderAblation);
   resetCanvasDeviceLimit(canvas);
   syncCanvasDrawingBuffer(canvas, undefined, opts?.canvasPixelRatio);
 
@@ -423,6 +429,14 @@ export async function createApp(
   return built;
 }
 
+/** Install a diagnostic render ablation; invalid configuration is a programmer error. */
+function applyRenderAblationOption(option: RenderAblation | string | undefined): void {
+  if (option === undefined) return;
+  const devtools = installRenderAblationDevtools();
+  const applied = devtools.set(option);
+  if (!applied.ok) throw applied.error;
+}
+
 type BrowserExecutionContext = {
   readonly capabilities: ExecutionCapabilities;
   readonly selection: ExecutionSelection;
@@ -443,6 +457,7 @@ function realmBoundExecutionOptionError(
     ['rhi', opts.rhi],
     ['rhiInstrumentation', opts.rhiInstrumentation],
     ['gpuPassTiming', opts.gpuPassTiming],
+    ['renderAblation', opts.renderAblation],
     ['shadowWorkload', opts.shadowWorkload],
     ['ssrIdentity', opts.ssrIdentity],
     ['captureReflectionFallbackReadback', opts.captureReflectionFallbackReadback],

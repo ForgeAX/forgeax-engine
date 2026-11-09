@@ -1,8 +1,16 @@
-import type { EntityHandle, SchemaOf, ShapeOf, World } from '@forgeax/engine-ecs';
-import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
+import {
+  type EntityHandle,
+  FixedTime,
+  type SchemaOf,
+  type ShapeOf,
+  Time,
+  type World,
+} from '@forgeax/engine-ecs';
+import { readMutationEpoch, readRenderArrayView } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { GlobalTransform, Transform } from '@forgeax/engine-scene';
+import { ok } from '@forgeax/engine-types';
 import {
   AmbientOcclusion,
   antialiasFromF32,
@@ -30,7 +38,8 @@ import { LensFlare, resolveLensFlare } from '../components/lens-flare';
 import { Outline, resolveOutline } from '../components/outline';
 import { PlanarReflection, PlanarReflectionInvalidError } from '../components/planar-reflection';
 import { resolveStereoCamera, StereoCamera } from '../components/stereo-camera';
-import { queryEnvironment, readEnvironmentPose } from '../extract/environment-gate';
+import { renderAblation } from '../diagnostics/render-ablation';
+import { createEnvironmentQuery, readEnvironmentPose } from '../extract/environment-gate';
 import {
   depthOfFieldRequestFailure,
   resolveDepthOfFieldParams,
@@ -39,6 +48,26 @@ import { resolveMotionBlurParams } from '../features/motion-blur/motion-blur-par
 import type { CameraSnapshot } from '../render-contract';
 import { collectCubeCameraSnapshots, resolveCameraTarget } from '../render-system-extract';
 import type { RenderTarget } from '../targets/contracts';
+
+const collectCameraSnapshotsQuery = createEnvironmentQuery({
+  read: [Camera],
+  optional: [
+    CameraView,
+    MotionBlur,
+    DynamicResolution,
+    ScreenSpaceReflection,
+    AmbientOcclusion,
+    DepthOfField,
+    BarrelDistortion,
+    LensEffects,
+    LensFlare,
+    ClippingPlanes,
+    Outline,
+    PlanarReflection,
+    StereoCamera,
+  ],
+  with: [Transform, GlobalTransform],
+});
 
 /**
  * The capture camera of a PlanarReflection: the display camera's view without
@@ -88,29 +117,70 @@ function validatePlanarReflection(
     throw new PlanarReflectionInvalidError('distortion');
 }
 
+/** Only an explicit 0 is stored on the snapshot; the default stays implicit. */
+function taaFlickeringField(value: number): { taaFlickering?: false } {
+  return value === 0 ? { taaFlickering: false } : {};
+}
+
+interface CameraMemo {
+  readonly epoch: number;
+  readonly structure: number;
+  readonly elapsed: number;
+  readonly tick: number;
+  readonly overstep: number;
+  readonly cameras: CameraSnapshot[];
+}
+const cameraMemos = new WeakMap<World, CameraMemo>();
+
+/**
+ * Camera snapshots are a pure function of World state, Time and the fixed-step
+ * phase (interpolated poses). Several roles select cameras within one frame
+ * with no World write between them, so the same inputs reuse the same result.
+ * Callers treat the returned list as read-only.
+ */
 export function collectCameraSnapshots(world: World): CameraSnapshot[] {
+  const epoch = readMutationEpoch(world);
+  const structure = world.getStructureEpoch();
+  const elapsed = world.getResource(Time).elapsed;
+  const fixed = world.getResource(FixedTime);
+  const memo = cameraMemos.get(world);
+  if (
+    memo !== undefined &&
+    memo.epoch === epoch &&
+    memo.structure === structure &&
+    memo.elapsed === elapsed &&
+    memo.tick === fixed.tick &&
+    memo.overstep === fixed.overstep
+  )
+    return memo.cameras;
+  const cameras = buildCameraSnapshots(world);
+  cameraMemos.set(world, {
+    epoch: readMutationEpoch(world),
+    structure,
+    elapsed,
+    tick: fixed.tick,
+    overstep: fixed.overstep,
+    cameras,
+  });
+  return cameras;
+}
+
+/** Diagnostic ablation: `fxaa: false` turns authored FXAA off. */
+function ablatedAntialias<T>(authored: T): T | 'none' {
+  return renderAblation()?.fxaa === false && authored === 'fxaa' ? 'none' : authored;
+}
+
+/** Diagnostic ablation: `bloom: false` turns camera bloom off. */
+function ablatedBloom<T>(authored: () => T): T | 'off' {
+  return renderAblation()?.bloom === false ? 'off' : authored();
+}
+
+function buildCameraSnapshots(world: World): CameraSnapshot[] {
   const cameras: CameraSnapshot[] = [];
-  const cameraQuery = queryEnvironment(world, {
-    read: [Camera],
-    optional: [
-      CameraView,
-      MotionBlur,
-      DynamicResolution,
-      ScreenSpaceReflection,
-      AmbientOcclusion,
-      DepthOfField,
-      BarrelDistortion,
-      LensEffects,
-      LensFlare,
-      ClippingPlanes,
-      Outline,
-      PlanarReflection,
-      StereoCamera,
-    ],
-    with: [Transform, GlobalTransform],
-  }).unwrap();
+  const cameraQuery = collectCameraSnapshotsQuery(world).unwrap();
   for (const batch of cameraQuery.batches().unwrap()) {
     const entities = batch.entities;
+    const effectColumns: CameraEffectColumns = {};
     const cameraProjectionColumn = batch.read(Camera, 'projection');
     const cameraFovColumn = batch.read(Camera, 'fov');
     const cameraNearColumn = batch.read(Camera, 'near');
@@ -121,6 +191,7 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
     const cameraTintColumn = batch.read(Camera, 'tint');
     const cameraColorLutStrengthColumn = batch.read(Camera, 'colorLutStrength');
     const cameraAntialiasColumn = batch.read(Camera, 'antialias');
+    const cameraTaaFlickeringColumn = batch.read(Camera, 'taaFlickering');
     const cameraTargetLayerColumn = batch.read(Camera, 'targetLayer');
     const cameraHistoryVersionColumn = batch.read(Camera, 'historyVersion');
     const cameraAspectColumn = batch.read(Camera, 'aspect');
@@ -138,237 +209,15 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
     const cameraBloomSmoothWidthColumn = batch.read(Camera, 'bloomSmoothWidth');
     const cameraBloomRadiusColumn = batch.read(Camera, 'bloomRadius');
     const cameraCompensationEvColumn = batch.read(Camera, 'compensationEv');
-    const cameraViewOrderColumn = batch.read(CameraView, 'order');
-    const cameraViewResolutionScaleColumn = batch.read(CameraView, 'resolutionScale');
-    const cameraViewMaxRenderShortSideColumn = batch.read(CameraView, 'maxRenderShortSide');
-    const cameraViewUpdateIntervalColumn = batch.read(CameraView, 'updateInterval');
-    const cameraViewEnabledColumn = batch.read(CameraView, 'enabled');
-    const clippingPlanesCountColumn = batch.read(ClippingPlanes, 'count');
-    const clippingPlanesIntersectionColumn = batch.read(ClippingPlanes, 'intersection');
-    const clippingPlanesClipShadowsColumn = batch.read(ClippingPlanes, 'clipShadows');
-    const clippingPlanesCapsColumn = batch.read(ClippingPlanes, 'caps');
-    const planarReflectionDistanceColumn = batch.read(PlanarReflection, 'distance');
-    const planarReflectionClipBiasColumn = batch.read(PlanarReflection, 'clipBias');
-    const planarReflectionDistortionColumn = batch.read(PlanarReflection, 'distortion');
-    const planarReflectionResolutionScaleColumn = batch.read(PlanarReflection, 'resolutionScale');
-    const planarReflectionGenerateMipmapsColumn = batch.read(PlanarReflection, 'generateMipmaps');
-    const planarReflectionUpdateIntervalFramesColumn = batch.read(
-      PlanarReflection,
-      'updateIntervalFrames',
-    );
-    const planarReflectionRequestVersionColumn = batch.read(PlanarReflection, 'requestVersion');
-    const motionBlurShutterAngleColumn = batch.read(MotionBlur, 'shutterAngle');
-    const motionBlurMaxRadiusPixelsColumn = batch.read(MotionBlur, 'maxRadiusPixels');
-    const motionBlurSampleCountColumn = batch.read(MotionBlur, 'sampleCount');
-    const motionBlurTargetFpsColumn = batch.read(MotionBlur, 'targetFps');
-    const barrelDistortionStrengthColumn = batch.read(BarrelDistortion, 'strength');
-    const barrelDistortionCenterXColumn = batch.read(BarrelDistortion, 'centerX');
-    const barrelDistortionCenterYColumn = batch.read(BarrelDistortion, 'centerY');
-    const lensEffectsVignetteIntensityColumn = batch.read(LensEffects, 'vignetteIntensity');
-    const lensEffectsVignetteRadiusColumn = batch.read(LensEffects, 'vignetteRadius');
-    const lensEffectsVignetteSoftnessColumn = batch.read(LensEffects, 'vignetteSoftness');
-    const lensEffectsChromaticAberrationColumn = batch.read(LensEffects, 'chromaticAberration');
-    const lensEffectsChromaticAberrationAngleColumn = batch.read(
-      LensEffects,
-      'chromaticAberrationAngle',
-    );
-    const lensEffectsGrainIntensityColumn = batch.read(LensEffects, 'grainIntensity');
-    const lensEffectsGrainSizeColumn = batch.read(LensEffects, 'grainSize');
-    const lensFlareIntensityColumn = batch.read(LensFlare, 'intensity');
-    const lensFlareThresholdColumn = batch.read(LensFlare, 'threshold');
-    const lensFlareBokehSizeColumn = batch.read(LensFlare, 'bokehSize');
-    const outlineWidthColumn = batch.read(Outline, 'width');
-    const outlineOcclusionColumn = batch.read(Outline, 'occlusion');
-    const depthOfFieldFocusDistanceColumn = batch.read(DepthOfField, 'focusDistance');
-    const depthOfFieldFStopColumn = batch.read(DepthOfField, 'fStop');
-    const depthOfFieldSensorHeightColumn = batch.read(DepthOfField, 'sensorHeight');
-    const depthOfFieldMaxRadiusPixelsColumn = batch.read(DepthOfField, 'maxRadiusPixels');
-    const depthOfFieldQualityColumn = batch.read(DepthOfField, 'quality');
-    const depthOfFieldBlurSideColumn = batch.read(DepthOfField, 'blurSide');
-    const dynamicResolutionTargetGpuMsColumn = batch.read(DynamicResolution, 'targetGpuMs');
-    const dynamicResolutionMinScaleColumn = batch.read(DynamicResolution, 'minScale');
-    const dynamicResolutionMaxScaleColumn = batch.read(DynamicResolution, 'maxScale');
-    const screenSpaceReflectionMaxDistanceColumn = batch.read(ScreenSpaceReflection, 'maxDistance');
-    const screenSpaceReflectionThicknessColumn = batch.read(ScreenSpaceReflection, 'thickness');
-    const screenSpaceReflectionMaxRoughnessColumn = batch.read(
-      ScreenSpaceReflection,
-      'maxRoughness',
-    );
-    const ambientOcclusionAlgorithmColumn = batch.read(AmbientOcclusion, 'algorithm');
-    const ambientOcclusionRadiusColumn = batch.read(AmbientOcclusion, 'radius');
-    const ambientOcclusionBiasColumn = batch.read(AmbientOcclusion, 'bias');
-    const ambientOcclusionIntensityColumn = batch.read(AmbientOcclusion, 'intensity');
-    const ambientOcclusionThicknessColumn = batch.read(AmbientOcclusion, 'thickness');
-    const ambientOcclusionDistanceExponentColumn = batch.read(AmbientOcclusion, 'distanceExponent');
-    const ambientOcclusionDistanceFallOffColumn = batch.read(AmbientOcclusion, 'distanceFallOff');
-    const ambientOcclusionResolutionScaleColumn = batch.read(AmbientOcclusion, 'resolutionScale');
-    const ambientOcclusionDirectLightingStrengthColumn = batch.read(
-      AmbientOcclusion,
-      'directLightingStrength',
-    );
-    const ambientOcclusionQualityColumn = batch.read(AmbientOcclusion, 'quality');
-    const stereoCameraEyeSeparationColumn = batch.read(StereoCamera, 'eyeSeparation');
-    const stereoCameraConvergenceColumn = batch.read(StereoCamera, 'convergence');
-    const stereoCameraLayoutColumn = batch.read(StereoCamera, 'layout');
-    const stereoCameraSwapEyesColumn = batch.read(StereoCamera, 'swapEyes');
+
     const selection = batch.kind === 'indexed' ? batch.rows : undefined;
     const first = batch.kind === 'range' ? batch.start : 0;
-    const readEffectInputs = (entity: EntityHandle, physicalRow: number) => ({
-      CameraView: world.hasComponent(entity, CameraView)
-        ? {
-            viewport: readRenderArrayView(world, entity, CameraView, 'viewport') as Float32Array,
-            order: cameraViewOrderColumn?.[physicalRow] as number,
-            resolutionScale: cameraViewResolutionScaleColumn?.[physicalRow] as number,
-            maxRenderShortSide: cameraViewMaxRenderShortSideColumn?.[physicalRow] as number,
-            updateInterval: cameraViewUpdateIntervalColumn?.[physicalRow] as number,
-            enabled: cameraViewEnabledColumn?.[physicalRow] === 1,
-          }
-        : undefined,
-      ClippingPlanes: world.hasComponent(entity, ClippingPlanes)
-        ? {
-            planes: readRenderArrayView(world, entity, ClippingPlanes, 'planes') as Float32Array,
-            count: clippingPlanesCountColumn?.[physicalRow] as number,
-            intersection: clippingPlanesIntersectionColumn?.[physicalRow] === 1,
-            clipShadows: clippingPlanesClipShadowsColumn?.[physicalRow] === 1,
-            caps: clippingPlanesCapsColumn?.[physicalRow] === 1,
-          }
-        : undefined,
-      PlanarReflection: world.hasComponent(entity, PlanarReflection)
-        ? {
-            target: world[worldRead].getFieldValue(entity, PlanarReflection, 'target') as ShapeOf<
-              SchemaOf<typeof PlanarReflection>
-            >['target'],
-            normal: readRenderArrayView(world, entity, PlanarReflection, 'normal') as Float32Array,
-            distance: planarReflectionDistanceColumn?.[physicalRow] as number,
-            clipBias: planarReflectionClipBiasColumn?.[physicalRow] as number,
-            distortion:
-              (planarReflectionDistortionColumn?.[physicalRow] as number | undefined) ?? 0,
-            resolutionScale:
-              (planarReflectionResolutionScaleColumn?.[physicalRow] as number | undefined) ?? 1,
-            generateMipmaps: planarReflectionGenerateMipmapsColumn?.[physicalRow] === 1,
-            updateIntervalFrames: planarReflectionUpdateIntervalFramesColumn?.[
-              physicalRow
-            ] as number,
-            requestVersion: planarReflectionRequestVersionColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      MotionBlur: world.hasComponent(entity, MotionBlur)
-        ? {
-            shutterAngle: motionBlurShutterAngleColumn?.[physicalRow] as number,
-            maxRadiusPixels: motionBlurMaxRadiusPixelsColumn?.[physicalRow] as number,
-            sampleCount: motionBlurSampleCountColumn?.[physicalRow] as number,
-            targetFps: motionBlurTargetFpsColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      BarrelDistortion: world.hasComponent(entity, BarrelDistortion)
-        ? {
-            strength: barrelDistortionStrengthColumn?.[physicalRow] as number,
-            centerX: barrelDistortionCenterXColumn?.[physicalRow] as number,
-            centerY: barrelDistortionCenterYColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      LensEffects: world.hasComponent(entity, LensEffects)
-        ? {
-            vignetteIntensity: lensEffectsVignetteIntensityColumn?.[physicalRow] as number,
-            vignetteRadius: lensEffectsVignetteRadiusColumn?.[physicalRow] as number,
-            vignetteSoftness: lensEffectsVignetteSoftnessColumn?.[physicalRow] as number,
-            vignetteColor: readRenderArrayView(
-              world,
-              entity,
-              LensEffects,
-              'vignetteColor',
-            ) as Float32Array,
-            chromaticAberration: lensEffectsChromaticAberrationColumn?.[physicalRow] as number,
-            chromaticAberrationAngle: lensEffectsChromaticAberrationAngleColumn?.[
-              physicalRow
-            ] as number,
-            grainIntensity: lensEffectsGrainIntensityColumn?.[physicalRow] as number,
-            grainSize: lensEffectsGrainSizeColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      LensFlare: world.hasComponent(entity, LensFlare)
-        ? {
-            intensity: lensFlareIntensityColumn?.[physicalRow] as number,
-            threshold: lensFlareThresholdColumn?.[physicalRow] as number,
-            bokehSize: lensFlareBokehSizeColumn?.[physicalRow] as number,
-            tint: readRenderArrayView(world, entity, LensFlare, 'tint') as Float32Array,
-            ghostTints: readRenderArrayView(world, entity, LensFlare, 'ghostTints') as Float32Array,
-            ghostScales: readRenderArrayView(
-              world,
-              entity,
-              LensFlare,
-              'ghostScales',
-            ) as Float32Array,
-          }
-        : undefined,
-      Outline: world.hasComponent(entity, Outline)
-        ? {
-            entities: readRenderArrayView(world, entity, Outline, 'entities') as Uint32Array,
-            visibleColor: readRenderArrayView(
-              world,
-              entity,
-              Outline,
-              'visibleColor',
-            ) as Float32Array,
-            hiddenColor: readRenderArrayView(world, entity, Outline, 'hiddenColor') as Float32Array,
-            width: outlineWidthColumn?.[physicalRow] as number,
-            occlusion: outlineOcclusionColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      DepthOfField: world.hasComponent(entity, DepthOfField)
-        ? {
-            focusDistance: depthOfFieldFocusDistanceColumn?.[physicalRow] as number,
-            fStop: depthOfFieldFStopColumn?.[physicalRow] as number,
-            sensorHeight: depthOfFieldSensorHeightColumn?.[physicalRow] as number,
-            maxRadiusPixels: depthOfFieldMaxRadiusPixelsColumn?.[physicalRow] as number,
-            quality: depthOfFieldQualityColumn?.[physicalRow] as number,
-            blurSide: depthOfFieldBlurSideColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      DynamicResolution: world.hasComponent(entity, DynamicResolution)
-        ? {
-            targetGpuMs: dynamicResolutionTargetGpuMsColumn?.[physicalRow] as number,
-            minScale: dynamicResolutionMinScaleColumn?.[physicalRow] as number,
-            maxScale: dynamicResolutionMaxScaleColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      ScreenSpaceReflection: world.hasComponent(entity, ScreenSpaceReflection)
-        ? {
-            maxDistance: screenSpaceReflectionMaxDistanceColumn?.[physicalRow] as number,
-            thickness: screenSpaceReflectionThicknessColumn?.[physicalRow] as number,
-            maxRoughness: screenSpaceReflectionMaxRoughnessColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      AmbientOcclusion: world.hasComponent(entity, AmbientOcclusion)
-        ? {
-            algorithm: ambientOcclusionAlgorithmColumn?.[physicalRow] as number,
-            radius: ambientOcclusionRadiusColumn?.[physicalRow] as number,
-            bias: ambientOcclusionBiasColumn?.[physicalRow] as number,
-            intensity: ambientOcclusionIntensityColumn?.[physicalRow] as number,
-            thickness: ambientOcclusionThicknessColumn?.[physicalRow] as number,
-            distanceExponent: ambientOcclusionDistanceExponentColumn?.[physicalRow] as number,
-            distanceFallOff: ambientOcclusionDistanceFallOffColumn?.[physicalRow] as number,
-            resolutionScale: ambientOcclusionResolutionScaleColumn?.[physicalRow] as number,
-            directLightingStrength: ambientOcclusionDirectLightingStrengthColumn?.[
-              physicalRow
-            ] as number,
-            quality: ambientOcclusionQualityColumn?.[physicalRow] as number,
-          }
-        : undefined,
-      StereoCamera: world.hasComponent(entity, StereoCamera)
-        ? {
-            eyeSeparation: stereoCameraEyeSeparationColumn?.[physicalRow] as number,
-            convergence: stereoCameraConvergenceColumn?.[physicalRow] as number,
-            layout: stereoCameraLayoutColumn?.[physicalRow] as number,
-            swapEyes: stereoCameraSwapEyesColumn?.[physicalRow] === 1,
-          }
-        : undefined,
-    });
+
     for (let ordinal = 0; ordinal < batch.count; ordinal++) {
       const physicalRow =
         selection === undefined ? first + ordinal : (selection[ordinal] as number);
       const entity = entities[physicalRow] as EntityHandle;
-      const effectInputs = readEffectInputs(entity, physicalRow);
+      const effectInputs = readCameraEffectInputs(world, batch, effectColumns, entity, physicalRow);
       const camTarget = world[worldRead].getFieldValue(entity, Camera, 'target') as ShapeOf<
         SchemaOf<typeof Camera>
       >['target'];
@@ -381,35 +230,28 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
         Camera,
         'projectionOffset',
       ) as Float32Array;
-      const camRangeEv = readRenderArrayView(world, entity, Camera, 'rangeEv') as Float32Array;
-      const camRates = readRenderArrayView(world, entity, Camera, 'rates') as Float32Array;
 
       const cameraView = effectInputs.CameraView;
       const clipping = extractClippingPlanes(effectInputs.ClippingPlanes);
       const planar = effectInputs.PlanarReflection;
       if (planar !== undefined) validatePlanarReflection(planar, camTarget, cameraView);
-      const motionBlur = effectInputs.MotionBlur;
       const barrelDistortion = effectInputs.BarrelDistortion;
-      const lensEffects = resolveLensEffects(effectInputs.LensEffects);
-      if (!lensEffects.ok) throw lensEffects.error;
-      const lensFlare = resolveLensFlare(effectInputs.LensFlare);
-      if (!lensFlare.ok) throw lensFlare.error;
-      const outline = resolveOutline(effectInputs.Outline);
-      if (!outline.ok) throw outline.error;
-      const motionBlurResult = resolveMotionBlurParams(motionBlur);
-      if (!motionBlurResult.ok) throw motionBlurResult.error;
-      const motionBlurParams = motionBlurResult.value;
+      const { lensEffects, lensFlare, outline, motionBlurParams } =
+        resolveCameraLensInputs(effectInputs);
       const depthOfField = effectInputs.DepthOfField;
       const dynamicResolution = effectInputs.DynamicResolution;
       const screenSpaceReflection = effectInputs.ScreenSpaceReflection;
       const ambientOcclusion = effectInputs.AmbientOcclusion;
       const projection = cameraProjectionFromF32(cameraProjectionColumn[physicalRow] as number);
-      const depthOfFieldResult = resolveDepthOfFieldParams(depthOfField, {
-        projection,
-        fov: cameraFovColumn[physicalRow] as number,
-        near: cameraNearColumn[physicalRow] as number,
-        far: cameraFarColumn[physicalRow] as number,
-      });
+      const depthOfFieldResult =
+        depthOfField === undefined
+          ? NO_CAMERA_EFFECT
+          : resolveDepthOfFieldParams(depthOfField, {
+              projection,
+              fov: cameraFovColumn[physicalRow] as number,
+              near: cameraNearColumn[physicalRow] as number,
+              far: cameraFarColumn[physicalRow] as number,
+            });
       const depthOfFieldError = depthOfFieldResult.ok
         ? undefined
         : depthOfFieldRequestFailure(depthOfFieldResult.error);
@@ -431,8 +273,8 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
               exposureMode: cameraExposureModeColumn[physicalRow] as number,
               exposure: cameraExposureColumn[physicalRow] as number,
               compensationEv: cameraCompensationEvColumn[physicalRow] as number,
-              rangeEv: camRangeEv,
-              rates: camRates,
+              rangeEv: readRenderArrayView(world, entity, Camera, 'rangeEv') as Float32Array,
+              rates: readRenderArrayView(world, entity, Camera, 'rates') as Float32Array,
             }),
             temperature: cameraTemperatureColumn[physicalRow] as number,
             tint: cameraTintColumn[physicalRow] as number,
@@ -440,10 +282,18 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
             colorLutStrength: cameraColorLutStrengthColumn[physicalRow] as number,
           }
         : undefined;
-      const antialias = antialiasFromF32(cameraAntialiasColumn[physicalRow] as number);
-      const dynamicResolutionResult = validateDynamicResolutionCamera(dynamicResolution, antialias);
+      const antialias = ablatedAntialias(
+        antialiasFromF32(cameraAntialiasColumn[physicalRow] as number),
+      );
+      const dynamicResolutionResult =
+        dynamicResolution === undefined
+          ? NO_CAMERA_EFFECT
+          : validateDynamicResolutionCamera(dynamicResolution, antialias);
       if (!dynamicResolutionResult.ok) throw dynamicResolutionResult.error;
-      const barrelDistortionResult = validateBarrelDistortionParameters(barrelDistortion);
+      const barrelDistortionResult =
+        barrelDistortion === undefined
+          ? NO_CAMERA_EFFECT
+          : validateBarrelDistortionParameters(barrelDistortion);
       if (!barrelDistortionResult.ok) throw barrelDistortionResult.error;
       const stereoData = effectInputs.StereoCamera;
       const stereo =
@@ -495,16 +345,19 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
         whitePoint: cameraWhitePointColumn[physicalRow] as number,
         ...(output === undefined ? {} : { output }),
         antialias,
+        ...taaFlickeringField(cameraTaaFlickeringColumn[physicalRow] as number),
         transparency: transparencyFromF32(cameraTransparencyColumn[physicalRow] as number),
         ...(dynamicResolutionResult.value === undefined
           ? {}
           : { dynamicResolution: dynamicResolutionResult.value }),
-        bloom: validateCameraBloom(
-          cameraBloomColumn[physicalRow] as number,
-          cameraBloomThresholdColumn[physicalRow] as number,
-          cameraBloomIntensityColumn[physicalRow] as number,
-          cameraBloomSmoothWidthColumn[physicalRow] as number,
-          cameraBloomRadiusColumn[physicalRow] as number,
+        bloom: ablatedBloom(() =>
+          validateCameraBloom(
+            cameraBloomColumn[physicalRow] as number,
+            cameraBloomThresholdColumn[physicalRow] as number,
+            cameraBloomIntensityColumn[physicalRow] as number,
+            cameraBloomSmoothWidthColumn[physicalRow] as number,
+            cameraBloomRadiusColumn[physicalRow] as number,
+          ),
         ),
         bloomThreshold: cameraBloomThresholdColumn[physicalRow] as number,
         bloomIntensity: cameraBloomIntensityColumn[physicalRow] as number,
@@ -526,10 +379,10 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
               motionBlur: motionBlurParams,
             }),
         ...(clipping === undefined ? {} : { clipping }),
-        ...(outline.value === undefined ? {} : { outline: outline.value }),
-        ...(lensEffects.value === undefined ? {} : { lensEffects: lensEffects.value }),
-        ...(lensFlare.value === undefined ? {} : { lensFlare: lensFlare.value }),
-        ...(barrelDistortion === undefined
+        ...(outline === undefined ? {} : { outline: outline }),
+        ...(lensEffects === undefined ? {} : { lensEffects: lensEffects }),
+        ...(lensFlare === undefined ? {} : { lensFlare: lensFlare }),
+        ...(barrelDistortionResult.value === undefined
           ? {}
           : { barrelDistortion: barrelDistortionResult.value }),
         ...(ambientOcclusion === undefined
@@ -561,4 +414,356 @@ export function collectCameraSnapshots(world: World): CameraSnapshot[] {
     planarTargets.add(camera.target);
   }
   return cameras;
+}
+
+type CameraQuery = ReturnType<ReturnType<typeof collectCameraSnapshotsQuery>['unwrap']>;
+type CameraBatch =
+  ReturnType<ReturnType<CameraQuery['batches']>['unwrap']> extends Iterable<infer B> ? B : never;
+
+interface CameraEffectInputs {
+  CameraView?: ShapeOf<SchemaOf<typeof CameraView>>;
+  ClippingPlanes?: ShapeOf<SchemaOf<typeof ClippingPlanes>>;
+  PlanarReflection?: ShapeOf<SchemaOf<typeof PlanarReflection>>;
+  MotionBlur?: ShapeOf<SchemaOf<typeof MotionBlur>>;
+  BarrelDistortion?: ShapeOf<SchemaOf<typeof BarrelDistortion>>;
+  LensEffects?: ShapeOf<SchemaOf<typeof LensEffects>>;
+  LensFlare?: ShapeOf<SchemaOf<typeof LensFlare>>;
+  Outline?: ShapeOf<SchemaOf<typeof Outline>>;
+  DepthOfField?: ShapeOf<SchemaOf<typeof DepthOfField>>;
+  DynamicResolution?: ShapeOf<SchemaOf<typeof DynamicResolution>>;
+  ScreenSpaceReflection?: ShapeOf<SchemaOf<typeof ScreenSpaceReflection>>;
+  AmbientOcclusion?: ShapeOf<SchemaOf<typeof AmbientOcclusion>>;
+  StereoCamera?: ShapeOf<SchemaOf<typeof StereoCamera>>;
+}
+
+/** Borrowed columns stay inside one live batch; no cached view escapes a snapshot. */
+type CameraEffectColumns = {
+  [C in keyof CameraEffectInputs]?: Partial<
+    Record<keyof NonNullable<CameraEffectInputs[C]>, ArrayLike<number> | undefined>
+  >;
+};
+
+function readCameraEffectInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+): CameraEffectInputs {
+  const inputs: CameraEffectInputs = {};
+  fillCameraCaptureInputs(world, batch, columns, entity, physicalRow, inputs);
+  fillCameraMotionInputs(world, batch, columns, entity, physicalRow, inputs);
+  fillCameraLensInputs(world, batch, columns, entity, physicalRow, inputs);
+  fillCameraOutputInputs(world, batch, columns, entity, physicalRow, inputs);
+  fillCameraLightingInputs(world, batch, columns, entity, physicalRow, inputs);
+  fillCameraCompositionInputs(world, batch, columns, entity, physicalRow, inputs);
+  return inputs;
+}
+
+function fillCameraCaptureInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+  inputs: CameraEffectInputs,
+): void {
+  if (world.hasComponent(entity, CameraView)) {
+    columns.CameraView ??= {
+      order: batch.read(CameraView, 'order'),
+      resolutionScale: batch.read(CameraView, 'resolutionScale'),
+      maxRenderShortSide: batch.read(CameraView, 'maxRenderShortSide'),
+      updateInterval: batch.read(CameraView, 'updateInterval'),
+      enabled: batch.read(CameraView, 'enabled'),
+    };
+    const numeric = columns.CameraView;
+    inputs.CameraView = {
+      viewport: readRenderArrayView(world, entity, CameraView, 'viewport') as Float32Array,
+      order: numeric.order?.[physicalRow] as number,
+      resolutionScale: numeric.resolutionScale?.[physicalRow] as number,
+      maxRenderShortSide: numeric.maxRenderShortSide?.[physicalRow] as number,
+      updateInterval: numeric.updateInterval?.[physicalRow] as number,
+      enabled: numeric.enabled?.[physicalRow] === 1,
+    };
+  }
+  if (world.hasComponent(entity, ClippingPlanes)) {
+    columns.ClippingPlanes ??= {
+      count: batch.read(ClippingPlanes, 'count'),
+      intersection: batch.read(ClippingPlanes, 'intersection'),
+      clipShadows: batch.read(ClippingPlanes, 'clipShadows'),
+      caps: batch.read(ClippingPlanes, 'caps'),
+    };
+    const numeric = columns.ClippingPlanes;
+    inputs.ClippingPlanes = {
+      planes: readRenderArrayView(world, entity, ClippingPlanes, 'planes') as Float32Array,
+      count: numeric.count?.[physicalRow] as number,
+      intersection: numeric.intersection?.[physicalRow] === 1,
+      clipShadows: numeric.clipShadows?.[physicalRow] === 1,
+      caps: numeric.caps?.[physicalRow] === 1,
+    };
+  }
+  if (world.hasComponent(entity, PlanarReflection)) {
+    columns.PlanarReflection ??= {
+      distance: batch.read(PlanarReflection, 'distance'),
+      clipBias: batch.read(PlanarReflection, 'clipBias'),
+      distortion: batch.read(PlanarReflection, 'distortion'),
+      resolutionScale: batch.read(PlanarReflection, 'resolutionScale'),
+      generateMipmaps: batch.read(PlanarReflection, 'generateMipmaps'),
+      updateIntervalFrames: batch.read(PlanarReflection, 'updateIntervalFrames'),
+      requestVersion: batch.read(PlanarReflection, 'requestVersion'),
+    };
+    const numeric = columns.PlanarReflection;
+    inputs.PlanarReflection = {
+      target: world[worldRead].getFieldValue(entity, PlanarReflection, 'target') as ShapeOf<
+        SchemaOf<typeof PlanarReflection>
+      >['target'],
+      normal: readRenderArrayView(world, entity, PlanarReflection, 'normal') as Float32Array,
+      distance: numeric.distance?.[physicalRow] as number,
+      clipBias: numeric.clipBias?.[physicalRow] as number,
+      distortion: (numeric.distortion?.[physicalRow] as number | undefined) ?? 0,
+      resolutionScale: (numeric.resolutionScale?.[physicalRow] as number | undefined) ?? 1,
+      generateMipmaps: numeric.generateMipmaps?.[physicalRow] === 1,
+      updateIntervalFrames: numeric.updateIntervalFrames?.[physicalRow] as number,
+      requestVersion: numeric.requestVersion?.[physicalRow] as number,
+    };
+  }
+}
+
+function fillCameraMotionInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+  inputs: CameraEffectInputs,
+): void {
+  if (world.hasComponent(entity, MotionBlur)) {
+    columns.MotionBlur ??= {
+      shutterAngle: batch.read(MotionBlur, 'shutterAngle'),
+      maxRadiusPixels: batch.read(MotionBlur, 'maxRadiusPixels'),
+      sampleCount: batch.read(MotionBlur, 'sampleCount'),
+      targetFps: batch.read(MotionBlur, 'targetFps'),
+    };
+    const numeric = columns.MotionBlur;
+    inputs.MotionBlur = {
+      shutterAngle: numeric.shutterAngle?.[physicalRow] as number,
+      maxRadiusPixels: numeric.maxRadiusPixels?.[physicalRow] as number,
+      sampleCount: numeric.sampleCount?.[physicalRow] as number,
+      targetFps: numeric.targetFps?.[physicalRow] as number,
+    };
+  }
+  if (world.hasComponent(entity, BarrelDistortion)) {
+    columns.BarrelDistortion ??= {
+      strength: batch.read(BarrelDistortion, 'strength'),
+      centerX: batch.read(BarrelDistortion, 'centerX'),
+      centerY: batch.read(BarrelDistortion, 'centerY'),
+    };
+    const numeric = columns.BarrelDistortion;
+    inputs.BarrelDistortion = {
+      strength: numeric.strength?.[physicalRow] as number,
+      centerX: numeric.centerX?.[physicalRow] as number,
+      centerY: numeric.centerY?.[physicalRow] as number,
+    };
+  }
+}
+
+function fillCameraLensInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+  inputs: CameraEffectInputs,
+): void {
+  if (world.hasComponent(entity, LensEffects)) {
+    columns.LensEffects ??= {
+      vignetteIntensity: batch.read(LensEffects, 'vignetteIntensity'),
+      vignetteRadius: batch.read(LensEffects, 'vignetteRadius'),
+      vignetteSoftness: batch.read(LensEffects, 'vignetteSoftness'),
+      chromaticAberration: batch.read(LensEffects, 'chromaticAberration'),
+      chromaticAberrationAngle: batch.read(LensEffects, 'chromaticAberrationAngle'),
+      grainIntensity: batch.read(LensEffects, 'grainIntensity'),
+      grainSize: batch.read(LensEffects, 'grainSize'),
+    };
+    const numeric = columns.LensEffects;
+    inputs.LensEffects = {
+      vignetteIntensity: numeric.vignetteIntensity?.[physicalRow] as number,
+      vignetteRadius: numeric.vignetteRadius?.[physicalRow] as number,
+      vignetteSoftness: numeric.vignetteSoftness?.[physicalRow] as number,
+      vignetteColor: readRenderArrayView(
+        world,
+        entity,
+        LensEffects,
+        'vignetteColor',
+      ) as Float32Array,
+      chromaticAberration: numeric.chromaticAberration?.[physicalRow] as number,
+      chromaticAberrationAngle: numeric.chromaticAberrationAngle?.[physicalRow] as number,
+      grainIntensity: numeric.grainIntensity?.[physicalRow] as number,
+      grainSize: numeric.grainSize?.[physicalRow] as number,
+    };
+  }
+  if (world.hasComponent(entity, LensFlare)) {
+    columns.LensFlare ??= {
+      intensity: batch.read(LensFlare, 'intensity'),
+      threshold: batch.read(LensFlare, 'threshold'),
+      bokehSize: batch.read(LensFlare, 'bokehSize'),
+    };
+    const numeric = columns.LensFlare;
+    inputs.LensFlare = {
+      intensity: numeric.intensity?.[physicalRow] as number,
+      threshold: numeric.threshold?.[physicalRow] as number,
+      bokehSize: numeric.bokehSize?.[physicalRow] as number,
+      tint: readRenderArrayView(world, entity, LensFlare, 'tint') as Float32Array,
+      ghostTints: readRenderArrayView(world, entity, LensFlare, 'ghostTints') as Float32Array,
+      ghostScales: readRenderArrayView(world, entity, LensFlare, 'ghostScales') as Float32Array,
+    };
+  }
+}
+
+function fillCameraOutputInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+  inputs: CameraEffectInputs,
+): void {
+  if (world.hasComponent(entity, Outline)) {
+    columns.Outline ??= {
+      width: batch.read(Outline, 'width'),
+      occlusion: batch.read(Outline, 'occlusion'),
+    };
+    const numeric = columns.Outline;
+    inputs.Outline = {
+      entities: readRenderArrayView(world, entity, Outline, 'entities') as Uint32Array,
+      visibleColor: readRenderArrayView(world, entity, Outline, 'visibleColor') as Float32Array,
+      hiddenColor: readRenderArrayView(world, entity, Outline, 'hiddenColor') as Float32Array,
+      width: numeric.width?.[physicalRow] as number,
+      occlusion: numeric.occlusion?.[physicalRow] as number,
+    };
+  }
+  if (world.hasComponent(entity, DepthOfField)) {
+    columns.DepthOfField ??= {
+      focusDistance: batch.read(DepthOfField, 'focusDistance'),
+      fStop: batch.read(DepthOfField, 'fStop'),
+      sensorHeight: batch.read(DepthOfField, 'sensorHeight'),
+      maxRadiusPixels: batch.read(DepthOfField, 'maxRadiusPixels'),
+      quality: batch.read(DepthOfField, 'quality'),
+      blurSide: batch.read(DepthOfField, 'blurSide'),
+    };
+    const numeric = columns.DepthOfField;
+    inputs.DepthOfField = {
+      focusDistance: numeric.focusDistance?.[physicalRow] as number,
+      fStop: numeric.fStop?.[physicalRow] as number,
+      sensorHeight: numeric.sensorHeight?.[physicalRow] as number,
+      maxRadiusPixels: numeric.maxRadiusPixels?.[physicalRow] as number,
+      quality: numeric.quality?.[physicalRow] as number,
+      blurSide: numeric.blurSide?.[physicalRow] as number,
+    };
+  }
+  if (world.hasComponent(entity, DynamicResolution)) {
+    columns.DynamicResolution ??= {
+      targetGpuMs: batch.read(DynamicResolution, 'targetGpuMs'),
+      minScale: batch.read(DynamicResolution, 'minScale'),
+      maxScale: batch.read(DynamicResolution, 'maxScale'),
+    };
+    const numeric = columns.DynamicResolution;
+    inputs.DynamicResolution = {
+      targetGpuMs: numeric.targetGpuMs?.[physicalRow] as number,
+      minScale: numeric.minScale?.[physicalRow] as number,
+      maxScale: numeric.maxScale?.[physicalRow] as number,
+    };
+  }
+}
+
+function fillCameraLightingInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+  inputs: CameraEffectInputs,
+): void {
+  if (world.hasComponent(entity, ScreenSpaceReflection)) {
+    columns.ScreenSpaceReflection ??= {
+      maxDistance: batch.read(ScreenSpaceReflection, 'maxDistance'),
+      thickness: batch.read(ScreenSpaceReflection, 'thickness'),
+      maxRoughness: batch.read(ScreenSpaceReflection, 'maxRoughness'),
+    };
+    const numeric = columns.ScreenSpaceReflection;
+    inputs.ScreenSpaceReflection = {
+      maxDistance: numeric.maxDistance?.[physicalRow] as number,
+      thickness: numeric.thickness?.[physicalRow] as number,
+      maxRoughness: numeric.maxRoughness?.[physicalRow] as number,
+    };
+  }
+  if (world.hasComponent(entity, AmbientOcclusion)) {
+    columns.AmbientOcclusion ??= {
+      algorithm: batch.read(AmbientOcclusion, 'algorithm'),
+      radius: batch.read(AmbientOcclusion, 'radius'),
+      bias: batch.read(AmbientOcclusion, 'bias'),
+      intensity: batch.read(AmbientOcclusion, 'intensity'),
+      thickness: batch.read(AmbientOcclusion, 'thickness'),
+      distanceExponent: batch.read(AmbientOcclusion, 'distanceExponent'),
+      distanceFallOff: batch.read(AmbientOcclusion, 'distanceFallOff'),
+      resolutionScale: batch.read(AmbientOcclusion, 'resolutionScale'),
+      directLightingStrength: batch.read(AmbientOcclusion, 'directLightingStrength'),
+      quality: batch.read(AmbientOcclusion, 'quality'),
+    };
+    const numeric = columns.AmbientOcclusion;
+    inputs.AmbientOcclusion = {
+      algorithm: numeric.algorithm?.[physicalRow] as number,
+      radius: numeric.radius?.[physicalRow] as number,
+      bias: numeric.bias?.[physicalRow] as number,
+      intensity: numeric.intensity?.[physicalRow] as number,
+      thickness: numeric.thickness?.[physicalRow] as number,
+      distanceExponent: numeric.distanceExponent?.[physicalRow] as number,
+      distanceFallOff: numeric.distanceFallOff?.[physicalRow] as number,
+      resolutionScale: numeric.resolutionScale?.[physicalRow] as number,
+      directLightingStrength: numeric.directLightingStrength?.[physicalRow] as number,
+      quality: numeric.quality?.[physicalRow] as number,
+    };
+  }
+}
+
+function fillCameraCompositionInputs(
+  world: World,
+  batch: CameraBatch,
+  columns: CameraEffectColumns,
+  entity: EntityHandle,
+  physicalRow: number,
+  inputs: CameraEffectInputs,
+): void {
+  if (world.hasComponent(entity, StereoCamera)) {
+    columns.StereoCamera ??= {
+      eyeSeparation: batch.read(StereoCamera, 'eyeSeparation'),
+      convergence: batch.read(StereoCamera, 'convergence'),
+      layout: batch.read(StereoCamera, 'layout'),
+      swapEyes: batch.read(StereoCamera, 'swapEyes'),
+    };
+    const numeric = columns.StereoCamera;
+    inputs.StereoCamera = {
+      eyeSeparation: numeric.eyeSeparation?.[physicalRow] as number,
+      convergence: numeric.convergence?.[physicalRow] as number,
+      layout: numeric.layout?.[physicalRow] as number,
+      swapEyes: numeric.swapEyes?.[physicalRow] === 1,
+    };
+  }
+}
+
+// No capability escapes this collector through an absent effect.
+const NO_CAMERA_EFFECT = ok(undefined);
+
+function resolveCameraLensInputs(inputs: CameraEffectInputs) {
+  const lensEffects =
+    inputs.LensEffects === undefined ? undefined : resolveLensEffects(inputs.LensEffects).unwrap();
+  const lensFlare =
+    inputs.LensFlare === undefined ? undefined : resolveLensFlare(inputs.LensFlare).unwrap();
+  const outline =
+    inputs.Outline === undefined ? undefined : resolveOutline(inputs.Outline).unwrap();
+  const motionBlurParams =
+    inputs.MotionBlur === undefined
+      ? undefined
+      : resolveMotionBlurParams(inputs.MotionBlur).unwrap();
+  return { lensEffects, lensFlare, outline, motionBlurParams };
 }

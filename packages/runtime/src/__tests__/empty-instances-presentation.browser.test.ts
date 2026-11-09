@@ -11,6 +11,7 @@ import {
 } from '@forgeax/engine-render';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect, it, vi } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
@@ -85,15 +86,12 @@ it('presents empty, populated, then empty instance holders across completed fram
         let presentation: string | undefined;
         for (let frame = 0; frame < 60; frame++) {
           world.update(1 / 60).unwrap();
-          const drawn = renderer.draw({
+          const receipt = await drawReadyFrame(renderer, {
             leases: [lease],
             camera: { lease, entityKey: camera },
             environment: { lease },
           });
-          if (!drawn.ok) throw drawn.error;
-          const completed = await drawn.value.completed;
-          if (!completed.ok) throw completed.error;
-          presentation = drawn.value.presentation;
+          presentation = receipt.presentation;
         }
         expect(presentation).toBe('ready');
       }

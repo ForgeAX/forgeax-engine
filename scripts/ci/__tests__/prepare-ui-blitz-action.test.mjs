@@ -65,7 +65,11 @@ test('Native GI prepares the current UI payload before its full Engine package b
   assert.ok(preparation > prior.lastIndexOf('      - name: Install workspace dependencies\n'));
   const step = workflow.slice(preparation).split('\n      - name: ')[0];
   assert.match(step, /uses: \.\/\.github\/actions\/prepare-ui-blitz/);
-  assert.doesNotMatch(step, /\n\s+if:/);
+  const nativeSteps = parse(workflow).jobs['native-node-gi'].steps;
+  const prepare = nativeSteps.find((candidate) => candidate.name === 'Prepare current Blitz UI');
+  const packageBuild = nativeSteps.find((candidate) => candidate.name === 'Build engine packages');
+  assert.equal(prepare.if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.equal(prepare.if, packageBuild.if, 'every actual Engine build must prepare UI first');
   assert.match(step, /cache-scope: self-hosted-ubuntu-linux-x64/);
 });
 

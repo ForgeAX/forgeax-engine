@@ -237,6 +237,8 @@ export interface CameraSnapshot {
   /** Camera schema output projection consumed by Standard prepare/inspection. */
   readonly output?: CameraOutputSnapshot;
   readonly antialias: Antialias;
+  /** TAA flickering temporal analysis (UE TSR `r.TSR.ShadingRejection.Flickering`); absent means on. */
+  readonly taaFlickering?: boolean;
   /** Requested transparent compositing; absent means `'sorted'`. */
   readonly transparency?: Transparency;
   /** Optional detached Camera companion for fixed or adaptive scaling. */
@@ -867,6 +869,12 @@ export interface FrameReceipt {
    */
   readonly barrelDistortion?: import('./barrel-distortion.js').BarrelDistortionMapping;
   readonly completed: Promise<RenderResult<void, RenderError>>;
+  /** Actual pending shader/native pipeline and environment preparation captured
+   * for this device generation. This does not present a picture: await it, then draw again and
+   * require a new ready receipt. Failure, disposal and device loss settle it.
+   * Compilation blockers always supply a signal, which may already be settled.
+   * Other next-frame work can have no asynchronous preparation dependency. */
+  readonly preparationCompleted?: Promise<RenderResult<void, RenderError>>;
   /**
    * The same completion for frame-credit feedback only. It settles when the
    * GPU work is done even while a cooperative frame holds completion-driven

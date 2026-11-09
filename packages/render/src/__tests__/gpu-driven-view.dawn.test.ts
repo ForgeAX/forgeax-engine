@@ -8,6 +8,7 @@ import {
   runGpuDrivenViewGpuEvidence,
   runGpuDrivenViewLifecycleEvidence,
   runGpuDrivenViewOcclusionEvidence,
+  runGpuDrivenVisibleOrderEvidence,
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
@@ -62,6 +63,17 @@ describe('GPU-driven View Dawn', () => {
       firstVisible: 1,
       recoveredVisible: 0,
     });
+  });
+
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('draws visible instances in candidate order on every frame with %s passes', async (mode) => {
+    const { instanceCount, rows } = await runGpuDrivenVisibleOrderEvidence(mode);
+    // Discard-free opaque programs resolve overlaps by submission order, so the
+    // drawn order must not depend on which cull invocation finished first.
+    const expected = Array.from({ length: instanceCount }, (_, i) => i).filter((i) => i % 3 !== 2);
+    for (const frame of rows) expect(frame).toEqual(expected);
   });
 
   it('survives 60 frames of spawn/despawn capacity crossings without stale buffers', async () => {

@@ -2,6 +2,7 @@ import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-
 import { setDerivedComponent } from '@forgeax/engine-ecs/projection';
 import { err } from '@forgeax/engine-rhi';
 import {
+  type CaptureGraphBatch,
   type CaptureGraphCompileInput,
   type CaptureGraphOutcome,
   captureGraphFailure,
@@ -10,6 +11,7 @@ import {
 } from '../record/frame-capture';
 import type { RenderSystemInternals } from '../record/render-context';
 import { ViewCaptureWork, viewCaptureWorkOf } from './capture-systems';
+import { stageRecordedFeatureGraph } from './feature-systems';
 import { awaitsRenderRecord, RENDER_GRAPH_COMPILE_SYSTEM } from './graph-systems';
 import { RENDER_ENCODER_OPEN_SYSTEM, renderFrameEncoder } from './record-systems';
 import {
@@ -130,7 +132,7 @@ function compileViewCaptures(
   if (reflection?.ok !== true)
     return err(captureGraphFailure({ system: 'view-reflection-probes', outcome: reflection }));
   const { value } = captures;
-  return compileCaptureGraphBatch({
+  const compiled = compileCaptureGraphBatch({
     internals: owner.internals,
     frameState: owner.frameState,
     pipelineState: lighting.fence.pipelineState,
@@ -145,6 +147,29 @@ function compileViewCaptures(
     shadowMapSize: topology.topology.shadowMapSize,
     terrainReceivers: topology.topology.terrainReceivers,
   });
+  if (compiled.ok) stageFaceFeatureReceipts(world, entity, compiled.value);
+  return compiled;
+}
+
+/** Acknowledge the Feature plans each compiled capture face records, as a display graph does. */
+function stageFaceFeatureReceipts(
+  world: World,
+  entity: EntityHandle,
+  batch: CaptureGraphBatch,
+): void {
+  const submission = renderSubmission(world);
+  for (const frame of batch.cube) {
+    const feature = frame.work.feature;
+    if (feature === undefined) continue;
+    stageRecordedFeatureGraph(world, {
+      kind: 'compiled',
+      graph: frame.graph,
+      frame: submission.frame,
+      generation: submission.generation,
+      view: entity,
+      plans: feature.plans,
+    });
+  }
 }
 
 export function registerCaptureGraphSystems(world: World): void {

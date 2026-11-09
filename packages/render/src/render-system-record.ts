@@ -11,6 +11,7 @@ import { EMPTY_GPU_DRAW_SELECTION, type GpuDrawSelection } from './gpu-driven/dr
 import { discardStandardOutputStates } from './pipeline/standard-output/resources';
 import { DEFAULT_STANDARD_PROFILE } from './pipeline/standard-profile';
 import { type RenderResourceScope, renderTime } from './publication/resource-scope';
+import { leanLightingFrame } from './record/directional-shadow-simple';
 import { createDrawObservation } from './record/draw-observation';
 import {
   type CubeCaptureFrameInput,
@@ -28,6 +29,7 @@ import {
   recordProfileRunner,
   runProfiledRenderPhase,
 } from './record/render-context';
+import { cloudShadowProjectionFor } from './record/view-topology';
 import type { CameraSnapshot, RenderPhase, RenderPhaseSkipReason } from './render-contract';
 import type { DispatchList, ExtractedFrame, GpuOwnedFrame } from './render-system-extract';
 import {
@@ -583,6 +585,11 @@ export function stageRecordQueue(
         captures.faces.length > 0 ||
         scene.reflectionProbes.graph.work.some((work) => work.rawCaptureFace !== undefined),
       profilePhase: recordProfileRunner(attempt.profileSession),
+      leanLighting: leanLightingFrame(
+        view.lights,
+        frame.environment?.source.kind,
+        cloudShadowProjectionFor(frame.cloudLayer),
+      ),
     });
   return { gpuDriven, records, sorted };
 }

@@ -47,6 +47,12 @@ iterator when traversal must be suspended or exited early.
 
 `Time` and `FixedTime` are World-owned resources. Systems read them; hosts never write time resources directly.
 
+For owner-package numeric reads into existing scratch, use
+`world[worldRead].copyArray` from `@forgeax/engine-ecs/world-read`. It resolves the
+live row and returns the current count, or `undefined` without writing for a
+missing field or insufficient target. Inline fields avoid transient row views;
+variable fields retain live pool lookup. Keep ordinary gameplay on World/Query.
+
 ## Cordis owns lifecycle; ECS runs the hot path
 
 `createWorldContext(world, plugins?)` creates a native DeepSeek Cordis realm and

@@ -22,12 +22,24 @@ import {
 import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-resources';
 
 type Prepared = Result<TextureAsset, AssetError>;
+interface Target {
+  result: Prepared;
+  completed: Promise<void>;
+  /** A caller has received the settled result; until then it is owed and pinned. */
+  taken: boolean;
+}
 interface Source {
   readonly revision: number;
   readonly fixed: TextureAsset;
   readonly channels: TranscodeChannels;
-  readonly targets: Map<GPUTextureFormat, { result: Prepared; completed: Promise<void> }>;
+  readonly targets: Map<GPUTextureFormat, Target>;
   bytes: number;
+}
+/** In flight, or settled but not yet delivered: eviction would discard owed work. */
+function pinned(source: Source): boolean {
+  for (const target of source.targets.values())
+    if (target.result === pending || !target.taken) return true;
+  return false;
 }
 const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_SOURCES = 256;
@@ -63,7 +75,10 @@ function admitNativeFormat(asset: TextureAsset, caps: RhiCaps | undefined): Prep
 }
 
 /** Device derivatives of privately captured source versions. A miss schedules
- * one transcode; steady draws perform one keyed lookup and never touch WASM. */
+ * one transcode; steady draws perform one keyed lookup and never touch WASM.
+ * The budget evicts only delivered derivatives. When owed work alone fills it,
+ * a new source starts nothing and reports not-ready; the caller's next-frame
+ * retry is its place in the queue, admitted as delivered entries free room. */
 export class TextureDerivations {
   private readonly sources = new ScopedGpuResources<Source>();
   private bytes = 0;
@@ -85,6 +100,7 @@ export class TextureDerivations {
     }
     if (source === undefined) {
       if (asset.data.byteLength > MAX_BYTES) return this.exceeded();
+      if (!this.admit(asset.data.byteLength)) return pending;
       // Borrowed World objects can mutate. Async work sees only this private
       // capture; the numeric source revision, not object identity, selects it.
       const parsed = asset.encoding === 'ktx2' ? parseKtx2(asset.data) : undefined;
@@ -117,9 +133,12 @@ export class TextureDerivations {
       },
     );
     const current = source.targets.get(target);
-    if (current !== undefined) return current.result;
+    if (current !== undefined) {
+      if (current.result !== pending) current.taken = true;
+      return current.result;
+    }
     const captured = source;
-    const state = { result: pending, completed: Promise.resolve() };
+    const state: Target = { result: pending, completed: Promise.resolve(), taken: false };
     state.completed = this.transcode(captured.fixed, target, String(key), caps).then((result) => {
       if (this.sources.get(key, namespace) !== captured) return;
       if (result.ok && captured.bytes + result.value.data.byteLength > MAX_BYTES)
@@ -129,10 +148,9 @@ export class TextureDerivations {
         this.bytes += result.value.data.byteLength;
       }
       state.result = result;
-      this.trim(key, namespace);
+      this.trim(0, 0);
     });
     source.targets.set(target, state);
-    this.trim(key, namespace);
     return pending;
   }
 
@@ -160,11 +178,20 @@ export class TextureDerivations {
     this.sources.clear();
     this.bytes = 0;
   }
-  private trim(keep: string | number, namespace: GpuResourceNamespace): void {
+  /** Room for one more source of `bytes`, evicting delivered derivatives first. */
+  private admit(bytes: number): boolean {
+    this.trim(1, bytes);
+    return this.within(1, bytes);
+  }
+  private within(sources: number, bytes: number): boolean {
+    return this.sources.size + sources <= MAX_SOURCES && this.bytes + bytes <= MAX_BYTES;
+  }
+  /** Evict delivered sources oldest first until `sources`/`bytes` more fit. */
+  private trim(sources: number, bytes: number): void {
     for (const [scope, resources] of this.sources.entries()) {
-      for (const key of resources.keys()) {
-        if (this.sources.size <= MAX_SOURCES && this.bytes <= MAX_BYTES) return;
-        if (key !== keep || scope !== namespace) this.remove(key, Number.POSITIVE_INFINITY, scope);
+      for (const [key, source] of resources) {
+        if (this.within(sources, bytes)) return;
+        if (!pinned(source)) this.remove(key, Number.POSITIVE_INFINITY, scope);
       }
     }
   }

@@ -173,6 +173,9 @@ export interface PipelineLibraryPrepareOptions {
  * prepare before drawing, and a background prepare may run after readiness.
  */
 export interface PipelineLibrary {
+  /** @internal Snapshot real outstanding runtime-demanded native compilations.
+   * Later requests and undemanded background warmup do not extend this signal. */
+  pendingRuntimeCompilation?(): Promise<Result<void, RhiError>> | undefined;
   /** Diagnostic route scope: retain the current graph and subsequent records until disposal. */
   collect?(): { dispose(): void };
   /** @internal Borrow a previously admitted state using a lazy final-state projection. */

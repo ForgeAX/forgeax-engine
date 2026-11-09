@@ -72,7 +72,11 @@ export async function nodeGpu(): Promise<
   try {
     const dawn = await import('@forgeax/engine-dawn-node');
     Object.assign(globalThis, dawn.globals as Record<string, unknown>);
-    instance = (dawn.create as (options: readonly string[]) => GPU)([]);
+    // Dawn rounds timestamp queries to 2^16 ticks (65.5 us on Metal) by default;
+    // replay timing needs the raw ticks.
+    instance = (dawn.create as (options: readonly string[]) => GPU)([
+      'disable-dawn-features=timestamp_quantization',
+    ]);
     return { ok: true, value: instance };
   } catch (cause) {
     return dawnUnavailable(cause instanceof Error ? cause.message : String(cause));

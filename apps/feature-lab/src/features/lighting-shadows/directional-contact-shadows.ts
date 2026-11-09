@@ -8,7 +8,7 @@ import { spawnCamera, spawnGround, spawnMesh, standard } from '../../lab/stage';
 const LENGTH = 0.5;
 
 const APP_OPTIONS: CreateAppOptions = {
-  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+  standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
 };
 
 export default defineFeature({
@@ -16,7 +16,7 @@ export default defineFeature({
   catalog: 'Directional contact shadows',
   kind: 'visual',
   appOptions: APP_OPTIONS,
-  summary: `Deferred path, cascades disabled (castShadow: false). DirectionalLight.contactShadowLength = ${LENGTH} m marches the depth buffer toward a low sun, so every dark band on the floor is contact-shadow evidence.`,
+  summary: `Forward path (also available in Deferred), cascades disabled (castShadow: false). DirectionalLight.contactShadowLength = ${LENGTH} m marches the depth buffer toward a low sun, so every dark band on the floor is contact-shadow evidence.`,
   expect:
     'ON: each small cube has a dark contact-shadow band on the floor on its side away from the sun. OFF: contactShadowLength = 0 and the cubes look pasted onto the floor with no grounding shadow.',
   setup({ world }) {

@@ -1,12 +1,27 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { materialShaderSource } from '../manifest-publication';
+import { manifestShaderSource, materialShaderSource } from '../manifest-publication';
 import {
   materialShaderSourceEquals,
   readShaderManifestPublication,
   shaderSourceDigestInput,
 } from '../manifest-publication.js';
 import { ShaderRegistry } from '../ShaderRegistry';
+
+it('loads the publication source in native Node without a bundler resolver', () => {
+  const source = new URL('../manifest-publication.ts', import.meta.url).href;
+  expect(() =>
+    execFileSync(
+      process.execPath,
+      ['--input-type=module', '--eval', `await import(${JSON.stringify(source)})`],
+      {
+        timeout: 2000,
+        stdio: 'pipe',
+      },
+    ),
+  ).not.toThrow();
+});
 
 const nativeSubtle = crypto.subtle;
 
@@ -482,4 +497,31 @@ it('shares selected publication source storage through ordinary registration and
       })
       .materialProgram(source),
   ).toBe(program);
+});
+
+it('keeps lazy source getters detached and publication-local while sharing equal source references', async () => {
+  type Expanded = {
+    entries: { wgsl: string }[];
+    materialShaders: { composedWgsl: string; variants: { composedWgsl: string }[] }[];
+  };
+  const first = (await readShaderManifestPublication(publication())) as Expanded;
+  const second = (await readShaderManifestPublication(publication())) as Expanded;
+  const entry = first.entries[0],
+    row = first.materialShaders[0],
+    other = second.materialShaders[0];
+  if (!entry || !row || !other || !row.variants[0]) throw new Error('Missing source fixture');
+  const descriptor = Object.getOwnPropertyDescriptor(row, 'composedWgsl');
+  const entryDescriptor = Object.getOwnPropertyDescriptor(entry, 'wgsl');
+  expect(descriptor?.enumerable).toBe(true);
+  expect(descriptor?.set).toBeUndefined();
+  expect(descriptor?.get?.call(undefined)).toBe(wgsl);
+  expect(descriptor?.get?.call({ composedWgsl: 'foreign' })).toBe(wgsl);
+  expect(entryDescriptor?.get?.call(other)).toBe(wgsl);
+  expect(Object.create(row).composedWgsl).toBe(wgsl);
+  expect(JSON.parse(JSON.stringify(row)).composedWgsl).toBe(wgsl);
+  const selected = materialShaderSource(row);
+  expect(materialShaderSource(row.variants[0])).toBe(selected);
+  expect(manifestShaderSource(entry)).toBe(selected);
+  expect(materialShaderSource(other)).not.toBe(selected);
+  expect(selected.read()).toBe(wgsl);
 });

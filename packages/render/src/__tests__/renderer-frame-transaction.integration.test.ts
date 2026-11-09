@@ -178,6 +178,16 @@ async function buildTemporalResolveGraph(device: RhiDevice) {
       'taa-write-stability',
       descriptor('r8unorm'),
     ).unwrap(),
+    historyFlicker: createRenderPipelineTarget(
+      graph,
+      'taa-history-flicker',
+      descriptor('rgba8unorm'),
+    ).unwrap(),
+    writeFlicker: createRenderPipelineTarget(
+      graph,
+      'taa-write-flicker',
+      descriptor('rgba8unorm'),
+    ).unwrap(),
     scene: createRenderPipelineTarget(graph, 'taa-scene', descriptor('rgba16float')).unwrap(),
     currentTemporal: createRenderPipelineTarget(
       graph,
@@ -227,15 +237,18 @@ async function buildTemporalResolveGraph(device: RhiDevice) {
   // Four rgba16float attachments already consume the default 32-byte budget.
   expect(
     graph.addRasterPass('taa-seed-stability', {
-      accesses: [{ resource: targets.historyStability.view, usage: 'color-attachment' }],
-      colorAttachments: [
-        {
-          view: targets.historyStability.view,
-          loadOp: 'clear',
-          storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        },
+      accesses: [
+        { resource: targets.historyStability.view, usage: 'color-attachment' },
+        { resource: targets.historyFlicker.view, usage: 'color-attachment' },
       ],
+      colorAttachments: [targets.historyStability.view, targets.historyFlicker.view].map(
+        (view) => ({
+          view,
+          loadOp: 'clear' as const,
+          storeOp: 'store' as const,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }),
+      ),
       encode: () => {},
     }).ok,
   ).toBe(true);

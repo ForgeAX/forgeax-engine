@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { parse } from 'yaml';
 
 const bevyRoot = join(process.cwd(), 'apps', 'bevy');
 
@@ -20,7 +21,14 @@ test('Bevy fleet prepares Chrome Beta before the Skybox WebGL2 smoke', () => {
     job.lastIndexOf('\n      - ', install),
     job.indexOf('\n      - ', install),
   );
-  assert.ok(!step.includes('if:'), 'every Bevy lane must support package-derived membership');
+  const browserStep = parse(workflow).jobs['bevy-smoke-fleet'].steps.find(
+    (candidate) => candidate.uses === './.github/actions/install-playwright-chrome-beta',
+  );
+  assert.equal(
+    browserStep.if,
+    "steps.ci-repair.outputs.reused != 'true'",
+    'every executed Bevy lane must support package-derived membership',
+  );
   assert.ok(!step.includes('continue-on-error'), 'browser preparation must fail visibly');
 });
 

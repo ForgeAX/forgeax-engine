@@ -1,4 +1,5 @@
 /** biome-ignore-all lint/suspicious/noConsole: Bounded case progress locates CI deadlines without changing the workload. */
+import { DEFAULT_STANDARD_PROFILE } from '@forgeax/engine-render';
 import { afterAll, beforeAll, it } from 'vitest';
 import {
   CUBE_CONTACT_CASES,
@@ -14,7 +15,10 @@ export function registerCubePlaneShadowContactCases(renderPath: 'forward' | 'def
   beforeAll(async () => {
     console.info('[cube-contact-progress]', JSON.stringify({ stage: 'fixture-start', renderPath }));
     document.body.append(canvas);
-    fixture = await createCubePlaneShadowContactFixture(canvas, '/shaders/manifest.json');
+    // The cold renderer starts in its measured mode, with unused SSAO disabled.
+    fixture = await createCubePlaneShadowContactFixture(canvas, '/shaders/manifest.json', {
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ssao: false },
+    });
     console.info('[cube-contact-progress]', JSON.stringify({ stage: 'fixture-ready', renderPath }));
   }, 60000);
   afterAll(async () => {

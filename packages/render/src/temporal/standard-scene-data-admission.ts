@@ -14,8 +14,10 @@ import {
 } from '../pbr-pipeline';
 import { matchesRecordMode } from '../record/material-pass-selection';
 import type { RenderPipelineTopology } from '../render-pipeline';
-import type { RenderableSnapshot } from '../render-system-extract';
+import type { DispatchEntry, RenderableSnapshot } from '../render-system-extract';
+import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import { DEFERRED_PASS_SELECTOR, FORWARD_PASS_SELECTOR, matchPass } from '../systems/pass-selector';
+import { materialProgramFact, retainedMaterialProgramFacts } from './material-program-facts';
 import type {
   SceneDataLane,
   StandardSceneDataContributorProgramFact,
@@ -161,6 +163,98 @@ export interface StandardSceneDataAdmissionInput {
   readonly contributors: readonly StandardSceneDataContributor[];
 }
 
+// Only this producer's frozen primitive observations can reuse a prior proof.
+// Raw/custom contributors keep the complete ordinary getter and diagnostic route.
+const ownedContributors = new WeakSet<StandardSceneDataContributor>();
+const contributorProgram = Symbol('StandardSceneDataContributor.program');
+type ProducedContributor = StandardSceneDataContributor & {
+  [contributorProgram]?: StandardSceneDataContributorProgramFact;
+};
+type AvailableProof = {
+  readonly header: Omit<StandardSceneDataAdmissionInput, 'contributors'>;
+  readonly contributors: readonly StandardSceneDataContributor[];
+};
+const availableProofs = new GenerationalWeakMap<StandardSceneSurfaceAdmission, AvailableProof>();
+
+function rememberAvailableProof(
+  admitted: StandardSceneSurfaceAdmission,
+  input: StandardSceneDataAdmissionInput,
+): void {
+  if (!input.contributors.every((row) => ownedContributors.has(row))) return;
+  const { contributors, ...header } = input;
+  // Retain the producer observations themselves, not a second primitive-field roster.
+  availableProofs.set(admitted, { header, contributors: Object.freeze(contributors.slice()) });
+}
+
+/** The prior available proof's immutable producer observations, in contribution order. */
+export function standardSceneSurfaceContributorBaseline(
+  admitted: StandardSceneSurfaceAdmission | undefined,
+): readonly StandardSceneDataContributor[] | undefined {
+  return admitted === undefined ? undefined : availableProofs.get(admitted)?.contributors;
+}
+
+function ownContributor(
+  contributor: StandardSceneDataContributor | undefined,
+): StandardSceneDataContributor | undefined {
+  if (contributor !== undefined) {
+    if (ownedContributors.has(contributor)) return contributor;
+    if (contributor.facts !== undefined) Object.freeze(contributor.facts);
+    Object.freeze(contributor);
+    ownedContributors.add(contributor);
+  }
+  return contributor;
+}
+
+/** Compare every input to identity and rejection; no program/source identity shortcut. */
+function sameContributorProof(
+  row: StandardSceneDataContributor,
+  prior: StandardSceneDataContributor,
+) {
+  return (
+    ownedContributors.has(row) &&
+    (row === prior ||
+      (row.id === prior.id &&
+        row.publication === prior.publication &&
+        row.materialShaderId === prior.materialShaderId &&
+        row.geometry === prior.geometry &&
+        row.deformation === prior.deformation &&
+        row.entryPoint === prior.entryPoint &&
+        row.selectedProgram === prior.selectedProgram &&
+        (row.forwardOnly === true) === (prior.forwardOnly === true) &&
+        row.facts?.authoredShaderId === prior.facts?.authoredShaderId &&
+        row.facts?.materialSnapshotMissing === prior.facts?.materialSnapshotMissing &&
+        row.facts?.selectedPassFound === prior.facts?.selectedPassFound &&
+        row.facts?.expectedFragmentEntry === prior.facts?.expectedFragmentEntry))
+  );
+}
+
+function reusableAdmission(
+  input: StandardSceneDataAdmissionInput,
+  previous: StandardSceneSurfaceAdmission | undefined,
+): boolean {
+  if (previous === undefined) return false;
+  const proof = availableProofs.get(previous);
+  if (proof === undefined) return false;
+  const header = proof.header;
+  if (
+    input.viewIdentity !== header.viewIdentity ||
+    input.generation !== header.generation ||
+    input.deviceGeneration !== header.deviceGeneration ||
+    input.standardPipeline !== header.standardPipeline ||
+    input.cameraAvailable !== header.cameraAvailable ||
+    input.lane !== header.lane ||
+    input.renderPath !== header.renderPath ||
+    input.contributors.length !== proof.contributors.length
+  )
+    return false;
+  for (let index = 0; index < input.contributors.length; index++) {
+    const row = input.contributors[index],
+      prior = proof.contributors[index];
+    if (row === undefined || prior === undefined || !sameContributorProof(row, prior)) return false;
+  }
+  return true;
+}
+
 function coversStockAo(admission: StandardSceneSurfaceAdmission): boolean {
   return (
     admission.status === 'available' ||
@@ -205,7 +299,9 @@ export function standardAoSceneDataUnavailable(input: {
 
 export function createStandardSceneSurfaceAdmission(
   input: StandardSceneDataAdmissionInput,
+  previous?: StandardSceneSurfaceAdmission,
 ): StandardSceneSurfaceAdmission {
+  if (previous !== undefined && reusableAdmission(input, previous)) return previous;
   const renderPath = input.standardPipeline && input.cameraAvailable ? input.renderPath : undefined;
   const expectedEntry = renderPath === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
   const hasProducer = renderPath !== undefined;
@@ -241,6 +337,17 @@ export function createStandardSceneSurfaceAdmission(
         : renderPath === 'deferred'
           ? 'standard-deferred-gbuffer'
           : 'standard-forward-surface-pass';
+  const identityRows = decisions.map(({ contributor, rejection }) =>
+    contributorIdentityFields(contributor, rejection?.reason),
+  );
+  // A singleton needs no ordering key. Keep its original direct serialization.
+  const orderedIdentityRows =
+    identityRows.length < 2
+      ? identityRows
+      : identityRows
+          .map((fields) => ({ fields, key: JSON.stringify(fields) }))
+          .sort((left, right) => left.key.localeCompare(right.key))
+          .map(({ fields }) => fields);
   const identity = JSON.stringify([
     input.viewIdentity,
     input.generation,
@@ -250,19 +357,7 @@ export function createStandardSceneSurfaceAdmission(
     input.lane,
     input.renderPath,
     producer,
-    decisions
-      .map(({ contributor: row, rejection }) => [
-        row.id,
-        row.publication,
-        row.materialShaderId,
-        row.geometry,
-        row.deformation,
-        row.entryPoint,
-        row.selectedProgram,
-        row.forwardOnly === true,
-        rejection?.reason,
-      ])
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+    orderedIdentityRows,
     rejected.map(({ id, reason }) => [id, reason]),
   ]);
   const base = {
@@ -277,13 +372,15 @@ export function createStandardSceneSurfaceAdmission(
     lane: input.lane,
   };
   if (renderPath !== undefined && producer !== undefined && rejected.length === 0) {
-    return Object.freeze({
+    const admitted: StandardSceneSurfaceAdmission = Object.freeze({
       ...base,
       renderPath,
       status: 'available',
       producer,
       missingContributorIds: Object.freeze([]) as readonly [],
     });
+    rememberAvailableProof(admitted, input);
+    return admitted;
   }
   return Object.freeze({
     ...base,
@@ -297,15 +394,33 @@ export function createStandardSceneSurfaceAdmission(
   });
 }
 
+type SurfaceContributorRejection = {
+  readonly reason: StandardSceneDataContributorRejectionReason;
+  readonly rejectedField: StandardSceneDataContributorRejectedField;
+};
+
+/** Capture the complete tuple once before canonical ordering. */
+function contributorIdentityFields(
+  row: StandardSceneDataContributor,
+  rejection: StandardSceneDataContributorRejectionReason | undefined,
+) {
+  return [
+    row.id,
+    row.publication,
+    row.materialShaderId,
+    row.geometry,
+    row.deformation,
+    row.entryPoint,
+    row.selectedProgram,
+    row.forwardOnly === true,
+    rejection,
+  ];
+}
+
 function surfaceContributorRejection(
   contributor: StandardSceneDataContributor,
   expectedEntry: string,
-):
-  | {
-      readonly reason: StandardSceneDataContributorRejectionReason;
-      readonly rejectedField: StandardSceneDataContributorRejectedField;
-    }
-  | undefined {
+): SurfaceContributorRejection | undefined {
   const facts = contributor.facts;
   const authoredShaderId = facts?.authoredShaderId ?? contributor.materialShaderId;
   const unlitForward =
@@ -322,20 +437,35 @@ function surfaceContributorRejection(
     !unlitForward
   )
     return { reason: 'authored-program-not-standard-pbr', rejectedField: 'authored-shader-id' };
-  if (contributor.geometry !== 'mesh' && contributor.geometry !== 'skinned')
-    return { reason: 'unsupported-geometry', rejectedField: 'geometry' };
-  if (contributor.geometry === 'mesh' && contributor.deformation !== 'rigid')
-    return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
-  if (
-    contributor.geometry === 'skinned' &&
-    (contributor.deformation !== 'skin' || !isStandardPbrSkinMaterialShader(authoredShaderId))
-  )
-    return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
+  const geometry = surfaceGeometryRejection(contributor, authoredShaderId);
+  if (geometry !== undefined) return geometry;
   if (
     contributor.entryPoint !== expectedEntry ||
     (facts?.expectedFragmentEntry !== undefined && facts.expectedFragmentEntry !== expectedEntry)
   )
     return { reason: 'missing-fragment-entry', rejectedField: 'fragment-entry-point' };
+  return undefined;
+}
+
+/** Deformation producers retain the selected rigid or Skin program's input ABI. */
+function surfaceGeometryRejection(
+  contributor: StandardSceneDataContributor,
+  authoredShaderId: string | undefined,
+): SurfaceContributorRejection | undefined {
+  if (contributor.geometry !== 'mesh' && contributor.geometry !== 'skinned')
+    return { reason: 'unsupported-geometry', rejectedField: 'geometry' };
+  if (
+    contributor.geometry === 'mesh' &&
+    contributor.deformation !== 'rigid' &&
+    contributor.deformation !== 'morph'
+  )
+    return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
+  if (
+    contributor.geometry === 'skinned' &&
+    ((contributor.deformation !== 'skin' && contributor.deformation !== 'morph') ||
+      !isStandardPbrSkinMaterialShader(authoredShaderId))
+  )
+    return { reason: 'unsupported-deformation', rejectedField: 'deformation' };
   return undefined;
 }
 
@@ -420,41 +550,6 @@ function isRequiredSurfaceDispatch(
   );
 }
 
-function materialProgramFact(
-  material: MaterialResource,
-  pass: MaterialResource['snapshot']['passes'][number],
-): StandardSceneDataContributorProgramFact {
-  const snapshot = material.snapshot;
-  const selectedProgramKey = snapshot.materialProgramKeys?.[pass.name];
-  const registryLookupKey =
-    selectedProgramKey ?? runtimeMaterialShaderId(pass.program.module, pass.name);
-  const selectedProgram = snapshot.materialPublication?.programs.find(
-    (program) => program.pass === pass.name,
-  );
-  return Object.freeze({
-    pass: pass.name,
-    authoredModule: pass.program.module,
-    authoredShaderId: runtimeMaterialShaderId(pass.program.module, pass.name),
-    selectedProgramKey,
-    registryLookupKey,
-    fragmentEntryPoints: Object.freeze(
-      (snapshot.materialEntryPoints?.[pass.name] ?? [])
-        .filter((entry) => entry.stage === 'fragment')
-        .map((entry) => entry.name),
-    ),
-    publicationIdentity: snapshot.materialPublication?.identity,
-    program:
-      selectedProgram === undefined
-        ? undefined
-        : Object.freeze({
-            context: selectedProgram.context,
-            address: selectedProgram.address,
-            specializationKey: selectedProgram.specializationKey,
-            artifactHash: selectedProgram.artifactHash,
-          }),
-  });
-}
-
 function deformationForContributor(
   row: RenderableSnapshot | undefined,
   geometry: string,
@@ -464,47 +559,106 @@ function deformationForContributor(
   return geometry === 'mesh' ? 'rigid' : 'unknown';
 }
 
-export function standardSceneDataContributorForDispatch(input: {
-  readonly row: RenderableSnapshot | undefined;
-  readonly sourceTuple: StandardSceneDataContributorTuple;
-  readonly materialHandle: number;
-  readonly materialShaderId: string | undefined;
-  readonly tags: Record<string, string>;
-  readonly lane: 'forward' | 'deferred';
-  readonly id: string;
-}): StandardSceneDataContributor | undefined {
-  const material = materialForDispatch(input.row, input.materialHandle);
-  const expectedFragmentEntry = input.lane === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
-  if (material === undefined) return missingSnapshotContributor(input, expectedFragmentEntry);
-  if (!isRequiredSurfaceDispatch(material, input.tags, input.lane)) return undefined;
-  const pass = passForDispatch(material, input.materialShaderId, input.tags);
+type StandardSceneDataDispatch = Pick<
+  DispatchEntry,
+  'materialHandle' | 'materialShaderId' | 'tags' | 'passIndex'
+>;
+
+export function standardSceneDataContributorForDispatch(
+  row: RenderableSnapshot | undefined,
+  dispatch: StandardSceneDataDispatch,
+  lane: 'forward' | 'deferred',
+  previous?: StandardSceneDataContributor,
+): StandardSceneDataContributor | undefined {
+  // Observe identity before material selection, but materialize it only for
+  // passes that actually contribute. The existing dispatch is the sole source.
+  const worldId = row?.worldId ?? -1;
+  const entityKey = row?.entityKey ?? -1;
+  const materialHandle = dispatch.materialHandle;
+  const passIndex = dispatch.passIndex;
+  const materialShaderId = dispatch.materialShaderId;
+  const tags = dispatch.tags;
+  const material = materialForDispatch(row, materialHandle);
+  if (
+    material === undefined
+      ? !matchPass(tags, lane === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR)
+      : !isRequiredSurfaceDispatch(material, tags, lane)
+  )
+    return undefined;
+  const prior = previous !== undefined && ownedContributors.has(previous) ? previous : undefined;
+  const sourceTuple = contributorSourceTuple(prior, worldId, entityKey, materialHandle, passIndex);
+  const expectedFragmentEntry = lane === 'deferred' ? 'fs_gbuffer' : 'fs_ao_input';
+  if (material === undefined)
+    return ownContributor(
+      missingSnapshotContributor(row, sourceTuple, materialShaderId, expectedFragmentEntry),
+    );
+  const pass = passForDispatch(material, materialShaderId, tags);
   if (pass === undefined)
-    return selectedPassMissingContributor(material, input, expectedFragmentEntry);
-  return selectedPassContributor(material, input, pass, expectedFragmentEntry);
+    return ownContributor(
+      selectedPassMissingContributor(
+        material,
+        row,
+        sourceTuple,
+        materialShaderId,
+        tags,
+        expectedFragmentEntry,
+      ),
+    );
+  return ownContributor(
+    selectedPassContributor(
+      material,
+      row,
+      sourceTuple,
+      materialShaderId,
+      tags,
+      lane,
+      pass,
+      expectedFragmentEntry,
+      prior,
+    ),
+  );
 }
 
-type StandardSceneDataDispatchInput = Parameters<typeof standardSceneDataContributorForDispatch>[0];
+function contributorSourceTuple(
+  previous: StandardSceneDataContributor | undefined,
+  worldId: number,
+  entityKey: number,
+  materialHandle: number,
+  passIndex: number,
+): StandardSceneDataContributorTuple {
+  const tuple = previous?.facts?.sourceTuple;
+  if (
+    tuple !== undefined &&
+    typeof worldId === 'number' &&
+    typeof entityKey === 'number' &&
+    typeof materialHandle === 'number' &&
+    typeof passIndex === 'number' &&
+    Object.is(tuple[0], worldId) &&
+    Object.is(tuple[1], entityKey) &&
+    Object.is(tuple[2], materialHandle) &&
+    Object.is(tuple[3], passIndex)
+  )
+    return tuple;
+  return Object.freeze([worldId, entityKey, materialHandle, passIndex] as const);
+}
 
 function missingSnapshotContributor(
-  input: StandardSceneDataDispatchInput,
+  row: RenderableSnapshot | undefined,
+  sourceTuple: StandardSceneDataContributorTuple,
+  materialShaderId: string | undefined,
   expectedFragmentEntry: string,
-): StandardSceneDataContributor | undefined {
-  const selected = matchPass(
-    input.tags,
-    input.lane === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR,
-  );
-  if (!selected) return undefined;
+): StandardSceneDataContributor {
   return {
-    id: input.id,
+    id: JSON.stringify(sourceTuple),
     publication: '',
-    materialShaderId: input.materialShaderId ?? '',
+    materialShaderId: materialShaderId ?? '',
     geometry: 'unknown',
-    deformation: deformationForContributor(input.row, 'unknown'),
+    deformation: deformationForContributor(row, 'unknown'),
     entryPoint: undefined,
     selectedProgram: '',
     facts: {
-      sourceTuple: input.sourceTuple,
-      dispatchProgramKey: input.materialShaderId ?? '',
+      sourceTuple,
+      dispatchProgramKey: materialShaderId ?? '',
       authoredModule: undefined,
       authoredShaderId: undefined,
       expectedFragmentEntry,
@@ -514,8 +668,8 @@ function missingSnapshotContributor(
       publicationIdentity: undefined,
       selectedProgramFacts: undefined,
       programCandidates: Object.freeze([]),
-      morphWeightsPresent: input.row?.morph !== undefined,
-      skinBindingPresent: input.row?.skinBinding !== undefined,
+      morphWeightsPresent: row?.morph !== undefined,
+      skinBindingPresent: row?.skinBinding !== undefined,
       materialSnapshotMissing: true,
       selectedPassFound: false,
     },
@@ -524,27 +678,30 @@ function missingSnapshotContributor(
 
 function selectedPassMissingContributor(
   material: MaterialResource,
-  input: StandardSceneDataDispatchInput,
+  row: RenderableSnapshot | undefined,
+  sourceTuple: StandardSceneDataContributorTuple,
+  materialShaderId: string | undefined,
+  tags: Record<string, string>,
   expectedFragmentEntry: string,
 ): StandardSceneDataContributor {
   const candidate = material.snapshot.passes.find((entry) => {
-    const tags = (entry.renderState?.tags as Record<string, string> | undefined) ?? {};
-    return tags.LightMode === input.tags.LightMode;
+    const candidateTags = (entry.renderState?.tags as Record<string, string> | undefined) ?? {};
+    return candidateTags.LightMode === tags.LightMode;
   });
   const candidateFact =
     candidate === undefined ? undefined : materialProgramFact(material, candidate);
   const geometry = material.snapshot.materialContext?.geometry ?? 'unknown';
   return {
-    id: input.id,
+    id: JSON.stringify(sourceTuple),
     publication: '',
-    materialShaderId: candidateFact?.authoredShaderId ?? input.materialShaderId ?? '',
+    materialShaderId: candidateFact?.authoredShaderId ?? materialShaderId ?? '',
     geometry,
-    deformation: deformationForContributor(input.row, geometry),
+    deformation: deformationForContributor(row, geometry),
     entryPoint: undefined,
     selectedProgram: '',
     facts: {
-      sourceTuple: input.sourceTuple,
-      dispatchProgramKey: input.materialShaderId ?? '',
+      sourceTuple,
+      dispatchProgramKey: materialShaderId ?? '',
       authoredModule: candidateFact?.authoredModule,
       authoredShaderId: candidateFact?.authoredShaderId,
       expectedFragmentEntry,
@@ -554,8 +711,8 @@ function selectedPassMissingContributor(
       publicationIdentity: material.snapshot.materialPublication?.identity,
       selectedProgramFacts: candidateFact?.program,
       programCandidates: candidateFact === undefined ? Object.freeze([]) : [candidateFact],
-      morphWeightsPresent: input.row?.morph !== undefined,
-      skinBindingPresent: input.row?.skinBinding !== undefined,
+      morphWeightsPresent: row?.morph !== undefined,
+      skinBindingPresent: row?.skinBinding !== undefined,
       materialSnapshotMissing: false,
       selectedPassFound: false,
     },
@@ -564,52 +721,152 @@ function selectedPassMissingContributor(
 
 function selectedPassContributor(
   material: MaterialResource,
-  input: StandardSceneDataDispatchInput,
+  row: RenderableSnapshot | undefined,
+  sourceTuple: StandardSceneDataContributorTuple,
+  materialShaderId: string | undefined,
+  tags: Record<string, string>,
+  lane: 'forward' | 'deferred',
   pass: MaterialResource['snapshot']['passes'][number],
   expectedFragmentEntry: string,
+  previous: StandardSceneDataContributor | undefined,
 ): StandardSceneDataContributor {
   const snapshot = material.snapshot;
-  const selectedProgramFact = materialProgramFact(material, pass);
-  const forwardOnly = input.lane === 'deferred' && matchPass(input.tags, FORWARD_PASS_SELECTOR);
+  const retained = retainedMaterialProgramFacts(material, snapshot, pass, materialShaderId);
+  const selectedProgramFact = retained?.fact ?? materialProgramFact(material, pass);
+  const forwardOnly = lane === 'deferred' && matchPass(tags, FORWARD_PASS_SELECTOR);
   // Publishing fs_gbuffer in the same WGSL module does not select a GBuffer
   // draw. The later Forward-only pass cannot certify that producer's coverage.
-  const entryPoint = forwardOnly
-    ? undefined
-    : (snapshot.materialEntryPoints?.[pass.name] ?? []).find(
-        (entry) => entry.stage === 'fragment' && entry.name === expectedFragmentEntry,
-      )?.name;
-  const authoredShaderId = runtimeMaterialShaderId(pass.program.module, pass.name);
-  return {
+  const entryPoint = contributorFragmentEntry(
+    snapshot,
+    pass,
+    selectedProgramFact,
+    retained !== undefined,
     forwardOnly,
-    id: input.id,
-    publication: JSON.stringify([
+    expectedFragmentEntry,
+  );
+  const authoredShaderId =
+    retained === undefined
+      ? runtimeMaterialShaderId(pass.program.module, pass.name)
+      : selectedProgramFact.authoredShaderId;
+  const id =
+    previous?.facts?.sourceTuple === sourceTuple ? previous.id : JSON.stringify(sourceTuple);
+  const publication =
+    retained?.publication ??
+    JSON.stringify([
       snapshot.materialPublication?.identity ?? null,
-      snapshot.materialProgramKeys?.[pass.name] ?? input.materialShaderId,
-    ]),
+      snapshot.materialProgramKeys?.[pass.name] ?? materialShaderId,
+    ]);
+  const geometry = snapshot.materialContext?.geometry ?? 'unknown';
+  const deformation = deformationForContributor(
+    row,
+    snapshot.materialContext?.geometry ?? 'unknown',
+  );
+  const selectedProgram =
+    retained?.selectedProgram ?? JSON.stringify(selectedProgramFact.program ?? null);
+  const dispatchProgramKey = materialShaderId ?? '';
+  const authoredModule = pass.program.module;
+  const publishedFragmentEntries = selectedProgramFact.fragmentEntryPoints;
+  const registryLookupKey = selectedProgramFact.registryLookupKey;
+  const selectedPass = pass.name;
+  const publicationIdentity = selectedProgramFact.publicationIdentity;
+  const selectedProgramFacts = selectedProgramFact.program;
+  const programCandidates = retained?.candidates ?? [selectedProgramFact];
+  const morphWeightsPresent = row?.morph !== undefined;
+  const skinBindingPresent = row?.skinBinding !== undefined;
+  if (
+    previous !== undefined &&
+    retained !== undefined &&
+    matchesSelectedContributor(
+      previous,
+      selectedProgramFact,
+      sourceTuple,
+      publication,
+      forwardOnly,
+      geometry,
+      deformation,
+      entryPoint,
+      dispatchProgramKey,
+      expectedFragmentEntry,
+      morphWeightsPresent,
+      skinBindingPresent,
+    )
+  )
+    return previous;
+  const contributor: ProducedContributor = {
+    forwardOnly,
+    id,
+    publication,
     materialShaderId: authoredShaderId ?? '',
-    geometry: snapshot.materialContext?.geometry ?? 'unknown',
-    deformation: deformationForContributor(
-      input.row,
-      snapshot.materialContext?.geometry ?? 'unknown',
-    ),
+    geometry,
+    deformation,
     entryPoint,
-    selectedProgram: JSON.stringify(selectedProgramFact.program ?? null),
+    selectedProgram,
     facts: {
-      sourceTuple: input.sourceTuple,
-      dispatchProgramKey: input.materialShaderId ?? '',
-      authoredModule: pass.program.module,
+      sourceTuple,
+      dispatchProgramKey,
+      authoredModule,
       authoredShaderId,
       expectedFragmentEntry,
-      publishedFragmentEntries: selectedProgramFact.fragmentEntryPoints,
-      registryLookupKey: selectedProgramFact.registryLookupKey,
-      selectedPass: pass.name,
-      publicationIdentity: selectedProgramFact.publicationIdentity,
-      selectedProgramFacts: selectedProgramFact.program,
-      programCandidates: [selectedProgramFact],
-      morphWeightsPresent: input.row?.morph !== undefined,
-      skinBindingPresent: input.row?.skinBinding !== undefined,
+      publishedFragmentEntries,
+      registryLookupKey,
+      selectedPass,
+      publicationIdentity,
+      selectedProgramFacts,
+      programCandidates,
+      morphWeightsPresent,
+      skinBindingPresent,
       materialSnapshotMissing: false,
       selectedPassFound: true,
     },
   };
+  if (retained !== undefined) contributor[contributorProgram] = selectedProgramFact;
+  return contributor;
+}
+
+function contributorFragmentEntry(
+  snapshot: MaterialResource['snapshot'],
+  pass: MaterialResource['snapshot']['passes'][number],
+  selectedProgramFact: StandardSceneDataContributorProgramFact,
+  retained: boolean,
+  forwardOnly: boolean,
+  expectedFragmentEntry: string,
+): string | undefined {
+  if (forwardOnly) return undefined;
+  if (retained)
+    return selectedProgramFact.fragmentEntryPoints.includes(expectedFragmentEntry)
+      ? expectedFragmentEntry
+      : undefined;
+  return (snapshot.materialEntryPoints?.[pass.name] ?? []).find(
+    (entry) => entry.stage === 'fragment' && entry.name === expectedFragmentEntry,
+  )?.name;
+}
+
+/** Complete current observations, compared only against a producer-owned prior. */
+function matchesSelectedContributor(
+  previous: StandardSceneDataContributor,
+  program: StandardSceneDataContributorProgramFact,
+  sourceTuple: StandardSceneDataContributorTuple,
+  publication: string,
+  forwardOnly: boolean,
+  geometry: StandardSceneDataContributor['geometry'],
+  deformation: StandardSceneDataContributor['deformation'],
+  entryPoint: string | undefined,
+  dispatchProgramKey: string,
+  expectedFragmentEntry: string,
+  morphWeightsPresent: boolean,
+  skinBindingPresent: boolean,
+): boolean {
+  return (
+    (previous as ProducedContributor)[contributorProgram] === program &&
+    previous.facts?.sourceTuple === sourceTuple &&
+    previous.publication === publication &&
+    previous.forwardOnly === forwardOnly &&
+    previous.geometry === geometry &&
+    previous.deformation === deformation &&
+    previous.entryPoint === entryPoint &&
+    previous.facts.dispatchProgramKey === dispatchProgramKey &&
+    previous.facts.expectedFragmentEntry === expectedFragmentEntry &&
+    previous.facts.morphWeightsPresent === morphWeightsPresent &&
+    previous.facts.skinBindingPresent === skinBindingPresent
+  );
 }

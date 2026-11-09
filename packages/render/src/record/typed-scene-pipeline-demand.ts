@@ -67,8 +67,7 @@ export function prepareTypedScenePipelineDemand(
       resolve: (shader, request) =>
         context.runtime.getMaterialShaderArtifact?.(shader, {
           ...(typeof request === 'boolean' ? { vertexColorAvailable: request } : request),
-          clustered:
-            context.lightingKind === 'clustered' && (context.hasLocalLights || context.ssao),
+          clustered: context.lightingKind === 'clustered',
           probeBlend: context.probeBlend,
           reflectionFallback: context.reflectionFallbackDemand,
         }),

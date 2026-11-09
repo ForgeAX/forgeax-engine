@@ -5,6 +5,13 @@ export default defineProject({
     environment: 'node',
     name: '@forgeax/engine-rhi-wgpu-native',
     passWithNoTests: true,
-    exclude: ['**/node_modules/**', '**/dist/**', '**/target/**', '**/*.dawn.test.ts'],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/target/**',
+      '**/*.dawn.test.ts',
+      'scripts/__tests__/verify-conformance-report.test.mjs',
+      'scripts/__tests__/windows-artifact.test.mjs',
+    ],
   },
 });

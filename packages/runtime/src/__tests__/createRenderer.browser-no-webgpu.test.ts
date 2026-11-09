@@ -17,7 +17,7 @@ import { projectDirectionalShadowInspection } from '../../../render/src/assembly
 import { resolveDirectionalShadowBackendAdmission } from '../../../render/src/render-pipeline';
 
 describe('createRenderer without navigator.gpu (browser-no-webgpu)', () => {
-  it('requires the shared backend admission truth table for WebGL2 fallback and capable failure', async () => {
+  it('requires the shared backend admission truth table for WebGL2 PCSS and candidate failure', async () => {
     const module = (await import('../../../render/src/render-pipeline')) as Record<string, unknown>;
     const resolver = module.resolveDirectionalShadowBackendAdmission;
     expect(typeof resolver).toBe('function');
@@ -34,9 +34,8 @@ describe('createRenderer without navigator.gpu (browser-no-webgpu)', () => {
     expect(
       resolve({ backendKind: 'wgpu-webgl2', requested: 'pcssMedium', candidate: 'accepted' }),
     ).toMatchObject({
-      effective: 'pcf3',
-      status: 'fallback',
-      fallbackReason: 'webgl2-unsupported',
+      effective: 'pcssMedium',
+      status: 'accepted',
     });
     expect(
       resolve({

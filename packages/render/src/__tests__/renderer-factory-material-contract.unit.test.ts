@@ -9,6 +9,8 @@ import {
   type ShaderCatalog,
   ShaderRegistry,
   type ShaderRegistryDevice,
+  STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
+  STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
 } from '@forgeax/engine-shader';
 import { ParamSchemaProjectionOwner, ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
@@ -32,6 +34,7 @@ import {
   viewAndSceneDepthLayoutEntries,
 } from '../assembly/material-shader-policy';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../gpu-stage';
+import { applySurfaceDiscardAxis, materialAbiRasterConstants } from '../material-stage-constants';
 import {
   buildPipelineForMaterialShader,
   type PipelineBuilderContext,
@@ -189,6 +192,49 @@ fn cloud_direct_solar_factorX() -> f32 {
     });
     expect(resolveMaterialShaderVariantSet(undefined, entry.variants, 'wgpu-webgl2', false)).toBe(
       variant(true, false).definesKey,
+    );
+  });
+
+  it('boots the discard-free program: LOD_DITHER and CLIPPING_PLANES default to false', async () => {
+    const variant = (lod: boolean, clip: boolean): MaterialShaderManifestVariant => ({
+      definesKey: `CLIPPING_PLANES=${clip}+LOD_DITHER=${lod}+STORAGE_BUFFER_AVAILABLE=true`,
+      defines: { CLIPPING_PLANES: clip, LOD_DITHER: lod, STORAGE_BUFFER_AVAILABLE: true },
+      composedWgsl: `lod=${lod} clip=${clip}`,
+    });
+    const entry: MaterialShaderManifestEntry = {
+      identifier: 'forgeax::default-standard-pbr',
+      sourcePath: 'default-standard-pbr.wgsl',
+      composedWgsl: 'canonical',
+      paramSchema: '[]',
+      variants: [variant(false, false), variant(false, true), variant(true, true)],
+    };
+    const installMaterialArtifact = vi.fn();
+    const registry = {
+      loadManifest: vi.fn(async () => ({ ok: true, value: undefined })),
+      materialShaderManifestEntries: () => [entry][Symbol.iterator](),
+      findMaterialArtifact: vi.fn(() => ({ ok: false })),
+      installMaterialArtifact,
+    } as unknown as ShaderCatalog;
+    const device = {
+      caps: {
+        backendKind: 'webgpu',
+        storageBuffer: true,
+        rgba16floatRenderable: true,
+        samplerAliasing: true,
+      },
+      limits: {
+        maxStorageBuffersPerShaderStage: 8,
+        maxSampledTexturesPerShaderStage: 32,
+        maxTextureArrayLayers: 64,
+        maxUniformBuffersPerShaderStage: 12,
+      },
+    } as unknown as RhiDevice;
+
+    await prepareMaterialShaders(device, () => registry, new Map());
+
+    expect(installMaterialArtifact).toHaveBeenCalledWith(
+      'forgeax::default-standard-pbr',
+      expect.objectContaining({ source: 'lod=false clip=false' }),
     );
   });
 
@@ -394,38 +440,196 @@ fn cloud_direct_solar_factorX() -> f32 {
     ).toBe('hdrp');
   });
 
-  it('rewrites directional PCSS to the backend-owned WebGL2 shader variant', () => {
+  it('derives directional PCSS from the storage row instead of a request axis', () => {
     const variants = [
-      {
-        defines: {
-          STORAGE_BUFFER_AVAILABLE: false,
-          DIRECTIONAL_PCSS_AVAILABLE: false,
-        },
-      },
-      {
-        defines: {
-          STORAGE_BUFFER_AVAILABLE: true,
-          DIRECTIONAL_PCSS_AVAILABLE: true,
-        },
-      },
+      { defines: { STORAGE_BUFFER_AVAILABLE: false } },
+      { defines: { STORAGE_BUFFER_AVAILABLE: true } },
     ];
-
     expect(
       resolveMaterialShaderVariantSet(
-        'DIRECTIONAL_PCSS_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true',
+        'STORAGE_BUFFER_AVAILABLE=true',
         variants,
         'wgpu-webgl2',
         false,
       ),
-    ).toBe('DIRECTIONAL_PCSS_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=false');
+    ).toBe('STORAGE_BUFFER_AVAILABLE=false');
     expect(
-      resolveMaterialShaderVariantSet(
-        'DIRECTIONAL_PCSS_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true',
-        variants,
-        'webgpu',
-        true,
-      ),
+      resolveMaterialShaderVariantSet('STORAGE_BUFFER_AVAILABLE=false', variants, 'webgpu', true),
     ).toBe('');
+  });
+
+  it('falls back to the general directional receiver when the simple row is not published', () => {
+    const axes = (simple: boolean, transmission: boolean, probe: boolean) => ({
+      defines: {
+        STORAGE_BUFFER_AVAILABLE: true,
+        TRANSMISSION_AVAILABLE: transmission,
+        PROBE_BLEND_AVAILABLE: probe,
+        DIRECTIONAL_SHADOW_SIMPLE: simple,
+      },
+    });
+    const variants = [axes(false, false, false), axes(true, false, false), axes(false, true, true)];
+    const resolve = (request: string, backend: 'webgpu' | 'wgpu-webgl2' = 'webgpu') =>
+      resolveMaterialShaderVariantSet(request, variants, backend, backend === 'webgpu');
+    expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true')).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true+TRANSMISSION_AVAILABLE=true')).toContain(
+      'DIRECTIONAL_SHADOW_SIMPLE=false',
+    );
+    expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true+PROBE_BLEND_AVAILABLE=true')).toContain(
+      'DIRECTIONAL_SHADOW_SIMPLE=false',
+    );
+    expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true', 'wgpu-webgl2')).toContain(
+      'DIRECTIONAL_SHADOW_SIMPLE=false',
+    );
+  });
+
+  it('resolves LEAN_LIGHTING together with the simple receiver', () => {
+    const axes = (simple: boolean, transmission: boolean) => ({
+      defines: {
+        STORAGE_BUFFER_AVAILABLE: true,
+        TRANSMISSION_AVAILABLE: transmission,
+        DIRECTIONAL_SHADOW_SIMPLE: simple,
+        LEAN_LIGHTING: simple,
+      },
+    });
+    const variants = [axes(false, false), axes(true, false), axes(false, true)];
+    const resolve = (request: string) =>
+      resolveMaterialShaderVariantSet(request, variants, 'webgpu', true);
+    const lean = resolve('DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true');
+    expect(lean).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(lean).toContain('LEAN_LIGHTING=true');
+    const general = resolve(
+      'DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true+TRANSMISSION_AVAILABLE=true',
+    );
+    expect(general).toContain('DIRECTIONAL_SHADOW_SIMPLE=false');
+    expect(general).toContain('LEAN_LIGHTING=false');
+    expect(resolve('')).toContain('LEAN_LIGHTING=false');
+  });
+
+  it('falls back to the general receiver when a clipped or LOD-faded draw requests the simple one', () => {
+    const axes = (simple: boolean, clip: boolean, lod: boolean) => ({
+      defines: {
+        STORAGE_BUFFER_AVAILABLE: true,
+        DIRECTIONAL_SHADOW_SIMPLE: simple,
+        LEAN_LIGHTING: simple,
+        CLIPPING_PLANES: clip,
+        LOD_DITHER: lod,
+      },
+    });
+    // The simple row exists only on the discard-free lane.
+    const variants = [
+      axes(false, false, false),
+      axes(true, false, false),
+      axes(false, true, false),
+      axes(false, true, true),
+    ];
+    // Same order as the PSO seam: the discard mask selects its source axis
+    // first, then the request is resolved against the published rows.
+    const seam = (mask: number) => {
+      const { variantSet, constants } = applySurfaceDiscardAxis(
+        'CLIPPING_PLANES=false+DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true+LOD_DITHER=false',
+        materialAbiRasterConstants(undefined, mask),
+      );
+      expect(constants).toBeUndefined();
+      return resolveMaterialShaderVariantSet(variantSet, variants, 'webgpu', true);
+    };
+    const plain = seam(0);
+    expect(plain).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(plain).toContain('LEAN_LIGHTING=true');
+    for (const mask of [
+      STANDARD_SURFACE_DISCARD_VIEW_CLIPPING,
+      STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
+      STANDARD_SURFACE_DISCARD_VIEW_CLIPPING | STANDARD_SURFACE_DISCARD_LOD_COVERAGE,
+    ]) {
+      const general = seam(mask);
+      expect(general).toContain('CLIPPING_PLANES=true');
+      expect(general).toContain('DIRECTIONAL_SHADOW_SIMPLE=false');
+      expect(general).toContain('LEAN_LIGHTING=false');
+      // The resolved key names a published row, so the draw compiles.
+      const row = Object.fromEntries(
+        (general ?? '').split('+').map((part) => {
+          const [axis, value] = part.split('=');
+          return [axis, value === 'true'];
+        }),
+      );
+      expect(
+        variants.some((variant) =>
+          Object.entries(variant.defines).every(([axis, value]) => (row[axis] ?? true) === value),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('selects the discard axes the record stage left out of a clipped request', () => {
+    // Record-stage requests name only the axes they set; boot-off discard
+    // axes are absent and the resolver would default them to false.
+    const request = 'CLUSTER_FORWARD_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+ALPHA_MASK=false';
+    const select = (mask: number) =>
+      applySurfaceDiscardAxis(request, materialAbiRasterConstants(undefined, mask)).variantSet;
+    expect(select(0)).toBe(request);
+    expect(select(STANDARD_SURFACE_DISCARD_VIEW_CLIPPING)).toBe(`${request}+CLIPPING_PLANES=true`);
+    expect(select(STANDARD_SURFACE_DISCARD_LOD_COVERAGE)).toBe(
+      `${request}+LOD_DITHER=true+CLIPPING_PLANES=true`,
+    );
+    // An explicit false is flipped in place; the empty all-true key stays.
+    expect(
+      applySurfaceDiscardAxis(
+        'CLIPPING_PLANES=false',
+        materialAbiRasterConstants(undefined, STANDARD_SURFACE_DISCARD_VIEW_CLIPPING),
+      ).variantSet,
+    ).toBe('CLIPPING_PLANES=true');
+    expect(
+      applySurfaceDiscardAxis(
+        '',
+        materialAbiRasterConstants(undefined, STANDARD_SURFACE_DISCARD_VIEW_CLIPPING),
+      ).variantSet,
+    ).toBe('');
+  });
+
+  it('folds the discard sources a visible-surface or coverage row is published with', () => {
+    const row = (visible: boolean, coverage: boolean, clip: boolean, lod: boolean) => ({
+      defines: {
+        STORAGE_BUFFER_AVAILABLE: true,
+        GPU_DRIVEN_SCENE_INDEX_AVAILABLE: true,
+        VISIBLE_SURFACE_AVAILABLE: visible,
+        COVERAGE_ONLY: coverage,
+        CLIPPING_PLANES: clip,
+        LOD_DITHER: lod,
+      },
+    });
+    const variants = [
+      row(false, false, false, false),
+      row(false, false, true, false),
+      row(false, false, true, true),
+      row(true, false, true, true),
+      row(false, true, true, true),
+    ];
+    const resolve = (request: string) =>
+      resolveMaterialShaderVariantSet(request, variants, 'webgpu', true);
+    const published = (key: string | undefined) => {
+      const defines = Object.fromEntries(
+        (key ?? '').split('+').map((part) => {
+          const [axis, value] = part.split('=');
+          return [axis, value === 'true'];
+        }),
+      );
+      return variants.some((variant) =>
+        Object.entries(variant.defines).every(([axis, value]) => (defines[axis] ?? true) === value),
+      );
+    };
+    const scene = 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true';
+    // An unclipped forward draw stays on the discard-free row.
+    const plain = resolve(scene);
+    expect(plain).toContain('CLIPPING_PLANES=false');
+    expect(plain).toContain('LOD_DITHER=false');
+    for (const request of [
+      `${scene}+VISIBLE_SURFACE_AVAILABLE=true`,
+      `${scene}+COVERAGE_ONLY=true`,
+    ]) {
+      const key = resolve(request);
+      expect(key, request).toContain('CLIPPING_PLANES=true');
+      expect(key, request).toContain('LOD_DITHER=true');
+      expect(published(key), request).toBe(true);
+    }
   });
 
   it('fails closed when a clustered layout is unavailable', () => {
@@ -1100,12 +1304,13 @@ describe('material shader color-domain contract', () => {
   it('routes HDR sprite targets to fs_main_hdr while unorm targets use fs_main', () => {
     const source = [
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-renderer.ts'), 'utf8'),
+      readFileSync(resolve(import.meta.dirname, '../assembly/material-fragment-entry.ts'), 'utf8'),
       readFileSync(resolve(import.meta.dirname, '../assembly/webgpu-ready-passes.ts'), 'utf8'),
     ]
       .join('\n')
       .replaceAll('\r\n', '\n');
     expect(source).toContain(
-      "isHdr &&\n      passKind === 'forward' &&\n      (materialShaderId === 'forgeax::sprite' || materialShaderId === 'forgeax::sprite-lit')",
+      "isHdr &&\n    passKind === 'forward' &&\n    (materialShaderId === 'forgeax::sprite' || materialShaderId === 'forgeax::sprite-lit')",
     );
     expect(source).toContain("? 'fs_main_hdr'");
     expect(source).toContain('colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat');

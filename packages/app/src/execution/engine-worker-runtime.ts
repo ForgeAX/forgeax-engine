@@ -96,13 +96,19 @@ import type {
   ExecutionRendererInspectionResult,
 } from './types';
 import { serializableDetail } from './worker-error';
+import {
+  createWorkerFrameResponder,
+  type FrameNotice,
+  type FrameRequest,
+} from './worker-frame-source';
 
 const scope = globalThis as unknown as {
-  postMessage(message: EngineToHostMessage, transfer?: Transferable[]): void;
-  onmessage: ((event: MessageEvent<HostToEngineMessage>) => void) | null;
+  postMessage(message: EngineToHostMessage | FrameNotice, transfer?: Transferable[]): void;
+  onmessage: ((event: MessageEvent<HostToEngineMessage | FrameRequest>) => void) | null;
   close(): void;
 };
 
+let nativeFrames: ReturnType<typeof createWorkerFrameResponder> | undefined;
 let renderer: Renderer | undefined;
 let currentSample: InputBackendSample = {
   downKeys: new Set(),
@@ -1587,8 +1593,43 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
   }
 }
 
+function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): boolean {
+  switch (message.kind) {
+    case 'native-frame-request':
+      nativeFrames?.receive(message);
+      return true;
+    case 'init':
+      if (message.workers.render.enabled) nativeFrames = createWorkerFrameResponder(scope);
+      void withRealmTransition(() => initialize(message));
+      return true;
+    case 'dispose':
+      nativeFrames?.dispose();
+      nativeFrames = undefined;
+      inspectionsClosed = true;
+      void withRealmTransition(async () => {
+        const target = realm;
+        realm = undefined;
+        inspectionQueue.length = 0;
+        try {
+          if (target !== undefined) await disposeRealm(target);
+          scope.postMessage({ kind: 'disposed' });
+        } catch (cause) {
+          scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
+        } finally {
+          target?.init.bootstrapPort?.close();
+          videoEndpoint?.close();
+          scope.close();
+        }
+      });
+      return true;
+    default:
+      return false;
+  }
+}
+
 scope.onmessage = (event): void => {
   const message = event.data;
+  if (receiveWorkerLifecycle(message)) return;
   switch (message.kind) {
     case 'surface-result': {
       const target = realm;
@@ -1618,9 +1659,6 @@ scope.onmessage = (event): void => {
           ),
         );
       return;
-    case 'init':
-      void withRealmTransition(() => initialize(message));
-      return;
     case 'frame':
       void runFrame(message);
       return;
@@ -1644,24 +1682,6 @@ scope.onmessage = (event): void => {
     }
     case 'rebuild':
       void withRealmTransition(() => rebuildQueue.enqueue(() => rebuild(message)));
-      return;
-    case 'dispose':
-      inspectionsClosed = true;
-      void withRealmTransition(async () => {
-        const target = realm;
-        realm = undefined;
-        inspectionQueue.length = 0;
-        try {
-          if (target !== undefined) await disposeRealm(target);
-          scope.postMessage({ kind: 'disposed' });
-        } catch (cause) {
-          scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
-        } finally {
-          target?.init.bootstrapPort?.close();
-          videoEndpoint?.close();
-          scope.close();
-        }
-      });
       return;
     case 'input-clear':
       inputBackend.revokeInjectedLease();

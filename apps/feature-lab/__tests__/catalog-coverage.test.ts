@@ -44,6 +44,8 @@ const GATE_PROVED_ROWS = new Set([
   'Resident Host Pack selection',
   'Bound Preview host',
   'Project preview',
+  // Generated pre-module Host markup; see the DevKit startup UI and generated-host gates.
+  'Project startup presentation',
   'Cached asset thumbnails',
   'Material preview',
   'Mesh preview',

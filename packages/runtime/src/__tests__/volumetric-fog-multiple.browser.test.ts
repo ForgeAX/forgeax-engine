@@ -13,6 +13,7 @@ import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-sce
 import type { TextureAsset } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { createRenderer } from '../createRenderer';
 import { testAssets } from './helpers/runtime-assets';
@@ -140,10 +141,11 @@ it('renders overlapping local fog, independently removes owners, and retires the
     const draw = async () => {
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-      if (!drawn.ok) throw drawn.error;
-      const completed = await drawn.value.completed;
-      if (!completed.ok) throw completed.error;
+      await drawReadyFrame(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
     };
     for (let index = 0; index < 12; index++) await draw();
     expect(renderer.inspect().volumetricFog?.ownerCount).toBe(9);

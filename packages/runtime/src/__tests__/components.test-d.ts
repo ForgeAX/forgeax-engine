@@ -74,6 +74,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
   it('Camera data shape includes output exposure and color-grading fields', () => {
     type Data = ShapeOf<SchemaOf<typeof Camera>>;
     expectTypeOf<keyof Data>().toEqualTypeOf<
+      | 'taaFlickering'
       | 'fov'
       | 'aspect'
       | 'near'
@@ -152,6 +153,7 @@ describe('w7 type-level - 5 component schemas yield exact data shapes via ShapeO
       | 'castShadow'
       | 'mapSize'
       | 'cascadeCount'
+      | 'sourceAngle'
       | 'splitLambda'
       | 'cascadeBlend'
       | 'depthBias'

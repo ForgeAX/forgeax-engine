@@ -39,15 +39,20 @@ import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 /** Two vec4 lanes shared by the graph allocation and uniform binding layout. */
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
-export interface StandardDeferredShaderSources {
+export interface StandardSceneShaderSources {
+  readonly forwardScreenPack?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly forwardScreenCompose?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly forwardContact?: string | import('@forgeax/engine-types').ShaderSource;
   readonly shadowVariance?: string | import('@forgeax/engine-types').ShaderSource;
   readonly decalProject?: string | import('@forgeax/engine-types').ShaderSource;
   readonly decalApply?: string | import('@forgeax/engine-types').ShaderSource;
   readonly subsurface?: string | import('@forgeax/engine-types').ShaderSource;
-  readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
-  readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
-  readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
-  readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly deferred?: {
+    readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
+    readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
+    readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+    readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+  };
 }
 
 interface DeferredLightingProgram {
@@ -62,12 +67,13 @@ interface DeferredLightingProgram {
 }
 
 function deferredLightingSource(
-  sources: StandardDeferredShaderSources | undefined,
+  sources: StandardSceneShaderSources | undefined,
   clustered: boolean,
   usesLut: boolean,
 ) {
-  if (clustered) return usesLut ? sources?.clusteredLut : sources?.clustered;
-  return usesLut ? sources?.unclusteredLut : sources?.unclustered;
+  const deferred = sources?.deferred;
+  if (clustered) return usesLut ? deferred?.clusteredLut : deferred?.clustered;
+  return usesLut ? deferred?.unclusteredLut : deferred?.unclustered;
 }
 
 // Graph targets and bind groups have graph lifetime. Immutable layouts/PSOs
@@ -315,7 +321,7 @@ export function addStandardDeferredLighting(
         ),
       );
       const source = deferredLightingSource(
-        internal.runtime.standardDeferredShaders,
+        internal.runtime.standardSceneShaders,
         input.cluster !== null,
         usesLut,
       );

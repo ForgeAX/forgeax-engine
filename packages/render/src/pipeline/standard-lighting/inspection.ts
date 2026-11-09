@@ -1,5 +1,6 @@
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type { RenderPipelineAsset } from '@forgeax/engine-types';
+import { type ClusterOccupancyReport, measureClusterOccupancy } from '../../cluster-binner';
 import { GTAO_SAMPLE_COUNTS, getSsaoParameters, SSAO_SAMPLE_COUNTS } from '../../ssao-config';
 import type { StandardTopologyInputValue } from './topology';
 import type { StandardClusterTransport } from './transport';
@@ -79,6 +80,12 @@ export interface StandardClusterTransportInspection {
   readonly lightDataBytes: number;
   readonly lightBoundsBytes: number;
   readonly grid: StandardClusterTransport['layout']['grid'];
+  /**
+   * Lights per cluster cell: the conservative cell box (what the CPU sizes)
+   * and the exact froxel test (what the GPU producer keeps). Present when the
+   * prepared frame carries its camera.
+   */
+  readonly lightsPerCluster?: ClusterOccupancyReport;
   readonly ambientOcclusion: StandardAmbientOcclusionInspection;
 }
 
@@ -108,7 +115,7 @@ export function inspectStandardClusterTransport(
   transport: StandardClusterTransport,
   prepared: StandardTopologyInputValue['prepared'],
 ): Omit<StandardClusterTransportInspection, 'ambientOcclusion'> {
-  return Object.freeze({
+  const base = Object.freeze({
     renderPath: prepared.renderPath,
     transport: transport.kind,
     producer: transport.producer,
@@ -126,6 +133,25 @@ export function inspectStandardClusterTransport(
     // layout object carried by a per-frame prepared result.
     grid: Object.freeze({ ...transport.layout.grid }),
   });
+  const camera = prepared.camera;
+  if (camera === undefined) return base;
+  // Inspection is assembled for every submitted frame; the occupancy walk
+  // only runs when a reader asks for it (memoized enumerable getter, so
+  // JSON serialization still includes it).
+  let report: ClusterOccupancyReport | undefined;
+  return Object.freeze(
+    Object.defineProperty({ ...base }, 'lightsPerCluster', {
+      enumerable: true,
+      get: () =>
+        (report ??= measureClusterOccupancy(
+          prepared.local.length,
+          prepared.lightBounds,
+          transport.layout.grid,
+          camera.near,
+          camera.far,
+        )),
+    }),
+  );
 }
 
 export function inspectStandardLighting(
@@ -161,10 +187,15 @@ export function inspectStandardLighting(
       ambientOcclusion,
     });
   }
-  return Object.freeze({
-    ...inspectStandardClusterTransport(input.transport, input.prepared),
-    ambientOcclusion,
-  });
+  // Copy descriptors, not values: spreading would evaluate the lazy
+  // lightsPerCluster getter on every submitted frame.
+  const transport = inspectStandardClusterTransport(input.transport, input.prepared);
+  return Object.freeze(
+    Object.defineProperties(
+      { ambientOcclusion },
+      Object.getOwnPropertyDescriptors(transport),
+    ) as StandardClusterTransportInspection,
+  );
 }
 
 function graphResource(

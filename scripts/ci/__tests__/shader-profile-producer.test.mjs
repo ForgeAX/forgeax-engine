@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { parse } from 'yaml';
 
 import {
   decodePackagedProfiles,
@@ -156,7 +157,10 @@ test('point-shadow Smoke prepares its verified profile on the same sole owner', 
   const smoke = fleet.indexOf('- name: Hello-learn-render-5.3.2-point-shadows smoke');
   assert.ok(preparation >= 0 && preparation < smoke);
   const step = fleet.slice(preparation, smoke);
-  assert.match(step, /if: matrix\.group == 0/);
+  const profileStep = parse(workflow).jobs['smoke-fleet'].steps.find(
+    (candidate) => candidate.name === 'Prepare point-shadow smoke shader profile',
+  );
+  assert.equal(profileStep.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.group == 0)");
   assert.match(step, /prepare-shader-release-inputs\.mjs --build --profile point-ssao/);
   assert.match(step, /--shared-input-manifest "\$FORGEAX_SHARED_APP_INPUTS_MANIFEST"/);
   assert.doesNotMatch(step, /FORGEAX_ENGINE_SHADER_SOURCE_BUILD/);

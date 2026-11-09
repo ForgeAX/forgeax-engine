@@ -75,7 +75,7 @@ const MVD_FALSIFIERS = Object.freeze({
   'force-csm-clear-blocker-raw': { ac: 'AC-05', expectation: 'raw blocker depth must remain observable', repair: 'restore raw blocker depth reads' },
   'force-csm-remove-tile-clamp': { ac: 'AC-07', expectation: 'integer inset and tile clamp must protect atlas edges', repair: 'restore shared shadow-pcf tile clamp' },
   'force-csm-capable-backend-pcf': { ac: 'AC-09', expectation: 'capable WebGPU must retain the requested PCSS profile', repair: 'remove the forced PCF fallback' },
-  'force-csm-webgl2-pcss-effective': { ac: 'AC-10', expectation: 'WebGL2 must expose fixed PCF3/PCF5, never effective PCSS', repair: 'keep WebGL2 mapping explicit and bounded' },
+  'force-csm-webgl2-pcss-effective': { ac: 'AC-10', expectation: 'WebGL2 PCSS evidence must come from the actual WebGL2 backend', repair: 'run the WebGL2 device rather than relabeling native evidence' },
   'force-csm-pcf5-pretends-pcss': { ac: 'AC-14', expectation: 'PCF5 must not claim PCSS blocker/filter semantics', repair: 'restore the closed profile identity' },
   'force-csm-shadow-off-build-pass': { ac: 'AC-15', expectation: 'shadow-off must remove the shadow pass', repair: 'keep shadow-off topology fail-closed' },
 });

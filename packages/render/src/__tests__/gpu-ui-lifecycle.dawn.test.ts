@@ -218,7 +218,7 @@ it('retires actual GPU UI buffers and textures after completion across ten mount
           }
           const beforeTransfers = transfers;
           const frame = submitted + 1;
-          compositor.prepare(frame, 0, size, size, true, 'srgb', stage.capture);
+          compositor.prepare(frame, 0, size, size, 'srgb', stage.capture);
           expect(transfers - beforeTransfers, stage.name).toBe(stage.changed ? 1 : 0);
           const bytesPerRow = Math.ceil((size * 4) / 256) * 256;
           const staging = device
@@ -236,9 +236,10 @@ it('retires actual GPU UI buffers and textures after completion across ten mount
               passes.push(descriptor.label ?? '');
               return begin.call(encoder, descriptor);
             };
-            expect(compositor.encode(frame, encoder, required(surface)).kind, stage.name).toBe(
-              'encoded',
-            );
+            expect(
+              compositor.encode(frame, encoder, required(surface), true).kind,
+              stage.name,
+            ).toBe('encoded');
             encoder.beginRenderPass = begin;
             expect(passes.filter((label) => label === 'screen-ui-composite')).toHaveLength(1);
             expect(

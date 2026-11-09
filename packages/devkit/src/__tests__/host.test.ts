@@ -15,6 +15,7 @@ import { RUNTIME_CATALOG_SNAPSHOT_SCHEMA } from '@forgeax/engine-types';
 import { transformWithOxc } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverPluginAssets } from '../build/plugin-assets.js';
+import type { StartupUiOptions } from '../host/startup-ui.js';
 import { createViteConfig, devKitDdcRoots, ignoreDevKitCatalogPath } from '../host.js';
 import { readLiveProjectInputs } from '../live-project-inputs.js';
 import { readProjectFacts } from '../project.js';
@@ -70,6 +71,28 @@ function hasPluginNamed(plugins: readonly unknown[] | undefined, name: string): 
       'name' in plugin &&
       plugin.name === name,
   );
+}
+
+function projectStartupUi(budget: number): StartupUiOptions {
+  const custom = {
+    html: '<main id="project-startup-template">My game</main>',
+    script: 'screen.root.dataset.projectTemplate = "mounted";',
+  };
+  return budget === 256 * 1024 * 1024
+    ? { loading: 'none', failure: custom }
+    : { loading: custom, failure: 'none' };
+}
+
+async function assertGeneratedStartupUi(
+  root: string | undefined,
+  ui: StartupUiOptions,
+): Promise<void> {
+  const html = await readFile(resolve(root ?? '', 'index.html'), 'utf8');
+  expect(html).toContain('id="project-startup-template"');
+  expect(html).toContain('screen.root.dataset.projectTemplate');
+  expect(html).not.toContain('<div id="forgeax-loading-brand"');
+  expect(html.includes('<div id="forgeax-loading"')).toBe(ui.loading !== 'none');
+  expect(html.includes('<div id="forgeax-fatal"')).toBe(ui.failure !== 'none');
 }
 
 describe('standalone host', () => {
@@ -179,6 +202,7 @@ describe('standalone host', () => {
         maxDeltaSeconds: 3 * (1 / 20),
       };
       for (const budget of [256 * 1024 * 1024, 128 * 1024 * 1024]) {
+        const startupUi = projectStartupUi(budget);
         const standardProfile = {
           ...DEFAULT_STANDARD_PROFILE,
           volumetricFog: { quality: 'low', depth: 48, tileSize: 16 },
@@ -202,6 +226,7 @@ describe('standalone host', () => {
                     time,
                     renderTaskYield: 'features',
                     wechat: { maxRenderShortSide: 480 },
+                    startupUi,
                   },
                 },
               },
@@ -212,6 +237,8 @@ describe('standalone host', () => {
           const config = await createViteConfig(facts.value, command);
           try {
             const source = await readFile(resolve(config.root ?? '', 'main.ts'), 'utf8');
+            await assertGeneratedStartupUi(config.root, startupUi);
+
             // A WeChat quality profile must not change the browser/desktop host.
             expect(source).not.toContain('maxRenderShortSide:');
             // The page realm reads the catalog through its one installed source.
@@ -278,6 +305,7 @@ describe('standalone host', () => {
                   cpuProfileRequested: false,
                   rhiCaptureRequested: false,
                   gpuPassTiming: undefined,
+                  renderAblation: undefined,
                   shadowWorkload: undefined,
                   geometryLane: undefined,
                   gbufferBatchOrderDiagnostic: undefined,

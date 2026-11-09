@@ -135,6 +135,7 @@ fn vfx_update(ctx: VfxUpdateContext, p: ptr<function,VfxParticle>, c: ptr<functi
     reset: phaseTick === 0,
     delta: 1 / 60,
     initialDelta: 1 / 60,
+    worldElapsed: 0,
     elapsed: (phaseTick + 1) / 60,
     phaseTick,
     tick: phaseTick,

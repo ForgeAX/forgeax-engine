@@ -77,3 +77,50 @@ it('does not let sparse changed spans displace the full-table preparation', () =
   expect(f.read().values.scalar).toBe(first.values.scalar);
   expect(f.read().entities).toBe(first.entities);
 });
+
+it('keeps declared field order, inline lanes and managed sidecars in each fresh shape', () => {
+  const Fields = defineComponent('SpanDeclaredColumnVocabulary', {
+    scalar: 'f32',
+    dynamic: 'array<f32>',
+    fixed: 'array<u16, 2>',
+    data: 'buffer<4>',
+    text: 'string',
+  });
+  const world = new World();
+  const entity = world
+    .spawn({
+      component: Fields,
+      data: {
+        scalar: 7,
+        dynamic: new Float32Array([2, 3, 5]),
+        fixed: new Uint16Array([11, 13]),
+        data: new Uint8Array([1, 2, 3, 4]),
+        text: 'kept',
+      },
+    })
+    .unwrap();
+  const query = world.query({ read: [Fields] }).unwrap();
+  for (const span of query.spans().unwrap()) {
+    const first = span.get(Fields),
+      second = span.get(Fields);
+    expect(first).not.toBe(second);
+    expect(Object.keys(first)).toEqual([
+      'scalar',
+      'dynamic',
+      'dynamic:count',
+      'fixed',
+      'data',
+      'text',
+    ]);
+    expect(Array.from(first.fixed)).toEqual([11, 13]);
+    expect(Array.from(first.data)).toEqual([1, 2, 3, 4]);
+    expect(first.dynamic).toBe(second.dynamic);
+    expect(first.text.get(0)).toBe(second.text.get(0));
+    const count = Reflect.get(first, 'dynamic:count') as Uint32Array;
+    expect(count).toBeInstanceOf(Uint32Array);
+    expect(count[0]).toBe(3);
+    world.set(entity, Fields, { dynamic: new Float32Array([17]) }).unwrap();
+    expect(count[0]).toBe(1);
+    expect(first.scalar[0]).toBe(7);
+  }
+});

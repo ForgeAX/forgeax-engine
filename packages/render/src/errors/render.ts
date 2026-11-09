@@ -1578,17 +1578,18 @@ export class DynamicResolutionInvalidParameterError extends Error {
 }
 
 export interface DynamicResolutionRequiresTaaDetail {
-  readonly antialias: Exclude<Antialias, 'taa'>;
+  readonly antialias: Exclude<Antialias, 'taa' | 'tsr'>;
 }
 
 export class DynamicResolutionRequiresTaaError extends Error {
   readonly code = 'dynamic-resolution-requires-taa' as const;
-  readonly expected = "DynamicResolution requires Camera.antialias to be 'taa'";
-  readonly hint = "set Camera.antialias to 'taa' or remove DynamicResolution before retrying";
+  readonly expected = "DynamicResolution requires Camera.antialias to be 'taa' or 'tsr'";
+  readonly hint =
+    "set Camera.antialias to 'taa' or 'tsr', or remove DynamicResolution before retrying";
   readonly detail: DynamicResolutionRequiresTaaDetail;
 
   constructor(detail: DynamicResolutionRequiresTaaDetail) {
-    super('DynamicResolution requires TAA');
+    super('DynamicResolution requires temporal antialiasing');
     this.name = 'DynamicResolutionRequiresTaaError';
     this.detail = detail;
   }

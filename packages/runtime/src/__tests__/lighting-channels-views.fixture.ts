@@ -176,69 +176,74 @@ export async function verifyChannelViews(
       diagnosticCaptureArmed = false;
       (await recorder.frameBoundary()).unwrap();
     }
-    return completeReadyFrame(async () => {
-      const candidate = publisher?.prepare(time).unwrap();
-      const packet =
-        candidate === undefined
-          ? undefined
-          : structuredClone(candidate.message, {
-              transfer: renderPublicationTransfers(candidate.message),
-            });
-      candidate?.accept();
-      const pending = capture ? recorder.captureFrame() : diagnostic;
-      diagnostic = undefined;
-      if (capture && pending) (await recorder.frameBoundary()).unwrap();
-      try {
-        const receipt = renderValue(
-          renderer.draw(
-            packet === undefined
-              ? {
-                  leases: [required(lease)],
-                  camera: { lease: required(lease) },
-                  environment: { lease: required(lease) },
-                }
-              : { publication: packet },
-          ),
-        );
-        renderValue(await receipt.completed);
-        if (pending) {
-          (await recorder.frameBoundary()).unwrap();
-          const tape = compactTape((await pending).unwrap());
-          if (capture) {
-            lastTape = tape;
-            await save(`view-${receipt.frameId}.rhitape`, tape.bytes);
-            expect(
-              decodeTape(tape.bytes)
-                .unwrap()
-                .events.filter((event) => event.kind === 'submit'),
-            ).toHaveLength(1);
-          } else if (receipt.presentation !== 'ready') {
-            await save(`pending-view-${receipt.frameId}.rhitape`, tape.bytes);
-            const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
-            const raster = model.works.filter((work) =>
-              model.passes.some(
-                (pass) => pass.passIndex === work.passIndex && pass.kind === 'render',
-              ),
-            );
-            // biome-ignore lint/suspicious/noConsole: Preserve native barrier conformance evidence.
-            console.info(
-              '[lighting-channel-preparation-barrier]',
-              JSON.stringify({
-                mode: publication === undefined ? 'world' : 'publication',
-                frameId: receipt.frameId,
-                rasterWorks: raster.length,
-                totalWorks: model.works.length,
-              }),
-            );
-            expect(raster).toHaveLength(0);
+    return completeReadyFrame(
+      async () => {
+        const candidate = publisher?.prepare(time).unwrap();
+        const packet =
+          candidate === undefined
+            ? undefined
+            : structuredClone(candidate.message, {
+                transfer: renderPublicationTransfers(candidate.message),
+              });
+        candidate?.accept();
+        const pending = capture ? recorder.captureFrame() : diagnostic;
+        diagnostic = undefined;
+        if (capture && pending) (await recorder.frameBoundary()).unwrap();
+        try {
+          const receipt = renderValue(
+            renderer.draw(
+              packet === undefined
+                ? {
+                    leases: [required(lease)],
+                    camera: { lease: required(lease) },
+                    environment: { lease: required(lease) },
+                  }
+                : { publication: packet },
+            ),
+          );
+          renderValue(await receipt.completed);
+          if (pending) {
+            (await recorder.frameBoundary()).unwrap();
+            const tape = compactTape((await pending).unwrap());
+            if (capture) {
+              lastTape = tape;
+              await save(`view-${receipt.frameId}.rhitape`, tape.bytes);
+              expect(
+                decodeTape(tape.bytes)
+                  .unwrap()
+                  .events.filter((event) => event.kind === 'submit'),
+              ).toHaveLength(1);
+            } else if (receipt.presentation !== 'ready') {
+              await save(`pending-view-${receipt.frameId}.rhitape`, tape.bytes);
+              const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
+              const raster = model.works.filter((work) =>
+                model.passes.some(
+                  (pass) => pass.passIndex === work.passIndex && pass.kind === 'render',
+                ),
+              );
+              // biome-ignore lint/suspicious/noConsole: Preserve native barrier conformance evidence.
+              console.info(
+                '[lighting-channel-preparation-barrier]',
+                JSON.stringify({
+                  mode: publication === undefined ? 'world' : 'publication',
+                  frameId: receipt.frameId,
+                  rasterWorks: raster.length,
+                  totalWorks: model.works.length,
+                }),
+              );
+              expect(raster).toHaveLength(0);
+            }
           }
+          return receipt;
+        } finally {
+          if (packet)
+            required(publisher)
+              .recycle(packet.revision, renderPublicationTransfers(packet))
+              .unwrap();
         }
-        return receipt;
-      } finally {
-        if (packet)
-          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-      }
-    });
+      },
+      { timeoutMs: 60_000 },
+    );
   };
   const read = async (
     outputs: readonly { target: RenderTarget; layer: number; name: string }[],

@@ -81,3 +81,21 @@ export function deriveRenderExtent(input: RenderExtentInput): RenderExtent {
     generation: input.generation,
   });
 }
+
+/** Native views keep their exact size; only DRS applies the shared alignment policy. */
+export function temporalAnalysisCapacity(
+  width: number,
+  height: number,
+  maxScale?: number,
+): { readonly width: number; readonly height: number } {
+  if (maxScale === undefined) return { width, height };
+  const extent = deriveRenderExtent({
+    outputWidth: width,
+    outputHeight: height,
+    requestedScale: maxScale,
+    minScale: maxScale,
+    maxScale,
+    generation: 0,
+  });
+  return { width: extent.internalWidth, height: extent.internalHeight };
+}

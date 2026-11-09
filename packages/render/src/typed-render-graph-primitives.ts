@@ -23,7 +23,6 @@ import {
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from './gpu-texture-usage';
-import { renderExtentSize } from './pipeline/render-extent';
 import { buildPerFrameBindGroups } from './record/frame-lighting';
 import { geometryPipelineRequestContext } from './record/geometry-pipeline-requests';
 import { encodeMainPass, hasMainPassCpuWork, type MainPassOptions } from './record/main-pass';
@@ -68,6 +67,11 @@ import {
   getTemporalGpuState,
   getTemporalParamsBuffer,
   stageTemporalGpuWrite,
+  TAA_FLICKER_FRAME_RATE_CAP,
+  TAA_FLICKER_MAX_PARALLAX_VELOCITY,
+  TAA_FLICKER_MIN_BLEND,
+  TAA_FLICKER_PERIOD,
+  TEMPORAL_PARAMS_BYTES,
 } from './temporal/gpu';
 import { recordContext } from './world/view-record-context';
 
@@ -124,6 +128,9 @@ export function addObservationCapturePass(
     encodeDirect: (encoder, frame, resources) => {
       const texture = resources.texture(target.texture);
       if (!texture.ok) throw texture.error;
+      const extent = resources.textureViewExtent(target.view);
+      if (!extent.ok) throw extent.error;
+      const size = { width: extent.value.width, height: extent.value.height };
       const internal = frame as _InternalRenderPipelineContext;
       // The RenderSystem frame counter is the identity used by
       // observeCurrentFrame after this submission. The public receipt counter
@@ -136,7 +143,7 @@ export function addObservationCapturePass(
           descriptor: {
             texture: texture.value,
             format: target.format,
-            size: { width: frame.targetW, height: frame.targetH },
+            size,
             usage:
               GPU_TEXTURE_USAGE_COPY_SRC |
               GPU_TEXTURE_USAGE_RENDER_ATTACHMENT |
@@ -148,10 +155,6 @@ export function addObservationCapturePass(
           backendId: frame.runtime.device.caps.backendKind,
         };
         if (target.sampleCount === 1) {
-          const size =
-            frame.extent === undefined
-              ? { width: frame.targetW, height: frame.targetH }
-              : renderExtentSize(frame.extent, 'internal');
           recordContext(frame.runtime).encodeFramebufferSnapshots?.(encoder, {
             texture: texture.value,
             format: target.format,
@@ -168,8 +171,7 @@ export function addObservationCapturePass(
         ...(domain === 'visible-surface'
           ? { surfaceRecords: internal.visibleSurface?.records }
           : {}),
-        width: frame.targetW,
-        height: frame.targetH,
+        ...size,
         frameNumber: internal.frameState.frameNumber,
         graphGeneration: internal.frameState.graphGeneration,
       });
@@ -469,6 +471,7 @@ export function addTypedScenePass(
       atmosphereCapture: false,
     }),
     options.coverageOnly,
+    sampleCount,
   );
   const bundleDescriptor = {
     colorFormats: formats,
@@ -1063,6 +1066,8 @@ function addTemporalSecondaryReactivityRows(
           .deviceScope,
         frame.targetW,
         frame.targetH,
+        false,
+        frame.camera,
       );
       let layout = reactivityRowsLayouts.get(state);
       if (layout === undefined) {
@@ -1120,6 +1125,68 @@ function addTemporalSecondaryReactivityRows(
   return ok(rows.value);
 }
 
+/** UE `r.TSR.ShadingRejection.Flickering` is 1 in the High/Epic/Cinematic AA scalability groups. */
+const DEFAULT_TAA_FLICKERING = true;
+const lastSampleTimes = new WeakMap<object, number>();
+
+/**
+ * Per-frame uniform terms of the UE TSR flickering analysis
+ * (TemporalSuperResolution.cpp ~1929-1942, 3012-3014, 2528-2529).
+ */
+export function flickerParams(
+  enabled: boolean,
+  sampleTimeSeconds: number | undefined,
+  owner: object,
+  width: number,
+): { enabled: boolean; invThreshold: number; invMaxParallax: number } {
+  const previous = lastSampleTimes.get(owner);
+  if (sampleTimeSeconds !== undefined) lastSampleTimes.set(owner, sampleTimeSeconds);
+  const dt =
+    previous !== undefined && sampleTimeSeconds !== undefined && sampleTimeSeconds > previous
+      ? sampleTimeSeconds - previous
+      : 0;
+  // AdjustToFrameRate: below FrameRateCap (60 Hz) the period shrinks so that a
+  // slower frame rate does not stretch the tolerated flicker window.
+  const refreshToCap = dt > 0 ? dt * TAA_FLICKER_FRAME_RATE_CAP : 1;
+  const period = TAA_FLICKER_PERIOD / Math.max(refreshToCap, 1);
+  return {
+    enabled,
+    invThreshold: 1 - (1 - TAA_FLICKER_MIN_BLEND) ** period,
+    invMaxParallax: 1 / (refreshToCap * TAA_FLICKER_MAX_PARALLAX_VELOCITY * (width / 1920)),
+  };
+}
+
+/** Packs and uploads the TAA resolve params block (jitter, history, flicker terms). */
+function writeTemporalResolveParams(
+  frame: _InternalRenderPipelineContext,
+  state: ReturnType<typeof getTemporalGpuState>,
+  params: NonNullable<ReturnType<typeof getTemporalParamsBuffer>>,
+  hasSecondaryReactivity: boolean,
+  hasCoverage: boolean,
+): void {
+  const payload = new ArrayBuffer(TEMPORAL_PARAMS_BYTES);
+  new Float32Array(payload).set([
+    frame.camera.temporal?.currentJitterUv?.[0] ?? 0,
+    frame.camera.temporal?.currentJitterUv?.[1] ?? 0,
+  ]);
+  const words = new Uint32Array(payload);
+  words[2] = state.valid && (frame.camera.temporal?.historyValid ?? true) ? 1 : 0;
+  words[3] = frame.camera.temporal?.temporalFrameIndex ?? 0;
+  words[4] = Number(hasSecondaryReactivity);
+  words[5] = Number(hasCoverage);
+  words[6] = Number(hasSecondaryReactivity);
+  const flicker = flickerParams(
+    frame.camera.taaFlickering ?? DEFAULT_TAA_FLICKERING,
+    frame.camera.temporal?.sampleTimeSeconds,
+    state,
+    frame.targetW,
+  );
+  words[7] = flicker.enabled ? 1 : 0;
+  new Float32Array(payload, 32, 2).set([flicker.invThreshold, flicker.invMaxParallax]);
+  const written = frame.runtime.device.queue.writeBuffer(params, 0, new Uint8Array(payload));
+  if (!written.ok) throwTemporalEncodeFailure('TAA resolve params upload succeeds', written.error);
+}
+
 export interface TypedTemporalResolveTargets {
   readonly scene: RenderPipelineTarget;
   /** Output-domain coverage produced by the Standard raster witness. */
@@ -1138,9 +1205,15 @@ export interface TypedTemporalResolveTargets {
   readonly writeStability: RenderPipelineTarget;
 }
 
+/** TAA resolve also carries the UE TSR flickering analysis history (rgba8unorm). */
+export interface TypedTaaResolveTargets extends TypedTemporalResolveTargets {
+  readonly historyFlicker: RenderPipelineTarget;
+  readonly writeFlicker: RenderPipelineTarget;
+}
+
 export function addTypedTemporalResolvePass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  targets: TypedTemporalResolveTargets,
+  targets: TypedTaaResolveTargets,
 ): Result<void, RenderGraphError> {
   // This graph has two alternating history inputs. Retain only those exact
   // physical bindings; a changed state, view or resource replaces the oldest.
@@ -1164,6 +1237,7 @@ export function addTypedTemporalResolvePass(
       { resource: targets.historyColor.view, usage: 'sampled-read' },
       { resource: targets.historyTemporal.view, usage: 'sampled-read' },
       { resource: targets.historyStability.view, usage: 'sampled-read' },
+      { resource: targets.historyFlicker.view, usage: 'sampled-read' },
       ...(targets.secondaryReactivity === undefined
         ? []
         : [{ resource: targets.secondaryReactivity.view, usage: 'sampled-read' as const }]),
@@ -1173,6 +1247,7 @@ export function addTypedTemporalResolvePass(
       { resource: targets.writeColor.view, usage: 'color-attachment' },
       { resource: targets.writeTemporal.view, usage: 'color-attachment' },
       { resource: targets.writeStability.view, usage: 'color-attachment' },
+      { resource: targets.writeFlicker.view, usage: 'color-attachment' },
     ],
     colorAttachments: [
       {
@@ -1193,6 +1268,12 @@ export function addTypedTemporalResolvePass(
         storeOp: 'store',
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
       },
+      {
+        view: targets.writeFlicker.view,
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+      },
     ],
     encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
@@ -1203,6 +1284,8 @@ export function addTypedTemporalResolvePass(
           .deviceScope,
         frame.targetW,
         frame.targetH,
+        false,
+        frame.camera,
       );
       const built = getTemporalBindGroupResources(state);
       const current = resolvedView(resources, targets.scene.view);
@@ -1210,6 +1293,7 @@ export function addTypedTemporalResolvePass(
       const historyColor = resolvedView(resources, targets.historyColor.view);
       const historyTemporal = resolvedView(resources, targets.historyTemporal.view);
       const historyStability = resolvedView(resources, targets.historyStability.view);
+      const historyFlicker = resolvedView(resources, targets.historyFlicker.view);
       const secondarySource =
         targets.secondaryReactivity === undefined
           ? currentTemporal
@@ -1218,20 +1302,13 @@ export function addTypedTemporalResolvePass(
       if (params === undefined || built.sampler === null || built.temporalSampler === null) {
         throwTemporalEncodeFailure('TAA resolve has an admitted params buffer and sampler');
       }
-      const payload = new ArrayBuffer(32);
-      new Float32Array(payload).set([
-        frame.camera.temporal?.currentJitterUv?.[0] ?? 0,
-        frame.camera.temporal?.currentJitterUv?.[1] ?? 0,
-      ]);
-      const words = new Uint32Array(payload);
-      words[2] = state.valid && (frame.camera.temporal?.historyValid ?? true) ? 1 : 0;
-      words[3] = frame.camera.temporal?.temporalFrameIndex ?? 0;
-      words[4] = Number(secondaryReactivity !== undefined);
-      words[5] = Number(targets.coverage !== undefined);
-      words[6] = Number(secondaryReactivity !== undefined);
-      const written = frame.runtime.device.queue.writeBuffer(params, 0, new Uint8Array(payload));
-      if (!written.ok)
-        throwTemporalEncodeFailure('TAA resolve params upload succeeds', written.error);
+      writeTemporalResolveParams(
+        internal,
+        state,
+        params,
+        secondaryReactivity !== undefined,
+        targets.coverage !== undefined,
+      );
       const secondary =
         secondaryReactivity === undefined
           ? currentTemporal
@@ -1252,6 +1329,7 @@ export function addTypedTemporalResolvePass(
         historyColor,
         historyTemporal,
         historyStability,
+        historyFlicker,
         secondary,
         secondarySource,
         coverage,
@@ -1274,6 +1352,7 @@ export function addTypedTemporalResolvePass(
             { binding: 7, resource: { kind: 'sampler', value: built.temporalSampler } },
             { binding: 8, resource: { kind: 'buffer', value: { buffer: params } } },
             { binding: 9, resource: { kind: 'textureView', value: historyStability } },
+            { binding: 13, resource: { kind: 'textureView', value: historyFlicker } },
             {
               binding: 10,
               resource: {
@@ -1308,6 +1387,7 @@ export function addTypedTemporalResolvePass(
         targets.writeColor.format,
         targets.writeTemporal.format,
         targets.writeStability.format,
+        targets.writeFlicker.format,
       ] as GPUTextureFormat[]);
       if (pipeline === null || pipeline === undefined) {
         throwTemporalEncodeFailure('TAA resolve pipeline is ready before frame encoding');

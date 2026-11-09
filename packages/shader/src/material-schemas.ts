@@ -25,13 +25,22 @@ export const DEFAULT_STANDARD_PBR_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
 export const STANDARD_TEXTURE_MASK_OVERRIDE = '64000';
 
 /**
- * Numeric WGSL override ID of the Standard template's surface discard gates.
- * Each set bit keeps one fragment discard; the default keeps both. A static
- * discard defeats hidden-surface removal on tile GPUs even when it never fires.
+ * Pipeline-request key that carries the surface discard facts (bit set below)
+ * from the raster class to the shader spec. It is no longer a WGSL override:
+ * the spec turns a nonzero mask into the compile-time SURFACE_DISCARD axis, so
+ * the default opaque program holds no discard at all.
  */
 export const STANDARD_SURFACE_DISCARDS_OVERRIDE = '64001';
-/** Zero is valid only for an admitted draw that declares no shadow reception. */
+/**
+ * View-level shadow reception. Zero only for a proven shadow-free Forward
+ * WebGL2 View; it is never per draw, so receiver and nonreceiver draws of one
+ * program keep sharing a PSO (per-draw reception rides the Mesh / material lane).
+ */
 export const STANDARD_SHADOW_RECEPTION_OVERRIDE = '64002';
+/** The compile-time source macro axis that keeps LOD-fade and view-clipping discards. */
+export const STANDARD_SURFACE_DISCARD_LOD_AXIS = 'LOD_DITHER';
+/** Compile-time axis for camera view clipping planes. */
+export const STANDARD_SURFACE_DISCARD_CLIPPING_AXIS = 'CLIPPING_PLANES';
 /** The visible item may carry a nonzero dithered LOD crossfade. */
 export const STANDARD_SURFACE_DISCARD_LOD_COVERAGE = 1;
 /** The view may carry world-space camera clipping planes. */

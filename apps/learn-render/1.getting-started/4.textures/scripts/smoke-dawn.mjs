@@ -38,6 +38,7 @@
 // exits 1 + emits the structured failure JSON on stderr; that is the
 // expected red signal until T-M8-04 wires the full recipe.
 
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -318,17 +319,11 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [lease],
     camera: { lease },
     environment: { lease },
   });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
   framesObserved++;
 }
 const device = sharedDevice;

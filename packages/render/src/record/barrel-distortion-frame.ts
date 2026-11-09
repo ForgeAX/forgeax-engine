@@ -1,6 +1,6 @@
 import { type Mat4, mat4 } from '@forgeax/engine-math';
 import {
-  attachBarrelDistortionCameraFrame,
+  attachComputedBarrelDistortionCameraFrame,
   type BarrelDistortionMapping,
   createBarrelDistortionMapping,
   ownsBarrelDistortionMapping,
@@ -83,7 +83,7 @@ function attachSubmittedCameraFrame(
     )
       return previous;
     // Publication detaches both matrices before this synchronous call returns.
-    return attachBarrelDistortionCameraFrame(mapping, frame);
+    return attachComputedBarrelDistortionCameraFrame(mapping, frame);
   } finally {
     freeCameraFrame ??= frame;
   }

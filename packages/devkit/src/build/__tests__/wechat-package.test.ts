@@ -198,3 +198,78 @@ it('rejects either the main-package or total deployed-byte limit', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+it.each([
+  undefined,
+  'default',
+  'none',
+  { html: '' },
+] as const)('honors failure presentation %j before the native subpackage loads', async (failure) => {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-presentation-'));
+  const generated = resolve(root, 'generated');
+  const output = resolve(root, 'output');
+  const facts: ProjectFacts = {
+    root,
+    id: 'native-presentation',
+    name: 'Native presentation',
+    roots: {},
+    assetRoots: ['assets'],
+    assetLibraries: [],
+    packageJson: {},
+  };
+  try {
+    await mkdir(generated);
+    await mkdir(output);
+    const { plugin } = await prepareWechatBuild(
+      facts,
+      generated,
+      {
+        assets: new Map(),
+        deferred: [],
+        sourceInputs: new Map(),
+        sourceSnapshot: createScriptablePackSourceSnapshot(),
+        filesystemInputs: undefined,
+      },
+      { startupUi: { ...(failure === undefined ? {} : { failure }) } },
+    );
+    const hook = plugin.generateBundle;
+    const emitted: { fileName: string; source: string }[] = [];
+    if (hook)
+      Reflect.apply(
+        typeof hook === 'function' ? hook : hook.handler,
+        { emitFile: (asset: { fileName: string; source: string }) => emitted.push(asset) },
+        [{}, {}, false],
+      );
+    for (const asset of emitted) await writeFile(resolve(output, asset.fileName), asset.source);
+    await writeFile(resolve(output, 'game.js'), '');
+    await writeFile(resolve(output, 'pack-index.json'), '[]');
+    await mkdir(resolve(output, 'shaders'));
+    await writeFile(resolve(output, 'shaders/manifest.json'), '{}');
+    await writeWechatProject(facts, { target: 'wechat', appid: 'wx0000000000000000' }, output);
+    const bootstrap = await readFile(resolve(output, 'game.js'), 'utf8');
+    const modals: unknown[] = [];
+    const inspection = runInNewContext(`${bootstrap}; globalThis.__forgeaxGameInspection`, {
+      wx: {
+        loadSubpackage(options: { fail(error: unknown): void }) {
+          options.fail({ errMsg: 'Native package transport rejected' });
+        },
+        showModal: (modal: unknown) => modals.push(modal),
+      },
+      console: { info() {}, error() {} },
+    });
+    expect(inspection.phase).toBe('failed');
+    expect(inspection.error).toMatchObject({
+      operation: 'wx.loadSubpackage',
+      message: 'Native package transport rejected',
+    });
+    expect(modals).toHaveLength(failure === undefined || failure === 'default' ? 1 : 0);
+    await expect(readFile(resolve(output, 'forgeax-wechat-startup.json'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(
+      readFile(resolve(output, 'payload/forgeax-wechat-startup.json.br')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

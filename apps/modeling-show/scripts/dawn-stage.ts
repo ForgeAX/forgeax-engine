@@ -34,6 +34,7 @@ export interface DawnStage {
   readonly width: number;
   readonly height: number;
   errors(): readonly string[];
+  inspectFrame(): unknown;
   dispose(): Promise<void>;
 }
 
@@ -78,9 +79,12 @@ export async function createDawnStage(width: number, height: number): Promise<Da
     addEventListener() {},
     removeEventListener() {},
   } as unknown as HTMLCanvasElement;
+  const captureDirectory = process.env.FORGEAX_SHOW_CAPTURE_DIR;
+  const recorder = captureDirectory === undefined ? undefined : (await import('@forgeax/engine/rhi-debug')).attachRecorder(await import('@forgeax/engine/rhi-webgpu')).unwrap();
+  let frameOrdinal = 0;
   let host: Awaited<ReturnType<typeof constructRuntimeRendererHost>>;
   try {
-    host = await constructRuntimeRendererHost(canvas, {}, { shaderManifestUrl: manifestUrl });
+    host = await constructRuntimeRendererHost(canvas, recorder === undefined ? {} : { rhi: recorder.backend.rhi }, { shaderManifestUrl: manifestUrl });
   } finally {
     gpu.requestAdapter = requestAdapter;
   }
@@ -104,15 +108,25 @@ export async function createDawnStage(width: number, height: number): Promise<Da
     width,
     height,
     errors: () => errors,
+    inspectFrame: () => ({ frame: renderer.inspect().frame, scene: renderer.inspect().renderScene }),
     async frame(dt, count = 1) {
+      const ordinal = frameOrdinal++;
       for (let i = 0; i < count; i++) {
         world.update(dt).unwrap();
+        const capture = recorder !== undefined && (ordinal === 0 || ordinal === 13) && i === count - 1 ? recorder.captureFrame() : undefined;
+        if (capture !== undefined) (await recorder?.frameBoundary())?.unwrap();
         await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } }).catch((error: unknown) => {
           // Keep the original readiness failure; diagnose only its bounded
           // recent renderer errors, without collecting more successful frames.
           console.error('show renderer errors at failure:', errors.slice(-8));
           throw error;
         });
+        if (capture !== undefined) {
+          (await recorder?.frameBoundary())?.unwrap();
+          const tape = (await capture).unwrap();
+          mkdirSync(captureDirectory as string, { recursive: true });
+          writeFileSync(join(captureDirectory as string, `panels-${ordinal}.rhitape`), tape.bytes);
+        }
       }
       if (device === undefined || target === undefined) throw new Error('device not captured');
       const buffer = device.createBuffer({ size: bytesPerRow * height, usage: 0x0001 | 0x0008 });
@@ -140,6 +154,7 @@ export async function createDawnStage(width: number, height: number): Promise<Da
     },
     dispose: async () => {
       await renderer.dispose();
+      (await recorder?.dispose())?.unwrap();
     },
   };
 }

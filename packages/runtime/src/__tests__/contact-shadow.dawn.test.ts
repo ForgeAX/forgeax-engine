@@ -22,7 +22,7 @@ import {
 import { deltaPng, luminancePng, offscreenCanvas } from './hdr-evidence.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest({ pointShadows: true }));
 const directory = 'artifacts/contact-shadow';
 
 function writeLuminancePng(name: string, luminance: Float32Array, size: number) {

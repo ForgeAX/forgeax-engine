@@ -107,7 +107,7 @@ describe('actual deferred direct AO uniform owners', () => {
             runtime: {
               device: { createBindGroupLayout },
               deviceScope: scope,
-              standardDeferredShaders: { unclustered: 'fixture' },
+              standardSceneShaders: { deferred: { unclustered: 'fixture' } },
               shaderModuleFactory: { createShaderModule: () => ok({}) },
             },
             pipelineState: { viewBindGroupLayout: {} },

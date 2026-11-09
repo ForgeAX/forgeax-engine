@@ -556,7 +556,9 @@ interface StandardOpts {
    * Mirror the camera's PlanarReflection where this surface lies on its plane.
    * Roughness fades the mirror out by 0.5, or, when the capture has
    * `generateMipmaps`, selects its mip (`roughness × (levels − 1)`). The
-   * material renders forward and adds one sampled texture.
+   * material adds one sampled texture and renders forward while a capture is
+   * published; without one it is an ordinary deferred surface (and so an SSR
+   * receiver).
    */
   readonly planarReflection?: boolean;
   /** RGB diffusion support radii in presentation pixels, each finite in [0,12]. */
@@ -692,7 +694,8 @@ export interface CustomStandardSurfaceOptions {
   /**
    * Opt this Surface into the display Camera's `PlanarReflection` capture, as the
    * built-in `planarReflection` does: the material gains the real u32 field and
-   * shades forward only. The Surface's per-pixel `normalWS` distorts the mirror
+   * shades forward while a capture is published (deferred, so an SSR receiver,
+   * otherwise). The Surface's per-pixel `normalWS` distorts the mirror
    * lookup by `PlanarReflection.distortion`, and its `roughness` fades the mirror
    * into the prefiltered environment, or blurs it through the mip chain when the
    * capture has `generateMipmaps` (wet-ground ripples and puddles).
@@ -1134,11 +1137,12 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
     ...(opts.queue === undefined ? {} : { queue: opts.queue }),
     layerPlan,
   });
-  // Transmission and planar mirroring read view captures, so they shade forward.
+  // Transmission reads the opaque backdrop, so it shades forward. A planar
+  // mirror keeps its Deferred pass: extraction routes it forward only while
+  // its world publishes a PlanarReflection capture, and otherwise it is an
+  // ordinary G-buffer surface that receives screen-space reflections.
   const passes = (
-    transmission > 0 || opts.planarReflection === true
-      ? projected.filter((entry) => entry.name !== 'deferred')
-      : projected
+    transmission > 0 ? projected.filter((entry) => entry.name !== 'deferred') : projected
   ) as [MaterialPass, ...MaterialPass[]];
   return {
     kind: 'material',
@@ -1169,11 +1173,9 @@ function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
     ...(opts.queue === undefined ? {} : { queue: opts.queue }),
     layerPlan,
   });
-  // The mirror is a view capture, so a planar Surface shades forward only.
-  const passes = (planar ? projected.filter((entry) => entry.name !== 'deferred') : projected) as [
-    MaterialPass,
-    ...MaterialPass[],
-  ];
+  // A planar Surface keeps its Deferred pass; extraction routes it forward
+  // only while a PlanarReflection capture is published (see planarRoutedPasses).
+  const passes = projected as [MaterialPass, ...MaterialPass[]];
   return {
     kind: 'material',
     ...(opts.staticSwitches === undefined ? {} : { staticSwitches: opts.staticSwitches }),

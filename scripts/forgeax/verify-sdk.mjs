@@ -412,14 +412,9 @@ if (selected('source')) {
     });
     await sourceBuildPnpm(['build:engine']);
     await sourceBuildPnpm(['build:tools']);
-    // This cold source build just produced and verified its own shared inputs.
-    // Preserve the Preview build without starting packages/producer a second time.
-    await sourceBuildPnpm([
-      'build:app',
-      'preview',
-      '--shared-input-manifest',
-      'shared-build-inputs/manifest.json',
-    ]);
+    // Source Preview starts Vite from source; its template journey never reads
+    // apps/preview/dist. Keep the clean Engine/tools proof and let both real
+    // source consumers use its independently produced shared inputs.
   });
 }
 const initializedSdk = await execFileAsync(

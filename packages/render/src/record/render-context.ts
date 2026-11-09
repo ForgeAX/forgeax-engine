@@ -197,8 +197,8 @@ export interface RenderSystemRuntime {
   readonly shaderRegistry?: import('@forgeax/engine-shader').ShaderRegistry;
   /** Final display observations wait for the screen UI composition. */
   deferFinalDisplayObservation?: boolean;
-  standardDeferredShaders?:
-    | import('../pipeline/standard-deferred-lighting').StandardDeferredShaderSources
+  standardSceneShaders?:
+    | import('../pipeline/standard-deferred-lighting').StandardSceneShaderSources
     | undefined;
   readonly device: RhiDevice;
   /** Current renderer device generation used to fence receipt-bound captures. */
@@ -238,6 +238,8 @@ export interface RenderSystemRuntime {
           readonly deformation?: 'rigid' | 'skin';
           readonly variantSet?: string;
           readonly clustered?: boolean;
+          /** Material admission for the compile-time ALPHA_MASK axis. */
+          readonly alphaMask?: boolean;
           readonly probeBlend?: boolean;
           readonly reflectionFallback?: boolean;
           readonly pass?: 'forward' | 'shadow' | 'depth';
@@ -254,7 +256,7 @@ export interface RenderSystemRuntime {
   /** Exact ordinary preparation request lookup; misses must not compile or allocate a PSO. */
   readonly lookupMaterialShaderPipeline?: RenderSystemInternals['getMaterialShaderPipeline'];
   readonly lookupMaterialShaderPipelineEntry?: RenderSystemInternals['getMaterialShaderPipelineEntry'];
-  readonly withPipelinePreparationErrors?: (action: () => void) => void;
+  readonly withPipelinePreparationErrors?: (action: () => void, onPending?: () => void) => void;
   readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
   readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
   readonly getMaterialShaderPipeline?: (
@@ -286,7 +288,8 @@ export interface RenderSystemRuntime {
     vertexEntryPoint?: string,
     additionalColorFormats?: readonly GPUTextureFormat[],
     vertexEntry?: string,
-    fragmentEntry?: string,
+    /** `null` selects a vertex-only depth pipeline; omitted keeps the program default. */
+    fragmentEntry?: string | null,
     particleInputLanes?: number,
     constants?: Readonly<Record<string, number>>,
   ) => RhiRenderPipeline | null;
@@ -646,6 +649,8 @@ export interface _StandardForwardSceneView {
   readonly viewBindGroupDynamicOffset?: number;
   /** Analytic fog or finite atmosphere can affect this View; absence stays conservative. */
   readonly viewFog?: boolean | undefined;
+  /** Proven Forward WebGL2 shadow demand; absent keeps the shader's per-draw reception. */
+  readonly viewShadows?: boolean | undefined;
   /** Bind the translucent View copy matching each blended draw's composition. */
   readonly translucentFog?: boolean;
   readonly meshBindGroup: BindGroup | null;
@@ -688,6 +693,8 @@ export interface _StandardForwardSceneView {
   readonly hdrpClusterMembershipBindGroup: BindGroup | null;
   /** Prepared Standard lighting declaration accepted by this graph frame. */
   readonly standardLighting?: StandardTopologyInputValue;
+  /** One Vogel-PCF cascade, no blend: Standard pipelines fold the general receiver away. */
+  readonly directionalShadowSimple?: boolean;
   readonly foldDispatchPlan: FoldDispatchPlan | null;
   readonly materialSlotIndices: FrameList<readonly number[]>;
   readonly materialSlots: readonly MaterialSnapshot[];
@@ -714,7 +721,7 @@ export interface _StandardForwardSceneView {
   ) => { readonly slot: number; readonly generation: number } | undefined;
   /** Per-shadow-view frusta shared by GPU compaction and CPU draw routing. */
   readonly shadowViewPlanesByView?: ReadonlyMap<string, Float32Array>;
-  /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
+  /** Capsule-ready casters leave directional cascades when this lane has its consumer. */
   readonly capsuleShadowDirectional?: boolean;
   /** Shading light for capsule shadows; present when admitted casters left the cascades. */
   readonly capsuleShadowLight?: {

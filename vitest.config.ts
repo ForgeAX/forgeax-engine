@@ -5,6 +5,7 @@ import { createBrowserProject } from './config/vitest-browser-project';
 import { playwrightWithBackgroundPages } from './config/vitest-browser-provider';
 import { dawnProject } from './config/vitest-dawn-project';
 import { REPOSITORY_ROOT, sharedVitestConfig } from './config/vitest-shared';
+import { selectBrowserExecutable } from './scripts/ci/browser-executable.mjs';
 
 // Root vitest config - declares projects per K-3 split policy:
 //
@@ -177,7 +178,7 @@ export default defineConfig({
             enabled: true,
             provider: playwrightWithBackgroundPages({
               launchOptions: {
-                channel: 'chrome-beta',
+                ...selectBrowserExecutable({ channel: 'chrome-beta' }),
                 chromiumSandbox: true,
                 args: [
                   '--disable-features=WebGPU,WebGPUService,MacAppCodeSignClone',

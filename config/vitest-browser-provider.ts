@@ -10,7 +10,8 @@ import type { BrowserProviderOption, TestProject } from 'vitest/node';
 // activates the app for that operation in headed runs. The CDP target option
 // keeps the same visible, Playwright-controlled page while preventing that
 // OS-level activation on every Chromium host; the test document remains
-// visible and focused.
+// visible with DOM focus. Native OS popups still require a foreground window;
+// their UI oracle groups opt out and own the runner exclusively.
 type OpenBrowserOptions = { parallel: boolean };
 
 type ProviderInternals = {

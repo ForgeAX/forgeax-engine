@@ -1,4 +1,5 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { isTemporalAntialias } from '../components/camera';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
 import { reportSsrHistoryFailure } from '../record/ssr-history-frame';
@@ -270,7 +271,7 @@ export function admitVolumeHistory(
         ? previousResetReason
         : undefined;
     const reset = resolveVolumeTemporalReset(previous, signature, {
-      taaEnabled: camera.antialias === 'taa',
+      taaEnabled: isTemporalAntialias(camera.antialias),
       ...(reprojection === undefined ? {} : { reprojection }),
     }).reset;
     if (!reset) readSlot = acceptedSlot;

@@ -324,3 +324,79 @@ test('distinguishes structural identities from value-only rows in one borrowed c
   expect(empty.indices).toEqual([]);
   expect(empty.hasStructuralChange(entityIndex(removed))).toBe(false);
 });
+
+test('detached projection callbacks retain independent candidate authority and component facts', () => {
+  const world = new World();
+  const entity = world.spawn({ component: Position, data: { x: 1 } }).unwrap();
+  const projection = createStateProjection(world, [Position, Extra]);
+  const { read, changed, entity: resolve, isCurrent, invalidate } = projection;
+  expect(read).toBe(projection.read);
+  const first = read();
+  const { accept, validate, hasStructuralChange } = first;
+  const firstComponents = [...first.changedComponents];
+  expect(accept).toBe(first.accept);
+  expect(validate).toBe(first.validate);
+  expect(hasStructuralChange).toBe(first.hasStructuralChange);
+  expect(resolve(entityIndex(entity))).toBe(entity);
+  expect(hasStructuralChange(entityIndex(entity))).toBe(true);
+  validate();
+  accept();
+  accept();
+  expect(isCurrent()).toBe(true);
+  expect(() => hasStructuralChange(entityIndex(entity))).toThrow();
+  world.set(entity, Position, { x: 2 }).unwrap();
+  expect(changed(entity, Position)).toBe(true);
+  const stale = read();
+  const staleAccept = stale.accept;
+  invalidate();
+  const latest = read();
+  expect(() => staleAccept()).toThrow();
+  expect(first.changedComponents).toEqual(firstComponents);
+  latest.accept();
+  expect(isCurrent()).toBe(true);
+  expect(changed(entity, Position)).toBe(false);
+});
+
+test('captures the declared component vocabulary together with its tracked IDs', () => {
+  const world = new World();
+  const entity = world.spawn({ component: Position, data: { x: 1 } }).unwrap();
+  const declared = [Position, Extra];
+  const projection = createStateProjection(world, declared);
+  declared[0] = Extra;
+  const first = projection.read();
+  expect(first.changedComponents).toEqual([Position, Extra]);
+  first.accept();
+  world.set(entity, Position, { x: 2 }).unwrap();
+  expect(projection.read().changedComponents).toEqual([Position]);
+});
+
+test('shares unchanged immutable change facts while candidate completion stays independent', () => {
+  const world = new World();
+  const entity = world.spawn({ component: Position, data: { x: 1 } }).unwrap();
+  const projection = createStateProjection(world, [Position, Extra]);
+  const first = projection.read(),
+    second = projection.read();
+  expect(second.changedComponents).toBe(first.changedComponents);
+  expect(Object.isFrozen(first.changedComponents)).toBe(true);
+  expect(() => first.accept()).toThrow();
+  second.accept();
+  const quiet = projection.read(),
+    quietAgain = projection.read();
+  expect(quietAgain.changedComponents).toBe(quiet.changedComponents);
+  expect(Object.isFrozen(quiet.changedComponents)).toBe(true);
+  quietAgain.accept();
+  world.set(entity, Position, { x: 2 }).unwrap();
+  const partial = projection.read(),
+    retry = projection.read();
+  expect(partial.changedComponents).toEqual([Position]);
+  expect(retry.changedComponents).toBe(partial.changedComponents);
+  expect(Object.isFrozen(partial.changedComponents)).toBe(true);
+  expect(partial.changedComponents).not.toBe(first.changedComponents);
+  expect(() => partial.accept()).toThrow();
+  retry.accept();
+  world.addComponent(entity, { component: Extra, data: {} }).unwrap();
+  expect(projection.read().changedComponents).toEqual([Extra]);
+  expect(partial.changedComponents).toEqual([Position]);
+  expect(() => (partial.changedComponents as unknown[]).push(Extra)).toThrow();
+  expect(first.changedComponents).toEqual([Position, Extra]);
+});

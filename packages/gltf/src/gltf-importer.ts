@@ -1,9 +1,15 @@
 import {
   applyMeshMaterialSlotTopology,
+  meshMaterialSlotsFromTopology,
   meshMaterialSlotsToTopology,
 } from '@forgeax/engine-geometry';
 import { cookMeshCollision } from '@forgeax/engine-import';
-import type { ImportSubAsset } from '@forgeax/engine-types';
+import {
+  createMeshMaterialSlotTable,
+  type ImportSubAsset,
+  type MeshMaterialSlotSource,
+  type Submesh,
+} from '@forgeax/engine-types';
 import { groupMeshPrimitives } from './mesh-primitives';
 // gltf-importer.ts - the build-time gltfImporter (feat-20260603-asset-import-loader-injection M2 / w19,
 // extended in feat-20260608 M3 w14 with the texture pipeline: three image
@@ -41,7 +47,10 @@ import { groupMeshPrimitives } from './mesh-primitives';
 
 import { deriveDefaultLodScreenCoverages } from '@forgeax/engine-import';
 import { packMeshBin } from '@forgeax/engine-import/mesh-bin';
-import { AssetGuid as AssetGuidCodec } from '@forgeax/engine-pack/guid';
+import {
+  AssetGuid as AssetGuidCodec,
+  TEXTURE_CONTENT_SOURCE_KEY_PREFIX,
+} from '@forgeax/engine-pack/guid';
 import {
   ANIMATION_CLIP_SAMPLES_ARTIFACT,
   encodeAnimationClipSamples,
@@ -68,6 +77,8 @@ import {
 import { deriveGltfAnimatedBounds } from './animated-bounds';
 import {
   gltfDocToSceneAsset,
+  type MergedMeshLayout,
+  mergedMeshLayout,
   meshIrToMeshAsset,
   toMaterialAsset,
   validateMaterialTangentInputs,
@@ -83,6 +94,7 @@ import { cookGltfMeshDistanceField } from './mesh-distance-field';
 import type { GltfDoc, GltfMaterialIr, GltfParseOptions } from './parse-gltf.js';
 import { GLTF_UV_SET_COUNT, gltfMeshUvSet, parseGlb, parseGltf } from './parse-gltf.js';
 import { deriveGltfShadowCapsules } from './shadow-capsules';
+import { gltfTextureContentIdentity } from './texture-content.js';
 
 type ParseDocResult =
   | { readonly ok: true; readonly value: GltfDoc }
@@ -568,28 +580,29 @@ function meshCookError(
   });
 }
 
+/** Names, GUIDs and sourceKeys the mesh material slot table derives from glTF materials. */
+function meshMaterialSlotSource(session: GltfImportSession): MeshMaterialSlotSource {
+  const { doc, ctx } = session;
+  const nameByIndex = new Map<number, string>();
+  const sourceKeyByIndex = new Map<number, string>();
+  for (let materialIndex = 0; materialIndex < doc.materials.length; materialIndex++) {
+    const name = doc.materials[materialIndex]?.name;
+    if (typeof name === 'string') nameByIndex.set(materialIndex, name);
+  }
+  for (const material of ctx.subAssets) {
+    if (material.kind === 'material' && material.sourceKey !== undefined) {
+      sourceKeyByIndex.set(material.sourceIndex, material.sourceKey);
+    }
+  }
+  return { guidByIndex: session.maps.materialGuidByIndex, nameByIndex, sourceKeyByIndex };
+}
+
 function bridgeMeshPrimitives(
   session: GltfImportSession,
   sub: ImportSubAsset,
   prims: readonly GltfMeshPrimitive[],
 ): ImportStep<MeshAsset> {
-  const { doc, ctx } = session;
-  const materialNameByIndex = new Map<number, string>();
-  const materialSourceKeyByIndex = new Map<number, string>();
-  for (let materialIndex = 0; materialIndex < doc.materials.length; materialIndex++) {
-    const name = doc.materials[materialIndex]?.name;
-    if (typeof name === 'string') materialNameByIndex.set(materialIndex, name);
-  }
-  for (const material of ctx.subAssets) {
-    if (material.kind === 'material' && material.sourceKey !== undefined) {
-      materialSourceKeyByIndex.set(material.sourceIndex, material.sourceKey);
-    }
-  }
-  const bridged = meshIrToMeshAsset(prims, {
-    guidByIndex: session.maps.materialGuidByIndex,
-    nameByIndex: materialNameByIndex,
-    sourceKeyByIndex: materialSourceKeyByIndex,
-  });
+  const bridged = meshIrToMeshAsset(prims, meshMaterialSlotSource(session));
   if (bridged.ok) return { ok: true, value: bridged.value };
   return {
     ok: false,
@@ -616,6 +629,196 @@ function meshLodGroup(doc: GltfDoc, meshIndex: number): GltfLodGroup | undefined
   return lod.rootNode !== undefined && doc.nodes[lod.rootNode]?.meshIndex === meshIndex
     ? lod
     : undefined;
+}
+
+/** Mesh indices of the MSFT_lod roots that draw this mesh as one of their lower levels. */
+function lodRootMeshIndices(doc: GltfDoc, meshIndex: number): number[] {
+  const lod = doc.lod;
+  if (lod === undefined) return [];
+  const groups = lod.groups.length > 0 ? lod.groups : [lod];
+  const roots = new Set<number>();
+  for (const group of groups) {
+    const rootMeshIndex = doc.nodes[group.rootNode]?.meshIndex;
+    if (
+      typeof rootMeshIndex === 'number' &&
+      rootMeshIndex !== meshIndex &&
+      group.lodNodeIds.some((nodeIndex) => doc.nodes[nodeIndex]?.meshIndex === meshIndex)
+    ) {
+      roots.add(rootMeshIndex);
+    }
+  }
+  return [...roots];
+}
+
+function lodSectionError(sub: ImportSubAsset, reason: string): ImportError {
+  return new ImportError({
+    code: 'mesh-lod-contract-invalid',
+    expected: 'every MSFT_lod level to draw through the root mesh material sections',
+    hint: IMPORT_ERROR_HINTS['mesh-lod-contract-invalid'],
+    detail: { ...(sub.sourceKey === undefined ? {} : { meshLodSourceKey: sub.sourceKey }), reason },
+  });
+}
+
+/** Every other LOD root sharing this level authors the same material sections. */
+function sharesRootSections(
+  session: GltfImportSession,
+  otherRoots: readonly number[],
+  rootMaterials: readonly (number | null)[],
+): boolean {
+  return otherRoots.every((index) => {
+    const materials = (session.primitivesByMesh.get(index) ?? []).map((p) => p.materialIndex);
+    return (
+      materials.length === rootMaterials.length &&
+      materials.every((material, k) => material === rootMaterials[k])
+    );
+  });
+}
+
+/** The level carries the root's vertex streams and fits its index width. */
+function fitsRootLayout(root: MergedMeshLayout, level: MergedMeshLayout): boolean {
+  return (
+    root.hasColor === level.hasColor &&
+    root.hasSkin === level.hasSkin &&
+    root.extraUvSetCount === level.extraUvSetCount &&
+    root.hasIndices === level.hasIndices &&
+    (!level.wideIndices || root.wideIndices)
+  );
+}
+
+/**
+ * Root section k -> this level's primitive with the same material (same
+ * position first, then authored order). Undefined when a level primitive has
+ * no free root section.
+ */
+function rootSectionSources(
+  rootMaterials: readonly (number | null)[],
+  prims: readonly GltfMeshPrimitive[],
+): (number | undefined)[] | undefined {
+  const sourceOf: (number | undefined)[] = rootMaterials.map((material, k) =>
+    prims[k]?.materialIndex === material ? k : undefined,
+  );
+  const used = new Set(sourceOf.filter((j): j is number => j !== undefined));
+  for (const [k, material] of rootMaterials.entries()) {
+    if (sourceOf[k] !== undefined) continue;
+    const j = prims.findIndex((prim, index) => !used.has(index) && prim.materialIndex === material);
+    if (j < 0) continue;
+    sourceOf[k] = j;
+    used.add(j);
+  }
+  return used.size === prims.length ? sourceOf : undefined;
+}
+
+/**
+ * Card layouts depend only on positions, indices and triangle sidedness, which
+ * stay the level's own; distance fields and collision re-derive from sections.
+ */
+function sectionCookedSetting(
+  importSettings: Readonly<Record<string, unknown>>,
+): 'meshDistanceField' | 'meshCollision' | undefined {
+  return (['meshDistanceField', 'meshCollision'] as const).find(
+    (setting) => ![undefined, false].includes(importSettings[setting] as undefined | false),
+  );
+}
+
+/**
+ * MSFT_lod lets every level author its own primitives and materials, while the
+ * runtime LOD chain draws each level through the root's material sections (one
+ * shared slot table, a per-level range per root section, as UE maps every LOD
+ * section onto the asset's material slots). A lower level is therefore
+ * published in the root's section layout: each root section takes the level's
+ * primitive with the same material (same position first, then authored
+ * order), sections the level does not author stay empty, and the slot table is
+ * the root's. Geometry and vertex streams stay the level's own.
+ */
+function conformLowerLodSections(
+  session: GltfImportSession,
+  sub: ImportSubAsset,
+  prims: readonly GltfMeshPrimitive[],
+  mesh: MeshAsset,
+): ImportStep<MeshAsset | undefined> {
+  const { ctx } = session;
+  const rootMeshIndices = lodRootMeshIndices(session.doc, sub.sourceIndex);
+  const rootMeshIndex = rootMeshIndices[0];
+  if (rootMeshIndex === undefined) return { ok: true, value: undefined };
+  const rootPrims = session.primitivesByMesh.get(rootMeshIndex) ?? [];
+  const rootSub = ctx.subAssets.find(
+    (entry) => entry.kind === 'mesh' && entry.sourceIndex === rootMeshIndex,
+  );
+  if (rootSub === undefined || rootPrims.length === 0) return { ok: true, value: undefined };
+  const rootMaterials = rootPrims.map((prim) => prim.materialIndex);
+  if (!sharesRootSections(session, rootMeshIndices.slice(1), rootMaterials)) {
+    return {
+      ok: false,
+      error: lodSectionError(sub, 'level is shared by LOD roots with different material sections'),
+    };
+  }
+  const rootLayout = mergedMeshLayout(rootPrims);
+  const layout = mergedMeshLayout(prims);
+  if (!rootLayout.ok || !layout.ok || !fitsRootLayout(rootLayout.value, layout.value)) {
+    return {
+      ok: false,
+      error: lodSectionError(sub, 'level vertex streams or index width differ from the root'),
+    };
+  }
+  const sourceOf = rootSectionSources(rootMaterials, prims);
+  if (sourceOf === undefined) {
+    return {
+      ok: false,
+      error: lodSectionError(
+        sub,
+        'level authors a primitive whose material has no free root section',
+      ),
+    };
+  }
+
+  const table = createMeshMaterialSlotTable('gltf', meshMaterialSlotSource(session));
+  const rootSkeleton = stabilizeMeshMaterialSlots(
+    {
+      ...mesh,
+      submeshes: rootMaterials.map((material) => ({
+        indexOffset: 0,
+        indexCount: 0,
+        vertexCount: 0,
+        topology: 'triangle-list',
+        materialSlot: table.slotFor(material),
+      })),
+      materialSlots: meshMaterialSlotsFromTopology(table.slots),
+    },
+    ctx,
+    rootSub.guid,
+    rootSub.sourceKey,
+  );
+  const reordered = sourceOf.some((j, k) => j !== k) || prims.length !== rootPrims.length;
+  const cooked = reordered ? sectionCookedSetting(ctx.importSettings) : undefined;
+  if (cooked !== undefined) {
+    return {
+      ok: false,
+      error: lodSectionError(
+        sub,
+        `${cooked} needs every section authored; give the level one primitive per root section or disable ${cooked}`,
+      ),
+    };
+  }
+  const submeshes: Submesh[] = rootSkeleton.submeshes.map((rootSection, k) => {
+    const j = sourceOf[k];
+    const section = j === undefined ? undefined : mesh.submeshes[j];
+    return section === undefined
+      ? { ...rootSection, indexOffset: 0, indexCount: 0, vertexCount: 0 }
+      : { ...section, materialSlot: rootSection.materialSlot };
+  });
+  const indices =
+    rootLayout.value.wideIndices && mesh.indices instanceof Uint16Array
+      ? Uint32Array.from(mesh.indices)
+      : mesh.indices;
+  return {
+    ok: true,
+    value: {
+      ...mesh,
+      ...(indices === undefined ? {} : { indices }),
+      submeshes,
+      materialSlots: rootSkeleton.materialSlots,
+    },
+  };
 }
 
 function validateLodGroupMeshes(
@@ -765,7 +968,10 @@ async function importMeshSubAsset(
     ctx.importSettings.meshCards,
   );
   if (!cards.ok) return { ok: false, error: meshCookError(sub.sourceIndex, cards.error) };
-  const stabilizedMesh = stabilizeMeshMaterialSlots(cards.value, ctx, sub.guid, sub.sourceKey);
+  const lowerLevel = conformLowerLodSections(session, sub, prims, cards.value);
+  if (!lowerLevel.ok) return lowerLevel;
+  const stabilizedMesh =
+    lowerLevel.value ?? stabilizeMeshMaterialSlots(cards.value, ctx, sub.guid, sub.sourceKey);
   const distanceField = await cookGltfMeshDistanceField(
     cards.value,
     sub.guid,
@@ -924,6 +1130,27 @@ async function importTextureSubAsset(
     colorSpace,
     mipmap: ctx.importSettings.mipmap ?? true,
   };
+  if (sub.sourceKey?.startsWith(TEXTURE_CONTENT_SOURCE_KEY_PREFIX) === true) {
+    // The GUID may be shared with other packages that declared the same
+    // content; publishing different bytes under it would cross their textures.
+    const actual = gltfTextureContentIdentity(
+      extracted.bytes,
+      extracted.mimeType,
+      colorSpace,
+      ctx.importSettings,
+    );
+    if (actual.sourceKey !== sub.sourceKey || actual.guid !== sub.guid.toLowerCase()) {
+      const reason = `image content or decode settings changed since the meta was written (declared ${sub.sourceKey}, actual ${actual.sourceKey})`;
+      const error = gltfErr('gltf-image-extract-failed', {
+        imageIndex,
+        source: extracted.source,
+        reason,
+      });
+      throw new Error(
+        `gltfImporter: ${error.code} on image ${imageIndex} (${extracted.source}): ${reason}; ${error.hint}`,
+      );
+    }
+  }
   const decoded = await ctx.decodeImage(extracted.bytes, extracted.mimeType, decodeSettings);
   if (!decoded.ok) {
     const reason = `decodeImage failed: ${decoded.error.code}`;

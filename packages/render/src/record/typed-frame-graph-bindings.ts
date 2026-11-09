@@ -448,6 +448,7 @@ function stageCloudHistoryWrite(frame: _InternalRenderPipelineContext): void {
     frame.targetW,
     frame.targetH,
     true,
+    frame.camera,
   );
   stageTemporalGpuWrite(frame.frameState, state);
 }

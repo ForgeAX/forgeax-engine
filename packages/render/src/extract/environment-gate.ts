@@ -1,4 +1,5 @@
 import type { Component, EntityHandle, QueryDescriptor, World } from '@forgeax/engine-ecs';
+import { isQueryIterating } from '@forgeax/engine-ecs/internal';
 import {
   createStateProjection,
   readEntityComponentEpoch,
@@ -14,16 +15,57 @@ import {
 } from '@forgeax/engine-scene';
 import { sameValue } from '../same-value';
 
-/** Pose reads of the environment extraction running now; undefined outside one. */
-let poseReads: EntityHandle[] | undefined;
-
 interface InputReads {
-  readonly world: World;
   readonly components: Set<Component>;
   readonly candidates: Set<Component>;
   readonly globals: Set<Component>;
 }
-let inputReads: InputReads | undefined;
+interface Observation {
+  readonly world: World;
+  readonly inputs: InputReads | undefined;
+  readonly poses: EntityHandle[];
+  volatile: boolean;
+}
+/** One synchronous extraction owns its observation and restores its parent. */
+let observation: Observation | undefined;
+const QUERY_INPUT_ROLES = ['read', 'write', 'optional', 'with', 'without'] as const;
+const INPUT_SETS = ['components', 'candidates', 'globals'] as const;
+
+function observedInputs(world: World): InputReads | undefined {
+  if (observation === undefined) return undefined;
+  if (observation.world === world) return observation.inputs;
+  observation.volatile = true;
+  return undefined;
+}
+
+/** One declared stock read Query per World, with ordinary live ECS iteration. */
+export function createEnvironmentQuery<
+  const R extends readonly Component[] = readonly [],
+  const O extends readonly Component[] = readonly [],
+>(descriptor: Pick<QueryDescriptor<R, readonly [], O>, 'read' | 'optional' | 'with' | 'without'>) {
+  const owned = Object.freeze({
+    ...(descriptor.read === undefined ? {} : { read: Object.freeze([...descriptor.read]) as R }),
+    ...(descriptor.optional === undefined
+      ? {}
+      : { optional: Object.freeze([...descriptor.optional]) as O }),
+    ...(descriptor.with === undefined ? {} : { with: Object.freeze([...descriptor.with]) }),
+    ...(descriptor.without === undefined
+      ? {}
+      : { without: Object.freeze([...descriptor.without]) }),
+  });
+  const construct = (world: World) => world.query<R, readonly [], O>(owned);
+  const queries = new WeakMap<World, ReturnType<typeof construct>>();
+  return (world: World): ReturnType<typeof construct> => {
+    noteQueryInputs(world, owned);
+    const cached = queries.get(world);
+    if (cached?.ok && !isQueryIterating(cached.value)) return cached;
+    // Error callbacks can extract this same World while the outer cursor lives.
+    // That cold invocation gets an independent Query, never the outer cursor.
+    const query = construct(world);
+    if (cached === undefined && query.ok) queries.set(world, query);
+    return query;
+  };
+}
 
 /** Record the actual query vocabulary, including optional absence and joins. */
 export function queryEnvironment<
@@ -31,21 +73,37 @@ export function queryEnvironment<
   const W extends readonly Component[] = readonly [],
   const O extends readonly Component[] = readonly [],
 >(world: World, descriptor: QueryDescriptor<R, W, O>) {
-  const reads = inputReads;
-  if (reads?.world === world) {
-    for (const role of ['read', 'write', 'optional', 'with', 'without'] as const)
-      for (const component of descriptor[role] ?? []) reads.components.add(component);
-    const candidates = descriptor.read ?? descriptor.with ?? [];
-    for (const component of candidates)
-      if (component !== Transform && component !== GlobalTransform) reads.candidates.add(component);
-  }
+  noteQueryInputs(world, descriptor);
   return world.query(descriptor);
+}
+
+function noteQueryInputs(world: World, descriptor: QueryDescriptor) {
+  const reads = observedInputs(world);
+  if (reads !== undefined) {
+    for (let roleIndex = 0; roleIndex < QUERY_INPUT_ROLES.length; roleIndex++) {
+      const role = QUERY_INPUT_ROLES[roleIndex];
+      if (role === undefined) continue;
+      const components = descriptor[role];
+      if (components === undefined) continue;
+      for (let index = 0; index < components.length; index++) {
+        const component = components[index];
+        if (component !== undefined) reads.components.add(component);
+      }
+    }
+    const candidates = descriptor.read ?? descriptor.with;
+    if (candidates !== undefined)
+      for (let index = 0; index < candidates.length; index++) {
+        const component = candidates[index];
+        if (component !== undefined && component !== Transform && component !== GlobalTransform)
+          reads.candidates.add(component);
+      }
+  }
 }
 
 /** Dependencies read outside query iteration, including cached queries and hierarchy. */
 export function noteEnvironmentInputs(world: World, components: readonly Component[]): void {
-  const reads = inputReads;
-  if (reads?.world !== world) return;
+  const reads = observedInputs(world);
+  if (reads === undefined) return;
   for (const component of components) reads.globals.add(component);
 }
 
@@ -55,13 +113,14 @@ export function noteEnvironmentInputs(world: World, components: readonly Compone
  * exact entities whose movement changes the environment.
  */
 export function readEnvironmentPose(world: World, entity: EntityHandle) {
-  poseReads?.push(entity);
+  if (observation?.world === world) observation.poses.push(entity);
+  else if (observation !== undefined) observation.volatile = true;
   return readPresentationWorldMatrix(world, entity);
 }
 
 /** Note an environment entity whose propagated world transform was read directly. */
 export function noteEnvironmentPose(entity: EntityHandle): void {
-  poseReads?.push(entity);
+  observation?.poses.push(entity);
 }
 
 const POSE = [Transform, GlobalTransform] as const;
@@ -79,6 +138,27 @@ interface Extraction<T> {
   readonly source: StateProjection | undefined;
   readonly globals: StateProjection | undefined;
   readonly inputs: InputReads | undefined;
+}
+
+/** Successful nested results carry dependencies even when their own cache hit. */
+function observeNested(world: World, extraction: Extraction<unknown>): void {
+  const parent = observation;
+  if (parent === undefined) return;
+  if (parent.world !== world) {
+    parent.volatile = true;
+    return;
+  }
+  if (extraction.volatile || parent.inputs === undefined || extraction.inputs === undefined)
+    parent.volatile = true;
+  if (parent.inputs !== undefined && extraction.inputs !== undefined)
+    for (const role of INPUT_SETS) {
+      const target = parent.inputs[role];
+      extraction.inputs[role].forEach(target.add, target);
+    }
+  for (let index = 0; index < extraction.poses.length; index++) {
+    const entity = extraction.poses[index];
+    if (entity !== undefined) parent.poses.push(entity);
+  }
 }
 
 /**
@@ -112,57 +192,60 @@ export class EnvironmentGate<T, M extends object = object> {
     extract: (routedError: () => void) => { readonly value: T; readonly timeDependent: boolean },
   ): T {
     const previous = this.extractions.get(world);
-    if (previous !== undefined && this.current(world, key, previous)) return previous.value;
+    if (previous !== undefined && this.current(world, key, previous)) {
+      observeNested(world, previous);
+      return previous.value;
+    }
     const epoch = readMutationEpoch(world);
     const structureEpoch = world.getStructureEpoch();
-    const outer = poseReads;
-    const outerInputs = inputReads;
+    const outer = observation;
     const inputs: InputReads | undefined = this.trackInputs
       ? {
-          world,
           components: new Set([Transform, GlobalTransform, TransformInterpolation]),
           candidates: new Set(),
           globals: new Set(),
         }
       : undefined;
-    inputReads = inputs;
     const poses: EntityHandle[] = [];
-    poseReads = poses;
-    let routed = false;
+    const current: Observation = { world, inputs, poses, volatile: false };
+    observation = current;
     let result: { readonly value: T; readonly timeDependent: boolean };
     try {
       result = extract(() => {
-        routed = true;
+        current.volatile = true;
       });
     } finally {
-      poseReads = outer;
-      inputReads = outerInputs;
+      observation = outer;
     }
+    const inputsEqual =
+      inputs !== undefined && previous?.inputs !== undefined && sameInputs(previous.inputs, inputs);
     const source =
       inputs === undefined
         ? undefined
-        : previous?.inputs !== undefined && sameInputs(previous.inputs, inputs)
-          ? previous.source
+        : inputsEqual
+          ? previous?.source
           : createStateProjection(world, [...inputs.components], [...inputs.candidates]);
     const globals =
       inputs === undefined || inputs.globals.size === 0
         ? undefined
-        : previous?.inputs !== undefined && sameInputs(previous.inputs, inputs)
-          ? previous.globals
+        : inputsEqual
+          ? previous?.globals
           : createStateProjection(world, [...inputs.globals]);
     source?.read().accept();
     globals?.read().accept();
-    this.extractions.set(world, {
+    const extraction: Extraction<T> = {
       value: result.value,
       structureEpoch,
       epoch,
       key,
       poses,
-      volatile: routed || result.timeDependent || readMutationEpoch(world) !== epoch,
+      volatile: current.volatile || result.timeDependent || readMutationEpoch(world) !== epoch,
       source,
       globals,
       inputs,
-    });
+    };
+    this.extractions.set(world, extraction);
+    observeNested(world, extraction);
     return result.value;
   }
 
@@ -238,7 +321,7 @@ function projectionCurrent(source: StateProjection | undefined): boolean {
 }
 
 function sameInputs(previous: InputReads, next: InputReads): boolean {
-  for (const role of ['components', 'candidates', 'globals'] as const) {
+  for (const role of INPUT_SETS) {
     if (previous[role].size !== next[role].size) return false;
     for (const component of previous[role]) if (!next[role].has(component)) return false;
   }

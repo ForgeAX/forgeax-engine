@@ -363,7 +363,7 @@ interface VfxMeshLightingRigParts {
   readonly meshGuid: SampleGuid;
 }
 
-class VfxMeshLightingRig {
+export class VfxMeshLightingRig {
   readonly options: VfxMeshLightingOptions;
   readonly phases: VfxMeshLightingPhases;
   readonly surface: CapturedCanvasSurface;
@@ -420,34 +420,47 @@ class VfxMeshLightingRig {
         }),
       );
     }
-    const receipt = await completeReadyFrame(async () => {
-      const candidate = source.prepare(0).unwrap();
-      const packet = structuredClone(candidate.message, {
-        transfer: [
-          ...renderPublicationTransfers(candidate.message),
-          ...renderPublicationAssetTransfers(candidate.message),
-        ],
-      });
-      candidate.accept();
-      try {
-        const draw = renderer.draw({
-          publication: packet,
-          onFeatureSourceSubmitted: (identity, feedback) => {
-            source
-              .acknowledgeFeatures(packet.revision, [
-                { identity, feedback: structuredClone(feedback) },
-              ])
-              .unwrap();
-          },
+    let recycling: Promise<void> | undefined;
+    const receipt = await completeReadyFrame(
+      async () => {
+        const candidate = source.prepare(0).unwrap();
+        const packet = structuredClone(candidate.message, {
+          transfer: [
+            ...renderPublicationTransfers(candidate.message),
+            ...renderPublicationAssetTransfers(candidate.message),
+          ],
         });
-        if (!draw.ok) throw draw.error;
-        const complete = await draw.value.completed;
-        if (!complete.ok) throw complete.error;
-        return draw.value;
-      } finally {
-        source.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-      }
-    });
+        candidate.accept();
+        const recycle = () => {
+          source.recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
+        };
+        try {
+          const draw = renderer.draw({
+            publication: packet,
+            onFeatureSourceSubmitted: (identity, feedback) => {
+              source
+                .acknowledgeFeatures(packet.revision, [
+                  { identity, feedback: structuredClone(feedback) },
+                ])
+                .unwrap();
+            },
+          });
+          if (!draw.ok) throw draw.error;
+          // Expose the preparation signal before waiting for native GPU work.
+          // The packet remains owned until this physical receipt completes.
+          recycling = draw.value.completed.then(recycle, (error) => {
+            recycle();
+            throw error;
+          });
+          void recycling.catch(() => {});
+          return draw.value;
+        } catch (error) {
+          recycle();
+          throw error;
+        }
+      },
+      { onCompleted: () => recycling },
+    );
     return ok(receipt);
   }
 

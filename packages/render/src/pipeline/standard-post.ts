@@ -7,6 +7,7 @@ import type {
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, mipDimension, ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
+import { isTemporalAntialias } from '../components/camera';
 import { addTypedDebugOverlayPass } from '../debug-draw-glue';
 import type { GraphAtmosphere } from '../environment/luts';
 import { RenderFeatureCapabilityMissingError, SceneDataUnavailableError } from '../errors/render';
@@ -37,6 +38,8 @@ import {
 } from '../render-pipeline';
 import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
 import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
+import { usesTsrCompute } from '../tsr/capabilities';
+import { addTsrPasses } from '../tsr/graph';
 import {
   addObservationCapturePass,
   addTypedBloomPasses,
@@ -49,7 +52,7 @@ import {
   TYPED_BLOOM_PASS_NAMES,
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
-import { renderExtentSize } from './render-extent';
+import { renderExtentSize, temporalAnalysisCapacity } from './render-extent';
 import {
   addAutoExposureExposurePass,
   addAutoExposureGraphPasses,
@@ -449,7 +452,8 @@ function standardPostRoute(
   const camera = topology.camera;
   const features = standardOutputFeatures(topology, clearOnly);
   const hdr =
-    !clearOnly && (camera.tonemap !== 'none' || camera.antialias === 'taa' || features.bloom);
+    !clearOnly &&
+    (camera.tonemap !== 'none' || isTemporalAntialias(camera.antialias) || features.bloom);
   const rawOnly = !clearOnly && topology.surface.profile?.kind === 'raw-only';
   // The barrel declaration is supplied by the ordinary feature host so its
   // shader stays prepared and recoverable, but Standard owns its one explicit
@@ -483,7 +487,7 @@ function standardOutputFeatures(
 ): StandardOutputPlan['features'] {
   const camera = topology.camera;
   return createStandardOutputPlan({
-    temporal: !clearOnly && camera.antialias === 'taa',
+    temporal: !clearOnly && isTemporalAntialias(camera.antialias),
     meter: topology.output?.autoExposure === true,
     bloom: !clearOnly && standardBloomAdmitted(topology.camera),
     dof: !clearOnly && camera.depthOfField !== undefined,
@@ -546,7 +550,7 @@ function standardToneLutFuses(
   const extent = topology.extent;
   const antialiasAllowsFusion =
     topology.camera.antialias === 'none' ||
-    (topology.camera.antialias === 'taa' &&
+    (isTemporalAntialias(topology.camera.antialias) &&
       (extent === undefined ||
         (extent.internalWidth === extent.outputWidth &&
           extent.internalHeight === extent.outputHeight)));
@@ -696,6 +700,7 @@ function addStandardTemporalResolve(
   secondaryReactivity: TemporalSecondaryReactivity | undefined,
   coverage: RenderPipelineTarget | undefined,
   coverageDepth: RenderPipelineTarget | undefined,
+  opaqueGuide: RenderPipelineTarget | undefined,
 ): Result<
   NonNullable<RenderPipelineBuildContext<RenderPipelineFrame>['taaHistory']>,
   RenderPipelineBuildError
@@ -721,7 +726,33 @@ function addStandardTemporalResolve(
     writeTemporal: history.currentTemporal,
     writeStability: history.currentStability,
   };
-  const resolve = addTypedTemporalResolvePass(context.graph, resolveTargets);
+  if (topology.camera.antialias === 'tsr' && opaqueGuide === undefined)
+    return err(missingTemporalContributor(topology, 'forgeax::standard::opaque-guide'));
+  const upper = temporalAnalysisCapacity(
+    topology.surface.width,
+    topology.surface.height,
+    topology.camera.dynamicResolution?.maxScale,
+  );
+  const { previousFlicker, currentFlicker } = history;
+  const resolve =
+    topology.camera.antialias === 'tsr' && opaqueGuide !== undefined
+      ? addTsrPasses(
+          context.graph,
+          resolveTargets,
+          opaqueGuide,
+          {
+            width: upper.width,
+            height: upper.height,
+          },
+          usesTsrCompute(topology.lane),
+        )
+      : previousFlicker !== undefined && currentFlicker !== undefined
+        ? addTypedTemporalResolvePass(context.graph, {
+            ...resolveTargets,
+            historyFlicker: previousFlicker,
+            writeFlicker: currentFlicker,
+          })
+        : err(missingTemporalContributor(topology, 'forgeax::standard::taa-history'));
   if (!resolve.ok) return resolve;
   return ok(history);
 }
@@ -1319,6 +1350,7 @@ export function addStandardPost(
   secondaryReactivity?: TemporalSecondaryReactivity,
   coverage?: RenderPipelineTarget,
   coverageDepth?: RenderPipelineTarget,
+  opaqueGuide?: RenderPipelineTarget,
 ): Result<void, RenderPipelineBuildError> {
   if (topology.clearOnly === true && surface.display === undefined) {
     return addClearOnlyPresent(context, scene, surface);
@@ -1343,7 +1375,7 @@ export function addStandardPost(
   let postTemporal = sceneTemporal;
   const autoExposure = requireAutoExposure(context, route);
   if (!autoExposure.ok) return autoExposure;
-  if (topology.camera.antialias === 'taa') {
+  if (isTemporalAntialias(topology.camera.antialias)) {
     const history = addStandardTemporalResolve(
       context,
       topology,
@@ -1353,6 +1385,7 @@ export function addStandardPost(
       secondaryReactivity,
       coverage,
       coverageDepth,
+      opaqueGuide,
     );
     if (!history.ok) return history;
     postInput = history.value.currentColor;

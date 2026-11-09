@@ -546,6 +546,8 @@ export function createLazyScriptablePackDefinition(input: {
   readonly sourceClosure: readonly ScriptablePackSourceClosureEntry[];
   readonly executors: ScriptablePackModuleExecutorPool;
   readonly sourceSnapshot: ScriptablePackSourceSnapshot;
+  /** Initial publication uses production bounds; live replacements retain loader bounds. */
+  readonly executionBudget?: 'production' | 'interactive';
 }): AnyScriptablePackDefinition {
   const expected = new Map(input.sourceClosure.map((entry) => [entry.path, entry.digest]));
   return {
@@ -586,8 +588,12 @@ export function createLazyScriptablePackDefinition(input: {
       const loaded = await loadScriptablePack(input.sourcePath, {
         executor,
         sourceSnapshot: input.sourceSnapshot,
-        timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
-        buildTimeoutMs: SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
+        ...(input.executionBudget === 'interactive'
+          ? {}
+          : {
+              timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
+              buildTimeoutMs: SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
+            }),
       });
       if (!loaded.ok) return loaded;
       if (

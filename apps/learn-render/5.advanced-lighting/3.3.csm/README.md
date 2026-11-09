@@ -16,7 +16,7 @@ profile 可选 `off`、`pcf3`、`pcf5`、`pcssMedium`、`pcssHigh`；scene 可�
 
 `smoke.mjs` 的 Dawn 路线使用真实 `copyTextureToBuffer` readback，并把同一帧的 RGBA hash、PNG、renderer generation 和结构化 inspection 写入 `.forgeax-debug/m4-csm-mvd/<profile>-<scene>.json`。PNG 是视觉辅助；paired readback 是数值事实，二者必须来自同一个 renderer frame。
 
-`smoke-browser.mjs` 复用 shared RHI-debug capture，读取 live/replay pixels 并沿 shared harness 输出 PNG。若 harness 未暴露 `deviceGeneration` 或 `graphGeneration`，receipt 保留 `null` 且 verdict 不升级为完整 generation-bound 证据。WebGL2 只允许报告 fixed PCF3/PCF5 mapping；RhiNull 只允许结构化证据，不产生 pixel claim 或 GPU timing claim。
+`smoke-browser.mjs` 复用 shared RHI-debug capture，读取 live/replay pixels 并沿 shared harness 输出 PNG。若 harness 未暴露 `deviceGeneration` 或 `graphGeneration`，receipt 保留 `null` 且 verdict 不升级为完整 generation-bound 证据。WebGL2 通过 raw depth 与 shader comparison 支持真正的 Medium／High PCSS；仍需该后端的真实像素证据。RhiNull 只允许结构化证据，不产生 pixel claim 或 GPU timing claim。
 
 ## 八项 visual expectation
 
@@ -37,6 +37,7 @@ light mode and the remaining padding lane stay strict. Pixel parity and
 receiver-quality thresholds remain independent of this binary contract check.
 
 Receiver source checks trace the physical array layer through the plane-aware
-comparison helper and all four raw depth texels. PCSS retains that layer and
+comparison helper, its native `shadow_sample_compare` hardware comparison,
+and all four raw depth texels. PCSS retains that layer and
 uses a bounded, one-sided receiver-plane reference toward the light. These
 checks complement the live/replay pixel gate; they do not replace it.

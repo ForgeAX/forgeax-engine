@@ -323,12 +323,6 @@ test('public source preparation completes before consumers start and is absent f
             ['scripts/clean-build-outputs.mjs'],
             ['build:engine'],
             ['build:tools'],
-            [
-              'build:app',
-              'preview',
-              '--shared-input-manifest',
-              'shared-build-inputs/manifest.json',
-            ],
           ]
         : [],
     );

@@ -208,10 +208,9 @@ describe('vite-plugin-shader public engine input surface', () => {
       if (identifier !== 'forgeax::default-unlit') {
         for (const variant of shader?.variants ?? []) {
           expect(variant.composedWgsl).toContain('@id(64000)');
-          // Only the rigid Standard root owns the surface discard gates.
-          expect(variant.composedWgsl.match(/@id\(64001\)/g)?.length ?? 0).toBe(
-            identifier === 'forgeax::default-standard-pbr' ? 1 : 0,
-          );
+          // Discard sources are compile-time axes (LOD_DITHER / CLIPPING_PLANES);
+          // no program carries the 64001 override constant any more.
+          expect(variant.composedWgsl).not.toMatch(/@id\(64001\)/);
           for (const field of [
             'baseColor',
             'metallicRoughness',

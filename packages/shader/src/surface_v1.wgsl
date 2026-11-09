@@ -38,6 +38,13 @@ struct SurfaceData {
   occlusion : f32,
   opacity : f32,
   alphaClipThreshold : f32,
+  // Temporal responsiveness in [0, 1] (Unreal's Responsive AA, per pixel).
+  // Raise it where the Surface animates without geometric motion, such as
+  // scrolling or rippling normals: TAA keeps less color history there. It is
+  // max-combined with the instance and coverage reactive lanes; 0 keeps them.
+  // Read by the deferred G-buffer temporal lane; the forward temporal pass does
+  // not evaluate the Surface, so forward-only materials keep their instance lane.
+  reactive : f32,
 };
 
 // Scaling each edge before the cross preserves the plane normal at every
@@ -58,5 +65,5 @@ fn surfaceGeometryNormal(dx : vec3<f32>, dy : vec3<f32>, fallback : vec3<f32>) -
 /// no backlit sun) and zero occlusion (no sky/IBL reflection), so the Standard BRDF adds
 /// nothing but `emissive`. `opacity` is the blend alpha (0 for a pure `one`/`one` additive).
 fn surfaceEmissionOnly(input : SurfaceInput, emissive : vec3<f32>, opacity : f32) -> SurfaceData {
-  return SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0);
+  return SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0, 0.0);
 }

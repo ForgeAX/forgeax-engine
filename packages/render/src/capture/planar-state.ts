@@ -21,6 +21,22 @@ export class PlanarCaptureState {
     this.completed = this.pending = this.selected = this.recorded = undefined;
   }
 
+  /** Pure cadence check: whether `prepare` would select a new capture this frame. */
+  isDue(camera: CameraSnapshot, physical: RenderTargetPhysical, frame: number): boolean {
+    const reflection = camera.planarReflection;
+    if (reflection === undefined) return false;
+    const pending = this.pending?.physical === physical ? this.pending : undefined;
+    const previous = pending ?? this.completed;
+    return (
+      previous === undefined ||
+      previous.physical !== physical ||
+      previous.target !== camera.target ||
+      previous.camera.planarReflection?.requestVersion !== reflection.requestVersion ||
+      previous.camera.planarReflection?.generateMipmaps !== reflection.generateMipmaps ||
+      frame - previous.frame >= reflection.updateIntervalFrames
+    );
+  }
+
   prepare(
     camera: CameraSnapshot | undefined,
     physical: RenderTargetPhysical | undefined,
@@ -37,22 +53,16 @@ export class PlanarCaptureState {
     this.recorded = undefined;
     // RenderTargetHost owns the sole physical output. Per-display target identity
     // is explicit in PlanarReflection; cadence never creates a second texture.
-    const previous = this.completed;
+    // Cadence counts from the latest submitted capture. An in-flight capture
+    // does not hold the next one back: both write the same texture on one
+    // queue, so the later capture is ordered after every earlier read of it.
     const pending = this.pending?.physical === physical ? this.pending : undefined;
-    const due =
-      pending === undefined &&
-      (previous === undefined ||
-        previous.physical !== physical ||
-        previous.target !== camera.target ||
-        previous.camera.planarReflection?.requestVersion !==
-          camera.planarReflection.requestVersion ||
-        previous.camera.planarReflection?.generateMipmaps !==
-          camera.planarReflection.generateMipmaps ||
-        frame - previous.frame >= camera.planarReflection.updateIntervalFrames);
+    const previous = pending ?? this.completed;
+    const due = this.isDue(camera, physical, frame);
     // The next submission is ordered after the pending capture on the same
     // queue. Its texture already belongs to that camera, even before the CPU
     // completion notification; never pair it with the preceding matrix.
-    this.selected = pending ?? previous;
+    this.selected = previous;
     if (!due) return undefined;
     const candidate = { camera, target: camera.target, physical, frame };
     this.selected = candidate;
@@ -90,9 +100,15 @@ export class PlanarCaptureState {
     this.pending = candidate;
     void completion.then(
       () => {
-        if (this.pending !== candidate) return;
+        if (this.pending === candidate) this.pending = undefined;
+        // A newer capture may already be in flight; a finished one still
+        // replaces an older completed image of the same texture.
+        else if (
+          this.pending?.physical !== candidate.physical ||
+          (this.completed !== undefined && this.completed.frame > candidate.frame)
+        )
+          return;
         this.completed = candidate;
-        this.pending = undefined;
       },
       () => {
         if (this.pending !== candidate) return;

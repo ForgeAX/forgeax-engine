@@ -369,6 +369,38 @@ basis with finite handedness. This defines missing orientation; it does not
 recover artist intent. Invalid normal bases return `gltf-mesh-bridge-invalid` with
 `reason: tangent-frame`. Raster and ray consumers receive the same repaired mesh.
 
+## Content-identified textures
+
+Opt in through the source Meta's `importSettings.textureIdentity`:
+
+```json
+{ "textureIdentity": "content" }
+```
+
+Use it when many glTF packages reference images with identical bytes, such as
+a shared texture set exported next to each model. Each opted-in package then
+declares the same texture GUID for the same bytes, the catalog publishes one
+row, and the runtime decodes and uploads that texture once instead of once per
+package. Omitted, every package keeps its own texture GUIDs (the default).
+
+The GUID is derived from the image bytes, media type, the colour space its
+material slots assign, and every decode setting (`mipmap`, `compressionMode`,
+`downscaleMaxDimension`). The same bytes read as sRGB colour and as linear
+normal/ORM data get different GUIDs; samplers stay per package, so wrap and
+filter state never crosses. Within one package, a second image with the same
+identity keeps its own GUID.
+
+Turning the setting on or off changes existing texture GUIDs and therefore the
+references to them, so reimport every affected source (`forgeax asset import`).
+Editing an image's bytes gives it a new GUID: reimport the packages that use it.
+An import whose Meta is stale fails with "changed since the meta was written"
+rather than publishing new bytes under the old shared GUID.
+
+Compared with a runtime loader cache keyed by URL (one decode per URL), the
+identity is fixed at import and stored in the catalog: different URLs or files
+with identical bytes share one asset, the same URL used under different colour
+spaces does not, and no runtime cache bookkeeping is needed.
+
 ## Offline mesh cards
 
 Opt in through the source Meta's `importSettings.meshCards`:

@@ -261,3 +261,36 @@ describe('Standard Cluster transport capability closure', () => {
     expect(deriveStandardClusterReflectedAbi([composed])).toEqual(STANDARD_CLUSTER_TEST_ABI);
   });
 });
+
+it('reserves disjoint half-float screen tiles without moving the existing AO payload', () => {
+  const layout = createStandardClusterLayout(STANDARD_CLUSTER_TEST_ABI.directLightSlot.capacity);
+  const before = standardClusterTextureLayout(
+    layout,
+    STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize,
+    { width: 65, height: 33 },
+  );
+  const after = standardClusterTextureLayout(
+    layout,
+    STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize,
+    { width: 65, height: 33, screen: { width: 129, height: 67 } },
+  );
+  expect(after.ao).toEqual(before.ao);
+  expect(after.gridOffset).toBe(before.gridOffset);
+  expect(after.indexOffset).toBe(before.indexOffset);
+  const screen = after.screen;
+  if (screen === undefined || after.ao === undefined) throw new Error('missing screen/AO region');
+  expect(screen.baseWord).toBeGreaterThanOrEqual(
+    after.ao.baseWord + after.ao.rowWords * after.ao.height,
+  );
+  expect(screen.baseWord % 4096).toBe(0);
+  expect(after.height * 4096).toBeGreaterThanOrEqual(screen.baseWord + 129 * 67 * 8);
+  const payload = packTestClusterUniform({
+    grid: { x: 16, y: 9, z: 24 },
+    near: 0.1,
+    far: 100,
+    aoLayout: after.ao,
+    screen,
+  });
+  expect(Array.from(new Float32Array(payload).subarray(13, 16))).toEqual([1, 129, 67]);
+  expect(new Uint32Array(payload)[22]).toBe(screen.baseWord);
+});

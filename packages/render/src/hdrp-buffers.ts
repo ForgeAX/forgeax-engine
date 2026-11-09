@@ -26,7 +26,7 @@ import type { StandardClusterReflectedAbi } from './light-buffer-layout';
 import { createPbrSkinMeshBindGroupEntries } from './pbr-pipeline';
 import { createStandardClusterLayout } from './pipeline/standard-lighting/layout';
 import {
-  type StandardClusterAoExtent,
+  type StandardClusterTextureExtent,
   standardClusterTextureLayout,
 } from './pipeline/standard-lighting/texture';
 import { DEFAULT_CLUSTER_GRID, LIGHT_INDEX_LIST_CAPACITY } from './pipeline/standard-profile';
@@ -46,7 +46,7 @@ export function createHdrpClusterMembershipBindGroupLayoutDescriptor(): BindGrou
       {
         binding: 0,
         visibility: GPU_SHADER_STAGE_COMPUTE,
-        buffer: { type: 'read-only-storage', hasDynamicOffset: false },
+        buffer: { type: 'storage', hasDynamicOffset: false },
       },
       {
         binding: 1,
@@ -133,7 +133,7 @@ function isReusableHdrpBundle(
   cached: HdrpBuffers,
   reflectedAbi: StandardClusterReflectedAbi,
   grid: { readonly x: number; readonly y: number; readonly z: number },
-  aoExtent: StandardClusterAoExtent | undefined,
+  aoExtent: StandardClusterTextureExtent | undefined,
 ): boolean {
   const publicationMatches =
     cached.clusterUniformBytes === reflectedAbi.clusterUniformBytes &&
@@ -147,7 +147,10 @@ function isReusableHdrpBundle(
     (aoExtent !== undefined &&
       aoLayout !== undefined &&
       aoLayout.width === aoExtent.width &&
-      aoLayout.height === aoExtent.height);
+      aoLayout.height === aoExtent.height &&
+      (cached.kind !== 'texture' ||
+        (cached.layout.screen?.width === aoExtent.screen?.width &&
+          cached.layout.screen?.height === aoExtent.screen?.height)));
   return (
     publicationMatches &&
     (cached.kind === 'storage'
@@ -174,7 +177,7 @@ function isReusableHdrpBundle(
 export function getOrCreateHdrpBuffers(
   runtime: RenderSystemRuntime,
   grid: { x: number; y: number; z: number } = DEFAULT_CLUSTER_GRID,
-  aoExtent?: StandardClusterAoExtent,
+  aoExtent?: StandardClusterTextureExtent,
 ): HdrpBuffers | null {
   const reflectedAbi = runtime.standardClusterAbi;
   if (reflectedAbi === undefined) return null;
@@ -309,7 +312,7 @@ function createHdrpTextureBuffers(
   runtime: RenderSystemRuntime,
   grid: { readonly x: number; readonly y: number; readonly z: number },
   reflectedAbi: StandardClusterReflectedAbi,
-  aoExtent?: StandardClusterAoExtent,
+  aoExtent?: StandardClusterTextureExtent,
 ): HdrpTextureBuffers | null {
   const device = runtime.device;
   const clusterUniformBytes = reflectedAbi.clusterUniformBytes;
@@ -455,6 +458,7 @@ export function packClusterUniform(input: {
     readonly rowWords: number;
   };
   readonly directLightingStrength?: number;
+  readonly screen?: { readonly width: number; readonly height: number; readonly baseWord?: number };
   readonly reflectedAbi: Pick<
     StandardClusterReflectedAbi,
     'clusterUniformBytes' | 'clusterUniformOffsets'
@@ -480,6 +484,7 @@ export function packClusterUniform(input: {
     lightCount = 0,
     aoLayout,
     directLightingStrength = 0,
+    screen,
     reflectedAbi,
     textureAddressing,
     clusterGridStrideU32,
@@ -513,6 +518,10 @@ export function packClusterUniform(input: {
     setU32('ao', 3, aoLayout.rowWords);
   }
   setF32('direct_ao', 0, directLightingStrength);
+  setF32('direct_ao', 1, screen === undefined ? 0 : 1);
+  setF32('direct_ao', 2, screen?.width ?? 0);
+  setF32('direct_ao', 3, screen?.height ?? 0);
+  setU32('cluster_layout', 2, screen?.baseWord ?? 0);
   setU32('texture', 0, reflectedAbi.directLightSlot.vec4Count);
   setU32('texture', 1, textureAddressing?.gridOffset ?? 0);
   setU32('texture', 2, textureAddressing?.indexOffset ?? 0);

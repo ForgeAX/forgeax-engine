@@ -23,13 +23,11 @@ import {
   type ScanSourceDeclaration,
   type ScriptablePackSourceDeclaration,
 } from '@forgeax/engine-pack/scanner';
+import { projectDirectPackJson } from '@forgeax/engine-pack/source';
 import {
-  type PackBuildContextWithoutParameters,
-  projectDirectPackJson,
-} from '@forgeax/engine-pack/source';
-import {
+  createLazyScriptablePackDefinition,
   createScriptablePackModuleExecutorPool,
-  loadScriptablePack,
+  createScriptablePackSourceSnapshot,
   type ScriptablePackModuleExecutorPool,
 } from '@forgeax/engine-pack/source-node';
 import type { AssetPublicationEnvelope, PackIndexEntry } from '@forgeax/engine-types';
@@ -63,6 +61,8 @@ interface AuthoredPackPublicationContext {
 }
 
 const DEV_PACK_PREFIX = '/__forgeax-ddc/';
+// The policy below is sink-free and depends only on the current product tuple.
+const DEV_PACK_TRANSPORT_IDENTITY = `vite-authored-pack/1:${DEV_PACK_PREFIX}`;
 
 function publicationTiming(stage: string, startedAt: number, sourcePath?: string): void {
   if (process.env.FORGEAX_WORKSPACE_TIMING !== '1') return;
@@ -111,6 +111,7 @@ async function packDevInputs(
   generationFor: (displaySourcePath: string) => number,
   sourceIdentityFor: ((sourcePath: string) => string) | undefined,
   executors: ScriptablePackModuleExecutorPool,
+  publicationStore: AcceptedPublicationStore,
 ): Promise<
   | {
       readonly ok: true;
@@ -121,42 +122,21 @@ async function packDevInputs(
   const subjects = await resolvePackSourceSubjects(declarations);
   if (!subjects.ok) return subjects;
 
-  // Inventory is metadata only. Acquire a fresh module lease when the worklist
-  // actually builds it, then return the worker through loadScriptablePack's
-  // existing completion/failure fence. Retries and instances each get a lease.
-  const definitionFor = (subject: ScriptablePackSourceDeclaration) => ({
-    ...subject.definition,
-    async build(context: PackBuildContextWithoutParameters) {
-      const waitingAt = performance.now();
-      const executor = await executors.acquire();
-      publicationTiming('worker-acquire', waitingAt, subject.sourcePath);
-      const loadingAt = performance.now();
-      const loaded = await loadScriptablePack(subject.sourcePath, { executor });
-      publicationTiming('module-load', loadingAt, subject.sourcePath);
-      if (!loaded.ok) throw loaded.error;
-      if (
-        PackageId.format(loaded.value.packageId) !== PackageId.format(subject.definition.packageId)
-      ) {
-        await executor.dispose?.('failure');
-        throw {
-          code: 'pack-source-revision-conflict',
-          expected: 'the ScriptablePack packageId to remain fixed during publication',
-          hint: 'retry after source writes settle and rebuild the current generation',
-          detail: {
-            sourcePath: subject.sourcePath,
-            scannedPackageId: PackageId.format(subject.definition.packageId),
-            loadedPackageId: PackageId.format(loaded.value.packageId),
-          },
-        };
-      }
-      const buildingAt = performance.now();
-      try {
-        return await loaded.value.build(context as never);
-      } finally {
-        publicationTiming('source-build', buildingAt, subject.sourcePath);
-      }
-    },
-  });
+  // First publication shares the ordinary source fence and production budget.
+  // Replacements retain the original interactive loader bound and lease cleanup.
+  const sourceSnapshot = createScriptablePackSourceSnapshot();
+  const definitionFor = (subject: ScriptablePackSourceDeclaration, displaySourcePath: string) =>
+    createLazyScriptablePackDefinition({
+      sourcePath: subject.sourcePath,
+      definition: subject.definition,
+      sourceClosure: subject.sourceClosure,
+      sourceSnapshot,
+      executors,
+      executionBudget:
+        publicationStore.observe(displaySourcePath).current === undefined
+          ? 'production'
+          : 'interactive',
+    });
 
   const policy =
     (packageId: PackageId): ScriptablePackInput['policy'] =>
@@ -181,10 +161,11 @@ async function packDevInputs(
     inputs.push({
       sourcePath: source.sourcePath,
       displaySourcePath,
-      definition: definitionFor(source),
+      definition: definitionFor(source, displaySourcePath),
       sourceClosure: source.sourceClosure,
       publicationGeneration: generationFor(displaySourcePath),
       policy: policy(source.definition.packageId),
+      transportIdentity: DEV_PACK_TRANSPORT_IDENTITY,
     });
   }
   for (const instance of subjects.value.instances) {
@@ -192,12 +173,13 @@ async function packDevInputs(
     inputs.push({
       sourcePath: instance.sourcePath,
       displaySourcePath,
-      definition: definitionFor(instance.root),
+      definition: definitionFor(instance.root, displaySourcePath),
       sourceClosure: instance.root.sourceClosure,
       subjectPackageId: instance.packageId,
       values: instance.values,
       publicationGeneration: generationFor(displaySourcePath),
       policy: policy(instance.packageId),
+      transportIdentity: DEV_PACK_TRANSPORT_IDENTITY,
     });
   }
 
@@ -357,6 +339,7 @@ async function publishWithExecutors(
       context.publicationStore.observe(displaySourcePath).current?.generation ?? 1,
     context.opts.sourceIdentityFor,
     executors,
+    context.publicationStore,
   );
   if (!probeInputsResult.ok) throw dynamicPluginError(probeInputsResult.error);
   let packInputs = probeInputsResult.value.inputs;
@@ -415,6 +398,7 @@ async function publishWithExecutors(
         generationFor,
         context.opts.sourceIdentityFor,
         executors,
+        context.publicationStore,
       );
       if (!finalInputsResult.ok) throw dynamicPluginError(finalInputsResult.error);
       packInputs = finalInputsResult.value.inputs;

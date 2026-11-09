@@ -42,6 +42,12 @@ fn resolvePbrTemporalReactive(
   return max(clamp(reactive, 0.0, 1.0), coverageReactive);
 }
 
+// SurfaceData.reactive (Unreal Responsive AA). Out-of-range values clamp to
+// [0, 1]; NaN and negative values keep the default history (0).
+fn surfaceTemporalReactive(reactive : f32) -> f32 {
+  return select(0.0, clamp(reactive, 0.0, 1.0), reactive >= 0.0);
+}
+
 fn projectPbrSceneTemporal(
   baseColorAlpha : f32,
   alphaCutoff : f32,

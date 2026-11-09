@@ -9,10 +9,15 @@ import {
 } from '@forgeax/engine-ecs';
 import { createStateProjection } from '@forgeax/engine-ecs/projection';
 import type { Plugin } from '@forgeax/engine-plugin';
-import type { AssetHandle, Result, TextureAsset } from '@forgeax/engine-types';
-import { unpackSlot } from '@forgeax/engine-types';
+import {
+  type AssetHandle,
+  err,
+  type Result,
+  type TextureAsset,
+  unpackSlot,
+} from '@forgeax/engine-types';
 import type { ParticleEventSource } from './code-source.js';
-import type { VfxValueMap } from './effect-contract.js';
+import type { VfxEffectContractError, VfxValue, VfxValueMap } from './effect-contract.js';
 import { createVfxEffectContract, type VfxEffectReflection } from './effect-contract.js';
 import {
   captureVfxFieldInputs,
@@ -27,9 +32,11 @@ import {
   type VfxChannelCounters,
   type VfxChannelInput,
   type VfxInstanceCommit,
+  type VfxInstanceError,
   type VfxReplayInput,
 } from './instance.js';
 import { ParticleEffectPlayer } from './player.js';
+import { validateVfxPlayerParameters } from './player-parameters.js';
 
 export const VFX_GPU_RUNTIME_RESOURCE_KEY = 'VfxGpuRuntime';
 
@@ -81,6 +88,8 @@ export interface VfxGpuTickIntent {
   readonly initialDelta: number;
   /** Simulated seconds of this play cycle through this dispatch. */
   readonly elapsed: number;
+  /** World `Time.elapsed` at the Update frame that queued this dispatch (seconds, f64). */
+  readonly worldElapsed: number;
   /** Effect-relative dispatch, including initialization. Resets on replay and restart-on-visible. */
   readonly phaseTick: number;
   /** Runtime update count when the intent was queued, retained for renderer correlation. */
@@ -171,10 +180,18 @@ export interface VfxGpuRuntimeDiagnostic {
     | 'vfx-intent-queue-overflow'
     | 'vfx-effect-unavailable'
     | 'vfx-player-invalid'
-    | 'vfx-instance-commit-failed';
+    | 'vfx-instance-commit-failed'
+    | 'vfx-parameters-invalid';
   readonly expected: string;
   readonly hint: string;
-  readonly detail: { readonly player: EntityHandle; readonly maxQueuedTicks?: number };
+  readonly detail: {
+    readonly player: EntityHandle;
+    readonly maxQueuedTicks?: number;
+    /** `vfx-parameters-invalid`: the offending parameter name and the names the effect declares. */
+    readonly parameter?: string;
+    readonly actual?: unknown;
+    readonly validNames?: readonly string[];
+  };
 }
 
 interface VfxGpuPlayerInput {
@@ -184,6 +201,8 @@ interface VfxGpuPlayerInput {
   readonly seed: number;
   readonly timeScale: number;
   readonly preparePipelines: boolean;
+  /** JSON object of per-Player parameter overrides; empty string means none. */
+  readonly parameters: string;
 }
 
 function playerSource(world: World) {
@@ -800,6 +819,7 @@ export class VfxGpuRuntime {
         seed: player.seed,
         timeScale: player.timeScale,
         preparePipelines: player.preparePipelines,
+        parameters: player.parameters,
       };
       this.#controls.set(index, input);
       this.#changedControls.add(index);
@@ -818,8 +838,15 @@ export class VfxGpuRuntime {
    * delta (`Time.delta`, already bounded by `TimePolicy.maxDeltaSeconds`);
    * each simulating emitter queues one intent carrying exactly that interval.
    */
+  #worldElapsed = 0;
+  readonly #appliedParameters = new WeakMap<
+    ParticleEffectInstance,
+    { readonly text: string; readonly keys: readonly string[]; readonly ok: boolean }
+  >();
+
   advance(world: World, delta: number): void {
     this.#updates += 1;
+    this.#worldElapsed = world.hasResource(Time) ? world.getResource(Time).elapsed : 0;
     const tick = this.#updates;
     this.#refreshPlayers(world, false);
     // Only changed paused controls and explicit replay requests need work.
@@ -891,10 +918,15 @@ export class VfxGpuRuntime {
     state.playing = input.playing;
     if (!input.playing && !replayRequested) {
       if (restart) state.pendingResets.fill(true);
+      // A paused Player does not simulate, but its parameter text is still
+      // validated and applied now so errors surface and the values are ready.
+      const existing = restart ? undefined : this.#instances.get(input.player);
+      if (existing !== undefined) this.#applyPlayerParameters(input, existing);
       return;
     }
     const instance = this.#simulationInstance(input.player, state, restart);
     if (instance === undefined) return;
+    this.#applyPlayerParameters(input, instance);
     const committed = this.#commitInstance(input, tick, instance, state, restart);
     if (committed === undefined) return;
     this.#queueEmitterTicks(world, input, tick, delta, state, restart, committed);
@@ -1005,6 +1037,94 @@ export class VfxGpuRuntime {
     return instance;
   }
 
+  /**
+   * Apply the Player's `parameters` overrides to its instance. Re-applied only
+   * when the text changes (or the instance is new); names dropped from the text
+   * revert to the effect default. An invalid text keeps the previous values and
+   * reports `vfx-parameters-invalid` with the offending name and the valid names.
+   */
+  #applyPlayerParameters(input: VfxGpuPlayerInput, instance: ParticleEffectInstance): undefined {
+    const applied = this.#appliedParameters.get(instance);
+    if (applied === undefined ? input.parameters === '' : applied.text === input.parameters) {
+      if (applied === undefined || applied.ok)
+        this.#clearDiagnostics(input.player, 'vfx-parameters-invalid');
+      return;
+    }
+    const fields = instance.contract.reflection.parameters.fields;
+    const validNames = fields.map((field) => field.name);
+    const fail = (parameter: string | undefined, expected: string, actual?: unknown): undefined => {
+      this.#appliedParameters.set(instance, {
+        text: input.parameters,
+        keys: applied?.keys ?? [],
+        ok: false,
+      });
+      this.#report({
+        code: 'vfx-parameters-invalid',
+        expected,
+        hint:
+          validNames.length === 0
+            ? 'declare `parameters` on the particle effect source, or clear ParticleEffectPlayer.parameters'
+            : `use a JSON object keyed by the effect's declared parameters: ${validNames.join(', ')}`,
+        detail: {
+          player: input.player,
+          validNames,
+          ...(parameter === undefined ? {} : { parameter }),
+          ...(actual === undefined ? {} : { actual }),
+        },
+      });
+    };
+    const checked = validateVfxPlayerParameters(input.parameters, fields);
+    if (!checked.ok)
+      return fail(checked.error.parameter, checked.error.expected, checked.error.actual);
+    const overrides = checked.value;
+    const patch: Record<string, VfxValue> = {};
+    for (const key of applied?.keys ?? []) {
+      const field = fields.find((candidate) => candidate.name === key);
+      if (field !== undefined && !(key in overrides))
+        patch[key] = field.defaultValue ?? instance.contract.defaults[key] ?? 0;
+    }
+    for (const [name, value] of Object.entries(overrides)) patch[name] = value;
+    if (Object.keys(patch).length > 0) {
+      const result = instance.patch(patch);
+      if (!result.ok)
+        return fail(result.error.detail.path, result.error.expected, result.error.detail.actual);
+    }
+    this.#appliedParameters.set(instance, {
+      text: input.parameters,
+      keys: Object.keys(overrides),
+      ok: true,
+    });
+    this.#clearDiagnostics(input.player, 'vfx-parameters-invalid');
+  }
+
+  /**
+   * Merge `values` into a running Player's parameters at the next update,
+   * without touching the component text. Rejects unknown names and mismatched types.
+   */
+  patchParameters(
+    player: EntityHandle,
+    values: VfxValueMap,
+  ): Result<void, VfxInstanceError | VfxEffectContractError> {
+    const instance = this.#instances.get(player);
+    if (instance === undefined)
+      return err({
+        code: 'vfx-reflection-invalid',
+        expected: 'a Player that has started simulating',
+        hint: 'call patchParameters after the first Update that advanced this Player',
+        detail: { path: 'player' },
+      });
+    const known = new Set(instance.contract.reflection.parameters.fields.map((f) => f.name));
+    for (const name of Object.keys(values))
+      if (!known.has(name))
+        return err({
+          code: 'vfx-value-unknown-field',
+          expected: `a declared parameter (${[...known].join(', ') || 'none'})`,
+          hint: 'use a name from the effect `parameters` table',
+          detail: { path: name },
+        });
+    return instance.patch(values);
+  }
+
   /** Commit (or replay) the instance values for this tick; failure keeps a restart pending. */
   #commitInstance(
     input: VfxGpuPlayerInput,
@@ -1080,6 +1200,7 @@ export class VfxGpuRuntime {
         delta,
         initialDelta: state.initialDeltas[index] ?? delta,
         elapsed: previousElapsed + delta,
+        worldElapsed: this.#worldElapsed,
         phaseTick,
         tick,
         seed: input.seed,

@@ -168,7 +168,8 @@ export interface RasterColorAttachment<FrameCtx> {
   readonly view: GraphTextureView;
   readonly resolveTarget?: GraphTextureView | undefined;
   readonly clearValue?: GPUColor | ((frame: FrameCtx) => GPUColor) | undefined;
-  readonly loadOp: GPULoadOp;
+  /** Dynamic loads conservatively require initialized attachment contents. */
+  readonly loadOp: GPULoadOp | ((frame: FrameCtx) => GPULoadOp);
   readonly storeOp: GPUStoreOp;
   readonly depthSlice?: number | undefined;
 }

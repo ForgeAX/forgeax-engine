@@ -7,10 +7,10 @@
 // native point loads where available and a portable comparison fallback.
 
 #import forgeax_view::common::{view, shadowMap, shadowSampler, shadowCasterCascade, directionalShadowCasterBias}
-#import forgeax_pbr::brdf::{standardOpaqueBrdf}
-#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d, sample_shadow_2d_vogel, sample_shadow_2d_soft, sample_shadow_variance, shadow_vogel_rotation, SHADOW_VOGEL_OFFSETS}
+#import forgeax_pbr::brdf::{standardOpaqueBrdfEnergy, halfVectorTerms, directLightingAlpha, sunDiscSpecularTerms}
+#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d, sample_shadow_2d_vogel, sample_shadow_2d_soft, sample_shadow_variance, shadow_vogel_rotation, SHADOW_VOGEL_OFFSETS, shadow_sample_compare}
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
-#import forgeax_pbr::shadow_pcf::{shadow_clamp_texel_to_tile, shadow_load_raw_depth, shadow_sample_compare}
+#import forgeax_pbr::shadow_pcf::{shadow_clamp_texel_to_tile, shadow_load_raw_depth}
 #endif
 
 // feat-20260621-learn-render-5-3-production-shadow-demos M0 / AC-14:
@@ -225,12 +225,12 @@ fn _directionalPointCompare(center: vec2<f32>, layer: i32, origin: vec2<f32>, de
   let stored = textureLoad(shadowMap, vec2<i32>(center * size), layer, 0);
   return select(0.0, 1.0, reference > stored);
 #else
-  return textureSampleCompareLevel(shadowMap, shadowSampler, center, layer, reference);
+  return shadow_sample_compare(shadowMap, shadowSampler, center, layer, reference);
 #endif
 }
 
 fn _directionalPlaneCompare(uv: vec2<f32>, layer: i32, originUv: vec2<f32>, depth: f32, gradient: vec2<f32>, extent: vec2<f32>) -> f32 {
-  if (view.splitPlanes[0].w > 0.5) { return textureSampleCompareLevel(shadowMap, shadowSampler, uv, layer, depth); }
+  if (view.splitPlanes[0].w > 0.5) { return shadow_sample_compare(shadowMap, shadowSampler, uv, layer, depth); }
   let size = vec2<f32>(textureDimensions(shadowMap));
   let position = uv * size - vec2<f32>(0.5);
   let base = floor(position);
@@ -327,6 +327,16 @@ fn _sampleShadowForCascade(
   // PCF1/3/5 profiles 1/2/3 retain their existing receiver. PCSS profiles 4/5
   // use the bounded three-stage receiver below without a material or variant
   // axis; the carrier y/z lanes provide angular radius and penumbra limit.
+#ifdef DIRECTIONAL_SHADOW_SIMPLE
+  // Source-level specialization: the frame has exactly one cascade, no cascade
+  // blend and the Vogel PCF profile. Every other profile (PCSS, kernel,
+  // variance, soft) is absent from the compiled fragment; a runtime branch or a
+  // pipeline override that never fires still costs registers in Metal codegen.
+  let simpleDepth = currentDepth + _directionalReceiverDepthBias(layer, normal, l);
+  let simpleGradient = _directionalReceiverPlaneGradient(layer, normal, l);
+  let simpleRadius = texel * vec2<f32>(1.0, 1.0 / aspect) * max(1.0 + view.splitPlanes[2].w, 0.0);
+  return _directionalVogel(uv, shadowLayer, simpleDepth, simpleGradient, pixel, viewportScale, simpleRadius);
+#else
   let filterProfile = clamp(u32(round(view.directionalShadowFilter.x)), 1u, 8u);
   #ifdef DIRECTIONAL_PCSS_AVAILABLE
   if (filterProfile == 4u || filterProfile == 5u) {
@@ -386,6 +396,7 @@ fn _sampleShadowForCascade(
     }
   }
   return 1.0 - blocked / 25.0;
+#endif
 }
 
 // `evalDirectionalNoShadow` evaluates the GGX direct-lighting term for the
@@ -422,15 +433,30 @@ fn evalDirectionalNoShadow(
 #endif
 ) -> vec3<f32> {
   let l = normalize(-view.lightDir);
-  let halfVector = viewDir + l;
-  let halfVectorLengthSquared = max(dot(halfVector, halfVector), 1e-8);
-  let h = halfVector * inverseSqrt(halfVectorLengthSquared);
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
-  let nDotV = max(dot(normal, viewDir), 1e-5);
-  let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(viewDir, h), 0.0);
-  let brdf = standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,
+  let signedNDotV = dot(normal, viewDir);
+  let nDotV = max(signedNDotV, 1e-5);
+  // Unreal's View.MinRoughness: direct lighting only (SceneView.cpp:2921).
+  let directAlpha = directLightingAlpha(alphaSq);
+  // Unreal BRDF.ush:24-31 N.H / V.H from dot products; with a sun disc
+  // (view.sunSourceRadius = sin(half angle) > 0) SphereMaxNoH and
+  // EnergyNormalization replace them (BRDF.ush:63-137, ShadingModels.ush:122-160).
+  // sunSourceRadius = 0 takes the point-light branch and is bit-identical to it.
+  var nDotH : f32;
+  var vDotH : f32;
+  var dEnergy = 1.0;
+  if (view.sunSourceRadius > 0.0) {
+    let disc = sunDiscSpecularTerms(signedNDotL, signedNDotV, dot(viewDir, l), view.sunSourceRadius, directAlpha);
+    nDotH = disc.x;
+    vDotH = disc.y;
+    dEnergy = disc.z;
+  } else {
+    let halfTerms = halfVectorTerms(signedNDotL, signedNDotV, dot(viewDir, l));
+    nDotH = halfTerms.x;
+    vDotH = halfTerms.y;
+  }
+  let brdf = standardOpaqueBrdfEnergy(baseColor, metallic, directAlpha, F0, nDotV, nDotL, nDotH, vDotH, dEnergy,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -466,6 +492,10 @@ fn evalDirectionalShadowFactorAtPixel(
   if (viewDepth > view.splitPlanes[count - 1u].x) {
     return 1.0;
   }
+#ifdef DIRECTIONAL_SHADOW_SIMPLE
+  let simpleShadow = _sampleShadowForCascade(worldPos + normal * view.normalBias, 0u, normal, l, layerBase, pixel);
+  return mix(1.0, simpleShadow, 1.0 - view.splitPlanes[1].w);
+#else
   let layer = _pickCascadeLayer(viewDepth, count);
   // normalBias is a world-space distance, independent of cascade depth span.
   let receiverPosition = worldPos + normal * view.normalBias;
@@ -492,6 +522,7 @@ fn evalDirectionalShadowFactorAtPixel(
     }
   }
   return mix(1.0, shadow, 1.0 - view.splitPlanes[1].w);
+#endif
 }
 
 // Volume receivers are samples in a medium, not surfaces. They therefore use

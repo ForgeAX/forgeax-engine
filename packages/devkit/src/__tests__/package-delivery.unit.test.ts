@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
@@ -32,7 +32,7 @@ function unzip(bytes: Buffer) {
 }
 
 it('preserves the exact player directory named by its receipt and preview command', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'package-delivery-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'package-delivery-')));
   try {
     await mkdir(join(root, 'dist/shaders'), { recursive: true });
     await mkdir(join(root, 'docs'));

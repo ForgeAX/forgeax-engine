@@ -66,11 +66,11 @@ export function luminanceRgba16f(
  * shadows are disabled, so every darkened pixel is contact-shadow evidence:
  * the band must appear on the anti-light (-x, screen-left) side only.
  */
-function buildContactScene(world: World) {
+export function buildContactScene(world: World) {
   const material = testAssets(world)
     .create(Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 }))
     .unwrap();
-  world
+  const ground = world
     .spawn(
       { component: Transform, data: { pos: [0, -0.1, 0] } },
       {
@@ -84,7 +84,7 @@ function buildContactScene(world: World) {
       { component: MeshRenderer, data: { materials: [material] } },
     )
     .unwrap();
-  world
+  const cube = world
     .spawn(
       { component: Transform, data: { pos: [0, 0.2, 0] } },
       {
@@ -100,7 +100,7 @@ function buildContactScene(world: World) {
     .unwrap();
   // Pitch the default -z view 50 degrees down onto the origin from 3.5 m.
   const pitch = (-50 * Math.PI) / 180;
-  world
+  const camera = world
     .spawn(
       {
         component: Transform,
@@ -124,14 +124,16 @@ function buildContactScene(world: World) {
       },
     )
     .unwrap();
-  world.spawn({ component: Skylight, data: { color: [0.4, 0.45, 0.5], intensity: 0.15 } }).unwrap();
+  const sky = world
+    .spawn({ component: Skylight, data: { color: [0.4, 0.45, 0.5], intensity: 0.15 } })
+    .unwrap();
   const sun = world
     .spawn({
       component: DirectionalLight,
       data: { direction: [-1, -0.35, 0], intensity: 3, castShadow: false },
     })
     .unwrap();
-  return sun;
+  return { sun, ground, cube, camera, sky, material };
 }
 
 export interface ContactShadowEvidence {
@@ -146,7 +148,7 @@ export interface ContactShadowEvidence {
   readonly deferredOff: Float32Array;
 }
 
-/** Deferred on/off comparison plus Forward invariance for the same World. */
+/** Deferred on/off comparison plus a Forward contact-shadow response for the same World. */
 export async function verifyContactShadow(
   renderer: Renderer,
   options: {
@@ -158,7 +160,7 @@ export async function verifyContactShadow(
 ): Promise<ContactShadowEvidence> {
   const size = CONTACT_SHADOW_SIZE;
   const world = new World();
-  const sun = buildContactScene(world);
+  const { sun } = buildContactScene(world);
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {
@@ -269,5 +271,5 @@ export function assertContactShadowEvidence(evidence: ContactShadowEvidence): vo
   expect(evidence.darkenedCentroid[0], summary).toBeLessThan(CONTACT_SHADOW_SIZE / 2);
   expect(evidence.darkenedOnLightSide, summary).toBe(0);
   expect(evidence.farFieldMaxDelta, summary).toBeLessThan(0.005);
-  expect(evidence.forwardMaxDelta, summary).toBeLessThan(1e-3);
+  expect(evidence.forwardMaxDelta, summary).toBeGreaterThan(0.05);
 }

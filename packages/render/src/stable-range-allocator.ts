@@ -81,7 +81,34 @@ function firstFit(
 }
 
 const SPARE_RANGE = 256;
-const descending = (a: number, b: number) => b - a;
+/** Exact-size spare ranges keep first-fit address order without sorting each reuse. */
+function pushSpare(heap: number[], value: number): void {
+  let index = heap.length;
+  heap.push(value);
+  while (index > 0) {
+    const parent = (index - 1) >>> 1;
+    const previous = heap[parent] as number;
+    if (previous <= value) break;
+    heap[index] = previous;
+    index = parent;
+  }
+  heap[index] = value;
+}
+
+function popSpare(heap: number[]): void {
+  const last = heap.pop();
+  if (heap.length === 0 || last === undefined) return;
+  let index = 0;
+  while (index * 2 + 1 < heap.length) {
+    let child = index * 2 + 1;
+    if (child + 1 < heap.length && (heap[child + 1] as number) < (heap[child] as number)) child++;
+    const value = heap[child] as number;
+    if (last <= value) break;
+    heap[index] = value;
+    index = child;
+  }
+  heap[index] = last;
+}
 
 /** Reusable physical ranges; changing one allocation never compacts another. */
 export class StableRangeAllocator {
@@ -90,7 +117,6 @@ export class StableRangeAllocator {
   /** Released small ranges by exact count, outside the tree until reused or flushed.
    * Reuse takes the lowest start, like first fit, so dirty uploads stay compact. */
   private readonly spare = new Map<number, number[]>();
-  private readonly unsorted = new Set<number>();
   private spareCount = 0;
 
   /**
@@ -105,10 +131,9 @@ export class StableRangeAllocator {
     if (!Number.isSafeInteger(alignment) || alignment < 1)
       throw new RangeError('range alignment must be a positive integer');
     const spare = this.spare.get(count);
-    if (spare !== undefined && this.unsorted.delete(count)) spare.sort(descending);
-    const reused = spare?.at(-1);
-    if (reused !== undefined && reused % alignment === 0) {
-      spare?.pop();
+    const reused = spare?.[0];
+    if (spare !== undefined && reused !== undefined && reused % alignment === 0) {
+      popSpare(spare);
       this.spareCount -= count;
       return reused;
     }
@@ -154,8 +179,7 @@ export class StableRangeAllocator {
         spare = [];
         this.spare.set(count, spare);
       }
-      spare.push(start);
-      this.unsorted.add(count);
+      pushSpare(spare, start);
       this.spareCount += count;
       return;
     }
@@ -166,7 +190,6 @@ export class StableRangeAllocator {
     for (const [count, starts] of this.spare)
       for (const start of starts) this.insertFree(start, count);
     this.spare.clear();
-    this.unsorted.clear();
     this.spareCount = 0;
   }
 
@@ -211,7 +234,6 @@ export class StableRangeAllocator {
     this.next = start;
     this.free = undefined;
     this.spare.clear();
-    this.unsorted.clear();
     this.spareCount = 0;
   }
 }

@@ -18,8 +18,11 @@ import { pnpmCommand } from '../../lib/pnpm-command.mjs';
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 
+const normalRepairExecution = "steps.ci-repair.outputs.reused != 'true'";
+
 function installsRootRuntime(step) {
-  if (step.if !== undefined || step['continue-on-error'] || step['working-directory']) return false;
+  if (step['continue-on-error'] || step['working-directory']) return false;
+  if (step.if !== undefined && step.if !== normalRepairExecution) return false;
   const command = String(step.run ?? '');
   if (/node scripts\/ci\/prepare-pnpm-workspace\.mjs --install\b/u.test(command)) return true;
   return command
@@ -35,15 +38,20 @@ function installsRootRuntime(step) {
 function missingRuntimeSteps(workflow) {
   const missing = [];
   for (const [jobId, job] of Object.entries(workflow.jobs ?? {})) {
-    let installed = false;
+    const installedUnder = new Set();
     for (const step of job.steps ?? []) {
-      installed ||= installsRootRuntime(step);
+      if (installsRootRuntime(step)) installedUnder.add(step.if);
+      const sameRepairExecution =
+        installedUnder.has(normalRepairExecution) &&
+        (step.if === normalRepairExecution ||
+          String(step.if).startsWith(`${normalRepairExecution} && (`));
       if (
         (/\.github\/actions\/upload-(?:artifact-with-retry|optional-artifact)$/u.test(
           step.uses ?? '',
         ) ||
           /pnpm check:no-reports\b/u.test(step.run ?? '')) &&
-        !installed
+        !installedUnder.has(undefined) &&
+        !sameRepairExecution
       )
         missing.push(`${jobId}: ${step.name ?? step.uses}`);
     }
@@ -73,6 +81,17 @@ test('all maintained upload lanes and the reports gate provision their declared 
   ])
     assert.equal(missingRuntimeSteps({ jobs: { native: { steps: [invalid, upload] } } }).length, 1);
   assert.deepEqual(missingRuntimeSteps({ jobs: { native: { steps: [install, upload] } } }), []);
+  const guardedInstall = { ...install, if: normalRepairExecution };
+  const guardedUpload = { ...upload, if: `${normalRepairExecution} && (always())` };
+  assert.deepEqual(
+    missingRuntimeSteps({ jobs: { native: { steps: [guardedInstall, guardedUpload] } } }),
+    [],
+  );
+  for (const ungatedUpload of [upload, { ...upload, if: 'always()' }])
+    assert.equal(
+      missingRuntimeSteps({ jobs: { native: { steps: [guardedInstall, ungatedUpload] } } }).length,
+      1,
+    );
 });
 
 function copyInstallInputs(destination) {

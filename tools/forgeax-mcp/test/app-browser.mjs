@@ -11,12 +11,15 @@ import { chromium } from 'playwright';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { collectViewBackendDiagnostics } from '../../../scripts/ci/view-backend-diagnostics.mjs';
+import { installTestCanvasBudget } from '../../../scripts/test/browser-canvas-budget.mjs';
 import { reduceTestProject } from '../../../scripts/test/reduce-test-project.mjs';
-import { assertNoRuntimeFailure, assertScenePixels } from './app/acceptance.mjs';
+import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
+import { assertNoRuntimeFailure, assertRenderBudget, assertScenePixels, waitForViewProjectReady } from './app/acceptance.mjs';
 import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
 const sourceProject = resolve(process.argv[2]);
 const engine = resolve(import.meta.dirname, '../../..');
 const evidence = resolve(process.argv[3] ?? '/tmp/forgeax-mcp-app-browser');
+const renderBudget = process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? testQuality.viewport : undefined;
 await mkdir(evidence, { recursive: true });
 const temp = await mkdtemp(join(tmpdir(), 'forgeax-app-consumer-'));
 const project = join(temp, 'game-3d');
@@ -181,6 +184,8 @@ try {
     console.error('MCP App native crash: ' + JSON.stringify(failure));
   });
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  if (renderBudget) await installTestCanvasBudget(page.context(), renderBudget);
+  records.push({ browserWorkload: { viewport: page.viewportSize(), renderBudget } });
   page.setDefaultTimeout(30000);
   // Each Play opens its own game session (Vite server, Pack production); on
   // Lavapipe runners that alone can exceed the 30 s UI default.
@@ -222,11 +227,25 @@ try {
     throw error;
   }
   console.error('MCP App stage: View connected');
+  const hostDocument = await (await view.owner().elementHandle()).contentFrame();
+  const initialHostState = await hostDocument.evaluate(() => {
+    const mounted = globalThis.__forgeaxViewReady?.mounted;
+    const client = mounted?.frontendHost?.context.get('viewOperationClient', false);
+    const state = client?.projectSession?.getSnapshot();
+    return { connected: mounted?.transport?.connected,
+      project: state && { busy: state.busy, restoring: state.restoring, failed: state.error !== null,
+        projectId: state.snapshot.project?.id, hasTarget: !!state.snapshot.projectTarget?.targetId },
+      statuses: [...document.querySelectorAll('[role="status"]')].map(element => ({
+        label: element.getAttribute('aria-label'), text: element.textContent,
+        width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height,
+      })) };
+  });
+  records.push({ initialHostState });
+  console.error('MCP App initial Host state: ' + JSON.stringify(initialHostState));
   // Project restoration replaces the header's connected label. It belongs to
   // the Preview's existing readiness budget, not the native Host connection gate.
-  // View owns its display name, so assert the host state independently of branding.
-  await view.getByRole('status', { name: /Host (\u5df2\u8fde\u63a5|connected)/ })
-    .waitFor({ timeout: Math.max(1, initialPreviewDeadline - performance.now()) });
+  // The header also presents restoration, so use the native project's retained state.
+  await waitForViewProjectReady(view, 'template-game-3d', initialPreviewDeadline);
   const playCycle = async (cycle) => {
     const playStarted = performance.now();
     await view.getByRole('button', { name: 'Play', exact: true }).click();
@@ -268,6 +287,8 @@ try {
       await page.waitForTimeout(50);
     }
     await play.waitFor({ state: 'visible' });
+    const drawingBuffer = await playCanvas.evaluate(canvas => ({ width: canvas.width, height: canvas.height }));
+    assertRenderBudget(drawingBuffer, `Play ${cycle}`, renderBudget);
     await stopStartupProfile();
     const readyMs = Math.round(performance.now() - playStarted);
     if (cycle === 0) {
@@ -287,7 +308,7 @@ try {
     await assertNoRuntimeFailure(playFrame, `Play ${cycle}`, errors, consoleErrors);
     const completedFrames = Number(await readCompletedFrame());
     assert.ok(completedFrames >= 60, 'The current Play document must retain 60 completed frames after capture');
-    records.push({ playCycle: cycle, frameId: completedFrames,
+    records.push({ playCycle: cycle, frameId: completedFrames, drawingBuffer,
       readyMs, placement });
     const stopStarted = performance.now();
     await view.getByRole('button', { name: 'Stop', exact: true }).click();
@@ -323,7 +344,12 @@ try {
     .getAttribute('data-forgeax-mcp-preview');
   assert.ok(targetId);
   const completeFrames = async (frameDeadline = performance.now() + 180000) => {
-    const preview = view.frameLocator('iframe[data-forgeax-mcp-preview]');
+    // Keep one admitted document for the entire readiness observation. Resolving
+    // the nested srcdoc locator on every poll repeats its large DOM preview.
+    const previewElement = await view.locator('iframe[data-forgeax-mcp-preview]').elementHandle();
+    const preview = await previewElement.contentFrame();
+    assert.ok(preview, 'Preview must expose its actual document');
+    await previewElement.dispose();
     const previewCanvas = preview.locator('canvas#app');
     // Match the maintained game-3d gate: observe completed frames without adding
     // GPU readbacks and multi-megabyte transport to every progress sample.
@@ -340,7 +366,7 @@ try {
   assert.ok(capture.frameId >= 60, 'The real Renderer must complete at least 60 frames');
   assert.ok(capture.png?.startsWith('data:image/png;base64,'));
   await writeFile(join(evidence, 'scene.png'), Buffer.from(capture.png.split(',')[1], 'base64'));
-  records.push({ scenePixels: await assertScenePixels(page, capture.png, 'Preview scene') });
+  records.push({ scenePixels: await assertScenePixels(page, capture.png, 'Preview scene', renderBudget) });
   await page.getByRole('button', { name: 'Dark', exact: true }).click();
   await view.locator('html[data-theme="dark"]').waitFor();
   if (!(await view.getByTestId('panel-content-browser').isVisible()))
@@ -412,7 +438,7 @@ try {
   const recoveredCapture = await cli('view workspace preview capture', { targetId, targetGeneration: 1 });
   assert.ok(recoveredCapture.frameId >= 60);
   await writeFile(join(evidence, 'scene-after-restart.png'), Buffer.from(recoveredCapture.png.split(',')[1], 'base64'));
-  records.push({ scenePixels: await assertScenePixels(page, recoveredCapture.png, 'Recovered Preview scene') });
+  records.push({ scenePixels: await assertScenePixels(page, recoveredCapture.png, 'Recovered Preview scene', renderBudget) });
   await view.locator('html[data-theme="dark"]').waitFor();
   records.push({ backendRestart: { previousTargetId, targetId, frameId: recoveredCapture.frameId } });
   await page.getByRole('button', { name: 'Close App', exact: true }).click();
@@ -431,6 +457,7 @@ try {
     }),
   );
 } catch (error) {
+  records.push({ failure: { name: error?.name, message: String(error?.message ?? error) } });
   await browser?.contexts()[0]?.pages()[0]?.screenshot({ path: join(evidence, 'failure.png') }).catch(() => {});
   for (const frame of browser?.contexts()[0]?.pages()[0]?.frames() ?? [])
     records.push({ failureDocument: frame.url().split('?')[0], body: await frame.locator('body').innerText().catch(() => '?'),
@@ -441,6 +468,14 @@ try {
         visibility: document.visibilityState,
         nativeViewConnected: globalThis.__forgeaxViewReady?.mounted?.transport?.connected,
         nativeViewError: globalThis.__forgeaxViewReady?.error,
+        statusNodes: [...document.querySelectorAll('[role="status"]')].map(element => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return { label: element.getAttribute('aria-label'), text: element.textContent,
+            classes: element.className, childClasses: element.firstElementChild?.className,
+            width: rect.width, height: rect.height, display: style.display, visibility: style.visibility,
+            hiddenAncestor: element.closest('[hidden], [inert], [aria-hidden="true"]')?.outerHTML.slice(0, 500) };
+        }),
       })).catch(() => undefined) });
   throw error;
 } finally {

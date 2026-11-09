@@ -273,7 +273,23 @@ test('implicit build globals cannot replace the removed metadata probes', () => 
 test('source asset transforms require an owned producer and may not survive into dist', () => {
   const source = 'import text from "./shader.wgsl?raw";';
   assert.ok(codes(source).includes('runtime-tool-resource'));
-  assert.deepEqual(codes(source, { file: 'packages/shader/src/auto-exposure-source.ts' }), []);
+  for (const file of [
+    'packages/shader/src/auto-exposure-source.ts',
+    'packages/shader/src/tsr-source.ts',
+    'packages/render/src/terrain/layer-bake.ts',
+  ]) {
+    assert.deepEqual(codes(source, { file }), []);
+    assert.ok(
+      codes('export const dev = process.env.NODE_ENV;', { file }).includes(
+        'runtime-host-environment',
+      ),
+    );
+  }
+  assert.ok(
+    codes(source, { file: 'packages/render/dist/terrain/layer-bake.mjs', mode: 'dist' }).includes(
+      'runtime-tool-resource',
+    ),
+  );
   assert.ok(
     codes(source, { file: 'packages/shader/dist/index.mjs', mode: 'dist' }).includes(
       'runtime-tool-resource',
@@ -508,5 +524,23 @@ test('Pack permits TypeScript as its sole mixed runtime tool dependency', async 
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Node-only Mesh IO workers resolve ESM dependencies while runtime imports stay forbidden', () => {
+  for (const name of ['export', 'svg']) {
+    assert.deepEqual(
+      codes('export const moduleUrl = import.meta.resolve("three");', {
+        file: `packages/mesh-io/src/${name}.ts`,
+      }),
+      [],
+    );
+  }
+  for (const specifier of ['@forgeax/engine-mesh-io', '@forgeax/engine/mesh-io']) {
+    assert.ok(
+      codes(`import { exportMeshes } from "${specifier}";`, {
+        file: 'packages/render/src/runtime.ts',
+      }).includes('runtime-tool-import'),
+    );
   }
 });

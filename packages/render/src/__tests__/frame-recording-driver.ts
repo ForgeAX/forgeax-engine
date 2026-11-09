@@ -589,6 +589,7 @@ class RecordingHarness {
         rendererInternals: timingOwner,
       },
       encoder,
+      true,
     );
     const accepted = submitEncodedFrame(
       this.world,

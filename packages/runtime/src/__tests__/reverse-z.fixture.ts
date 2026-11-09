@@ -12,6 +12,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { observeReplaySubmissions } from './native-replay-work.fixture';
@@ -71,13 +72,15 @@ export async function verifyReverseZ(
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const draw = async () => {
+  const draw = async (observation?: readonly ('final-display' | 'linear-ldr')[]) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      observation,
     );
-    value(await receipt.completed);
+    expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe('ready');
     return receipt;
   };
   const readColor = async (receipt: Awaited<ReturnType<typeof draw>>) => {
@@ -104,11 +107,9 @@ export async function verifyReverseZ(
   };
   try {
     for (let i = 0; i < warmupFrames; i++) await draw();
-    if (!renderer.requestObservation) throw new Error('observation unavailable');
-    value(renderer.requestObservation(['final-display', 'linear-ldr']));
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const receipt = await draw();
+    const receipt = await draw(['final-display', 'linear-ldr']);
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
     await save('frame.rhitape', compactTape(capture).bytes);
@@ -261,8 +262,7 @@ export async function verifyReverseZ(
       for (const antialias of [2, 3, 1, 0]) {
         world.set(camera, Camera, { projection, antialias }).unwrap();
         for (let i = 0; i < 3; i++) await draw();
-        value(renderer.requestObservation(['final-display', 'linear-ldr']));
-        const pixels = await readColor(await draw());
+        const pixels = await readColor(await draw(['final-display', 'linear-ldr']));
         expectSurfaces(pixels);
         await save(`projection-${projection}-aa-${antialias}.rgba`, pixels);
       }

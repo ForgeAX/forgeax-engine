@@ -40,10 +40,16 @@ export interface InstanceBufferCacheEntry {
   readonly uploadedRevision?: number;
   /** See `InstanceResidentUpload.uploadedMotionRows`. */
   readonly uploadedMotionRows?: readonly { readonly start: number; readonly end: number }[];
+  /** Last record using a view-local CPU LOD permutation of a uniform page. */
+  readonly usedFrame?: number;
 }
 
 /** Each collection owns its numeric chunk starts and releases them together. */
-export type InstanceBufferChunks = Map<number, Map<number, InstanceBufferCacheEntry>>;
+export type InstanceBufferChunkKey = number | string;
+export type InstanceBufferChunks = Map<
+  number,
+  Map<InstanceBufferChunkKey, InstanceBufferCacheEntry>
+>;
 
 function destroyInstanceBufferEntries(
   entries: Iterable<InstanceBufferCacheEntry>,

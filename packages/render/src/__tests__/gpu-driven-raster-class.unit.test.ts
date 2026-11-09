@@ -26,7 +26,9 @@ import {
 } from '../gpu-usage';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { MaterialResource } from '../material-resource';
+import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import { worldRenderResources } from '../publication/resource-scope';
+import { clusteredLightingActive } from '../record/frame-gpu-driven';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
@@ -60,6 +62,20 @@ it('selects the typed AO input pipeline for material-normal rasterization', () =
   } as unknown as ProjectedRasterClass;
 
   expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
+});
+
+it('preserves the explicit Forward screen entry and the prepared Cluster authority', () => {
+  const screenPipelineFor = vi.fn();
+  const batch = {
+    pipelines: { pipelineFor: vi.fn(), screenPipelineFor },
+  } as unknown as ProjectedRasterClass;
+  expect(selectRasterPipeline(batch, 'fs_forward_screen', false)).toBe(screenPipelineFor);
+  expect(
+    clusteredLightingActive({
+      kind: 'clustered',
+      prepared: { local: [] },
+    } as unknown as StandardTopologyInputValue),
+  ).toBe(true);
 });
 
 function mesh(device: RhiNullDevice, indexed = true, withLod = false): MeshGpuHandles {

@@ -2,6 +2,23 @@
 
 > WebGPU thin shim implementation of `@forgeax/engine-rhi`; spec-aligned descriptors; `'x' in src` guard; no field renaming.
 
+`rhi.requestAdapter({ featureLevel: 'compatibility' })` forwards the standard
+adapter option without changing the default core request. A browser may return
+a core adapter instead; inspect the actual device's `core-features-and-limits`
+feature before claiming Compatibility Mode execution. The pinned Ubuntu gate
+requires a real compatibility device, native rejection of resource-limit
+violations, and sixty completed frames with pixel readback. This does not certify
+every Renderer effect in that mode or qualify Android/iOS drivers.
+
+`caps.depthTextureLoad` qualifies the restricted operation on explicit/non-core
+devices using native pipeline validation. Core requests retain the standard
+guarantee without another startup pipeline. Graphics `storageBuffer` admission
+also honors implemented vertex/fragment stage limits, including explicit zero.
+Stock Renderer construction rejects missing depth loads before acquiring the
+canvas, allowing Runtime's existing automatic WebGL2 fallback; explicitly injected
+backends keep their structured failure. Full native Compatibility Mode rendering
+requires further shader/resource work and is not claimed by this gate.
+
 ## Charter propositions (AI users read AGENTS.md §RHI / WebGPU first)
 
 | Proposition | This package's contract |
@@ -252,6 +269,12 @@ another native compilation cache. Module aliases also share one native `getCompi
 completion, including its diagnostic messages; they never query the same native module again.
 Disposal/device loss clears retained handles.
 
+`pendingRuntimeCompilation()` awaits the current runtime-demanded native
+compilations through those same records. It creates no second pipeline cache,
+excludes undemanded startup/background work, and preserves native failures. The
+snapshot does not grow when later requests arrive. A FrameReceipt still needs a
+new successful draw after this signal; completion alone presents no scene.
+
 `device.pipelineLibrary.export()` returns the reachable JSON recipe graph. It contains
 WGSL and descriptors, never driver binaries. `await device.pipelineLibrary.prepare(manifest)`
 recreates dependencies and awaits native asynchronous pipeline completion (at most four
@@ -389,3 +412,16 @@ remain a cold path, and absent optional selection support uses the existing fact
 field projection and stage/layout dependencies. The material path uses the same
 projection for equality and a true cold miss. The scan runs only on a local selection
 miss; it does not create a parallel device index or hash complete state again.
+
+## Compatibility at the native boundary
+
+Buffer copies always use the five-argument native form. TypedArray uploads keep
+the native element arguments while bounds checks and telemetry use actual bytes.
+Unknown device-creation failures retain their native diagnostic under
+`webgpu-runtime-error`; they do not invent a missing `compute` capability.
+
+The [Ubuntu compatibility gate](../../scripts/ci/README.md#pinned-webgpu-compatibility)
+runs this owner's browser suite against exact Stable, reference and historical
+builds. This does not establish a mobile support floor. Optional descriptors,
+media bindings, WGSL and capability combinations still require owner admission
+and actual execution; typechecking or method presence alone does not qualify them.

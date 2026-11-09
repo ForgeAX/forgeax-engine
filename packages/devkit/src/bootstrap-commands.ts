@@ -13,6 +13,7 @@ import {
 import { basename, dirname, resolve } from 'node:path';
 import { UI_AUTHORING_PROFILE, type UiAuthoringProfile } from '@forgeax/engine-ui/authoring';
 import { parseDocument } from 'yaml';
+import { type AssetCheckReport, checkProjectAssets } from './asset-check.js';
 import { execFileCommand } from './child-process.js';
 import { engineDoctorCommand, readEngineBinding } from './engine-binding.js';
 import { isFilesystemPathWithin } from './filesystem-path.js';
@@ -73,6 +74,8 @@ export interface DoctorReport {
   readonly pnpm: string;
   readonly workspaceDependencies: readonly string[];
   readonly uiAuthoringProfile: UiAuthoringProfile;
+  /** Offline dry cook of authored material and particle-effect rows. */
+  readonly assets: Pick<AssetCheckReport, 'checked' | 'skipped'>;
 }
 
 function nodeSupported(): boolean {
@@ -96,6 +99,41 @@ async function readPnpmVersion(
     }
   }
   return (await execFileCommand('pnpm', ['--version'], { cwd: root })).stdout.trim();
+}
+
+function assetCheckFailure(assets: AssetCheckReport): CommandResult<never> | undefined {
+  if (assets.failures.length === 0) return undefined;
+  return {
+    ok: false,
+    error: {
+      code: 'project-assets-invalid',
+      expected: 'every authored material and particle-effect to cook offline',
+      hint: 'Fix the listed assets (see detail.failures) and rerun project check; dev start would fail on the same rows.',
+      detail: { checked: assets.checked, failures: assets.failures },
+    },
+  };
+}
+
+async function finishDoctor(
+  facts: Extract<Awaited<ReturnType<typeof readProjectFacts>>, { ok: true }>['value'],
+  pnpm: string,
+  workspaceDependencies: DoctorReport['workspaceDependencies'],
+): Promise<CommandResult<DoctorReport>> {
+  const assets = await checkProjectAssets(facts.root, facts.assetRoots);
+  const failure = assetCheckFailure(assets);
+  if (failure !== undefined) return failure;
+  return {
+    ok: true,
+    value: {
+      root: facts.root,
+      projectId: facts.id,
+      node: process.versions.node,
+      pnpm,
+      workspaceDependencies,
+      uiAuthoringProfile: UI_AUTHORING_PROFILE,
+      assets: { checked: assets.checked, skipped: assets.skipped },
+    },
+  };
 }
 
 export async function doctorCommand(
@@ -188,17 +226,7 @@ export async function doctorCommand(
       return { ok: false, error: commandError(cause, 'project-dependency-closure-invalid') };
     }
   }
-  return {
-    ok: true,
-    value: {
-      root: facts.value.root,
-      projectId: facts.value.id,
-      node: process.versions.node,
-      pnpm,
-      workspaceDependencies: localDependencies,
-      uiAuthoringProfile: UI_AUTHORING_PROFILE,
-    },
-  };
+  return finishDoctor(facts.value, pnpm, localDependencies);
 }
 
 export async function initCommand(options: InitOptions = {}): Promise<CommandResult<unknown>> {

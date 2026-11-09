@@ -397,6 +397,8 @@ it('binds A/B/A textures from each selected material instead of retaining the ad
       [0, 1, 0].map((index) => ({ kind: 'textureView', value: defined(residents[index]).view })),
     );
     expect(f.draws[0]?.group).toBe(f.draws[2]?.group);
+    const dependencies = vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls;
+    expect(new Set(dependencies.map(([deps]) => deps)).size).toBe(1);
   } finally {
     f.dispose();
   }
@@ -651,6 +653,9 @@ it('retains every raw material-owner query for adjacent batches', async () => {
   try {
     f.run();
     expect(f.draws).toHaveLength(64);
+    const dependencies = vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls;
+    expect(new Set(dependencies.map(([deps]) => deps)).size).toBe(64);
+
     expect([
       vi.mocked(materialBuilder.buildPerSubmeshMaterialBg).mock.calls.length,
       f.queries.artifact.mock.calls.length,

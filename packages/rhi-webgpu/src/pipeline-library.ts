@@ -653,6 +653,24 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
     if (program !== undefined) program.pending = pending;
     return pending;
   }
+  // forgeax-async-whitelist: dom-native - await the existing native compilation records.
+  pendingRuntimeCompilation(): Promise<Result<void, RhiError>> | undefined {
+    const pending = [...this.programs.values()]
+      .filter((program) => program.runtimeRequest !== undefined)
+      .flatMap((program) => (program.pending === undefined ? [] : [program.pending]));
+    if (pending.length === 0) return undefined;
+    return Promise.all(pending).then(
+      () => {
+        try {
+          this.active();
+          return ok(undefined);
+        } catch (cause) {
+          return err(failure(cause));
+        }
+      },
+      (cause: unknown) => err(failure(cause)),
+    );
+  }
   inspect(options?: { readonly runtimeRequests?: boolean }): PipelineLibraryInspection {
     return {
       state: this.closed ? 'disposed' : 'active',

@@ -192,3 +192,24 @@ it('keeps alignment and reset semantics for exact spare reuse', () => {
   ranges.reset(1);
   expect(ranges.allocate(4)).toBe(1);
 });
+
+it('reuses interleaved exact spare ranges in address order without sorting', () => {
+  const owner = new StableRangeAllocator(4096);
+  const ranges = Array.from({ length: 128 }, () => owner.allocate(4));
+  for (let index = 127; index >= 0; index -= 2) owner.release(ranges[index] as number, 4);
+  for (let index = 0; index < 128; index += 2) owner.release(ranges[index] as number, 4);
+  const selected: number[] = [];
+  const sort = vi.spyOn(Array.prototype, 'sort').mockImplementation(() => {
+    throw new Error('spare sorting');
+  });
+  try {
+    for (let index = 0; index < ranges.length; index++) selected.push(owner.allocate(4));
+    owner.release(selected[37] as number, 4);
+    owner.release(selected[9] as number, 4);
+    selected.push(owner.allocate(4), owner.allocate(4));
+  } finally {
+    sort.mockRestore();
+  }
+  expect(selected).toEqual([...ranges, ranges[9], ranges[37]]);
+  expect(owner.requiredCapacity()).toBe(512);
+});

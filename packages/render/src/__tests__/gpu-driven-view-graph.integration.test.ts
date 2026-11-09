@@ -392,7 +392,8 @@ describe('GpuDrivenView graph projection', () => {
       return pass;
     });
     compiled.execute({ encoder }).unwrap();
-    expect(dispatches).toEqual([[1], [1], [1]]);
+    // reset, cull, visible-order scan, visible-order place, finalize.
+    expect(dispatches).toEqual([[1], [1], [1], [1], [1]]);
     encoder.finish().unwrap();
     expect((device as RhiNullDevice).framePassNames).toEqual(
       mode === 'combined'

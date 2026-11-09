@@ -18,6 +18,7 @@ export type ForwardGtaoTargetName =
   | 'ssao-raw'
   | 'ssao-blurred'
   | 'standard-scene-surface-normal'
+  | 'gbuffer-normal-roughness'
   | 'standard-cluster-tables';
 type ForwardGtaoCaptureTargetName = Exclude<ForwardGtaoTargetName, 'standard-cluster-tables'>;
 

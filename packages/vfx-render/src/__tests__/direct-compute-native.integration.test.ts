@@ -305,7 +305,7 @@ it('uses only the job table for current batch projection runtime bytes', async (
             (resource) =>
               resource.kind === 'buffer' &&
               resource.name.endsWith('.table') &&
-              resource.data?.byteLength === 2 * 336,
+              resource.data?.byteLength === 2 * 352,
           ),
         ),
     ).toBe(true);
@@ -342,13 +342,13 @@ it.each([
       });
       expect(projections).toHaveLength(4);
       for (const { binding, buffer } of projections) {
-        expect(binding.size).toBe(304);
+        expect(binding.size).toBe(320);
         expect(buffer?.kind).toBe('buffer');
         if (buffer?.kind !== 'buffer') throw new Error('Missing ordinary projection uniform');
         expect(buffer.usage).toContain('uniform');
         expect(
           buffer.uploads?.some(
-            (upload) => upload.offset === (binding.offset ?? 0) && upload.data.byteLength === 304,
+            (upload) => upload.offset === (binding.offset ?? 0) && upload.data.byteLength === 320,
           ),
         ).toBe(true);
       }
@@ -360,7 +360,7 @@ it.each([
           .every((entry) => entry.uniformBuffers > 0),
       ).toBe(true);
       expect(
-        f.uploads.filter((entry) => entry.scope !== 'frame' && entry.bytes === 304),
+        f.uploads.filter((entry) => entry.scope !== 'frame' && entry.bytes === 320),
       ).toHaveLength(4);
     }
     row.close();

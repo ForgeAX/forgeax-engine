@@ -1,3 +1,5 @@
+import { producerBoundsInt32Length } from '../../cluster-binner';
+
 export const DEFAULT_CLUSTER_GRID = Object.freeze({ x: 16, y: 9, z: 24 } as const);
 export const CLUSTER_GRID_STRIDE_U32 = 2 as const;
 export const CLUSTER_GRID_COUNT_WORD_OFFSET_U32 = 1 as const;
@@ -27,6 +29,6 @@ export function createStandardClusterLayout(
     clusterGridU32Length: clusterCount * CLUSTER_GRID_STRIDE_U32,
     lightIndexListCapacity: LIGHT_INDEX_LIST_CAPACITY,
     lightDataSlotCount,
-    lightBoundsInt32Length: lightDataSlotCount * 6,
+    lightBoundsInt32Length: producerBoundsInt32Length(lightDataSlotCount),
   });
 }

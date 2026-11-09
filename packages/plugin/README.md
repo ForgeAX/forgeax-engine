@@ -10,6 +10,16 @@ The public SDK bundles that patched dependency. Source installs apply the same
 patch through pnpm's workspace declaration or Bun's root `patchedDependencies`;
 both lockfiles retain their package manager's native patch record.
 
+The same pinned patch reads an already available native injected implementation
+directly when the native event bus has no read interceptors. It consults current
+Fiber storage on every read; it does not retain a second service value. Accessors,
+interceptors, custom event accessors/overrides and missing/retired implementations
+keep the ordinary resolution and diagnostic path, including caller tracing.
+Run [`bench/service-reads.mjs`](bench/service-reads.mjs) against a built Cordis
+entry and private output for the allocation regression and positive control.
+Provider retirement/reinstall is a semantic control; its cold cost is separate
+from that bench's steady read rates.
+
 | Identity | Authority |
 |:--|:--|
 | Asset GUID | Pack namespace and output sourceKey |

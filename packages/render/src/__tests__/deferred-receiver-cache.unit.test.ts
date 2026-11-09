@@ -70,7 +70,7 @@ async function fixture() {
     runtime: {
       device,
       deviceScope: DeviceScope.create(1, 'deferred-lut-test'),
-      standardDeferredShaders: { unclustered: '', unclusteredLut: 'lut' },
+      standardSceneShaders: { deferred: { unclustered: '', unclusteredLut: 'lut' } },
       shaderModuleFactory: {
         createShaderModule: (desc: Parameters<typeof createShaderModuleImmediate>[1]) =>
           createShaderModuleImmediate(device, desc),

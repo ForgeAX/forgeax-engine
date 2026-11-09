@@ -152,6 +152,567 @@ function ensureScratchCapacity(
   }
 }
 
+// ── spot binning sphere ────────────────────────────────────────────────────
+
+/**
+ * Smallest-radius bounding sphere of a spot light's lit volume, for binning.
+ *
+ * A spot contributes exactly zero outside its outer cone (evalSpotCone) and
+ * outside its range sphere (the squared range window), so its lit volume is
+ * the spherical sector with apex `position`, axis `direction`, half-angle
+ * acos(cosOuter) and slant length `range`. The range sphere proxy (D-8)
+ * bounds a 16 degree cone of range 70 with radius 70; this sector sphere has
+ * radius 70 / (2 cos 16) ~= 36.4, an 8x smaller volume and correspondingly
+ * fewer cluster cells, with the same shaded result in every cell.
+ *
+ * Construction (sector bounding sphere):
+ *   half-angle <= 45 deg: the sphere through the apex whose chord along every
+ *     cone edge has length `range`: radius = range / (2 cos), centre on the
+ *     axis at that radius. Cap points (angle phi < theta, distance range)
+ *     lie inside because the chord at phi is 2 R cos(phi) >= range.
+ *   45 .. 90 deg: centre = apex + axis * range * cos, radius = range * sin
+ *     (the rim circle's sphere; apex and cap both inside).
+ *   wider than 90 deg, a degenerate axis or a non-finite range: the range
+ *     sphere itself.
+ *
+ * `output` receives the centre; the returned value is the radius. A relative
+ * 1e-5 pad keeps boundary fragments (where the factor is already zero)
+ * conservatively inside after f32/f64 rounding.
+ */
+export function spotBinningSphere(
+  position: Vec3,
+  direction: Vec3,
+  cosOuter: number,
+  range: number,
+  output: Vec3,
+): number {
+  const px = position[0] ?? 0;
+  const py = position[1] ?? 0;
+  const pz = position[2] ?? 0;
+  output[0] = px;
+  output[1] = py;
+  output[2] = pz;
+  const dx = direction[0] ?? 0;
+  const dy = direction[1] ?? 0;
+  const dz = direction[2] ?? 0;
+  const length = Math.hypot(dx, dy, dz);
+  if (!Number.isFinite(range) || !(range > 0) || !(length > 1e-8) || !(cosOuter > 0)) {
+    return range;
+  }
+  const cos = Math.min(cosOuter, 1);
+  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+  let offset: number;
+  let radius: number;
+  if (cos >= Math.SQRT1_2) {
+    radius = range / (2 * cos);
+    offset = radius;
+  } else {
+    radius = range * sin;
+    offset = range * cos;
+  }
+  const scale = offset / length;
+  output[0] = px + dx * scale;
+  output[1] = py + dy * scale;
+  output[2] = pz + dz * scale;
+  return Math.min(range, radius * (1 + 1e-5));
+}
+
+// ── exact froxel culling ───────────────────────────────────────────────────
+
+/**
+ * Perspective terms that map a view-space point to cluster NDC, read once per
+ * frame: ndc.x = (p00 * x + p20 * z) / (p23 * z), ndc.y likewise with p11 / p21.
+ * `undefined` for projections where clip.w is not a pure function of view z
+ * (orthographic or skewed); callers then keep the conservative cell box.
+ */
+export interface FroxelProjection {
+  readonly p00: number;
+  readonly p11: number;
+  readonly p20: number;
+  readonly p21: number;
+  readonly p23: number;
+}
+
+function entry(values: ArrayLike<number>, index: number): number {
+  return values[index] ?? 0;
+}
+
+function allNearZero(values: ArrayLike<number>, indices: readonly number[]): boolean {
+  return indices.every((index) => Math.abs(entry(values, index)) < 1e-8);
+}
+
+// clip.w must not depend on view x / y / w, and clip x / y must not mix
+// view x / y / translation, for the froxel box to be a function of depth.
+const FROXEL_ZERO_ENTRIES = [3, 7, 15, 4, 1, 12, 13] as const;
+
+export function froxelProjection(proj: Mat4): FroxelProjection | undefined {
+  const p00 = entry(proj, 0);
+  const p11 = entry(proj, 5);
+  const p23 = entry(proj, 11);
+  if (!allNearZero(proj, FROXEL_ZERO_ENTRIES) || Math.abs(p23) < 1e-5) return undefined;
+  if (Math.abs(p00) < 1e-8 || Math.abs(p11) < 1e-8) return undefined;
+  return { p00, p11, p20: entry(proj, 8), p21: entry(proj, 9), p23 };
+}
+
+/** Projection terms stored in a producer payload header (`encodeProducerBounds`). */
+function payloadProjection(words: Float32Array): FroxelProjection {
+  return {
+    p00: entry(words, 0),
+    p11: entry(words, 1),
+    p20: entry(words, 2),
+    p21: entry(words, 3),
+    p23: entry(words, 4),
+  };
+}
+
+/**
+ * View-space AABB of the fragments the shader assigns to cluster cell
+ * (cx, cy, cz) (`ndc_position_to_cluster`): an NDC tile and a log-z depth
+ * slice. Slice 0 starts at the eye (anything nearer than `near` clamps into
+ * it). The last slice is unbounded (anything beyond `far` clamps into it);
+ * for it only `out[5]` (= -d0, the near face) is meaningful and the function
+ * returns false. View x / y are linear in depth along a fixed NDC ray, so the
+ * box is exact at the slice depths. It is padded by a relative 1e-4 so f32
+ * cell assignment at a boundary can never place a reached fragment in a cell
+ * that rejected the light.
+ *
+ * `out` = [minX, minY, minZ, maxX, maxY, maxZ]. Mirrors `froxel_aabb` in
+ * `STANDARD_CLUSTER_MEMBERSHIP_WGSL`.
+ */
+/** Fraction of a cluster tile added on each side of its NDC footprint. */
+export const FROXEL_TILE_PAD = 1 / 32;
+
+export function froxelViewAabb(
+  cx: number,
+  cy: number,
+  cz: number,
+  projection: FroxelProjection,
+  gridX: number,
+  gridY: number,
+  gridZ: number,
+  near: number,
+  far: number,
+  out: Float64Array,
+): boolean {
+  const logRatio = Math.log(far / near);
+  const d0 = cz === 0 ? 0 : near * Math.exp((logRatio * cz) / gridZ);
+  if (cz >= gridZ - 1) {
+    out[5] = -d0 * (1 - 1e-4);
+    return false;
+  }
+  const d1 = near * Math.exp((logRatio * (cz + 1)) / gridZ);
+  const pad = d1 * 1e-4;
+  const { p00, p11, p20, p21, p23 } = projection;
+  // The tile grows by FROXEL_TILE_PAD of its width on each side so a raster
+  // projection that differs from the binning one by a sub-pixel jitter (TAA)
+  // still looks fragments up in a cell that kept every light reaching them.
+  const padX = (2 / gridX) * FROXEL_TILE_PAD;
+  const padY = (2 / gridY) * FROXEL_TILE_PAD;
+  // view.x = depth * (p20 - p23 * ndc.x) / p00, linear in depth and ndc.x.
+  const ax0 = (p20 - p23 * ((cx / gridX) * 2 - 1 - padX)) / p00;
+  const ax1 = (p20 - p23 * (((cx + 1) / gridX) * 2 - 1 + padX)) / p00;
+  const ay0 = (p21 - p23 * ((cy / gridY) * 2 - 1 - padY)) / p11;
+  const ay1 = (p21 - p23 * (((cy + 1) / gridY) * 2 - 1 + padY)) / p11;
+  out[0] = Math.min(ax0 * d0, ax0 * d1, ax1 * d0, ax1 * d1) - pad;
+  out[3] = Math.max(ax0 * d0, ax0 * d1, ax1 * d0, ax1 * d1) + pad;
+  out[1] = Math.min(ay0 * d0, ay0 * d1, ay1 * d0, ay1 * d1) - pad;
+  out[4] = Math.max(ay0 * d0, ay0 * d1, ay1 * d0, ay1 * d1) + pad;
+  out[2] = -d1 - pad;
+  out[5] = -d0 + pad;
+  return true;
+}
+
+function sphereReachesFroxel(
+  box: Float64Array,
+  bounded: boolean,
+  sx: number,
+  sy: number,
+  sz: number,
+  radius: number,
+): boolean {
+  if (!bounded) return sz - radius <= (box[5] ?? 0);
+  const dx = Math.max((box[0] ?? 0) - sx, 0, sx - (box[3] ?? 0));
+  const dy = Math.max((box[1] ?? 0) - sy, 0, sy - (box[4] ?? 0));
+  const dz = Math.max((box[2] ?? 0) - sz, 0, sz - (box[5] ?? 0));
+  return dx * dx + dy * dy + dz * dz <= radius * radius;
+}
+
+/**
+ * Cone (apex, unit axis, half-angle < 90 deg, slant `range`) against the
+ * froxel's bounding sphere (Wronski, "Cull that cone"). Conservative.
+ */
+function coneReachesFroxel(
+  box: Float64Array,
+  apexX: number,
+  apexY: number,
+  apexZ: number,
+  range: number,
+  axisX: number,
+  axisY: number,
+  axisZ: number,
+  cos: number,
+): boolean {
+  const cxm = ((box[0] ?? 0) + (box[3] ?? 0)) * 0.5;
+  const cym = ((box[1] ?? 0) + (box[4] ?? 0)) * 0.5;
+  const czm = ((box[2] ?? 0) + (box[5] ?? 0)) * 0.5;
+  const rr =
+    0.5 *
+    Math.hypot(
+      (box[3] ?? 0) - (box[0] ?? 0),
+      (box[4] ?? 0) - (box[1] ?? 0),
+      (box[5] ?? 0) - (box[2] ?? 0),
+    );
+  const vx = cxm - apexX;
+  const vy = cym - apexY;
+  const vz = czm - apexZ;
+  const lenSq = vx * vx + vy * vy + vz * vz;
+  const along = vx * axisX + vy * axisY + vz * axisZ;
+  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+  const closest = cos * Math.sqrt(Math.max(0, lenSq - along * along)) - along * sin;
+  return !(closest > rr || along > rr + range || along < -rr);
+}
+
+/**
+ * Whether a view-space sphere can touch cluster cell (cx, cy, cz); see
+ * `froxelViewAabb` for the cell. Mirrors the GPU membership producer.
+ */
+export function froxelSphereOverlaps(
+  cx: number,
+  cy: number,
+  cz: number,
+  sx: number,
+  sy: number,
+  sz: number,
+  radius: number,
+  projection: FroxelProjection,
+  gridX: number,
+  gridY: number,
+  gridZ: number,
+  near: number,
+  far: number,
+): boolean {
+  if (!Number.isFinite(radius)) return true;
+  const box = new Float64Array(6);
+  const bounded = froxelViewAabb(cx, cy, cz, projection, gridX, gridY, gridZ, near, far, box);
+  return sphereReachesFroxel(box, bounded, sx, sy, sz, radius);
+}
+
+// ── GPU membership producer payload ─────────────────────────────────────────
+
+/**
+ * Producer payload (`light_bounds` binding) layout, in 32-bit words:
+ *   header (8): f32 p00, p11, p20, p21, p23; u32 exact (1 = froxel tests on); 0; 0
+ *   per light (20), at header + index * 20:
+ *     i32 min x/y/z, max x/y/z cell box (min x < 0 = culled);
+ *     u32 flags (bit 0: unbounded sphere, bit 1: cone valid); 0;
+ *     f32 view sphere centre xyz, radius;
+ *     f32 view cone apex xyz, slant range;
+ *     f32 view cone axis xyz, cos(half-angle).
+ */
+export const PRODUCER_BOUNDS_HEADER_WORDS = 8;
+export const PRODUCER_BOUNDS_STRIDE_WORDS = 20;
+const PRODUCER_FLAG_UNBOUNDED = 1;
+const PRODUCER_FLAG_CONE = 2;
+
+export function producerBoundsInt32Length(lightSlots: number): number {
+  return PRODUCER_BOUNDS_HEADER_WORDS + lightSlots * PRODUCER_BOUNDS_STRIDE_WORDS;
+}
+
+/** Optional spot cone carried next to a light's binning sphere (world space). */
+export interface BinningCone {
+  readonly apex: Vec3;
+  readonly direction: Vec3;
+  readonly cosOuter: number;
+  readonly range: number;
+}
+
+/**
+ * Encode the cell boxes from `bin` (stride 6 in `lightBounds`) plus each
+ * light's view-space sphere / cone into the producer payload.
+ */
+export function encodeProducerBounds(
+  lights: ReadonlyArray<{
+    readonly position: Vec3;
+    readonly range: number;
+    readonly cone?: BinningCone | undefined;
+  }>,
+  lightBounds: Int32Array,
+  view: Mat4,
+  proj: Mat4,
+  output: Int32Array,
+): void {
+  const words = new Float32Array(output.buffer, output.byteOffset, output.length);
+  output.fill(0);
+  const projection = froxelProjection(proj);
+  if (projection !== undefined) {
+    words.set([projection.p00, projection.p11, projection.p20, projection.p21, projection.p23], 0);
+    output[5] = 1;
+  }
+  const centre = vec3.create(0, 0, 0);
+  for (let index = 0; index < lights.length; index++) {
+    const light = lights[index];
+    const at = PRODUCER_BOUNDS_HEADER_WORDS + index * PRODUCER_BOUNDS_STRIDE_WORDS;
+    for (let k = 0; k < 6; k++) output[at + k] = lightBounds[index * 6 + k] ?? -1;
+    if (light === undefined) {
+      output[at] = -1;
+      continue;
+    }
+    const sphereFlags = encodeLightSphere(light.position, light.range, view, centre, words, at);
+    const coneFlags =
+      light.cone === undefined ? 0 : encodeLightCone(light.cone, view, centre, words, at);
+    output[at + 6] = sphereFlags | coneFlags;
+  }
+}
+
+/** Write one light's view-space binning sphere at `at + 8`; returns its flags. */
+function encodeLightSphere(
+  position: Vec3,
+  range: number,
+  view: Mat4,
+  centre: Vec3,
+  words: Float32Array,
+  at: number,
+): number {
+  const radius = viewSpaceBinningSphere(position, range, view, centre);
+  if (!Number.isFinite(radius)) return PRODUCER_FLAG_UNBOUNDED;
+  words[at + 8] = entry(centre, 0);
+  words[at + 9] = entry(centre, 1);
+  words[at + 10] = entry(centre, 2);
+  words[at + 11] = radius;
+  return 0;
+}
+
+/** Write one spot light's view-space cone at `at + 12`; returns its flags. */
+function encodeLightCone(
+  cone: BinningCone,
+  view: Mat4,
+  centre: Vec3,
+  words: Float32Array,
+  at: number,
+): number {
+  if (cone.cosOuter <= 0 || !Number.isFinite(cone.range)) return 0;
+  const apexRange = viewSpaceBinningSphere(cone.apex, cone.range, view, centre);
+  const axis = transformDirection(view, cone.direction);
+  const length = Math.hypot(axis[0], axis[1], axis[2]);
+  if (length <= 1e-8 || viewAxisScale(view) <= 0) return 0;
+  words[at + 12] = entry(centre, 0);
+  words[at + 13] = entry(centre, 1);
+  words[at + 14] = entry(centre, 2);
+  // Relative pad mirrors spotBinningSphere: boundary fragments stay in.
+  words[at + 15] = apexRange * (1 + 1e-4);
+  words[at + 16] = axis[0] / length;
+  words[at + 17] = axis[1] / length;
+  words[at + 18] = axis[2] / length;
+  // Widen the half-angle slightly (cos down) for the same reason.
+  words[at + 19] = Math.max(0, Math.min(1, cone.cosOuter) - 1e-4);
+  return PRODUCER_FLAG_CONE;
+}
+
+/** Upper 3x3 of `view` applied to a direction (no translation). */
+function transformDirection(view: Mat4, direction: Vec3): [number, number, number] {
+  const dx = entry(direction, 0);
+  const dy = entry(direction, 1);
+  const dz = entry(direction, 2);
+  return [
+    entry(view, 0) * dx + entry(view, 4) * dy + entry(view, 8) * dz,
+    entry(view, 1) * dx + entry(view, 5) * dy + entry(view, 9) * dz,
+    entry(view, 2) * dx + entry(view, 6) * dy + entry(view, 10) * dz,
+  ];
+}
+
+/** Largest axis scale of the view matrix's upper 3x3. */
+function viewAxisScale(view: Mat4): number {
+  return Math.max(
+    Math.hypot(entry(view, 0), entry(view, 1), entry(view, 2)),
+    Math.hypot(entry(view, 4), entry(view, 5), entry(view, 6)),
+    Math.hypot(entry(view, 8), entry(view, 9), entry(view, 10)),
+  );
+}
+
+/**
+ * Whether the producer keeps light `index` in cell (cx, cy, cz), given the
+ * cell box already contains it. CPU mirror of the WGSL froxel tests.
+ */
+function producerKeeps(
+  payload: Int32Array,
+  words: Float32Array,
+  index: number,
+  box: Float64Array,
+  bounded: boolean,
+): boolean {
+  const at = PRODUCER_BOUNDS_HEADER_WORDS + index * PRODUCER_BOUNDS_STRIDE_WORDS;
+  const flags = payload[at + 6] ?? 0;
+  if ((flags & PRODUCER_FLAG_UNBOUNDED) !== 0) return true;
+  if (
+    !sphereReachesFroxel(
+      box,
+      bounded,
+      words[at + 8] ?? 0,
+      words[at + 9] ?? 0,
+      words[at + 10] ?? 0,
+      words[at + 11] ?? 0,
+    )
+  )
+    return false;
+  if ((flags & PRODUCER_FLAG_CONE) === 0 || !bounded) return true;
+  return coneReachesFroxel(
+    box,
+    words[at + 12] ?? 0,
+    words[at + 13] ?? 0,
+    words[at + 14] ?? 0,
+    words[at + 15] ?? 0,
+    words[at + 16] ?? 0,
+    words[at + 17] ?? 0,
+    words[at + 18] ?? 0,
+    words[at + 19] ?? 0,
+  );
+}
+
+/**
+ * View-space binning sphere of one light (rigid or uniformly scaled view):
+ * `output` receives the centre, the returned value is the radius.
+ */
+export function viewSpaceBinningSphere(
+  position: Vec3,
+  range: number,
+  view: Mat4,
+  output: Vec3,
+): number {
+  const rotated = transformDirection(view, position);
+  output[0] = rotated[0] + entry(view, 12);
+  output[1] = rotated[1] + entry(view, 13);
+  output[2] = rotated[2] + entry(view, 14);
+  return range * viewAxisScale(view);
+}
+
+/** Lights-per-cell distribution of one membership derivation. */
+export interface ClusterOccupancyStats {
+  /** Sum of per-cell list lengths. */
+  readonly entries: number;
+  /** Cells with at least one light. */
+  readonly occupied: number;
+  /** entries / occupied (0 when nothing is occupied). */
+  readonly meanPerOccupied: number;
+  readonly max: number;
+  /** Cell counts per list length bucket: 0, 1-4, 5-8, 9-16, 17-32, 33-64, 65+. */
+  readonly histogram: readonly number[];
+}
+
+/** Diagnostic comparison of the conservative cell box and the exact froxel test. */
+export interface ClusterOccupancyReport {
+  readonly box: ClusterOccupancyStats;
+  readonly exact: ClusterOccupancyStats | undefined;
+}
+
+const OCCUPANCY_BUCKETS = [0, 4, 8, 16, 32, 64] as const;
+
+function occupancyStats(counts: Uint32Array): ClusterOccupancyStats {
+  const histogram = new Array<number>(OCCUPANCY_BUCKETS.length + 1).fill(0);
+  let entries = 0;
+  let occupied = 0;
+  let max = 0;
+  for (const count of counts) {
+    entries += count;
+    if (count > 0) occupied++;
+    if (count > max) max = count;
+    let bucket = OCCUPANCY_BUCKETS.findIndex((limit) => count <= limit);
+    if (bucket < 0) bucket = OCCUPANCY_BUCKETS.length;
+    histogram[bucket] = (histogram[bucket] ?? 0) + 1;
+  }
+  return {
+    entries,
+    occupied,
+    meanPerOccupied: occupied === 0 ? 0 : entries / occupied,
+    max,
+    histogram,
+  };
+}
+
+/**
+ * CPU mirror of the GPU membership producer for one light and one cell:
+ * whether light `index` of an encoded producer payload survives the exact
+ * froxel test in cell (cx, cy, cz). Cell-box membership is assumed.
+ */
+export function producerKeepsLight(
+  payload: Int32Array,
+  index: number,
+  cx: number,
+  cy: number,
+  cz: number,
+  grid: { readonly x: number; readonly y: number; readonly z: number },
+  near: number,
+  far: number,
+): boolean {
+  if (payload[5] !== 1) return true;
+  const words = new Float32Array(payload.buffer, payload.byteOffset, payload.length);
+  const projection = payloadProjection(words);
+  const froxel = new Float64Array(6);
+  const bounded = froxelViewAabb(cx, cy, cz, projection, grid.x, grid.y, grid.z, near, far, froxel);
+  return producerKeeps(payload, words, index, froxel, bounded);
+}
+
+/** Visit every cell of the inclusive cell box stored at `payload[at..at+6)`. */
+function forEachBoxCell(
+  payload: Int32Array,
+  at: number,
+  visit: (cx: number, cy: number, cz: number) => void,
+): void {
+  const [x0, y0, z0, x1, y1, z1] = [0, 1, 2, 3, 4, 5].map((k) => payload[at + k] ?? -1);
+  for (let cz = z0 ?? 0; cz <= (z1 ?? -1); cz++) {
+    for (let cy = y0 ?? 0; cy <= (y1 ?? -1); cy++) {
+      for (let cx = x0 ?? 0; cx <= (x1 ?? -1); cx++) visit(cx, cy, cz);
+    }
+  }
+}
+
+/**
+ * Measure lights per cluster cell for the cell boxes and for the cells the
+ * GPU producer keeps after its froxel tests, from one producer payload
+ * (`encodeProducerBounds`). On-demand inspection tooling; not on the
+ * per-frame path.
+ */
+export function measureClusterOccupancy(
+  lightCount: number,
+  payload: Int32Array,
+  grid: { readonly x: number; readonly y: number; readonly z: number },
+  near: number,
+  far: number,
+): ClusterOccupancyReport {
+  const cellCount = grid.x * grid.y * grid.z;
+  const box = new Uint32Array(cellCount);
+  const kept = new Uint32Array(cellCount);
+  const words = new Float32Array(payload.buffer, payload.byteOffset, payload.length);
+  const exact = payload[5] === 1;
+  const projection = payloadProjection(words);
+  const froxel = new Float64Array(6);
+  for (let index = 0; index < lightCount; index++) {
+    const at = PRODUCER_BOUNDS_HEADER_WORDS + index * PRODUCER_BOUNDS_STRIDE_WORDS;
+    if ((payload[at] ?? -1) < 0) continue;
+    forEachBoxCell(payload, at, (cx, cy, cz) => {
+      const cell = (cz * grid.y + cy) * grid.x + cx;
+      box[cell] = (box[cell] ?? 0) + 1;
+      if (!exact) return;
+      const bounded = froxelViewAabb(
+        cx,
+        cy,
+        cz,
+        projection,
+        grid.x,
+        grid.y,
+        grid.z,
+        near,
+        far,
+        froxel,
+      );
+      if (producerKeeps(payload, words, index, froxel, bounded)) kept[cell] = (kept[cell] ?? 0) + 1;
+    });
+  }
+  return {
+    box: occupancyStats(box),
+    exact: exact ? occupancyStats(kept) : undefined,
+  };
+}
+
 // ── view_z_to_z_slice ──────────────────────────────────────────────────────
 
 /**

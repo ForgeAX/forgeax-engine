@@ -17,7 +17,7 @@ import { getOrCreateHdrpBuffers, type HdrpBuffers } from '../../hdrp-buffers';
 import type { _InternalRenderPipelineContext } from '../../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
 import { addTypedSsaoClusterPackPass } from '../../typed-render-graph-primitives';
-import type { StandardClusterAoExtent } from './texture';
+import type { StandardClusterTextureExtent } from './texture';
 import { standardClusterTextureLayout } from './texture';
 import type { StandardTopologyInputValue } from './topology';
 
@@ -43,12 +43,12 @@ export type StandardClusterGraphBuffers =
 /** Stable graph-time projection; never retain a frame's typed-array payload. */
 interface StandardClusterGraphDescriptor {
   readonly grid: { readonly x: number; readonly y: number; readonly z: number };
-  readonly aoExtent?: StandardClusterAoExtent | undefined;
+  readonly aoExtent?: StandardClusterTextureExtent | undefined;
 }
 
 function projectDescriptor(
   input: StandardTopologyInputValue,
-  aoExtent?: StandardClusterAoExtent,
+  aoExtent?: StandardClusterTextureExtent,
 ): StandardClusterGraphDescriptor {
   const { x, y, z } = input.prepared.layout.grid;
   return { grid: { x, y, z }, ...(aoExtent === undefined ? {} : { aoExtent }) };
@@ -78,7 +78,7 @@ export function shouldExecuteStandardClusterMembershipPass(frame: RenderPipeline
 export function importStandardClusterBuffers(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   input: StandardTopologyInputValue,
-  aoExtent?: StandardClusterAoExtent,
+  aoExtent?: StandardClusterTextureExtent,
 ): Result<StandardClusterGraphBuffers | null, RenderGraphError> {
   if (input.kind !== 'clustered') return ok(null);
   const layout = input.prepared.layout;
@@ -236,7 +236,7 @@ export function addStandardClusterMembershipPass(
   const descriptor = projectDescriptor(input);
   return graph.addComputePass('cluster-membership-producer', {
     accesses: [
-      { resource: buffers.clusterGrid, usage: 'storage-read' },
+      { resource: buffers.clusterGrid, usage: 'storage-read-write' },
       { resource: buffers.clusterUniform, usage: 'uniform-read' },
       { resource: buffers.lightBounds, usage: 'storage-read' },
       { resource: buffers.lightIndexList, usage: 'storage-write' },

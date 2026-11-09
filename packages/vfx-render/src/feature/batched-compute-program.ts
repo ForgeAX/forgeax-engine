@@ -15,7 +15,7 @@ export function compileVfxComputeBatchProgram(
   if (
     batch === undefined ||
     batch.format !== 'forgeax-vfx-instance-compute-1' ||
-    batch.jobBytes !== 336 ||
+    batch.jobBytes !== 352 ||
     batch.bindings.length !== 1 ||
     batch.bindings[0]?.entries.length !== 9 ||
     !batch.bindings[0].entries.every(

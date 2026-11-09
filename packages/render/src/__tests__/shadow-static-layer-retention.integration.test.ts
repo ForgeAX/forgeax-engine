@@ -16,7 +16,11 @@ import { ShadowRasterLedger } from '../record/shadow-raster-ledger';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
 import { ShadowDepthLayers } from '../shadow-depth-layers';
 import type { TerrainShadowReceiver } from '../terrain/shadow-family';
-import { addTypedShadowPasses, shadowPipelinePreparationDemand } from '../typed-shadow-passes';
+import {
+  addTypedShadowPasses,
+  MERGED_STATIC_HYSTERESIS_FRAMES,
+  shadowPipelinePreparationDemand,
+} from '../typed-shadow-passes';
 import { updateShadowView } from './helpers/gpu-input-read-domain';
 
 function spotTopology(spotMapSize = 32): RenderPipelineTopology {
@@ -417,6 +421,138 @@ describe('static shadow layer retention', () => {
     staticLayers.dispose();
   });
 
+  /** A pool whose views all miss for `reason`. */
+  const missPool = (reason: ShadowViewInvalidationReason): typeof hitPool => ({
+    ...hitPool,
+    invalidationReason: () => reason,
+  });
+  const scheduled = (operations: readonly string[]) =>
+    operations.filter((op) => op.startsWith('raster:') || op.startsWith('copy:'));
+  const splitCopy = `copy:${JSON.stringify({
+    source: { x: 0, y: 0, z: 0 },
+    destination: { x: 0, y: 0, z: 0 },
+    size: { width: 32, height: 32, depthOrArrayLayers: 1 },
+  })}`;
+
+  it.each([
+    ['a renderer-owned', true],
+    ['a graph-owned', false],
+  ])('rasters a moving view once and rebuilds %s static layer when the view settles', async (_label, owned) => {
+    const device = await nullDevice();
+    const staticLayers = owned ? new ShadowDepthLayers(device) : undefined;
+    const compiled = compile(device, staticLayers);
+    frame(device, compiled, staticLayers);
+    const operations: string[] = [];
+    // The static layer cannot be reused for a changed view: one clearing
+    // pass encodes static and dynamic casters, with no layer raster or copy.
+    expect(
+      frame(device, compiled, staticLayers, 'submit', operations, missPool('view-changed')),
+    ).toEqual(['static:view-changed', 'final:view-changed']);
+    expect(scheduled(operations)).toEqual(['raster:spot-shadow-0.single']);
+    operations.length = 0;
+    // The skipped layer holds no depth; the view still moving keeps one pass.
+    expect(
+      frame(device, compiled, staticLayers, 'submit', operations, missPool('view-changed')),
+    ).toEqual(['static:merged-static-layer', 'final:view-changed']);
+    expect(scheduled(operations)).toEqual(['raster:spot-shadow-0.single']);
+    operations.length = 0;
+    // A view that holds still briefly keeps one pass: rebuilding the
+    // skipped layer would add a static raster and a copy for a light that
+    // is likely to move again.
+    for (let settled = 1; settled < MERGED_STATIC_HYSTERESIS_FRAMES; settled++) {
+      frame(device, compiled, staticLayers, 'submit', operations);
+      expect(scheduled(operations)).toEqual(['raster:spot-shadow-0.single']);
+      operations.length = 0;
+    }
+    // Once the view has held still for the whole window the stale layer
+    // rebuilds and the split resumes.
+    expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
+      'static:merged-static-layer',
+      'final:static-layer-changed',
+    ]);
+    expect(scheduled(operations)).toEqual([
+      'raster:spot-shadow-0.static',
+      splitCopy,
+      'raster:spot-shadow-0',
+    ]);
+    operations.length = 0;
+    expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
+      'static:hit',
+      'final:hit',
+    ]);
+    expect(scheduled(operations)).toEqual([]);
+    // A dynamic-only change on a stable view keeps reusing the static layer.
+    const dynamicPool: typeof hitPool = {
+      ...hitPool,
+      invalidationReason: (identity) =>
+        identity.layer === 'static' ? undefined : 'content-changed',
+    };
+    expect(frame(device, compiled, staticLayers, 'submit', operations, dynamicPool)).toEqual([
+      'static:hit',
+      'final:content-changed',
+    ]);
+    expect(scheduled(operations)).toEqual([splitCopy, 'raster:spot-shadow-0']);
+    (await compiled.retire()).unwrap();
+    staticLayers?.dispose();
+  });
+
+  it('keeps the split for a static content miss and for a layer a failed submit discarded', async () => {
+    const device = await nullDevice();
+    const staticLayers = new ShadowDepthLayers(device);
+    const compiled = compile(device, staticLayers);
+    frame(device, compiled, staticLayers);
+    const operations: string[] = [];
+    // Content changes leave the view stable, so the rebuilt layer is reusable.
+    expect(
+      frame(device, compiled, staticLayers, 'submit', operations, missPool('content-changed')),
+    ).toEqual(['static:content-changed', 'final:content-changed']);
+    expect(scheduled(operations)).toEqual([
+      'raster:spot-shadow-0.static',
+      splitCopy,
+      'raster:spot-shadow-0',
+    ]);
+    operations.length = 0;
+    frame(device, compiled, staticLayers, 'abort', operations, missPool('view-changed'));
+    expect(scheduled(operations)).toEqual(['raster:spot-shadow-0.single']);
+    expect(staticLayers.retained('spot-shadow-static', 0)).toBe(false);
+    operations.length = 0;
+    for (let settled = 1; settled < MERGED_STATIC_HYSTERESIS_FRAMES; settled++) {
+      frame(device, compiled, staticLayers, 'submit', operations);
+      expect(staticLayers.retained('spot-shadow-static', 0)).toBe(false);
+    }
+    operations.length = 0;
+    expect(frame(device, compiled, staticLayers, 'submit', operations)).toEqual([
+      'static:merged-static-layer',
+      'final:static-layer-changed',
+    ]);
+    expect(staticLayers.retained('spot-shadow-static', 0)).toBe(true);
+    (await compiled.retire()).unwrap();
+    staticLayers.dispose();
+  });
+
+  it('keeps the static producer for a moving cascade whose layer Terrain families copy', async () => {
+    const device = await nullDevice();
+    const staticLayers = new ShadowDepthLayers(device);
+    const compiled = compile(device, staticLayers, undefined, [
+      { worldId: 0, entityKey: 7 },
+      { worldId: 1, entityKey: 7 },
+    ]);
+    frame(device, compiled, staticLayers);
+    const operations: string[] = [];
+    expect(
+      frame(device, compiled, staticLayers, 'submit', operations, missPool('view-changed')),
+    ).toEqual([
+      'static:view-changed',
+      'final:view-changed',
+      'terrain-0-7:view-changed',
+      'terrain-1-7:view-changed',
+    ]);
+    expect(operations).not.toContain('raster:shadowCascade0.single');
+    expectFullCopies(operations);
+    (await compiled.retire()).unwrap();
+    staticLayers.dispose();
+  });
+
   it('keeps a retained static layer across a graph recompile with the real view pool', async () => {
     const device = await nullDevice();
     const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
@@ -588,7 +724,9 @@ it.each([
     kind === 'point',
   );
   const identity: ShadowViewIdentity = { kind, index: 0, ...(kind === 'point' ? { face: 0 } : {}) };
-  const context = { gpuDrivenShadowViews: hitPool } as unknown as RenderPipelineFrame;
+  // RenderSystem starts every frame state with empty dark-light sets.
+  const frameState = { darkShadowViews: { point: new Set(), spot: new Set() } };
+  const context = { gpuDrivenShadowViews: hitPool, frameState } as unknown as RenderPipelineFrame;
   const demand = compiled.preparationDemand;
   expect(demand).toBeDefined();
   try {
@@ -600,6 +738,7 @@ it.each([
     expect(demand?.(context, identity)).toBe(false);
     expect(demand?.(context, { ...identity, layer: 'static' })).toBe(false);
     const dynamic = {
+      frameState,
       gpuDrivenShadowViews: {
         ...hitPool,
         invalidationReason: (view: ShadowViewIdentity) =>

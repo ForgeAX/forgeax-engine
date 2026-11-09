@@ -104,7 +104,10 @@ function clusteredStandardLighting() {
 }
 
 function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
-  const target = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+  const target = (
+    label: string,
+    format: 'rgba16float' | 'r8unorm' | 'rgba8unorm' = 'rgba16float',
+  ) => {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
@@ -126,6 +129,8 @@ function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     previousTemporal: target('taa-history-previous-temporal'),
     currentStability: target('taa-history-current-stability', 'r8unorm'),
     previousStability: target('taa-history-previous-stability', 'r8unorm'),
+    currentFlicker: target('taa-history-current-flicker', 'rgba8unorm'),
+    previousFlicker: target('taa-history-previous-flicker', 'rgba8unorm'),
   };
 }
 

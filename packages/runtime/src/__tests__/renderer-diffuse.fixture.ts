@@ -18,6 +18,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
 import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -227,16 +228,19 @@ export async function verifyRendererDiffuse(
     seed: 47,
     environment: [0.25, 0.5, 0.75] as const,
   };
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    });
-  const draw = async () => {
+  const request = {
+    leases: [lease],
+    camera: { lease },
+    environment: { lease },
+    geometryLane: 'direct' as const,
+  };
+  const submit = () => renderer.draw(request);
+  const advanceWorld = () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
+  };
+  const draw = async () => {
+    advanceWorld();
     const receipt = renderValue(submit());
     renderValue(await receipt.completed);
     return receipt;
@@ -255,9 +259,12 @@ export async function verifyRendererDiffuse(
     );
   };
   const hdr = async (name: string) => {
-    assert(renderer.requestObservation);
-    renderValue(renderer.requestObservation(['linear-hdr']));
-    const receipt = await draw();
+    advanceWorld();
+    const receipt = await drawReadyFrame(renderer, request, ['linear-hdr']);
+    expect(
+      receipt.presentation,
+      `${name}: ${JSON.stringify(receipt.presentationPendingReason)}`,
+    ).toBe('ready');
     const result = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');

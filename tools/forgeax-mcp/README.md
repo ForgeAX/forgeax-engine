@@ -57,6 +57,11 @@ header and its host controls belong to the test harness; they are not View UI.
 Preview and Play may retain their own isolated child documents in each mode.
 Top-level View access therefore does not imply annotation access inside every child.
 
+Simulation readiness follows the retained native Host and project-session owners,
+not the header status that also describes project restoration. Require the
+expected project, its published target and no pending recovery or error within
+the existing startup budget; retain the complete Scene, Play and lifecycle gates.
+
 Simulation evidence must record the carrier's `srcdoc`, sandbox and CSP conditions.
 It qualifies that adapter path; actual Codex behavior still requires native
 verification. Here, native means the application host, independently of the GPU

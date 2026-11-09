@@ -111,7 +111,20 @@ export function encodePackagedProfiles(input: {
       throw new Error(`${name} does not rebuild to its exact compiler publication`);
     }
   }
-  return gzipSync(JSON.stringify(container), { level: 9 });
+  return gzipSync(asciiJson(container), { level: 9 });
+}
+
+/**
+ * JSON with every non-ASCII character escaped. Raw WGSL imports carry a few
+ * comment characters outside Latin-1 (an em dash, an arrow); one of them makes
+ * V8 decode the whole container text as a two-byte string, doubling the
+ * largest transient allocation of every consumer that reads the container.
+ */
+function asciiJson(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[\u0080-\uffff]/g,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 /**

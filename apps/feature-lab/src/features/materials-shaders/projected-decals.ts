@@ -10,10 +10,10 @@ const feature: FeatureDefinition = defineFeature({
   catalog: 'Projected decals',
   kind: 'visual',
   summary:
-    'ProjectedDecal projects a Standard material box onto visible Deferred depth before lighting; color, normal and roughness go through graph-owned DBuffer targets. Deferred only; no receiver mesh scan.',
+    'ProjectedDecal projects a Standard material box onto visible Standard depth before lighting; color, normal and roughness go through graph-owned DBuffer targets. Forward and Deferred; no receiver mesh scan.',
   expect:
     'ON: a red box-projected stain lies across the floor and wraps over the cube edge. OFF: opacity 0 removes the decal pass and the floor and cube are clean grey.',
-  appOptions: { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' } },
+  appOptions: { standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' } },
   setup({ app, world, frames }) {
     const primitiveAssets = world.assets;
     if (!(primitiveAssets instanceof AssetRegistry))
@@ -51,7 +51,7 @@ const feature: FeatureDefinition = defineFeature({
         const checks = new CheckList();
         await frames(2);
         const inspection = app.renderer.inspect();
-        checks.equal('render path is deferred', inspection.profile.renderPath, 'deferred');
+        checks.equal('render path is forward', inspection.profile.renderPath, 'forward');
         const decalPasses = inspection.perFramePassNames.filter((name) => /decal/i.test(name));
         checks.ok('decal passes scheduled', decalPasses.length > 0, decalPasses.join(','));
         return checks.items;

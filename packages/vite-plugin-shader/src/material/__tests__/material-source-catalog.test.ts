@@ -10,7 +10,7 @@ fn fs_main() -> vec4<f32> { return vec4<f32>(1.0); }`;
 const surface = `#define_import_path forgeax_material::test_surface
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`;
 
 const surfaceV1 = `#define_import_path forgeax_material::surface_v1
@@ -24,6 +24,7 @@ struct SurfaceInput {
 struct SurfaceData {
   baseColor: vec3<f32>, normalWS: vec3<f32>, metallic: f32, roughness: f32,
   emissive: vec3<f32>, occlusion: f32, opacity: f32, alphaClipThreshold: f32,
+  reactive: f32,
 }`;
 
 describe('Standard engine source adapter', () => {

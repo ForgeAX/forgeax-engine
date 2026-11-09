@@ -51,16 +51,18 @@ type ParsedCliResult =
   | { readonly ok: true; readonly value: ParsedCli }
   | { readonly ok: false; readonly error: unknown };
 
-/** Only exact built-in recovery commands may omit extension discovery. */
-function backendControlDiscovery(
+/** Exact built-in owner controls do not consume project command contracts. */
+function ownerControlDiscovery(
   parsed: ParsedCliResult,
 ): Parameters<typeof createDevkitCliStartup>[1] {
   return parsed.ok &&
     !parsed.value.helpRequested &&
     parsed.value.args.help !== true &&
     parsed.value.path.length === 2 &&
-    parsed.value.path[0] === 'backend' &&
-    ['start', 'status', 'stop'].includes(parsed.value.path[1] ?? '')
+    ((parsed.value.path[0] === 'backend' &&
+      ['start', 'status', 'stop'].includes(parsed.value.path[1] ?? '')) ||
+      (parsed.value.path[0] === 'dev' &&
+        ['start', 'status', 'stop', 'reload'].includes(parsed.value.path[1] ?? '')))
     ? async () => []
     : undefined;
 }
@@ -334,11 +336,14 @@ export async function runUnifiedCli(
     } catch (error) {
       parsedResult = { ok: false, error };
     }
-    // Recovery controls must not import the project/Host Pack they need to stop.
-    // Keep help and every other command on ordinary extension discovery.
+    // The serving owner validates its project during start/reload. The command
+    // client only dispatches that operation; inventory here duplicates its scan
+    // and retains an unrelated snapshot throughout startup. Recovery controls
+    // also remain usable with broken project/Host Packs. Help and extension
+    // paths retain ordinary discovery.
     cli = createDevkitCliStartup(
       parsedResult.ok ? parsedResult.value.root : process.cwd(),
-      backendControlDiscovery(parsedResult),
+      ownerControlDiscovery(parsedResult),
     );
     startup = await createHostStartup({ startupPlugins: [createToolApiPlugin(), cli.plugin] });
     if (!parsedResult.ok) throw parsedResult.error;
@@ -422,12 +427,26 @@ export async function runUnifiedCli(
   }
 }
 
+/** `forgeax rhi timing TAPE` is `--artifact TAPE`. */
+const RHI_ARTIFACT_COMMANDS = new Set(['rhi summary', 'rhi inspect', 'rhi read', 'rhi timing']);
+
 function positionalArgs(
   command: string,
   flags: Record<string, unknown>,
   positionals: readonly string[],
 ): Record<string, unknown> {
   const args = { ...flags };
+  if (command === 'asset guid') {
+    // `asset guid <packageId> <key>`: the Pack subject namespace, then the sourceKey.
+    if (positionals.length > 2) {
+      throw new Error(
+        `too many positional arguments for ${command}: ${positionals.slice(2).join(' ')}`,
+      );
+    }
+    if (positionals[0] !== undefined) args.packageId = positionals[0];
+    if (positionals[1] !== undefined) args.key = positionals[1];
+    return args;
+  }
   const positionalName =
     command === 'asset import'
       ? 'path'
@@ -439,7 +458,9 @@ function positionalArgs(
             ? 'script'
             : command === 'project engine use-local'
               ? 'path'
-              : undefined;
+              : RHI_ARTIFACT_COMMANDS.has(command)
+                ? 'artifact'
+                : undefined;
   if (positionalName === undefined) {
     if (positionals.length > 0) {
       throw new Error(`unexpected positional argument for ${command}: ${positionals[0]}`);

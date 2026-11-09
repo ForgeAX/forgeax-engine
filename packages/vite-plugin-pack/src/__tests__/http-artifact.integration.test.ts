@@ -344,14 +344,38 @@ describe('published HTTP artifact representations', () => {
     );
   });
 
-  it('serializes preparation and keys representations by raw body rather than GUID history', async () => {
+  it('coalesces overlapping preparation and keys representations by raw body rather than GUID history', async () => {
     const compression = new HttpArtifactCompression(),
       first = artifact(),
       replacement = artifact();
     await Promise.all([compression.prepare([first, replacement]), compression.prepare([first])]);
     await compression.prepare([first]);
     expect(encoder.calls).toBe(2);
+    expect(encoder.peak).toBe(2);
+  });
+
+  it('bounds small-body preparation to four encoders across overlapping callers', async () => {
+    const compression = new HttpArtifactCompression();
+    const bodies = Array.from({ length: 11 }, artifact);
+    await Promise.all([compression.prepare(bodies.slice(0, 6)), compression.prepare(bodies)]);
+    expect(encoder.calls).toBe(bodies.length);
+    expect(encoder.peak).toBe(4);
+    expect(encoder.active).toBe(0);
+  });
+
+  it('drains each input-byte window and handles oversized bodies alone', async () => {
+    const compression = new HttpArtifactCompression();
+    const body = (size: number): HttpArtifact => ({
+      bytes: new Uint8Array(size).fill(7),
+      mimeType: 'application/octet-stream',
+    });
+    // Any pair exceeds the shared 4 MiB input window, even though each small
+    // body is individually eligible for overlap. Large bodies keep one slot.
+    const bodies = [body(3 * 1024 * 1024), body(5 * 1024 * 1024), body(3 * 1024 * 1024)];
+    await compression.prepare(bodies);
+    expect(encoder.calls).toBe(3);
     expect(encoder.peak).toBe(1);
+    expect(encoder.active).toBe(0);
   });
 
   it.each([

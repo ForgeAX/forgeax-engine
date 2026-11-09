@@ -22,19 +22,21 @@
 
 import {
   type Buffer,
+  bufferWriteRange,
   type CommandBuffer,
   createQueueCompletionHold,
   type ExternalImageTextureDestination,
   err,
   ok,
   queueSubmitFailed,
+  queueWriteBufferOutOfBounds,
   type Result,
   type RhiError,
   type RhiQueue,
   type TexelCopyTextureInfo,
   textureCopyOrigin,
 } from '@forgeax/engine-rhi';
-import { unwrapBuffer } from './buffer';
+import { bufferByteLength, unwrapBuffer } from './buffer';
 import { webgpuRuntimeError } from './errors';
 import { driveNativeCompletion, type NativeCompletionDriver } from './internal/native-completion';
 
@@ -77,6 +79,15 @@ export function aspectToU8(aspect: GPUTextureAspect | undefined): number {
   return 0;
 }
 
+/** Web IDL EnforceRange unsigned-long conversion, before the WASM u32 ABI. */
+function extentCoordinate(value: number): number {
+  const integer = Math.trunc(+value);
+  if (!Number.isFinite(integer) || integer < 0 || integer > 0xffff_ffff) {
+    throw new TypeError('Texture extent coordinate is outside the unsigned 32-bit range');
+  }
+  return integer === 0 ? 0 : integer;
+}
+
 /**
  * bug-20260610 helper: normalise spec `GPUExtent3DStrict` (which can be a
  * dict, an iterable, or a 1/2/3-element array) into a `{width, height,
@@ -87,17 +98,22 @@ export function normalizeExtent(size: GPUExtent3DStrict): {
   height: number;
   depthOrArrayLayers: number;
 } {
-  if (Array.isArray(size)) {
-    const w = (size[0] as number | undefined) ?? 1;
-    const h = (size[1] as number | undefined) ?? 1;
-    const d = (size[2] as number | undefined) ?? 1;
-    return { width: w, height: h, depthOrArrayLayers: d };
+  if (Symbol.iterator in Object(size)) {
+    const values = Array.from(size as Iterable<number>);
+    if (values.length < 1 || values.length > 3)
+      throw new RangeError('Texture extent needs one to three coordinates');
+    return {
+      width: extentCoordinate(values[0] as number),
+      height: values.length > 1 ? extentCoordinate(values[1] as number) : 1,
+      depthOrArrayLayers: values.length > 2 ? extentCoordinate(values[2] as number) : 1,
+    };
   }
   const dict = size as GPUExtent3DDict;
   return {
-    width: dict.width,
-    height: dict.height ?? 1,
-    depthOrArrayLayers: dict.depthOrArrayLayers ?? 1,
+    width: extentCoordinate(dict.width),
+    height: dict.height === undefined ? 1 : extentCoordinate(dict.height),
+    depthOrArrayLayers:
+      dict.depthOrArrayLayers === undefined ? 1 : extentCoordinate(dict.depthOrArrayLayers),
   };
 }
 
@@ -163,6 +179,23 @@ class RhiWgpuQueueImpl implements RhiQueue {
     if (this.raw.writeBuffer === undefined) {
       return webgpuRuntimeError(new Error('underlying queue handle does not expose writeBuffer'));
     }
+    const range = bufferWriteRange(data, dataOffset, size);
+    if (!range.ok) return range;
+    const bufferSize = bufferByteLength(buffer) ?? Number.MAX_SAFE_INTEGER;
+    if (
+      !Number.isSafeInteger(bufferOffset) ||
+      bufferOffset < 0 ||
+      bufferOffset % 4 !== 0 ||
+      bufferOffset + range.value.byteLength > bufferSize
+    ) {
+      return err(
+        queueWriteBufferOutOfBounds({
+          offset: bufferOffset,
+          byteLength: range.value.byteLength,
+          bufferSize,
+        }),
+      );
+    }
     try {
       // Resolve forgeax Buffer brand → raw GPUBuffer (charter proposition 5
       // consistent abstraction). The dawn-node real-GPU path validates the
@@ -189,8 +222,8 @@ class RhiWgpuQueueImpl implements RhiQueue {
         rawBuffer,
         BigInt(bufferOffset),
         bytes,
-        dataOffset !== undefined ? BigInt(dataOffset) : undefined,
-        size !== undefined ? BigInt(size) : undefined,
+        BigInt(range.value.byteOffset),
+        BigInt(range.value.byteLength),
       );
       return ok(undefined);
     } catch (e) {

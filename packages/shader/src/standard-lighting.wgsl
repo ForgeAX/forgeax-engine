@@ -1,7 +1,7 @@
 #define_import_path forgeax_pbr::standard_lighting
 #import forgeax_view::common::{view, lightingChannelsMatch}
 #import forgeax_pbr::ibl_shared::{fresnelSchlickRoughness, standardDiffuseWeight}
-#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblRadiance, sampleReflectionProbeRadiance, environmentScatteringFromDfg}
+#import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblRadiance, sampleReflectionProbeRadiance, environmentScatteringFromDfg, environmentDfg}
 #import forgeax_pbr::lighting_probe::{evaluateProbeDiffuse}
 #import forgeax_view::atmosphere::{view_apply_direct_solar}
 #import forgeax_pbr::lighting_directional::{evalDirectionalNoShadow, evalDirectionalShadowFactor}
@@ -65,7 +65,7 @@ fn evaluateStandardEnvironment(
   let skyScale = select(tint * sky.intensity, sky.diffuseScale.xyz, sky.intensity < 0.0);
   let diffuseScale = skylightHemisphereScale(sky, skyScale, normal);
   let fresnel = fresnelSchlickRoughness(max(dot(normal, direction), 0.0), f0, roughness);
-  let ab = textureSampleLevel(brdfLut, irradianceSampler, vec2<f32>(max(dot(normal, direction), 0.001), roughness), 0.0).rg;
+  let ab = environmentDfg(max(dot(normal, direction), 0.001), roughness, brdfLut, irradianceSampler);
   // Fdez-Aguera is nonlinear in F0. Evaluate each material constituent before
   // mixing; the non-metal diffuse term conserves only dielectric scattering.
   let dielectric = environmentScatteringFromDfg(ab, dielectricSpecular.rgb, dielectricSpecular.a);
@@ -111,7 +111,43 @@ struct StandardDirect {
   diffuse : vec3<f32>,
 };
 
+// Forward Standard direct lighting: radiance only. Forward callers never
+// split diffuse from specular, so the zero-albedo second pass (a second
+// cluster loop) is absent from their programs; deferred uses
+// evaluateStandardDirectSplit.
 fn evaluateStandardDirect(
+  worldPosition : vec3<f32>, ndc : vec3<f32>, viewZ : f32, pixel : vec2<f32>,
+  normal : vec3<f32>, direction : vec3<f32>, albedo : vec3<f32>,
+  transmission : vec3<f32>, metallic : f32, alpha : f32, f0 : vec3<f32>, shadow : f32,
+  receiveShadows : bool, receiverChannels : u32,
+  useDirectDfgLut: bool,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+  directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
+#endif
+) -> StandardDirect {
+  var direct = vec3<f32>(0.0);
+  if (lightingChannelsMatch(view.lightingChannels, receiverChannels)) {
+    direct = view_apply_direct_solar(view, shadow * evalDirectionalNoShadow(normal, direction, albedo, metallic, alpha, f0, transmission,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  ), worldPosition);
+  }
+#ifdef CLUSTER_FORWARD_AVAILABLE
+  direct += evaluateStandardClusterLights(ndc, pixel, viewZ, worldPosition, normal, direction,
+    albedo, metallic, alpha, f0, transmission, false, receiveShadows, receiverChannels,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  );
+#endif
+  return StandardDirect(direct, vec3<f32>(0.0));
+}
+
+// Deferred variant: `splitDiffuse` is a per-pixel G-buffer fact there.
+fn evaluateStandardDirectSplit(
   worldPosition : vec3<f32>, ndc : vec3<f32>, viewZ : f32, pixel : vec2<f32>,
   normal : vec3<f32>, direction : vec3<f32>, albedo : vec3<f32>,
   transmission : vec3<f32>, metallic : f32, alpha : f32, f0 : vec3<f32>, shadow : f32,

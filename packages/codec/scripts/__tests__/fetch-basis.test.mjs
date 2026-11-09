@@ -2,14 +2,41 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
-import test from 'node:test';
+import { dirname, resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { test } from 'vitest';
 
 const exec = promisify(execFile);
+test('Codec Vitest discovery retains runtime and offline tooling gates', async (t) => {
+  const root = fileURLToPath(new URL('../../../../', import.meta.url));
+  const require = createRequire(import.meta.url);
+  const cli = resolve(dirname(require.resolve('vitest/package.json')), 'vitest.mjs');
+  const cache = resolve(root, 'node_modules/.cache');
+  await mkdir(cache, { recursive: true });
+  const temporary = await mkdtemp(resolve(cache, 'codec-discovery-'));
+  t.onTestFinished(() => rm(temporary, { recursive: true, force: true }));
+  const config = resolve(temporary, 'vitest.config.mts');
+  // Root uses this same shared policy. Importing its entry point also constructs
+  // unrelated Browser/Dawn projects before this fixture replaces their list.
+  // Keep the actual policy, owner and CLI discovery without that discarded work.
+  await writeFile(config, `import { sharedVitestConfig } from ${JSON.stringify(new URL('../../../../config/vitest-shared.ts', import.meta.url).href)};
+export default { ...sharedVitestConfig, test: { ...sharedVitestConfig.test, projects: [${JSON.stringify(resolve(root, 'packages/codec/vitest.config.ts'))}] } };
+`);
+  const { stdout } = await exec(process.execPath, [
+    cli, 'list', '--config', config, '--project=@forgeax/engine-codec', '--filesOnly', '--json',
+  ], { cwd: root, timeout: 60000 });
+  const files = JSON.parse(stdout).map(({ file }) => file.replaceAll('\\', '/'));
+  assert.ok(files.some((file) => file.endsWith('/src/__tests__/wasm-init-smoke.test.ts')),
+    'the real WASM initialization gate remains in the runtime project');
+  assert.ok(files.some((file) => file.endsWith('/scripts/__tests__/fetch-basis.test.mjs')),
+    'the offline acquisition suite remains collected by its actual Vitest owner');
+});
+
 test('offline Basis acquisition uses only an explicitly supplied pinned clone', async (t) => {
   const root = await mkdtemp(resolve(tmpdir(), 'forgeax-basis-source-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  t.onTestFinished(() => rm(root, { recursive: true, force: true }));
   const source = resolve(root, 'source');
   const target = resolve(root, 'codec');
   await mkdir(source);

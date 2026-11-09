@@ -22,6 +22,7 @@
 //   - `[smoke] meanBrightness=<json>`
 //   - `[smoke] frameDelta_1=<num> delta_2=<num>`
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -286,8 +287,7 @@ async function captureFrameAtT(t) {
   for (let i = 0; i < SMOKE_FRAMES_PER_T; i++) {
     if (!FALSIFY_NO_DRAW) {
       world.update().unwrap();
-      const r = renderer.draw(frameRequest);
-      if (!r.ok) console.error(`[smoke] draw t=${t} frame ${i} error: ${r.error.code}`);
+      await drawReadyFrame(renderer, frameRequest);
     }
   }
   await device.queue.onSubmittedWorkDone();

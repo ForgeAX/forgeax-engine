@@ -183,3 +183,59 @@ describe('planar capture receipt and cadence', () => {
     destroyRenderTargetPhysical(second);
   });
 });
+
+describe('planar capture every-frame cadence', () => {
+  const everyFrame = {
+    target: {},
+    planarReflection: { updateIntervalFrames: 1, requestVersion: 0 },
+  } as CameraSnapshot;
+  const held = () => {
+    let done!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    return { completion, done };
+  };
+
+  it('captures again while the previous capture has not reported completion', async () => {
+    const state = makeState();
+    const first = state.prepare(everyFrame, physical, 0);
+    const a = held();
+    state.stage(true, a.completion);
+    state.settle(true);
+    // The GPU completion of frame 0 arrives after frame 1 is prepared.
+    const second = state.prepare(everyFrame, physical, 1);
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    expect(state.current()).toBe(second);
+    const b = held();
+    state.stage(true, b.completion);
+    state.settle(true);
+    a.done();
+    await a.completion;
+    // A late completion of the superseded capture keeps the newer selection.
+    expect(state.current()).toBe(second);
+    expect(state.prepare(everyFrame, physical, 2)).toBeDefined();
+  });
+
+  it('falls back to the in-flight capture when the new one does not submit', () => {
+    const state = makeState();
+    state.prepare(everyFrame, physical, 0);
+    state.stage(true, held().completion);
+    state.settle(true);
+    const inFlight = state.current();
+    expect(state.prepare(everyFrame, physical, 1)).toBeDefined();
+    state.stage(false, undefined);
+    state.settle(true);
+    expect(state.current()).toBe(inFlight);
+  });
+
+  it('still honours a longer interval from the latest submitted capture', () => {
+    const state = makeState();
+    state.prepare(camera, physical, 0);
+    state.stage(true, held().completion);
+    state.settle(true);
+    expect(state.prepare(camera, physical, 3)).toBeUndefined();
+    expect(state.prepare(camera, physical, 4)).toBeDefined();
+  });
+});

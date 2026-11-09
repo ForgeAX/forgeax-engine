@@ -453,3 +453,13 @@ outside the frustum. The default spot has a 60-degree outer and 0-degree inner
 half-angle (falloff across the whole cone); `outerConeDeg` alone narrows it.
 Equal angles give a hard cone; they are valid with shadows on or off and use a defined hard step in
 surface and volume shaders. Spot shadow farPlane remains its own range.
+
+## Capture faces
+
+Which Features record into capture faces (planar mirror now; probe and cube are
+a follow-up) is set per Feature by `RenderFeature.capture`: `'display-only'`
+(default), `'all'`, or `{ faces: ['planar' | 'probe' | 'cube'] }`. GPU particles
+declare `'all'`: they draw again in each recorded face, costing one extra
+particle draw per face at the face resolution. Opt out with
+`createGpuParticleFeature({ capture: 'display-only' })`. Post effects stay
+display-only. See `packages/vfx-render/README.md`.

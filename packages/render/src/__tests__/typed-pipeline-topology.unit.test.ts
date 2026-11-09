@@ -216,7 +216,10 @@ function disabledDirectionalVolumeTopology(lightKind: 'point' | 'spot'): RenderP
 }
 
 function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
-  const target = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+  const target = (
+    label: string,
+    format: 'rgba16float' | 'r8unorm' | 'rgba8unorm' = 'rgba16float',
+  ) => {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
@@ -243,6 +246,8 @@ function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     previousTemporal: target('taa-history-previous-temporal'),
     currentStability: target('taa-history-current-stability', 'r8unorm'),
     previousStability: target('taa-history-previous-stability', 'r8unorm'),
+    currentFlicker: target('taa-history-current-flicker', 'rgba8unorm'),
+    previousFlicker: target('taa-history-previous-flicker', 'rgba8unorm'),
   };
 }
 
@@ -1183,6 +1188,43 @@ describe('Standard two-phase GPU occlusion topology', () => {
       'gpu-driven.occlusion-cull',
       'main-late',
     ]);
+  });
+
+  it.each([
+    'ao',
+    'contact',
+    'capsules',
+    'decals',
+  ] as const)('completes late visibility before Forward %s consumes its surface', (consumer) => {
+    const names = passNames(
+      topology('forgeax::standard', {
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ssao: consumer === 'ao',
+        },
+        ...(consumer === 'ao' ? { config: { ssao: { enabled: true } } } : {}),
+        ...(consumer === 'contact' ? { forwardContactShadows: true } : {}),
+        ...(consumer === 'capsules' ? { forwardCapsuleShadows: true } : {}),
+        ...(consumer === 'decals' ? { projectedDecals: [[]] } : {}),
+      }),
+    );
+    const firstConsumer =
+      consumer === 'ao'
+        ? 'ssao-calc'
+        : consumer === 'contact' || consumer === 'capsules'
+          ? 'forward-contact-shadow'
+          : 'decal-project';
+    expectOrder(names, [
+      'standard-scene-surface-data',
+      'occlusion-depth-pyramid-seed',
+      'gpu-driven.occlusion-cull',
+      'standard-scene-surface-data-late',
+      firstConsumer,
+      'main',
+    ]);
+    expect(names.filter((name) => name === 'gpu-driven.occlusion-cull')).toHaveLength(1);
+    expect(names).not.toContain('main-late');
   });
 
   it('builds the furthest pyramid from deferred G-buffer depth before the late G-buffer', () => {

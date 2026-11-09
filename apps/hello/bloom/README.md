@@ -33,7 +33,7 @@ pnpm --filter @forgeax/hello-bloom smoke:falsify # expected red Bloom contributi
 pnpm --filter @forgeax/hello-bloom smoke:all # complete Dawn + Browser carrier gate
 ```
 
-Ordinary CI retains the initial 60-frame lifecycle receipt and every resize/recovery pixel check, but uses eight post-resize frames with `FORGEAX_DAWN_LIGHTWEIGHT=1` or `FORGEAX_BROWSER_CI_LIGHTWEIGHT=1`. GPU timing mode and full local runs retain sixty post-resize frames.
+Ordinary Browser CI awaits sixty successfully completed ready receipts before its first picture; submitted preparation frames do not qualify. Ordinary CI retains every resize/recovery pixel check, but uses eight post-resize frames with `FORGEAX_DAWN_LIGHTWEIGHT=1` or `FORGEAX_BROWSER_CI_LIGHTWEIGHT=1`. GPU timing mode and full local runs retain sixty post-resize frames.
 
 The standalone extraction and quality Dawn carriers destroy their device, drain
 completion callbacks, verify the destruction notification and release their GPU

@@ -33,6 +33,9 @@ import {
 import { createFeatureEvidence } from './required-evidence.mjs';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
 
+const temporalMode = process.argv.includes('--tsr') ? 'tsr' : (process.env.SMOKE_TEMPORAL_MODE ?? 'taa');
+if (!['taa', 'tsr'].includes(temporalMode)) throw new Error('SMOKE_TEMPORAL_MODE must be taa or tsr');
+const temporalPasses = temporalMode === 'tsr' ? ['tsr-measure-opaque', 'tsr-analyze', 'tsr-reconstruct'] : ['taa-resolve'];
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(here, '..');
 const timingMode = ['1', 'manual'].includes(process.env.SMOKE_TIMING_MODE ?? '');
@@ -95,7 +98,7 @@ if (!Number.isInteger(requestedFrames) || requestedFrames < 1) {
 // hello-* contract window. Keep shorter fleet hints from silently weakening
 // this carrier's temporal proof.
 const frames = Math.max(requestedFrames, 60);
-const rerunCmd = 'pnpm --filter @forgeax/hello-taa smoke';
+const rerunCmd = `pnpm --filter @forgeax/hello-taa ${temporalMode === 'tsr' ? 'smoke:tsr' : 'smoke'}`;
 const sha256File = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
 const hashVitePayload = (root) => {
   const hash = createHash('sha256');
@@ -440,7 +443,7 @@ function spawnFeatureCamera(world, kind, exposure, lutHandle) {
             colorLutStrength: kind === 'positive-lut' ? 0.75 : 0,
             ...(lutHandle === undefined ? {} : { colorLut: lutHandle }),
           }),
-          antialias: render.ANTIALIAS_TAA,
+          antialias: temporalMode === 'tsr' ? render.ANTIALIAS_TSR : render.ANTIALIAS_TAA,
         },
       },
       { component: render.MotionBlur, data: { shutterAngle: 180, maxRadiusPixels: motionBlurMaxRadiusPixels, sampleCount: motionBlurSampleCount } },
@@ -909,7 +912,7 @@ const camera = world
       component: render.Camera,
       data: {
         ...render.perspective({ fov: Math.PI / 3, aspect: width / height }),
-        antialias: render.ANTIALIAS_TAA,
+        antialias: temporalMode === 'tsr' ? render.ANTIALIAS_TSR : render.ANTIALIAS_TAA,
         ...(visualCase === 'taa-motion-blur-bloom'
           ? {
               tonemap: render.TONEMAP_ACES_FILMIC,
@@ -1189,7 +1192,7 @@ if (isolatedCaptureMode !== undefined) {
     buffer: stableFrameResourceEvents.filter((event) => event.kind === 'buffer').length,
     pipeline: stableFrameResourceEvents.filter((event) => event.kind === 'pipeline').length,
   };
-  const isolatedRequiredPasses = ['standard-scene-data', 'taa-resolve', 'output-transform'];
+  const isolatedRequiredPasses = ['standard-scene-data', ...temporalPasses, 'output-transform'];
   const isolatedMissingPasses = isolatedRequiredPasses.filter(
     (pass) => !isolatedInspection.perFramePassNames.includes(pass),
   );
@@ -1321,7 +1324,7 @@ const stableCreation = {
   pipeline: stableFrameResourceEvents.filter((event) => event.kind === 'pipeline').length,
 };
 const temporal = inspection.temporal;
-const requiredPasses = ['standard-scene-data', 'taa-resolve', 'motion-blur', 'output-transform'];
+const requiredPasses = ['standard-scene-data', ...temporalPasses, 'motion-blur', 'output-transform'];
 const missingPasses = requiredPasses.filter((pass) => !inspection.perFramePassNames.includes(pass));
 const requiresRoiDifference = ['moving-rigid', 'camera-pan'].includes(visualCase);
 const centerEnergy = onRoiEnergy;
@@ -1450,10 +1453,10 @@ try {
 }
 delete globalThis.navigator.gpu;
 if (failed) {
-  console.error('[smoke] FAIL - TAA + MotionBlur Dawn readback did not satisfy the 60-frame temporal contract');
+  console.error(`[smoke] FAIL - ${temporalMode.toUpperCase()} + MotionBlur Dawn readback did not satisfy the 60-frame temporal contract`);
   console.error(`  rerun: ${rerunCmd}`);
   console.error('  hint: inspect renderer temporal status, pass trace, and Renderer.onError before changing the carrier');
   process.exit(1);
 }
-console.log(`[smoke] PASS Dawn TAA + MotionBlur, frames=${framesObserved}, roiEnergy=${centerEnergy.toFixed(6)}`);
-emitSmokeReceipt('hello-taa/smoke', framesObserved);
+console.log(`[smoke] PASS Dawn ${temporalMode.toUpperCase()} + MotionBlur, frames=${framesObserved}, roiEnergy=${centerEnergy.toFixed(6)}`);
+emitSmokeReceipt(temporalMode === 'tsr' ? 'hello-taa/smoke:tsr' : 'hello-taa/smoke', framesObserved);

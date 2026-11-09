@@ -22,6 +22,29 @@ function extractor(world: World) {
 }
 
 describe('World environment storage matching', () => {
+  it('reuses an unchanged point light snapshot and rebuilds it after a write', () => {
+    const world = new World();
+    const { extract } = extractor(world);
+    const lamp = world
+      .spawn({ component: PointLight, data: { intensity: 2 } }, { component: Transform, data: {} })
+      .unwrap();
+    world
+      .set(lamp, GlobalTransform, { world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 3, 1] })
+      .unwrap();
+    const first = extract().lights.point[0];
+    expect(extract().lights.point[0]).toBe(first);
+    world.set(lamp, PointLight, { intensity: 7 }).unwrap();
+    const changed = extract().lights.point[0];
+    expect(changed).not.toBe(first);
+    expect(changed?.intensity).toBe(7);
+    world
+      .set(lamp, GlobalTransform, { world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1] })
+      .unwrap();
+    const moved = extract().lights.point[0];
+    expect(moved).not.toBe(changed);
+    expect(moved?.position[0]).toBe(4);
+  });
+
   it('keeps live Fog, cloud Time and moving poses independent of older produced frames', () => {
     const world = new World();
     const fog = world.spawn({ component: Fog, data: { density: 0.03 } }).unwrap();
@@ -96,6 +119,57 @@ describe('World environment storage matching', () => {
     expect(a().cloudLayer?.sunRadiance).toEqual([4, 4, 4]);
     first.despawn(cloud).unwrap();
     expect(a().cloudLayer).toBeUndefined();
+  });
+
+  it('gives the sun lane to the castShadow DirectionalLight whatever its entity order', () => {
+    const world = new World();
+    const fill = world
+      .spawn({
+        component: DirectionalLight,
+        data: { intensity: 1.5, castShadow: false, direction: [0, -1, 0] },
+      })
+      .unwrap();
+    const sun = world
+      .spawn({
+        component: DirectionalLight,
+        data: { intensity: 2, castShadow: true, direction: [0, -1, 0] },
+      })
+      .unwrap();
+    const lights = extractor(world).extract().lights;
+    expect(lights.directionalCount).toBe(2);
+    expect(lights.directional?.entity).toBe(sun);
+    expect(lights.directional?.intensity).toBe(2);
+    expect(lights.additionalDirectional?.map((light) => light.entity)).toEqual([fill]);
+    expect(lights.directionalCsmConfig).toBeDefined();
+    expect(lights.ignoredDirectionalShadowCasters).toEqual([]);
+  });
+
+  it('reports every castShadow DirectionalLight beyond the CSM owner as ignored', () => {
+    const world = new World();
+    const first = world
+      .spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0, -1, 0] } })
+      .unwrap();
+    const second = world
+      .spawn({ component: DirectionalLight, data: { castShadow: true, direction: [0, -1, 0] } })
+      .unwrap();
+    const lights = extractor(world).extract().lights;
+    expect(lights.directional?.entity).toBe(first);
+    expect(lights.ignoredDirectionalShadowCasters).toEqual([second]);
+    expect(lights.additionalDirectional?.map((light) => light.entity)).toEqual([second]);
+  });
+
+  it('keeps the first light as the sun lane when no DirectionalLight casts a shadow', () => {
+    const world = new World();
+    const first = world
+      .spawn({ component: DirectionalLight, data: { castShadow: false, direction: [0, -1, 0] } })
+      .unwrap();
+    world
+      .spawn({ component: DirectionalLight, data: { castShadow: false, direction: [0, -1, 0] } })
+      .unwrap();
+    const lights = extractor(world).extract().lights;
+    expect(lights.directional?.entity).toBe(first);
+    expect(lights.directionalCsmConfig).toBeUndefined();
+    expect(lights.ignoredDirectionalShadowCasters).toEqual([]);
   });
 
   it('allows nested extraction from an error callback and releases queries after a throw', () => {

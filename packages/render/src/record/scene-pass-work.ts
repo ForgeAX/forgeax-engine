@@ -1,6 +1,7 @@
 import type { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { RhiError } from '@forgeax/engine-rhi';
 import type { PassKind, PassSelector } from '@forgeax/engine-types';
+import { isTemporalAntialias } from '../components/camera';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import type { GpuDrivenBatchBinding } from '../gpu-driven/batch-topology';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
@@ -359,7 +360,7 @@ function queueScenePass(
   const combinedTranslucency =
     request.recordMode === 'translucent' ||
     request.recordMode === 'translucent-before-transmission';
-  const admitted = !(request.capture || eye?.antialias === 'taa');
+  const admitted = !(request.capture || isTemporalAntialias(eye?.antialias));
   // The Record graph owner selected this request roster. Its per-pass row
   // cache queues only consumers of that compiled graph; frame-independent
   // phase sorting and pass plans were already produced in RenderQueue.

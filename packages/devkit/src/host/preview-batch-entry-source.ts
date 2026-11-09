@@ -105,9 +105,13 @@ try {
         if (renderError) throw renderError;
         if (!receipt) throw new Error('Preview submitted no frame');
         submitted++;
+        if (receipt.presentation !== 'ready' && receipt.preparationCompleted) value(await receipt.preparationCompleted);
         value(await receipt.completed);
         if (receipt.presentation === 'ready') ready++;
-        else await new Promise(done => setTimeout(done, 0));
+        else if (receipt.observationDomains?.length) {
+          // Pending pictures can still own captures; consume their exact domains before rearming.
+          value(await app.renderer.observe(receipt, { include: receipt.observationDomains }));
+        }
       }
       const observed = value(await app.renderer.observe(receipt, { include: ['final-display'] }));
       const image = observed.observations?.find(item => item.domain === 'final-display');

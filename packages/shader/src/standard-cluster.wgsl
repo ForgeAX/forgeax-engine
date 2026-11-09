@@ -8,8 +8,9 @@
 
 #define_import_path forgeax_standard::cluster
 #import forgeax_view::common::{DirectLightSlot, lightingChannelsMatch, view}
+#import forgeax_pbr::brdf::{prepareDirectMultiScatterView, DirectMultiScatterView, directLightingAlpha}
 
-#import forgeax_pbr::lighting_punctual::{evalDirectionalSlot, evalPoint, evalPointFlat, evalSpot, evalSpotFlat, evalSpotShadowed}
+#import forgeax_pbr::lighting_punctual::{evalDirectionalSlot, evalPoint, evalPointFlat, evalSpot, evalSpotFlat, evalSpotShadowed, punctualRangeReaches, spotConeReaches}
 #import forgeax_pbr::lighting_spot_modifiers::{spotModifierFactors}
 #import forgeax_pbr::lighting_ies_profile::{iesProfileFactor}
 #import forgeax_pbr::lighting_rect_area::{evalRectAreaLtcGgx}
@@ -87,6 +88,48 @@ fn get_ssao_direct_lighting_strength() -> f32 {
   return cluster_uniform.direct_ao.x;
 }
 
+// Native storage lighting reuses its existing AO sampled texture. The
+// no-storage lane reads the identical half-float tiles from Cluster words.
+fn standardScreenCoordinate(worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>, layer: u32) -> vec2<u32> {
+  let size = vec2<u32>(cluster_uniform.direct_ao.zw);
+  let clip = worldViewProjection * vec4<f32>(worldPosition, 1.0);
+  let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  let pixel = vec2<u32>(clamp(uv * vec2<f32>(size), vec2<f32>(0.0), vec2<f32>(size - 1u)));
+  return pixel + vec2<u32>(layer % 2u, layer / 2u) * size;
+}
+#ifdef STORAGE_BUFFER_AVAILABLE
+fn sampleStandardScreenData(worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>, layer: u32, data: texture_2d<f32>) -> vec4<f32> {
+  if (cluster_uniform.direct_ao.y <= 0.0) { return vec4<f32>(0.0); }
+  return textureLoad(data, vec2<i32>(standardScreenCoordinate(worldPosition, worldViewProjection, layer)), 0);
+}
+fn sampleStandardContactShadow(worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>, data: texture_2d<f32>) -> f32 {
+  if (cluster_uniform.direct_ao.y <= 0.0) { return 1.0; }
+  return sampleStandardScreenData(worldPosition, worldViewProjection, 0u, data).g;
+}
+#else
+fn sampleStandardScreenData(worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>, layer: u32) -> vec4<f32> {
+  if (cluster_uniform.direct_ao.y <= 0.0) { return vec4<f32>(0.0); }
+  let pixel = standardScreenCoordinate(worldPosition, worldViewProjection, layer);
+  let width = u32(cluster_uniform.direct_ao.z) * 2u;
+  let word = cluster_uniform.cluster_layout.z + (pixel.y * width + pixel.x) * 2u;
+  return vec4<f32>(unpack2x16float(load_cluster_word(word)), unpack2x16float(load_cluster_word(word + 1u)));
+}
+fn sampleStandardContactShadow(worldPosition: vec3<f32>, worldViewProjection: mat4x4<f32>) -> f32 {
+  if (cluster_uniform.direct_ao.y <= 0.0) { return 1.0; }
+  return sampleStandardScreenData(worldPosition, worldViewProjection, 0u).g;
+}
+#endif
+
+// DBuffer channels are premultiplied by their independent coverage. Preserve
+// receiver metallic, emission, opacity and occlusion before the ordinary BRDF.
+struct StandardDecalSurface { baseColor: vec3<f32>, normalWS: vec3<f32>, roughness: f32 }
+fn applyStandardScreenDecals(baseColor: vec3<f32>, normalWS: vec3<f32>, baseRoughness: f32, color: vec4<f32>, normal: vec4<f32>, roughness: vec4<f32>) -> StandardDecalSurface {
+  var finalNormal = normalWS;
+  let normalSum = normal.xyz + normalWS * (1.0 - normal.a);
+  if (dot(normalSum, normalSum) > 0.000001) { finalNormal = normalize(normalSum); }
+  return StandardDecalSurface(color.rgb + baseColor * (1.0 - color.a), finalNormal, roughness.r + baseRoughness * (1.0 - roughness.a));
+}
+
 // Shared by static, skinned, and custom Standard surface programs.
 // The AO producer already applied the intensity exponent before filtering;
 // a non-zero intensity here only marks the texture as live.
@@ -96,6 +139,9 @@ fn sampleStandardAmbientOcclusion(
   aoTexture: texture_2d<f32>, aoSampler: sampler,
 ) -> f32 {
   if (get_ssao_intensity() <= 0.0) { return 1.0; }
+  if (cluster_uniform.direct_ao.y > 0.0) {
+    return sampleStandardScreenData(worldPosition, worldViewProjection, 0u, aoTexture).r;
+  }
   let clip = worldViewProjection * vec4<f32>(worldPosition, 1.0);
   let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
   return clamp(textureSampleLevel(aoTexture, aoSampler, uv, 0.0).r, 0.0, 1.0);
@@ -176,13 +222,24 @@ fn evaluate_cluster_light(
   flat_2d    : bool,
   receive_shadows : bool,
   pixel: vec2<f32>,
+  ms: DirectMultiScatterView,
   useDirectDfgLut: bool,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   directDfgLut: texture_2d<f32>, directDfgSampler: sampler,
 #endif
 ) -> vec3<f32> {
   let kind = light.metadata.x & KIND_MASK;
+  // Exact-zero gates: skip lights whose range (or cone) cannot reach this
+  // fragment before IES, modifiers, BRDF or shadow taps run.
+  if ((kind == KIND_POINT || kind == KIND_SPOT)
+      && !punctualRangeReaches(light.position.xyz, world_pos, light.position.w)) {
+    return vec3<f32>(0.0);
+  }
   if (kind == KIND_POINT) {
+#ifdef LEAN_LIGHTING
+    // LEAN_LIGHTING frames carry no IES slice: the factor is the identity.
+    let radiance = light.colorTimesIntensity.xyz;
+#else
     let radiance = light.colorTimesIntensity.xyz * iesProfileFactor(
       light.position.xyz, light.auxiliary.xyz, light.direction.xyz, world_pos, light.metadata.z,
     );
@@ -192,6 +249,7 @@ fn evaluate_cluster_light(
         world_pos, base_color,
       );
     }
+#endif
 #ifdef POINT_SHADOW_AVAILABLE
     let layer = bitcast<i32>(light.metadata.y);
     if (receive_shadows && layer >= 0) {
@@ -204,7 +262,7 @@ fn evaluate_cluster_light(
         shadow.y,
         shadow.z, shadow.w,
         shadowParams[4 + layer], shadowParams[12 + layer].xyz, pixel,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
@@ -214,13 +272,14 @@ fn evaluate_cluster_light(
     return evalPoint(
       light.position.xyz, radiance, light.position.w, light.colorTimesIntensity.w,
       world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
     );
   }
   if (kind == KIND_SPOT) {
+#ifndef LEAN_LIGHTING
     if (flat_2d) {
       return evalSpotFlat(
         light.position.xyz, light.direction.xyz, light.colorTimesIntensity.xyz,
@@ -228,6 +287,45 @@ fn evaluate_cluster_light(
         world_pos, base_color,
       );
     }
+#endif
+    if (!spotConeReaches(
+      light.position.xyz, light.direction.xyz,
+      light.colorTimesIntensity.w, light.direction.w, world_pos,
+    )) {
+      return vec3<f32>(0.0);
+    }
+#ifdef LEAN_LIGHTING
+    // LEAN_LIGHTING frames carry no IES, Cookie or projector spot: every
+    // modifier is the identity and the shadow lane is a plain tile or -1.
+    let tile = bitcast<i32>(light.metadata.y);
+    if (receive_shadows && tile >= 0 && tile < 4) {
+      return evalSpotShadowed(
+        light.position.xyz, light.direction.xyz, light.colorTimesIntensity.xyz,
+        light.colorTimesIntensity.w, light.direction.w, light.position.w,
+        world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
+        view.spotLightViewProj[tile], tile, light.auxiliary.x, light.auxiliary.y,
+#ifdef POINT_SHADOW_AVAILABLE
+        shadowParams[8 + tile],
+#else
+        vec4<f32>(f32(max(light.metadata.x >> PCF_SHIFT, 1u)), 0.0, 6.0, 1.0),
+#endif
+        light.auxiliary.z, pixel,
+    ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+      );
+    }
+    return evalSpot(
+      light.position.xyz, light.direction.xyz, light.colorTimesIntensity.xyz,
+      light.colorTimesIntensity.w, light.direction.w, light.position.w,
+      world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
+    ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+    );
+#else
     let modifierFactors = spotModifierFactors(
       light.position.xyz,
       light.direction.xyz,
@@ -246,10 +344,11 @@ fn evaluate_cluster_light(
       projector_selected = true;
       tile = encoded_tile & TILE_MASK;
     }
+    var lit : vec3<f32>;
     // A non-receiver keeps the projector cookie; only the shadow tile is skipped.
     if (receive_shadows && tile >= 0 && tile < 4) {
       // Row 3 xyz carries the live depth bias, normal bias and shadow opacity.
-      return evalSpotShadowed(
+      lit = evalSpotShadowed(
         light.position.xyz, light.direction.xyz, light.colorTimesIntensity.xyz,
         // DirectLightSlot packs cosInner in color.w and cosOuter in direction.w;
         // keep the evaluator's named cone order intact at the decode boundary.
@@ -262,38 +361,36 @@ fn evaluate_cluster_light(
         vec4<f32>(f32(max(light.metadata.x >> PCF_SHIFT, 1u)), 0.0, 6.0, 1.0),
 #endif
         light.auxiliary.z, pixel,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
-      ) * modifier
-#ifdef PROJECTOR_AVAILABLE
-        * select(
-          vec3<f32>(1.0),
-          sampleStandardSpotProjector(view.spotLightViewProj[tile], world_pos, light.metadata),
-          projector_selected,
-        )
+      ) * modifier;
+    } else {
+      lit = evalSpot(
+        light.position.xyz, light.direction.xyz, light.colorTimesIntensity.xyz,
+        light.colorTimesIntensity.w, light.direction.w, light.position.w,
+        world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
+    ms, useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
 #endif
-      ;
+      ) * modifier;
     }
-    return evalSpot(
-      light.position.xyz, light.direction.xyz, light.colorTimesIntensity.xyz,
-      light.colorTimesIntensity.w, light.direction.w, light.position.w,
-      world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
-    useDirectDfgLut,
-#ifdef DIRECT_DFG_LUT_AVAILABLE
-    directDfgLut, directDfgSampler,
-#endif
-    ) * modifier
 #ifdef PROJECTOR_AVAILABLE
-      * select(
-        vec3<f32>(1.0),
-        sampleStandardSpotProjector(view.spotLightViewProj[max(tile, 0)], world_pos, light.metadata),
-        projector_selected && tile >= 0 && tile < 4,
-      )
+    // Only a marked spot samples the projector (a real branch, not a select
+    // that evaluates the projection for every spot). The unshadowed path
+    // keeps the same tile bound it always applied.
+    if (projector_selected && tile >= 0 && tile < 4 && any(lit != vec3<f32>(0.0))) {
+      lit = lit * sampleStandardSpotProjector(view.spotLightViewProj[tile], world_pos, light.metadata);
+    }
 #endif
-    ;
+    return lit;
+#endif
   }
+#ifndef LEAN_LIGHTING
+  // LEAN_LIGHTING frames carry neither rect-area nor additional directional
+  // slots; their decode is absent from that variant.
   if (kind == KIND_RECT_AREA) {
     let radiance = light.colorTimesIntensity.xyz * iesProfileFactor(
       light.position.xyz, light.auxiliary.xyz, light.direction.xyz, world_pos, light.metadata.z,
@@ -324,12 +421,13 @@ fn evaluate_cluster_light(
     return evalDirectionalSlot(
       light.direction.xyz, light.colorTimesIntensity.xyz,
       normal, view_dir, base_color, metallic, alpha_sq, f0, transmission,
-    useDirectDfgLut,
+    ms, useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
 #endif
     );
   }
+#endif
   return vec3<f32>(0.0);
 }
 
@@ -364,7 +462,20 @@ fn evaluateStandardClusterLights(
   let log_far = cluster_uniform.near_far_log.z;
   var total_radiance = vec3<f32>(0.0);
 
-  let cluster_idx = ndc_position_to_cluster(ndc, view_z, gx, gy, gz, near, far, log_far);
+  // Look the cell up from the fragment's own screen position. A per-vertex
+  // NDC varying is interpolated perspective-correctly, which is not the
+  // screen-linear NDC of the fragment, so large or near triangles would read a
+  // neighbouring cell; the membership producer culls each cell to its froxel
+  // and that neighbour need not hold the lights reaching this fragment.
+  // `pixel` is @builtin(position).xy in the View's viewport (the View UBO
+  // carries the colour target extent), so its screen-linear NDC equals the
+  // fragment's projected position without a per-pixel worldViewProj product.
+  let fragment_ndc = vec3<f32>(
+    pixel / vec2<f32>(view.viewportWidth, view.viewportHeight) * vec2<f32>(2.0, -2.0)
+      + vec2<f32>(-1.0, 1.0),
+    ndc.z,
+  );
+  let cluster_idx = ndc_position_to_cluster(fragment_ndc, view_z, gx, gy, gz, near, far, log_far);
   let cluster_linear = cluster_idx.z * gy * gx + cluster_idx.y * gx + cluster_idx.x;
   let grid_offset = cluster_linear * cluster_uniform.cluster_layout.x;
 #ifdef STORAGE_BUFFER_AVAILABLE
@@ -377,6 +488,17 @@ fn evaluateStandardClusterLights(
   );
   let list_word_offset = cluster_uniform.texture.z;
 #endif
+  if (list_count == 0u) {
+    return total_radiance;
+  }
+  // Per-pixel view terms of the direct multi-scatter lobe (nDotV, the view
+  // DFG sample, E_avg/F_avg), hoisted out of the light loop.
+  let ms = prepareDirectMultiScatterView(directLightingAlpha(alpha_sq), max(dot(normal, view_dir), 1e-5), f0,
+    useDirectDfgLut,
+#ifdef DIRECT_DFG_LUT_AVAILABLE
+    directDfgLut, directDfgSampler,
+#endif
+  );
   for (var i = 0u; i < list_count; i = i + 1u) {
 #ifdef STORAGE_BUFFER_AVAILABLE
     let light = light_data[light_index_list[list_offset + i]];
@@ -387,7 +509,7 @@ fn evaluateStandardClusterLights(
     total_radiance += evaluate_cluster_light(
       light, world_pos, normal, view_dir, base_color, metallic, alpha_sq, f0,
       transmission, flat_2d, receive_shadows,
-      pixel,
+      pixel, ms,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,

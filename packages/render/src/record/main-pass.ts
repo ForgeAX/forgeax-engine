@@ -17,6 +17,7 @@ import {
   type SsaoBindOptions,
 } from '../hdrp-buffers';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
+import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
 import { standardTopologyBindGroupReady } from '../pipeline-spec';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -689,7 +690,7 @@ function resolveStandardGroup2(
     ? getOrCreateHdrpBuffers(
         c.runtime,
         c.frameState.installedPipelineConfig?.clusterGrid,
-        c.frameState.standardClusterAoExtent,
+        c.frameState.standardClusterTextureExtent,
       )
     : null;
   const meshGroup2 = clusteredLighting
@@ -1290,8 +1291,10 @@ export function hasSsrSceneInputs(
   if (renderPath === 'forward')
     return (
       c.renderables.length > 0 &&
-      c.renderables.every(
-        (source) => read(source.material).materialShaderId === 'forgeax::default-standard-pbr',
+      c.renderables.every((source) =>
+        (source.materials.length === 0 ? [source.material] : source.materials).every((resource) =>
+          isCanonicalStandardPbrMaterialShader(read(resource).materialShaderId),
+        ),
       )
     );
   const selected = buildMatchedMaterialHandlesByRenderable(c.dispatch, DEFERRED_PASS_SELECTOR);

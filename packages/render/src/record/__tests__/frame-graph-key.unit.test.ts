@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { serializeFrameGraphKey } from '../frame-graph-key';
+import { retainedFrameGraphPolicyMatches, serializeFrameGraphKey } from '../frame-graph-key';
 
 function input() {
   return {
@@ -90,4 +90,22 @@ describe('current frame graph key', () => {
     slot.depthSlice = 2;
     expect(serializeFrameGraphKey(source)).not.toBe(second);
   });
+});
+
+it('uses conservative absent policy for malformed retained graph keys', () => {
+  const directional = { mapSize: 1024, cascadeCount: 4 as const };
+  for (const key of ['invalid', 'null', '{}']) {
+    expect(retainedFrameGraphPolicyMatches(key, directional, false)).toBe(true);
+    expect(retainedFrameGraphPolicyMatches(key, directional, true)).toBe(false);
+    expect(
+      retainedFrameGraphPolicyMatches(
+        key,
+        {
+          ...directional,
+          terrainReceivers: [{ worldId: 0, entityKey: 1 }],
+        },
+        false,
+      ),
+    ).toBe(false);
+  }
 });

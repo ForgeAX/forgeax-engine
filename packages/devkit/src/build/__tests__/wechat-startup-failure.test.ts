@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { VFX_GPU_RUNTIME_RESOURCE_KEY } from '../../../../vfx/src/index.js';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
+import type { StartupUiOptions } from '../../host/startup-ui.js';
 import type { ProjectFacts } from '../../types.js';
 import { wechatHostSource } from '../wechat.js';
 
@@ -28,6 +29,7 @@ const cleanupError = {
 async function host(
   activate: (emitError: (error: unknown) => void) => Promise<unknown>,
   rhiDebug = false,
+  startupUi: StartupUiOptions = {},
 ) {
   let drawSource: (() => unknown) | undefined;
   let inputAllowed = true;
@@ -94,7 +96,9 @@ async function host(
       return unwrap(undefined);
     },
   };
-  const source = wechatHostSource({ name: 'Native startup' } as ProjectFacts, '/native', rhiDebug)
+  const source = wechatHostSource({ name: 'Native startup' } as ProjectFacts, '/native', rhiDebug, {
+    startupUi,
+  })
     .replace(/^import .*;$/gm, '')
     .replace('export function start(', 'function start(')
     .replace("import('./wechat-game.ts')", 'loadGame()');
@@ -276,6 +280,48 @@ async function host(
 }
 
 describe('native Host startup failure ownership', () => {
+  it.each([
+    'none',
+    'custom',
+  ] as const)('retains native diagnostics with %s project UI', async (mode) => {
+    const startupUi: StartupUiOptions =
+      mode === 'none'
+        ? { loading: 'none', failure: 'none' }
+        : {
+            loading: { html: '<h1>My game</h1>' },
+            failure: {
+              html: '<p id="native-project-failure"></p>',
+              script: `screen.subscribe(state => { screen.root.querySelector('p').textContent = state.diagnostics; });
+            return () => { screen.document.body.dataset.nativeUiDisposed = 'yes'; };`,
+            },
+          };
+    const running = await host(
+      async () => {
+        throw primary;
+      },
+      false,
+      startupUi,
+    );
+    try {
+      await vi.waitFor(() => expect(running.inspect().phase).toBe('failed'));
+      expect(running.inspect().startupError).toBe(primary);
+      expect(running.inputAllowed()).toBe(false);
+      expect(document.querySelector('#forgeax-loading-brand')).toBeNull();
+      expect(document.querySelector('#forgeax-fatal-details')).toBeNull();
+      if (mode === 'none') {
+        expect(document.querySelector('#forgeax-loading')).toBeNull();
+        expect(document.querySelector('#forgeax-fatal')).toBeNull();
+      } else {
+        expect(document.querySelector('#native-project-failure')?.textContent).toContain(
+          'plugin-startup-failed',
+        );
+      }
+    } finally {
+      await running.stop();
+    }
+    if (mode === 'custom') expect(document.body.dataset.nativeUiDisposed).toBe('yes');
+  });
+
   it('projects actual native Fiber states and missing services through the existing inspection owner', async () => {
     const running = await host(async () => ({ dispose: async () => {} }));
     try {

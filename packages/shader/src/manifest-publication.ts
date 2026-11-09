@@ -32,19 +32,41 @@ export async function digestShaderBytes(bytes: Uint8Array<ArrayBuffer>): Promise
     : new Uint8Array(await subtle.digest('SHA-256', bytes));
 }
 
-// These are the same immutable fragments read by each row's lazy getter.
-// Weak row keys keep source queries from extending a publication's lifetime.
-const fragmentsByRow = new WeakMap<object, readonly string[]>();
-/** Utility rows use the same admitted source owner as material variants. */
-export function manifestShaderSource(row: { readonly wgsl: string }): ShaderSource {
-  return selectedSourcesByRow.get(row)?.() ?? new ShaderSource([row.wgsl]);
+// Verified fragment arrays already own each source independently of other rows.
+// Each verified fragment array belongs to exactly one published source digest.
+const selectedSources = new WeakMap<readonly string[], ShaderSource>();
+const selectedSourcesByRow = new WeakMap<object, readonly string[]>();
+const publishedDigests = new WeakMap<readonly string[], string>();
+const deferredReflectionRows = new WeakSet<object>();
+/** True while a row's reflection is validated on first read instead of at admission. */
+export function hasDeferredReflection(row: object): boolean {
+  return deferredReflectionRows.has(row);
 }
 
-const selectedSourcesByRow = new WeakMap<object, () => ShaderSource>();
+function selectSource(fragments: readonly string[]): ShaderSource {
+  let source = selectedSources.get(fragments);
+  if (source === undefined) {
+    source = new ShaderSource(fragments, publishedDigests.get(fragments));
+    selectedSources.set(fragments, source);
+  }
+  return source;
+}
+
+/** Bound to the fragment owner, so detached and foreign-receiver reads stay independent. */
+function readSourceText(this: readonly string[]): string {
+  return selectSource(this).read();
+}
+
+/** Utility rows use the same admitted source owner as material variants. */
+export function manifestShaderSource(row: { readonly wgsl: string }): ShaderSource {
+  const fragments = selectedSourcesByRow.get(row);
+  return fragments === undefined ? new ShaderSource([row.wgsl]) : selectSource(fragments);
+}
 
 /** Read the verified fragment owner without retaining its expanded body. */
 export function materialShaderSource(row: { readonly composedWgsl: string }): ShaderSource {
-  return selectedSourcesByRow.get(row)?.() ?? new ShaderSource([row.composedWgsl]);
+  const fragments = selectedSourcesByRow.get(row);
+  return fragments === undefined ? new ShaderSource([row.composedWgsl]) : selectSource(fragments);
 }
 
 /** Exact source matching for boot-module aliases and selected material variants. */
@@ -52,7 +74,7 @@ export function materialShaderSourceEquals(
   row: { readonly composedWgsl: string },
   source: string,
 ): boolean {
-  const fragments = fragmentsByRow.get(row);
+  const fragments = selectedSourcesByRow.get(row);
   if (fragments === undefined) return row.composedWgsl === source;
   let offset = 0;
   for (const fragment of fragments) {
@@ -67,7 +89,7 @@ export function materialShaderSourceMatches(
   row: { readonly composedWgsl: string },
   pattern: RegExp,
 ): boolean {
-  const fragments = fragmentsByRow.get(row);
+  const fragments = selectedSourcesByRow.get(row);
   return pattern.test(fragments === undefined ? row.composedWgsl : fragments.join(''));
 }
 
@@ -248,8 +270,22 @@ function expandPublicationRows(
   receipts: readonly unknown[],
   entryPoints: readonly unknown[],
   reflections: readonly unknown[],
+  deferReflections = false,
 ): Record<string, unknown> {
-  const selected = new Map<string, ShaderSource>();
+  const selected = new Map<string, () => string>();
+  const admittedReflections = new Map<number, unknown>();
+  // First read of a deferred reflection snapshots, freezes and validates that
+  // one table entry; the result is shared by every row that references it.
+  const admitReflection = (index: number): unknown => {
+    if (admittedReflections.has(index)) return admittedReflections.get(index);
+    // The deferred table is the registry's freshly parsed JSON, held by nobody else:
+    // freeze the row in place instead of cloning ~130 KB of structure per admission.
+    const snapshot = reflections[index];
+    freezeTree(snapshot);
+    if (!isShaderReflection(snapshot)) throw new Error('Invalid shader manifest publication');
+    admittedReflections.set(index, snapshot);
+    return snapshot;
+  };
   const expand = (row: Record<string, unknown>, field: string) => {
     const { sourceDigest, receiptIndex, entryPointsIndex, reflectionIndex, ...metadata } = row;
     const digest = sourceDigest as string;
@@ -260,27 +296,28 @@ function expandPublicationRows(
       ...(entryPointsIndex === undefined
         ? {}
         : { entryPoints: entryPoints[entryPointsIndex as number] }),
-      ...(reflectionIndex === undefined
-        ? {}
+      ...(reflectionIndex === undefined || deferReflections
+        ? reflectionIndex === undefined
+          ? {}
+          : {}
         : { reflection: reflections[reflectionIndex as number] }),
     };
+    if (deferReflections && reflectionIndex !== undefined) {
+      Object.defineProperty(result, 'reflection', {
+        enumerable: true,
+        get: () => admitReflection(reflectionIndex as number),
+      });
+      deferredReflectionRows.add(result);
+    }
     const fragments = sources.fragments.get(digest) as readonly string[];
-    fragmentsByRow.set(result, fragments);
-    const select = (): ShaderSource => {
-      let source = selected.get(digest);
-      if (source === undefined) {
-        source = new ShaderSource(fragments);
-        selected.set(digest, source);
-      }
-      return source;
-    };
-    selectedSourcesByRow.set(result, select);
-    Object.defineProperty(result, field, {
-      enumerable: true,
-      get() {
-        return select().read();
-      },
-    });
+    let getter = selected.get(digest);
+    if (getter === undefined) {
+      publishedDigests.set(fragments, digest);
+      getter = readSourceText.bind(fragments);
+      selected.set(digest, getter);
+    }
+    selectedSourcesByRow.set(result, fragments);
+    Object.defineProperty(result, field, { enumerable: true, get: getter });
     return result;
   };
   return {
@@ -293,8 +330,43 @@ function expandPublicationRows(
   };
 }
 
+interface PublicationShape extends Record<string, unknown> {
+  readonly entries: unknown[];
+  readonly materialShaders: unknown[];
+  readonly fragments: string[];
+  readonly sources: Record<string, unknown>;
+  readonly receipts: Record<string, unknown>[];
+  readonly entryPoints: unknown[];
+  readonly reflections?: unknown[];
+}
+
+function assertPublicationShape(
+  value: Record<string, unknown>,
+  options: { readonly deferReflections?: boolean },
+): asserts value is PublicationShape {
+  if (
+    !Array.isArray(value.entries) ||
+    !Array.isArray(value.materialShaders) ||
+    !Array.isArray(value.fragments) ||
+    !value.fragments.every((fragment) => typeof fragment === 'string') ||
+    !isRecord(value.sources) ||
+    !Array.isArray(value.receipts) ||
+    !value.receipts.every(isRecord) ||
+    !Array.isArray(value.entryPoints) ||
+    !value.entryPoints.every(isShaderEntryPointReads) ||
+    (value.reflections !== undefined &&
+      (!Array.isArray(value.reflections) ||
+        (options.deferReflections !== true && !value.reflections.every(isShaderReflection))))
+  ) {
+    throw new Error('Invalid shader manifest publication');
+  }
+}
+
 /** Pure expansion shared by browser admission and synchronous packaged-input loading. */
-export function expandShaderManifestPublication(value: unknown): {
+export function expandShaderManifestPublication(
+  value: unknown,
+  options: { readonly deferReflections?: boolean } = {},
+): {
   readonly manifest: unknown;
   readonly sourceFragments: ReadonlyMap<string, readonly string[]>;
   readonly fragmentTable: readonly string[];
@@ -312,21 +384,7 @@ export function expandShaderManifestPublication(value: unknown): {
     throw new Error(
       `Unsupported shader manifest publication version: ${String(value.schemaVersion)}`,
     );
-  if (
-    !Array.isArray(value.entries) ||
-    !Array.isArray(value.materialShaders) ||
-    !Array.isArray(value.fragments) ||
-    !value.fragments.every((fragment) => typeof fragment === 'string') ||
-    !isRecord(value.sources) ||
-    !Array.isArray(value.receipts) ||
-    !value.receipts.every(isRecord) ||
-    !Array.isArray(value.entryPoints) ||
-    !value.entryPoints.every(isShaderEntryPointReads) ||
-    (value.reflections !== undefined &&
-      (!Array.isArray(value.reflections) || !value.reflections.every(isShaderReflection)))
-  ) {
-    throw new Error('Invalid shader manifest publication');
-  }
+  assertPublicationShape(value, options);
   const fragments = [...value.fragments] as string[];
   const sources = value.sources;
   const receipts = value.receipts;
@@ -334,8 +392,13 @@ export function expandShaderManifestPublication(value: unknown): {
   // No row owns a writable copy of this publication-local table.
   const entryPoints = structuredClone(value.entryPoints);
   freezeTree(entryPoints);
-  const reflections = structuredClone(value.reflections ?? []) as unknown[];
-  freezeTree(reflections);
+  const deferReflections = options.deferReflections === true;
+  // Deferred tables are admitted per row on first read; eager tables share
+  // complete detached facts once at admission.
+  const reflections = deferReflections
+    ? ((value.reflections ?? []) as unknown[])
+    : shareReflectionFacts(structuredClone(value.reflections ?? []) as unknown[]);
+  if (!deferReflections) freezeTree(reflections);
   const referenced: PublicationReferences = {
     sources: new Set(),
     receipts: new Set(),
@@ -347,7 +410,14 @@ export function expandShaderManifestPublication(value: unknown): {
   assertPublicationReferences(referenced, sources, receipts, entryPoints, reflections);
   const resolved = resolvePublicationSources(referenced.sources, sources, fragments);
   // Keep only sources requested by a renderer; verification never populates this cache.
-  const manifest = expandPublicationRows(rows, resolved, receipts, entryPoints, reflections);
+  const manifest = expandPublicationRows(
+    rows,
+    resolved,
+    receipts,
+    entryPoints,
+    reflections,
+    deferReflections,
+  );
   return {
     manifest,
     sourceFragments: resolved.fragments,
@@ -356,9 +426,28 @@ export function expandShaderManifestPublication(value: unknown): {
   };
 }
 
-/** Verify source bytes before ShaderRegistry's atomic validation. */
+/**
+ * Verify source bytes before ShaderRegistry's atomic validation. Reflection facts
+ * are detached from `value` and shared within this publication at admission.
+ */
 export async function readShaderManifestPublication(value: unknown): Promise<unknown> {
-  const expanded = expandShaderManifestPublication(value);
+  return verifyShaderManifestPublication(expandShaderManifestPublication(value));
+}
+
+/**
+ * Same verification as {@link readShaderManifestPublication}, but takes ownership of
+ * `value.reflections`: each row is validated and frozen in place on first read instead
+ * of being cloned up front. Callers must pass freshly parsed JSON that nothing else retains.
+ */
+export async function readOwnedShaderManifestPublication(value: unknown): Promise<unknown> {
+  return verifyShaderManifestPublication(
+    expandShaderManifestPublication(value, { deferReflections: true }),
+  );
+}
+
+async function verifyShaderManifestPublication(
+  expanded: ReturnType<typeof expandShaderManifestPublication>,
+): Promise<unknown> {
   const sources = [...expanded.sourceIndices];
   const encoder = new TextEncoder();
   const fragmentDigests: Uint8Array[] = [];
@@ -395,4 +484,78 @@ export async function readShaderManifestPublication(value: unknown): Promise<unk
     }
   }
   return expanded.manifest;
+}
+
+interface Fact {
+  readonly value: unknown;
+  readonly id: number;
+}
+
+/** Only detached plain acyclic data can acquire structural sharing. */
+function plainTree(value: unknown, active: Set<object>, visited: Set<object>): boolean {
+  if (value === null || typeof value !== 'object') return true;
+  if (active.has(value)) return false;
+  if (visited.has(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+  active.add(value);
+  const record = value as Record<string, unknown>;
+  for (const field of Object.keys(record))
+    if (!plainTree(record[field], active, visited)) return false;
+  active.delete(value);
+  visited.add(value);
+  return true;
+}
+
+/**
+ * Called only after structuredClone at publication admission. The short-lived
+ * pool shares complete immutable values, not resource or shader identities.
+ * No pool, key string or caller-owned object escapes with the accepted facts.
+ */
+function shareReflectionFacts(rows: unknown[]): unknown[] {
+  if (!plainTree(rows, new Set(), new Set())) return rows;
+  const pool = new Map<string, Fact>();
+  const primitives = new Map<unknown, Fact>();
+  const fields = new Map<string, number>();
+  const negativeZero = Symbol();
+  const seen = new WeakMap<object, Fact>();
+  let nextId = 0;
+  function intern(value: unknown): Fact {
+    if (value === null || typeof value !== 'object') {
+      const key = Object.is(value, -0) ? negativeZero : value;
+      let fact = primitives.get(key);
+      if (fact === undefined) {
+        fact = { value, id: nextId++ };
+        primitives.set(key, fact);
+      }
+      return fact;
+    }
+    const previous = seen.get(value);
+    if (previous !== undefined) return previous;
+    const record = value as Record<string, unknown>;
+    let key = Array.isArray(value)
+      ? `a${value.length}:`
+      : Object.getPrototypeOf(value) === null
+        ? 'n:'
+        : 'o:';
+    // Own key order, array holes, optional absence and signed zero all survive.
+    for (const field of Object.keys(record)) {
+      let fieldId = fields.get(field);
+      if (fieldId === undefined) {
+        fieldId = fields.size;
+        fields.set(field, fieldId);
+      }
+      const child = intern(record[field]);
+      record[field] = child.value;
+      key += `${fieldId}:${child.id};`;
+    }
+    let fact = pool.get(key);
+    if (fact === undefined) {
+      fact = { value: Object.freeze(value), id: nextId++ };
+      pool.set(key, fact);
+    }
+    seen.set(value, fact);
+    return fact;
+  }
+  return intern(rows).value as unknown[];
 }

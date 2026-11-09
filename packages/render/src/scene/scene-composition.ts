@@ -21,6 +21,7 @@ import { Children, GlobalTransform, MorphWeights } from '@forgeax/engine-scene';
 import type { ShaderRegistry } from '@forgeax/engine-shader';
 import { Skin } from '@forgeax/engine-skinning';
 import { type MeshAsset, ok, type Result, type SkeletonAsset } from '@forgeax/engine-types';
+import { planarCaptureDemanded } from '../capture/planar-material';
 import { Instances, Lines, Points, SpriteInstances } from '../components';
 import {
   captureHiddenEntityReports,
@@ -565,6 +566,8 @@ export class SceneComposition {
     ReturnType<AssetRegistry['observe']> extends Result<infer T, unknown> ? T : never
   >();
   private materialContext: MaterialCookRasterContext | undefined;
+  /** Planar capture demand each World's planar receivers were last adopted under. */
+  private readonly planarDemand = new WeakMap<World, boolean>();
   private terrainAssets: AssetRegistry | undefined;
 
   /** The renderer asset service for source projections: the latest observed registry, else the construction option. */
@@ -819,6 +822,50 @@ export class SceneComposition {
     }
     return { materialUpdates: updates ?? EMPTY_MATERIAL_UPDATES, changed };
   }
+  /**
+   * Planar receivers shade forward only while their World publishes a
+   * PlanarReflection capture (see planarRoutedPasses). Adding or removing the
+   * capture changes no entity and no asset, so the retained composition would
+   * keep the previous routing: re-prepare the cached planar snapshots whose
+   * routing no longer matches, exactly as an asset change would.
+   */
+  private adoptPlanarRouting(
+    worlds: readonly World[],
+    assets: AssetRegistry,
+  ): MaterialResource[] | undefined {
+    let updates: MaterialResource[] | undefined;
+    for (const world of worlds) {
+      if (world === undefined) continue;
+      const demanded = planarCaptureDemanded(world);
+      const previous = this.planarDemand.get(world);
+      this.planarDemand.set(world, demanded);
+      if (previous === demanded) continue;
+      const resources = worldRenderResources(world);
+      for (const { cache, geometry, vertexColor } of this.materialSnapshotCaches
+        .get(resources)
+        ?.values() ?? []) {
+        for (const [handle, cached] of [...cache]) {
+          if (cached.planarRouted === undefined || cached.planarRouted === demanded) continue;
+          const snapshot = resolveMaterialSnapshot(
+            handle,
+            resources,
+            assets,
+            undefined,
+            cache,
+            this.materialContext === undefined ? undefined : { ...this.materialContext, geometry },
+            undefined,
+            vertexColor,
+          );
+          const resource = materialResource(snapshot);
+          if (resource === undefined) continue;
+          updates ??= [];
+          updates.push(resource);
+        }
+      }
+    }
+    return updates;
+  }
+
   private adoptLocalAsset(world: World, worldId: number, change: AssetChange): void {
     if (world.assets === undefined) return;
     this.notifyAssetChange(worldRenderResources(world), change);
@@ -1220,7 +1267,9 @@ export class SceneComposition {
     this.worldEntitiesScanned = 0;
     this.sceneTableUploadBytes = 0;
     this.terrainAssets = assets;
-    const { materialUpdates, changed: assetsChanged } = this.adoptAssetChanges(worlds, assets);
+    const adopted = this.adoptAssetChanges(worlds, assets);
+    let materialUpdates = adopted.materialUpdates;
+    const assetsChanged = adopted.changed;
     const entry = this.composition;
     if (
       entry === undefined ||
@@ -1248,6 +1297,10 @@ export class SceneComposition {
     }
 
     const resourceFrame = buildCandidateFrame('none');
+    // The resource frame publishes each World's planar capture demand; a flip
+    // re-routes planar receivers without any entity or asset change.
+    const planarUpdates = this.adoptPlanarRouting(worlds, assets);
+    if (planarUpdates !== undefined) materialUpdates = [...materialUpdates, ...planarUpdates];
     for (const batch of changes.sourceBatches) batch.validate();
     const applied = this.applyCompositionChanges(entry, worlds, changes, buildCandidateFrame);
     const changedDelta = applied?.delta;

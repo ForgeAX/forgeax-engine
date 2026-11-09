@@ -8,5 +8,5 @@ fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   let grain = sin(p.x * 57.0) * sin(p.y * 63.0);
   let wet = 1.0 - smoothstep(-0.05, 0.35, input.positionWS.y);
   let color = material.sandColor.rgb * (0.92 + ripple * 0.035 + grain * 0.012) * (1.0 - wet * 0.18);
-  return SurfaceData(color, input.vertexNormalWS, 0.0, 0.9, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(color, input.vertexNormalWS, 0.0, 0.9, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }

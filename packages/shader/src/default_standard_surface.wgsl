@@ -340,7 +340,10 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
   let coverage = sampledAlpha;
 #endif
 #ifdef ALPHA_HASH_AVAILABLE
+#if ALPHA_MASK == true
+  // The hash discard exists only in alpha-mask variants; see alphaTestSurface.
   applyAlphaHash(coverage, input.positionOS, materialValue.alphaHash);
+#endif
 #endif
   return SurfaceData(
     baseColor,
@@ -351,6 +354,7 @@ fn evaluate_standard_surface(sourceInput : SurfaceInput, materialValue : Materia
     occlusion,
     coverage,
     alphaClipThreshold,
+    0.0,
   );
 }
 

@@ -474,7 +474,8 @@ it('restores the exclusive pointer after numeric dirty registration fails', asyn
     key,
     value,
   ) {
-    if (!failed && key === leaf && value === 256) {
+    const dirty = value as { start?: number; end?: number } | undefined;
+    if (!failed && key === leaf && dirty?.start === leaf && dirty.end === leaf + 256) {
       failed = true;
       throw cause;
     }

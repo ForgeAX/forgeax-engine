@@ -89,6 +89,10 @@ describe('native build root process', () => {
       volumetricFog: { quality: 'low', depth: 48, tileSize: 16 },
     };
     const time = { fixedDeltaSeconds: 0.05, maxStepsPerUpdate: 2, maxDeltaSeconds: 0.15 };
+    const startupUi = {
+      loading: 'none',
+      failure: { html: '<h1>Retry</h1>', script: 'return () => {};' },
+    };
     const facts = await fixture(
       `export default { provide: ['devkitAppOptions'], apply(ctx, config) {
       ctx.provide('devkitAppOptions', config);
@@ -98,6 +102,7 @@ describe('native build root process', () => {
         dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
         standardProfile,
         time,
+        startupUi,
         wechat: { maxRenderShortSide: 0 },
       },
     );
@@ -107,6 +112,7 @@ describe('native build root process', () => {
       dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
       standardProfile,
       time,
+      startupUi,
       wechat: { maxRenderShortSide: 0 },
     });
     const absent = await loadProjectCookers({ ...facts, roots: {} }, []);
@@ -128,6 +134,8 @@ describe('native build root process', () => {
     '{ standardProfile: null }',
     '{ time: null }',
     '{ wechat: null }',
+    '{ startupUi: { loading: false } }',
+    '{ startupUi: { failure: { html: 1 } } }',
     '{ wechat: [] }',
     '{ wechat: { unknown: 720 } }',
     '{ wechat: { maxRenderShortSide: -1 } }',

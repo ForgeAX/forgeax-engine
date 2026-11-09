@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { assembleRuntimePacks, createAssetRuntimeAssembly } from '@forgeax/engine-app';
@@ -155,5 +156,8 @@ process.stdout.write(
     executions: 2,
     sameEngineToken: probe.sameEngineToken,
     sameProjectToken: probe.sameProjectToken,
+    largeTextSha256: createHash('sha256')
+      .update(Buffer.from(probe.largeText, 'utf16le'))
+      .digest('hex'),
   })}\n`,
 );

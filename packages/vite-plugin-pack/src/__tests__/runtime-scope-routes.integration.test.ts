@@ -72,7 +72,12 @@ describe('runtime-scoped pack routes', () => {
     });
     const binding = createStandaloneRuntimeAssetBinding('scoped-wire');
     await plugin.rebind(binding, [root]);
+    const stringify = vi.spyOn(JSON, 'stringify');
     const response = await request(middlewares, binding.catalogUrl);
+    const publicationEncodes = stringify.mock.calls.filter(
+      ([value]) => value?.schemaVersion === 'asset-publication/1',
+    ).length;
+    expect(publicationEncodes).toBe(1);
     expect(response.statusCode).toBe(200);
     const wire = JSON.parse(response.body);
     expect(wire).toMatchObject({

@@ -65,6 +65,7 @@ They remain part of the complete `pnpm test:browser` roster.
 
 | Catalog row | Owning gate | Evidence boundary |
 |:--|:--|:--|
+| Project startup presentation | `packages/devkit/src/__tests__/startup-ui.unit.test.ts`, `startup-entry.unit.test.ts`, `build/__tests__/wechat-startup-failure.test.ts` | Generated pre-module Host UI, black-screen input gating, custom state/actions and teardown; native device appearance remains a separate acceptance step. |
 | Gamepad feedback | `packages/input/src/__tests__/gamepad-feedback.browser.test.ts` | Actual DOM ownership and Worker POD transport; actuator double, physical compatibility unverified. |
 | Long audio windows | `packages/audio-webaudio/src/__tests__/pcm-stream.browser.test.ts` | Native Web Audio output and real HTTP Range windows; original PCM, clock, cleanup and budget assertions. |
 | Acoustic regions | `packages/audio-webaudio/src/__tests__/acoustic-regions.browser.test.ts` | Real OfflineAudioContext PCM, bus/send ramps and accepted regional routing. |

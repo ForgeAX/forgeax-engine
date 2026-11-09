@@ -27,6 +27,7 @@ import type {
   RenderSystemRuntime,
 } from '../record/render-context';
 import type { CameraSnapshot } from '../render-contract';
+import type { RenderableSnapshot } from '../render-system-extract';
 import { getOrCreateSsaoBuffers } from '../ssao-buffers';
 import { createTemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
@@ -226,9 +227,11 @@ describe('Standard Cluster upload ownership', () => {
   });
 
   it.each([
-    false,
-    true,
-  ] as const)('retains no-storage Cluster topology when Forward AO is %s with no local lights', (aoEnabled) => {
+    'none',
+    'ao',
+    'capsule',
+  ] as const)('retains no-storage Cluster topology for Forward %s with no local lights', (consumer) => {
+    const aoEnabled = consumer === 'ao';
     const internals = {
       device: {
         caps: { storageBuffer: false, compute: false },
@@ -271,10 +274,17 @@ describe('Standard Cluster upload ownership', () => {
       shadowViews: [],
     } as unknown as ViewLights;
 
-    const result = prepareFrameLighting(internals, frameState, lights, camera());
+    const result = prepareFrameLighting(
+      internals,
+      frameState,
+      lights,
+      camera(),
+      undefined,
+      consumer === 'capsule' ? [{ capsuleShadowRequested: true } as RenderableSnapshot] : undefined,
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    if (!aoEnabled) {
+    if (consumer === 'none') {
       expect(result.value.standard.kind).toBe('no-local-lights');
       return;
     }

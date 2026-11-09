@@ -84,8 +84,8 @@ Source-package production and Vite development request product-only import;
 their shared transport finalizer owns Pack projection, so import does not build
 an additional Pack that those callers discard.
 
-Production Meta imports reuse the existing Pack build-product DDC before import
-and native Cook. The host supplies its sealed build-program identity; the same
+Build and live development Meta imports reuse the existing Pack build-product
+DDC before import and native Cook. The host supplies its sealed build-program identity; the same
 Pack cache owns storage, typed-array encoding, integrity and material generation
 rebinding. No producer identity means ordinary uncached production.
 
@@ -105,6 +105,10 @@ byte checks. Import dependency labels can name builtin shaders and are not file
 paths; native cookers retain authority for their complete source identity.
 Missing or corrupt cache evidence falls back to the producer. Every hit still
 checks declared GUID closure and passes through the ordinary publication owner.
+Development admits current native cooker identities on every production attempt;
+an existing server can rebuild edited material inputs without retaining an old
+cache identity. Cached terminal receipts are reconstructed for dev publication,
+while build-only consumers reuse the product without that extra work.
 
 Imported materials use the host's registered material cooker before the complete
 source package is published. `produceSourcePackage` accepts the same `cookers`
@@ -1094,3 +1098,19 @@ product binary payloads. Corrupt or mismatched metadata falls back to ordinary
 finalization. Policies without an identity remain live. Cached output/read GUIDs
 are scheduling hints only; the current dependency worklist still validates every
 reference and retries missing dependencies.
+
+Meta publication lets DDC staging derive its receipt digest from one private
+capture. DDC validates and publishes the immutable entry once before its ordinary
+lifecycle CAS; the Import adapter does not bypass closure checks or head fences.
+With `FORGEAX_WORKSPACE_TIMING=1`, `forgeax.meta-publication.timing` separates
+artifact closure validation, immutable payload selection and DDC staging.
+
+Live generation owners first call `readImportPublication` with their newly
+produced Pack and complete artifact closure. Matching output digest, producer,
+current key and a fenced integrity-checked DDC entry restore the Catalog revision
+and runtime-bound Pack without staging, leases, head commits or sidecar writes.
+Serve the returned Pack and its privately owned artifact bytes: restoration discards
+the caller's transport text and buffers. Prepare HTTP compression only after these
+restored bodies are installed. Changed,
+damaged, missing or actively leased entries retain ordinary publication and its
+rollback; a product-cache hit alone never admits a publication.

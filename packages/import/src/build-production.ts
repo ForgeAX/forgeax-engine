@@ -46,13 +46,15 @@ import {
   type ScriptablePackInput,
   type ScriptablePackProductionOptions,
 } from './scriptable-pack-host.js';
-import { createPackBuildProductCache } from './scriptable-pack-product-cache.js';
 import {
   finalizeSourcePackage,
   produceSourcePackage,
   sourcePackageAssetsByGuid,
 } from './source-package.js';
-import type { SourcePackageBuildDdc } from './source-package-build-product.js';
+import {
+  createSourcePackageBuildDdc,
+  type SourcePackageBuildDdc,
+} from './source-package-build-product.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
 
 export interface BuildProductionFailure {
@@ -395,6 +397,20 @@ interface PackEmissionOptions {
   readonly publication?: AssetPublicationEnvelope;
   readonly sourcePath?: string;
   readonly revision?: PackIndexEntry['revision'];
+}
+
+const CONTENT_ADDRESSED_PROGRAM = /^materials\/programs\/[a-f0-9]{64}\.wgsl$/;
+
+/**
+ * Imported material programs are already named by the digest of their bytes,
+ * and many imported files compile to the same handful of programs. Keeping
+ * that address under `shared/` lets every Pack in one build output reference a
+ * single file instead of writing one copy per material. A changed material
+ * compiles to a new digest, so it gets a new file and never overwrites one
+ * that other Packs still reference. Other artifacts stay owner-scoped.
+ */
+function importedArtifactPath(assetGuid: string, key: string): string {
+  return CONTENT_ADDRESSED_PROGRAM.test(key) ? `shared/${key}` : `${assetGuid}-${key}.bin`;
 }
 
 async function emitPackDocument(
@@ -766,7 +782,7 @@ async function emitBuildEntry(
     {
       base: work.context.basePrefix,
       packagePath: `assets/${subAssets[0]?.guid ?? 'pack'}.pack.json`,
-      artifactPath: (assetGuid, key) => `${assetGuid}-${key}.bin`,
+      artifactPath: importedArtifactPath,
     },
   );
   const productByGuid = sourcePackageAssetsByGuid(sourcePackage.value);
@@ -807,28 +823,17 @@ export async function produceBuildAssets(
   const availableGuids = new Set(entries.map((entry) => entry.guid.toLowerCase()));
   const importedEntries = [...entries];
   const guidSeen = new Set<string>();
-  const products =
-    context.buildCacheRoot === undefined || context.producerIdentity === undefined
-      ? undefined
-      : await createPackBuildProductCache({
-          root: context.buildCacheRoot,
-          identityRoot: context.cwd,
-          outputVersions: { 'meta-source-package': '1' },
-          cookers: context.cookers,
-        });
+  const sourcePackageDdc = await createSourcePackageBuildDdc({
+    root: context.buildCacheRoot,
+    identityRoot: context.cwd,
+    producerIdentity: context.producerIdentity,
+    cookers: context.cookers,
+  });
   const work: BuildEmissionWork = {
     importedEntries,
     context,
     sharedMaterialPrograms: new Set(),
-    ...(products === undefined
-      ? {}
-      : {
-          sourcePackageDdc: {
-            products,
-            producerIdentity: `${context.producerIdentity}:${products.producerIdentity}`,
-            identityRoot: context.cwd,
-          },
-        }),
+    ...(sourcePackageDdc === undefined ? {} : { sourcePackageDdc }),
   };
   // Emission owns the remaining queue. Published payloads no longer need to
   // survive while subsequent Packs are cooked; Catalog rows live in entries.

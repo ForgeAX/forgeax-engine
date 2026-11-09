@@ -88,6 +88,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
       reset: tick === 0,
       delta: 1 / 60,
       initialDelta: 1 / 60,
+      worldElapsed: 0,
       elapsed: (tick + 1) / 60,
       phaseTick: tick,
       tick,
@@ -179,7 +180,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
         device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint } }),
       ]),
     );
-    const sizeWords = [capacity * 28, 76, capacity, 6, 5, capacity * 2 + groups, capacity * 31];
+    const sizeWords = [capacity * 28, 80, capacity, 6, 5, capacity * 2 + groups, capacity * 31];
     const states = (groups === 1 ? [0, 1] : [0, 1, 2]).map(() => {
       const buffers = sizeWords.map((words, binding) =>
         make(words, binding === 1 ? GPUBufferUsage.UNIFORM : GPUBufferUsage.STORAGE),
@@ -225,7 +226,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>){ (*p).position.x
         for (let tick = 0; tick < 6; tick += 1) {
           const spawnCount = tick % 3 === 0 ? capacity + 2 : tick % 3 === 1 ? 0 : 2;
           const selected = plannedDispatches(tick, pattern * 2 + replay, spawnCount);
-          const runtime = new Uint32Array(76);
+          const runtime = new Uint32Array(80);
           new Float32Array(runtime.buffer)[0] = 1 / 60;
           runtime.set(
             [tick, 7, pattern * 2 + replay, capacity, spawnCount, 1000 + tick * capacity, 1],

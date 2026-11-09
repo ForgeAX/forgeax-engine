@@ -43,6 +43,8 @@ export class BufferPool {
   private readonly extendedLengths = new Map<number, number>();
   private slotCount = 1;
   private readonly freeIds: number[] = [];
+  /** One borrowed window per live extent; no window survives slot retirement. */
+  private readonly views: (Uint8Array<ArrayBuffer> | undefined)[] = [];
   private readonly pages = new BufferPages();
   private readonly owned = new Map<number, ArrayBuffer>();
   private readonly freeBuffers: ArrayBuffer[][] = SIZE_CLASSES.map(() => []);
@@ -132,6 +134,7 @@ export class BufferPool {
       this.owned.delete(id);
     }
     this.classes[id] = DEAD;
+    if (this.views[id] !== undefined) this.views[id] = undefined;
     this.lengths[id] = 0;
     this.extendedLengths.delete(id);
     this.freeIds.push(id);
@@ -247,6 +250,8 @@ export class BufferPool {
     return length === EXTENDED_LENGTH ? (this.extendedLengths.get(id) as number) : length;
   }
   private writeLength(id: number, bytes: number): void {
+    const view = this.views[id];
+    if (view !== undefined && view.byteLength !== bytes) this.views[id] = undefined;
     if (bytes >= EXTENDED_LENGTH) {
       this.extendedLengths.set(id, bytes);
       this.lengths[id] = EXTENDED_LENGTH;
@@ -269,13 +274,17 @@ export class BufferPool {
   private viewOf(id: number): Uint8Array<ArrayBuffer> {
     const kind = this.classes[id] as number;
     if (kind === ZERO) return EMPTY;
-    return new Uint8Array(
+    const cached = this.views[id];
+    if (cached !== undefined) return cached;
+    const view = new Uint8Array(
       kind < 3
         ? this.pages.pageBuffer(this.chunkOf[id] as number)
         : (this.owned.get(id) as ArrayBuffer),
       kind < 3 ? (this.offsets[id] as number) : 0,
       this.lengthOf(id),
     );
+    this.views[id] = view;
+    return view;
   }
   private prepareMetadata(
     id: number,

@@ -76,14 +76,27 @@ export async function readyFrames(
     longestCompletionMs = Math.max(longestCompletionMs, Date.now() - submitted);
     if (!result.ok) throw result.error;
     if (receipt.presentation === 'ready') completed++;
-    if (Date.now() > deadline) {
+    const timeout = async (): Promise<never> => {
       const error = new Error(
         `scene readiness timed out: ${JSON.stringify({ completed, required: frames, elapsedMs: Date.now() - started, longestRenderMs, longestCompletionMs, presentation: receipt.presentation, pending: receipt.presentationPendingReason, frame: renderer.inspect().renderer.frame })}`,
       );
       await onTimeout?.();
       throw error;
+    };
+    if (Date.now() > deadline) await timeout();
+    // The Engine owns shader/native compilation. Wait for its captured work
+    // instead of submitting a new preparation barrier every fifty milliseconds.
+    if (receipt.presentation !== 'ready' && receipt.preparationCompleted !== undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const prepared = await Promise.race([
+        receipt.preparationCompleted,
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
+        }),
+      ]).finally(() => clearTimeout(timer));
+      if (prepared === undefined) await timeout();
+      else if (!prepared.ok) throw prepared.error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
 
@@ -169,6 +182,30 @@ export async function verifyReplay(capture: THREE.ThreeFrameCapture, label?: str
   }
 }
 
+/** Two independent immutable captures, each still checked on a fresh device. */
+export function replayChecks() {
+  const slots = [Promise.resolve(), Promise.resolve()];
+  const failures: unknown[] = [];
+  let nextSlot = 0;
+  return {
+    queue(capture: THREE.ThreeFrameCapture, label?: string) {
+      const slot = nextSlot++ % slots.length;
+      slots[slot] = (slots[slot] as Promise<void>)
+        .then(async () => {
+          await verifyReplay(capture, label);
+        })
+        .catch((cause: unknown) => {
+          failures.push(cause);
+        });
+    },
+    async complete() {
+      await Promise.all(slots);
+      if (failures.length > 0)
+        throw new AggregateError(failures, 'Three fresh-device replay failed');
+    },
+  };
+}
+
 export async function verifyRender(
   renderer: THREE.WebGPURenderer,
   oracle?: (scene: THREE.Object3D, camera: THREE.Camera) => Uint8Array | Promise<Uint8Array>,
@@ -178,30 +215,12 @@ export async function verifyRender(
     expected: Uint8Array | undefined,
   ) => Promise<void>,
 ) {
-  // Each replay still owns a fresh device and immutable tape. Bound independent
-  // replay work to two slots while the live renderer advances unrelated scenes;
-  // drain both slots before returning or propagating a live-frame failure.
-  const slots = [Promise.resolve(), Promise.resolve()];
-  const failures: unknown[] = [];
-  let nextSlot = 0;
-  const queueReplay = (capture: THREE.ThreeFrameCapture) => {
-    const slot = nextSlot++ % slots.length;
-    slots[slot] = (slots[slot] as Promise<void>)
-      .then(async () => {
-        await verifyReplay(capture);
-      })
-      .catch((cause: unknown) => {
-        failures.push(cause);
-      });
-  };
-  let result: Awaited<ReturnType<typeof verifyRenderFrames>>;
+  const replays = replayChecks();
   try {
-    result = await verifyRenderFrames(renderer, oracle, evidence, queueReplay);
+    return await verifyRenderFrames(renderer, oracle, evidence, replays.queue);
   } finally {
-    await Promise.all(slots);
+    await replays.complete();
   }
-  if (failures.length > 0) throw new AggregateError(failures, 'Three fresh-device replay failed');
-  return result;
 }
 
 async function verifyRenderFrames(

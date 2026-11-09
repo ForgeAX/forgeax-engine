@@ -70,16 +70,9 @@ type PrepareShadowGeometry = (
 ) => MeshGpuHandles;
 type LodRows = (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[];
 
-/** Clustered Standard lighting binds its cluster owner only with local lights or SSAO. */
-export function clusteredLightingActive(
-  standard: StandardTopologyInputValue,
-  frameState: RenderFrameState,
-): boolean {
-  return (
-    standard.kind === 'clustered' &&
-    (standard.prepared.local.length > 0 ||
-      frameState.installedPipelineConfig?.ssao?.enabled === true)
-  );
+/** GPU draws consume the same prepared lighting topology as direct draws. */
+export function clusteredLightingActive(standard: StandardTopologyInputValue): boolean {
+  return standard.kind === 'clustered';
 }
 
 /**
@@ -90,7 +83,6 @@ export function clusteredLightingActive(
  */
 export function collectFrameGpuDrivenArtifacts(
   internals: RenderSystemInternals,
-  frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
   programs: PersistentShadowCasterProjection['materialPrograms'] | undefined,
   standard: StandardTopologyInputValue,
@@ -101,7 +93,7 @@ export function collectFrameGpuDrivenArtifacts(
     probeBlend: (scene?.probeBlend?.records.length ?? 0) > 0,
     programs,
     resolve: internals.getMaterialShaderArtifact,
-    clustered: clusteredLightingActive(standard, frameState),
+    clustered: clusteredLightingActive(standard),
     reflectionFallback: reflectionFallbackDemandOf(internals),
     shadowViews,
   });
@@ -202,7 +194,6 @@ function materialPipelineFactories(internals: RenderSystemInternals) {
 
 export function gpuDrivenPrepareRequest(
   internals: RenderSystemInternals,
-  frameState: RenderFrameState,
   frameGpuDriven: GpuDrivenRecordInput,
   artifacts: CollectedMaterialArtifacts,
   standard: StandardTopologyInputValue,
@@ -217,6 +208,7 @@ export function gpuDrivenPrepareRequest(
   shadowCasterProjection: PersistentShadowCasterProjection | undefined,
   profilePhase: RecordProfileRunner | undefined,
   capsuleShadowDirectional: boolean,
+  directionalShadowSimple = false,
 ): GpuDrivenPrepareInput {
   const scene = frameGpuDriven.scene;
   return {
@@ -225,7 +217,7 @@ export function gpuDrivenPrepareRequest(
     materialArtifactResolver: (shader, request) =>
       internals.getMaterialShaderArtifact?.(shader, {
         ...(typeof request === 'boolean' ? { vertexColorAvailable: request } : request),
-        clustered: clusteredLightingActive(standard, frameState),
+        clustered: clusteredLightingActive(standard),
         probeBlend: (scene?.probeBlend?.records.length ?? 0) > 0,
         reflectionFallback: reflectionFallbackDemandOf(internals),
       }),
@@ -239,7 +231,7 @@ export function gpuDrivenPrepareRequest(
     // the clustered topology. The production frame supplies the explicit
     // Standard topology, so the GPU owner can select a matching published
     // group(2) artifact and bind the existing cluster owner.
-    hdrp: clusteredLightingActive(standard, frameState),
+    hdrp: clusteredLightingActive(standard),
     clustered: standard.kind === 'clustered',
     materialBindingClasses,
     ...gpuDrivenFrameFacts(frameGpuDriven),
@@ -252,6 +244,7 @@ export function gpuDrivenPrepareRequest(
       : { materialFrame: shadowCasterProjection.content.materials }),
     ...materialPipelineFactories(internals),
     capsuleShadowDirectional,
+    ...(directionalShadowSimple ? { directionalShadowSimple } : {}),
     ...(profilePhase === undefined ? {} : { profilePhase }),
   };
 }

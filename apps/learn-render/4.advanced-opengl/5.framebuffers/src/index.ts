@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 // apps/learn-render/4.advanced-opengl/5.framebuffers/src/index.ts
 // LearnOpenGL section 4.5 — Framebuffers (offscreen render-to-texture +
 // fullscreen post-process effects).
@@ -653,42 +654,48 @@ const primitiveQuad = app.assets.create(createPrimitiveMesh('quad').unwrap()).un
 
 }
 
-// RHI-debug live-pixel hook for the capture smoke harness (pixel mode). Drives
-// one update + draw + readPixels so the live canvas read is anchored to the same
-// frame the capture records. Only meaningful when the page is served with
-// FORGEAX_ENGINE_RHI_DEBUG=1; harmless otherwise.
+// Prepare before arming capture; its submission callback only reads pixels.
+// Manual recovery probes retain their separate update/draw entry point.
 function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasElement): void {
   type CaptureHook = () => Promise<Uint8Array>;
   const win = window as unknown as {
     __captureFramebuffers?: CaptureHook;
+    __readFramebuffersPixels?: CaptureHook;
+    __prepareFramebuffersCapture?: () => Promise<void>;
     __replayFramebuffersCapture?: typeof replayCapturedFrameInBrowser;
   };
   const renderer = app.renderer;
   const attached = renderer.attach(world);
   if (!attached.ok) throw attached.error;
   const lease = attached.value;
-  win.__captureFramebuffers = async (): Promise<Uint8Array> => {
+  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  win.__prepareFramebuffersCapture = async (): Promise<void> => {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
-    if (!frame.ok) throw frame.error;
+    await drawReadyFrame(renderer, request);
+  };
+  const readPixels = async (): Promise<Uint8Array> => {
+    const result = await captureCanvasPixels(canvas);
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
+  win.__readFramebuffersPixels = readPixels;
+  win.__captureFramebuffers = async (): Promise<Uint8Array> => {
+    // The App owns simulation and input. Recovery probes render the same
+    // paused snapshot even if physical input arrives between pixel captures.
+    const faulty = recoveryMode === 'cycle' || recoveryMode === 'invalid-format';
+    // Fault probes must expose their first physical result; healthy probes
+    // qualify a ready picture before comparing the recovered scene.
+    const submitted = faulty ? renderer.draw(request) : undefined;
+    if (submitted !== undefined && !submitted.ok) throw submitted.error;
+    const frame = submitted?.ok ? submitted.value : await drawReadyFrame(renderer, request);
     pipelineRecoveryState.frameEndCount += 1;
     pipelineRecoveryState.lastFrameStatus =
       recoveryMode === 'cycle' || recoveryMode === 'invalid-format'
         ? 'feature-failed'
         : 'healthy';
-    const observed = await renderer.observe(frame.value, { include: ['draws'] });
+    const observed = await renderer.observe(frame, { include: ['draws'] });
     if (!observed.ok) throw observed.error;
-    const r = await captureCanvasPixels(canvas);
-    if (!r.ok) {
-      throw new Error(
-        `[learn-render 4.5 framebuffers] canvas capture failed: ${r.error.code} -- ${r.error.hint ?? ''}`,
-      );
-    }
-    return r.value;
+    return readPixels();
   };
   // Keep pixel ownership in the same browser/WebGPU implementation. Dawn
   // replay remains mandatory diagnostic evidence, but software-GPU
@@ -699,6 +706,8 @@ function installCaptureHook(app: App, world: App['world'], canvas: HTMLCanvasEle
 declare global {
   interface Window {
     __captureFramebuffers?: () => Promise<Uint8Array>;
+    __readFramebuffersPixels?: () => Promise<Uint8Array>;
+    __prepareFramebuffersCapture?: () => Promise<void>;
     __replayFramebuffersCapture?: typeof replayCapturedFrameInBrowser;
     __learnRenderErrors?: Array<{ code: string; hint?: string }>;
     __learnRenderFramebuffers?: {

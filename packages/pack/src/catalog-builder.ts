@@ -310,6 +310,7 @@ export async function buildCatalogProjection(
   const entries: PackIndexEntry[] = [];
   const errors: CatalogBuildError[] = [];
   const declarations = new Map<string, CatalogImportMeta>();
+  const published = new Set<string>();
   for (const path of paths) {
     const sourceDeclaration = sourceDeclarations.get(path);
     if (sourceDeclaration === undefined) continue;
@@ -323,7 +324,14 @@ export async function buildCatalogProjection(
       declarations,
       options.sourceIdentityFor,
     );
-    entries.push(...projected.entries);
+    // Content-identified textures are declared by every package that uses
+    // the same bytes the same way; the first declaration owns the row.
+    for (const entry of projected.entries) {
+      const guid = entry.guid.toLowerCase();
+      if (published.has(guid)) continue;
+      published.add(guid);
+      entries.push(entry);
+    }
     if (projected.error !== undefined) errors.push(projected.error);
   }
   timing('project-catalog');

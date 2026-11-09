@@ -73,7 +73,7 @@ export function retainEmitterResources(input: {
         : 0,
     ),
   );
-  if (!input.arena.supports(maximum, ['storage']) || !input.arena.supports(304, ['uniform']))
+  if (!input.arena.supports(maximum, ['storage']) || !input.arena.supports(320, ['uniform']))
     return undefined;
   const { instance, emitter, program } = input;
   const prefix = instance.prefix;
@@ -168,7 +168,7 @@ export function retainEmitterResources(input: {
   if (input.batch === undefined)
     for (let tick = 0; tick < input.tickCapacity; tick++) {
       const tickPrefix = `${prefix}.tick-${tick}`;
-      buffer(`${tickPrefix}.runtime`, 304, ['uniform']);
+      buffer(`${tickPrefix}.runtime`, 320, ['uniform']);
       bind(`${tickPrefix}.simulation-bindings`, `${tickPrefix}.runtime`, `${prefix}.scratch`);
       for (const [index, renderer] of emitter.renderers.entries()) {
         if (
@@ -178,7 +178,7 @@ export function retainEmitterResources(input: {
         )
           continue;
         const runtime = `${tickPrefix}.renderer-${index}.history-runtime`;
-        buffer(runtime, 304, ['uniform']);
+        buffer(runtime, 320, ['uniform']);
         bind(
           `${tickPrefix}.renderer-${index}.history-bindings`,
           runtime,
@@ -240,7 +240,7 @@ export function retainProjectionResources(input: {
       ),
       ['storage'],
     ) ||
-    !input.arena.supports(304, ['uniform'])
+    !input.arena.supports(320, ['uniform'])
   )
     return undefined;
   const prefix = input.instance.prefix;
@@ -278,7 +278,7 @@ export function retainProjectionResources(input: {
   buffer('counters', 24, ['storage'], 24);
   buffer('indirect', input.indirectBytes, ['storage', 'indirect'], 20);
   // Job-table projection has no binding for an emitter-local runtime uniform.
-  const runtime = input.batch === undefined ? buffer('runtime', 304, ['uniform']) : undefined;
+  const runtime = input.batch === undefined ? buffer('runtime', 320, ['uniform']) : undefined;
   let binding: Binding | undefined;
   if (input.batch === undefined) {
     const reflected = new Set(

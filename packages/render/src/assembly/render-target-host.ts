@@ -324,6 +324,8 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       device,
       stagedTarget.value.descriptor,
       stagedTarget.value.generation,
+      // A sampled 2D target (a planar mirror) lets Features read its scene depth.
+      stagedTarget.value.descriptor.sampled && stagedTarget.value.descriptor.shape === '2d',
     );
     const previous = candidatePhysical.get(target);
     candidatePhysical.delete(target);

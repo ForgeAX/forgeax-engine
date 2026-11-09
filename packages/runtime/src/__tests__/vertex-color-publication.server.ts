@@ -20,7 +20,7 @@ export async function startVertexColorPublicationServer() {
       `#define_import_path test::vertex_color
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(vec3f(0.0), input.geometricNormalWS, 0.0, 0.5, input.vertexColor.rgb, 1.0, 1.0, 0.0);
+  return SurfaceData(vec3f(0.0), input.geometricNormalWS, 0.0, 0.5, input.vertexColor.rgb, 1.0, 1.0, 0.0, 0.0);
 }`,
     );
     const draft = await createMaterialPackCooker([root]).cook({

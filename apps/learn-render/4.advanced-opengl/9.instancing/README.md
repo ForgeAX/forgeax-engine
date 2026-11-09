@@ -62,7 +62,7 @@ pnpm --filter @forgeax/app-learn-render-4-advanced-opengl-9-instancing typecheck
 
 The Dawn smoke uses one World with a planet and 12 rocks; the interactive
 demo uses 1200 rocks. It requires the WebGPU backend, the requested frame
-count, at least one of three mesh sample sites differing from the clear color
+count, at least one of three mesh sample sites differing from both sampled background corners
 by more than 0.05, and no Renderer errors. This is a scene smoke, not an
 instance-count differential oracle. Instance PBR, shadow, uniform-chunking and
 large-population browser regressions provide the stronger rendering checks.

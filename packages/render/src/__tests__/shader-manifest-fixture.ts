@@ -177,21 +177,18 @@ const materialShaders = [
     paramSchema: '[]',
     variants: [false, true].flatMap((cluster) =>
       [false, true].flatMap((extended) =>
-        [false, true].flatMap((projector) =>
-          [false, true].map((pcss) => ({
-            definesKey:
-              cluster && extended && projector && pcss
-                ? ''
-                : `CLUSTER_FORWARD_AVAILABLE=${cluster}+DIRECTIONAL_PCSS_AVAILABLE=${pcss}+EXTENDED_LIGHTING_AVAILABLE=${extended}+PROJECTOR_AVAILABLE=${projector}`,
-            defines: {
-              CLUSTER_FORWARD_AVAILABLE: cluster,
-              EXTENDED_LIGHTING_AVAILABLE: extended,
-              PROJECTOR_AVAILABLE: projector,
-              DIRECTIONAL_PCSS_AVAILABLE: pcss,
-            },
-            composedWgsl: '// fixture marker: standard deferred',
-          })),
-        ),
+        [false, true].map((projector) => ({
+          definesKey:
+            cluster && extended && projector
+              ? ''
+              : `CLUSTER_FORWARD_AVAILABLE=${cluster}+EXTENDED_LIGHTING_AVAILABLE=${extended}+PROJECTOR_AVAILABLE=${projector}`,
+          defines: {
+            CLUSTER_FORWARD_AVAILABLE: cluster,
+            EXTENDED_LIGHTING_AVAILABLE: extended,
+            PROJECTOR_AVAILABLE: projector,
+          },
+          composedWgsl: '// fixture marker: standard deferred',
+        })),
       ),
     ),
   },

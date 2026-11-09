@@ -1,4 +1,5 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import { isTemporalAntialias } from '../components/camera';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { SkinTaskBinding } from '../record/skin-tasks';
 import type { ExtractedFrame, RenderableSnapshot } from '../render-system-extract';
@@ -6,6 +7,7 @@ import { recordRetirementError } from '../render-system-record-attempt';
 import { sparseRowsOf } from '../scene/frame-list';
 import { standardSceneTemporalDemand } from '../temporal/standard-scene-data';
 import { RENDER_GPU_DRIVEN_PREPARE_SYSTEM } from './gpu-driven-systems';
+import { viewRecordHistory } from './record-history';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCleanup, RenderQueue, renderSubmission } from './render-world';
 import { recordsCaptures, viewShadowCastersOf } from './shadow-caster-systems';
@@ -91,7 +93,7 @@ function* skinDemandRows(
       ? undefined
       : owner.scene.skinDemandLane();
   // Capture and TAA requests draw rows the camera frustum rejects.
-  const admitted = !capture && camera?.antialias !== 'taa';
+  const admitted = !capture && !isTemporalAntialias(camera?.antialias);
   const owned = lane === undefined ? undefined : frame.gpuOwned;
   const main =
     owned !== undefined
@@ -236,7 +238,8 @@ export function registerSkinSettlement(world: World): void {
           );
           const failures = skin.complete(
             requireViewField(world, entity, ViewSubmission, 'accepted') &&
-              requireViewField(world, entity, ViewSubmission, 'scene'),
+              requireViewField(world, entity, ViewSubmission, 'scene') &&
+              viewRecordHistory(world, entity)?.presentation === 'ready',
           );
           if (failures.length > 0) internals.errorRegistry.fire(recordRetirementError(failures));
         });

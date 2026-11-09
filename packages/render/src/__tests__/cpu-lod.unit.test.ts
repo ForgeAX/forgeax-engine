@@ -8,7 +8,12 @@ import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_INDEX, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
-import { cpuLodLevel, lodLevelHistogram, selectCpuLodRows } from '../record/cpu-lod';
+import {
+  cpuInstanceLodDraws,
+  cpuLodLevel,
+  lodLevelHistogram,
+  selectCpuLodRows,
+} from '../record/cpu-lod';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 
@@ -96,6 +101,30 @@ function row(snapshot: RenderableSnapshot, handles: MeshGpuHandles): ValidatedRe
 }
 
 describe('CPU-lane LOD selection', () => {
+  it('groups alternating opaque LOD ordinals within each resident page', () => {
+    const entry = {
+      ...row(source(), mesh()),
+      cpuInstanceLods: Array.from({ length: 260 }, (_, first) => ({
+        first,
+        count: 1,
+        level: first % 2,
+      })),
+    };
+    const pages = [
+      { firstInstanceOrdinal: 0, instanceCount: 128 },
+      { firstInstanceOrdinal: 128, instanceCount: 128 },
+      { firstInstanceOrdinal: 256, instanceCount: 4 },
+    ];
+    const draws = cpuInstanceLodDraws(entry, 0, pages, true);
+    expect(draws).toHaveLength(6);
+    expect(draws.map((draw) => draw.instanceCount)).toEqual([64, 64, 64, 64, 2, 2]);
+    expect(draws[0]?.instanceOrdinals).toEqual(Array.from({ length: 64 }, (_, i) => i * 2));
+    expect(draws[1]?.instanceOrdinals).toEqual(Array.from({ length: 64 }, (_, i) => i * 2 + 1));
+    expect(draws.flatMap((draw) => draw.instanceOrdinals ?? []).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 260 }, (_, i) => i),
+    );
+    expect(cpuInstanceLodDraws(entry, 0, pages)).toHaveLength(260);
+  });
   it('runs on devices without compute/storage/indirect, such as WebGL2', () => {
     expect(selectGpuLodLane({ compute: false, storageBuffer: false, indirectDrawing: false })).toBe(
       'cpu',

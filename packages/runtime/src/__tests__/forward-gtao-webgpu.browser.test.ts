@@ -979,12 +979,21 @@ function assertMorphSceneDataRejection(
     },
   });
   const ids = detail?.missingContributorIds;
-  if (!Array.isArray(ids) || ids.length !== 1 || typeof ids[0] !== 'string') {
-    throw new Error(`Morph rejection has no single contributor id: ${JSON.stringify(detail)}`);
+  if (
+    !Array.isArray(ids) ||
+    ids.length !== 3 ||
+    typeof ids[0] !== 'string' ||
+    !ids.every((id) => typeof id === 'string')
+  ) {
+    throw new Error(
+      `Custom Morph rejection has no three published contributor ids: ${JSON.stringify(detail)}`,
+    );
   }
   const contributors = detail?.missingContributors;
-  if (!Array.isArray(contributors) || contributors.length !== 1) {
-    throw new Error(`Morph rejection has no single contributor detail: ${JSON.stringify(detail)}`);
+  if (!Array.isArray(contributors) || contributors.length !== 3) {
+    throw new Error(
+      `Custom Morph rejection has no three published contributor details: ${JSON.stringify(detail)}`,
+    );
   }
   const missingContributorId = ids[0];
   const sourceTuple = JSON.parse(missingContributorId) as unknown;
@@ -995,16 +1004,30 @@ function assertMorphSceneDataRejection(
   }
   expect(sourceTuple).toEqual([0, expected.entityKey, expected.materialHandle, expect.any(Number)]);
   expect(missingContributorId).toBe(JSON.stringify(sourceTuple));
-  expect(failureRecord(contributors[0])).toMatchObject({
-    id: missingContributorId,
-    sourceTuple,
-    reason: 'unsupported-deformation',
-    deformation: 'morph',
-    morphWeightsPresent: true,
-    skinBindingPresent: false,
-    selectedPass: 'forward',
-    expectedFragmentEntry: 'fs_ao_input',
-  });
+  expect(new Set(ids).size).toBe(3);
+  expect(contributors.map((row) => failureRecord(row)?.selectedPass).sort()).toEqual([
+    'Center',
+    'Center',
+    'Left',
+  ]);
+  for (const contributor of contributors) {
+    const row = failureRecord(contributor);
+    expect(row?.id).toBe(JSON.stringify(row?.sourceTuple));
+    expect(ids).toContain(row?.id);
+    expect(row?.sourceTuple).toEqual([
+      0,
+      expected.entityKey,
+      expected.materialHandle,
+      expect.any(Number),
+    ]);
+    expect(row).toMatchObject({
+      reason: 'authored-program-not-standard-pbr',
+      deformation: 'morph',
+      morphWeightsPresent: true,
+      skinBindingPresent: false,
+      expectedFragmentEntry: 'fs_ao_input',
+    });
+  }
   return {
     weights: expected.weights,
     missingContributorId,
@@ -3300,7 +3323,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
     const acceptedNeutralFrameId = neutralMorphFrame.frame.frameId;
     const acceptedNeutralTrace = requirePresent(
       debugHost.clusterWorkFrameTraceForConformance(),
-      'Neutral MorphWeights readback has no completed frame trace before nonzero Morph rejection',
+      'Neutral MorphWeights readback has no completed frame trace before weighted Morph acceptance',
     );
     const acceptedNeutralReceiptEvidence = failureReceipt;
     const acceptedNeutralReadbackEvidence = failureReadback;
@@ -3377,34 +3400,67 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       height: neutralMorphRaw.height,
       sha256: acceptedNeutralReadbackSha256,
     });
+    // Valid Morph now publishes the deformed AO surface. Keep the negative
+    // boundary below with a published custom program that has no Standard AO surface.
+    world.set(morphEntity, MorphWeights, { weights: new Float32Array([1]) }).unwrap();
+    clusterWorkPhase = 'morph-weighted';
+    const weightedMorphRaw = await captureTarget('ssao-raw', orthographicCamera);
+    expect(weightedMorphRaw.publicReceiptFrameId).toBeGreaterThan(acceptedNeutralFrameId);
+    expect(
+      weightedMorphRaw.bytes.some((byte, index) => byte !== neutralMorphRaw.bytes[index]),
+    ).toBe(true);
+    expect(weightedMorphRaw.frameTrace.receipt).toMatchObject({
+      presentation: 'ready',
+      completion: 'completed',
+    });
+    const weightedMorphInspection = renderer.inspect().standardLighting?.ambientOcclusion;
+    expect(weightedMorphInspection).toMatchObject({
+      status: 'active',
+      algorithm: 'gtao',
+      execution: 'fragment',
+    });
+    expect(errors).toEqual([]);
+    const acceptedWeightedReceiptEvidence = failureReceipt;
+    const acceptedWeightedReadbackEvidence = failureReadback;
+    const acceptedWeightedTrace = requirePresent(
+      debugHost.clusterWorkFrameTraceForConformance(),
+      'Weighted Morph has no completed frame trace',
+    );
+    assets.configurePackIndex('/__material-programs/pack-index.json');
+    const unsupportedMorphMaterial = value(
+      await assets.load(assets.parseGuid('8f50ae65-6e0a-40b4-8949-b47006edab90'), 'material'),
+    );
+    world.set(morphEntity, MeshRenderer, { materials: [unsupportedMorphMaterial] }).unwrap();
     const acceptedClusterObservationCount = clusterWorkObservations.length;
     const acceptedSurfaceReceiptCount = surfaceConsumerReceipts.length;
 
     world.set(morphEntity, MorphWeights, { weights: new Float32Array([1]) }).unwrap();
-    clusterWorkPhase = 'morph-weighted';
-    failureReceipt = acceptedNeutralReceiptEvidence;
-    failureReadback = acceptedNeutralReadbackEvidence;
+    clusterWorkPhase = 'morph-unsupported-program';
+    failureReceipt = acceptedWeightedReceiptEvidence;
+    failureReadback = acceptedWeightedReadbackEvidence;
     const weightedRejection = await captureMorphCoverageRejection({
       draw: () => draw(orthographicCamera),
       errors,
       weights: 1,
       entityKey: Number(morphEntity),
-      materialHandle: Number(material),
+      materialHandle: Number(unsupportedMorphMaterial),
     });
     expectMorphFailurePreservesAcceptedFrame({
-      acceptedFrameId: acceptedNeutralFrameId,
+      acceptedFrameId: weightedMorphRaw.publicReceiptFrameId,
       currentFrameId: renderer.inspect().frame.frameId,
-      acceptedReceipt: acceptedNeutralReceiptEvidence,
+      acceptedReceipt: acceptedWeightedReceiptEvidence,
       failureReceipt,
-      acceptedTrace: acceptedNeutralTrace,
+      acceptedTrace: acceptedWeightedTrace,
       failureFrameTrace,
-      acceptedReadback: acceptedNeutralReadbackEvidence,
+      acceptedReadback: acceptedWeightedReadbackEvidence,
       failureReadback,
     });
     expect(surfaceDataConsumer.latestPlan()).toBeUndefined();
     expect(clusterWorkObservations).toHaveLength(acceptedClusterObservationCount);
     expect(surfaceConsumerReceipts).toHaveLength(acceptedSurfaceReceiptCount);
-    expect(clusterWorkObservations.some((row) => row.phase === 'morph-weighted')).toBe(false);
+    expect(clusterWorkObservations.some((row) => row.phase === 'morph-unsupported-program')).toBe(
+      false,
+    );
     expect(errors).toEqual([]);
     const weightedFailureBoundary = Object.freeze({
       receipt: failureReceipt,
@@ -3417,9 +3473,10 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
       status: 'active',
       algorithm: 'gtao',
       execution: 'fragment',
-      graphGeneration: neutralMorphRaw.graphGeneration,
+      graphGeneration: weightedMorphRaw.graphGeneration,
     });
 
+    world.set(morphEntity, MeshRenderer, { materials: [material] }).unwrap();
     world.removeComponent(morphEntity, MorphWeights).unwrap();
     clusterWorkPhase = 'morph-recovery';
     const morphRecoveredRaw = await captureTarget('ssao-raw', orthographicCamera);
@@ -3533,7 +3590,18 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
         frameTrace: acceptedNeutralTrace,
         rawSha256: acceptedNeutralReadbackSha256,
       },
-      rejections: [{ ...weightedRejection, failureBoundary: weightedFailureBoundary }],
+      weightedAccepted: {
+        publicReceiptFrameId: weightedMorphRaw.publicReceiptFrameId,
+        frameTrace: weightedMorphRaw.frameTrace,
+        sha256: await sha256Hex(weightedMorphRaw.bytes),
+      },
+      rejections: [
+        {
+          ...weightedRejection,
+          unsupportedCustomProgram: true,
+          failureBoundary: weightedFailureBoundary,
+        },
+      ],
       recoveredRaw: {
         name: morphRecoveredRaw.name,
         publicReceiptFrameId: morphRecoveredRaw.publicReceiptFrameId,
@@ -3693,6 +3761,7 @@ it('runs production Forward GTAO compute and fragment graph variants on WebGPU t
         targetPositionComponents: morphEvidence.mesh.target.length,
         weights: morphEvidence.mesh.weights,
         neutralBaseline: morphEvidence.neutralBaseline,
+        weightedAccepted: morphEvidence.weightedAccepted,
         rejections: morphEvidence.rejections,
         recoveredRaw: morphEvidence.recoveredRaw,
       },

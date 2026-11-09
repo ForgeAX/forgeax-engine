@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareBrowserGlueAsset } from '../../packages/wgpu-wasm/scripts/prepare-browser-glue.mjs';
 import { verifyProvenance } from '../../packages/wgpu-wasm/scripts/provenance.mjs';
 import { appPackages } from '../build-task-cache.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
@@ -111,8 +112,11 @@ export async function main(
       ? sourceAppBuilds(root, contract.consumers[consumer])
       : undefined;
   const stage = mkdtempSync(join(tmpdir(), 'forgeax-ci-inputs-'));
-  const invoke = async (args, { timeoutMs = 20 * 60_000, env = process.env } = {}) => {
-    const result = await runCommand([process.execPath, ...args], {
+  const invoke = async (
+    args,
+    { timeoutMs = 20 * 60_000, env = process.env, nodeArgs = [] } = {},
+  ) => {
+    const result = await runCommand([process.execPath, ...nodeArgs, ...args], {
       cwd: root,
       env,
       timeoutMs,
@@ -159,12 +163,18 @@ export async function main(
     if (existsSync(compiler)) await verifyProvenance({ pkgDirectory: compiler });
     return manifest;
   };
-  const publishSharedInput = () => {
+  const publishSharedInput = async () => {
     const compiler = join(stage, shared, 'compiler');
     if (existsSync(compiler)) {
       const destination = join(root, 'packages/wgpu-wasm/pkg');
       rmSync(destination, { recursive: true, force: true });
       cpSync(compiler, destination, { recursive: true });
+      // Same-source producers may emit different glue. Keep the runtime's raw
+      // derived asset paired with the exact compiler admitted above.
+      await prepareBrowserGlueAsset(
+        join(destination, 'wgpu_wasm.js'),
+        join(root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'),
+      );
     }
     rmSync(join(root, shared), { recursive: true, force: true });
     cpSync(join(stage, shared), join(root, shared), { recursive: true });
@@ -248,7 +258,7 @@ export async function main(
       },
       publish: async () => {
         publishOutputs(['packages', ...(needsApps ? ['apps'] : [])]);
-        if (needsShared) publishSharedInput();
+        if (needsShared) await publishSharedInput();
       },
       recover: async () => {
         if (mode === 'build' && needsShared && existsSync(join(root, shared, 'manifest.json'))) {
@@ -305,7 +315,7 @@ export async function main(
               '--transfer-artifact',
               'shared-app-inputs',
             ]);
-            publishSharedInput();
+            await publishSharedInput();
             sharedRetained = true;
           } catch (error) {
             if (error.cancelled) throw error;
@@ -371,14 +381,19 @@ export async function main(
           await invoke(['scripts/build.mjs', '--packages-only']);
           if (!needsShared) return;
           if (!sharedRetained)
-            await invoke([
-              'scripts/ci/build-shared-app-inputs.mjs',
-              '--root',
-              root,
-              '--out',
-              shared,
-              '--catalog-only',
-            ]);
+            await invoke(
+              [
+                'scripts/ci/build-shared-app-inputs.mjs',
+                '--root',
+                root,
+                '--out',
+                shared,
+                '--catalog-only',
+              ],
+              // Match the normal shader producer. The complete reflected
+              // publication exceeds Node's default 2 GiB parent heap.
+              { nodeArgs: ['--max-old-space-size=4096'] },
+            );
           // App producers build their own shader manifests from the catalog.
           if (consumer === 'app-shard') return;
         }

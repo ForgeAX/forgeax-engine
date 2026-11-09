@@ -9,7 +9,7 @@ import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { ok } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { drawPublished } from './draw-published';
 import { testAssets } from './helpers/runtime-assets';
@@ -165,8 +165,19 @@ it('advances uniform Skin history after accepted submissions without other frame
   if (!host.ok) throw host.error;
   const renderer = host.value.renderer;
   const errors: unknown[] = [];
+  const submissions: { presentation: 'ready' | 'pending'; flags: number[] }[] = [];
+  const draw = renderer.draw.bind(renderer);
+  const drawSpy = vi.spyOn(renderer, 'draw').mockImplementation((request) => {
+    states.push([]);
+    return draw(request);
+  });
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
+    if (event.kind === 'frame-submitted')
+      submissions.push({
+        presentation: event.receipt.presentation,
+        flags: states.at(-1)?.slice() ?? [],
+      });
   });
   try {
     const world = new World();
@@ -174,7 +185,6 @@ it('advances uniform Skin history after accepted submissions without other frame
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     for (let frame = 0; frame < 3; frame++) {
-      states.push([]);
       const receipt = await drawPublished(renderer, world);
       if (!receipt.ok) throw receipt.error;
       const completed = await receipt.value.completed;
@@ -182,10 +192,19 @@ it('advances uniform Skin history after accepted submissions without other frame
     }
     expect(errors).toEqual([]);
     // The first actual draw seeds history (1); later accepted frames read it (3).
-    expect(states.filter((frame) => frame.length > 0)).toEqual([[1], [3], [3]]);
+    expect(
+      submissions.filter((frame) => frame.presentation === 'ready').map((frame) => frame.flags),
+    ).toEqual([[1], [3], [3]]);
+    // A preparation submission may upload tasks, but cannot seed accepted history.
+    expect(
+      submissions
+        .filter((frame) => frame.presentation === 'pending')
+        .every((frame) => frame.flags.every((flags) => flags === 1)),
+    ).toBe(true);
     attached.value.dispose();
   } finally {
     unsubscribe();
+    drawSpy.mockRestore();
     await renderer.dispose();
     target.texture?.destroy();
   }

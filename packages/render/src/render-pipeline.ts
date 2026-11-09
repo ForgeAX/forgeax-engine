@@ -85,7 +85,7 @@ export interface DirectionalShadowBackendAdmission {
 
 /**
  * Resolve a Directional profile only after the selected production candidate
- * has been admitted. WebGL2 and RhiNull are the sole declared fallbacks;
+ * has been admitted. RhiNull retains structural admission;
  * capable candidate failure retains a compatible LKG and never silently maps
  * a failed PCSS request to PCF.
  */
@@ -109,22 +109,6 @@ export function resolveDirectionalShadowBackendAdmission(
       fallbackReason: 'rhi-null-structural',
       lastKnownGood: false,
       pixelEvidence: 'not-available',
-    };
-  }
-  if (input.backendKind === 'wgpu-webgl2') {
-    const effective =
-      input.requested === 'pcssMedium'
-        ? 'pcf3'
-        : input.requested === 'pcssHigh'
-          ? 'pcf5'
-          : input.requested;
-    return {
-      requested: input.requested,
-      effective,
-      status: effective === input.requested ? 'accepted' : 'fallback',
-      ...(effective === input.requested ? {} : { fallbackReason: 'webgl2-unsupported' as const }),
-      lastKnownGood: false,
-      pixelEvidence: 'available',
     };
   }
   if (input.candidate === 'accepted') {
@@ -221,6 +205,8 @@ export interface RenderPipelineTopology {
   /** Derived from the active fullscreen declarations, never authored twice in pipeline config. */
   readonly preTemporalEffects?: readonly string[];
   readonly subsurface?: { readonly quality: 'low' | 'high' };
+  readonly forwardContactShadows?: boolean;
+  readonly forwardCapsuleShadows?: boolean;
   readonly projectedDecals?: import('./decals/graph').ProjectedDecalTopology;
   readonly pipelineId: string;
   /** Same per-view admission catalog authorization and stock Standard graph production. */
@@ -254,7 +240,7 @@ export interface RenderPipelineTopology {
   readonly extent?: RenderExtent;
   readonly camera: Pick<
     RenderPipelineContext['camera'],
-    'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity'
+    'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity' | 'dynamicResolution'
   > & {
     /** Shape-only DoF admission; optical values remain per-frame UBO data. */
     readonly depthOfField?:
@@ -355,6 +341,8 @@ export interface RenderPipelineTopology {
   };
   readonly lane: {
     readonly compute: boolean;
+    /** Storage-texture kernels require an explicit capability, independently of compute. */
+    readonly storageTexture?: boolean | undefined;
     readonly storageBuffer: boolean;
     readonly multisample: boolean;
     readonly maxColorAttachments: number;
@@ -522,6 +510,7 @@ export interface RenderPipelineGpuDrivenProjection {
     filter?: RenderPipelineGpuDrivenFilter,
     fragmentEntryPoint?: string,
     coverageOnly?: boolean,
+    sampleCount?: 1 | 4,
   ) => void;
   /** @internal Poll the registered real PSOs before any graph pass is encoded. */
   readonly preparePipelines?: (
@@ -701,6 +690,9 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     readonly previousTemporal: RenderPipelineTarget;
     readonly currentStability: RenderPipelineTarget;
     readonly previousStability: RenderPipelineTarget;
+    /** TAA only; TSR has no flickering history. */
+    readonly currentFlicker?: RenderPipelineTarget;
+    readonly previousFlicker?: RenderPipelineTarget;
   };
   /**
    * Renderer-owned CloudLayer transport history.  Each pair is backed by the

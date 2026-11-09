@@ -79,15 +79,15 @@ const ENGINE_SHADER_DEFAULT_DEFINES: Record<string, boolean> = {
 };
 
 const STANDARD_NON_CLUSTER_VARIANT_KEY =
-  'ATMOSPHERE_AVAILABLE=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_PCSS_AVAILABLE=true+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
 const STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY =
-  'ATMOSPHERE_AVAILABLE=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_PCSS_AVAILABLE=true+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false';
 const STANDARD_SHARED_TRANSMISSION_VARIANT_KEY = STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY.replace(
   'TRANSMISSION_AVAILABLE=false',
   'TRANSMISSION_AVAILABLE=true',
 );
 const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
-  'ATMOSPHERE_AVAILABLE=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_PCSS_AVAILABLE=true+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
 
 {
   describe('shared-engine-inputs.test.ts', () => {
@@ -1485,8 +1485,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 42 named engine shader entries',
-      ).toBe(42);
+        'materialShaders[] must contain exactly 45 named engine shader entries',
+      ).toBe(45);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1613,6 +1613,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::depth-pyramid-seed-fragment',
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
+        'forgeax::engine-forward-contact-shadow',
+        'forgeax::engine-forward-screen-compose',
+        'forgeax::engine-forward-screen-pack',
         'forgeax::engine-light-texture-resample-compute',
         'forgeax::engine-light-texture-resample-fragment',
         'forgeax::engine-ray-path-tracer',
@@ -1773,6 +1776,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::depth-pyramid-seed-fragment',
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
+          'forgeax::engine-forward-contact-shadow',
+          'forgeax::engine-forward-screen-compose',
+          'forgeax::engine-forward-screen-pack',
           'forgeax::engine-light-texture-resample-compute',
           'forgeax::engine-light-texture-resample-fragment',
           'forgeax::engine-ray-path-tracer',

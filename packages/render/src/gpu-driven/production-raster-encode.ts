@@ -326,6 +326,8 @@ export interface RasterEncodeCall {
   readonly coverageOnly: boolean;
   readonly phase: GpuDrivenDrawPhase;
   readonly colorFormats: readonly TextureFormat[];
+  /** Actual graph-pass samples; raw projections may retain their declared target count. */
+  readonly sampleCount?: 1 | 4;
   readonly formatKey: string | undefined;
   readonly regionOffset: number;
   readonly visibleRegionBase: number;

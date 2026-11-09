@@ -11,7 +11,7 @@ import type {
 } from '@forgeax/engine-types';
 import { isValidAssetGuidString, PACK_ERROR_HINTS } from '@forgeax/engine-types';
 import { PackError } from './errors.js';
-import { PackageId } from './guid.js';
+import { isTextureContentDeclaration, PackageId } from './guid.js';
 import {
   type AnyScriptablePackDefinition,
   type DirectPackJsonAsset,
@@ -651,7 +651,10 @@ function findReferenceCycle(
  * kind stays in the path/detail evidence; identity is the normalized GUID.
  */
 class PackScan {
-  readonly assets = new Map<string, { path: string; refs: readonly string[] }>();
+  readonly assets = new Map<
+    string,
+    { path: string; refs: readonly string[]; contentTexture?: boolean }
+  >();
   readonly packages = new Map<string, { path: string; kind: PackageKind }>();
   readonly instances: InstanceDeclaration[] = [];
   readonly failedPaths = new Set<string>();
@@ -687,15 +690,23 @@ class PackScan {
     return undefined;
   }
 
-  registerAsset(guid: string, path: string, refs: readonly string[] = []): PackError | undefined {
+  registerAsset(
+    guid: string,
+    path: string,
+    refs: readonly string[] = [],
+    contentTexture = false,
+  ): PackError | undefined {
     const normalized = guid.toLowerCase();
     const existing = this.assets.get(normalized);
+    // A content-identified texture names the same bytes decoded the same way
+    // wherever it is declared; the first declaration owns it.
+    if (existing?.contentTexture === true && contentTexture) return undefined;
     if (existing !== undefined)
       return makePackError('pack-guid-collision', {
         paths: [existing.path, path],
         guid: normalized,
       });
-    this.assets.set(normalized, { path, refs });
+    this.assets.set(normalized, { path, refs, ...(contentTexture ? { contentTexture } : {}) });
     return undefined;
   }
 
@@ -851,7 +862,12 @@ class PackScan {
           reason: 'expected 36-char RFC 4122 dash-form UUID in subAssets[].guid',
         });
       }
-      const collision = this.registerAsset(sub.guid, metaPath);
+      const collision = this.registerAsset(
+        sub.guid,
+        metaPath,
+        [],
+        isTextureContentDeclaration(sub),
+      );
       if (collision !== undefined) return collision;
     }
     if (metaObj.subAssets.length <= 1) return undefined;

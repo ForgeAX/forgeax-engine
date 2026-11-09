@@ -185,6 +185,13 @@ export interface RenderFeatureSubmission {
  */
 export interface RenderFeature<FrameData> {
   readonly identity: string;
+  /**
+   * Which capture faces (planar reflection, reflection probe, cube capture)
+   * this Feature records into. Omitted means `display-only`; scene-content
+   * Features such as GPU particles declare `all`. Cost scales with the number
+   * of captured faces, so opt out when a Feature is not visible in reflections.
+   */
+  readonly capture?: import('../capture/feature-policy').RenderFeatureCapturePolicy;
   /** Optional graph placement; omitted features retain the historical post stage. */
   readonly placement?: RenderFeaturePlacement;
   /**

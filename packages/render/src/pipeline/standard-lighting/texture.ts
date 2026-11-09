@@ -3,16 +3,17 @@ import type { StandardClusterLayout } from './layout';
 /** Physical width of the single-row rgba32uint Cluster transport. */
 export const STANDARD_CLUSTER_TEXTURE_WIDTH = 1024;
 
-export interface StandardClusterAoExtent {
+export interface StandardClusterTextureExtent {
   readonly width: number;
   readonly height: number;
+  readonly screen?: { readonly width: number; readonly height: number };
 }
 
 /** The same u32 payload as storage, packed four words per integer texel. */
 export function standardClusterTextureLayout(
   layout: StandardClusterLayout,
   directLightSlotBytes: number,
-  aoExtent?: StandardClusterAoExtent,
+  aoExtent?: StandardClusterTextureExtent,
 ) {
   const width = STANDARD_CLUSTER_TEXTURE_WIDTH;
   const rowWords = width * 4;
@@ -24,12 +25,28 @@ export function standardClusterTextureLayout(
   const aoBaseWord = aoExtent === undefined ? 0 : Math.ceil(clusterEndWord / rowWords) * rowWords;
   const aoRowWords = aoPackedWidth * 4;
   const aoEndWord = aoBaseWord + aoRowWords * aoHeight;
-  const endWord = Math.max(clusterEndWord, aoEndWord);
+  const screen = aoExtent?.screen;
+  const screenBaseWord =
+    screen === undefined ? 0 : Math.ceil(Math.max(clusterEndWord, aoEndWord) / rowWords) * rowWords;
+  const screenWords = screen === undefined ? 0 : screen.width * screen.height * 8;
+  const endWord = Math.max(clusterEndWord, aoEndWord, screenBaseWord + screenWords);
   return {
     width,
     height: Math.ceil(endWord / rowWords),
     gridOffset,
     indexOffset,
+    ...(screen === undefined
+      ? {}
+      : {
+          screen: {
+            baseWord: screenBaseWord,
+            width: screen.width,
+            height: screen.height,
+            originY: screenBaseWord / rowWords,
+            textureWidth: width,
+            writeHeight: Math.ceil(screenWords / rowWords),
+          },
+        }),
     ...(aoExtent === undefined
       ? {}
       : {

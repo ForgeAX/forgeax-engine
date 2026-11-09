@@ -6,6 +6,7 @@ import { AssetGuid } from '@forgeax/engine-pack/guid';
 import {
   Camera,
   DirectionalLight,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -19,6 +20,7 @@ import { RhiError, type RhiInstance } from '@forgeax/engine-rhi';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { assert } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import {
@@ -75,6 +77,7 @@ export const irradianceFieldGi = (
 });
 
 export interface FieldImage {
+  readonly receipt: FrameReceipt;
   readonly bytes: Uint8Array;
   /** Linear HDR red per pixel, row-major. */
   readonly red: Float32Array;
@@ -305,16 +308,19 @@ export async function createIrradianceFieldHarness(options: {
     ssao: false,
     visibleSurface: true,
   };
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    });
-  const draw = async () => {
+  const request = {
+    leases: [lease],
+    camera: { lease },
+    environment: { lease },
+    geometryLane: 'direct' as const,
+  };
+  const submit = () => renderer.draw(request);
+  const advanceWorld = () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
+  };
+  const draw = async () => {
+    advanceWorld();
     const result = submit();
     if (!result.ok)
       throw new Error(JSON.stringify({ result, gi: renderer.inspect().diffuseGi, errors }));
@@ -344,9 +350,8 @@ export async function createIrradianceFieldHarness(options: {
     for (let i = 0; i < frames; i++) await draw();
   };
   const image = async (): Promise<FieldImage> => {
-    assert(renderer.requestObservation);
-    renderValue(renderer.requestObservation(['linear-hdr']));
-    const receipt = await draw();
+    advanceWorld();
+    const receipt = await drawReadyFrame(renderer, request, ['linear-hdr']);
     const item = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((entry) => entry.domain === 'linear-hdr');
@@ -364,6 +369,7 @@ export async function createIrradianceFieldHarness(options: {
         sum += value;
       }
     return {
+      receipt,
       bytes: item.bytes,
       red,
       mean: sum / red.length,
@@ -375,7 +381,8 @@ export async function createIrradianceFieldHarness(options: {
    * it also covers CameraView composition, which has no linear-HDR observation.
    */
   const surfaceImage = async (): Promise<FieldImage> => {
-    await draw();
+    advanceWorld();
+    const receipt = await drawReadyFrame(renderer, request);
     assert(native && surface);
     const { width, height } = canvas;
     const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
@@ -410,6 +417,7 @@ export async function createIrradianceFieldHarness(options: {
           sum += value;
         }
       return {
+        receipt,
         bytes,
         red,
         mean: sum / red.length,

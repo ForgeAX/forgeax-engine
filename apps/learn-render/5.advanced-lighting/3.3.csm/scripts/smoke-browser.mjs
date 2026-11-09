@@ -22,7 +22,7 @@ const MVD_FALSIFIERS = Object.freeze({
   'force-csm-clear-blocker-raw': { ac: 'AC-05', expectation: 'raw blocker depth must remain observable', repair: 'restore raw blocker depth reads' },
   'force-csm-remove-tile-clamp': { ac: 'AC-07', expectation: 'integer inset and layer clamp must protect cascade edges', repair: 'restore shared shadow-pcf tile clamp' },
   'force-csm-capable-backend-pcf': { ac: 'AC-09', expectation: 'capable WebGPU must retain the requested PCSS profile', repair: 'remove the forced PCF fallback' },
-  'force-csm-webgl2-pcss-effective': { ac: 'AC-10', expectation: 'WebGL2 must expose fixed PCF3/PCF5, never effective PCSS', repair: 'keep WebGL2 mapping explicit and bounded' },
+  'force-csm-webgl2-pcss-effective': { ac: 'AC-10', expectation: 'WebGL2 PCSS evidence must come from the actual WebGL2 backend', repair: 'run the WebGL2 device rather than relabeling native evidence' },
   'force-csm-pcf5-pretends-pcss': { ac: 'AC-14', expectation: 'PCF5 must not claim PCSS blocker/filter semantics', repair: 'restore the closed profile identity' },
   'force-csm-shadow-off-build-pass': { ac: 'AC-15', expectation: 'shadow-off must remove the shadow pass', repair: 'keep shadow-off topology fail-closed' },
 });
@@ -93,7 +93,7 @@ await verifyDemoCapture({
   capturePrepareHook: '__prepareCsmCapture',
   rtIdx: 0,
   appDir: dirname(here),
-  warmupMs: Number.parseInt(process.env.CSM_BROWSER_WARMUP_MS ?? '10000', 10),
+  warmupMs: 0,
   navigationWaitUntil: 'domcontentloaded',
   assertCapture: assertCsmCapture,
   assertTape: assertCsmTape,
@@ -306,6 +306,7 @@ function assertCsmLayerSamplerFormula(shaderCode) {
   const pcss = body('_samplePcssForCascade');
   const sample = body('_sampleShadowForCascade');
   const plane = body('_directionalPlaneCompare');
+  const comparison = body('shadow_sample_compare');
   const point = body('_directionalPointCompare');
   const vogel = body('_directionalVogel');
   const soft = body('_directionalSoft');
@@ -323,7 +324,8 @@ function assertCsmLayerSamplerFormula(shaderCode) {
     [/shadow_load_raw_depth[^;]*,i32\(layer(?:_\d+)?\)\);/, pcss],
     [new RegExp(String.raw`lettapDepth(?:_\d+)?=max\(0f,\(compareDepth(?:_\d+)?\+max\(0f,dot\(${planeGradient},[^;]*;`), pcss],
     [/shadow_sample_compare[^;]*,i32\(layer(?:_\d+)?\),tapDepth(?:_\d+)?\);/, pcss],
-    [/textureSampleCompareLevel\([^;]*,layer(?:_\d+)?,depth(?:_\d+)?\)/, plane],
+    [/shadow_sample_compare[^;]*,layer(?:_\d+)?,depth(?:_\d+)?\)/, plane],
+    [/textureSampleCompareLevel\([^;]*,layer(?:_\d+)?,depthRef(?:_\d+)?\)/, comparison],
     [/textureLoad\(shadowMap[^;]*,layer(?:_\d+)?,0i\)/, point],
     [/_directionalPlaneCompare[^;(]*\([^;]*,layer(?:_\d+)?,[^;]*\)/, vogel],
     [/_directionalPointCompare[^;(]*\([^;]*,layer(?:_\d+)?,[^;]*\)/, soft],

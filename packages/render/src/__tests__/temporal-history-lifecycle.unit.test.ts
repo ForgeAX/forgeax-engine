@@ -29,8 +29,11 @@ describe('TAA history lifecycle', () => {
         'rgba16float',
         'r8unorm',
         'r8unorm',
+        'rgba8unorm',
+        'rgba8unorm',
       ]);
       expect(state).toHaveProperty('stability');
+      expect(state).toHaveProperty('flicker');
       expect(state).toHaveProperty('cloudRadiance');
       expect(state).toHaveProperty('cloudTransmittance');
       expect(state).toHaveProperty('cloudDepth');
@@ -38,8 +41,8 @@ describe('TAA history lifecycle', () => {
       expect(state.cloudRadiance).toBeUndefined();
       const view = createTemporalView({ antialias: 'taa', width: 8, height: 8 });
       const inspection = inspectTemporal(view, undefined, { active: state });
-      expect(inspection.historyBytes).toBe(34 * 8 * 8);
-      expect(inspection.resources.activeBytes).toBe(34 * 8 * 8);
+      expect(inspection.historyBytes).toBe(42 * 8 * 8);
+      expect(inspection.resources.activeBytes).toBe(42 * 8 * 8);
     } finally {
       retireTemporalGpuState(state);
     }
@@ -58,8 +61,8 @@ describe('TAA history lifecycle', () => {
     try {
       expect(state.cloudHistoryEnabled).toBe(true);
       expect(state.cloudRadiance).toBeDefined();
-      expect(textures).toHaveBeenCalledTimes(12);
-      expect(textures.mock.calls.slice(6).map(([desc]) => desc.label)).toEqual([
+      expect(textures).toHaveBeenCalledTimes(14);
+      expect(textures.mock.calls.slice(8).map(([desc]) => desc.label)).toEqual([
         'cloud-history-radiance-a',
         'cloud-history-radiance-b',
         'cloud-history-transmittance-a',
@@ -93,8 +96,8 @@ describe('TAA history lifecycle', () => {
     const scope = DeviceScope.create(8, 'renderer');
     const taa = new TemporalHistory(scope, { width: 320, height: 200, mode: 'taa' });
     const off = new TemporalHistory(scope, { width: 320, height: 200, mode: 'off' });
-    expect(taa.historyCount).toBe(6);
-    expect(taa.historyBytes).toBe(34 * 320 * 200);
+    expect(taa.historyCount).toBe(8);
+    expect(taa.historyBytes).toBe(42 * 320 * 200);
     expect(taa.childScope?.parent).toBe(scope);
     expect(off.historyCount).toBe(0);
     expect(off.historyBytes).toBe(0);
@@ -144,10 +147,10 @@ describe('TAA history lifecycle', () => {
     frameState.activeTemporalGpuState = active;
     frameState.temporalGpuState = undefined;
     expect(active.childScope.parent).toBe(scope);
-    expect(active.childScope.resourceDelta()).toBe(6);
+    expect(active.childScope.resourceDelta()).toBe(8);
     const bindGroupResources = getTemporalBindGroupResources(active);
     expect(bindGroupResources.sampler).not.toBeNull();
-    expect(active.childScope.resourceDelta()).toBe(9);
+    expect(active.childScope.resourceDelta()).toBe(11);
     expect(getTemporalGpuState(frameState, device, scope, 64, 64)).toBe(active);
 
     const replacement = getTemporalGpuState(frameState, device, scope, 128, 64);
@@ -184,7 +187,7 @@ describe('TAA history lifecycle', () => {
       throw new Error('unexpected temporal retirement failure');
     });
     expect(state.childScope.state).toBe('retiring');
-    expect(state.childScope.resourceDelta()).toBe(9);
+    expect(state.childScope.resourceDelta()).toBe(11);
     expect(retiring.has(state)).toBe(true);
     resolveFence();
     await fence;

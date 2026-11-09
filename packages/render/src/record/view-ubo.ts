@@ -18,6 +18,7 @@ import {
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
 import { LineCapValue, LineWidthUnitsValue } from '../components/lines';
 import { PointShapeValue } from '../components/points';
+import { sunSourceRadiusOf } from '../components/sun-source-radius';
 import { writeAtmosphereUniform } from '../environment/uniform';
 import { type AtmosphereParameters, type FogFrame, fogIsActive } from '../extract/environment';
 import type { PointsLinesStyle } from '../points-lines/snapshot';
@@ -124,11 +125,54 @@ export function writePointsLinesViewUbo(
   style?: PointsLinesStyle,
   byteOffset = 0,
 ): void {
-  const projection = computeProjectionMatrix(camera, mat4.create());
-  const view = computeViewMatrix(camera, mat4.create());
-  const worldViewProj = mat4.create();
+  const scratch = pointsLinesScratch ?? createPointsLinesScratch();
+  pointsLinesScratch = undefined;
+  try {
+    writePointsLinesPayload(
+      queue,
+      buffer,
+      camera,
+      width,
+      height,
+      model,
+      style,
+      byteOffset,
+      scratch,
+    );
+  } finally {
+    pointsLinesScratch ??= scratch;
+  }
+}
+
+function createPointsLinesScratch() {
+  const storage = new Float32Array(48 + POINTS_LINES_VIEW_BYTES / 4);
+  return {
+    projection: mat4.view(storage, 0),
+    view: mat4.view(storage, 1),
+    worldViewProj: mat4.view(storage, 2),
+    payload: storage.subarray(48),
+  };
+}
+let pointsLinesScratch: ReturnType<typeof createPointsLinesScratch> | undefined;
+
+/** No staging window escapes the synchronous RHI queue write. */
+function writePointsLinesPayload(
+  queue: RhiQueue,
+  buffer: Buffer,
+  camera: CameraSnapshot,
+  width: number,
+  height: number,
+  model: ArrayLike<number> | undefined,
+  style: PointsLinesStyle | undefined,
+  byteOffset: number,
+  scratch: ReturnType<typeof createPointsLinesScratch>,
+): void {
+  const projection = computeProjectionMatrix(camera, scratch.projection);
+  const view = computeViewMatrix(camera, scratch.view);
+  const worldViewProj = scratch.worldViewProj;
   mat4.multiply(worldViewProj, projection, view);
-  const payload = new Float32Array(POINTS_LINES_VIEW_BYTES / 4);
+  const payload = scratch.payload;
+  payload.fill(0);
   payload.set(worldViewProj);
   if (model === undefined) {
     payload[16] = 1;
@@ -221,7 +265,7 @@ let writingViewUbo = false;
  *   [228..231] temporalProjection (near, far, orthographic, cloud solar
  *   transmittance), [232..235] temporalPreviousCameraPos, [236..239]
  *   ssrParams (maxDistance, thickness, maxRoughness, enabled).
- *   [240..255] cloud shadow projection, [256..279] clippingPlanes,
+ *   [240..255] cloud shadow projection ([251] sunSourceRadius), [256..279] clippingPlanes,
  *   [280..283] clippingControl, [284..287] fogColorDensity,
  *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time).
  *
@@ -279,6 +323,7 @@ export function writeViewUbo(
     if (cloudShadowProjection !== undefined)
       writeCloudShadowLanes(viewPayload, cloudShadowProjection);
     writeDirectionalShadowLanes(viewPayload, lights, light);
+    viewPayload[251] = sunSourceRadiusOf(light.sourceAngle ?? 0);
     writeSpotProjectionLanes(viewPayload, spotShadowSnapshots, projectorSpotIndex);
 
     // Raw scene targets have no screen-space opaque Fog pass. Their surface

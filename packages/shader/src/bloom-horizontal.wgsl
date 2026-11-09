@@ -1,6 +1,13 @@
 #define_import_path forgeax_view::bloom_horizontal
-// Three r184 BloomNode: horizontal truncated Gaussian, radii 6/10/14/18/22.
-// Level zero fuses the half-resolution high pass at the exact source texel centres.
+// Three r184 BloomNode Gaussian (horizontal, truncated radii 6/10/14/18/22) whose
+// input stage follows Unreal's standalone Gaussian bloom:
+//  - every downsample is Unreal PostProcessDownsample.usf DOWNSAMPLE_QUALITY_HIGH:
+//    four bilinear taps at +-1 source texel (a 4x4 filter), so a sub-pixel
+//    highlight is spread over the whole 2x2 destination footprint before anything
+//    non-linear sees it;
+//  - level 0 then applies the threshold to that filtered half-resolution colour,
+//    like PostProcessBloom.usf BloomSetup running on the downsampled scene;
+//  - a negative threshold disables the setup (Unreal BloomThreshold -1 default).
 // linearHdrColorDomain: threshold and convolution stay in linear HDR.
 #import forgeax_view::common::{FullscreenOutput, clampLinearHdr, fullscreen_triangle}
 struct BloomHorizontalParams {
@@ -16,10 +23,23 @@ struct BloomHorizontalParams {
 @group(0) @binding(0) var src : texture_2d<f32>;
 @group(0) @binding(1) var samp : sampler;
 @group(0) @binding(2) var<uniform> params : BloomHorizontalParams;
+// UE SampleInput: clamp to the bilinear-safe viewport so edge taps stay in range.
+fn sampleSource(uv : vec2<f32>, texel : vec2<f32>) -> vec3<f32> {
+  let clamped = clamp(uv, 0.5 * texel, 1.0 - 0.5 * texel);
+  return textureSampleLevel(src, samp, clamped, 0.0).rgb;
+}
+// UE DownsampleCommon (HIGH): average of four bilinear taps at (+-1, +-1) source texels.
+fn downsample4x4(uv : vec2<f32>) -> vec3<f32> {
+  let texel = 1.0 / vec2<f32>(textureDimensions(src));
+  let sum = sampleSource(uv + texel * vec2<f32>(-1.0, -1.0), texel)
+    + sampleSource(uv + texel * vec2<f32>(1.0, -1.0), texel)
+    + sampleSource(uv + texel * vec2<f32>(-1.0, 1.0), texel)
+    + sampleSource(uv + texel * vec2<f32>(1.0, 1.0), texel);
+  return max(sum * 0.25, vec3<f32>(0.0));
+}
 fn bloomInput(uv : vec2<f32>) -> vec3<f32> {
-  if (params.level > 0.0) { return textureSampleLevel(src, samp, uv, 0.0).rgb; }
-  let halfTexel = 0.5 / vec2<f32>(params.destinationW, params.destinationH);
-  let color = textureSampleLevel(src, samp, clamp(uv, halfTexel, 1.0 - halfTexel), 0.0).rgb;
+  let color = downsample4x4(uv);
+  if (params.level > 0.0 || params.threshold < 0.0) { return color; }
   let luma = min(dot(color, vec3<f32>(0.2126, 0.7152, 0.0722)), 65504.0);
   if (params.smoothWidth == 0.0) { return color * select(0.0, 1.0, luma > params.threshold); }
   return color * smoothstep(params.threshold, params.threshold + params.smoothWidth, luma);

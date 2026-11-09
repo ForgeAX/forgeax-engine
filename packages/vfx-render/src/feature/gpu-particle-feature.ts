@@ -175,6 +175,15 @@ interface GpuParticleFeatureOptions {
   readonly camera: ParticleRenderCameraSource;
   /** Same-build diagnostic A/B. Opt in to validated view-local graph isolation. */
   readonly isolateViewGraph?: boolean;
+  /**
+   * Capture policy; defaults to `all` (planar, probe and cube captures show
+   * particles). Each captured face adds a particle pass; pass `display-only`
+   * to opt out.
+   */
+  readonly capture?:
+    | 'all'
+    | 'display-only'
+    | { readonly faces: readonly ('planar' | 'probe' | 'cube')[] };
   /** Diagnostic opt-in until the complete instance-arena owner is qualified. */
   readonly instanceArenas?: boolean;
   /** Build a Host-private primary plan instead of publishing a raw declaration tree. */
@@ -1815,7 +1824,7 @@ export function gpuParticleRenderFeature(
       limits?.maxBufferSize ?? 256 * 1024 * 1024,
       limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024,
     );
-    if (bindingLimit < 16 * 336) return undefined;
+    if (bindingLimit < 16 * 352) return undefined;
     return batchStorageSizes(emitter, candidate.customStride, inputBytes).every(([size, stride]) =>
       arena.supports(size, STORAGE_USAGE, stride),
     )
@@ -3550,6 +3559,11 @@ export function gpuParticleRenderFeature(
   };
   const feature: VfxParticleRenderFeature = {
     identity: IDENTITY,
+    capture: options.capture ?? 'all',
+    // Particles are scene radiance. The post placement runs after the TAA
+    // resolve and writes the pre-resolve scene target, which the post chain no
+    // longer reads, so every particle vanished whenever TAA was enabled.
+    placement: 'scene',
     ...(options.isolateViewGraph === true ? { viewGraph: 'transient' as const } : {}),
     requiredCapabilities: ['compute', 'indirectDrawing'],
     // Generated emitter programs are first-use assets. They must hand a
@@ -3563,7 +3577,7 @@ export function gpuParticleRenderFeature(
       ...Object.values(PARTICLE_INPUT_SHADER_IDENTIFIERS),
     ]),
     extract: (context) => {
-      const emitterVisible = createEmitterVisibility();
+      let visibility: ReturnType<typeof createEmitterVisibility> | undefined;
       // A rejected recovery candidate can outlive the frame that produced it.
       // Keep the producer-owned submission ledger bounded even when a host
       // disappears before it can call onFrameAborted.
@@ -3578,11 +3592,13 @@ export function gpuParticleRenderFeature(
         intentPublication.reset();
       }
       const extracted: PublishedWorld[] = [];
-      const queuedSessions = new Map<string, Set<string>>();
+      let queuedSessions: Map<string, Set<string>> | undefined;
       for (const world of context.worlds) {
         if (!world.hasResource(VFX_GPU_RUNTIME_RESOURCE_KEY)) continue;
         const camera = options.camera.read(world, context.views);
         if (camera === undefined) continue;
+        visibility ??= createEmitterVisibility();
+        const emitterVisible = visibility;
         const views = context.views.map((view) => ({
           identity: view.identity,
           camera: view.selectedView ?? camera,
@@ -3843,6 +3859,7 @@ export function gpuParticleRenderFeature(
         }
         if (meshFailure !== undefined) return err(meshFailure);
         const sceneSdf = options.sceneSdf?.read(world);
+        queuedSessions ??= new Map();
         extracted.push({
           sourceWorldIndex,
           ...(sceneSdf === undefined ? {} : { sceneSdf }),
@@ -3868,7 +3885,8 @@ export function gpuParticleRenderFeature(
           meshes,
         });
       }
-      intentPublication.retain(queuedSessions);
+      if (queuedSessions === undefined) intentPublication.reset();
+      else intentPublication.retain(queuedSessions);
       return ok({ worlds: extracted, frameNumber: context.frameNumber });
     },
     assetDependencies: (frame) => [

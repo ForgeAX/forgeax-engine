@@ -58,6 +58,19 @@ function hasTransmission(names: ReadonlySet<string>): boolean {
   );
 }
 
+/**
+ * Static switches that select a Standard code path without touching the ABI.
+ * `environmentBrdfApprox` opts into the analytic EnvBRDFApprox fit; the
+ * default program samples the preintegrated environment BRDF LUT.
+ */
+export function standardStaticSwitchDefines(
+  switches: MaterialStaticSwitches | undefined,
+  passes?: readonly MaterialPass[],
+): Record<string, boolean> {
+  if (switches?.environmentBrdfApprox !== true || !usesStandardTemplate(passes)) return {};
+  return { ENV_BRDF_FIT: true };
+}
+
 /** Shared by exact-root cooking and the engine's fixed-layout shader producer. */
 export function standardMaterialDefines(
   schema: readonly ParamSchemaEntry[],

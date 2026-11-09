@@ -15,6 +15,8 @@ export interface PreparedStandardLighting extends StandardClusterMembership {
   readonly membershipLightCount: number;
   readonly renderPath: NonNullable<StandardLightFrame['renderPath']>;
   readonly maxLights: number;
+  /** Camera terms the membership was derived with; read by on-demand inspection. */
+  readonly camera?: Pick<StandardLightFrame, 'view' | 'projection' | 'near' | 'far'>;
 }
 
 export function prepareStandardLighting(
@@ -41,5 +43,6 @@ export function prepareStandardLighting(
     membershipLightCount: frame.local.length,
     renderPath: frame.renderPath,
     maxLights: frame.lightCount,
+    camera: { view: frame.view, projection: frame.projection, near: frame.near, far: frame.far },
   });
 }

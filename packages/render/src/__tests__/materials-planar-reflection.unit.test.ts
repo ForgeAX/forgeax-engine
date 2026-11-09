@@ -10,7 +10,10 @@ import { describe, expect, it } from 'vitest';
 import {
   materialUsesPlanarReflection,
   PLANAR_REFLECTION_MATERIAL_LAYOUT_ENTRIES,
+  planarCaptureDemanded,
   planarReflectionMaterialEntries,
+  planarRoutedPasses,
+  setPlanarCaptureDemand,
 } from '../capture/planar-material.js';
 import { Materials } from '../materials.js';
 import {
@@ -34,7 +37,7 @@ describe('Standard planar reflection capability', () => {
       expect(materialUsesPlanarReflection(schema)).toBe(false);
   });
 
-  it('publishes one real u32 field and renders forward only', () => {
+  it('publishes one real u32 field and keeps both colour passes for extract routing', () => {
     const material = Materials.standard({ baseColor: [1, 1, 1, 1], planarReflection: true });
     expect(material.parameters).toContainEqual({
       name: 'planarReflection',
@@ -45,6 +48,15 @@ describe('Standard planar reflection capability', () => {
     expect(material.values?.planarReflection).toBe(1);
     expect(materialUsesPlanarReflection(material.parameters)).toBe(true);
     expect(material.passes?.map((p) => p.name)).toContain('forward');
+    expect(material.passes?.map((p) => p.name)).toContain('deferred');
+  });
+
+  it('still drops the Deferred pass for transmission, which reads the backdrop', () => {
+    const material = Materials.standard({
+      baseColor: [1, 1, 1, 1],
+      transmission: 0.5,
+      planarReflection: true,
+    });
     expect(material.passes?.map((p) => p.name)).not.toContain('deferred');
   });
 
@@ -107,7 +119,7 @@ describe('custom Standard Surface planar reflection', () => {
     expect(material.values).toMatchObject({ rippleStrength: 0.08, planarReflection: 1 });
     expect(materialUsesPlanarReflection(material.parameters)).toBe(true);
     expect(material.passes?.map((p) => p.name)).toContain('forward');
-    expect(material.passes?.map((p) => p.name)).not.toContain('deferred');
+    expect(material.passes?.map((p) => p.name)).toContain('deferred');
   });
 
   it('keeps an opted-out Surface free of the planar contract', () => {
@@ -129,5 +141,49 @@ describe('custom Standard Surface planar reflection', () => {
         planarReflection: true,
       }),
     ).toThrow(/engine-owned/);
+  });
+});
+
+describe('planar receiver routing between the G-buffer and the forward mirror', () => {
+  const names = (passes: readonly { name: string }[]) => passes.map((p) => p.name);
+
+  it('keeps the Deferred pass (G-buffer, SSR receiver) while no capture is published', () => {
+    const world = {};
+    const material = Materials.standard({ baseColor: [1, 1, 1, 1], planarReflection: true });
+    const routed = planarRoutedPasses(material.passes ?? [], material.parameters, world);
+    expect(routed.routed).toBe(false);
+    expect(names(routed.passes)).toContain('deferred');
+    expect(names(routed.passes)).toContain('forward');
+  });
+
+  it('shades forward only while its world publishes a PlanarReflection capture', () => {
+    const world = {};
+    const material = Materials.standard({
+      surfaceModule: 'game::wet_ground',
+      parameters: [{ name: 'rippleStrength', type: 'f32' }],
+      values: { rippleStrength: 0.08 },
+      planarReflection: true,
+    });
+    setPlanarCaptureDemand(world, true);
+    expect(planarCaptureDemanded(world)).toBe(true);
+    const routed = planarRoutedPasses(material.passes ?? [], material.parameters, world);
+    expect(routed.routed).toBe(true);
+    expect(names(routed.passes)).not.toContain('deferred');
+    expect(names(routed.passes)).toContain('forward');
+    setPlanarCaptureDemand(world, false);
+    expect(planarCaptureDemanded(world)).toBe(false);
+    expect(
+      names(planarRoutedPasses(material.passes ?? [], material.parameters, world).passes),
+    ).toContain('deferred');
+  });
+
+  it('leaves non-planar materials untouched, even in a world with a capture', () => {
+    const world = {};
+    setPlanarCaptureDemand(world, true);
+    const material = Materials.standard({ baseColor: [1, 1, 1, 1] });
+    const routed = planarRoutedPasses(material.passes ?? [], material.parameters, world);
+    expect(routed.routed).toBeUndefined();
+    expect(routed.passes).toBe(material.passes);
+    expect(planarCaptureDemanded(undefined)).toBe(false);
   });
 });

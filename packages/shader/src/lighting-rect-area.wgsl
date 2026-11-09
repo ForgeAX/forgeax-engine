@@ -1,6 +1,6 @@
 #define_import_path forgeax_pbr::lighting_rect_area
 #ifdef EXTENDED_LIGHTING_AVAILABLE
-#import forgeax_pbr::brdf::{specularF90}
+#import forgeax_pbr::brdf::{specularF90, directLightingAlpha}
 #import forgeax_view::common::{ltcLambertTexture, ltcGgxTexture, spotModifierSampler, cookieTexture}
 #endif
 
@@ -205,7 +205,10 @@ fn evalRectAreaLtcStandard(
   transmission : vec3<f32>, sourceSlice : u32,
 ) -> vec3<f32> {
 #ifdef EXTENDED_LIGHTING_AVAILABLE
-  let uv = ltcUv(n, v, sqrt(max(alphaSq, 0.0)));
+  // Unreal's View.MinRoughness reaches rect lights through the same direct-light
+  // integration (CapsuleLightIntegrate.ush:110, SceneView.cpp:2921).
+  let directAlpha = directLightingAlpha(alphaSq);
+  let uv = ltcUv(n, v, sqrt(directAlpha));
   let matrixSample = textureSampleLevel(ltcLambertTexture, spotModifierSampler, uv, 0.0);
   let fresnelSample = textureSampleLevel(ltcGgxTexture, spotModifierSampler, uv, 0.0);
   let mInv = mat3x3<f32>(
@@ -218,7 +221,7 @@ fn evalRectAreaLtcStandard(
     n, v, worldPos, mInv, lightPos, axisX, axisY, halfWidth, halfHeight,
   );
   let source = rectSourceTextureRadiance(
-    sourceSlice, worldPos, specular.direction, lightPos, axisX, axisY, halfWidth, halfHeight, alphaSq,
+    sourceSlice, worldPos, specular.direction, lightPos, axisX, axisY, halfWidth, halfHeight, directAlpha,
   );
   let diffuse = evalRectAreaLtcDiffuse(
     lightPos, lightColor, axisX, axisY, halfWidth, halfHeight, invRangeSquared,

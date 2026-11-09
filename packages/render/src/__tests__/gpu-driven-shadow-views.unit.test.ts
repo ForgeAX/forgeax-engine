@@ -12,6 +12,7 @@ import { LOD_VIEW_CONSTANTS_BYTES, writeLodViewConstants } from '../gpu-driven/l
 import { lodViewCameraFromMatrix } from '../gpu-driven/production-raster-lod';
 import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import {
+  POINT_SELECTION_BATCH_PASS,
   type ShadowViewIdentity,
   ShadowViewStatePool,
   type ShadowViewUpdateInput,
@@ -156,6 +157,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
   updateShadowView(pool, input).unwrap();
   pool._commitResourceReplacement();
   return {
+    device,
     pool,
     input,
     identity,
@@ -237,6 +239,101 @@ describe('GPU-driven shadow view owner contract', () => {
       await Promise.resolve();
       expect(f.pool.texelCulled(f.identity)).toBe(5);
       expect(f.pool.cameraCulled(f.identity)).toBeUndefined();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('demands the counts copy only for views whose counts are read after submit', async () => {
+    const unread = await lodShadowFixture();
+    try {
+      const view = unread.pool.submission(unread.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      const demand = vi.spyOn(view, '_setCullingReadbackDemand');
+      const read = vi.spyOn(view, 'readCullingCounts');
+      unread.pool.invalidate('view-changed');
+      updateShadowView(unread.pool, unread.input).unwrap();
+      unread.pool._commitResourceReplacement();
+      expect(demand).toHaveBeenLastCalledWith(false);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      unread.dispose();
+    }
+    const counted = await lodShadowFixture({
+      matrix: mat4.identity(mat4.create()),
+      targetSize: 64,
+    });
+    try {
+      const view = counted.pool.submission(counted.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      const demand = vi.spyOn(view, '_setCullingReadbackDemand');
+      const read = vi.spyOn(view, 'readCullingCounts');
+      counted.pool.invalidate('view-changed');
+      updateShadowView(counted.pool, counted.input).unwrap();
+      counted.pool._commitResourceReplacement();
+      expect(demand).toHaveBeenLastCalledWith(true);
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      counted.dispose();
+    }
+  });
+
+  it('selects every point-face view in one compute pass ahead of their readbacks', async () => {
+    const f = await lodShadowFixture();
+    const faces: readonly ShadowViewIdentity[] = [
+      { kind: 'point', index: 0, face: 0 },
+      { kind: 'point', index: 0, face: 0, layer: 'static' },
+      { kind: 'point', index: 0, face: 1 },
+    ];
+    try {
+      for (const identity of faces) updateShadowView(f.pool, { ...f.input, identity }).unwrap();
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      const directional = f.pool.project(graph, f.identity, true, undefined, true).unwrap();
+      const projected = faces.map((identity) =>
+        f.pool.project(graph, identity, true, undefined, true).unwrap(),
+      );
+      expect(directional.passNames).toEqual([
+        'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+      ]);
+      for (const projection of projected) {
+        expect(projection.passNames).toEqual([POINT_SELECTION_BATCH_PASS]);
+      }
+      // A second projection of the same face reuses the batch, not a new pass.
+      expect(f.pool.project(graph, faces[0] as ShadowViewIdentity, true, undefined, true).ok).toBe(
+        true,
+      );
+      const device = f.device;
+      const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      expect(compiled.inspect().passes.map((pass) => pass.name)).toEqual([
+        'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+        'gpu-driven.shadow.directional-cascade-0.static.lod-selection-readback',
+        POINT_SELECTION_BATCH_PASS,
+        'gpu-driven.shadow.point-cube-face-0-0.lod-selection-readback',
+        'gpu-driven.shadow.point-cube-face-0-0.static.lod-selection-readback',
+        'gpu-driven.shadow.point-cube-face-0-1.lod-selection-readback',
+      ]);
+      const encoder = device.createCommandEncoder().unwrap();
+      const passes: string[] = [];
+      let dispatches = 0;
+      const begin = encoder.beginComputePass.bind(encoder);
+      vi.spyOn(encoder, 'beginComputePass').mockImplementation((descriptor) => {
+        passes.push(descriptor?.label ?? '');
+        const pass = begin(descriptor);
+        const dispatch = pass.dispatchWorkgroups.bind(pass);
+        pass.dispatchWorkgroups = (...args) => {
+          dispatches++;
+          dispatch(...args);
+        };
+        return pass;
+      });
+      compiled.execute({ encoder }).unwrap();
+      expect(passes).toEqual([
+        'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+        POINT_SELECTION_BATCH_PASS,
+      ]);
+      // reset + compact (cull, order scan, order place) + finalize for each of the four views.
+      expect(dispatches).toBe(4 * 5);
+      (await compiled.retire()).unwrap();
     } finally {
       f.dispose();
     }

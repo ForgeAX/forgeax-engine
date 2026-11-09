@@ -25,7 +25,13 @@ fn view_solar_transmittance(v: View, position: vec3<f32>) -> vec3<f32> {
 }
 
 fn view_apply_direct_solar(v:View, radiance:vec3<f32>, position:vec3<f32>)->vec3<f32>{
+#ifdef LEAN_LIGHTING
+  // LEAN_LIGHTING frames have no atmosphere source and no live cloud shadow
+  // (absent, low sun or zero range), where both factors are exactly one.
+  return radiance;
+#else
   return radiance*view_solar_transmittance(v,position)*cloud_direct_solar_factor(position,v.cloudShadowOrigin.xyz,v.cloudShadowRight.xyz,v.cloudShadowUp.xyz,v.cloudShadowProjection);
+#endif
 }
 
 fn view_distant_sky_light(v:View)->vec3<f32>{

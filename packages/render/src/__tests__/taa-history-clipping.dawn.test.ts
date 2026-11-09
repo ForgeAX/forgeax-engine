@@ -197,9 +197,9 @@ fn probeClip(current : vec3<f32>, neighbors : array<vec3<f32>, 8>, history : vec
     })
     .unwrap();
   const temporalParams = device
-    .createBuffer({ size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
+    .createBuffer({ size: 48, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
     .unwrap();
-  device.queue.writeBuffer(temporalParams, 0, new Uint8Array(32)).unwrap();
+  device.queue.writeBuffer(temporalParams, 0, new Uint8Array(48)).unwrap();
   const neighborhoodLayout = device
     .createBindGroupLayout({
       entries: [

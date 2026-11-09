@@ -188,9 +188,9 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       });
     });
 
-    it('Camera has 33 fields including target, targetLayer, exposure, and color grading columns', () => {
+    it('Camera has 34 fields including target, targetLayer, exposure, and color grading columns', () => {
       expect(Camera.name).toBe('Camera');
-      expect(Object.keys(componentSchema(Camera)).length).toBe(33);
+      expect(Object.keys(componentSchema(Camera)).length).toBe(34);
       expect(componentSchema(Camera).targetLayer).toBe('u32');
       expect(componentSchema(Camera).fov).toBe('f32');
       expect(componentSchema(Camera).aspect).toBe('f32');
@@ -239,7 +239,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       // feat-20260709 M2: direction/color collapsed from 6 per-axis scalars to
       // two array<f32,3> columns (3 light fields: direction + color + intensity).
       expect(DirectionalLight.name).toBe('DirectionalLight');
-      expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(28);
+      expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(29);
       expect(componentSchema(DirectionalLight).lightingChannels).toBe('f64');
       expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
       expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
@@ -1311,7 +1311,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   //        refactoring — every field value must stay byte-identical)
   // ────────────────────────────────────────────────────────────────────────────
 
-  describe('camera factory 33-field schema snapshot (w14 AC-07 invariant)', () => {
+  describe('camera factory 34-field schema snapshot (w14 AC-07 invariant)', () => {
     it('perspective({ fov: Math.PI/3, aspect: 16/9 }) — all 20 fields match reference', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 16 / 9 });
       // Caller-supplied projection with shared clip defaults
@@ -1414,16 +1414,16 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.tonemap).toBe(TONEMAP_NONE);
     });
 
-    it('perspective + orthographic 32-field payload counts (32 factory Camera values)', () => {
+    it('perspective + orthographic 33-field payload counts (33 factory Camera values)', () => {
       const p = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const o = orthographic({ left: -1, right: 1, bottom: -1, top: 1 });
-      // Both return exactly 32 values (including targetLayer 0): Camera.fields also
+      // Both return exactly 33 values (including targetLayer 0): Camera.fields also
       // includes the optional target reference, which factories intentionally leave unset.
       // The returned values include exposure and color grading columns +
       // autoAspect bool column; feat-20260709 M3 collapsed the 4-scalar
       // clear-color quartet into one inline array<f32,4>).
-      expect(Object.keys(p).length).toBe(32);
-      expect(Object.keys(o).length).toBe(32);
+      expect(Object.keys(p).length).toBe(33);
+      expect(Object.keys(o).length).toBe(33);
     });
   });
 
@@ -1432,7 +1432,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
   // ────────────────────────────────────────────────────────────────────────────
 
   describe('Camera.fields reflection (w14 AC-07 SSOT)', () => {
-    it('Camera.fields has exactly 33 keys matching the Camera column set', () => {
+    it('Camera.fields has exactly 34 keys matching the Camera column set', () => {
       const keys = Object.keys(Camera.fields).sort();
       expect(keys).toEqual([
         'antialias',
@@ -1460,6 +1460,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'rangeEv',
         'rates',
         'right',
+        'taaFlickering',
         'target',
         'targetLayer',
         'temperature',
@@ -1573,6 +1574,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         tint: 0,
         colorLut: 0,
         colorLutStrength: 1,
+        taaFlickering: 1,
         transparency: 0,
       });
     });
@@ -1782,7 +1784,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.exposure).toBeCloseTo(1.0, 6);
     });
 
-    it('perspective return value has all 32 factory Camera fields', () => {
+    it('perspective return value has all 33 factory Camera fields', () => {
       const pod = perspective({ fov: Math.PI / 3, aspect: 4 / 3 });
       const keys = Object.keys(pod).sort();
       expect(keys).toEqual([
@@ -1811,6 +1813,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         'rangeEv',
         'rates',
         'right',
+        'taaFlickering',
         'targetLayer',
         'temperature',
         'tint',

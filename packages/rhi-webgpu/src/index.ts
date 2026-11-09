@@ -57,13 +57,19 @@ import type {
   ShaderModule,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError as RhiErrorClass, validateRayQueryShader } from '@forgeax/engine-rhi';
+import { probeDepthTextureLoad } from './depth-texture-load';
 import {
   _internal_getRawDevice,
   makeCanvasContext,
   makeRhiDevice,
   pipelineLibraryFor,
 } from './device';
-import { adapterUnavailable, featureNotEnabled, requestAdapterFailed } from './errors';
+import {
+  adapterUnavailable,
+  featureNotEnabled,
+  requestAdapterFailed,
+  requestDeviceFailed,
+} from './errors';
 
 /**
  * The `GPU` subset accepted at the provider seam (research §F-6 webgpu-utils +
@@ -179,10 +185,7 @@ function classifyRequestDeviceError(e: unknown): Result<never, RhiError> {
   const msg = e instanceof Error ? e.message : String(e);
   if (/feature/i.test(msg)) return featureNotEnabled();
   if (/limit/i.test(msg)) return err(limitExceeded());
-  // Fallback: an unrecognized message keyword is classified as feature-not-enabled
-  // (charter proposition 4: explicit failure + structured errors over hidden
-  // branches). Subsequent loops can extend the classification.
-  return featureNotEnabled();
+  return requestDeviceFailed(e);
 }
 
 function createRawShaderModule(
@@ -352,7 +355,7 @@ export function createShaderModuleImmediate(
  *   - `requestDevice` forwards to `adapter.requestDevice(opts)` and wraps the
  *     resulting `GPUDevice` via `makeRhiDevice` (research §F-5 error paths).
  */
-function makeRhiAdapter(rawAdapter: GpuAdapterLike): RhiAdapter {
+function makeRhiAdapter(rawAdapter: GpuAdapterLike, featureLevel?: string): RhiAdapter {
   // Defensive against minimal mock adapters that omit features / limits
   // (the spec mandates them on real adapters, but unit-test mocks
   // historically expose only `requestDevice`). Defaults to empty
@@ -373,7 +376,21 @@ function makeRhiAdapter(rawAdapter: GpuAdapterLike): RhiAdapter {
       } catch (e) {
         return classifyRequestDeviceError(e);
       }
-      const { device } = makeRhiDevice(rawDevice as unknown as GPUDevice);
+      const native = rawDevice as unknown as GPUDevice;
+      let depthTextureLoad = true;
+      if (
+        (featureLevel === 'compatibility' ||
+          rawAdapter.features?.has('core-features-and-limits')) &&
+        !native.features.has('core-features-and-limits')
+      ) {
+        try {
+          depthTextureLoad = await probeDepthTextureLoad(native);
+        } catch (cause) {
+          native.destroy();
+          return requestDeviceFailed(cause);
+        }
+      }
+      const { device } = makeRhiDevice(native, { depthTextureLoad });
       return ok(device);
     },
   };
@@ -428,7 +445,7 @@ export async function requestAdapterFrom(
   if (adapter === null) {
     return adapterUnavailable();
   }
-  return ok(makeRhiAdapter(adapter));
+  return ok(makeRhiAdapter(adapter, opts?.featureLevel));
 }
 
 /**

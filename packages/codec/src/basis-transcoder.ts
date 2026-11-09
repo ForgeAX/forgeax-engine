@@ -280,6 +280,7 @@ export async function transcodeKtx2(
     };
   } finally {
     file.close();
+    file.delete();
   }
 }
 
@@ -338,5 +339,6 @@ export async function transcodeBasis(
     };
   } finally {
     file.close();
+    file.delete();
   }
 }

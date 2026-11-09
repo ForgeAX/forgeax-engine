@@ -98,6 +98,17 @@ export {
  * castShadow, so geometry excluded from shadow maps still self-shadows.
  * Deferred-path only; forward-lit surfaces ignore it. Typical values: 0.1-0.5.
  *
+ * sourceAngle (degrees, finite, >= 0, default 0.5357 = the sun's apparent
+ * diameter) gives the light an angular size. Direct specular then follows
+ * Unreal's directional-light sphere model: SphereMaxNoH (BRDF.ush:63-137) moves
+ * the light direction to the point of the disc that maximises N.H, and
+ * EnergyNormalization (ShadingModels.ush:122-160) widens the lobe and rescales
+ * it to conserve energy, so a smooth surface shows a sun-sized highlight
+ * instead of a sub-pixel glint. The disc shrinks with roughness as
+ * saturate(sin(half angle) * (1 - roughness^2)) (CapsuleLightIntegrate.ush:98).
+ * 0 keeps the infinitely small point-light behaviour exactly. Diffuse and
+ * shadows are unaffected (shadowAngularRadius is the separate PCSS knob).
+ *
  * @example Spawn a single directional light without shadow maps:
  *   world.spawn({ component: DirectionalLight, data: {
  *     direction: [-0.5, -1, -0.3], // [x, y, z]
@@ -180,4 +191,7 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   // Retained static cascade layer for GPU-driven casters (see doc above).
   staticShadowCache: { type: 'bool', default: true },
   contactShadowLength: { type: 'f32', default: 0 },
+  // Apparent diameter of the light disc in degrees (Unreal LightSourceAngle,
+  // default 0.5357 = the sun). 0 = point light.
+  sourceAngle: { type: 'f32', default: 0.5357 },
 });

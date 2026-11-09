@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { type AssetRegistry, createMaterialLoader } from '@forgeax/engine-assets-runtime';
 import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
@@ -12,7 +13,7 @@ import {
 import { rhi } from '@forgeax/engine-rhi-null';
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { createStandardPbrArtifactReceipt, MaterialArtifactRegistry } from '@forgeax/engine-shader';
-import { ok, type ShaderEntryPointReads } from '@forgeax/engine-types';
+import { type MaterialAsset, ok, type ShaderEntryPointReads } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { installMaterialReadyShaders } from '../../../assets-runtime/src/material/runtime-shader';
@@ -1397,15 +1398,44 @@ function noOpSceneDataFeature(): RenderFeature<null> {
 }
 
 async function cookStandardMaterialIntoRegistry(assets: AssetRegistry) {
-  const guid = '019f0000-0000-7000-8000-0000000008d0';
-  const output = await createMaterialPackCooker().cook({
-    guid,
-    source: Materials.standard({
-      baseColor: [0.7, 0.5, 0.3, 1],
-      roughness: 0.5,
-      metallic: 0,
-    }),
-  });
+  return cookMaterialIntoRegistry(
+    assets,
+    '019f0000-0000-7000-8000-0000000008d0',
+    Materials.standard({ baseColor: [0.7, 0.5, 0.3, 1], roughness: 0.5, metallic: 0 }),
+  );
+}
+
+async function cookUnsupportedMorphMaterial(assets: AssetRegistry) {
+  return cookMaterialIntoRegistry(
+    assets,
+    '019f0000-0000-7000-8000-0000000008d1',
+    {
+      kind: 'material',
+      colorSpace: 'linear',
+      parameters: [{ name: 'strength', type: 'f32', default: 1 }],
+      passes: [
+        {
+          name: 'forward',
+          program: { module: 'regression::left', vertexEntry: 'vs_main', fragmentEntry: 'fs_main' },
+          renderState: { tags: { LightMode: 'Forward' } },
+        },
+      ],
+    },
+    [
+      fileURLToPath(
+        new URL('../../../runtime/src/__tests__/fixtures/material-programs/', import.meta.url),
+      ),
+    ],
+  );
+}
+
+async function cookMaterialIntoRegistry(
+  assets: AssetRegistry,
+  guid: string,
+  source: MaterialAsset,
+  roots: readonly string[] = [],
+) {
+  const output = await createMaterialPackCooker(roots).cook({ guid, source });
   const record = validateCookedMaterialRecord(
     (output.payload as { readonly cooked: unknown }).cooked,
   ).unwrap();
@@ -1645,16 +1675,16 @@ it('admits a real cooked Standard Registry snapshot through production surface s
     const publicationProgram = material.snapshot.materialPublication?.programs.find(
       (program) => program.pass === pass.name,
     );
-    const sourceTuple = [row.worldId, row.entityKey, Number(cooked.handle), passIndex] as const;
-    const contributor = standardSceneDataContributorForDispatch({
+    const contributor = standardSceneDataContributorForDispatch(
       row,
-      sourceTuple,
-      materialHandle: Number(cooked.handle),
-      materialShaderId: selectedProgramKey,
-      tags: (pass.renderState?.tags as Record<string, string> | undefined) ?? {},
-      lane: 'forward',
-      id: JSON.stringify(sourceTuple),
-    });
+      {
+        materialHandle: Number(cooked.handle),
+        materialShaderId: selectedProgramKey,
+        tags: (pass.renderState?.tags as Record<string, string> | undefined) ?? {},
+        passIndex: passIndex,
+      },
+      'forward',
+    );
     if (contributor === undefined) throw new Error('Cooked Standard pass did not enter coverage');
     expect(material.snapshot.materialPublication?.identity).toMatchObject({
       materialGuid: cooked.guid,
@@ -1761,7 +1791,7 @@ it.each([
 it.each([
   ['SSAO', 'ssao'],
   ['GTAO', 'gtao'],
-] as const)('admits %s only for complete visible Standard AO inputs', async (_label, algorithm) => {
+] as const)('admits %s Standard Morph and rejects incomplete custom AO inputs', async (_label, algorithm) => {
   for (const consumer of ['none', 'no-op', 'surface'] as const) {
     const requireErrors: unknown[] = [];
     const feature =
@@ -1787,6 +1817,15 @@ it.each([
       }
       const morphAdded = fixture.enableMorph();
       expect(morphAdded.ok).toBe(true);
+      fixture.update();
+      const morphAccepted = await completeSceneDataFrame(fixture);
+      expect(morphAccepted.frameId).toBeGreaterThan(lastReadyFrameId);
+      lastReadyFrameId = morphAccepted.frameId;
+      expect(fixture.errors).toEqual([]);
+      const unsupportedMaterial = await cookUnsupportedMorphMaterial(fixture.host.assetRegistry);
+      fixture.world
+        .set(fixture.entity, MeshRenderer, { materials: [unsupportedMaterial.handle] })
+        .unwrap();
       fixture.update();
       const unsupported = fixture.drawFrame();
       expect(unsupported.ok, JSON.stringify({ algorithm, consumer, errors: fixture.errors })).toBe(
@@ -1824,6 +1863,9 @@ it.each([
       }
       expect(fixture.renderer.inspect().frame.frameId).toBe(lastReadyFrameId);
 
+      fixture.world
+        .set(fixture.entity, MeshRenderer, { materials: [fixture.standardMaterial] })
+        .unwrap();
       const morphRemoved = fixture.disableMorph();
       expect(morphRemoved.ok).toBe(true);
       fixture.update();
@@ -1966,7 +2008,7 @@ it('returns producer-missing from a real camera-less Renderer view', async () =>
   }
 });
 
-it('rejects unsupported visible deformation and recovers on the next admitted candidate', async () => {
+it('rejects unsupported visible programs and recovers on the next admitted candidate', async () => {
   const requireErrors: unknown[] = [];
   const catalogs: SceneDataCatalog[] = [];
   const priorValidations: boolean[] = [];
@@ -2011,9 +2053,15 @@ it('rejects unsupported visible deformation and recovers on the next admitted ca
     expect(valueChangedOwner?.surfaceAdmissionRevision).toBe(initialOwner.surfaceAdmissionRevision);
     expect(fixture.renderer.inspect().featureGraph?.compileAttempts).toBe(steadyCompileAttempts);
     const initialAdmission = catalogs.at(-1)?.surfaceAdmissionIdentity;
-    const frameIdBeforeUnsupported = fixture.renderer.inspect().frame.frameId;
-
     fixture.enableMorph().unwrap();
+    fixture.update();
+    await completeSceneDataFrame(fixture);
+    expect(requireErrors).toEqual([]);
+    const frameIdBeforeUnsupported = fixture.renderer.inspect().frame.frameId;
+    const unsupportedMaterial = await cookUnsupportedMorphMaterial(fixture.host.assetRegistry);
+    fixture.world
+      .set(fixture.entity, MeshRenderer, { materials: [unsupportedMaterial.handle] })
+      .unwrap();
     fixture.update();
     const unsupported = fixture.drawFrame();
     expect(unsupported).toMatchObject({
@@ -2052,6 +2100,9 @@ it('rejects unsupported visible deformation and recovers on the next admitted ca
     expect(priorValidations.at(-1)).toBe(false);
     expect(fixture.renderer.inspect().frame.frameId).toBe(frameIdBeforeUnsupported);
 
+    fixture.world
+      .set(fixture.entity, MeshRenderer, { materials: [fixture.standardMaterial] })
+      .unwrap();
     fixture.disableMorph().unwrap();
     fixture.update();
     const recovered = fixture.drawFrame();
@@ -2088,7 +2139,7 @@ it('rejects unsupported visible deformation and recovers on the next admitted ca
   }
 });
 
-it('reports the exact visible MorphWeights Standard contributor as incomplete coverage', async () => {
+it('reports the exact visible MorphWeights custom contributor as incomplete coverage', async () => {
   const requireErrors: unknown[] = [];
   const feature = sceneDataConsumer(
     () => {},
@@ -2107,7 +2158,14 @@ it('reports the exact visible MorphWeights Standard contributor as incomplete co
     const added = fixture.enableMorph();
     expect(added.ok, added.ok ? '' : JSON.stringify(added.error)).toBe(true);
     fixture.update();
+    await completeSceneDataFrame(fixture);
+    expect(requireErrors).toEqual([]);
     const frameIdBeforeUnsupported = fixture.renderer.inspect().frame.frameId;
+    const unsupportedMaterial = await cookUnsupportedMorphMaterial(fixture.host.assetRegistry);
+    fixture.world
+      .set(fixture.entity, MeshRenderer, { materials: [unsupportedMaterial.handle] })
+      .unwrap();
+    fixture.update();
     const morphed = fixture.drawFrame();
     expect(morphed).toMatchObject({
       ok: false,
@@ -2143,7 +2201,17 @@ it('reports the exact visible MorphWeights Standard contributor as incomplete co
     const contributor = JSON.parse(missingIds[0] ?? 'null') as unknown[];
     expect(contributor[0]).toBe(0);
     expect(contributor[1]).toBe(fixture.entity);
-    expect(contributor[2]).toEqual(expect.any(Number));
+    expect(contributor[2]).toBe(Number(unsupportedMaterial.handle));
+    expect(unavailable.detail.missingContributors).toEqual([
+      expect.objectContaining({
+        sourceTuple: contributor,
+        reason: 'authored-program-not-standard-pbr',
+        deformation: 'morph',
+        morphWeightsPresent: true,
+        skinBindingPresent: false,
+        authoredModule: 'regression::left',
+      }),
+    ]);
     expect(contributor[3]).toEqual(expect.any(Number));
     expect(fixture.renderer.inspect().frame.frameId).toBe(frameIdBeforeUnsupported);
   } finally {

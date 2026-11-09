@@ -36,6 +36,7 @@ import {
   classifyCaptureAdapter,
   resolveBrowserExecutable,
 } from '../browser-capture.js';
+import type { StartupUiState } from '../host/startup-ui.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import type { BootstrapRoot, CaptureBackend, CaptureBackendObserved } from '../types.js';
@@ -62,8 +63,13 @@ export async function waitForBrowserToolHost(
 ): Promise<void> {
   const observation = await realm.waitForFunction(
     (key) => {
+      const startup = (
+        Reflect.get(globalThis, '__forgeaxStartup') as { inspect?(): StartupUiState } | undefined
+      )?.inspect?.();
+      if (startup?.phase === 'failed' && startup.recovery !== 'retrying')
+        return (startup.diagnostics || startup.message || 'Engine startup failed').slice(0, 16_384);
       const fatal = document.querySelector('#forgeax-fatal');
-      if (fatal?.checkVisibility())
+      if (startup === undefined && fatal?.checkVisibility())
         return (
           document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
           fatal.textContent?.trim() ||

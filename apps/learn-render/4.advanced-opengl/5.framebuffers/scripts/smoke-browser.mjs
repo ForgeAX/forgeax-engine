@@ -21,7 +21,8 @@ await verifyDemoCapture({
   pkg: '@forgeax/app-learn-render-4-advanced-opengl-5-framebuffers',
   label: 'learn-render 4.5 framebuffers',
   mode: 'pixel',
-  liveHook: '__captureFramebuffers',
+  capturePrepareHook: '__prepareFramebuffersCapture',
+  liveHook: '__readFramebuffersPixels',
   browserReplayHook: '__replayFramebuffersCapture',
   pixelVerdictOwner: 'browser-fresh',
   // The shared verifier checks the public capture seam; Vite's live connection is not frame readiness.

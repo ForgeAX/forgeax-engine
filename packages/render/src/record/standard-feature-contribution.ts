@@ -204,7 +204,7 @@ function resolveFeatureTargets(
   return { ok: true, resolveTarget, viewAccesses };
 }
 
-function resolveLightingBinding(
+export function resolveLightingBinding(
   frame: RenderGraphFrame,
   pipeline: import('@forgeax/engine-rhi').RenderPipeline,
 ): BindGroup | undefined {

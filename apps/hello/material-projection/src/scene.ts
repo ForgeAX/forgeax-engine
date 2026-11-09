@@ -11,6 +11,7 @@ import {
   Materials,
   MeshFilter,
   MeshRenderer,
+  ShadowParticipation,
   orthographic,
 } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
@@ -275,7 +276,7 @@ interface SceneKit {
     material: number,
     rotation?: ReturnType<typeof quat.create>,
     scale?: readonly [number, number, number],
-  ) => unknown;
+  ) => EntityHandle;
   readonly checkerTexture: TextureValue;
   readonly dimpleTexture: TextureValue;
   readonly sphereMesh: number;
@@ -321,7 +322,7 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
 
   // Object +X faces the camera after a -90 degree yaw; the non-uniform scale
   // exercises the cofactor normal transform. A correct decode is flat-lit.
-  spawn(
+  const objectNormal = spawn(
     [OBJECT_NORMAL_X, TOP_Y, 0],
     sphereMesh,
     material(
@@ -337,6 +338,12 @@ if (!(sceneAssets instanceof AssetRegistry)) throw new Error('Scene requires its
     quat.fromAxisAngle(quat.create(), [0, 1, 0], -Math.PI / 2),
     [SPHERE_RADIUS, SPHERE_RADIUS * 1.1, SPHERE_RADIUS * 0.8],
   );
+  // This oracle isolates normal decoding from the geometric self-shadow at
+  // the sphere's rim. Other subjects retain ordinary shadow participation.
+  world.addComponent(objectNormal, {
+    component: ShadowParticipation,
+    data: { receive: false },
+  }).unwrap();
 
   const sphereScale: [number, number, number] = [SPHERE_RADIUS, SPHERE_RADIUS, SPHERE_RADIUS];
   const sphereAt = (x: number, handle: number) =>

@@ -47,7 +47,6 @@ export interface SurfaceUiInput {
   readonly sampleTimeMs: number;
   readonly width: number;
   readonly height: number;
-  readonly uiOnly: boolean;
   readonly colorSpace: OutputColorSpace;
   readonly captureEncodedOutput: boolean;
 }

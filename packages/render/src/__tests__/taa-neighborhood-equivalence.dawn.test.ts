@@ -21,6 +21,8 @@ const WIDTH = 9;
 const HEIGHT = 9;
 const SECONDARY_SIZE = 7;
 const READBACK_ROW_BYTES = 256;
+// TaaResolveParams: two f32 jitter words, eight u32/f32 words and padding.
+const PARAMS_BYTES = 48;
 const HALF_BYTES_PER_PIXEL = 8;
 const ATTACHMENT_READBACK_BYTES = READBACK_ROW_BYTES * HEIGHT;
 const PINNED_BASELINE_SHA256 = '4a7a7c7def9cb860da2a92ad960aa6be1d41d6c6551e0e77093cd5d2cc99ea9d';
@@ -562,6 +564,24 @@ async function runPair(
       outputUsage,
     ),
   ] as const;
+  // Flickering history input (binding 13) and the output both pipelines write.
+  // The pinned baseline predates it; equivalence is checked with it disabled.
+  const historyFlicker = createSurface(
+    device,
+    'taa-equivalence-history-flicker',
+    WIDTH,
+    HEIGHT,
+    'rgba8unorm',
+    sourceUsage,
+  );
+  const flickerSink = createSurface(
+    device,
+    'taa-equivalence-flicker-sink',
+    WIDTH,
+    HEIGHT,
+    'rgba8unorm',
+    outputUsage,
+  );
   // Sources that declare the row entry consume their Renderer row copy.
   const secondaryRows = createSurface(
     device,
@@ -580,13 +600,15 @@ async function runPair(
     currentCoverage,
     historyStability,
     secondaryReactivity,
+    historyFlicker,
+    flickerSink,
     ...baselineOutputs,
     ...productionOutputs,
   ];
   const params = device
     .createBuffer({
       label: 'taa-equivalence-params',
-      size: 32,
+      size: PARAMS_BYTES,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     })
     .unwrap();
@@ -636,7 +658,7 @@ async function runPair(
         : testCase.secondaryReactivity,
       secondarySourceSize.width * 4,
     );
-    const payload = new ArrayBuffer(32);
+    const payload = new ArrayBuffer(PARAMS_BYTES);
     new Float32Array(payload).set([testCase.params.jitterX, testCase.params.jitterY]);
     const words = new Uint32Array(payload);
     words[2] = Number(testCase.params.historyValid);
@@ -644,6 +666,9 @@ async function runPair(
     words[4] = Number(testCase.params.hasSecondary);
     words[5] = Number(testCase.currentCoverage !== undefined);
     words[6] = 1;
+    // words[7] is flickerEnabled and stays zero: the pinned baseline has no
+    // flickering analysis, so equivalence holds with that analysis off. The
+    // flicker history written beside the resolve is a separate attachment.
     device.queue.writeBuffer(params, 0, new Uint8Array(payload)).unwrap();
 
     const inputLayout = device
@@ -655,7 +680,7 @@ async function runPair(
             visibility: GPU_SHADER_STAGE_FRAGMENT,
             texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
           })),
-          ...[4, 6, 10, 11, 12].map((binding) => ({
+          ...[4, 6, 10, 11, 12, 13].map((binding) => ({
             binding,
             visibility: GPU_SHADER_STAGE_FRAGMENT,
             texture: { sampleType: 'unfilterable-float' as const, viewDimension: '2d' as const },
@@ -728,12 +753,18 @@ async function runPair(
           fragment: {
             module,
             entryPoint: 'fs_main',
-            targets: [{ format: 'rgba16float' }, { format: 'rgba16float' }, { format: 'r8unorm' }],
+            targets: [
+              { format: 'rgba16float' },
+              { format: 'rgba16float' },
+              { format: 'r8unorm' },
+              // Sources that declare the flickering history output write it here.
+              ...(source.includes('@location(3)') ? [{ format: 'rgba8unorm' as const }] : []),
+            ],
           },
           primitive: { topology: 'triangle-list' },
         })
       ).unwrap();
-      return { rows, resolve };
+      return { rows, resolve, flicker: source.includes('@location(3)') };
     };
     const baselinePipeline = await makePipeline(baselineSource, 'taa-equivalence-baseline');
     const productionPipeline = await makePipeline(productionSource, 'taa-equivalence-production');
@@ -768,6 +799,7 @@ async function runPair(
               },
             },
             { binding: 12, resource: { kind: 'textureView', value: source } },
+            { binding: 13, resource: { kind: 'textureView', value: historyFlicker.view } },
           ],
         })
         .unwrap();
@@ -802,13 +834,15 @@ async function runPair(
       pass.draw(3, 1, 0, 0);
       pass.end();
     };
+    const resolveOutputs = (pipeline: typeof baselinePipeline, outputs: readonly Surface[]) =>
+      pipeline.flicker ? [...outputs, flickerSink] : outputs;
     const draw = (pipeline: typeof baselinePipeline, outputs: readonly Surface[]) => {
       if (pipeline.rows === undefined) {
-        fullscreen(pipeline.resolve, rawInputGroup, outputs);
+        fullscreen(pipeline.resolve, rawInputGroup, resolveOutputs(pipeline, outputs));
         return;
       }
       fullscreen(pipeline.rows, rowsGroup, [secondaryRows]);
-      fullscreen(pipeline.resolve, rowsInputGroup, outputs);
+      fullscreen(pipeline.resolve, rowsInputGroup, resolveOutputs(pipeline, outputs));
     };
     draw(baselinePipeline, baselineOutputs);
     draw(productionPipeline, productionOutputs);

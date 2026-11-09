@@ -158,7 +158,8 @@ describe('direct-light URP browser producer evidence', () => {
   }, 120_000);
 
   it('captures linear HDR from the current producer attachment', async () => {
-    const capture = await captureBrowser(sceneCase);
+    // Attachment provenance needs two ready pictures, not shadow convergence.
+    const capture = await captureSession.capture(sceneCase, undefined, 'base', 2);
     const observation = capture.observations?.linearHdr;
 
     expect(observation?.status).toBe('ready');

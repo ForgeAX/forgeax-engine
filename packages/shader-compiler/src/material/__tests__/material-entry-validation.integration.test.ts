@@ -563,6 +563,7 @@ describe('selected material graphics entries', () => {
       expect(wgsl).toContain('sceneTransforms');
       expect(wgsl).toContain('shadowCasterCascade');
       expect(wgsl).toContain('applyViewClipping');
+      // The shadow pass is not on the discard-free lane: its LOD coverage stays unconditional.
       expect(wgsl).toContain('applyLodCoverage');
       expect(wgsl).not.toContain('material.metallic');
     } finally {

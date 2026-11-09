@@ -199,7 +199,7 @@ export function formatCodeFileLineLimitReport(result) {
     `[code-file-lines] FAIL total=${result.findings.length} files=${result.codeFileCount} max=${CODE_FILE_LINE_LIMIT}`,
   );
   lines.push(
-    '[code-file-lines] HINT split the owning boundary into smaller code files; there is no baseline, whitelist, or suppress path.',
+    '[code-file-lines] HINT first optimize the implementation: remove duplication and increase reuse where it simplifies the code. If the file still exceeds the limit, split by owning responsibility. There is no baseline, whitelist, or suppress path.',
   );
 
   return { status: 1, stdout: '', stderr: `${lines.join('\n')}\n` };

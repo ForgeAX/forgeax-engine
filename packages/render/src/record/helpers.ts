@@ -11,6 +11,7 @@ import { isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { CameraSnapshot } from '../render-contract';
 import type {
   ExtractedFrame,
+  LightRoster,
   MaterialSnapshot,
   SkyboxSnapshot,
   SkylightSnapshot,
@@ -110,6 +111,26 @@ export function warnMultiSkybox(
         `Keep a single SkyboxBackground per scene.`,
     );
   }
+}
+
+/**
+ * Once-warn when more than one DirectionalLight sets castShadow. There is one
+ * CSM, owned by the first castShadow light; the rest render unshadowed. Names
+ * the owner and the ignored entities, once per RendererState lifetime.
+ */
+export function warnIgnoredDirectionalShadowCasters(
+  frameState: Pick<RenderFrameState, 'warnedIgnoredDirectionalShadow'>,
+  lights: Pick<LightRoster, 'directional' | 'ignoredDirectionalShadowCasters'>,
+): void {
+  const ignored = lights.ignoredDirectionalShadowCasters ?? [];
+  if (frameState.warnedIgnoredDirectionalShadow || ignored.length === 0) return;
+  frameState.warnedIgnoredDirectionalShadow = true;
+  console.warn(
+    `[forgeax] DirectionalLight: ${ignored.length + 1} DirectionalLights set castShadow; ` +
+      `entity ${lights.directional?.entity ?? 0} owns the single CSM shadow and ` +
+      `${ignored.length === 1 ? 'entity' : 'entities'} ${ignored.join(', ')} render unshadowed. ` +
+      'Set castShadow on one DirectionalLight only.',
+  );
 }
 
 /**

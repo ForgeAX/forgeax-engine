@@ -467,6 +467,113 @@ passes and find the dominant GI stage. A software adapter such as lavapipe
 emulates the GPU on the CPU, so its absolute numbers are not frame budgets.
 `scripts/measure-replay.mjs --timing` records the slowest passes into JSON.
 
+### Replay GPU benchmark
+
+`session.benchmarkPasses(options)` turns the single timed replay into a
+deterministic GPU benchmark in the style of RenderDoc replay profiling, and
+`session.compareWith(candidate, options)` times two tapes against each other.
+The devkit CLI wraps both:
+
+```sh
+forgeax rhi timing frame.rhitape                          # table: union p50 + 95% CI, drift, top passes, preflight
+forgeax rhi timing frame.rhitape --json                   # every pass, sample, interval and check
+forgeax rhi timing frame.rhitape --ci-ms 0.05 --max-repeat 200
+forgeax rhi timing frame.rhitape --skip 'shadow'          # paired cost delta with a verdict
+forgeax rhi timing after.rhitape --compare before.rhitape # interleaved A/B, after minus before
+forgeax rhi timing frame.rhitape --isolate                # per-pass submit + wait, sum >= real frame
+forgeax rhi timing frame.rhitape --restore reload --pipeline-depth 0   # the old re-upload path
+```
+
+- **Steady restore (default).** The first replay keeps every bootstrap
+  resource alive, adds `COPY_SRC | COPY_DST` to mutable buffers and
+  single-sample textures, and copies their capture-start contents into
+  pristine GPU twins once. Each later replay restores only mutable state with
+  GPU-side copies (no CPU upload, no resource re-creation) and replays the
+  frame's events. `restore.steady` reports the counts and bytes copied and
+  `unrestored` lists resources steady mode cannot reset (multisampled, or
+  mappable for reading); a tape that destroys a bootstrap resource or maps an
+  upload buffer for writing falls back to `reload` with `fallbackReason`.
+- **Pipelined timestamps.** Replays are submitted back to back into two banks
+  of `pipelineDepth` (default 4) timestamp query sets; a bank's readbacks
+  drain only when it is reused, so the GPU never idles between measured
+  replays. `pipelineDepth: 0` waits for every readback; `isolate` always does.
+- **Repeat, warm-up and convergence.** `warmup` (default 3) replays are
+  discarded. `repeat` (default 20) replays are measured; with
+  `ciTargetNanoseconds` (`--ci-ms`) repeat extends in steps until the 95%
+  interval of the union p50 (or of the paired delta) is at most the target,
+  up to `maxRepeat` (default 200), and `convergence` says whether it was met.
+- **Statistics.** Per pass and per frame: `TimingStats { count, min, p50, p95,
+  max, mean, stddev }` in nanoseconds. Each variant adds `unionP50Interval`
+  (order-statistic 95% interval of the median) and `drift` (least-squares
+  trend, first/second half p50 shift, lag-1 autocorrelation, `stable`); a
+  slow wave shows as `stable: false`. `samples` keeps every measured frame.
+- **Whole-frame time.** Tile-based GPUs (Apple, mobile) run consecutive passes
+  concurrently, so per-pass intervals overlap and their `sum` overcounts the
+  frame. `union` is the time at least one pass was open; `envelope` runs from
+  the first begin to the last end and includes idle gaps. Quote `union`.
+- **Missing timestamps.** `timestampCoverage.missingPasses` names every
+  executed pass whose interval was `unwritten`, `zero` or `inverted` and in how
+  many replays; those passes are not in `union`.
+- **Isolated mode.** `isolate: true` finishes the encoder before and after
+  every pass and submits each piece alone, waiting for `onSubmittedWorkDone`.
+  Isolation removes overlap and parallelism, so the isolated sum is at least
+  the real frame; use it to read a pass's own cost. Debug groups are dropped.
+- **Ablation.** `skip: { passLabel, passIndices, workIndices }` (`--skip`,
+  `--skip-passes`, `--skip-works`) adds an ablated variant. Base and ablated
+  replays alternate in ABBA order; `ablated.delta` holds the paired
+  base-minus-ablated statistics and `ablated.unionVerdict` a bootstrap 95%
+  interval of the median union delta, `significant` when it excludes 0. A
+  skipped pass leaves stale or cleared targets that later passes still read:
+  **the delta is a cost estimate, not a correct image**, and a shadow raster
+  skip keeps shadow sampling in its consumers.
+- **Comparison.** `compareWith` runs the baseline and candidate sessions (each
+  on its own device) in alternating chunks of `2 * pipelineDepth` replays
+  (A B B A ...), each chunk drained before the other side starts, so clock
+  drift lands on both. It reports both sides, the paired candidate-minus-
+  baseline `delta` with `unionVerdict`, per-pass deltas matched by label and
+  occurrence, and `unmatchedPasses`.
+
+The devkit `rhi.timing` operation adds a preflight and an environment block:
+the replay backend and `timestamp-query` must be present (otherwise
+`replay-backend-unavailable` / `replay-capability-mismatch`); timestamp
+quantization must be off (declared by the provider, and checked on the data:
+all pass minima on the 2^16 ns grid fail); GPU utilization is sampled before
+(busiest of four samples over 1.5 s) and after the run, and at or above
+`maxGpuPercent` (default 5) the result is `valid: false` with
+`invalidReasons`; `--require-idle` refuses to start instead (`gpu-busy`). CPU
+load, coverage, drift and convergence are warnings. `environment` records the
+adapter, build revision and dirty state, tape path, digest and size, start time
+and elapsed time. `--timeout-ms` (default 600000) fails with `timing-timeout`
+and `{ timeoutMs, elapsedMs, stage }`.
+
+Measured on r2-searchlight (Apple M4 Pro, Metal through Dawn, 110 passes,
+266 MB restored per replay, 40 measured replays, idle GPU):
+
+| | union p50 | 95% CI | sd | drift | wall / replay |
+| --- | --- | --- | --- | --- | --- |
+| live game, 15 s | 17.2 ms | | 2.3 ms | | 17.3 ms |
+| `--restore reload --pipeline-depth 0` | 23.1 / 23.6 ms | 6 ms wide | 4.6–5.1 ms | wave, lag-1 0.8 | 70 ms |
+| `--pipeline-depth 0` (steady) | 15.1 ms | 2.7 ms wide | 2.3 ms | ramp 11.5 → 19 | 27 ms |
+| default (steady, depth 4) | 11.30 / 11.32 ms | 0.03–0.04 ms wide | 0.20–0.25 ms | stable | 19 ms |
+
+Any idle gap between replays lets the Apple GPU clock fall, and replay time
+rises with it: re-uploading the tape (reload) or waiting for each readback
+(depth 0) both drift. Back-to-back steady replay holds the clock and reads the
+frame's cost at a sustained clock, which is lower than the live game's frame
+time (17.2 ms); compare replay numbers with replay numbers, not with live ms.
+Paired deltas shrink to sub-0.1 ms intervals: shadow raster skip 2.89 ms
+[2.85, 2.97], bloom 0.50 [0.41, 0.53], FXAA 0.24 [0.21, 0.26].
+
+Compared with live in-game timing, replay has no CPU, vsync, frame pacing or
+compositor noise and is comparable across commits for the same tape and
+device. It does not include cross-frame overlap, frame-to-frame cache state or
+shader-level feature toggles. Run benchmarks in a quiet machine slot: other GPU
+work shifts the numbers, which is what the preflight checks for. Dawn rounds
+timestamps to 2^16 ticks (about 65.5 us on Metal) unless the
+`timestamp_quantization` toggle is disabled, which the devkit Node GPU does. A
+Dawn build without timestamp writes for empty compute passes reports them in
+`missingPasses` as `zero`.
+
 ## Structured errors
 
 The public operation boundary uses `RhiDebugError`. Consumers should narrow
@@ -724,3 +831,13 @@ combine a broad resource kind with an unrelated role. Recorded tape kinds and
 the serialized protocol remain owned by the tape schema.
 
 FrameModel pipeline availability is a discriminated result: `available` guarantees a captured pipeline handle, kind, descriptor and shader roster; `unavailable` carries a reason and an empty roster. Missing shader source remains `null` within an available pipeline. Pipeline and shader indexes retain their admitted event kinds.
+
+## Buffer compatibility capture
+
+Recorded uploads and index shadows use the shared RHI source-range conversion:
+TypedArray offsets/counts are elements; stored blobs and event sizes are bytes.
+Subview offsets, remaining ranges and explicit zero retain their meaning. Copy
+shorthand records the actual source size from the existing descriptor table,
+then forwards the explicit size. No additional resource registry is introduced.
+The owning buffer compatibility regression checks the recorded blob and event
+against the forwarded upload. See [CI compatibility](../../scripts/ci/README.md#pinned-webgpu-compatibility).

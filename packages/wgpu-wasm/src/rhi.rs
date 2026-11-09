@@ -152,7 +152,7 @@ thread_local! {
     // the pointer-cast path either read uninitialized memory or wgpu-bindgen
     // had moved the box mid-call. Cloning out of a thread-local registry
     // sidesteps both failure modes.
-    static DEVICE_REGISTRY: RefCell<HashMap<u32, (wgpu::Device, wgpu::Queue)>> = RefCell::new(HashMap::new());
+    static DEVICE_REGISTRY: RefCell<HashMap<u32, DeviceRegistration>> = RefCell::new(HashMap::new());
     static DEVICE_ADAPTER_REGISTRY: RefCell<HashMap<u32, wgpu::Adapter>> = RefCell::new(HashMap::new());
     // bug-20260610 v18: TextureView / Sampler / Buffer registries.
     // createBindGroup re-acquires resource handles every frame; the
@@ -249,14 +249,111 @@ fn lookup_bgl(token: u32) -> Option<wgpu::BindGroupLayout> {
     BGL_REGISTRY.with(|r| r.borrow().get(&token).cloned())
 }
 
-fn register_device(token: u32, device: wgpu::Device, queue: wgpu::Queue) {
+struct DeviceRegistration {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    loss: std::rc::Weak<RefCell<DeviceLossState>>,
+}
+
+#[derive(Default)]
+struct DeviceLossState {
+    callback: Option<js_sys::Function>,
+    lost: Option<(String, String)>,
+}
+
+fn notify_device_loss(state: &std::rc::Rc<RefCell<DeviceLossState>>, reason: &str, message: &str) {
+    let callback = {
+        let mut state = state.borrow_mut();
+        if state.lost.is_some() {
+            return;
+        }
+        state.lost = Some((reason.to_owned(), message.to_owned()));
+        state.callback.take()
+    };
+    if let Some(callback) = callback {
+        let _ = callback.call2(
+            &JsValue::UNDEFINED,
+            &JsValue::from_str(reason),
+            &JsValue::from_str(message),
+        );
+    }
+}
+
+fn register_device(
+    token: u32,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    loss: &std::rc::Rc<RefCell<DeviceLossState>>,
+) {
     DEVICE_REGISTRY.with(|r| {
-        r.borrow_mut().insert(token, (device, queue));
+        r.borrow_mut().insert(
+            token,
+            DeviceRegistration {
+                device,
+                queue,
+                loss: std::rc::Rc::downgrade(loss),
+            },
+        );
     });
 }
 
 fn lookup_device(token: u32) -> Option<(wgpu::Device, wgpu::Queue)> {
-    DEVICE_REGISTRY.with(|r| r.borrow().get(&token).cloned())
+    DEVICE_REGISTRY.with(|r| {
+        r.borrow()
+            .get(&token)
+            .map(|entry| (entry.device.clone(), entry.queue.clone()))
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+struct ContextLossListener {
+    target: web_sys::EventTarget,
+    callback: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for ContextLossListener {
+    fn drop(&mut self) {
+        let _ = self.target.remove_event_listener_with_callback(
+            "webglcontextlost",
+            self.callback.as_ref().unchecked_ref(),
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn listen_context_loss(
+    device: &wgpu::Device,
+    loss: &std::rc::Rc<RefCell<DeviceLossState>>,
+) -> Result<Option<ContextLossListener>, JsValue> {
+    let Some(hal) = (unsafe { device.as_hal::<wgpu::hal::api::Gles>() }) else {
+        return Ok(None);
+    };
+    let gl = &hal.context().webgl2_context;
+    let Some(canvas) = gl.canvas() else {
+        return Ok(None);
+    };
+    // Borrowed native canvases need not implement DOM events. Their active
+    // queue still observes is_context_lost below; never invent host support.
+    if !js_sys::Reflect::get(&canvas, &JsValue::from_str("addEventListener"))?.is_function()
+        || !js_sys::Reflect::get(&canvas, &JsValue::from_str("removeEventListener"))?.is_function()
+    {
+        return Ok(None);
+    }
+    let target: web_sys::EventTarget = canvas.unchecked_into();
+    let state = loss.clone();
+    let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Permit browser restoration. The old wgpu device remains lost; Renderer
+        // must build a new generation rather than reusing invalid GL resources.
+        event.prevent_default();
+        notify_device_loss(&state, "unknown", "WebGL context lost");
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    target
+        .add_event_listener_with_callback("webglcontextlost", callback.as_ref().unchecked_ref())?;
+    if gl.is_context_lost() {
+        notify_device_loss(loss, "unknown", "WebGL context lost");
+    }
+    Ok(Some(ContextLossListener { target, callback }))
 }
 
 fn register_device_adapter(token: u32, adapter: wgpu::Adapter) {
@@ -339,6 +436,9 @@ pub struct RhiWgpuAdapter {
 
 #[wasm_bindgen]
 pub struct RhiWgpuDevice {
+    loss: std::rc::Rc<RefCell<DeviceLossState>>,
+    #[cfg(target_arch = "wasm32")]
+    context_loss_listener: RefCell<Option<ContextLossListener>>,
     inner: wgpu::Device,
     queue: wgpu::Queue,
     queue_completion: std::rc::Rc<RefCell<js_sys::Promise>>,
@@ -348,6 +448,7 @@ pub struct RhiWgpuDevice {
 
 #[wasm_bindgen]
 pub struct RhiWgpuQueue {
+    loss: std::rc::Rc<RefCell<DeviceLossState>>,
     inner: wgpu::Queue,
     device: wgpu::Device,
     completion: std::rc::Rc<RefCell<js_sys::Promise>>,
@@ -731,7 +832,26 @@ impl RhiWgpuAdapter {
         // path (which panicked with "Device[Id(0,0)] is no longer alive" on
         // the WebGL2 fallback path).
         let token = alloc_token();
-        register_device(token, device.clone(), queue.clone());
+        let loss = std::rc::Rc::new(RefCell::new(DeviceLossState::default()));
+        register_device(token, device.clone(), queue.clone(), &loss);
+        device.set_device_lost_callback(move |reason, message| {
+            let state = DEVICE_REGISTRY.with(|registry| {
+                registry
+                    .borrow()
+                    .get(&token)
+                    .and_then(|entry| entry.loss.upgrade())
+            });
+            if let Some(state) = state {
+                let reason = if reason == wgpu::DeviceLostReason::Destroyed {
+                    "destroyed"
+                } else {
+                    "unknown"
+                };
+                notify_device_loss(&state, reason, &message);
+            }
+        });
+        #[cfg(target_arch = "wasm32")]
+        let context_loss_listener = RefCell::new(listen_context_loss(&device, &loss)?);
         register_device_adapter(token, self.inner.clone());
         // bug-20260622 R5 WS2: register the on_uncaptured_error global callback
         // so submit-period wgpu validation errors land in a JS-visible slot
@@ -752,6 +872,9 @@ impl RhiWgpuAdapter {
             .flags
             .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
         Ok(RhiWgpuDevice {
+            loss,
+            #[cfg(target_arch = "wasm32")]
+            context_loss_listener,
             inner: device,
             queue,
             token,
@@ -793,16 +916,30 @@ impl RhiWgpuDevice {
 #[wasm_bindgen]
 impl RhiWgpuDevice {
     #[wasm_bindgen(js_name = registerLostCallback)]
-    pub fn register_lost_callback(&self, js_callback: js_sys::Function) {
-        let closure: Closure<dyn FnMut(String, String)> =
-            Closure::wrap(Box::new(move |reason: String, message: String| {
-                let _ = js_callback.call2(
-                    &JsValue::NULL,
-                    &JsValue::from_str(&reason),
-                    &JsValue::from_str(&message),
-                );
-            }));
-        closure.forget();
+    pub fn register_lost_callback(&self, callback: js_sys::Function) {
+        let lost = {
+            let mut state = self.loss.borrow_mut();
+            if state.lost.is_none() {
+                state.callback = Some(callback.clone());
+            }
+            state.lost.clone()
+        };
+        if let Some((reason, message)) = lost {
+            let _ = callback.call2(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(&reason),
+                &JsValue::from_str(&message),
+            );
+        }
+    }
+
+    pub fn destroy(&self) {
+        #[cfg(target_arch = "wasm32")]
+        self.context_loss_listener.borrow_mut().take();
+        self.inner.destroy();
+        // Native completion owns the destroyed notification. Poll once for an
+        // idle device; in-flight queue observers continue the same device poll.
+        let _ = self.inner.poll(wgpu::PollType::Poll);
     }
 
     #[wasm_bindgen(js_name = createTexture, catch)]
@@ -1391,6 +1528,7 @@ impl RhiWgpuDevice {
     #[wasm_bindgen(getter, js_name = queue)]
     pub fn queue(&self) -> RhiWgpuQueue {
         RhiWgpuQueue {
+            loss: self.loss.clone(),
             inner: self.queue.clone(),
             device: self.inner.clone(),
             completion: self.queue_completion.clone(),
@@ -2137,6 +2275,7 @@ fn detach_mapped_buffer(bytes: &js_sys::ArrayBuffer) -> Result<(), JsValue> {
 /// Short-lived completion observation, explicitly released by the JS driver.
 #[wasm_bindgen]
 pub struct RhiWgpuCompletionRequest {
+    loss: std::rc::Rc<RefCell<DeviceLossState>>,
     device: wgpu::Device,
     completed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -2149,6 +2288,9 @@ impl RhiWgpuCompletionRequest {
             let device = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() }
                 .ok_or_else(|| JsValue::from_str("Queue completion requires its WebGL2 device"))?;
             if device.context().webgl2_context.is_context_lost() {
+                // Notify before rejecting completion so Renderer sees a physical
+                // device loss rather than an unconfirmed generic queue fault.
+                notify_device_loss(&self.loss, "unknown", "WebGL context lost");
                 return Err(JsValue::from_str(
                     "WebGL context lost before queue completion",
                 ));
@@ -2176,13 +2318,18 @@ impl RhiWgpuQueue {
     ) -> Result<js_sys::Promise, JsValue> {
         let queue = self.inner.clone();
         let device = self.device.clone();
+        let loss = self.loss.clone();
         let start = Closure::once_into_js(move || -> RhiWgpuCompletionRequest {
             let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let callback = completed.clone();
             queue.on_submitted_work_done(move || {
                 callback.store(true, std::sync::atomic::Ordering::Release);
             });
-            RhiWgpuCompletionRequest { device, completed }
+            RhiWgpuCompletionRequest {
+                device,
+                completed,
+                loss,
+            }
         });
         let previous = self.completion.borrow().clone();
         let result = driver

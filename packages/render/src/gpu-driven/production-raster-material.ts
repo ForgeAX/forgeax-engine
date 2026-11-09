@@ -1635,14 +1635,13 @@ export class MaterialAbiRasterAdapter {
         }),
       );
     }
-    // The factory compiles the selected program; the fixed legacy module was
-    // compiled from its own producer artifact. Each declares its own overrides.
-    const discardArtifact =
-      this.pipelineFactory === undefined ? program?.artifact : selectedArtifact;
+    // Discards are a compile-time program axis. The factory compiles the
+    // selected program; the fixed legacy module is the discard-free program
+    // and has no pipeline constant to carry them.
     const surfaceDiscards =
-      discardArtifact === undefined
+      this.pipelineFactory === undefined
         ? undefined
-        : effectiveStandardSurfaceDiscards(discardArtifact, standardSurfaceDiscards);
+        : effectiveStandardSurfaceDiscards(selectedArtifact, standardSurfaceDiscards);
     const constants = materialAbiRasterConstants(standardTextureMask, surfaceDiscards);
     // Projection identity and shader UV count already determine the aliased
     // layout. Do not build a temporary GPU descriptor just to look up its PSO.

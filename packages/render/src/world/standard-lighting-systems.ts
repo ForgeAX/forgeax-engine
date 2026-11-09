@@ -8,7 +8,7 @@ import {
   writeShadowParamsBuffer,
 } from '../record/frame-lighting';
 import type { RenderFrameState } from '../record/frame-snapshot';
-import { prepareViewSky } from '../record/helpers';
+import { prepareViewSky, warnIgnoredDirectionalShadowCasters } from '../record/helpers';
 import {
   type PipelineState,
   type RenderSystemInternals,
@@ -227,9 +227,18 @@ function prepareViewStandardLighting(
     const lighting = runRecordProfilePhase(
       recordProfileRunner(internals.profiler?.activeSession()),
       'record/scene-state/lighting-prep',
-      () => prepareFrameLighting(internals, frameState, lights, camera, pipelineState ?? undefined),
+      () =>
+        prepareFrameLighting(
+          internals,
+          frameState,
+          lights,
+          camera,
+          pipelineState ?? undefined,
+          frame.renderables,
+        ),
     );
     prepareViewSky(internals, resourceWorld, frameState, frame);
+    warnIgnoredDirectionalShadowCasters(frameState, frame.lights);
     if (lighting.ok) {
       warnZeroLightStandard(
         frameState,

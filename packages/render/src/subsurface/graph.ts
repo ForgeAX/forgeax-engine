@@ -80,7 +80,7 @@ export function addSubsurfaceDiffusion(
         const internal = frame as _InternalRenderPipelineContext;
         const device = frame.runtime.device;
         if (state === undefined) {
-          const code = internal.runtime.standardDeferredShaders?.subsurface;
+          const code = internal.runtime.standardSceneShaders?.subsurface;
           if (code === undefined)
             throw new RhiError({
               code: 'shader-compile-failed',
@@ -175,7 +175,7 @@ export function addSubsurfaceDiffusion(
         const internal = frame as _InternalRenderPipelineContext;
         const device = frame.runtime.device;
         if (composition === undefined) {
-          const code = internal.runtime.standardDeferredShaders?.subsurface;
+          const code = internal.runtime.standardSceneShaders?.subsurface;
           const factory = frame.runtime.shaderModuleFactory;
           if (code === undefined || factory === undefined)
             throw new RhiError({

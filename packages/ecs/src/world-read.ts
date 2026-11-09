@@ -4,7 +4,7 @@
 // scene projections. It exposes semantic scalar/array reads, never the table,
 // archetype, buffer-pool, or mutation stores behind those reads.
 
-import type { Component } from './component';
+import type { Component, ScalarFieldType, TypedArrayFor } from './component';
 import type { EntityHandle } from './entity-handle';
 
 /** Stable identity for the World-owned semantic read capability. */
@@ -40,5 +40,15 @@ export interface WorldRead {
     component: Component,
     fieldName: string,
     index: number,
+  ) => number | undefined;
+  /** Copy a whole numeric array into caller-owned output, preserving its remaining tail.
+   * Returns its logical count, or undefined without writing for absence / insufficient capacity.
+   * Inline columns need no transient view; overlapping typed output retains native copy semantics.
+   */
+  readonly copyArray: (
+    entity: EntityHandle,
+    component: Component,
+    fieldName: string,
+    target: TypedArrayFor<ScalarFieldType>,
   ) => number | undefined;
 }

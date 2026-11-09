@@ -3145,26 +3145,18 @@ export async function runSurfaceOpticalOracle(
     for (let frame = 0; frame < quality.staticFrames; frame += 1) {
       renderer.setSurfaceDynamicInput({ ...dynamicInput, frameTime: 0 });
       world.update(1 / 60).unwrap();
-      if (frame === quality.staticFrames - 1) {
-        const armed = renderer.requestObservation?.(['linear-hdr']);
-        if (armed === undefined || !armed.ok) {
-          throw new Error('surface-optical: linear-hdr observation could not be armed');
-        }
-      }
-      const captured = await captureVfxFrame(
-        frame === quality.staticFrames - 1 ? diagnostics?.recorder : undefined,
-        async () => {
-          const drawn = renderer.draw({
-            leases: [attached.value],
-            camera: { lease: attached.value },
-            environment: { lease: attached.value },
-            geometryLane: 'direct',
-          });
-          if (!drawn.ok) throw drawn.error;
-          const completed = await drawn.value.completed;
-          if (!completed.ok) throw completed.error;
-          return drawn.value;
-        },
+      const request = {
+        leases: [attached.value],
+        camera: { lease: attached.value },
+        environment: { lease: attached.value },
+        geometryLane: 'direct' as const,
+      };
+      const finalFrame = frame === quality.staticFrames - 1;
+      // A diagnostic recorder must start after runtime preparation, so its
+      // one physical frame contains the actual nearest/color picture.
+      if (finalFrame && diagnostics !== undefined) await drawReadyFrame(renderer, request);
+      const captured = await captureVfxFrame(finalFrame ? diagnostics?.recorder : undefined, () =>
+        drawReadyFrame(renderer, request, finalFrame ? ['linear-hdr'] : undefined),
       );
       if (frame === quality.staticFrames - 1) {
         receipt = captured.value;
@@ -3548,22 +3540,18 @@ async function captureSurfaceMsaaEdgeFrame(input: {
   for (let frame = 0; frame < input.warmupFrames; frame += 1) {
     input.renderer.setSurfaceDynamicInput({ ...input.dynamicInput, frameTime: 0 });
     input.world.update(1 / 60).unwrap();
-    if (frame === input.warmupFrames - 1) {
-      const armed = input.renderer.requestObservation?.(['linear-hdr']);
-      if (armed === undefined || !armed.ok) {
-        throw new Error('surface-msaa-edge: linear-hdr observation could not be armed');
-      }
-    }
-    const drawn = input.renderer.draw({
-      leases: [input.lease],
-      camera: { lease: input.lease, entityKey: input.cameraEntity },
-      environment: { lease: input.lease },
-      geometryLane: 'direct',
-    });
-    if (!drawn.ok) throw drawn.error;
-    const completed = await drawn.value.completed;
-    if (!completed.ok) throw completed.error;
-    if (frame === input.warmupFrames - 1) receipt = drawn.value;
+    const finalFrame = frame === input.warmupFrames - 1;
+    const drawn = await drawReadyFrame(
+      input.renderer,
+      {
+        leases: [input.lease],
+        camera: { lease: input.lease, entityKey: input.cameraEntity },
+        environment: { lease: input.lease },
+        geometryLane: 'direct',
+      },
+      finalFrame ? ['linear-hdr'] : undefined,
+    );
+    if (finalFrame) receipt = drawn;
   }
   if (receipt === undefined) throw new Error('surface-msaa-edge: completed receipt unavailable');
   const observed = await input.renderer.observe(receipt, { include: ['linear-hdr'] });

@@ -10,11 +10,13 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import { addAtmosphereIbl, type GraphEnvironment } from './ibl';
 import { addAtmosphereLuts } from './luts';
+import { addAtmospherePackedLuts } from './packed-tables';
 import { addAtmosphereSkyLuts } from './sky-tables';
 import { atmosphereStorage, stageAtmospherePublish } from './storage';
 import { writeAtmosphereUniform } from './uniform';
@@ -83,8 +85,14 @@ export function addAtmosphereBackground(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   color: RenderPipelineTarget,
   visibility: AtmosphereVisibility = {},
-  mode: 'full' | 'sky' = 'full',
+  options:
+    | {
+        readonly mode: 'full';
+        readonly clusters?: StandardClusterGraphBuffers | null | undefined;
+      }
+    | { readonly mode: 'sky' } = { mode: 'full' },
 ): Result<GraphEnvironment, RenderGraphError> {
+  const mode = options.mode;
   const cube = graph.importTexture(
     'atmosphere-sky',
     {
@@ -174,7 +182,11 @@ export function addAtmosphereBackground(
   });
   if (!upload.ok) return upload;
   const full =
-    mode === 'full' ? addAtmosphereLuts(graph, params.value, dirty, visibility) : undefined;
+    options.mode === 'full'
+      ? options.clusters?.kind === 'texture'
+        ? addAtmospherePackedLuts(graph, options.clusters, params.value, dirty, visibility)
+        : addAtmosphereLuts(graph, params.value, dirty, visibility)
+      : undefined;
   if (full !== undefined && !full.ok) return full;
   const tables = full ?? addAtmosphereSkyLuts(graph, { parameters: params.value, dirty });
   if (!tables.ok) return tables;

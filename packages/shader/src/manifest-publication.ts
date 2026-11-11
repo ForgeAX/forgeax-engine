@@ -278,8 +278,8 @@ function expandPublicationRows(
   // one table entry; the result is shared by every row that references it.
   const admitReflection = (index: number): unknown => {
     if (admittedReflections.has(index)) return admittedReflections.get(index);
-    // The deferred table is the registry's freshly parsed JSON, held by nobody else:
-    // freeze the row in place instead of cloning ~130 KB of structure per admission.
+    // The owned table already shares immutable compiler facts. Validate only the
+    // selected row; no clone or retained interning pool is needed here.
     const snapshot = reflections[index];
     freezeTree(snapshot);
     if (!isShaderReflection(snapshot)) throw new Error('Invalid shader manifest publication');
@@ -387,17 +387,23 @@ export function expandShaderManifestPublication(
   assertPublicationShape(value, options);
   const fragments = [...value.fragments] as string[];
   const sources = value.sources;
-  const receipts = value.receipts;
+  // Own and freeze the pooled ABI facts once before verification yields. Registry
+  // keys can then share the admitted receipt instead of cloning its type tree
+  // for every material variant.
+  const receipts = structuredClone(value.receipts);
+  freezeTree(receipts);
   // Snapshot each shared compiler fact once before the first digest await.
   // No row owns a writable copy of this publication-local table.
   const entryPoints = structuredClone(value.entryPoints);
   freezeTree(entryPoints);
   const deferReflections = options.deferReflections === true;
-  // Deferred tables are admitted per row on first read; eager tables share
-  // complete detached facts once at admission.
-  const reflections = deferReflections
-    ? ((value.reflections ?? []) as unknown[])
-    : shareReflectionFacts(structuredClone(value.reflections ?? []) as unknown[]);
+  // Owned JSON can share immutable facts immediately without eagerly validating
+  // each reflection. Borrowed input first needs its independent snapshot.
+  const reflections = shareReflectionFacts(
+    (deferReflections
+      ? (value.reflections ?? [])
+      : structuredClone(value.reflections ?? [])) as unknown[],
+  );
   if (!deferReflections) freezeTree(reflections);
   const referenced: PublicationReferences = {
     sources: new Set(),
@@ -436,8 +442,9 @@ export async function readShaderManifestPublication(value: unknown): Promise<unk
 
 /**
  * Same verification as {@link readShaderManifestPublication}, but takes ownership of
- * `value.reflections`: each row is validated and frozen in place on first read instead
- * of being cloned up front. Callers must pass freshly parsed JSON that nothing else retains.
+ * `value.reflections`: immutable subtrees are shared in place, and each row is
+ * validated on first read without an up-front clone. Callers must pass freshly
+ * parsed JSON that nothing else retains.
  */
 export async function readOwnedShaderManifestPublication(value: unknown): Promise<unknown> {
   return verifyShaderManifestPublication(
@@ -508,7 +515,7 @@ function plainTree(value: unknown, active: Set<object>, visited: Set<object>): b
 }
 
 /**
- * Called only after structuredClone at publication admission. The short-lived
+ * Called on detached snapshots or exclusively owned JSON at admission. The short-lived
  * pool shares complete immutable values, not resource or shader identities.
  * No pool, key string or caller-owned object escapes with the accepted facts.
  */

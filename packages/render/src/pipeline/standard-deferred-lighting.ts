@@ -19,13 +19,13 @@ import { WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
 import type { DeviceScope } from '../device/device-scope';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import type { GraphEnvironment } from '../environment/ibl';
-import { atmosphereTextures } from '../environment/luts';
+import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
 import {
   SKYLIGHT_UNIFORM_BYTES,
   type SkylightBindGroupResources,
 } from '../ibl/skylight-bind-group';
-import { buildPerFrameBindGroups } from '../record/frame-lighting';
+import { buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type {
@@ -503,33 +503,13 @@ export function addStandardDeferredLighting(
         : undefined;
       const view = (target: RenderPipelineTarget | undefined) =>
         target === undefined ? undefined : resources.textureView(target.view).unwrap();
-      const bindings = buildPerFrameBindGroups(
+      const viewBindGroup = buildViewBindGroup(
         internal.runtime as RenderSystemInternals,
         internal.frameState,
         internal.pipelineState,
-        true,
         internal.bindGroupCounts,
         {
-          atmosphere:
-            input.environment?.atmosphere === undefined
-              ? undefined
-              : {
-                  transmittance: resources
-                    .textureView(input.environment.atmosphere.transmittance)
-                    .unwrap(),
-                  distantSkyLight: resources
-                    .textureView(input.environment.atmosphere.distantSkyLight)
-                    .unwrap(),
-                  multipleScattering: resources
-                    .textureView(input.environment.atmosphere.multipleScattering)
-                    .unwrap(),
-                  aerialPerspective: resources
-                    .textureView(input.environment.atmosphere.aerialPerspective)
-                    .unwrap(),
-                  aerialTransmittance: resources
-                    .textureView(input.environment.atmosphere.aerialTransmittance)
-                    .unwrap(),
-                },
+          atmosphere: atmosphereVolumeViews(resources, input.environment?.atmosphere),
           directionalShadow: view(input.directionalShadow),
           spotShadow: view(input.spotShadow),
           shadowMoments: view(input.shadowMoments),
@@ -537,17 +517,15 @@ export function addStandardDeferredLighting(
           projector: internal.spotLightProjector?.view,
           projectorSampler: internal.spotLightProjector?.sampler,
         },
-        true,
-        internal.standardLighting,
       );
-      if (bindings.viewBindGroup === null)
+      if (viewBindGroup === null)
         throw new RhiError({
           code: 'rhi-not-available',
           expected: 'Standard view/shadow resources',
           hint: 'repair the frame lighting resources',
         });
       pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, bindings.viewBindGroup, [0, 0]);
+      pass.setBindGroup(0, viewBindGroup, [0, 0]);
       if (input.cluster?.kind === 'texture')
         throw new RhiError({
           code: 'rhi-not-available',

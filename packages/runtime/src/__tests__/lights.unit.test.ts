@@ -2281,9 +2281,10 @@ function spawnValidatedLight(
           projectorAvailable: false,
         });
         const samplers = entries.filter((e) => e.sampler !== undefined);
-        expect(samplers).toHaveLength(1);
-        expect(samplers[0]?.binding).toBe(4);
-        expect(samplers[0]?.sampler?.type).toBe('comparison');
+        expect(samplers.map((entry) => [entry.binding, entry.sampler?.type])).toEqual([
+          [4, 'comparison'],
+          [17, 'filtering'],
+        ]);
       });
     });
 
@@ -2332,7 +2333,7 @@ function spawnValidatedLight(
     });
 
     describe('base binding roster keeps Points/Lines at 10', () => {
-      it('exposes camera/shadow bindings plus binding 10', () => {
+      it('exposes camera/shadow bindings, Points/Lines at 10 and the shared optical sampler at 17', () => {
         const bindings = buildPbrViewBglEntries({
           storageBuffer: true,
           extendedLighting: false,
@@ -2340,7 +2341,7 @@ function spawnValidatedLight(
         })
           .map((e) => e.binding)
           .sort((a, b) => a - b);
-        expect(bindings).toEqual([0, 3, 4, 5, 6, 7, 8, 10]);
+        expect(bindings).toEqual([0, 3, 4, 5, 6, 7, 8, 10, 17]);
       });
     });
   });

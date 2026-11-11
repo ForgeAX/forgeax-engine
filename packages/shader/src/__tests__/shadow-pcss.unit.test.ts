@@ -114,6 +114,15 @@ describe('Directional PCSS numeric oracle', () => {
     expect(shadowPcf).toContain('fn shadow_clamp_texel_to_tile');
   });
 
+  it('keeps the PCSS disk a module constant so non-PCSS fragments pay no table setup', () => {
+    // Every Standard fragment imports this module. A private table is
+    // initialized per invocation even when the profile is PCF; the constant is
+    // read only at the PCSS tap site.
+    expect(directional).toMatch(/^const PCSS_DISK_OFFSETS : array<vec2<f32>, 32>/m);
+    expect(directional).not.toMatch(/var<private>\s+PCSS_DISK_OFFSETS/);
+    expect(directional.match(/PCSS_DISK_OFFSETS\[/g)).toHaveLength(1);
+  });
+
   it('does not accept fixed-radius or PCF5-as-PCSS receiver structure', () => {
     expect(directional).not.toMatch(/fixed.?radius|fixedUvRadius|pcf5.*pcss/i);
     expect(directional).not.toContain('M2 supplies the PCSS arithmetic');

@@ -30,9 +30,9 @@ export function directionalShadowSimple(
  * modifier lanes: no IES, Cookie or projector spot, no IES point, no rect-area
  * or additional directional slot, no atmosphere solar transmittance and no
  * live cloud shadow (absent, low sun or empty range). The forward Standard
- * pipeline then compiles the LEAN_LIGHTING row, from which those decodes are
- * absent. LEAN_LIGHTING is bound 1:1 to DIRECTIONAL_SHADOW_SIMPLE by the
- * permutation rules, so this predicate is folded into that request.
+ * pipeline can select LEAN_LIGHTING within the admitted simple-receiver domain.
+ * The predicates stay distinct: full lighting keeps every modifier lane while
+ * still allowing a simple directional receiver.
  */
 export function leanLightingFrame(
   lights: Pick<ViewLights, 'point' | 'spot' | 'rect' | 'additionalDirectional'>,
@@ -54,17 +54,4 @@ export function leanLightingFrame(
       return false;
   }
   return true;
-}
-
-/**
- * The per-frame DIRECTIONAL_SHADOW_SIMPLE request. The simple receiver row
- * also compiles LEAN_LIGHTING (bound 1:1 by the permutation rules), so it is
- * requested only when the receiver is simple and the frame is lean.
- */
-export function directionalShadowSimpleRequest(
-  lights: Parameters<typeof directionalShadowSimple>[0] & Parameters<typeof leanLightingFrame>[0],
-  environmentKind: string | undefined,
-  cloudShadow: { readonly lowSun: boolean; readonly range: number } | undefined,
-): boolean {
-  return directionalShadowSimple(lights) && leanLightingFrame(lights, environmentKind, cloudShadow);
 }

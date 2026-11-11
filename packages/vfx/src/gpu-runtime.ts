@@ -441,6 +441,7 @@ export class VfxGpuRuntime {
   forEachEmitterSource(world: World, visitor: (source: VfxGpuEmitterSource) => void): void {
     this.#refreshPlayers(world, true);
     for (const [player, state] of this.#players) {
+      const instanceGeneration = this.#instances.get(player)?.generation ?? 0;
       for (const emitter of state.asset.program.emitters) {
         const fields = this.#captureFields(world, state, emitter);
         visitor({
@@ -448,7 +449,7 @@ export class VfxGpuRuntime {
           emitter,
           ...(fields === undefined ? {} : { forceFields: fields.input }),
           effect: state.asset,
-          instanceGeneration: this.#instances.get(player)?.generation ?? 0,
+          instanceGeneration,
         });
       }
     }

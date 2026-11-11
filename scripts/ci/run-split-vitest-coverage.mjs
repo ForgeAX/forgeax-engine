@@ -34,7 +34,8 @@ const maxGroupConcurrency = 3;
 const maxChildOutputBytes = 64 * 1024 * 1024;
 const completedCoverageAssignmentCache = new Map();
 const coverageAssignmentOrders = new WeakMap();
-const completedCoverageSearchRestarts = 24;
+const coverageAssignmentInputs = new WeakMap();
+const completedCoverageSearchRestarts = 48;
 // Retain all historical replay windows after admitting a slower partial cohort.
 // More bounded search work preserves the same execution and test deadlines.
 const completedCoverageSearchIterations = 60_000;
@@ -119,7 +120,32 @@ const devkitNativeUnitFiles = devkitNativeUnitFileSets.flatMap(({ files }) => fi
 // project no longer queues behind it. Weights are median complete child seconds
 // from CI runs 38313136540 and 38316658619, rounded to five seconds, except
 // the explicitly estimated cold-scene additions documented below.
+// The source-contract batch reserves each unchanged critical case deadline and
+// one 15-second process/transform startup, rather than three separate startups.
+const sourceContractStartupWeight = 15;
 const isolatedCoverageFileSets = [
+  {
+    // Run 42758031056 crossed the original 15 s repository scan beside a
+    // TypeScript compiler child. Keep the complete file instrumented and cold.
+    project: '@forgeax/engine-app',
+    files: ['packages/app/__tests__/builtin-systems.test.ts'],
+    batch: 'source-contracts',
+    weight: 15,
+  },
+  {
+    // Retain real CLI discovery and its 5 s test / 60 s child bounds.
+    project: '@forgeax/engine-codec',
+    files: ['packages/codec/scripts/__tests__/fetch-basis.test.mjs'],
+    batch: 'source-contracts',
+    weight: 5,
+  },
+  {
+    // Retain both real TypeScript programs and the original 30 s oracle.
+    project: '@forgeax/engine-three',
+    files: ['packages/three/src/__tests__/api-audit.test.ts'],
+    batch: 'source-contracts',
+    weight: 30,
+  },
   {
     // Run 41345505497 crossed the unchanged 60 s mip/gutter oracle beside
     // another coverage child. Preserve all three 1024-square bakes exclusively.
@@ -327,7 +353,28 @@ const isolatedCoverageFileSets = [
   {
     project: '@forgeax/engine-pack',
     files: ['packages/pack/src/__tests__/material-surface-publication.unit.test.ts'],
+    batch: 'scriptable-publications',
+    // Preserve this complete child's historical identity. The added cases
+    // remain charged to their original broad receipts and add a reservation.
+    batchReceiptLabel:
+      '@forgeax/engine-pack:packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
     weight: 20,
+  },
+  {
+    // Run 42979759251 crossed both 5 s cases beside another cold compiler
+    // child. Keep the real single/reusable Workers and all captured JSON bytes.
+    project: '@forgeax/engine-pack',
+    files: ['packages/pack/src/__tests__/scriptable-pack-json.integration.test.ts'],
+    batch: 'scriptable-publications',
+    weight: 15,
+  },
+  {
+    // The same run crossed the 15 s module-load bound during a rebuild.
+    // Retain the complete publication clock file and its unchanged deadlines.
+    project: '@forgeax/engine-vite-plugin-pack',
+    files: ['packages/vite-plugin-pack/src/__tests__/authored-pack-serving.regression.test.ts'],
+    batch: 'scriptable-publications',
+    weight: 15,
   },
 ];
 
@@ -602,6 +649,43 @@ function modelingPartitionWeight(count, excludes) {
   return Math.ceil(seconds / count / 5) * 5;
 }
 
+// Related cold contracts share one complete, serial Vitest child rather than
+// paying several startups and consuming additional per-job tail slots.
+// Their case work is already charged to the original project receipts. Zero
+// additional historical weight is not a zero-time observation: current admission
+// retains the complete independent forecast through the existing reservation.
+function coalesceCoverageBatches(groups) {
+  const batches = new Map();
+  const result = [];
+  for (const { batch, batchReceiptLabel, ...group } of groups) {
+    if (!batch) {
+      result.push(group);
+      continue;
+    }
+    let entry = batches.get(batch);
+    if (!entry) {
+      const combined = {
+        ...group,
+        projects: [],
+        files: [],
+        weight: 0,
+        reservationWeight: sourceContractStartupWeight,
+      };
+      entry = { group: combined, receiptLabel: batchReceiptLabel };
+      batches.set(batch, entry);
+      result.push(combined);
+    }
+    const combined = entry.group;
+    for (const project of group.projects)
+      if (!combined.projects.includes(project)) combined.projects.push(project);
+    combined.files.push(...group.files);
+    combined.reservationWeight += group.weight;
+    combined.label =
+      entry.receiptLabel ?? `${combined.projects.join(',')}:${combined.files.join(',')}`;
+  }
+  return result;
+}
+
 // Coverage children are objects so a heavy test file can own its own child
 // while the rest of its project keeps the ordinary project group. `label` is
 // the stable identity the shard merge uses to prove every child ran once.
@@ -626,17 +710,30 @@ export function coverageGroups(
     },
     ...fileSets
       .filter(({ project }) => group.includes(project))
-      .map(({ project, files, weight, reservationWeight, gpuLease = false, receiptLabel }) => ({
-        label: `${project}:${receiptLabel ?? files.join(',')}`,
-        projects: [project],
-        files,
-        excludes: [],
-        weight,
-        ...(reservationWeight === undefined ? {} : { reservationWeight }),
-        gpuLease,
-      })),
+      .map(
+        ({
+          project,
+          files,
+          weight,
+          reservationWeight,
+          gpuLease = false,
+          receiptLabel,
+          batch,
+          batchReceiptLabel,
+        }) => ({
+          label: `${project}:${receiptLabel ?? files.join(',')}`,
+          ...(batch === undefined ? {} : { batch }),
+          ...(batchReceiptLabel === undefined ? {} : { batchReceiptLabel }),
+          projects: [project],
+          files,
+          excludes: [],
+          weight,
+          ...(reservationWeight === undefined ? {} : { reservationWeight }),
+          gpuLease,
+        }),
+      ),
   ]);
-  return groups
+  return coalesceCoverageBatches(groups)
     .flatMap((group) => {
       const partition =
         group.files.length === 0 &&
@@ -662,14 +759,33 @@ export function coverageGroups(
     })
     .map((group) => {
       const receipt = isolateFiles && completed.groups[group.label];
-      return receipt
+      const weight = receipt
+        ? Math.max(group.weight, Math.ceil(receipt.reservedSeconds / 5) * 5)
+        : group.weight;
+      const reservationWeight = Math.max(
+        group.reservationWeight ?? weight,
+        ...(completed.replayRuns ?? []).map(
+          (run) => Math.ceil((run.completedSeconds[group.label] ?? 0) / 5) * 5,
+        ),
+      );
+      // A newly separated owner can have complete replay evidence without
+      // rewriting the historical seed that already charged its case work.
+      const hasReplay =
+        isolateFiles &&
+        completed.replayRuns?.some((run) => run.completedSeconds[group.label] !== undefined);
+      return receipt || hasReplay
         ? {
             ...group,
-            weight: Math.max(group.weight, Math.ceil(receipt.reservedSeconds / 5) * 5),
+            weight,
+            // Later partial cohorts own current capacity, not the earlier
+            // complete seed's historical cost or missing-owner identity.
+            ...(reservationWeight > weight || group.reservationWeight !== undefined
+              ? { reservationWeight }
+              : {}),
             // A partial refresh must not optimize against older partition
             // observations while its unmeasured peers retain a newer workload.
             observedSeconds:
-              receipt.run === completed.latestRun ? receipt.latestSeconds : undefined,
+              receipt?.run === completed.latestRun ? receipt.latestSeconds : undefined,
             // Partial later runs are distinct scenarios, never restamped as a
             // complete cohort. Missing work keeps the admitted cohort forecast.
             replaySeconds: completed.replayRuns?.map(
@@ -687,19 +803,45 @@ export function coverageGroups(
     });
 }
 
-export function coverageGroupOrder(groups) {
+export function coverageGroupOrder(groups, typecheck = false) {
+  if (typecheck) {
+    return groups
+      .map((_group, index) => index)
+      .sort(
+        (left, right) =>
+          Number(groups[right].startEarly === true) - Number(groups[left].startEarly === true) ||
+          (groups[right].observedSeconds ??
+            groups[right].reservationWeight ??
+            groups[right].weight) -
+            (groups[left].observedSeconds ??
+              groups[left].reservationWeight ??
+              groups[left].weight) ||
+          left - right,
+      );
+  }
+  const scenarios = coverageReplayScenarios(groups, typecheck);
+  const scores = groups.map(
+    (_, index) =>
+      scenarios.reduce((total, scenario) => total + scenario.weights[index] * scenario.scale, 0) /
+      scenarios.length,
+  );
   return groups
     .map((_group, index) => index)
     .sort(
       (left, right) =>
         Number(groups[right].startEarly === true) - Number(groups[left].startEarly === true) ||
-        groups[right].weight - groups[left].weight ||
+        scores[right] - scores[left] ||
         left - right,
     );
 }
 
-export function scheduledGroupOrder(groups, { coverage, localGpuLease }) {
-  const order = coverage ? coverageGroupOrder(groups) : groups.map((_group, index) => index);
+export function scheduledGroupOrder(
+  groups,
+  { coverage, localGpuLease, typecheck = false, coverageOrder },
+) {
+  const order = coverage
+    ? [...(coverageOrder ?? coverageGroupOrder(groups, typecheck))]
+    : groups.map((_group, index) => index);
   const isNative = (index) =>
     groups[index].gpuLease === true ||
     groups[index].files?.some((file) => devkitNativeUnitFiles.includes(file));
@@ -737,6 +879,72 @@ function coverageLaneFinish(lane) {
   return Math.max(...lane.parallel) + lane.exclusive;
 }
 
+function coverageScenarioWeights(groups, completed, replay, useReservation, reservationMode) {
+  const critical = completed ? criticalExclusiveCoverageGroup(groups) : -1;
+  return groups.map((group, index) => {
+    const retained = replay >= 0 ? group.replaySeconds?.[replay] : undefined;
+    const reserved = group.replayReserved?.[replay] === true;
+    const current =
+      reservationMode === 'current' ? group.weight : Math.max(retained ?? 0, group.weight);
+    const seconds =
+      (reserved && reservationMode !== 'recorded' ? current : retained) ??
+      (index !== critical ? group.observedSeconds : undefined);
+    const forecast = completed && seconds !== undefined ? seconds : group.weight;
+    return !completed && useReservation ? (group.reservationWeight ?? forecast) : forecast;
+  });
+}
+
+function coverageReplayScenarios(groups, typecheck) {
+  const replayCount = Math.max(0, ...groups.map((group) => group.replaySeconds?.length ?? 0));
+  const budgets = groups.find((group) => group.replayBudgetSeconds)?.replayBudgetSeconds;
+  const typechecks = groups.find((group) => group.replayTypechecks)?.replayTypechecks;
+  return Array.from({ length: replayCount + 1 }, (_, index) => {
+    const replay = index - 1;
+    if (typechecks?.[replay] !== undefined && typechecks[replay] !== typecheck) return [];
+    const budget = replay < 0 ? 2300 : (budgets?.[replay] ?? 2300);
+    const reserved = groups.some((group) => group.replayReserved?.[replay]);
+    const modes = reserved ? ['recorded', 'current', 'retained-max'] : ['recorded'];
+    const seen = new Set();
+    return modes.flatMap((mode) => {
+      const weights = coverageScenarioWeights(groups, true, replay, true, mode);
+      const key = weights.join(',');
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [{ weights, scale: 2300 / budget }];
+    });
+  }).flat();
+}
+
+function coverageModel(groups, shardCount, typecheck) {
+  return {
+    order: coverageAssignmentOrders.get(groups) ?? coverageGroupOrder(groups, typecheck),
+    exclusive: groups.map(isExclusiveCoverageGroup),
+    shardCount,
+    typecheck,
+    scratch: new Float64Array(shardCount * 3),
+  };
+}
+
+// Synchronous call-local scratch; neither assignment nor recorded costs change.
+function evaluateCoverageLanes(model, assignment, weights) {
+  const lanes = model.scratch;
+  lanes.fill(0);
+  if (model.typecheck && model.shardCount > 1) lanes[0] = lanes[1] = typecheckSeconds;
+  for (const index of model.order) {
+    const shard = assignment[index];
+    if (shard < 0) continue;
+    const base = shard * 3;
+    const slot = model.exclusive[index] ? 2 : lanes[base] <= lanes[base + 1] ? 0 : 1;
+    lanes[base + slot] += weights[index];
+  }
+  return lanes;
+}
+
+function coverageModelFinish(lanes, shard) {
+  const base = shard * 3;
+  return Math.max(lanes[base], lanes[base + 1]) + lanes[base + 2];
+}
+
 export function coverageAssignmentLaneFinishes(
   groups,
   assignment,
@@ -745,30 +953,18 @@ export function coverageAssignmentLaneFinishes(
   completed = false,
   replay = -1,
   useReservation = true,
-  currentReservations = false,
+  reservationMode = 'recorded',
 ) {
-  const lanes = coverageLanes(shardCount, typecheck);
-  const critical = completed ? criticalExclusiveCoverageGroup(groups) : -1;
-  for (const index of coverageAssignmentOrders.get(groups) ?? coverageGroupOrder(groups)) {
-    const shard = assignment[index];
-    if (shard < 0) continue;
-    const group = groups[index];
-    // Keep the critical reservation in unmeasured scenarios. A completed
-    // compiler in a separate run is evidence for that scenario only.
-    const retained = replay >= 0 ? group.replaySeconds?.[replay] : undefined;
-    // Historical placeholders retain their raw identity. Admission must also
-    // cover a later larger forecast; measured child times remain unchanged.
-    const seconds =
-      (currentReservations && group.replayReserved?.[replay]
-        ? Math.max(retained ?? 0, group.weight)
-        : retained) ?? (index !== critical ? group.observedSeconds : undefined);
-    const forecast = completed && seconds !== undefined ? seconds : group.weight;
-    const weight = !completed && useReservation ? (group.reservationWeight ?? forecast) : forecast;
-    const lane = lanes[shard];
-    if (isExclusiveCoverageGroup(group)) lane.exclusive += weight;
-    else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += weight;
-  }
-  return lanes.map(coverageLaneFinish);
+  const model = coverageModel(groups, shardCount, typecheck);
+  const weights = coverageScenarioWeights(
+    groups,
+    completed,
+    replay,
+    useReservation,
+    reservationMode,
+  );
+  const lanes = evaluateCoverageLanes(model, assignment, weights);
+  return Array.from({ length: shardCount }, (_, shard) => coverageModelFinish(lanes, shard));
 }
 
 function coverageAssignmentFinish(
@@ -795,7 +991,7 @@ function coverageAssignmentFinish(
 function criticalExclusiveCoverageGroup(groups) {
   return groups.reduce(
     (selected, group, index) =>
-      group.files.length > 0 &&
+      group.files?.length > 0 &&
       group.weight >= 900 &&
       (selected < 0 || group.weight > groups[selected].weight)
         ? index
@@ -827,16 +1023,33 @@ function admitsFineCoveragePartition(siblings, part, shardCount) {
   );
 }
 
+// A sparse partial refresh cannot justify concentrating its few measured slow
+// owners. Retain the even-share spread until a full optimization cohort exists.
+function retainsSparseCoverageSpread(groups, assignment, index, shard, shardCount) {
+  if (groups[index].observedSeconds === undefined) return true;
+  const measured = groups.flatMap((group, position) =>
+    group.observedSeconds === undefined ? [] : [position],
+  );
+  if (measured.length < shardCount || measured.length >= 20) return true;
+  return (
+    measured.filter((position) => position !== index && assignment[position] === shard).length <
+    Math.ceil(measured.length / shardCount)
+  );
+}
+
 // Broad project halves span jobs; fine partitions retain both spread quotas
 // and source headroom while complete-child placement balances measured work.
 function canPlaceCoverageGroup(groups, assignment, index, shard, shardCount) {
   if (!retainsExclusiveCoverageHeadroom(groups, assignment, index, shard)) return false;
+  if (!retainsSparseCoverageSpread(groups, assignment, index, shard, shardCount)) return false;
   // Timings do not bound startup and serial tails when a few cold children
   // overrun. Keep at most one child above the even share on every physical job.
   const childNeighbors = assignment.filter(
     (lane, position) => position !== index && lane === shard,
   );
-  if (childNeighbors.length >= Math.ceil(groups.length / shardCount) + 1) return false;
+  // Keep the established tail cap after admitting the additional cold child.
+  if (childNeighbors.length >= Math.min(16, Math.ceil(groups.length / shardCount) + 1))
+    return false;
   const group = groups[index];
   if (!group.shard) return true;
   const [part, count] = group.shard.split('/').map(Number);
@@ -876,7 +1089,7 @@ function fineCoverageWave(groups, order, index, shardCount) {
 
 // Admit one complete wave atomically. At most four actual jobs means at most
 // 24 complete permutations, avoiding a greedy dead end under the complete-wave spread quota.
-function placeFineCoverageWave(groups, indexes, assignment, lanes, shardCount) {
+function placeFineCoverageWave(groups, indexes, assignment, lanes, shardCount, costs) {
   let best;
   function visit(offset, planned, projected) {
     if (offset === indexes.length) {
@@ -894,7 +1107,11 @@ function placeFineCoverageWave(groups, indexes, assignment, lanes, shardCount) {
       const next = [...planned];
       next[index] = shard;
       const nextLanes = [...projected];
-      nextLanes[shard] = appendCoverageLane(projected[shard], groups[index], false);
+      nextLanes[shard] = appendCoverageLane(
+        projected[shard],
+        { ...groups[index], weight: costs[index] },
+        false,
+      );
       visit(offset + 1, next, nextLanes);
     }
   }
@@ -906,6 +1123,11 @@ function placeFineCoverageWave(groups, indexes, assignment, lanes, shardCount) {
 // The actual 16-part/four-job roster has at most 576 complete wave/rank
 // allocations. Larger future rosters keep bounded wave admission and local moves.
 function* coverageAssignmentCandidates(groups, assignment, shardCount) {
+  // Typecheck occupies physical job zero. Move whole admitted rosters as well
+  // as individual owners so job zero can receive a lighter existing roster.
+  for (let shard = 1; shard < shardCount; shard++) {
+    yield assignment.map((lane) => (lane === 0 ? shard : lane === shard ? 0 : lane));
+  }
   for (let index = 0; index < groups.length; index++) {
     for (let shard = 0; shard < shardCount; shard++) {
       if (
@@ -932,6 +1154,46 @@ function* coverageAssignmentCandidates(groups, assignment, shardCount) {
   }
 }
 
+// Typecheck/startup headroom can require an atomic fine-wave rotation even
+// when no single move or pair swap improves all retained windows.
+function* completedCoverageCandidates(groups, assignment, shardCount, finish) {
+  yield* coverageAssignmentCandidates(groups, assignment, shardCount);
+  if (finish <= 2300 || shardCount > 4) return;
+  const waves = new Map();
+  groups.forEach((group, index) => {
+    if (!group.shard) return;
+    const [part, count] = group.shard.split('/').map(Number);
+    const key =
+      count <= shardCount ? 'broad' : `${group.projects[0]}:${Math.floor((part - 1) / shardCount)}`;
+    const indexes = waves.get(key) ?? [];
+    indexes.push(index);
+    waves.set(key, indexes);
+  });
+  for (const indexes of waves.values()) {
+    if (indexes.length !== shardCount) continue;
+    function* place(lanes) {
+      if (lanes.length < indexes.length) {
+        for (let lane = 0; lane < shardCount; lane++) {
+          if (!lanes.includes(lane)) yield* place([...lanes, lane]);
+        }
+        return;
+      }
+      const candidate = [...assignment];
+      indexes.forEach((index, position) => {
+        candidate[index] = lanes[position];
+      });
+      if (
+        indexes.every((index) =>
+          canPlaceCoverageGroup(groups, candidate, index, candidate[index], shardCount),
+        )
+      ) {
+        yield candidate;
+      }
+    }
+    yield* place([]);
+  }
+}
+
 function balanceCompletedCoverage(groups, assignment, shardCount, typecheck) {
   if (!groups.some((group) => group.observedSeconds !== undefined)) return assignment;
   let current = assignment;
@@ -939,7 +1201,12 @@ function balanceCompletedCoverage(groups, assignment, shardCount, typecheck) {
   for (;;) {
     let best = current;
     let bestMetrics = metrics;
-    for (const candidate of coverageAssignmentCandidates(groups, current, shardCount)) {
+    for (const candidate of completedCoverageCandidates(
+      groups,
+      current,
+      shardCount,
+      metrics.finish,
+    )) {
       const candidateMetrics = coverageAssignmentMetrics(groups, candidate, shardCount, typecheck);
       if (completedCoverageMetricsImprove(candidateMetrics, bestMetrics)) {
         best = candidate;
@@ -952,32 +1219,38 @@ function balanceCompletedCoverage(groups, assignment, shardCount, typecheck) {
   }
 }
 
-function coverageAssignmentMetrics(groups, assignment, shardCount, typecheck) {
-  const replayCount = Math.max(0, ...groups.map((group) => group.replaySeconds?.length ?? 0));
-  // Compare each scenario against its retained execution window. A slower
-  // cohort must not erase the preceding cohorts' stricter regression bounds.
-  const budgets = groups.find((group) => group.replayBudgetSeconds)?.replayBudgetSeconds;
-  const typechecks = groups.find((group) => group.replayTypechecks)?.replayTypechecks;
-  const finishes = Array.from({ length: replayCount + 1 }, (_value, index) => {
-    const recordedMode = index === 0 ? undefined : typechecks?.[index - 1];
-    if (recordedMode !== undefined && recordedMode !== typecheck) return [];
-    return coverageAssignmentLaneFinishes(
-      groups,
-      assignment,
-      shardCount,
-      typecheck,
-      true,
-      index - 1,
-      true,
-      true,
-    ).map((finish) => (finish * 2300) / (index === 0 ? 2300 : (budgets?.[index - 1] ?? 2300)));
-  }).flat();
+function prepareCoverageAssignmentInputs(groups, shardCount, typecheck) {
   return {
-    finish: Math.max(...finishes),
-    violation: Math.hypot(...finishes.map((finish) => Math.max(0, finish - 2300))),
-    reservation: coverageAssignmentFinish(groups, assignment, shardCount, typecheck, false, false),
-    spread: finishes.reduce((total, finish) => total + finish * finish, 0),
+    model: coverageModel(groups, shardCount, typecheck),
+    scenarios: coverageReplayScenarios(groups, typecheck),
+    reservation: coverageScenarioWeights(groups, false, -1, false, 'recorded'),
   };
+}
+
+function coverageAssignmentMetrics(groups, assignment, shardCount, typecheck) {
+  let inputs = coverageAssignmentInputs.get(groups);
+  if (!inputs) {
+    inputs = prepareCoverageAssignmentInputs(groups, shardCount, typecheck);
+    coverageAssignmentInputs.set(groups, inputs);
+  }
+  const { model } = inputs;
+  let finish = 0,
+    spread = 0;
+  const violations = [];
+  for (const scenario of inputs.scenarios) {
+    const lanes = evaluateCoverageLanes(model, assignment, scenario.weights);
+    for (let shard = 0; shard < shardCount; shard++) {
+      const seconds = coverageModelFinish(lanes, shard) * scenario.scale;
+      finish = Math.max(finish, seconds);
+      spread += seconds * seconds;
+      if (seconds > 2300) violations.push(seconds - 2300);
+    }
+  }
+  const reserved = evaluateCoverageLanes(model, assignment, inputs.reservation);
+  const reservation = Math.max(
+    ...Array.from({ length: shardCount }, (_, shard) => coverageModelFinish(reserved, shard)),
+  );
+  return { finish, violation: Math.hypot(...violations), reservation, spread };
 }
 
 function completedCoverageCacheKey(groups, shardCount, typecheck) {
@@ -1003,7 +1276,8 @@ function completedCoverageCacheKey(groups, shardCount, typecheck) {
 }
 
 function completedCoverageRandom() {
-  let state = 0x5f3759df;
+  // Keep all retained complete and partial replay windows deterministic.
+  let state = 0x00000024;
   return () => {
     state ^= state << 13;
     state ^= state >>> 17;
@@ -1021,6 +1295,28 @@ function shuffleCoverageLanes(shardCount, random) {
   return lanes;
 }
 
+// Equal-size swaps preserve each job's child count. A one-for-two exchange
+// crosses that barrier while retaining complete owners and all admission caps.
+function completedCoverageUnequalExchange(groups, current, shardCount, indexes, random) {
+  const first = indexes[Math.floor(random() * indexes.length)];
+  const source = current[first];
+  const target = (source + 1 + Math.floor(random() * (shardCount - 1))) % shardCount;
+  const neighbors = indexes.filter((index) => current[index] === target);
+  if (neighbors.length < 2) return null;
+  const second = Math.floor(random() * neighbors.length);
+  const third = (second + 1 + Math.floor(random() * (neighbors.length - 1))) % neighbors.length;
+  const changed = [first, neighbors[second], neighbors[third]];
+  const candidate = [...current];
+  candidate[first] = target;
+  candidate[neighbors[second]] = source;
+  candidate[neighbors[third]] = source;
+  return changed.every((index) =>
+    canPlaceCoverageGroup(groups, candidate, index, candidate[index], shardCount),
+  )
+    ? candidate
+    : null;
+}
+
 function completedCoverageCandidate(
   groups,
   current,
@@ -1031,6 +1327,8 @@ function completedCoverageCandidate(
   movableIndexes,
   random,
 ) {
+  if (move === 6)
+    return completedCoverageUnequalExchange(groups, current, shardCount, movableIndexes, random);
   const candidate = [...current];
   if (move === 0) {
     const lanes = shuffleCoverageLanes(shardCount, random);
@@ -1150,10 +1448,23 @@ function optimizeCompletedCoverage(groups, assignment, shardCount, typecheck) {
     restart += 1
   ) {
     let current = [...best];
+    // Each restart starts from a distinct recorded cost scenario, while the
+    // shared scorer still requires every original window and admission rule.
+    if (restart > 0) {
+      const scenarios = coverageAssignmentInputs.get(groups).scenarios;
+      current = greedyCoverageAssignment(
+        groups,
+        shardCount,
+        typecheck,
+        scenarios[(restart - 1) % scenarios.length].weights,
+      );
+    }
     let currentMetrics = coverageAssignmentMetrics(groups, current, shardCount, typecheck);
 
     for (let iteration = 0; iteration < completedCoverageSearchIterations; iteration += 1) {
-      const move = Math.floor(random() * 6);
+      // Runtime-only cohorts can rebalance job sizes; keep the established
+      // typechecked search with its fixed job-zero reservation unchanged.
+      const move = Math.floor(random() * (typecheck ? 6 : 7));
       const candidate = completedCoverageCandidate(
         groups,
         current,
@@ -1175,8 +1486,50 @@ function optimizeCompletedCoverage(groups, assignment, shardCount, typecheck) {
         bestMetrics = metrics;
       }
     }
+    // Refine each completed restart before exploring from its best placement.
+    // Waiting until all restarts finish can strand a useful wave rotation.
+    best = balanceCompletedCoverage(groups, best, shardCount, typecheck);
+    bestMetrics = coverageAssignmentMetrics(groups, best, shardCount, typecheck);
   }
   return balanceCompletedCoverage(groups, best, shardCount, typecheck);
+}
+
+// A bounded two-step exchange can cross a one-move minimum. Intermediate
+// assignments retain structural admission; the scorer retains every window.
+function repairCompletedCoverage(groups, assignment, shardCount, typecheck) {
+  if (groups.length > 80) return assignment;
+  let current = assignment;
+  let metrics = coverageAssignmentMetrics(groups, current, shardCount, typecheck);
+  for (let round = 0; round < shardCount && metrics.finish > 2300; round++) {
+    const neighbors = [...coverageAssignmentCandidates(groups, current, shardCount)].map(
+      (assignment) => ({
+        assignment,
+        metrics: coverageAssignmentMetrics(groups, assignment, shardCount, typecheck),
+      }),
+    );
+    neighbors.sort((left, right) =>
+      completedCoverageMetricsImprove(left.metrics, right.metrics)
+        ? -1
+        : completedCoverageMetricsImprove(right.metrics, left.metrics)
+          ? 1
+          : 0,
+    );
+    let best = current,
+      bestMetrics = metrics;
+    for (const first of neighbors.slice(0, 16)) {
+      for (const candidate of coverageAssignmentCandidates(groups, first.assignment, shardCount)) {
+        const projected = coverageAssignmentMetrics(groups, candidate, shardCount, typecheck);
+        if (completedCoverageMetricsImprove(projected, bestMetrics)) {
+          best = candidate;
+          bestMetrics = projected;
+        }
+      }
+    }
+    if (best === current) break;
+    current = balanceCompletedCoverage(groups, best, shardCount, typecheck);
+    metrics = coverageAssignmentMetrics(groups, current, shardCount, typecheck);
+  }
+  return current;
 }
 
 function retainedCoverageWindowsFit(groups, assignment, shardCount, typecheck) {
@@ -1185,17 +1538,19 @@ function retainedCoverageWindowsFit(groups, assignment, shardCount, typecheck) {
   return Array.from({ length: replayCount + 1 }, (_value, index) => {
     const replay = index - 1;
     const budget = replay < 0 ? 2300 : (budgets[replay] ?? 2300);
-    const finishes = coverageAssignmentLaneFinishes(
-      groups,
-      assignment,
-      shardCount,
-      typecheck,
-      true,
-      replay,
-      true,
-      true,
-    );
-    return Math.max(...finishes) <= budget;
+    return ['recorded', 'current', 'retained-max'].every((reservationMode) => {
+      const finishes = coverageAssignmentLaneFinishes(
+        groups,
+        assignment,
+        shardCount,
+        typecheck,
+        true,
+        replay,
+        true,
+        reservationMode,
+      );
+      return Math.max(...finishes) <= budget;
+    });
   }).every(Boolean);
 }
 
@@ -1273,32 +1628,38 @@ function refineCoverageAssignment(groups, assignment, shardCount, typecheck) {
   }
 }
 
-export function assignCoverageShards(groups, shardCount, { typecheck = true } = {}) {
-  // Local single-job execution still serializes exclusive children; it has no
-  // peer job onto which a placement constraint could move a complete owner.
-  if (shardCount === 1) return Array(groups.length).fill(0);
-  coverageAssignmentOrders.set(groups, coverageGroupOrder(groups));
-  const cached = cachedCoverageAssignment(groups, shardCount, typecheck);
-  if (cached?.assignment) return cached.assignment;
+function greedyCoverageAssignment(
+  groups,
+  shardCount,
+  typecheck,
+  costs = groups.map((group) => group.weight),
+) {
   let lanes = coverageLanes(shardCount, typecheck);
   const critical = criticalExclusiveCoverageGroup(groups);
-  const weights = groups.map((group) => group.weight * (isExclusiveCoverageGroup(group) ? 2 : 1));
+  const weights = groups.map(
+    (group, index) => costs[index] * (isExclusiveCoverageGroup(group) ? 2 : 1),
+  );
   const order = groups
     .map((_group, index) => index)
     .sort(
-      (a, b) => Number(b === critical) - Number(a === critical) || weights[b] - weights[a] || a - b,
+      (a, b) =>
+        Number(b === critical) - Number(a === critical) ||
+        Number(isExclusiveCoverageGroup(groups[b])) - Number(isExclusiveCoverageGroup(groups[a])) ||
+        weights[b] - weights[a] ||
+        a - b,
     );
   let assignment = Array(groups.length).fill(-1);
   for (const index of order) {
     if (assignment[index] >= 0) continue;
     const wave = fineCoverageWave(groups, order, index, shardCount);
     if (wave) {
-      const planned = placeFineCoverageWave(groups, wave, assignment, lanes, shardCount);
+      const planned = placeFineCoverageWave(groups, wave, assignment, lanes, shardCount, costs);
       assignment = planned.assignment;
       lanes = planned.lanes;
       continue;
     }
-    const candidates = lanes.map((lane) => appendCoverageLane(lane, groups[index], false));
+    const projected = { ...groups[index], weight: costs[index] };
+    const candidates = lanes.map((lane) => appendCoverageLane(lane, projected, false));
     let selected = -1;
     for (let shard = 0; shard < shardCount; shard += 1) {
       if (!canPlaceCoverageGroup(groups, assignment, index, shard, shardCount)) continue;
@@ -1312,10 +1673,53 @@ export function assignCoverageShards(groups, shardCount, { typecheck = true } = 
     assignment[index] = selected;
     lanes[selected] = candidates[selected];
   }
-  const balanced = refineCoverageAssignment(groups, assignment, shardCount, typecheck);
+  return assignment;
+}
+
+// A frozen forecast is only a search seed, never executed CI evidence. Recheck
+// its exact roster, admission and every current replay before accepting it.
+export function coveragePlacementSeed(
+  groups,
+  shardCount,
+  typecheck,
+  seed = completedCoverage.placementSeeds?.find(
+    (seed) => seed.shardCount === shardCount && seed.typecheck === typecheck,
+  ),
+) {
+  if (!seed || seed.shardCount !== shardCount || seed.typecheck !== typecheck) return null;
+  if (Object.keys(seed.assignment).length !== groups.length) return null;
+  const assignment = groups.map((group) => seed.assignment[group.label]);
+  if (
+    assignment.some((shard) => !Number.isInteger(shard) || shard < 0 || shard >= shardCount) ||
+    assignment.some(
+      (shard, index) => !canPlaceCoverageGroup(groups, assignment, index, shard, shardCount),
+    )
+  )
+    return null;
+  return coverageAssignmentMetrics(groups, assignment, shardCount, typecheck).finish <= 2300
+    ? assignment
+    : null;
+}
+
+export function assignCoverageShards(groups, shardCount, { typecheck = true } = {}) {
+  // Local single-job execution still serializes exclusive children; it has no
+  // peer job onto which a placement constraint could move a complete owner.
+  if (shardCount === 1) return Array(groups.length).fill(0);
+  coverageAssignmentOrders.set(groups, coverageGroupOrder(groups, typecheck));
+  coverageAssignmentInputs.delete(groups);
+  const cached = cachedCoverageAssignment(groups, shardCount, typecheck);
+  if (cached?.assignment) return cached.assignment;
+  const seed = coveragePlacementSeed(groups, shardCount, typecheck);
+  const assignment = seed ?? greedyCoverageAssignment(groups, shardCount, typecheck);
+  const balanced = seed ?? refineCoverageAssignment(groups, assignment, shardCount, typecheck);
   const optimized = placeReservedCoverageOwners(
     groups,
-    optimizeCompletedCoverage(groups, balanced, shardCount, typecheck),
+    repairCompletedCoverage(
+      groups,
+      optimizeCompletedCoverage(groups, balanced, shardCount, typecheck),
+      shardCount,
+      typecheck,
+    ),
     shardCount,
     typecheck,
   );
@@ -1325,6 +1729,7 @@ export function assignCoverageShards(groups, shardCount, { typecheck = true } = 
     }
     completedCoverageAssignmentCache.set(cached.key, [...optimized]);
   }
+  coverageAssignmentInputs.delete(groups);
   return optimized;
 }
 
@@ -1831,13 +2236,22 @@ async function main(options) {
   const shardAssignment = assignCoverageShards(groups, options.shardCount, {
     typecheck: options.typecheck,
   });
-  const selectedGroups = groups.filter(
-    (_group, index) => shardAssignment[index] === options.shardIndex,
+  const selectedGroupIndices = groups.flatMap((_group, index) =>
+    shardAssignment[index] === options.shardIndex ? [index] : [],
   );
+  const selectedGroups = selectedGroupIndices.map((index) => groups[index]);
   const localGpuLease = process.env.FORGEAX_LOCAL_GPU_LEASE === '1';
+  const selectedPosition = new Map(
+    selectedGroupIndices.map((globalIndex, selectedIndex) => [globalIndex, selectedIndex]),
+  );
+  const coverageOrder = coverageGroupOrder(groups, options.typecheck)
+    .filter((index) => shardAssignment[index] === options.shardIndex)
+    .map((index) => selectedPosition.get(index));
   const groupOrder = scheduledGroupOrder(selectedGroups, {
     coverage: options.coverage,
     localGpuLease,
+    typecheck: options.typecheck,
+    coverageOrder,
   });
   const selectedProjects = [...new Set(selectedGroups.flatMap((group) => group.projects))];
   const runsTypecheck = options.coverage && options.typecheck && options.shardIndex === 0;

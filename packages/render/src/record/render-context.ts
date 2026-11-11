@@ -269,7 +269,8 @@ export interface RenderSystemRuntime {
     passKind?: PassKind,
     meshAttributes?: VertexAttributeMap,
     sampleCount?: number,
-    colorFormatOverride?: GPUTextureFormat,
+    /** `null` selects a colorless pipeline (depth-only scene prepass). */
+    colorFormatOverride?: GPUTextureFormat | null,
     shaderUvSetCount?: number,
     depthFormatOverride?: GPUTextureFormat | null,
     vertexLayout?: string,
@@ -695,6 +696,8 @@ export interface _StandardForwardSceneView {
   readonly standardLighting?: StandardTopologyInputValue;
   /** One Vogel-PCF cascade, no blend: Standard pipelines fold the general receiver away. */
   readonly directionalShadowSimple?: boolean;
+  /** Independent per-frame proof that no extended light modifiers are needed. */
+  readonly leanLighting?: boolean;
   readonly foldDispatchPlan: FoldDispatchPlan | null;
   readonly materialSlotIndices: FrameList<readonly number[]>;
   readonly materialSlots: readonly MaterialSnapshot[];

@@ -321,7 +321,8 @@ export function hostStartupScript(
         };
         const reload = () => {
           if (phase === 'destroyed') return;
-          destroy();
+          // The page is going away: keep the game UI inert under the cover.
+          destroy(false);
           if (host !== undefined) host.reload();
           else if (typeof location?.reload === 'function') location.reload();
         };
@@ -458,11 +459,18 @@ export function hostStartupScript(
             }
           }
           inputBinding = callback;
-          setInputEnabled(false);
+          // A binding joins the current gate: an App bound after the first
+          // ready frame (hot reload, a replacement App) is admitted at once,
+          // and the game UI never falls back to inert behind no cover.
+          setInputEnabled(inputEnabled);
           return () => {
             if (inputBinding !== callback) return;
-            setInputEnabled(false);
             inputBinding = undefined;
+            try {
+              callback(false);
+            } catch {
+              // The retiring App may already be disposed.
+            }
           };
         };
         let fadeCanvasWatch;
@@ -928,7 +936,7 @@ export function hostStartupScript(
             cleanupStartupListeners();
           }, fadeDurationMs);
         };
-        const destroy = () => {
+        const destroy = (releaseUi = true) => {
           if (phase === 'destroyed') return;
           sessionGeneration += 1;
           phase = 'destroyed';
@@ -939,6 +947,8 @@ export function hostStartupScript(
           startupCache?.retire();
           frameRate.destroy();
           setInputEnabled(false);
+          // The retired startup owner no longer gates the page's UI.
+          if (releaseUi && gamePage && isElement(gameUi)) gameUi.inert = false;
           clearStartupWork();
           cleanupStartupListeners();
         };
@@ -989,7 +999,10 @@ export function hostStartupScript(
             slowTimer = undefined;
           }
         };
-        const onPageHide = () => destroy();
+        // A page kept in the back/forward cache resumes as it was.
+        const onPageHide = (event) => {
+          if (event?.persisted !== true) destroy();
+        };
         const onError = (event) => {
           if (event?.error !== undefined) {
             show(event.error);

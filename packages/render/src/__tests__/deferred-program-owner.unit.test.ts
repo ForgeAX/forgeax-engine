@@ -7,11 +7,14 @@ import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { MaterialResource } from '../material-resource';
 import { addStandardDeferredLighting } from '../pipeline/standard-deferred-lighting';
-import { buildPerFrameBindGroups } from '../record/frame-lighting';
+import { buildPerFrameBindGroups, buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import type { RenderPipelineFrame } from '../render-pipeline';
 
-vi.mock('../record/frame-lighting', () => ({ buildPerFrameBindGroups: vi.fn() }));
+vi.mock('../record/frame-lighting', () => ({
+  buildPerFrameBindGroups: vi.fn(),
+  buildViewBindGroup: vi.fn(),
+}));
 vi.mock('../record/main-pass-material', () => ({ prepareMaterialSkylight: vi.fn() }));
 
 async function fixture() {
@@ -32,6 +35,10 @@ async function fixture() {
   vi.mocked(buildPerFrameBindGroups).mockReturnValue({ viewBindGroup: group } as ReturnType<
     typeof buildPerFrameBindGroups
   >);
+  vi.mocked(buildViewBindGroup).mockImplementation(
+    (runtime, state, pipeline, counts, targets) =>
+      buildPerFrameBindGroups(runtime, state, pipeline, true, counts, targets).viewBindGroup,
+  );
   vi.mocked(prepareMaterialSkylight).mockReturnValue({
     skylightResources: {
       irradianceView: view,

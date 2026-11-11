@@ -11,7 +11,7 @@ import {
   legendLines,
   renderLuminanceHeatmap,
 } from './luminance-heatmap.js';
-import { parsePlayViewports } from './play-layout.js';
+import { parsePlayViewports } from './play-viewports.js';
 import type { BrowserExecutionTarget } from './tools/display-carrier.js';
 
 /** A fixed observation camera for one look, in `dev camera set` form. */

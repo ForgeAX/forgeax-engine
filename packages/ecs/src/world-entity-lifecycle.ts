@@ -16,10 +16,29 @@ import {
   StaleEntityError,
 } from './errors';
 import { relationshipRole } from './relationship-index';
-import type { Archetype } from './storage/archetype';
+import { type Archetype, archetypeComponentIndex } from './storage/archetype';
 import type { ArchetypeGraph } from './storage/archetype-graph';
 import type { ComponentData, EcsError, World } from './world';
 import { worldInternal } from './world-internal';
+
+/** A spawn roster names exactly `archetype`'s non-Entity components, once each. */
+export function spawnRosterMatches(
+  archetype: Archetype,
+  componentDatas: readonly ComponentData[],
+): boolean {
+  const count = componentDatas.length;
+  if (archetype.ids.length !== count + 1) return false;
+  for (let index = 0; index < count; index++) {
+    const component = (componentDatas[index] as ComponentData).component;
+    if (
+      archetype.components[archetypeComponentIndex(archetype, componentId(component))] !== component
+    )
+      return false;
+    for (let other = 0; other < index; other++)
+      if ((componentDatas[other] as ComponentData).component === component) return false;
+  }
+  return true;
+}
 
 function tableRow(world: World, slot: number): number {
   const records = world[worldInternal].getRecords();

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 const compiled = await build({
-  entryPoints: [new URL('../../src/app/host-poll.ts', import.meta.url).pathname],
+  entryPoints: [fileURLToPath(new URL('../../src/app/host-poll.ts', import.meta.url))],
   bundle: true,
   write: false,
   platform: 'node',

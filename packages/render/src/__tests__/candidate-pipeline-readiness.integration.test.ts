@@ -187,6 +187,7 @@ async function fixture(
     for (const resolve of moduleReleases.splice(0)) resolve();
   };
   let hold = false;
+  let holdAllCandidatePasses = false;
   let rejected = false;
   const failure = new RhiError({
     code: 'webgpu-runtime-error',
@@ -215,7 +216,7 @@ async function fixture(
             ? ['fs_main', 'fs_opaque'].includes(descriptor.fragment?.entryPoint ?? '')
             : descriptor.label?.includes('default-shadow-caster');
     const result = compile(descriptor);
-    if (hold && newLayout(descriptor) && selected) {
+    if (hold && newLayout(descriptor) && (selected || holdAllCandidatePasses)) {
       held.push(descriptor);
       await new Promise<void>((resolve) => releases.push(resolve));
       if (rejected) throw failure;
@@ -428,6 +429,10 @@ async function fixture(
     },
     releaseModules,
     release,
+    holdCandidatePipelines: () => {
+      hold = true;
+      holdAllCandidatePasses = true;
+    },
     reject: () => {
       rejected = true;
     },
@@ -953,6 +958,136 @@ async function finish<T>(f: Awaited<ReturnType<typeof fixture>>, pending: Promis
   return result;
 }
 
+it('keeps a published candidate pending until its real cold PSO is ready', async () => {
+  const f = await fixture('color', true);
+  const controller = new AbortController();
+  const result: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>>[] = [];
+  const pending = f.renderer
+    .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received', {
+      signal: controller.signal,
+    })
+    .then((value) => {
+      result.push(value);
+      return value;
+    });
+  try {
+    await f.draw();
+    for (let turn = 0; turn < 8; turn++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(f.held.some((descriptor) => newLayout(descriptor))).toBe(true);
+    expect(result).toHaveLength(0);
+    f.release();
+    for (let frame = 0; frame < 60 && result.length === 0; frame++) {
+      await f.draw();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(result[0]?.ok).toBe(true);
+    expect(f.host.health().reason).toBe('alive');
+  } finally {
+    controller.abort();
+    f.release();
+    const prepared = await pending;
+    if (prepared.ok) await prepared.value.release();
+    await f.dispose();
+  }
+});
+
+it('faults the actual Renderer when a mesh completion rejects before its PSO is ready', async () => {
+  const f = await fixture('color', true);
+  const controller = new AbortController();
+  let rejectUpload!: (cause: unknown) => void;
+  const upload = new Promise<undefined>((_resolve, reject) => {
+    rejectUpload = reject;
+  });
+  const completion = vi.spyOn(f.queue, 'onSubmittedWorkDone').mockReturnValueOnce(upload);
+  const results: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>>[] = [];
+  const pending = f.renderer
+    .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received', {
+      signal: controller.signal,
+    })
+    .then((result) => {
+      results.push(result);
+      return result;
+    });
+  let submitted: Awaited<ReturnType<typeof f.submit>> | undefined;
+  try {
+    submitted = await f.submit();
+    for (let turn = 0; turn < 8; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.held.some((descriptor) => newLayout(descriptor))).toBe(true);
+    expect(results).toHaveLength(0);
+    rejectUpload(new Error('mesh completion failed before pipeline readiness'));
+    expect((await pending).ok).toBe(false);
+    expect(f.host.health()).toMatchObject({ reason: 'internal-fault', recoverable: false });
+    expect(f.renderer.state()).toBe('faulted');
+    expect(f.errors.length).toBeGreaterThan(0);
+    await expect(f.submit()).rejects.toThrow('renderer draw failed');
+  } finally {
+    controller.abort();
+    rejectUpload(new Error('mesh completion cleanup'));
+    completion.mockRestore();
+    f.release();
+    const result = await pending;
+    if (result.ok) await result.value.release();
+    if (submitted !== undefined) {
+      await submitted.receipt.completed;
+      submitted.recycle();
+    }
+    await f.dispose();
+  }
+});
+
+it('faults the actual Renderer when an early-ready mesh upload completion later rejects', async () => {
+  const f = await fixture('color', true);
+  let rejectUpload!: (cause: unknown) => void;
+  const upload = new Promise<undefined>((_resolve, reject) => {
+    rejectUpload = reject;
+  });
+  let pending: ReturnType<typeof f.renderer.preparePublishedMeshResidency> | undefined;
+  let restore: (() => void) | undefined;
+  try {
+    f.release();
+    const first = (
+      await finish(
+        f,
+        f.renderer.preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received'),
+      )
+    ).unwrap();
+    await first.release();
+    const completion = vi.spyOn(f.queue, 'onSubmittedWorkDone').mockReturnValueOnce(upload);
+    restore = () => completion.mockRestore();
+    const result: Awaited<ReturnType<typeof f.renderer.preparePublishedMeshResidency>>[] = [];
+    pending = f.renderer
+      .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received')
+      .then((value) => {
+        result.push(value);
+        return value;
+      });
+    for (let turn = 0; turn < 4; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(completion).toHaveBeenCalledTimes(1);
+    expect(result[0]?.ok).toBe(true);
+    const prepared = result[0]?.unwrap();
+    expect(prepared?.isCurrent()).toBe(true);
+    const errorCount = f.errors.length;
+    rejectUpload(new Error('held mesh upload completion failed'));
+    for (let turn = 0; turn < 4; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.host.health()).toMatchObject({ reason: 'internal-fault', recoverable: false });
+    expect(f.renderer.state()).toBe('faulted');
+    expect(f.errors.length).toBeGreaterThan(errorCount);
+    expect(prepared?.isCurrent()).toBe(false);
+    await expect(f.submit()).rejects.toThrow('renderer draw failed');
+  } finally {
+    rejectUpload(new Error('held mesh upload completion cleanup'));
+    restore?.();
+    const result = await pending;
+    if (result?.ok) await result.value.release();
+    await f.dispose();
+  }
+});
+
 it.each([
   'before',
   'after',
@@ -964,6 +1099,7 @@ it.each([
   const demand = vi.spyOn(candidateViewDemand, 'readCandidateViewDemand');
   const post = vi.fn();
   const worker = new RenderMeshResidency(f.renderer, f.identity, post);
+  let releaseUploadHold: (() => void) | undefined;
   try {
     f.release();
     const first = (
@@ -978,6 +1114,7 @@ it.each([
       await f.draw();
     }
     const releaseUploads = f.queue.holdCompletions();
+    releaseUploadHold = releaseUploads;
     const pending = worker.receive({
       kind: 'mesh-prepare',
       requestId: 1,
@@ -986,12 +1123,12 @@ it.each([
     });
     for (let turn = 0; turn < 4; turn++)
       await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(post).not.toHaveBeenCalled();
-    const beforeValidation = demand.mock.calls.length;
+    expect(post.mock.calls[0]?.[0].result.ok).toBe(true);
+    const afterValidation = demand.mock.calls.length;
     releaseUploads();
     await pending;
     expect(post.mock.calls[0]?.[0].result.ok).toBe(true);
-    expect(demand.mock.calls.length).toBeGreaterThan(beforeValidation);
+    expect(demand.mock.calls.length).toBe(afterValidation);
     if (ordering === 'before') f.world.set(f.entity, MeshFilter, { assetHandle: f.next }).unwrap();
     const receipt = await f.draw();
     const afterPublication = demand.mock.calls.length;
@@ -1023,6 +1160,7 @@ it.each([
       0,
     );
   } finally {
+    releaseUploadHold?.();
     await worker.dispose();
     demand.mockRestore();
     await f.dispose();
@@ -1321,7 +1459,45 @@ it.each([
   }
 });
 
-it('rechecks current outline selection before a warm candidate completes its upload fence', async () => {
+async function assertChangedDemandWaitsForPipelines(
+  f: Awaited<ReturnType<typeof fixture>>,
+  heldBefore: number,
+) {
+  const controller = new AbortController();
+  let settled = false;
+  const pending = f.renderer
+    .preparePublishedMeshResidency(structuredClone(f.publishedInput()), 'received', {
+      signal: controller.signal,
+    })
+    .then((result) => {
+      settled = true;
+      return result;
+    });
+  try {
+    for (let turn = 0; turn < 8; turn++)
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled, 'new accepted demand cannot reuse the earlier ready proof').toBe(false);
+    for (let frame = 0; frame < 60 && f.held.length <= heldBefore && !settled; frame++)
+      await f.draw();
+    expect(
+      f.held.length,
+      'new accepted demand must prepare an actual candidate PSO',
+    ).toBeGreaterThan(heldBefore);
+    expect(settled, 'a real pending PSO still blocks mesh readiness').toBe(false);
+    f.release();
+    for (let frame = 0; frame < 60 && !settled; frame++) await f.draw();
+    expect(settled, 'the new demand settles after its real PSO is released').toBe(true);
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
+  } finally {
+    controller.abort();
+    f.release();
+    const prepared = await pending;
+    if (prepared.ok) await prepared.value.release();
+  }
+}
+
+it('invalidates an early-ready warm candidate when current outline selection changes', async () => {
   const f = await fixture('color', true);
   let releaseFence: (() => void) | undefined;
   try {
@@ -1352,8 +1528,12 @@ it('rechecks current outline selection before a warm candidate completes its upl
       });
     for (let turn = 0; turn < 8; turn++)
       await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
+    expect(settled).toBe(true);
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
     expect(f.asyncPipelines).toHaveBeenCalledTimes(compilationCount);
+    const heldBefore = f.held.length;
+    f.holdCandidatePipelines();
     // Change the current selection, not graph topology or the candidate's mesh/material recipe.
     f.world.set(f.camera, Outline, { entities: [f.entity] }).unwrap();
     // Keep accepted metadata ahead of recording with a real pending environment upload.
@@ -1371,14 +1551,16 @@ it('rechecks current outline selection before a warm candidate completes its upl
     f.world.spawn({ component: Skylight, data: { equirect: sky } }).unwrap();
     const submitted = await f.submit();
     expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
-    releaseFence();
-    releaseFence = undefined;
-    expect((await pending).ok, 'new selection must require its exact coverage pipelines').toBe(
+    expect(prepared.isCurrent(), 'new selection invalidates the old ready coverage proof').toBe(
       false,
     );
+    releaseFence();
+    releaseFence = undefined;
     expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
     expect((await submitted.receipt.completed).ok).toBe(true);
     submitted.recycle();
+    await prepared.release();
+    await assertChangedDemandWaitsForPipelines(f, heldBefore);
     await first.release();
   } finally {
     releaseFence?.();
@@ -1386,7 +1568,7 @@ it('rechecks current outline selection before a warm candidate completes its upl
   }
 });
 
-it('rechecks accepted clipping demand while a warm candidate still waits for its upload fence', async () => {
+it('invalidates an early-ready warm candidate when accepted clipping demand changes', async () => {
   const f = await fixture('color', true);
   let releaseFence: (() => void) | undefined;
   try {
@@ -1412,7 +1594,9 @@ it('rechecks accepted clipping demand while a warm candidate still waits for its
       });
     for (let turn = 0; turn < 8; turn++)
       await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled, 'warm pipeline proof must not bypass physical upload completion').toBe(false);
+    expect(settled, 'warm pipeline proof permits ordered uploads before GPU completion').toBe(true);
+    const prepared = (await pending).unwrap();
+    expect(prepared.isCurrent()).toBe(true);
     expect(f.asyncPipelines).toHaveBeenCalledTimes(compilationCount);
     f.world
       .addComponent(f.camera, {
@@ -1436,14 +1620,14 @@ it('rechecks accepted clipping demand while a warm candidate still waits for its
     const submitted = await f.submit();
     expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
     expect(f.world.get(f.entity, MeshFilter).unwrap().assetHandle).toBe(f.previous);
+    expect(prepared.isCurrent(), 'new clipping demand invalidates the old ready proof').toBe(false);
+    expect(prepared.recordStageLane(submitted.receipt, f.entity).unwrap()).toBeUndefined();
     releaseFence();
     releaseFence = undefined;
-    expect((await pending).ok, 'new accepted demand must invalidate the earlier warm proof').toBe(
-      false,
-    );
     expect(f.renderer.inspect().recoveryEvidence.graph).toEqual(graph);
     expect((await submitted.receipt.completed).ok).toBe(true);
     submitted.recycle();
+    await prepared.release();
     await first.release();
   } finally {
     releaseFence?.();

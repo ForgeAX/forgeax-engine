@@ -45,14 +45,14 @@ export async function verifyCloudWindHistory(
   const previousPosition = texture('rgba16float', 6);
   const depth = texture('depth32float', 20);
   const output = texture('rgba16float', 17);
-  const view = buffer(1280, 72);
+  const view = buffer(1296, 72);
   const params = buffer(176, 72);
   fill(source, [0, 0, 0, 0x3800]);
   fill(current, [0x3800, 0x3800, 0x3800, 0x3c00], [0x3400, 0x3400, 0x3400, 0x3c00]);
   fill(previous, [0x3800, 0x3800, 0x3800, 0x3c00]);
   fill(transmission, [0x3800, 0x3800, 0x3800, 0x3c00]);
   fill(position, [0, 0, 0x3c00, 0x3c00]); // z = 1000 m
-  const uniforms = new Float32Array(320);
+  const uniforms = new Float32Array(324);
   for (const offset of [0, 44, 252]) for (let i = 0; i < 4; i++) uniforms[offset + i * 5] = 1;
   device.queue.writeBuffer(view, 0, uniforms);
   const cloud = new Float32Array(44);

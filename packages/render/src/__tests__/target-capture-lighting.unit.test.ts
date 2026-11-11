@@ -355,6 +355,7 @@ it('uses current Fog while retaining the captured atmosphere and sun', async () 
     mode: 'exp' as const,
     near: 0,
     far: 100,
+    skyOpacity: 1,
   };
   f.state.environmentFrame = selectEnvironment({
     environments: [

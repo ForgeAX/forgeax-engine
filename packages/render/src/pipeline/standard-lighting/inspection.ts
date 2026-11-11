@@ -259,15 +259,13 @@ function collectAmbientOcclusionFacts(input: {
   const slices = sampleBudget >= 30 ? 5 : 3;
   const depthCandidatesPerPixel =
     parameters.algorithm === 'gtao' ? slices * Math.ceil(sampleBudget / slices) * 2 : sampleBudget;
+  // Forward keeps the surface-data prepass to seed `main` with AO off; it is
+  // AO work only when AO is requested.
   const passNames = (input.graph?.passes ?? [])
-    .filter((pass) =>
-      [
-        'standard-scene-surface-data',
-        'ssao-calc',
-        'gtao-calc-compute',
-        'ssao-blur',
-        'ssao-cluster-pack',
-      ].includes(pass.name),
+    .filter(
+      (pass) =>
+        (requested && pass.name === 'standard-scene-surface-data') ||
+        ['ssao-calc', 'gtao-calc-compute', 'ssao-blur', 'ssao-cluster-pack'].includes(pass.name),
     )
     .map((pass) => pass.name);
   const status: StandardAmbientOcclusionInspection['status'] = !requested

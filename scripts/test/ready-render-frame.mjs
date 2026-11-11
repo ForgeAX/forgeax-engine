@@ -1,3 +1,12 @@
+/** The Engine test owner translates one scene lease into its current draw contract. */
+export function drawSceneFrame(renderer, scene) {
+  return drawReadyFrame(renderer, {
+    leases: [scene],
+    camera: { lease: scene },
+    environment: { lease: scene },
+  });
+}
+
 /** Submit one ready scene picture without advancing the caller's World. */
 export async function drawReadyFrame(renderer, request, observation, options) {
   let consumePending;

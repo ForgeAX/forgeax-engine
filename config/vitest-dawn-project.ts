@@ -4,6 +4,7 @@ import {
   DAWN_ISOLATED_TEST_FILES,
   DIRECT_LIGHT_DAWN_TEST_FILE,
 } from '../scripts/ci/dawn-gate-roster.mjs';
+import { dawnOrdinaryWorkers } from '../scripts/lib/runner-resources.mjs';
 
 // Every exclusion is derived from the same roster used by local, PR and nightly.
 const R32FLOAT_CAPABILITY_GENERATION_TEST =
@@ -27,10 +28,12 @@ export const dawnProject = defineProject({
     // Keep the bound tight but allow the worker to close cleanly instead
     // of turning completed assertions into a Vitest worker-exit error.
     teardownTimeout: 5000,
-    // Dawn tests use a shared software Vulkan backend. Keep this project
-    // to one worker: the 96-vCPU heavy runners can otherwise launch
-    // multiple GPU processes and lose workers under lavapipe contention.
-    maxWorkers: 1,
+    // Never inherit host-wide GPU fanout. Only explicitly admitted ordinary
+    // forks can run together; native capture/compact/partition owners stay serial.
+    maxWorkers:
+      RUNNING_DIRECT_LIGHT_PARTITION || RUNNING_DAWN_COMPACT || RUNNING_DAWN_ISOLATED
+        ? 1
+        : dawnOrdinaryWorkers(),
     include: [
       '**/*.dawn.test.ts',
       'packages/rhi-wgpu/src/__tests__/**/*.dawn.test.ts',

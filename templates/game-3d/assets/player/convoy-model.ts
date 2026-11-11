@@ -1,7 +1,7 @@
 import { CONVOY_SURFACES, CONVOY_HARDWARE_SLOTS } from './convoy-surfaces.ts';
 import { addConvoyPart, type ConvoyBinding } from './convoy-parts.ts';
 import { convoyFrame } from './convoy-frame.ts';
-import { CONVOY_LAYOUT, mirrorPoint, type ConvoyLayout } from './convoy-layout.ts';
+import { CONVOY_LAYOUT, mirrorPoint, type ConvoyLayout } from '../shared/convoy-layout.ts';
 import { model, rig, sel, type Tuple3, type Pose, type PosePath, textStrokes } from '@forgeax/engine/modeling';
 import { deriveAnimationTargetId } from '@forgeax/engine/animation';
 import { Materials } from '@forgeax/engine/render';
@@ -9,7 +9,7 @@ import type { AnimationClip, MaterialAsset, MeshAsset, SkeletonAsset, SkinAsset 
 import type { PackageId } from '@forgeax/engine/pack/guid';
 import { assetGuid, guidText } from '../shared/asset-refs.ts';
 import { convoyHardwareTextures } from './convoy-finish.ts';
-import { PLAYER_RIG, PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, CONVOY_WHEELS, convoyJointSpecs, nativeJointName as nativeName, playerTargetPath } from './player-rig.ts';
+import { PLAYER_RIG, PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, CONVOY_WHEELS, convoyJointSpecs, nativeJointName as nativeName, playerTargetPath } from '../shared/player-rig.ts';
 
 export const CONVOY_NORMALS = { mode: 'weighted' } as const;
 export const CONVOY_DEFAULT_RESOLUTION = 1024;

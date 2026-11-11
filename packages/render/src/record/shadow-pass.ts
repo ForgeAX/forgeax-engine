@@ -314,14 +314,14 @@ function ensureTypedShadowViewBg(
                       value: pipelineState.defaultWhiteTextureView,
                     },
                   },
-                  {
-                    binding: 17,
-                    resource: {
-                      kind: 'sampler' as const,
-                      value: pipelineState.defaultSampler,
-                    },
-                  },
                 ]),
+            {
+              binding: 17,
+              resource: {
+                kind: 'sampler' as const,
+                value: pipelineState.defaultSampler,
+              },
+            },
           ],
         });
         if (!created.ok) throw created.error;

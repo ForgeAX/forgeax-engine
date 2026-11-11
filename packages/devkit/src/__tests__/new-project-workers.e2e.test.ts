@@ -301,14 +301,8 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
     const ui = page.locator('#game-ui [data-ui-slot="lock"]');
     expect(await ui.textContent()).toContain('Click to lock camera');
     expect(await page.locator('#game-ui > *').count()).toBe(1);
-    await page.locator('#game-ui [data-ui-action="language-fr"]').click();
-    await expect
-      .poll(() => currentPage.locator('#game-ui [data-ui-part="guide-title"]').textContent())
-      .toBe('Prototype 3C');
     expect((await read()).camera.pointerLocked).toBe(false);
-    await page.locator('#game-ui [data-ui-action="language-en"]').click();
-    await expect.poll(() => ui.textContent()).toContain('Click to lock camera');
-    // Native canvas input must start outside the interactive guide's language buttons.
+    // Native canvas input must start outside the guide panel.
     await page.locator('#app').click({ position: { x: 4, y: 4 } });
     await expect
       .poll(async () => (await read()).camera.pointerLocked, { timeout: 10_000 })

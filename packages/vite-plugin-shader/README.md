@@ -173,7 +173,7 @@ an obsolete container version or an absent profile warns or falls back and
 compiles from source instead of publishing stale bindings.
 
 The public `VIEW_ABI` export is typed transport metadata for
-`forgeax_view::common`: group 0, binding 0, and the 1280-byte upload shape, including camera clipping planes, fog and atmosphere. It contains no live WebGPU object. Consumers should use the manifest
+`forgeax_view::common`: group 0, binding 0, and the 1296-byte upload shape, including camera clipping planes, fog, atmosphere and sky fog. It contains no live WebGPU object. Consumers should use the manifest
 and reflection output; they must not add a second manifest URL or hard-code a
 carrier-side index.
 

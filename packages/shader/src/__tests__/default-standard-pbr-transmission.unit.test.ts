@@ -66,10 +66,10 @@ function violatesCapabilityTopology(defines: Record<string, boolean>): boolean {
     defines.PROBE_BLEND_AVAILABLE ||
     defines.EXTENDED_LIGHTING_AVAILABLE ||
     defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE;
-  return (
+  return Boolean(
     (!defines.STORAGE_BUFFER_AVAILABLE && storageOnly) ||
-    (defines.ATMOSPHERE_AVAILABLE && !defines.EXTENDED_LIGHTING_AVAILABLE) ||
-    (defines.EXTENDED_LIGHTING_AVAILABLE && !defines.PROJECTOR_AVAILABLE)
+      (defines.ATMOSPHERE_AVAILABLE && !defines.EXTENDED_LIGHTING_AVAILABLE) ||
+      (defines.EXTENDED_LIGHTING_AVAILABLE && !defines.PROJECTOR_AVAILABLE),
   );
 }
 
@@ -154,17 +154,24 @@ describe('default Standard PBR transmission manifest contract', () => {
       const previousCode = programsByEffectiveChoice.get(choice);
       if (previousCode !== undefined) expect(code).toBe(previousCode);
       programsByEffectiveChoice.set(choice, code);
-      // LEAN_LIGHTING drops projector sampling, so its rows may share code
-      // across PROJECTOR_AVAILABLE; every other choice keeps distinct code.
-      const programKey = defines.LEAN_LIGHTING
+      // Lean drops projector reads. No-storage omits the cloud map; without
+      // Cluster or shared transmission, the projector axis has no other read.
+      // Every other effective choice must retain its distinct program.
+      const inactiveProjector =
+        defines.LEAN_LIGHTING ||
+        (!defines.STORAGE_BUFFER_AVAILABLE &&
+          !defines.CLUSTER_FORWARD_AVAILABLE &&
+          !defines.TRANSMISSION_AVAILABLE);
+      if (inactiveProjector) {
+        expect(code).not.toMatch(/textureSampleLevel\(projectorTexture\w*,/);
+      }
+      const programKey = inactiveProjector
         ? choice.replace(/PROJECTOR_AVAILABLE=(true|false)/, 'PROJECTOR_AVAILABLE=*')
         : choice;
       const previousChoice = choicesByProgram.get(code);
       if (previousChoice !== undefined) expect(programKey).toBe(previousChoice);
       choicesByProgram.set(code, programKey);
     }
-    // The CPU-direct deferred lane adds 16 clip-only visible-surface rows.
-    // It shares the producer's published 2032-row contract, not the older 2016.
     const directVisibleRows = [...expected.values()].filter(
       (defines) =>
         defines.VISIBLE_SURFACE_AVAILABLE &&
@@ -172,16 +179,44 @@ describe('default Standard PBR transmission manifest contract', () => {
         !defines.COVERAGE_ONLY,
     );
     expect(directVisibleRows).toHaveLength(16);
+    // Count the contract independently of the producer and permutation helper:
+    // no-storage, storage/direct, direct G-buffer, and storage/scene-index rows.
+    // The direct G-buffer slice has four (projector, extended, atmosphere)
+    // topologies, two probe choices and two alpha-mask choices.
+    const generalRows = 32 * 5 + 128 * 5 + 4 * 2 * 2 + 128 * 9;
+    // Lean fixes the receiver/discard axes. Four lighting topologies combine
+    // with GPU scene-index, cluster, vertex colour and reflection choices.
+    const leanRows = 4 * 2 ** 4;
+    // Without extended lighting, each of those 16 choices has two projector
+    // rows but one program; the loop above rejects every other code alias.
+    const leanProjectorPairs = 2 ** 4;
+    // Full-lighting receivers also keep both ProbeBlend choices.
+    const fullSimpleRows = 4 * 2 ** 5;
+    expect(programsByEffectiveChoice.size).toBe(generalRows + leanRows + fullSimpleRows);
+    // No-storage/non-Cluster/non-transmission has five receiver/discard
+    // states, two vertex-colour and two reflection choices; each projector pair
+    // shares code because neither the projector nor cloud map is consumed.
+    const noStorageProjectorPairs = 5 * 2 * 2;
+    const noStorageInactiveChoices = [...expected.values()].filter(
+      (defines) =>
+        !defines.STORAGE_BUFFER_AVAILABLE &&
+        !defines.CLUSTER_FORWARD_AVAILABLE &&
+        !defines.TRANSMISSION_AVAILABLE,
+    );
+    expect(noStorageInactiveChoices).toHaveLength(2 * noStorageProjectorPairs);
+    expect(choicesByProgram.size).toBe(
+      generalRows + leanRows + fullSimpleRows - leanProjectorPairs - noStorageProjectorPairs,
+    );
     const leanChoices = [...expected.values()].filter(
       (defines) => defines.LEAN_LIGHTING && !defines.EXTENDED_LIGHTING_AVAILABLE,
     );
     expect(leanChoices).toHaveLength(32);
-    expect(expected.size - leanChoices.length).toBe(2000);
-    expect(programsByEffectiveChoice.size).toBe(2032);
-    // The 32 lean choices without extended lighting share code pairwise across
-    // PROJECTOR_AVAILABLE; all other 2000 choices keep distinct code.
-
-    expect(choicesByProgram.size).toBe(2016);
+    const fullSimple = [...expected.values()].filter(
+      (defines) => defines.DIRECTIONAL_SHADOW_SIMPLE && !defines.LEAN_LIGHTING,
+    );
+    expect(fullSimple).toHaveLength(128);
+    // The new full-lighting receiver rows preserve all previously published choices.
+    expect(expected.size - fullSimple.length - leanChoices.length).toBe(2000);
     expect(standard.variants.every((variant) => 'TRANSMISSION_AVAILABLE' in variant.defines)).toBe(
       true,
     );

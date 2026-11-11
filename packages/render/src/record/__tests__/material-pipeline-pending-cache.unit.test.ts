@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createGeometryPipelineRequests,
   type GeometryPipelineRequestContext,
+  geometryPipelineRequestContext,
   type PipelineRequestRuntime,
 } from '../geometry-pipeline-requests';
 import type { MaterialShaderPipelineEntry } from '../render-context';
@@ -98,7 +99,7 @@ describe('main-pass material pipeline cache', () => {
     expect(lookup).toHaveBeenCalledTimes(3);
   });
 
-  it('draws the general directional receiver while the simple receiver builds', () => {
+  it.each([false, true])('preserves lean=%s while the simple receiver builds', (leanLighting) => {
     const general = { pipeline: {} } as MaterialShaderPipelineEntry;
     const simple = { pipeline: {} } as MaterialShaderPipelineEntry;
     let simpleReady = false;
@@ -114,6 +115,7 @@ describe('main-pass material pipeline cache', () => {
     const context = {
       runtime: { getMaterialShaderPipelineEntry: lookup },
       directionalShadowSimple: true,
+      leanLighting,
     } as unknown as GeometryPipelineRequestContext;
     const requests = createGeometryPipelineRequests(context, {
       passKind: 'forward',
@@ -141,6 +143,7 @@ describe('main-pass material pipeline cache', () => {
     expect(resolve()).toBe(general);
     const requested = lookup.mock.calls.map((call) => String(call[5]));
     expect(requested[0]).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(requested[0]).toContain(`LEAN_LIGHTING=${leanLighting}`);
     expect(requested[1]).not.toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
     // The fallback is not memoized under the simple key.
     simpleReady = true;
@@ -148,4 +151,25 @@ describe('main-pass material pipeline cache', () => {
     expect(resolve()).toBe(simple);
     expect(lookup).toHaveBeenCalledTimes(3);
   });
+});
+
+it('snapshots lean lighting independently when the next frame adds modifiers', () => {
+  const source = {
+    camera: {},
+    frameState: { warnedNineSliceScaleEntities: new Set<number>() },
+    directionalShadowSimple: true,
+    leanLighting: true,
+  };
+  const project = () =>
+    geometryPipelineRequestContext(
+      source as unknown as Parameters<typeof geometryPipelineRequestContext>[0],
+    );
+  const before = project();
+  source.leanLighting = false;
+  const full = project();
+  source.leanLighting = true;
+  expect(before.leanLighting).toBe(true);
+  expect(full.leanLighting).toBe(false);
+  expect(project().leanLighting).toBe(true);
+  expect(full.directionalShadowSimple).toBe(true);
 });

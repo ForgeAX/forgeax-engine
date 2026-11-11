@@ -245,6 +245,25 @@ function sameMaterialPasses(previous: MaterialSnapshot, next: MaterialSnapshot):
 
 /** Fixed shared material roots; capturing or adopting a version never copies bindings. */
 export class MaterialFrame {
+  readonly #programRoot = true;
+
+  /** Native fixed program root; proxies and borrowed/custom read protocols stay observable. */
+  static fixedProgramRoot(frame: unknown): MaterialFrame | undefined {
+    if (typeof frame !== 'object' || frame === null || !(#programRoot in frame)) return undefined;
+    if (
+      Object.getPrototypeOf(frame) !== MaterialFrame.prototype ||
+      Object.hasOwn(frame, 'get') ||
+      Object.hasOwn(frame, 'hasBorrowedValues') ||
+      Object.getOwnPropertyDescriptor(MaterialFrame.prototype, 'get')?.value !==
+        MATERIAL_FRAME_GET ||
+      Object.getOwnPropertyDescriptor(MaterialFrame.prototype, 'hasBorrowedValues')?.get !==
+        MATERIAL_FRAME_BORROWED ||
+      frame.hasBorrowedValues
+    )
+      return undefined;
+    return frame;
+  }
+
   readonly transmissionDemand: import('../transmission/projection').TransmissionDemand;
   constructor(
     private readonly root: Node<AcceptedMaterial> | undefined,
@@ -393,6 +412,12 @@ export class MaterialFrame {
     changes(previous.root, this.root, visit);
   }
 }
+
+const MATERIAL_FRAME_GET = MaterialFrame.prototype.get;
+const MATERIAL_FRAME_BORROWED = Object.getOwnPropertyDescriptor(
+  MaterialFrame.prototype,
+  'hasBorrowedValues',
+)?.get;
 
 // Only a completed real traversal can populate this cache. Fixed Work is
 // retained across parameter adoption, so later draws and slices reuse its order.
@@ -755,6 +780,11 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
 
 /** One private completion cursor per walk; only a complete walk publishes its rows. */
 const nativeDispatchIterator = FrameDispatch.prototype[Symbol.iterator];
+
+/** A captured root with the native walk: one identity always lists the same Pass members. */
+export function isCapturedDispatch(list: DispatchList): boolean {
+  return list instanceof FrameDispatch && list[Symbol.iterator] === nativeDispatchIterator;
+}
 
 /** Preserve a custom iterator's single lookup, receiver and IteratorClose. */
 function forEachCustomDispatch(

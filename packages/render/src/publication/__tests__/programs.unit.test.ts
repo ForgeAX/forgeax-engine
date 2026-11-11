@@ -140,7 +140,7 @@ it.each([
   'paramSchema',
   'abi',
   'receipt',
-] as const)('compares repeated artifact %s even when its producer digest is unchanged', (dimension) => {
+] as const)('rejects a repeated artifact with another %s before installing its publication', (dimension) => {
   const assets = new AssetRegistry({
     shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
   });
@@ -148,7 +148,9 @@ it.each([
   installPublicationPrograms(assets, [row]);
   const changed = structuredClone(row);
   const artifact = changed.artifact;
-  if (dimension === 'bytes') artifact.bytes[2] = 9;
+  // Other content under the key carries another content address.
+  if (dimension === 'bytes')
+    Object.assign(artifact, { digest: 'other-producer-digest' }).bytes[2] = 9;
   else Object.assign(artifact.metadata, { [dimension]: 'changed' });
   const fresh = program('forgeax::fresh-program');
   expect(() => installPublicationPrograms(assets, [fresh, changed])).toThrow();
@@ -156,6 +158,27 @@ it.each([
   expect(assets.getMaterialArtifact(fresh.key)).toBeUndefined();
   installPublicationPrograms(assets, [fresh, structuredClone(row)]);
   expect(assets.getMaterialArtifact(row.key)?.bytes).toEqual(new Uint8Array([1, 2, 3, 4]));
+});
+
+it('identifies a repeated artifact by its producer digest without reading its bytes', () => {
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const row = program();
+  installPublicationPrograms(assets, [row]);
+  const installed = assets.getMaterialArtifact(row.key);
+  const repeated = structuredClone(row);
+  Object.assign(repeated.artifact, {
+    bytes: new Proxy(new Uint8Array(4), {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property))
+          throw new Error('repeated publication read artifact bytes');
+        return Reflect.get(target, property, receiver);
+      },
+    }),
+  });
+  installPublicationPrograms(assets, [repeated]);
+  expect(assets.getMaterialArtifact(row.key)).toBe(installed);
 });
 
 it('still validates an installed receipt when the incoming object was mutated in place', () => {

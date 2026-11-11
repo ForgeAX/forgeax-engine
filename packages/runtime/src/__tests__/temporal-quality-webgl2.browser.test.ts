@@ -28,6 +28,14 @@ async function save(name: string, data: Uint8Array | string) {
 const quantile = (values: number[], q: number) =>
   [...values].sort((a, b) => a - b)[Math.ceil(q * values.length) - 1];
 
+function frameCapture(name: string, index: number, steadyFrames: number) {
+  const stopped = index === steadyFrames + 23;
+  return {
+    name: stopped ? `${name}-stopped` : name,
+    selected: index === steadyFrames - 1 || stopped,
+  };
+}
+
 async function route(name: string, aa: number, scale: number, extent = size) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = extent;
@@ -66,7 +74,8 @@ async function route(name: string, aa: number, scale: number, extent = size) {
       propagateTransforms(world).unwrap();
       world.update(1 / 60).unwrap();
       const observe = (i >= count - 16 && i < count) || i === count + 23;
-      const pending = i === count - 1 ? recorder.captureFrame() : undefined;
+      const capture = frameCapture(name, i, count);
+      const pending = capture.selected ? recorder.captureFrame() : undefined;
       if (pending) (await recorder.frameBoundary()).unwrap();
       const start = performance.now();
       const receipt = await drawReadyFrame(
@@ -80,9 +89,9 @@ async function route(name: string, aa: number, scale: number, extent = size) {
         const artifact = (await pending).unwrap();
         const model = buildFrameModel(decodeTape(artifact.bytes).unwrap());
         expect(model.works.some((w) => w.kind === 'dispatchWorkgroups')).toBe(false);
-        await save(`${name}.rhitape`, artifact.bytes);
+        await save(`${capture.name}.rhitape`, artifact.bytes);
         await save(
-          `${name}-capture.json`,
+          `${capture.name}-capture.json`,
           JSON.stringify(
             { digest: await tapeDigest(artifact.bytes), summary: summarizeFrame(model), model },
             null,
@@ -91,7 +100,7 @@ async function route(name: string, aa: number, scale: number, extent = size) {
         );
         const shot = await page.elementLocator(canvas).screenshot({ base64: true });
         await commands.writeFile(
-          `${ROOT}/${name}-canvas.png`,
+          `${ROOT}/${capture.name}-canvas.png`,
           typeof shot === 'string' ? shot : shot.base64,
           'base64',
         );
@@ -99,7 +108,10 @@ async function route(name: string, aa: number, scale: number, extent = size) {
       if (observe) {
         const values = await linearQualityFrame(renderer, receipt, extent);
         if (i < count) frames.push(values);
-        else stopped = values;
+        else {
+          stopped = values;
+          await save(`${name}-stopped.f32`, new Uint8Array(new Float32Array(values).buffer));
+        }
       }
     }
     const mean = Array.from(
@@ -186,6 +198,9 @@ it.each([
         2,
       ),
     );
+    // Preparation-only receipts must not consume a jitter/history sample.
+    expect(taa.inspection.temporal.frameIndex).toBe(95);
+    expect(tsr.inspection.temporal.frameIndex).toBe(119);
     expect(stoppedMae).toBeLessThanOrEqual(b.mae * 1.1);
     expect(b.mae).toBeLessThanOrEqual(a.mae * 1.05);
     expect(Math.abs(b.energy - energy)).toBeLessThanOrEqual(Math.abs(a.energy - energy) * 1.05);

@@ -67,7 +67,7 @@ it('reuses LUT programs across graph replacement and resize while binding curren
     kind: 'textureView',
     value: second.inputView,
   });
-  expect(modules.mock.calls[0]?.[0].code).toContain('mix(color.rgb, mapped.rgb, 0.35)');
+  expect(modules.mock.calls[0]?.[0].code).toContain('mix(color.rgb, mapped, 0.35)');
   expect(creates.mock.calls[0]?.[0]).toMatchObject({
     fragment: { entryPoint: 'color_stage_fs', targets: [{ format: 'rgba8unorm' }] },
     primitive: { topology: 'triangle-list' },

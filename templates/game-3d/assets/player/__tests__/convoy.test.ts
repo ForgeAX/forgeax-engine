@@ -7,8 +7,8 @@ import { buildConvoy, prepareConvoyAssets, convoyPath, CONVOY_NORMALS, convoyBak
 import { finishConvoyTextures } from '../convoy-finish.ts';
 import { CONVOY_OUTPUT_KEYS } from '../convoy-job.ts';
 import { PACKAGE_IDS } from '../../shared/asset-refs.ts';
-import characterPack from '../../character.pack.ts';
-import { CONVOY_WHEELS, PLAYER_RIG, playerTargetPath } from '../player-rig.ts';
+import characterPack from '../character.pack.ts';
+import { CONVOY_WHEELS, PLAYER_RIG, playerTargetPath } from '../../shared/player-rig.ts';
 
 describe('Convoy native modeling delivery', () => {
   let built: ReturnType<typeof buildConvoy>;

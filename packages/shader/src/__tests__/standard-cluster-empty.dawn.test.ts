@@ -125,6 +125,7 @@ struct Output { @location(0) actual: vec4<f32>, @location(1) expected: vec4<f32>
       Object.fromEntries(
         Object.entries({
           'forgeax_view::common': common,
+          'forgeax_standard::cluster_texture_data': source('cluster-texture-data.wgsl'),
           'forgeax_standard::cluster': countedCluster(),
           'forgeax_pbr::lighting_punctual': source('lighting-punctual.wgsl'),
           'forgeax_pbr::lighting_spot_modifiers': source('lighting-spot-modifiers.wgsl'),

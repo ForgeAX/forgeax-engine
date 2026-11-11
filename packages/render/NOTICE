@@ -9,8 +9,8 @@ see the LICENSE file in this repository or at
 http://www.apache.org/licenses/LICENSE-2.0 for details.
 
 The lightweight lens post-processing implementation in
-packages/render/src/features/lens-effects.ts references Three.js VignetteShader,
-RGBShiftShader and FilmShader at b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2.
+packages/render/src/features/lens-effects.ts references Three.js VignetteShader and FilmShader at
+b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2.
 
 The MIT License
 

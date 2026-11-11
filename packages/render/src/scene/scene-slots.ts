@@ -1,6 +1,6 @@
 import { worldEntityKey } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
-import { FrameListBase, type SparseRowKind } from './frame-list';
+import { type FrameList, FrameListBase, type SparseRowKind } from './frame-list';
 import { FrameSet } from './frame-set';
 import { type Node, put, remove } from './frame-tree';
 import { IdentityMap, IdentityMapEditor } from './identity-map';
@@ -131,9 +131,15 @@ function pageVersion(page: Page | undefined, slot: number): number {
 
 /** A fixed scene root. Rank is derived at consumption; physical slot addresses never move. */
 export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
+  readonly #nativeLength: number;
   readonly length: number;
   private cachedPageIndex = -1;
   private cachedPage: Page | undefined;
+  /** Page and lane of the last `readContentAt`, with the frame rank its page starts at. */
+  private rankNode: Node<Page> | undefined;
+  private rankStart = 0;
+  private rankOrdinal = 0;
+  private rankLane = 0;
   constructor(
     readonly root: Node<Page> | undefined,
     readonly capacity: number,
@@ -143,9 +149,15 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
     /** This frame's cursor in its owner's row-change log. */
     private readonly position = 0,
     private readonly sparse?: Readonly<Record<SparseRowKind, FrameSet>>,
+    /**
+     * Identity of every row's shared content and entity identity. Frames of one
+     * owner keep the token across pose-only writes; ownerless frames have none.
+     */
+    readonly contentEpoch?: object,
   ) {
     super();
     this.length = root?.count ?? 0;
+    this.#nativeLength = this.length;
   }
 
   /** Sparse membership captured with this row root; ownerless frames may have no index proof. */
@@ -205,6 +217,72 @@ export class SceneSlotFrame extends FrameListBase<RenderSceneSlot> {
         }
         return undefined;
       }
+    }
+    return undefined;
+  }
+
+  /** A native captured root with no overridden indexed reader; never invokes an at getter. */
+  static hasNativeAt(frame: FrameList<RenderSceneSlot>): frame is SceneSlotFrame {
+    return (
+      #nativeLength in frame &&
+      Object.getPrototypeOf(frame) === SceneSlotFrame.prototype &&
+      Object.getOwnPropertyDescriptor(frame, 'at') === undefined &&
+      Object.getOwnPropertyDescriptor(frame, 'length')?.value === frame.#nativeLength &&
+      Object.getOwnPropertyDescriptor(SceneSlotFrame.prototype, 'at')?.value === sceneSlotFrameAt
+    );
+  }
+
+  /** Read cold columns at a frame rank without creating a pose window or full row. */
+  readContentAt<T>(
+    index: number,
+    read: (content: RowContent, worldId: number, entityKey: number, slot: number) => T,
+  ): T | undefined {
+    index = Math.trunc(index) || 0;
+    if (index < 0) index += this.length;
+    if (!Number.isInteger(index) || index < 0 || index >= this.length) return undefined;
+    // Ranks usually arrive ascending; resume inside the page the last read ended on.
+    // The captured root is immutable, so the remembered page and lane stay exact.
+    let node = this.rankNode;
+    let ordinal = 0;
+    let lane = 0;
+    let start = this.rankStart;
+    let target: number;
+    if (node !== undefined && index >= start && index < start + node.weight) {
+      target = index - start;
+      if (target >= this.rankOrdinal) {
+        ordinal = this.rankOrdinal;
+        lane = this.rankLane;
+      }
+    } else {
+      node = this.root;
+      let rest = index;
+      let left = 0;
+      while (node !== undefined) {
+        left = node.left?.count ?? 0;
+        if (rest < left) node = node.left;
+        else if (rest >= left + node.weight) {
+          rest -= left + node.weight;
+          node = node.right;
+        } else break;
+      }
+      if (node === undefined) return undefined;
+      target = rest - left;
+      start = index - target;
+    }
+    for (; lane < PAGE_SIZE; lane++) {
+      if (node.value.contents[lane] === undefined) continue;
+      if (ordinal++ !== target) continue;
+      this.rankNode = node;
+      this.rankStart = start;
+      this.rankOrdinal = target;
+      this.rankLane = lane;
+      const ids = lane * IDS;
+      return read(
+        node.value.contents[lane] as RowContent,
+        node.value.ids[ids] as number,
+        node.value.ids[ids + 1] as number,
+        node.key * PAGE_SIZE + lane,
+      );
     }
     return undefined;
   }
@@ -282,6 +360,8 @@ interface LodBucket {
  * through its shared Mesh reads that Mesh's levels, every other row its own.
  * Maintained from slot writes and Mesh changes, so a frame reads it in O(1).
  */
+const sceneSlotFrameAt = SceneSlotFrame.prototype.at;
+
 class LodCandidates {
   total = 0;
   private readonly buckets = new Map<string, LodBucket>();
@@ -383,7 +463,17 @@ export class SceneSlots {
   get journal(): RowChangeLog {
     return this.log;
   }
-  private frame = new SceneSlotFrame(undefined, 0, IdentityMap.EMPTY, this.views, this.log);
+  private contentEpoch: object = Object.freeze({});
+  private frame = new SceneSlotFrame(
+    undefined,
+    0,
+    IdentityMap.EMPTY,
+    this.views,
+    this.log,
+    0,
+    undefined,
+    this.contentEpoch,
+  );
   private readonly pending = new Map<number, WritablePage>();
   private identities = new IdentityMapEditor();
   private highWater = 0;
@@ -631,6 +721,8 @@ export class SceneSlots {
       this.identities.set(row.worldId, row.entityKey, slot);
     }
     this.logChange(slot, change, row.generation);
+    if (change !== 'update' || previous !== row.content || ids[at + 2] !== row.generation)
+      this.contentEpoch = Object.freeze({});
     page.contents[lane] = row.content;
     ids[at] = row.worldId;
     ids[at + 1] = row.entityKey;
@@ -687,6 +779,7 @@ export class SceneSlots {
     if (this.identities.get(worldId, entityKey) === slot)
       this.identities.delete(worldId, entityKey);
     this.logChange(slot, 'leave', page.ids[at + 2] as number);
+    this.contentEpoch = Object.freeze({});
     page.contents[lane] = undefined;
     this.views.remove(page, slot);
     page.count--;
@@ -714,6 +807,7 @@ export class SceneSlots {
         raster: this.indexedSlots('raster'),
         pointsLines: this.indexedSlots('pointsLines'),
       },
+      this.contentEpoch,
     );
     return this.frame;
   }
@@ -723,6 +817,7 @@ export class SceneSlots {
     this.identities.clear();
     this.views.clear();
     this.log.reset();
+    this.contentEpoch = Object.freeze({});
     this.frame = new SceneSlotFrame(
       undefined,
       0,
@@ -730,6 +825,8 @@ export class SceneSlots {
       this.views,
       this.log,
       this.log.position,
+      undefined,
+      this.contentEpoch,
     );
     this.highWater = 0;
     this.live = 0;

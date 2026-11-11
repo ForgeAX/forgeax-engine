@@ -15,6 +15,7 @@ import { RUNTIME_CATALOG_SNAPSHOT_SCHEMA } from '@forgeax/engine-types';
 import { transformWithOxc } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverPluginAssets } from '../build/plugin-assets.js';
+import { gameProjectionSource } from '../host/game-projection-source.js';
 import type { StartupUiOptions } from '../host/startup-ui.js';
 import { createViteConfig, devKitDdcRoots, ignoreDevKitCatalogPath } from '../host.js';
 import { readLiveProjectInputs } from '../live-project-inputs.js';
@@ -2349,6 +2350,76 @@ export default definePack({
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('lets frontend plugins register read projections on the Worker execution page host', async () => {
+    const template = resolve(import.meta.dirname, '../../../../templates/empty');
+    const facts = await readProjectFacts(template);
+    if (!facts.ok) throw facts.error;
+    const project = await createViteConfig(facts.value, 'serve');
+    if (!project.root) throw new Error('required fixture project.root missing');
+    const generated = await readFile(resolve(project.root, 'main.ts'), 'utf8');
+    const start = generated.indexOf('    if (workerExecution) {\n      // DOM plugins');
+    const end = generated.indexOf('    if (workspaceTarget) {', start);
+    expect(Math.min(start, end)).toBeGreaterThanOrEqual(0);
+    const pageHost = (
+      await transformWithOxc(
+        `(async () => { ${gameProjectionSource}\n${generated.slice(start, end).replaceAll('import.meta.env.DEV', 'true')} })()`,
+        'page-host.ts',
+        { lang: 'ts' },
+      )
+    ).code;
+    const provided = new Map<string, unknown>();
+    const disposers: Array<() => void> = [];
+    const sandbox: Record<string, unknown> = {
+      workerExecution: true,
+      cpuProfileRequested: false,
+      runtimeScopeBinding: {},
+      assetCatalog: {},
+      bundler: {},
+      canvas: { width: 1, height: 1 },
+      gameChannel: undefined,
+      hostAudio: undefined,
+      controlMode: {},
+      appState: {},
+      document: { querySelector: () => null, body: {} },
+      AssetRegistry: class {},
+      ShaderRegistry: class {},
+      HTMLElement: class {},
+      assembleAssetRuntime: () => ({ ok: true, value: { dispose() {} } }),
+      trackRendererErrors: () => ({ unsubscribe() {}, read: () => null }),
+      // The Engine Worker answers for its own registrations through remoteEval.
+      app: {
+        remoteEval: async (source: string) =>
+          source.endsWith('.list()') ? { reads: ['worker.state'] } : { from: 'worker' },
+      },
+      ctx: {
+        provide: (name: string, value: unknown) => provided.set(name, value),
+        effect: (effect: () => () => void) => disposers.push(effect()),
+      },
+    };
+    sandbox.globalThis = sandbox;
+    await runInNewContext(pageHost, sandbox);
+    const host = provided.get('gameHost') as {
+      gameProjection?: {
+        registerRead(def: { id: string; title: string; read: () => unknown }): () => void;
+      };
+    };
+    expect(host.gameProjection).toBeDefined();
+    host.gameProjection?.registerRead({
+      id: 'frontend.turret',
+      title: 'Turret',
+      read: () => ({ aim: 1 }),
+    });
+    const inspection = sandbox.__forgeaxGameInspection as {
+      list(): Promise<{ reads: string[] }>;
+      read(id: string): unknown;
+    };
+    expect((await inspection.list()).reads).toEqual(['frontend.turret', 'worker.state']);
+    expect(await inspection.read('frontend.turret')).toEqual({ aim: 1 });
+    expect(await inspection.read('worker.state')).toEqual({ from: 'worker' });
+    for (const dispose of disposers) dispose();
+    expect(sandbox.__forgeaxGameInspection).toBeUndefined();
   });
 
   it('escapes the project name used as the generated page title', async () => {

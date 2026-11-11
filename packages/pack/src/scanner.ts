@@ -35,6 +35,7 @@ import {
   type LoadScriptablePackOptions,
   loadScriptablePack,
   SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
+  scriptablePackBuildTimeoutMs,
 } from './scriptable-pack-node.js';
 import {
   createScriptablePackSourceSnapshot,
@@ -77,6 +78,9 @@ export const STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS = Object.freeze({
   // finite while allowing a heavy character/scene closure to complete on a
   // busy host.
   timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
+  get buildTimeoutMs() {
+    return scriptablePackBuildTimeoutMs();
+  },
 }) satisfies ScriptablePackScanOptions;
 
 export interface InventoryDeclaration

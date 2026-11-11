@@ -43,6 +43,15 @@ function expectedCountsFromOracle(wireText, rebuiltPublicationRef) {
   return {
     materialCount: publication.materialShaders.length,
     variantCount: publication.materialShaders.reduce((sum, row) => sum + row.variants.length, 0),
+    firstSource:
+      publication.materialShaders[0] === undefined
+        ? undefined
+        : Buffer.from(
+            publication.sources[publication.materialShaders[0].sourceDigest]
+              .map((index) => publication.fragments[index])
+              .join(''),
+            'utf16le',
+          ),
   };
 }
 
@@ -91,18 +100,6 @@ async function loadRegistryFromOracle(containerPath, profile) {
   };
 }
 
-async function firstSourceMatchesOracle(containerPath, profile, material) {
-  const container = decodePackagedProfiles(await readFile(containerPath));
-  assert.ok(container, `obsolete packaged profile container: ${containerPath}`);
-  const publication = packagedProfilePublication(container, profile);
-  assert.ok(publication, `packaged profile is missing: ${profile}`);
-  const sourceDigest = publication.materialShaders[0].sourceDigest;
-  const expectedSource = publication.sources[sourceDigest]
-    .map((index) => publication.fragments[index])
-    .join('');
-  return material.composedWgsl === expectedSource;
-}
-
 const started = performance.now();
 const { registry, expectedCounts, wireBytes, containerSha256 } = await loadRegistryFromOracle(
   containerPath,
@@ -125,10 +122,13 @@ const variantCount = materials.reduce((sum, row) => sum + row.variants.length, 0
 const materialCountMatches = materialCount === expectedCounts.materialCount;
 const variantCountMatches = variantCount === expectedCounts.variantCount;
 // Demand one material source after admission; its bytes must match the exact
-// ordered fragments committed by its verified source identity.
+// ordered fragments committed by its verified source identity. Keep only that
+// exact UTF-16 source witness from the independent oracle; a Buffer does not
+// retain a parsed string slice's backing JSON text. Decoding the entire pooled
+// container again beside the live registry would measure two fleets at once.
 const selectedSourceEqual =
   materials[0] !== undefined &&
-  (await firstSourceMatchesOracle(containerPath, profile, materials[0]));
+  Buffer.from(materials[0].composedWgsl, 'utf16le').equals(expectedCounts.firstSource);
 const containerHashAfter = sha256(await readFile(containerPath));
 const containerUnchanged = containerHashAfter === containerSha256;
 const retainedHeapWithinLimit = retained.heapUsed < 128 * 1024 * 1024;

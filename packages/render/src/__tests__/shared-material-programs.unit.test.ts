@@ -12,7 +12,7 @@ import {
   prepareHiddenMaterialExecutions,
 } from '../gpu-driven/material-artifacts';
 import { prepareGpuDrivenDraw } from '../gpu-driven/prepared-draw';
-import { MaterialResource } from '../material-resource';
+import { captureMaterialSnapshot, MaterialResource } from '../material-resource';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
@@ -162,6 +162,7 @@ function fixture(count = 1) {
     programs,
     projection,
     guarded,
+    dispatch,
     artifact,
     topology,
     rows,
@@ -812,4 +813,202 @@ it('keeps the collected frame identity when every retained execution is unchange
   const noShadow = collectGpuDrivenMaterialArtifacts({ ...f.input, retention, shadowViews: false });
   expect(noShadow).not.toBe(first);
   expect(noShadow.shadowMaterialArtifacts.size).toBe(0);
+});
+
+it('retains the native program join across dispatch-only changes without revisiting batches', () => {
+  const f = fixture(128);
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const materials = f.owner.materials();
+  expect(materials.hasBorrowedValues).toBe(false);
+  const artifacts = new Map<string, typeof f.artifact>();
+  const resolve = vi.fn((id: string) => {
+    let artifact = artifacts.get(id);
+    if (artifact === undefined) {
+      artifact = { ...f.artifact, material: id };
+      artifacts.set(id, artifact);
+    }
+    return artifact;
+  });
+  let visits = 0;
+  const batches = {
+    [Symbol.iterator]() {
+      visits++;
+      return f.input.batches[Symbol.iterator]();
+    },
+  };
+  const collect = (dispatch: typeof f.guarded, frame = materials) =>
+    collectGpuDrivenMaterialArtifacts({
+      ...f.input,
+      batches,
+      resolve,
+      programs: f.projection.project(dispatch, frame),
+    });
+  const first = collect(f.guarded);
+  expect(visits).toBe(1);
+  const nextDispatch = new Proxy(f.guarded, {});
+  expect(collect(nextDispatch)).toBe(first);
+  expect(visits).toBe(1);
+  // Distinct shader observations remain live even when the program join is fixed.
+  expect(resolve).toHaveBeenCalledTimes(4);
+  const changed = captureMaterialSnapshot({ ...f.snapshot, roughness: 0.8 });
+  f.material.adopt(changed);
+  f.owner.adopt(f.material);
+  const next = collect(nextDispatch, f.owner.materials());
+  expect(visits).toBe(2);
+  expect(next).not.toBe(first);
+  const binding = next.batchExecutions.keys().next().value;
+  if (binding === undefined) throw new Error('Expected one shared binding');
+  expect(next.batchExecutions.get(binding)?.forward).toMatchObject({ material: changed });
+  expect(first.batchExecutions.get(binding)?.forward).toMatchObject({
+    material: { roughness: 0.5 },
+  });
+});
+
+it('keeps overwritten native program getters on the original observed path', () => {
+  const f = fixture();
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const materials = f.owner.materials();
+  const artifacts = new Map<string, typeof f.artifact>();
+  const resolve = (id: string) => {
+    let artifact = artifacts.get(id);
+    if (artifact === undefined) {
+      artifact = { ...f.artifact, material: id };
+      artifacts.set(id, artifact);
+    }
+    return artifact;
+  };
+  const firstPrograms = f.projection.project(f.guarded, materials);
+  collectGpuDrivenMaterialArtifacts({ ...f.input, resolve, programs: firstPrograms });
+  const next = f.projection.project(new Proxy(f.guarded, {}), materials);
+  const originalGet = next.get;
+  const get = vi.fn((material: MaterialResource) => originalGet.call(next, material));
+  const observe = vi.fn(() => get);
+  Object.defineProperty(next, 'get', { configurable: true, get: observe });
+  collectGpuDrivenMaterialArtifacts({ ...f.input, resolve, programs: next });
+  expect(get).toHaveBeenCalled();
+  expect(observe).toHaveBeenCalledTimes(f.input.batches.length);
+});
+
+it('rechecks current artifacts after dispatch changes even with the same native material root', () => {
+  const f = fixture();
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const materials = f.owner.materials();
+  let generation = 0;
+  const artifacts = new Map<string, typeof f.artifact>();
+  const resolve = vi.fn((id: string) => {
+    const key = `${generation}/${id}`;
+    let artifact = artifacts.get(key);
+    if (artifact === undefined) {
+      artifact = { ...f.artifact, material: id };
+      artifacts.set(key, artifact);
+    }
+    return artifact;
+  });
+  const first = collectGpuDrivenMaterialArtifacts({
+    ...f.input,
+    resolve,
+    programs: f.projection.project(f.guarded, materials),
+  });
+  generation++;
+  const current = collectGpuDrivenMaterialArtifacts({
+    ...f.input,
+    resolve,
+    programs: f.projection.project(new Proxy(f.guarded, {}), materials),
+  });
+  expect(current).not.toBe(first);
+  const binding = current.batchExecutions.keys().next().value;
+  if (binding === undefined) throw new Error('Expected one shared binding');
+  const previousForward = first.batchExecutions.get(binding)?.forward;
+  const currentForward = current.batchExecutions.get(binding)?.forward;
+  if (previousForward?.route !== 'gpu' || currentForward?.route !== 'gpu')
+    throw new Error('Expected unchanged GPU routes');
+  expect(currentForward.artifact).not.toBe(previousForward.artifact);
+});
+
+it('keeps detached get and own enumerable overlays safe for proxies and foreign receivers', () => {
+  const f = fixture();
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const materials = f.owner.materials();
+  const before = f.projection.project(f.dispatch, materials);
+  const get = before.get;
+  expect(get(f.material)?.snapshot).toBe(f.material.snapshot);
+  const held = before.overlays;
+  expect(new Proxy(before, {}).overlays).toBe(held);
+  const descriptor = Object.getOwnPropertyDescriptor(before, 'overlays');
+  expect(descriptor?.enumerable).toBe(true);
+  expect(descriptor?.configurable).toBe(true);
+  expect(descriptor?.get?.call({})).toBe(held);
+  expect(Object.keys(before)).toContain('overlays');
+  const dispatch = Array.from(f.dispatch, (entry) => ({ ...entry, stencilReference: 7 }));
+  const after = f.projection.project(dispatch, materials);
+  expect(after.overlays.dispatch).toBe(dispatch);
+  expect(after.overlays.values.get(0)?.stencilReference).toBe(7);
+  expect(held.dispatch).toBe(f.dispatch);
+  expect(held.values.get(0)?.stencilReference).not.toBe(7);
+});
+
+it('keeps borrowed material values current without granting fixed-root reuse', () => {
+  const f = fixture();
+  const materials = f.owner.materials();
+  expect(materials.hasBorrowedValues).toBe(true);
+  const artifacts = new Map<string, typeof f.artifact>();
+  const resolve = (id: string) => {
+    let artifact = artifacts.get(id);
+    if (artifact === undefined) {
+      artifact = { ...f.artifact, material: id };
+      artifacts.set(id, artifact);
+    }
+    return artifact;
+  };
+  let visits = 0;
+  const batches = {
+    [Symbol.iterator]() {
+      visits++;
+      return f.input.batches[Symbol.iterator]();
+    },
+  };
+  collectGpuDrivenMaterialArtifacts({
+    ...f.input,
+    batches,
+    resolve,
+    programs: f.projection.project(f.dispatch, materials),
+  });
+  Object.assign(f.snapshot, { roughness: 0.875 });
+  const programs = f.projection.project(new Proxy(f.dispatch, {}), materials);
+  collectGpuDrivenMaterialArtifacts({ ...f.input, batches, resolve, programs });
+  expect(visits).toBe(2);
+  expect(programs.get(f.material)?.snapshot.roughness).toBe(0.875);
+});
+
+it('does not observe Proxy or forged material-frame metadata before the ordinary get path', () => {
+  const f = fixture();
+  f.material.adopt(captureMaterialSnapshot(f.snapshot));
+  f.owner.adopt(f.material);
+  const materials = f.owner.materials();
+  const metadata = vi.fn(() => {
+    throw new Error('Unexpected material-frame metadata observation');
+  });
+  const proxy = new Proxy(materials, {
+    getPrototypeOf: metadata,
+    getOwnPropertyDescriptor: metadata,
+  });
+  const accepted = materials.get(f.material);
+  if (accepted === undefined) throw new Error('Expected accepted material');
+  const get = vi.fn(() => accepted);
+  const forged = Object.create(MaterialFrame.prototype, {
+    get: { value: get },
+    hasBorrowedValues: { get: metadata },
+  }) as MaterialFrame;
+  for (const frame of [proxy, forged]) {
+    const programs = f.projection.project(new Proxy(f.dispatch, {}), frame);
+    expect(collectGpuDrivenMaterialArtifacts({ ...f.input, programs }).materialArtifacts.size).toBe(
+      1,
+    );
+  }
+  expect(metadata).not.toHaveBeenCalled();
+  expect(get).toHaveBeenCalled();
 });

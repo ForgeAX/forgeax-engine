@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
 
 const installer = resolve('scripts/ci/install-playwright-system-deps-with-retry.sh');
 function fixture(t) {
@@ -22,7 +23,7 @@ function fixture(t) {
   );
   script(
     join(bin, 'fixture-install'),
-    'echo install >> "$FIXTURE_LOG"\ntest ! -e "$FIXTURE_PENDING"',
+    'echo install >> "$FIXTURE_LOG"\nif [ "$FIXTURE_LOG_MIRROR" = 1 ]; then echo "$FORGEAX_APT_ARCHIVE_MIRROR" >> "$FIXTURE_LOG"; fi\nif [ "$FIXTURE_FAIL_ALL" = 1 ] || { [ "$FIXTURE_FAIL_HTTPS" = 1 ] && [ "$FORGEAX_APT_ARCHIVE_MIRROR" = ubuntu-https ]; }; then exit 100; fi\ntest ! -e "$FIXTURE_PENDING"',
   );
   script(join(bin, 'sleep'), ':');
   script(
@@ -42,6 +43,9 @@ function fixture(t) {
           GITHUB_WORKSPACE: root,
           RUNNER_OS: 'Linux',
           FIXTURE_REPAIR_EXIT: '0',
+          FIXTURE_LOG_MIRROR: '0',
+          FIXTURE_FAIL_ALL: '0',
+          FIXTURE_FAIL_HTTPS: '0',
           FIXTURE_LOG: log,
           FIXTURE_PENDING: pending,
           ...overrides,
@@ -72,4 +76,38 @@ test('non-Linux consumers do not run package recovery', (t) => {
   const result = f.run({ RUNNER_OS: 'macOS', FIXTURE_REPAIR_EXIT: '42' });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(f.calls(), ['sources', 'install']);
+});
+
+test('transport recovery changes only the temporary Ubuntu mirror and retains the install command', (t) => {
+  const f = fixture(t);
+  const result = f.run({ FIXTURE_FAIL_HTTPS: '1', FIXTURE_LOG_MIRROR: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.calls(), [
+    'dpkg --force-confold --configure -a',
+    'sources',
+    'install',
+    'ubuntu-https',
+    'sources',
+    'install',
+    'ubuntu-kernel-mirror',
+  ]);
+});
+
+test('three failed transport attempts remain a preparation failure', (t) => {
+  const f = fixture(t);
+  const result = f.run({ FIXTURE_FAIL_ALL: '1' });
+  assert.equal(result.status, 1);
+  assert.equal(f.calls().filter((call) => call === 'install').length, 3);
+});
+
+test('compatibility graphics preparation uses the shared bounded Ubuntu recovery owner', () => {
+  const workflow = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'));
+  const step = workflow.jobs.compatibility.steps.find(
+    (step) => step.name === 'Install Linux graphics carrier',
+  );
+  assert.match(step.run, /bash scripts\/ci\/install-playwright-system-deps-with-retry\.sh/);
+  assert.match(step.run, /apt-get update/);
+  assert.match(step.run, /apt-get install -y mesa-vulkan-drivers libvulkan1 xvfb/);
+  assert.match(step.run, /install-deps webkit/);
+  assert.doesNotMatch(step.run, /--allow-unauthenticated|AllowInsecure|trusted=yes|no-sandbox/);
 });

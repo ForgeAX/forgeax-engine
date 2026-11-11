@@ -213,7 +213,7 @@ export function bloomSettingsFromCamera(camera: Record<string, unknown>): BloomS
   };
   return {
     enabled: number('bloom', 0) !== 0,
-    threshold: number('bloomThreshold', 1),
+    threshold: number('bloomThreshold', -1),
     smoothWidth: number('bloomSmoothWidth', 0.01),
     intensity: number('bloomIntensity', 0.5),
   };

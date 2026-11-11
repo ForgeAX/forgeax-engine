@@ -342,7 +342,8 @@ function createEngineVariantJobs(
       ...standardMaterialDefines(engineMaterialParamSchema(file.reservedIdentifier ?? '')),
       ...file.defines,
       ...defines,
-      ...(defines?.PROJECTOR_AVAILABLE === false && defines?.EXTENDED_LIGHTING_AVAILABLE === false
+      ...(defines?.STORAGE_BUFFER_AVAILABLE === false ||
+      (defines?.PROJECTOR_AVAILABLE === false && defines?.EXTENDED_LIGHTING_AVAILABLE === false)
         ? { CLOUD_SHADOW_LOW_LIMIT: true }
         : {}),
       ...standardSharedTransmissionDefines(defines),
@@ -1878,7 +1879,8 @@ function createPluginEngineVariantJobs(
       ...standardMaterialDefines(engineMaterialParamSchema(baseIdentifier)),
       ...file.defines,
       ...defines,
-      ...(defines.PROJECTOR_AVAILABLE === false && defines.EXTENDED_LIGHTING_AVAILABLE === false
+      ...(defines.STORAGE_BUFFER_AVAILABLE === false ||
+      (defines.PROJECTOR_AVAILABLE === false && defines.EXTENDED_LIGHTING_AVAILABLE === false)
         ? { CLOUD_SHADOW_LOW_LIMIT: true }
         : {}),
       ...standardSharedTransmissionDefines(defines),

@@ -21,6 +21,17 @@ export class ShaderSource {
     Object.freeze(this);
   }
 
+  /**
+   * Text decoded from bytes whose SHA-256 the caller has just verified. `utf8Sha256`
+   * must be the lowercase hex digest of the complete UTF-8 encoding of `text`: it is
+   * exactly the content-hash identity, so the text is never hashed a second time.
+   */
+  static fromVerifiedUtf8(text: string, utf8Sha256: string): ShaderSource {
+    const source = new ShaderSource([text]);
+    source.#identity = utf8Sha256;
+    return source;
+  }
+
   /** True when identity comes from a verified build-time digest rather than a runtime hash. */
   get hasPublishedIdentity(): boolean {
     return this.#identity?.startsWith('published:') === true;

@@ -1,18 +1,15 @@
 import { animationPlugin, AnimationPlayer, deriveAnimationTargetId } from '@forgeax/engine/animation';
-import { FixedTime, Time } from '@forgeax/engine/ecs';
 import { createInputSnapshot, INPUT_SNAPSHOT_RESOURCE_KEY } from '@forgeax/engine/input';
 import { CharacterController, Collider, ColliderShapeValue, RigidBody, RigidBodyTypeValue } from '@forgeax/engine/physics';
 import physics3d from '@forgeax/engine/physics-rapier3d';
-import { GlobalTransform, sceneEntity, scenePlugin, Transform, worldInstantiateSceneAsset, worldResolveSceneEntity } from '@forgeax/engine/scene';
+import { sceneEntity, scenePlugin, Transform, worldInstantiateSceneAsset, worldResolveSceneEntity } from '@forgeax/engine/scene';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import type { AnimationClip } from '@forgeax/engine/types';
 import { describe, expect, it, vi } from 'vitest';
-import { camera as cameraPlugin } from '../../camera/camera.pack.ts';
-import { sceneWorldFixture } from '../../shared/__tests__/plugin-fixture.ts';
+import { sceneWorldFixture } from '../../__tests__/plugin-fixture.ts';
 import playerPlugin, { ThirdPersonRig } from '../player.ts';
 import { prepareConvoyAssets } from '../convoy-model.ts';
-import { PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, PLAYER_COLLIDER } from '../player-rig.ts';
-
+import { PLAYER_JOINT_NAMES, PLAYER_TRANSFORM_SECONDS, PLAYER_COLLIDER } from '../../shared/player-rig.ts';
 import { PACKAGE_IDS } from '../../shared/asset-refs.ts';
 const convoy = prepareConvoyAssets(512, PACKAGE_IDS.character).assets;
 
@@ -50,7 +47,6 @@ async function temporalFixture() {
     ...empty, keyboard: { ...empty.keyboard, downCode: (code: string) => (moving && code === 'KeyW') || (steering && code === 'KeyD'), justPressedCode: (code: string) => { if (code !== 'KeyT' || !transformPressed) return false; transformPressed = false; return true; } },
   });
   await ctx.plugin(playerPlugin, { speed: 5.5, jumpSpeed: 6.25, gravity: 17, walk: '019fb7ce-1000-7000-8000-000000000001', transform: '019fb7ce-1000-7000-8000-000000000002', wheels: '019fb7ce-1000-7000-8000-000000000003' });
-  await ctx.plugin(cameraPlugin);
   for (let step = 0; step < 5; step += 1) world.update(1 / 60).unwrap();
   return { world, ctx, entity, player, move: (active = true) => { moving = active; }, transform: () => { transformPressed = true; }, steer: (active = true) => { steering = active; } };
 }
@@ -94,48 +90,5 @@ describe('game-3d temporal alignment with native Rapier', () => {
       for (let frame = 0; frame < 20; frame++) world.update(0.1).unwrap();
       expect(world.get(player, ThirdPersonRig).unwrap().vehicleSpeed).toBe(0);
     } finally { await ctx.fiber.dispose(); }
-  });
-
-  it('publishes the current player and camera world positions after mixed fixed-step counts', async () => {
-    const { world, ctx, entity, move } = await temporalFixture();
-    try {
-      move();
-      for (const dt of [1 / 60, 3 / 60, 1 / 120, 1 / 30, 1 / 60]) {
-        const previousTick = world.getResource(FixedTime).tick;
-        world.update(dt).unwrap();
-        if (dt === 1 / 120) expect(world.getResource(FixedTime).tick).toBe(previousTick);
-        if (dt === 3 / 60) expect(world.getResource(FixedTime).tick - previousTick).toBe(3);
-        for (const key of ['player', 'camera']) {
-          const local = world.get(entity(key), Transform).unwrap().pos;
-          const resolved = world.get(entity(key), GlobalTransform).unwrap().world;
-          const error = Math.hypot(...Array.from(local, (value, axis) => value - resolved[12 + axis]!));
-          expect(error, `${key}, fixed tick ${world.getResource(FixedTime).tick}, dt ${dt}: local ${Array.from(local)}, resolved ${Array.from(resolved).slice(12, 15)}`).toBeLessThan(1e-5);
-        }
-      }
-    } finally {
-      await ctx.fiber.dispose();
-    }
-  });
-
-  it.each([1 / 240, 1 / 60, 3 / 60])('samples current movement intent before animation with update delta %s', async (dt) => {
-    const { world, ctx, entity, player, move } = await temporalFixture();
-    try {
-      move();
-      const previousTick = world.getResource(FixedTime).tick;
-      world.update(dt).unwrap();
-      if (dt === 1 / 240) expect(world.getResource(FixedTime).tick).toBe(previousTick);
-      const animation = world.get(player, AnimationPlayer).unwrap();
-      expect(animation.weights[0]).toBe(1);
-      expect(animation.times[0]).toBeCloseTo(world.getResource(Time).elapsed, 8);
-      const sampled = world.get(entity(`player/joint/${PLAYER_JOINT_NAMES[0]}`), Transform).unwrap().pos[0];
-      expect(sampled).toBeCloseTo(animation.times[0]!, 6);
-      const rendered = world.get(entity(`player/joint/${PLAYER_JOINT_NAMES[0]}`), GlobalTransform).unwrap().world;
-      expect(rendered[12]).toBeCloseTo((world.get(player, Transform).unwrap().pos[0] ?? 0) + animation.times[0]!, 6);
-      move(false);
-      world.update(1 / 240).unwrap();
-      expect(world.get(player, AnimationPlayer).unwrap().weights[0]).toBe(0);
-    } finally {
-      await ctx.fiber.dispose();
-    }
   });
 });

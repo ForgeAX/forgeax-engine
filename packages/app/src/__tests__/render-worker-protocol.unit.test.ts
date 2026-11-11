@@ -1290,7 +1290,7 @@ it.each([
     complete = () => resolve({ ok: true, value: undefined });
   });
   mocks.draw.mockReturnValue({ ok: true, value: { deviceGeneration: 1, completed } });
-  const { post, receive } = await start();
+  const { post, receive } = await start({ renderPipelineCapacity: 2 });
   const closes = [vi.fn(), vi.fn(), vi.fn()];
   try {
     receive({ data: drawMessage(1, closes[0], source) });
@@ -1409,14 +1409,115 @@ it('constructs timing in the Render Worker and returns the receipt-bound observa
     },
   });
   await vi.waitFor(() =>
-    expect(post).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'completed', gpuPassTiming: timing }),
-      expect.any(Array),
-    ),
+    expect(post).toHaveBeenCalledWith({
+      kind: 'gpu-pass-timing',
+      frameId: 1,
+      deviceGeneration: 1,
+      gpuPassTiming: timing,
+      skippedFrames: 0,
+    }),
+  );
+  const kinds = post.mock.calls.map(([message]) => message.kind);
+  expect(kinds.indexOf('completed')).toBeLessThan(kinds.indexOf('gpu-pass-timing'));
+  expect(post.mock.calls.find(([message]) => message.kind === 'completed')?.[0]).not.toHaveProperty(
+    'gpuPassTiming',
   );
   expect(mocks.observe).toHaveBeenCalledWith(expect.objectContaining({ deviceGeneration: 1 }), {
     include: ['timings'],
   });
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('returns frame credit at GPU completion while its timing readback is still pending', async () => {
+  const timings = [deferred<unknown>(), deferred<unknown>(), deferred<unknown>()];
+  let drawIndex = 0;
+  mocks.draw.mockImplementation(() => ({
+    ok: true,
+    value: {
+      frameId: 200 + drawIndex++,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    },
+  }));
+  let observeIndex = 0;
+  mocks.observe.mockImplementation(() => timings[observeIndex++]?.promise);
+  const { post, receive } = await start({ gpuPassTiming: {}, renderPipelineCapacity: 2 });
+  const completedRevisions = () =>
+    post.mock.calls
+      .filter(([message]) => message.kind === 'completed')
+      .map(([message]) => message.revision);
+  for (const revision of [1, 2, 3]) {
+    receive({ data: drawMessage(revision) });
+    await vi.waitFor(() => expect(completedRevisions()).toContain(revision));
+  }
+  // Three frames pass a two-frame pipeline: each credit returned without its timing.
+  expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
+  expect(post.mock.calls.some(([message]) => message.kind === 'gpu-pass-timing')).toBe(false);
+
+  timings[1]?.resolve({ ok: true, value: { timings: timingFor(201) } });
+  await vi.waitFor(() =>
+    expect(post).toHaveBeenCalledWith({
+      kind: 'gpu-pass-timing',
+      frameId: 2,
+      deviceGeneration: 7,
+      gpuPassTiming: timingFor(201),
+      skippedFrames: 0,
+    }),
+  );
+  timings[0]?.resolve({ ok: true, value: { timings: timingFor(200) } });
+  timings[2]?.resolve({ ok: true, value: { timings: timingFor(202) } });
+  await vi.waitFor(() =>
+    expect(post.mock.calls.filter(([message]) => message.kind === 'gpu-pass-timing')).toHaveLength(
+      3,
+    ),
+  );
+  receive({ data: { kind: 'dispose' } });
+  await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
+});
+
+it('counts frames rendered untimed when every timing slot is in flight', async () => {
+  const exhausted = {
+    status: 'failed',
+    error: {
+      code: 'timing-in-flight-exhausted',
+      expected: 'a bounded timing slot is idle',
+      hint: 'increase maxFramesInFlight or reduce the capture rate',
+      detail: { maxFramesInFlight: 3, skippedFrames: 1 },
+    },
+  } as const;
+  let drawIndex = 0;
+  mocks.draw.mockImplementation(() => ({
+    ok: true,
+    value: {
+      frameId: 300 + drawIndex++,
+      deviceGeneration: 7,
+      graphGeneration: 3,
+      presentation: 'ready',
+      completed: Promise.resolve({ ok: true as const, value: undefined }),
+    },
+  }));
+  mocks.observe.mockImplementation(async (receipt: { readonly frameId: number }) => ({
+    ok: true as const,
+    value: { timings: receipt.frameId === 301 ? timingFor(301) : exhausted },
+  }));
+  const { post, receive } = await start({ gpuPassTiming: {} });
+  const timingMessages = () =>
+    post.mock.calls.filter(([message]) => message.kind === 'gpu-pass-timing').map(([m]) => m);
+  for (const revision of [1, 2, 3]) {
+    receive({ data: drawMessage(revision) });
+    await vi.waitFor(() => expect(timingMessages()).toHaveLength(revision));
+  }
+  expect(timingMessages().map((message) => [message.frameId, message.skippedFrames])).toEqual([
+    [1, 1],
+    [2, 1],
+    [3, 2],
+  ]);
+  expect(timingMessages()[0]?.gpuPassTiming).toEqual(exhausted);
+  expect(post.mock.calls.filter(([message]) => message.kind === 'completed')).toHaveLength(3);
+  expect(post.mock.calls.some(([message]) => message.kind === 'failed')).toBe(false);
   receive({ data: { kind: 'dispose' } });
   await vi.waitFor(() => expect(post).toHaveBeenCalledWith({ kind: 'disposed' }));
 });
@@ -1427,7 +1528,7 @@ it('reports publication overflow as deterministic protocol failure and drains ow
     complete = () => resolve({ ok: true, value: undefined });
   });
   mocks.draw.mockReturnValue({ ok: true, value: { deviceGeneration: 1, completed } });
-  const { post, receive } = await start();
+  const { post, receive } = await start({ renderPipelineCapacity: 2 });
   const closeFrames = [vi.fn(), vi.fn(), vi.fn()];
   const draw = (revision: number) => ({
     kind: 'draw',

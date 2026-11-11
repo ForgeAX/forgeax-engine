@@ -430,7 +430,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // pass-count literal that changes when a named stage is split.
       expect(log.beginRenderPassCount).toBeGreaterThan(log.queueSubmitCount);
       expect(log.setPipelineCount).toBeGreaterThan(0);
-      expect(log.drawIndexedCount).toBe(1);
+      // The Forward depth prepass and `main` each draw the entity once.
+      expect(log.drawIndexedCount).toBe(2);
       expect(log.encoderFinishCount).toBe(1); // one typed graph command encoder
       expect(log.queueSubmitCount).toBe(1); // one submission for the frame graph
       // Three BindGroups recorded per entity (view / material / mesh-array).
@@ -579,9 +580,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
       // Soft path: no error fired (D-Q7 mirroring; LO §1.1 minimum semantic).
       expect(errors).toHaveLength(0);
-      // Nine fallback clears plus spot-shadow, skybox, main and output-transform.
+      // Nine fallback clears plus spot-shadow, the Forward depth prepass and its
+      // seed (UE ShouldForceFullDepthPass), skybox, main and output-transform.
       // Empty geometry still paints; absent clouds and idle debug UI add no pass.
-      expect(log.beginRenderPassCount).toBe(13);
+      expect(log.beginRenderPassCount).toBe(15);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
       // No geometry submitted.
       expect(log.drawIndexedCount).toBe(0);
@@ -635,7 +637,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       drawPublished(renderer, world as WorldType);
 
       expect(errors).toEqual([]);
-      expect(log.drawIndexedCount).toBe(1);
+      // Forward depth prepass + main.
+      expect(log.drawIndexedCount).toBe(2);
     });
 
     it('case D: world has N>1 Camera fires render-system-multi-camera + uses first hit', async () => {
@@ -824,9 +827,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Case E secondary-fix: even when every renderable fails asset
       // registration, the clear pass still runs (so visual debugging shows
       // the cleared canvas rather than a stale frame).
-      // Nine fallback clears plus spot-shadow, skybox, main and output-transform.
+      // Nine fallback clears plus spot-shadow, the Forward depth prepass and its
+      // seed (UE ShouldForceFullDepthPass), skybox, main and output-transform.
       // Empty geometry still paints; absent clouds and idle debug UI add no pass.
-      expect(log.beginRenderPassCount).toBe(13);
+      expect(log.beginRenderPassCount).toBe(15);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
     });
 
@@ -1394,7 +1398,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       drawPublished(renderer, world as WorldType);
 
       expect(errors).toHaveLength(0);
-      expect(log.drawIndexedCount).toBe(1);
+      // Forward depth prepass + main.
+      expect(log.drawIndexedCount).toBe(2);
 
       // Without stencilReference, the draw loop should call
       // setStencilReference(0) (harmless WebGPU default) or not call it at

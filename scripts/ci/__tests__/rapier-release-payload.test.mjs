@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
 import {
   hydrateRapierPayload,
@@ -98,7 +99,7 @@ for (const dimension of ['2d', '3d']) {
     assert.equal(archive, join(root, 'out', await rapierAssetName(dimension, root)));
     const members = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' })
       .trim()
-      .split('\n')
+      .split(/\r?\n/)
       .filter((name) => !name.endsWith('/'))
       .map((name) => name.replace(/^\.\//, ''))
       .sort();
@@ -183,6 +184,17 @@ test('Rapier release publication stays on main and preserves all runtime gates',
   );
 });
 
+// The CI action prepends exactly this owned import plus one separator space.
+// Retain all other options byte-for-byte; do not reinterpret quoted or middle tokens.
+function sourceGateEnvironment(environment = process.env) {
+  const options = environment.NODE_OPTIONS;
+  const owned = `--import=${resolve('scripts/ci/patch-dawn-device-limits.mjs')}`;
+  if (options === owned) return { ...environment, NODE_OPTIONS: '' };
+  if (options?.startsWith(`${owned} `))
+    return { ...environment, NODE_OPTIONS: options.slice(owned.length + 1) };
+  return environment;
+}
+
 test('native publication satisfies the unchanged engineering stance gate', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-stance-work-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -209,10 +221,11 @@ test('native publication satisfies the unchanged engineering stance gate', (t) =
   );
   execFileSync(
     process.execPath,
-    ['--import', observer, 'apps/hello/triangle/scripts/ac-08-grep-gate.mjs'],
+    ['--import', pathToFileURL(observer).href, 'apps/hello/triangle/scripts/ac-08-grep-gate.mjs'],
     {
       encoding: 'utf8',
       timeout: 30_000,
+      env: sourceGateEnvironment(),
     },
   );
   const counts = JSON.parse(readFileSync(output, 'utf8'));

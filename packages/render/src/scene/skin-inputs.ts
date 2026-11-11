@@ -802,6 +802,11 @@ export class SkinInputFrame {
   #page: Page | undefined;
   #inputs: GpuInputArena | undefined;
   #state: State | undefined;
+  /** Per-slot `bounds` results; valid for the life of this immutable root. */
+  readonly #boundsMemo = new Map<
+    number,
+    { envelopes: Float32Array; radius: number; ok: boolean; box: Float32Array }
+  >();
   constructor(inputs: GpuInputArena, state: State, page: Page | undefined) {
     this.root = page?.address ?? ABSENT;
     this.jointCapacity = page?.jointCount ?? 0;
@@ -911,6 +916,32 @@ export class SkinInputFrame {
     disjoint(out, envelopes);
     disjoint(matrix, envelopes);
     disjoint(inverse, envelopes);
+    // The held root is immutable, so the result is a pure function of the slot,
+    // the shared envelope table and the radius. A cached refusal leaves `out` untouched.
+    let memo = this.#boundsMemo.get(slot);
+    if (memo === undefined || memo.envelopes !== envelopes || memo.radius !== displacementRadius) {
+      const box = new Float32Array(6);
+      memo = {
+        envelopes,
+        radius: displacementRadius,
+        ok: this.#computeBounds(inputs, slot, envelopes, displacementRadius, box, matrix, inverse),
+        box,
+      };
+      this.#boundsMemo.set(slot, memo);
+    }
+    if (!memo.ok) return false;
+    out.set(memo.box);
+    return true;
+  }
+  #computeBounds(
+    inputs: GpuInputArena,
+    slot: number,
+    envelopes: Float32Array,
+    displacementRadius: number,
+    out: Float32Array,
+    matrix: Mat4,
+    inverse: Mat4,
+  ): boolean {
     const count = this.jointCount(slot);
     const minimumSum = envelopes[0] as number,
       maximumSum = envelopes[1] as number,
@@ -1298,6 +1329,7 @@ export class SkinInputFrame {
     this.#inputs = undefined;
     this.#state = undefined;
     this.#page = undefined;
+    this.#boundsMemo.clear();
     state.frames--;
     retirePage(inputs, state, page);
   }

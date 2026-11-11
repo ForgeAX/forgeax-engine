@@ -34,19 +34,25 @@ const fontRoot = dirname(
 );
 const [guideHtml, guideCss, guideLocalization, guideController] = await Promise.all([
   readFile(
-    new URL('../../../../../templates/game-3d/assets/guide.ui.html', import.meta.url),
+    new URL('../../../../../packages/ui/test-fixtures/game-guide/guide.ui.html', import.meta.url),
     'utf8',
   ),
   readFile(
-    new URL('../../../../../templates/game-3d/assets/guide.ui.css', import.meta.url),
+    new URL('../../../../../packages/ui/test-fixtures/game-guide/guide.ui.css', import.meta.url),
     'utf8',
   ),
   readFile(
-    new URL('../../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url),
+    new URL(
+      '../../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json',
+      import.meta.url,
+    ),
     'utf8',
   ),
   import(
-    new URL('../../../../../templates/game-3d/assets/ui/guide-controller.ts', import.meta.url).href
+    new URL(
+      '../../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
+      import.meta.url,
+    ).href
   ),
 ]);
 const cleanup: (() => Promise<void>)[] = [];

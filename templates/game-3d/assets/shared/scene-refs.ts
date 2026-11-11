@@ -14,7 +14,7 @@ type GameEntityKey =
   | 'player'
   | 'point-light'
   | 'skylight'
-  | 'sky-background'
+  | 'atmosphere'
   | 'sun'
   | `player/joint/${string}`;
 

@@ -31,6 +31,7 @@ test('Preview forwards validated CI readiness to its actual Pack configuration',
   );
   assert.ok(rejection, 'invalid readiness must fail rather than silently select another policy');
   const pack = statements
+    .flatMap((node) => (ts.isTryStatement(node) ? [...node.tryBlock.statements] : [node]))
     .filter(ts.isVariableStatement)
     .flatMap((node) => [...node.declarationList.declarations])
     .find((node) => node.name.getText(tree) === 'pack')?.initializer;

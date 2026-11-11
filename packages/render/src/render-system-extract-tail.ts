@@ -63,6 +63,7 @@ import {
 import { validateChannelMask } from './components/lighting-channels';
 import { ProjectedDecalInvalidError } from './decals/component';
 import { extractProjectedDecals } from './decals/extract';
+import { meshSlotBindingDeps } from './entity-materials';
 import {
   createLightResourceUnavailable,
   MaterialSkinAttrMissingError,
@@ -137,7 +138,6 @@ import {
   prepareMaterialSnapshot,
   readPersistentMaterialSnapshot,
   resolveMaterialSnapshot,
-  resolveRuntimeAssetReference,
   Severity,
   selectFogFrame,
   sortDispatchByQueue,
@@ -1290,19 +1290,12 @@ function resolveMeshSlotBindings(
   mesh: MeshAsset,
   materialsView: Uint32Array | undefined,
 ): EntityMaterialBindings | undefined {
-  const world = scope.world;
   const guid = (mesh as { guid?: string }).guid ?? '<no-guid>';
-  const resolved = resolveMeshMaterialBindings(mesh, materialsView ?? [], {
-    isValidOverride(handle) {
-      const material = runtimeAssets(world.assets).resolveAsset(handle as AssetHandle<'material'>);
-      return material.ok && material.value.kind === 'material';
-    },
-    resolveMeshDefault(defaultGuid) {
-      return resolveRuntimeAssetReference(worldRenderResources(world), defaultGuid, 'material') as
-        | number
-        | undefined;
-    },
-  });
+  const resolved = resolveMeshMaterialBindings(
+    mesh,
+    materialsView ?? [],
+    meshSlotBindingDeps(scope.world),
+  );
   if (!resolved.ok) {
     routeMeshSlotFailure(scope, entity, mesh, guid, resolved);
     return undefined;

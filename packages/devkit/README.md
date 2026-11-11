@@ -33,7 +33,7 @@ Source authoring gateways scan `forge.json#assetRoots`. Unrelated staging is out
 
 `forgeax asset shader check --path assets/example.wgsl --json` compiles that source and its imported module closure, reports its digest and dependency paths, and does not build game code. Omit `--path` for the whole project build check. A raw Surface requiring generated material parameters still needs its material cook; a named-source success is not material or GPU acceptance.
 
-For browser/Tauri platform integrations, author an HTML head fragment and pass `forgeax project build --html-head platform-head.html --json`. Use inline content or absolute platform URLs; local relative files resolve from the generated host, not the fragment. DevKit includes it before Vite emits and `forgeax-dist.json` seals the output. Do not inject scripts into a sealed `dist/index.html`. Integration tools must forward this build input; Engine does not rewrite their post-build hooks. WeChat has no HTML carrier and rejects this option.
+For browser/Tauri platform integrations, author an HTML head fragment and pass `forgeax project build --html-head platform-head.html --json`. Use inline content or absolute platform URLs; local relative files resolve from the generated host, not the fragment. DevKit includes it before Vite emits and `forgeax-dist.json` seals the output. Add scripts through the head fragment before Vite emits; a sealed `dist/index.html` stays as built. Integration tools must forward this build input; Engine does not rewrite their post-build hooks. WeChat has no HTML carrier and rejects this option.
 
 `forgeax project check` also dry-cooks every authored `*.pack.json` material and particle-effect entry with the real producers, offline and in seconds, so a mistake such as a `texture2d` parameter type fails with the pack, key and owner hint (`project-assets-invalid`) instead of after a full dev start. `*.pack.ts` packs are reported as skipped. `forgeax asset guid <packageId> <key> [--json]` prints the asset GUID derived for a pack key (UUIDv5 over the package id and key), the same value the cook assigns.
 
@@ -465,7 +465,8 @@ the game. These operations do not save scene edits.
 `capture` (it waits for an edited revision), waits for the startup overlay and two
 fresh submissions, and captures each `--viewports` x `--cameras` view, restoring the
 viewport and releasing the observation camera afterwards. `look-report.ts` computes
-the per-view `metrics` and heuristic `findings` from the composed PNG; the owner keeps
+the per-view `metrics` (size and whether the frame is one flat colour) and `findings`
+(renderer error, flat frame) from the composed PNG; the owner keeps
 one retained browser across reloads (each runtime page gets a fresh context, because
 development modules are bound to their program session) and serves its project
 children from a stable `.forgeax/generated/dev` root with a `.forgeax/dev/vite`
@@ -1073,7 +1074,9 @@ The DevKit development and dist-preview servers provide COOP/COEP isolation and
 can embed their output across ports. An embedding owner that needs isolation
 inside its iframe also grants `allow="cross-origin-isolated"`. Production hosting
 must supply the corresponding headers; without isolation, auto preserves Render
-Worker and executes numeric kernels inline.
+Worker and executes numeric kernels inline. `project play --release --headers none`
+serves the built release without these headers, to check that non-isolated path
+as a plain static host would serve it.
 
 The generated host writes the internal
 `.forgeax/generated/execution-bootstrap.ts`; authors do not edit or maintain
@@ -1313,7 +1316,9 @@ It samples the visible canvas rectangle from the owner-page compositor, includin
 without scrolling the element, resizing the viewport, or waiting for layout to stop moving.
 Offscreen canvas pixels cannot make a flat visible frame pass.
 `--require-ui` requires at least one mounted child under the generated host's `#game-ui` root; unrelated
-Engine or browser ShadowRoots are only diagnostics and cannot satisfy the gate. A uniform black frame
+Engine or browser ShadowRoots are only diagnostics and cannot satisfy the gate. When no UI mounts
+within 10 seconds of the first canvas, the capture fails with `browser-capture-ui-missing`; omit
+`--require-ui` for a canvas-only game. A uniform black frame
 also fails even when canvas and adapter structure exist. Browser discovery includes the installed
 Playwright Chromium; `--browser` explicitly selects another executable. Resource
 preview and replay reuse this discovery across Linux, macOS, and Windows, including `FORGEAX_BROWSER_EXECUTABLE`;
@@ -1386,14 +1391,23 @@ export default async function playthrough(play) {
 | `step(name, run)` | Labels work; a failure reports the innermost step and the last helper action. |
 | `state(read?)` / `waitFor(predicate, { read, timeoutMs })` | Read `gameHost.gameProjection.registerRead({ id, read })`; the id defaults to the only registered read. `waitFor` polls every 50 ms (default 10 s). |
 | `keyboard.press(key)` / `keyboard.hold(keys, ms \| predicate)` | Real key events; `press` (and `mouse.click`) holds until the execution report completes three more frames (at least 50 ms, at most 2 s), so the frame-start input scan observes it; a game that tells a tap from a hold by frame count sees a three-frame press, so use `hold(key, ms)` for an exact duration. Chords use `Shift+KeyA`. |
-| `mouse.click/move(point)`, `mouse.drag(from, to, { button })` | Canvas-normalized `[x, y]` or `{ x, y }`; `[0, 0]` is the canvas top-left. |
-| `screenshot(name)` | Composed page PNG (canvas and DOM UI) with a `rendered` flag; never fails on pixels. |
+| `mouse.click/move(point)`, `mouse.drag(from, to, { button })` | Canvas-normalized `[x, y]` or `{ x, y }`; `[0, 0]` is the canvas top-left. Under pointer lock the game reads only the movement delta, and the result lists a `warnings` entry; a cursor-aimed game calls `gameHost.setPointerLockAllowed(false)` so `move` aims at the point. A `click` whose point is covered by page content that is neither the canvas nor a control (for example a HUD panel with `pointer-events: auto`) still clicks, and adds a `warnings` entry naming that element. |
+| `mouse.look(dx, dy)` | Turns a mouse-look camera by `dx`, `dy` pixels of `movementDelta` and waits until a frame scan has read it. Under pointer lock the delta goes straight to the locked element; otherwise the cursor moves by that offset from its last point. A game that looks only while a button is held uses `drag(from, to, { button: 'right' })`, which waits two Engine frames after the press and after the motion (three pointer moves) before the release. |
+| `screenshot(name)` | Composed page PNG (canvas and DOM UI) with a `rendered` flag; never fails on pixels. Nothing judges how the frame looks; open the PNG. |
 | `advance(seconds, { stepSeconds, render, read })` | Pauses the App, steps whole frames of explicit game time (`stepSeconds` default 1/60, in (0, 0.1] so ECS Time never clamps; `seconds` in (0, 600], at most 36000 frames) inside one page evaluation through `App.stepFrame`, resumes and returns `state(read)`. Frames before the last are `stepFrame(dt, { render: false })` (World update only, no draw or receipt credit) and the last one renders, so `advance(180)` takes about a second instead of a minute; `render: true` draws every frame, for logic that reads the submitted picture (GPU picking, submitted terrain height). It sends no input; keys held through the browser stay held for every stepped frame. Out-of-range arguments fail as `play-step-failed` reason `advance-invalid`, an App step refusal as `advance-failed`. For timers, day/night cycles or long waits, call `play.advance(seconds)` instead of `play.wait`/long `waitFor` timeouts; never poll a running play from the shell — run `project play` in the foreground with a timeout longer than the script. |
 | `reload()`, `wait(ms)`, `page`, `signal` | Reload and wait for input again; plain delay; the Playwright Page for anything else; the abort signal of the run. |
 
 The default `--json` value or error stays within 900 bytes (`PLAY_COMPACT_BYTES`):
 `passed`, step count, a bounded `state` and `returned` summary, screenshot paths,
-`rendered`, `layout` warnings (when any), error counts and the report path. Output lives in
+`rendered`, error counts and the report path. `warnings`
+has its own budget (`PLAY_WARNING_BYTES`, 2400 bytes). Warnings share one shape in the
+success value, the failure `detail` and `play.json`: one `PlayWarning`
+`{ kind, count, screenshots, message, others? }` per kind (`mouse.move under pointer lock`,
+`mouse.click off canvas`), with the occurrence count, the screenshots it
+hit, the first occurrence in full as `message` and, in the report, the other distinct
+occurrences as `others`. Kinds keep the order first seen; the compact forms list at most four kinds, six screenshot names each and no
+`others`, each message whole, and `moreWarningKinds` counts the kinds left in the report.
+Output lives in
 `artifacts/play/<script path without extension>/` (`scripts/playthrough.mjs` ->
 `artifacts/play/scripts/playthrough/`; a script outside the project uses
 `artifacts/play/external/<name>-<digest>/`). A rerun deletes only the files the
@@ -1463,35 +1477,15 @@ otherwise run it in the background and poll at least 30 s apart. The
 one unbounded case is a script that blocks the event loop (a synchronous infinite
 loop), which no deadline can interrupt.
 
-**Viewports and HUD layout.** `--viewports WxH[,WxH...]` (default
+**Viewports.** `--viewports WxH[,WxH...]` (default
 `1280x720,1280x600`, at most four) runs the script in the first viewport. After the
 final frame passes the gate and the execution report reads healthy, each further
 viewport resizes the same page (not replayed) and applies the same strict gate to a
 `viewport-WxH` screenshot: a fatal, a browser error, a uniform canvas, a missing
-`#game-ui` child under `--require-ui`, or no frame in
-time fails the play as `play-runtime-failed` with `At viewport WxH` in the message. A
-single viewport skips the resize. In every viewport, after two animation frames, an
-automatic check reads the `#game-ui` tree (light and open shadow DOM) and reports, as
-`layout` warnings that never fail the play: `text-overlap` (text drawn over other
-text), `text-over-panel` (text over an effectively opaque background, image, SVG or
-canvas outside its own component; background alpha times opacity at least 0.5) and
-`text-clipped` (text cut by the viewport edge). Only visible text counts: an ancestor
-with `overflow` other than `visible` clips it first. It skips full-viewport backdrops,
-a panel and text inside one component smaller than a quarter of the viewport (a
-health bar fill and its label), a panel that precedes the text inside a component
-smaller than 90% of the viewport (painted behind it, such as a dialog portrait),
-tightly stacked lines, text parked fully off-screen, and any subtree marked
-`data-forgeax-layout="ignore"` (world-anchored name tags, damage numbers). Games
-legitimately overlap HUD text, so the check warns rather than gates. Its exemptions
-are heuristics with known limits: document order stands in for paint order, so a
-`z-index` or a later stacking context can put an earlier panel in front of the text
-(missed) or a later one behind it (false warning); and an absolutely or fixed
-positioned descendant escapes an `overflow` ancestor's clip in the browser but is
-still clipped by the check, so its overlaps can be missed. A failed resize
-or DOM read, or a walk that stops at its 600-element limit, adds an `incomplete`
-warning for that viewport instead of passing silently. The compact result lists up to
-three `<viewport> <kind> <selector "text"> vs <other>` lines (one plus `+N more` when
-the 900-byte budget is tight); `play.json` keeps up to 20.
+`#game-ui` child under `--require-ui`, a failed resize, or no frame in time fails the
+play as `play-runtime-failed` with `At viewport WxH` in the message. A single viewport
+skips the resize. Play does not judge the HUD layout or the picture; open the viewport
+screenshots and look at them.
 
 `play` never attaches to a `dev start` owner: that owner's page holds the single
 live App bridge, and a second page served by its Vite child would replace that
@@ -2775,6 +2769,8 @@ It uses a real browser compositor with a flat-canvas fixture: observation preser
 black pixels and runtime diagnostics, validation still fails, and an absent
 checkpoint cannot become a successful observation. `dev capture` selects observation;
 project/Preview capture keeps validation by default.
+The live disk reconciliation gate uses `dev verify` to await and validate the
+final revision's pixels and UI text within the existing capture deadline.
 Validated composition waits for the Host startup cover to become hidden within
 the existing capture deadline. A ready canvas beneath its cosmetic fade does
 not yet qualify unobscured DOM/Shadow DOM pixels; observation and fatal

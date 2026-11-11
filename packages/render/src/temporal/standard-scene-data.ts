@@ -260,6 +260,18 @@ export function createStandardSceneDataTarget(
   return temporal.ok ? ok({ temporal: temporal.value }) : temporal;
 }
 
+/** The current-view surface depth alone, for a depth-only Forward prepass. */
+export function createStandardSceneSurfaceDepthTarget(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  size: GraphTextureDescriptor['size'],
+): Result<RenderPipelineTarget, RenderGraphError> {
+  return createRenderPipelineTarget(graph, 'standard-scene-surface-depth', {
+    format: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.format,
+    size,
+    sampleCount: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.sampleCount,
+  });
+}
+
 /** Allocate the Forward surface inputs when no compatible Deferred GBuffer exists. */
 export function createStandardSceneSurfaceDataTargets(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
@@ -272,11 +284,7 @@ export function createStandardSceneSurfaceDataTargets(
     usage: GPU_TEXTURE_USAGE_COPY_SRC,
   });
   if (!normal.ok) return normal;
-  const depth = createRenderPipelineTarget(graph, 'standard-scene-surface-depth', {
-    format: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.format,
-    size,
-    sampleCount: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.sampleCount,
-  });
+  const depth = createStandardSceneSurfaceDepthTarget(graph, size);
   if (!depth.ok) return depth;
   return ok({
     normalSchema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
@@ -332,17 +340,22 @@ export function addStandardSceneDataPass(
   });
 }
 
-/** Produce shared current-view surface semantics for Forward scene consumers. */
+/**
+ * Produce shared current-view surface semantics for Forward scene consumers.
+ * Without a normal target the pass is depth-only (UE DepthPass PositionOnly):
+ * no color attachment, and only Alpha Mask draws keep a fragment for coverage.
+ */
 export function addStandardSceneSurfaceDataPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
-  targets: StandardSceneSurfaceDataTargets,
+  targets: Pick<StandardSceneSurfaceDataTargets, 'depth'> &
+    Partial<Pick<StandardSceneSurfaceDataTargets, 'normal'>>,
   gpuDriven?: RenderPipelineGpuDrivenProjection,
 ): Result<void, RenderGraphError> {
   return addTypedScenePass(graph, {
     name: 'standard-scene-surface-data',
     ...(gpuDriven === undefined ? {} : { gpuDriven }),
     gpuDrivenFilter: 'opaque',
-    color: targets.normal,
+    ...(targets.normal === undefined ? { colorTargets: [] } : { color: targets.normal }),
     depth: targets.depth,
     selector: FORWARD_PASS_SELECTOR,
     recordMode: 'opaque',

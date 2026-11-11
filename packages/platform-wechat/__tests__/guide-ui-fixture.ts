@@ -1,7 +1,9 @@
 import type { UiAsset, UiInstance } from '@forgeax/engine/ui';
-import localization from '../../../templates/game-3d/assets/guide.ui.i18n.json';
-import { createGuideUi } from '../../../templates/game-3d/assets/ui/guide-controller.ts';
-import { VASE_CHANNEL, VASE_DEFAULTS, type VaseState } from '../../../templates/game-3d/assets/runtime-vase/vase-program.ts';
+import localization from '../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json';
+import { createGuideUi } from '../../../packages/ui/test-fixtures/game-guide/guide-controller.ts';
+import { VASE_CHANNEL, VASE_PARAMETERS, type VaseState, type VaseValues } from '../../../packages/ui/test-fixtures/game-guide/protocol.ts';
+
+const VASE_DEFAULTS = Object.fromEntries(VASE_PARAMETERS.map((p) => [p.name, p.default])) as VaseValues;
 
 /** UI-owner diagnostic using the real authored view/behavior and a borrowed channel.
  * Its generated state is a fixture and makes no 3D presentation claim. */

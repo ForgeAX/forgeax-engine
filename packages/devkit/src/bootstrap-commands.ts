@@ -73,6 +73,8 @@ export interface DoctorReport {
   readonly node: string;
   readonly pnpm: string;
   readonly workspaceDependencies: readonly string[];
+  /** Authored Pack sources loaded with the same admission rules as `project play`. */
+  readonly packSources: number;
   readonly uiAuthoringProfile: UiAuthoringProfile;
   /** Offline dry cook of authored material and particle-effect rows. */
   readonly assets: Pick<AssetCheckReport, 'checked' | 'skipped'>;
@@ -122,6 +124,8 @@ async function finishDoctor(
   const assets = await checkProjectAssets(facts.root, facts.assetRoots);
   const failure = assetCheckFailure(assets);
   if (failure !== undefined) return failure;
+  const sources = await (await import('./assets.js')).checkProjectSources(facts);
+  if (!sources.ok) return sources;
   return {
     ok: true,
     value: {
@@ -130,6 +134,7 @@ async function finishDoctor(
       node: process.versions.node,
       pnpm,
       workspaceDependencies,
+      packSources: sources.value,
       uiAuthoringProfile: UI_AUTHORING_PROFILE,
       assets: { checked: assets.checked, skipped: assets.skipped },
     },

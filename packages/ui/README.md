@@ -327,7 +327,7 @@ if (island) {
 
 Portable direct-manipulation controls declare `touch-action: none` on their hit region. Axis-constrained scrollers can use `pan-x` or `pan-y`; `auto`, `pan-x pan-y` and `manipulation` permit both pan axes. The native Host samples this CSS policy per contact before `pointerdown` handlers, including shadow-host ancestry. Pointer event cancellation does not replace this declaration; wheel and programmatic scrolling keep their own behavior. Directional `pan-left/right/up/down` and explicit `pinch-zoom` are outside the portable profile.
 
-Interactive asset elements opt in with `pointer-events: auto`. The input package decides UI ownership from `event.composedPath()` and clears held state when ownership changes, focus leaves the window, or the run is stopped. A single settings modal owns its own inert backdrop, focus trap, <kbd>Escape</kbd> close, and focus restore. Settings in the default template are memory-only for the current run; no `localStorage` authority is implied.
+The mount layers and display-only content (panels, text, images, crosshairs) are click-through, so clicks over a HUD reach the canvas. Controls receive input by default: buttons, links, form fields, `label`, `summary`, `[tabindex]`, `[data-ui-action]`, ARIA widget roles, and dialogs (`dialog`, `role="dialog"`, `aria-modal`), whose backdrop blocks the game beneath. Any other element that handles pointer events itself, such as a touch joystick or a scrollable panel, sets `pointer-events: auto` in its CSS. The default rule has zero specificity, so authored CSS always wins. The input package decides UI ownership from `event.composedPath()` and clears held state when ownership changes, focus leaves the window, or the run is stopped. A single settings modal owns its own inert backdrop, focus trap, <kbd>Escape</kbd> close, and focus restore. Settings in the default template are memory-only for the current run; no `localStorage` authority is implied.
 
 `dispose()` is idempotent: it aborts `signal`, removes listeners, derived resource URLs, the host and its font stylesheet. Hosts should dispose instances in reverse registration order and remove the run-scoped `uiRoot` on Stop/pagehide.
 
@@ -456,13 +456,7 @@ Catalog revisions must fence asynchronous loads with its UI signal before refres
 
 Run `node packages/ui/scripts/bench-localization.mjs` after building to retain hardware,
 sampling conditions, initialization/lookup/refresh times and bundle bytes in
-`.forgeax-debug/g09/benchmark.json`. The template smoke also measures actual language
-actions and saves English/French screenshots. The production probe additionally switches
-the browser offline after loading; the development smoke retains its live HMR transport.
-After `forgeax project build --root templates/game-3d --out-dir .forgeax/g09-production`,
-run `node apps/preview/scripts/smoke-game3d-localization-production.mjs` from the repository
-root. This contributor gate serves only the built files, rejects external requests,
-requires 60 completed frames and a nonblank canvas, and saves offline action evidence.
+`.forgeax-debug/g09/benchmark.json`.
 
 HTML and CSS authoring parsers return `UiAuthoringParse`. Companion URL categories
 and precedence come from the authoring profile; blocking is derived from diagnostic

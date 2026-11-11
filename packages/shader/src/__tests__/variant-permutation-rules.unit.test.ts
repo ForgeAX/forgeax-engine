@@ -90,7 +90,8 @@ describe('variant permutation rules', () => {
       });
     expect(simple({})).toBe(true);
     expect(simple({ TRANSMISSION_AVAILABLE: true })).toBe(false);
-    expect(simple({ PROBE_BLEND_AVAILABLE: true })).toBe(false);
+    expect(simple({ PROBE_BLEND_AVAILABLE: true, LEAN_LIGHTING: false })).toBe(true);
+    expect(simple({ PROBE_BLEND_AVAILABLE: true, LEAN_LIGHTING: true })).toBe(false);
     expect(simple({ STORAGE_BUFFER_AVAILABLE: false })).toBe(false);
     // Discarding draws (view clipping, LOD cross-fade + clipping) stay general.
     expect(simple({ CLIPPING_PLANES: false, LOD_DITHER: false })).toBe(true);
@@ -106,7 +107,7 @@ describe('variant permutation rules', () => {
     ).toBe(true);
   });
 
-  it('binds LEAN_LIGHTING to the simple-receiver row without adding rows', () => {
+  it('publishes the simple receiver independently from full lighting', () => {
     const row = (simple: boolean, lean: boolean) =>
       isSupportedVariantDefines({
         STORAGE_BUFFER_AVAILABLE: true,
@@ -117,7 +118,7 @@ describe('variant permutation rules', () => {
     expect(row(false, false)).toBe(true);
     expect(row(true, true)).toBe(true);
     expect(row(false, true)).toBe(false);
-    expect(row(true, false)).toBe(false);
+    expect(row(true, false)).toBe(true);
     expect(
       isSupportedVariantKey(
         'DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true+TRANSMISSION_AVAILABLE=true',

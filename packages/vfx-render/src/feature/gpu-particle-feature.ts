@@ -48,6 +48,8 @@ import { createVfxDirectComputeFrame } from './direct-compute-frame.js';
 import {
   createVfxEmitterProgramOwner,
   emitterComputeProgram,
+  emitterHasNoProviders,
+  emitterStagePlan,
   reflectedDataInterfaceRequirements,
   simulationDispatches,
   WORKGROUP_SIZE,
@@ -155,10 +157,16 @@ import {
 import { createRuntimeStorage, RUNTIME_BYTES, runtimeData } from './runtime-uniform.js';
 import { shareVfxGraphicsPrograms, vfxGraphicsProgramKey } from './shared-graphics-programs.js';
 import type { VfxValidatedStagePlan } from './stage-plan.js';
-import { validatedStagePlan } from './stage-plan.js';
 
 const IDENTITY = 'forgeax.vfx-render.gpu-particles';
 const IDENTITY_MATRIX = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+const NO_PREPARATION_PLAYERS: ReadonlySet<EntityHandle> = new Set();
+/** The steady frame has no paused preparation; only a non-empty list needs a lookup set. */
+function preparationPlayerSet(
+  players: readonly EntityHandle[] | undefined,
+): ReadonlySet<EntityHandle> {
+  return players === undefined || players.length === 0 ? NO_PREPARATION_PLAYERS : new Set(players);
+}
 
 type ParticleRenderer = ParticleRendererSourceV3;
 
@@ -316,28 +324,6 @@ function emitterHasEvents(emitter: VfxGpuTickIntent['emitter']): boolean {
   if (immutable) eventEmitters.set(emitter, value);
   return value;
 }
-const stagePlans = new WeakMap<object, Map<number, ReturnType<typeof validatedStagePlan>>>();
-function emitterStagePlan(
-  emitter: VfxGpuTickIntent['emitter'],
-  generation: number,
-): ReturnType<typeof validatedStagePlan> {
-  if (!immutableEmitters.has(emitter))
-    return validatedStagePlan(emitter.reflection.stages, generation);
-  let plans = stagePlans.get(emitter);
-  if (plans === undefined) {
-    plans = new Map();
-    stagePlans.set(emitter, plans);
-  }
-  let plan = plans.get(generation);
-  if (plan === undefined) {
-    plan = validatedStagePlan(emitter.reflection.stages, generation);
-    // Instance generations advance with recovery; keep the latest few only.
-    if (plans.size >= 4) plans.clear();
-    plans.set(generation, plan);
-  }
-  return plan;
-}
-
 function resolveEffect(
   reference: PublishedEmitter,
   sourceWorldIndex: number,
@@ -393,13 +379,6 @@ function planFailure(cause?: unknown): RenderFeatureStageFailedError {
 
 /** Zero source shared by every reset copy of one plan. */
 const RESET_ZERO = 'vfx.reset-zero';
-
-/** Emitters without data-interface or force-field providers own no per-frame provider resources. */
-function emitterHasNoProviders(emitter: VfxGpuTickIntent['emitter']): boolean {
-  return (
-    (emitter.reflection.dataInterfaces?.length ?? 0) === 0 && emitter.forceFields === undefined
-  );
-}
 
 /** Immutable provider-free emitters may retain bindings, storage and native plans across frames. */
 function isRetainableEmitter(emitter: VfxGpuTickIntent['emitter']): boolean {
@@ -1330,7 +1309,7 @@ export function gpuParticleRenderFeature(
     const resolver = planResolver(state, entry.renderGeneration, entry.sourceWorldIndex, context);
     const keys = streamKeys(state, entry.worldId, entry.renderGeneration, entry.runtimeId);
     const emitterState = resolveEmitterStates(entry, resolver, keys, context);
-    const preparationPlayers = new Set(entry.preparationPlayers ?? []);
+    const preparationPlayers = preparationPlayerSet(entry.preparationPlayers);
     const retained = new Map<string, RetainedEmitter>();
     for (const row of entry.retained) {
       if (preparationPlayers.has(row.player)) continue;
@@ -1554,7 +1533,7 @@ export function gpuParticleRenderFeature(
     // reset or unavailable provider must not head-of-line block unrelated
     // players that share the same VfxGpuRuntime/World.
     const blockedEmitters = new Set<string>();
-    const preparationPlayers = new Set(entry.preparationPlayers ?? []);
+    const preparationPlayers = preparationPlayerSet(entry.preparationPlayers);
     for (const intent of entry.intents) {
       // Explicit paused preparation retires expired playback, including a
       // queued reset. Acknowledge its exact sequence without GPU work.
@@ -1595,7 +1574,11 @@ export function gpuParticleRenderFeature(
       blockedEmitters.add(baseKey);
       return 'deferred';
     }
-    const stagePlan = emitterStagePlan(intent.emitter, intent.instanceGeneration);
+    const stagePlan = emitterStagePlan(
+      intent.emitter,
+      intent.instanceGeneration,
+      immutableEmitters,
+    );
     if (!stagePlan.ok) return planFailure();
     const entryPoints =
       emitterPrograms(intent.emitter)?.entryPoints ??
@@ -1688,6 +1671,7 @@ export function gpuParticleRenderFeature(
       const stagePlan = emitterStagePlan(
         retained.intent.emitter,
         retained.intent.instanceGeneration,
+        immutableEmitters,
       );
       if (!stagePlan.ok) return planFailure();
       const visible =
@@ -2205,8 +2189,8 @@ export function gpuParticleRenderFeature(
   const resetsThisFrame = (group: EmitterGroup): boolean =>
     group.intents.some((planned) => !planned.retained && planned.intent.reset);
   /**
-   * Provider-free shared programs without events or parameters keep their
-   * storage in the retained arena; other groups declare buffers each frame.
+   * Provider-free shared programs retain simulation storage. Events and parameters
+   * keep their existing frame declarations, uploads, and bindings.
    */
   const retainGroupStorage = (
     plan: FramePlan,
@@ -2220,8 +2204,6 @@ export function gpuParticleRenderFeature(
       resourceAdmission === undefined ||
       retainedArena === undefined ||
       facts.sharedProgramId === undefined ||
-      facts.hasEvents ||
-      facts.parameterBytes !== 0 ||
       !emitterHasNoProviders(facts.firstIntent.emitter)
     )
       return undefined;
@@ -2233,6 +2215,7 @@ export function gpuParticleRenderFeature(
     );
     const retained = retainEmitterResources({
       previous: emitter.resources,
+      inputs: facts.hasEvents || facts.parameterBytes !== 0 ? 'frame' : 'retained',
       batch: facts.batchProgram,
       emitter: facts.firstIntent.emitter,
       instance: facts.arenaInstance,
@@ -2271,17 +2254,21 @@ export function gpuParticleRenderFeature(
     return retained;
   };
   /** Frame-scope buffers of a group whose storage is not retained in the arena. */
-  const declareGroupStorage = (plan: FramePlan, gp: GroupPlan): void => {
+  const declareGroupStorage = (plan: FramePlan, gp: GroupPlan, coreRetained = false): void => {
     const { names, capacity, parameterBytes, customStride, latest, first } = gp;
     plan.resources.push(
       ...gp.dataInterfaces.resources,
       ...(gp.sharedProgramId === undefined ? [gp.programDeclaration] : []),
-      {
-        kind: 'buffer',
-        name: names.particles,
-        size: capacity * VFX_PARTICLE_CORE_STRIDE,
-        usage: ['storage'],
-      },
+      ...(coreRetained
+        ? []
+        : [
+            {
+              kind: 'buffer' as const,
+              name: names.particles,
+              size: capacity * VFX_PARTICLE_CORE_STRIDE,
+              usage: ['storage'] as const,
+            },
+          ]),
       ...(parameterBytes === 0
         ? []
         : [
@@ -2293,7 +2280,7 @@ export function gpuParticleRenderFeature(
               ...(latest === undefined ? {} : { data: latest.intent.parameterBlock }),
             },
           ]),
-      ...(customStride === 0
+      ...(customStride === 0 || coreRetained
         ? []
         : [
             {
@@ -2303,43 +2290,47 @@ export function gpuParticleRenderFeature(
               usage: ['storage'] as const,
             },
           ]),
-      {
-        kind: 'buffer',
-        name: names.aliveIndices,
-        size: capacity * 4,
-        usage: ['storage', 'copy-src'],
-      },
-      {
-        kind: 'buffer',
-        name: names.counters,
-        size: COUNTERS_BYTES,
-        usage: ['storage', 'copy-src'],
-      },
-      {
-        kind: 'buffer',
-        name: names.indirect,
-        size: gp.indirectWords.byteLength,
-        usage: ['storage', 'indirect', 'copy-src'],
-      },
-      {
-        kind: 'buffer',
-        name: names.indirectInitial,
-        size: gp.indirectWords.byteLength,
-        usage: ['copy-src'],
-        ...(resetsThisFrame(gp.group) ? { data: gp.indirectWords } : {}),
-      },
-      {
-        kind: 'buffer',
-        name: names.scratch,
-        size: gp.scratchBytes,
-        usage: ['storage'],
-      },
-      {
-        kind: 'buffer',
-        name: names.sharedInstances,
-        size: gp.sharedInstanceBytes,
-        usage: ['storage', 'vertex'],
-      },
+      ...(coreRetained
+        ? []
+        : [
+            {
+              kind: 'buffer' as const,
+              name: names.aliveIndices,
+              size: capacity * 4,
+              usage: ['storage', 'copy-src'] as const,
+            },
+            {
+              kind: 'buffer' as const,
+              name: names.counters,
+              size: COUNTERS_BYTES,
+              usage: ['storage', 'copy-src'] as const,
+            },
+            {
+              kind: 'buffer' as const,
+              name: names.indirect,
+              size: gp.indirectWords.byteLength,
+              usage: ['storage', 'indirect', 'copy-src'] as const,
+            },
+            {
+              kind: 'buffer' as const,
+              name: names.indirectInitial,
+              size: gp.indirectWords.byteLength,
+              usage: ['copy-src'] as const,
+              ...(resetsThisFrame(gp.group) ? { data: gp.indirectWords } : {}),
+            },
+            {
+              kind: 'buffer' as const,
+              name: names.scratch,
+              size: gp.scratchBytes,
+              usage: ['storage'] as const,
+            },
+            {
+              kind: 'buffer' as const,
+              name: names.sharedInstances,
+              size: gp.sharedInstanceBytes,
+              usage: ['storage', 'vertex'] as const,
+            },
+          ]),
       ...(gp.hasEvents
         ? [
             {
@@ -2436,13 +2427,15 @@ export function gpuParticleRenderFeature(
       live === undefined
         ? undefined
         : runtimeData(
-            retained !== undefined && admission !== undefined ? plan.runtimeScratch : undefined,
+            retained?.inputs === 'retained' && admission !== undefined
+              ? plan.runtimeScratch
+              : undefined,
             live.intent,
             gp.group.entry.camera,
             undefined,
             live.localToWorld,
           );
-    if (retained !== undefined && admission !== undefined) {
+    if (retained?.inputs === 'retained' && admission !== undefined) {
       if (tickData !== undefined)
         uploadEmitterResource(admission, retained, tick.runtime, tickData);
       return;
@@ -2526,7 +2519,9 @@ export function gpuParticleRenderFeature(
       const historyBindings = historyNames.bindings;
       const historyData = enabled
         ? runtimeData(
-            retained !== undefined && admission !== undefined ? plan.runtimeScratch : undefined,
+            retained?.inputs === 'retained' && admission !== undefined
+              ? plan.runtimeScratch
+              : undefined,
             planned.intent,
             gp.group.entry.camera,
             undefined,
@@ -2535,7 +2530,7 @@ export function gpuParticleRenderFeature(
             rendererIndex,
           )
         : undefined;
-      if (retained !== undefined && admission !== undefined) {
+      if (retained?.inputs === 'retained' && admission !== undefined) {
         if (historyData !== undefined)
           uploadEmitterResource(admission, retained, historyRuntime, historyData);
       } else
@@ -2767,7 +2762,11 @@ export function gpuParticleRenderFeature(
     rv: RendererView,
   ): RetainedProjection | undefined => {
     const { retainedArena, resourceAdmission } = plan;
-    if (gp.retained === undefined || retainedArena === undefined || resourceAdmission === undefined)
+    if (
+      gp.retained?.inputs !== 'retained' ||
+      retainedArena === undefined ||
+      resourceAdmission === undefined
+    )
       return undefined;
     const retained = retainProjectionResources({
       frame: gp.retained,
@@ -3362,7 +3361,8 @@ export function gpuParticleRenderFeature(
       programDeclaration,
       retained,
     }) as GroupPlan;
-    if (retained === undefined) declareGroupStorage(plan, gp);
+    if (retained === undefined || retained.inputs === 'frame')
+      declareGroupStorage(plan, gp, retained !== undefined);
     declareTrailHistory(plan, gp);
     plan.resetZeroBytes = Math.max(plan.resetZeroBytes, facts.emitterFacts.resetZeroBytes);
     const tickFailure =
@@ -3803,14 +3803,14 @@ export function gpuParticleRenderFeature(
         runtime.forEachEmitterSource(
           world,
           ({ player, emitter, effect, instanceGeneration, forceFields }) => {
-            const sourceIntent = runtime.lastCommittedEmitter(player, emitter.id);
+            // Capture only reads the runtime, so this is also the committed intent below.
+            const intent = runtime.lastCommittedEmitter(player, emitter.id);
             const localToWorld =
-              (sourceIntent?.emitter ?? emitter).space === 'world'
+              (intent?.emitter ?? emitter).space === 'world'
                 ? IDENTITY_MATRIX
                 : playerWorld(player);
             const visible = visibleInAnyView(emitter, localToWorld);
             captureEmitter(player, emitter, effect, localToWorld, instanceGeneration, forceFields);
-            const intent = runtime.lastCommittedEmitter(player, emitter.id);
             if (intent !== undefined && !preparationPlayers.has(player)) {
               // Retained queued work owns its previous geometry and material leases.
               if (intent.emitter !== emitter) captureResources(player, intent.emitter);

@@ -42,6 +42,17 @@ export function runnerResources({
   };
 }
 
+/** Ordinary Dawn can opt into two isolated forks; never inherit host-wide fanout. */
+export function dawnOrdinaryWorkers(environment = process.env, resources = runnerResources()) {
+  const requested = environment.FORGEAX_DAWN_ORDINARY_WORKERS ?? '1';
+  if (requested === '1') return 1;
+  if (requested !== '2') throw new Error('Dawn ordinary workers must be exactly 1 or 2');
+  if (resources.cpus < 8 || resources.memoryBytes < 16_000_000_000) {
+    throw new Error('Two Dawn ordinary workers require at least eight CPUs and 16 GB');
+  }
+  return 2;
+}
+
 export function workspaceConcurrency({ cpus, memoryBytes, reserveGB, workerGB }) {
   const memoryGB = memoryBytes / 1024 ** 3;
   const memoryBudget = Math.max(1, Math.floor((memoryGB - reserveGB) / workerGB));

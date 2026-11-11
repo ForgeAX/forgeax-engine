@@ -79,7 +79,7 @@ interface LookValue {
   readonly views: readonly {
     readonly name: string;
     readonly screenshot: string;
-    readonly metrics: { readonly luma: number; readonly width: number; readonly flat: boolean };
+    readonly metrics: { readonly width: number; readonly flat: boolean };
     readonly findings: readonly string[];
   }[];
 }
@@ -166,8 +166,10 @@ it(
     expect(dark.views).toHaveLength(1);
     expect(dark.views[0]?.name).toBe('01-current-game');
     expect(dark.views[0]?.metrics.flat).toBe(false);
-    expect(dark.views[0]?.metrics.luma).toBeLessThan(60);
-    expect(dark.views[0]?.findings.some((finding) => finding.startsWith('dark:'))).toBe(true);
+    expect(dark.views[0]?.findings.some((finding) => finding.startsWith('flat frame:'))).toBe(
+      false,
+    );
+    const darkPng = await readFile(dark.views[0]?.screenshot ?? '');
     const dependencyHash = await devDependencyHash();
 
     // No status polling: the look itself waits for the edited revision.
@@ -175,7 +177,7 @@ it(
     const bright = await look();
     expect(bright.revision).not.toBe(dark.revision);
     expect(bright.waitedMs).toBeGreaterThan(0);
-    expect(bright.views[0]?.metrics.luma).toBeGreaterThan(150);
+    expect((await readFile(bright.views[0]?.screenshot ?? '')).equals(darkPng)).toBe(false);
     // The replacement page opened in the same browser, and Vite kept the
     // dependency cache identity, so module URLs stayed stable.
     expect(ownerBrowsers(ownerPid)).toEqual(browsers);

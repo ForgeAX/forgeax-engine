@@ -294,3 +294,20 @@ it('reserves disjoint half-float screen tiles without moving the existing AO pay
   expect(Array.from(new Float32Array(payload).subarray(13, 16))).toEqual([1, 129, 67]);
   expect(new Uint32Array(payload)[22]).toBe(screen.baseWord);
 });
+
+it('keeps full atmosphere tables disjoint from host light, AO and screen regions', () => {
+  const layout = createStandardClusterLayout(STANDARD_CLUSTER_TEST_ABI.directLightSlot.capacity);
+  const bytes = STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize;
+  const extent = { width: 257, height: 129, screen: { width: 257, height: 129 } };
+  const base = standardClusterTextureLayout(layout, bytes, extent);
+  const packed = standardClusterTextureLayout(layout, bytes, { ...extent, atmosphere: true });
+  expect(packed.width).toBe(base.width);
+  expect(packed.height).toBe(base.height + 50);
+  expect(packed.gridOffset).toBe(base.gridOffset);
+  expect(packed.indexOffset).toBe(base.indexOffset);
+  expect(packed.ao).toEqual(base.ao);
+  expect(packed.screen).toEqual(base.screen);
+  expect(packed.atmosphere?.originY).toBe(base.height);
+  expect(packed.atmosphere?.writeHeight).toBe(50);
+  expect(base.atmosphere).toBeUndefined();
+});

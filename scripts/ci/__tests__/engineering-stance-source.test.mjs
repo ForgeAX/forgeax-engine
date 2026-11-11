@@ -27,7 +27,7 @@ test('stance source inventory admits every regular source without per-file stats
     };
     syncBuiltinESMExports();
     const actual = [...walkSourceFiles(root, ['.ts', '.mjs'], excluded)]
-      .map((path) => relative(root, path))
+      .map((path) => relative(root, path).replaceAll('\\', '/'))
       .sort();
     assert.deepEqual(
       actual,
@@ -51,7 +51,9 @@ test('stance source inventory preserves file and directory symlinks and ignores 
     fs.symlinkSync(join(root, 'missing'), join(root, 'broken.ts'));
     fs.symlinkSync(join(root, 'actual'), join(root, 'node_modules'), 'dir');
     assert.deepEqual(
-      [...walkSourceFiles(root, ['.ts'])].map((path) => relative(root, path)).sort(),
+      [...walkSourceFiles(root, ['.ts'])]
+        .map((path) => relative(root, path).replaceAll('\\', '/'))
+        .sort(),
       ['actual/source.ts', 'alias.ts', 'mirror/source.ts'],
     );
     assert.deepEqual([...walkSourceFiles(join(root, 'missing'), ['.ts'])], []);

@@ -1,4 +1,4 @@
-import { PLAYER_CONTROL_CHANNEL, type PlayerControl } from '../player/player-input.ts';
+import { PLAYER_CONTROL_CHANNEL, type PlayerControl } from '../shared/player-protocol.ts';
 
 type Role = 'move' | 'look' | 'jump' | 'run';
 

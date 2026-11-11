@@ -28,6 +28,7 @@ const frame = selectEnvironment({
       mode: 'exp',
       near: 0,
       far: 100,
+      skyOpacity: 1,
     },
   ],
   suns: [{ entityKey: 9, direction: [0, -1, 0], color: [1, 1, 1], intensity: 2 }],

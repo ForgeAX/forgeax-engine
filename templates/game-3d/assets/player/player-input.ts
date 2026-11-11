@@ -1,21 +1,5 @@
 import type { InputSnapshot } from '@forgeax/engine/input';
-
-export const PLAYER_CONTROL_CHANNEL = 'game-3d/player-controls';
-export type PlayerControl =
-  | { readonly kind: 'move'; readonly horizontal: number; readonly vertical: number }
-  | { readonly kind: 'look'; readonly x: number; readonly y: number }
-  | { readonly kind: 'jump' }
-  | { readonly kind: 'transform' }
-  | { readonly kind: 'run'; readonly held: boolean }
-  | { readonly kind: 'reset' };
-
-export interface PlayerInput {
-  readonly horizontal: number;
-  readonly vertical: number;
-  readonly lookX: number;
-  readonly lookY: number;
-  readonly run: boolean;
-}
+import { PLAYER_CONTROL_CHANNEL, type PlayerInput } from '../shared/player-protocol.ts';
 
 const bounded = (value: number, limit: number) => Math.max(-limit, Math.min(limit, value));
 

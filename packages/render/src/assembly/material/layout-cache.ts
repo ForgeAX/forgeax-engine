@@ -263,6 +263,11 @@ export function createMaterialLayoutCache({
     const program = artifact?.program;
     const source = program?.identity ?? '';
     const paramSchema = lookup.ok ? lookup.value.paramSchema : explicitParamSchema;
+    // An entry is retained only after the derivations below accepted this exact
+    // (source, schema) pair, so a hit is the answer they would reproduce.
+    const cacheKey = materialLayoutSlot(layoutKind, clustered);
+    const cached = cacheState.perShaderMaterialLayoutCache.get(materialShaderId)?.get(cacheKey);
+    if (sameMaterialLayoutPublication(cached, source, paramSchema)) return cached.layout;
     // Optional engine-owned resources extend the Standard layout and its texture budget.
     const directMultiscatteringLut = materialUsesDirectDfgLut(paramSchema);
     const planarReflection = materialUsesPlanarReflection(paramSchema);
@@ -273,11 +278,6 @@ export function createMaterialLayoutCache({
       materialShaderId === 'forgeax::single-layer-medium' ||
       artifact?.receipt?.surface?.model === 'single-layer-medium';
     if (paramSchema === undefined) return null;
-    const cacheKey = materialLayoutSlot(layoutKind, clustered);
-    const cached = cacheState.perShaderMaterialLayoutCache.get(materialShaderId)?.get(cacheKey);
-    if (cached?.source === source && cached.paramSchema === paramSchema) {
-      return cached.layout;
-    }
     // A custom schema may reuse the shared PBR layout only when every derived
     // binding is an identical canonical prefix. Otherwise build its own layout
     // so texture dimensions and sampler/storage shapes cannot drift.
@@ -418,6 +418,16 @@ export function createMaterialLayoutCache({
     getParamSchema,
     getMaterialBindGroupLayout,
   };
+}
+
+function sameMaterialLayoutPublication(
+  cached: PerShaderMaterialLayoutCacheEntry | undefined,
+  source: string,
+  paramSchema: readonly ParamSchemaEntry[] | undefined,
+): cached is PerShaderMaterialLayoutCacheEntry {
+  return (
+    paramSchema !== undefined && cached?.source === source && cached.paramSchema === paramSchema
+  );
 }
 
 // Exhaustive codes encode the closed layout union; these are cache keys only.

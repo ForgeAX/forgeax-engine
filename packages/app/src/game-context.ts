@@ -113,6 +113,7 @@ export interface GameHost {
    * Optional Play-only projection seam. A game registers its own action and read
    * capabilities here; the host may only discover/invoke/read those closures. It
    * is deliberately absent outside a host that can clear registrations on disposal.
+   * Engine and frontend plugins register on their own realm's Host; Play lists both.
    */
   readonly gameProjection?: GameProjectionRegistrar;
 }

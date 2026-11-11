@@ -30,7 +30,7 @@ import type { TemporalView } from '../temporal/view';
 import type { ViewLights } from '../world/render-lights';
 import { computeProjectionMatrix, computeViewMatrix } from './helpers';
 
-export const VIEW_UNIFORM_BYTES = 1280;
+export const VIEW_UNIFORM_BYTES = 1296;
 /** Four Point/Spot lanes each for depth, filtering, viewport and frozen origins. */
 export const SHADOW_PARAMS_BYTES = 16 * 16;
 export const POINTS_LINES_VIEW_BYTES = 176;
@@ -38,7 +38,8 @@ export const POINTS_LINES_VIEW_SLOT_STRIDE = 256;
 export const POINTS_LINES_VIEW_SLOT_COUNT = 1024;
 export const POINTS_LINES_VIEW_BUFFER_SIZE =
   POINTS_LINES_VIEW_SLOT_STRIDE * POINTS_LINES_VIEW_SLOT_COUNT;
-export const VIEW_UNIFORM_SLOT_STRIDE = 1280;
+/** Dynamic View slot: VIEW_UNIFORM_BYTES rounded up to the 256-byte offset alignment. */
+export const VIEW_UNIFORM_SLOT_STRIDE = 1536;
 export const POINT_SHADOW_VIEW_SLOT_COUNT = 24;
 export const CUBE_CAPTURE_VIEW_SLOT_BASE = 1 + POINT_SHADOW_VIEW_SLOT_COUNT;
 export const REFLECTION_PROBE_VIEW_SLOT_BASE = CUBE_CAPTURE_VIEW_SLOT_BASE + 6 + 1;
@@ -267,7 +268,9 @@ let writingViewUbo = false;
  *   ssrParams (maxDistance, thickness, maxRoughness, enabled).
  *   [240..255] cloud shadow projection ([251] sunSourceRadius), [256..279] clippingPlanes,
  *   [280..283] clippingControl, [284..287] fogColorDensity,
- *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time).
+ *   [288..291] fogHeightOpacity (heightFalloff, maxOpacity, translucent-fog slot, frame time),
+ *   [292..315] atmosphere medium, [316..319] atmosphereControl,
+ *   [320..323] fogSky (skyOpacity, reserved).
  *
  * @internal
  */
@@ -365,11 +368,13 @@ function writeClippingLanes(
 /** Fog facts the View lanes carry. */
 type ViewFog = Pick<
   FogFrame,
-  'color' | 'density' | 'heightFalloff' | 'maxOpacity' | 'mode' | 'near' | 'far'
+  'color' | 'density' | 'heightFalloff' | 'maxOpacity' | 'mode' | 'near' | 'far' | 'skyOpacity'
 >;
 
 /**
- * fogColorDensity at [284..287], fogHeightOpacity at [288..290], frame time at [291].
+ * fogColorDensity at [284..287], fogHeightOpacity at [288..290], frame time at [291],
+ * fogSky at [320] (skyOpacity; read only by the Atmosphere compose pass on
+ * background pixels).
  * The law is signed into the existing lanes (fog.wgsl decodes it):
  *   exp:    (rgb, density),  (heightFalloff, maxOpacity)
  *   exp2:   (rgb, -density), (0, maxOpacity)
@@ -390,6 +395,7 @@ function writeFogAndClockLanes(
       [linear ? fog.near : fog.heightFalloff, linear ? -fog.maxOpacity : fog.maxOpacity, 0, 0],
       288,
     );
+    viewPayload[320] = fog.skyOpacity;
   }
   // The clock is available even when fog is disabled; no per-material publication.
   const frameTime = Math.fround(frameTimeSeconds ?? 0);

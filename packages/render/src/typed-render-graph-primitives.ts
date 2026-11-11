@@ -16,7 +16,7 @@ import {
 } from '@forgeax/engine-rhi';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { err, ok, type PassKind, type PassSelector, type Result } from '@forgeax/engine-types';
-import { atmosphereTextures } from './environment/luts';
+import { atmosphereTextures, atmosphereVolumeViews } from './environment/luts';
 import type { PostProcessShaderEntry } from './fullscreen-post-process-pass';
 import {
   GPU_TEXTURE_USAGE_COPY_SRC,
@@ -224,7 +224,8 @@ export interface TypedScenePassOptions {
   };
   readonly environment?: import('./environment/ibl').GraphEnvironment | undefined;
   readonly name: string;
-  readonly color: RenderPipelineTarget;
+  /** Omitted (with no colorTargets) for a depth-only pass: no color attachment. */
+  readonly color?: RenderPipelineTarget | undefined;
   readonly depth: RenderPipelineTarget;
   readonly resolve?: RenderPipelineTarget | undefined;
   readonly sampled?: readonly RenderPipelineTarget[] | undefined;
@@ -243,6 +244,8 @@ export interface TypedScenePassOptions {
   readonly colorClearValues?: readonly (readonly [number, number, number, number])[];
   readonly colorLoadOp?: GPULoadOp | readonly GPULoadOp[] | undefined;
   readonly depthLoadOp?: GPULoadOp | undefined;
+  /** The loaded depth is the exact prepass raster of this pass's opaque draws. */
+  readonly seededDepth?: boolean | undefined;
   /** Preserve nearest transparent fragment depth for downstream medium clipping. */
   readonly transparentDepthWrite?: boolean | undefined;
   readonly coverageOnly?: boolean | undefined;
@@ -396,7 +399,7 @@ export function addTypedScenePass(
     late: options.gpuDrivenPhase === 'late',
     capture: false,
   });
-  const colorTargets = options.colorTargets ?? [options.color];
+  const colorTargets = options.colorTargets ?? (options.color === undefined ? [] : [options.color]);
   const fragmentEntryPoint = scenePassFragmentEntryPoint(options);
   const formats = colorTargets.map((target) => target.format as GPUTextureFormat);
   const sampleCount = colorTargets[0]?.sampleCount ?? options.depth.sampleCount;
@@ -442,6 +445,7 @@ export function addTypedScenePass(
           fragmentEntryPoint,
           coverageOnly: options.coverageOnly ?? false,
           transparentDepthWrite: options.transparentDepthWrite ?? false,
+          seededDepth: options.seededDepth === true,
           ...(options.selectEntities !== undefined || options.selection === undefined
             ? {}
             : { selection: options.selection }),
@@ -456,6 +460,7 @@ export function addTypedScenePass(
           fragmentEntryPoint,
           coverageOnly: options.coverageOnly ?? false,
           transparentDepthWrite: options.transparentDepthWrite ?? false,
+          seededDepth: options.seededDepth === true,
           ...(options.selection === undefined ? {} : { selection: options.selection }),
         }
       : undefined,
@@ -472,6 +477,7 @@ export function addTypedScenePass(
     }),
     options.coverageOnly,
     sampleCount,
+    options.seededDepth,
   );
   const bundleDescriptor = {
     colorFormats: formats,
@@ -499,6 +505,7 @@ export function addTypedScenePass(
     if (options.transparentDepthWrite !== undefined)
       result.transparentDepthWrite = options.transparentDepthWrite;
     if (options.coverageOnly !== undefined) result.coverageOnly = options.coverageOnly;
+    result.seededDepth = options.seededDepth === true;
     if (request.excludeSelector !== undefined) result.excludeSelector = request.excludeSelector;
     if (options.transmissionBackdrop !== undefined)
       result.transmissionBackdropView = transmissionBackdrop;
@@ -600,31 +607,7 @@ export function addTypedScenePass(
               ? undefined
               : resolvedView(resources, options.shadowMoments.view),
           cloudShadow,
-          atmosphere:
-            options.environment?.atmosphere === undefined
-              ? undefined
-              : {
-                  distantSkyLight: resolvedView(
-                    resources,
-                    options.environment.atmosphere.distantSkyLight,
-                  ),
-                  transmittance: resolvedView(
-                    resources,
-                    options.environment.atmosphere.transmittance,
-                  ),
-                  multipleScattering: resolvedView(
-                    resources,
-                    options.environment.atmosphere.multipleScattering,
-                  ),
-                  aerialPerspective: resolvedView(
-                    resources,
-                    options.environment.atmosphere.aerialPerspective,
-                  ),
-                  aerialTransmittance: resolvedView(
-                    resources,
-                    options.environment.atmosphere.aerialTransmittance,
-                  ),
-                },
+          atmosphere: atmosphereVolumeViews(resources, options.environment?.atmosphere),
           projector: internal.spotLightProjector?.view ?? internal.volumetricFog?.projectorView,
           projectorSampler:
             internal.spotLightProjector?.sampler ?? internal.volumetricFog?.projectorSampler,

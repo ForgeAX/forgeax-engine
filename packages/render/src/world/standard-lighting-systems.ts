@@ -18,6 +18,7 @@ import {
 import { resetRenderFeatureGraphState } from '../record/typed-frame-graph';
 import type { CameraSnapshot } from '../render-contract';
 import { ssaoStructuralIdentity } from '../ssao-config';
+import { VIEW_ENVIRONMENT_ADMIT_SYSTEM } from './environment-systems';
 import { RENDER_CASCADE_FIT_SYSTEM } from './light-systems';
 import { viewLightsOf } from './render-lights';
 import { ViewRecorder } from './render-views';
@@ -275,7 +276,7 @@ export function registerStandardLightingSystem(world: World): void {
     .addSystem(RenderPrepare, {
       commands: 'none',
       name: RENDER_STANDARD_LIGHTING_SYSTEM,
-      after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM],
+      after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM, VIEW_ENVIRONMENT_ADMIT_SYSTEM],
       queries: [{ read: [ViewRecorder, ViewFrame], optional: [ViewStandardLighting] }],
       fn: (world, [rows]) => {
         const frame = renderSubmission(world).frame;

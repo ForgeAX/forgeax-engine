@@ -82,6 +82,7 @@ export {
   worldSpawnSceneMembers,
   worldValidateMountOverrides,
 } from './instances/scene-instances';
+export { setTransformLookAt } from './look-at';
 export {
   emitMobilityDiagnostic,
   type MobilityDiagnosticListener,

@@ -137,7 +137,7 @@ world.replaceSystem(Update, 'movement', {
 }).unwrap();
 ```
 
-A system belongs to the schedule selected at registration. Use `after: [FixedUpdate]` or `before: [FixedUpdate]` only as the intrinsic fixed-anchor edge inside `Update`; do not use it to smuggle a system between schedules.
+A system belongs to the schedule selected at registration. Use `after: [FixedUpdate]` or `before: [FixedUpdate]` only as the intrinsic fixed-anchor edge inside `Update`; pick the schedule at registration to place a system.
 
 ### Migration from the pre-token form
 
@@ -310,8 +310,7 @@ const Transform = defineComponent('Transform', { x: 'f32' }, {
 `World.spawn`, `World.addComponent`, and deferred `Commands` materialization
 expand `requires` transitively at the structural boundary. Explicit data for a
 required component wins; missing identities are appended once. This is generic
-ECS behavior, so scene/import helpers must not duplicate it and systems must
-not perform per-frame repair scans. Removing a requirement does not cascade;
+ECS behavior, so scene/import helpers rely on it and systems skip per-frame repair scans. Removing a requirement does not cascade;
 an owner that does so explicitly gets the owning domain's structured invariant
 error on the next use.
 

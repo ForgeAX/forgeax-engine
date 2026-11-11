@@ -1,8 +1,9 @@
 import { type AssetRegistry, runtimeMaterialShaderId } from '@forgeax/engine-assets-runtime';
 import { validateMaterialCookProgramContext } from '@forgeax/engine-pack/material-cook';
 import {
-  MaterialArtifactRegistry,
+  type MaterialRuntimeArtifact,
   type MaterialShaderEntry,
+  materialArtifactConflict,
   ShaderRegistry,
 } from '@forgeax/engine-shader';
 import {
@@ -511,13 +512,44 @@ function publicationSourceEntry(
   return previous.ok ? undefined : canonicalShaderEntry(shader);
 }
 
+const verifiedProgramEvidence = new Set<readonly unknown[]>();
+
+/**
+ * Establish the digest evidence of received byte programs off this thread. The
+ * evidence stays held until the returned release runs, so call that only after
+ * installPublicationPrograms: admission then compares those bytes instead of
+ * hashing them. Undefined means the packet carries no byte program.
+ */
+export function verifyPublicationPrograms(
+  programs: RenderPublication['programs'] | undefined,
+): Promise<() => void> | undefined {
+  // Runs before the receiver validates the packet: skip any row it will reject.
+  if (!Array.isArray(programs)) return undefined;
+  let rows: Promise<unknown>[] | undefined;
+  for (const row of programs as RenderPublication['programs']) {
+    const shader: unknown = row?.shader;
+    const artifact = row?.artifact;
+    if (shader === null || typeof shader !== 'object' || !('sourceEncoding' in shader)) continue;
+    if (!(artifact?.bytes instanceof Uint8Array) || typeof artifact.digest !== 'string') continue;
+    rows ??= [];
+    rows.push(ShaderRegistry.verifyMaterialArtifactBytes(artifact.bytes, artifact.digest));
+  }
+  const pending = rows === undefined ? undefined : Promise.all(rows);
+  return pending?.then((evidence) => {
+    verifiedProgramEvidence.add(evidence);
+    return () => {
+      verifiedProgramEvidence.delete(evidence);
+    };
+  });
+}
+
 /** Admit immutable producer artifacts before the full Renderer prepares their pipelines. */
 export function installPublicationPrograms(
   assets: AssetRegistry,
   programs: RenderPublication['programs'],
 ): void {
   if (programs.length === 0) return;
-  const validation = new MaterialArtifactRegistry();
+  const added: MaterialRuntimeArtifact[] = [];
   let shaders: ShaderRegistry | undefined;
   const keys = new Set<string>();
   for (const row of programs) {
@@ -528,9 +560,13 @@ export function installPublicationPrograms(
       });
     keys.add(row.key);
     if (row.artifact !== undefined) {
+      // Keys are unique within a publication, so only the held artifact can conflict.
       const existing = assets.getMaterialArtifact(row.key);
-      if (existing !== undefined) validation.register(existing).unwrap();
-      validation.register(row.artifact).unwrap();
+      if (existing === undefined) added.push(row.artifact);
+      else {
+        const conflict = materialArtifactConflict(existing, row.artifact);
+        if (conflict !== undefined) throw conflict;
+      }
     }
     if ('sourceEncoding' in row.shader) {
       if (row.shader.sourceEncoding !== 'utf8' || row.artifact?.digest === undefined)
@@ -538,12 +574,12 @@ export function installPublicationPrograms(
           reason: 'shape',
           subject: 'byte shader publication requires its complete artifact',
         });
-      const input = {
-        ...canonicalShaderEntry(row.shader),
-        bytes: row.artifact.bytes,
-        digest: row.artifact.digest,
-      };
-      const accepted = assets.shaderRegistry.validateMaterialArtifactBytes(row.key, input);
+      const evidence = { bytes: row.artifact.bytes, digest: row.artifact.digest };
+      // Validation only reads the row; canonical ABI facts are built for a new program alone.
+      const accepted = assets.shaderRegistry.validateMaterialArtifactBytes(row.key, {
+        ...row.shader,
+        ...evidence,
+      });
       if (!accepted.ok)
         throw new RenderPublicationError({
           reason: 'shape',
@@ -551,7 +587,10 @@ export function installPublicationPrograms(
         });
       if (!accepted.value) {
         shaders ??= new ShaderRegistry({ manifestUrl: undefined });
-        shaders.installMaterialArtifactBytes(row.key, input);
+        shaders.installMaterialArtifactBytes(row.key, {
+          ...canonicalShaderEntry(row.shader),
+          ...evidence,
+        });
       }
     } else {
       const source = publicationSourceEntry(assets.shaderRegistry, row.key, row.shader);
@@ -562,7 +601,5 @@ export function installPublicationPrograms(
     }
   }
   if (shaders !== undefined) assets.shaderRegistry.installMaterialArtifactsFrom(shaders);
-  for (const row of programs) {
-    if (row.artifact !== undefined) assets.materialArtifactRegistry.register(row.artifact).unwrap();
-  }
+  for (const artifact of added) assets.materialArtifactRegistry.register(artifact).unwrap();
 }

@@ -202,6 +202,22 @@ export function discoverSdkTemplates(templatesRoot = resolve(SDK_REPOSITORY_ROOT
 }
 
 export const SDK_TEMPLATES = discoverSdkTemplates();
+
+/**
+ * Whether a project `.gitignore` keeps DevKit's `.forgeax/` state (caches, builds, run
+ * records) out of version control: a pattern naming the directory, not negated later.
+ */
+export function ignoresProjectState(gitignore) {
+  let ignored = false;
+  for (const raw of gitignore.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const negated = line.startsWith('!');
+    const pattern = (negated ? line.slice(1) : line).replace(/^\//, '').replace(/\/(\*\*)?$/, '');
+    if (pattern === '.forgeax' || pattern === '.forgeax/**') ignored = !negated;
+  }
+  return ignored;
+}
 export const SDK_SOURCE_GIT_DEPENDENCIES = Object.freeze([
   'third_party/wgpu',
   'third_party/blitz',

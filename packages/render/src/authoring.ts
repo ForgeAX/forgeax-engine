@@ -11,7 +11,7 @@ export {
   createFullscreenRenderFeature,
   type FullscreenRenderFeatureOptions,
 } from './features/fullscreen';
-export { SPRITE_PREMULTIPLIED_ALPHA_BLEND } from './materials';
+export { ADDITIVE_BLEND, SPRITE_PREMULTIPLIED_ALPHA_BLEND } from './materials';
 export {
   createStandardForwardPipeline,
   type StandardForwardOutput,

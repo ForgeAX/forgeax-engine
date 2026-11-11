@@ -1292,9 +1292,8 @@ export function deriveRenderFeaturePassAccess(
   plan: RenderFeatureWorkPlan,
   pass: RenderFeaturePassDeclaration,
 ): readonly RenderFeatureDerivedAccess[] {
-  const resources = new Map(plan.resources.map((resource) => [resource.name, resource]));
-  const accesses: RenderFeatureDerivedAccess[] = [];
   if (pass.kind === 'copy') {
+    const accesses: RenderFeatureDerivedAccess[] = [];
     for (const copy of pass.copies) {
       accesses.push(
         { resource: copy.source, usage: 'copy-src' },
@@ -1303,48 +1302,16 @@ export function deriveRenderFeaturePassAccess(
     }
     return Object.freeze(accesses);
   }
+  // Copy and draw-less raster passes never consult declarations.
+  const resources: ReadonlyMap<string, RenderFeatureResourceDeclaration> =
+    pass.kind === 'compute' || pass.draws.length > 0
+      ? new Map(plan.resources.map((resource) => [resource.name, resource]))
+      : new Map();
   if (pass.kind === 'compute') {
-    const program = resources.get(pass.program);
-    const bindingNames = new Set([pass.bindings]);
-    for (const dispatch of pass.dispatches)
-      if (dispatch.bindings !== undefined) bindingNames.add(dispatch.bindings);
-    const layoutEntries =
-      program?.kind === 'compute-program' ? (program.program.bindings?.[0]?.entries ?? []) : [];
-    for (const name of bindingNames) {
-      const bindings = resources.get(name);
-      if (bindings?.kind === 'compute-bindings') {
-        for (const entry of bindings.entries) {
-          const usage = bindingAccess(
-            layoutEntries.find((candidate) => candidate.binding === entry.binding)?.buffer?.type,
-          );
-          if (usage !== undefined) accesses.push({ resource: entry.resource, usage });
-          const declaration = resources.get(entry.resource);
-          if (
-            declaration?.kind === 'prepared-gpu-resource' &&
-            declaration.logicalTarget !== undefined
-          ) {
-            const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
-            const usage =
-              layout?.storageTexture?.access === 'write-only'
-                ? 'storage-write'
-                : layout?.storageTexture?.access === 'read-only'
-                  ? 'storage-read'
-                  : layout?.storageTexture?.access === 'read-write'
-                    ? 'sampled-storage-read-write'
-                    : 'sampled-read';
-            accesses.push({ resource: declaration.logicalTarget, usage });
-          }
-        }
-      }
-    }
-    for (const dispatch of pass.dispatches) {
-      if (dispatch.kind === 'indirect') {
-        accesses.push({ resource: dispatch.resource, usage: 'indirect-read' });
-      }
-    }
-    return Object.freeze(accesses);
+    return deriveComputePassAccess(resources, pass);
   }
 
+  const accesses: RenderFeatureDerivedAccess[] = [];
   for (const attachment of pass.kind === 'raster' ? pass.colorAttachments : []) {
     accesses.push({ resource: attachment.target, usage: 'color-attachment' });
   }
@@ -1385,6 +1352,52 @@ export function deriveRenderFeaturePassAccess(
     }
     if (draw.draw.kind === 'draw-indirect' || draw.draw.kind === 'draw-indexed-indirect') {
       accesses.push({ resource: draw.draw.resource, usage: 'indirect-read' });
+    }
+  }
+  return Object.freeze(accesses);
+}
+
+function deriveComputePassAccess(
+  resources: ReadonlyMap<string, RenderFeatureResourceDeclaration>,
+  pass: Extract<RenderFeaturePassDeclaration, { readonly kind: 'compute' }>,
+): readonly RenderFeatureDerivedAccess[] {
+  const accesses: RenderFeatureDerivedAccess[] = [];
+  const program = resources.get(pass.program);
+  const bindingNames = new Set([pass.bindings]);
+  for (const dispatch of pass.dispatches)
+    if (dispatch.bindings !== undefined) bindingNames.add(dispatch.bindings);
+  const layoutEntries =
+    program?.kind === 'compute-program' ? (program.program.bindings?.[0]?.entries ?? []) : [];
+  for (const name of bindingNames) {
+    const bindings = resources.get(name);
+    if (bindings?.kind === 'compute-bindings') {
+      for (const entry of bindings.entries) {
+        const usage = bindingAccess(
+          layoutEntries.find((candidate) => candidate.binding === entry.binding)?.buffer?.type,
+        );
+        if (usage !== undefined) accesses.push({ resource: entry.resource, usage });
+        const declaration = resources.get(entry.resource);
+        if (
+          declaration?.kind === 'prepared-gpu-resource' &&
+          declaration.logicalTarget !== undefined
+        ) {
+          const layout = layoutEntries.find((candidate) => candidate.binding === entry.binding);
+          const usage =
+            layout?.storageTexture?.access === 'write-only'
+              ? 'storage-write'
+              : layout?.storageTexture?.access === 'read-only'
+                ? 'storage-read'
+                : layout?.storageTexture?.access === 'read-write'
+                  ? 'sampled-storage-read-write'
+                  : 'sampled-read';
+          accesses.push({ resource: declaration.logicalTarget, usage });
+        }
+      }
+    }
+  }
+  for (const dispatch of pass.dispatches) {
+    if (dispatch.kind === 'indirect') {
+      accesses.push({ resource: dispatch.resource, usage: 'indirect-read' });
     }
   }
   return Object.freeze(accesses);

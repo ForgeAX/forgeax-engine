@@ -20,6 +20,7 @@ import {
   TONEMAP_NEUTRAL,
   TONEMAP_REINHARD,
   TONEMAP_REINHARD_EXTENDED,
+  TONEMAP_UE_FILMIC,
 } from '../components';
 import { extractCameraSnapshots, tonemapParams } from '../render-system-extract';
 import { setActiveCamera } from '../systems/active-camera';
@@ -32,6 +33,7 @@ const OPERATORS = [
   ['aces-filmic', TONEMAP_ACES_FILMIC],
   ['agx', TONEMAP_AGX],
   ['neutral', TONEMAP_NEUTRAL],
+  ['ue-filmic', TONEMAP_UE_FILMIC],
 ] as const;
 
 describe('Camera.exposure under every tone operator', () => {

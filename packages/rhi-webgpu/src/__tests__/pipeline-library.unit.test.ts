@@ -9,7 +9,10 @@ import { expect, it, vi } from 'vitest';
 import { disposeDevice, makeRhiDevice } from '../device';
 import { createShaderModule, createShaderModuleImmediate } from '../index';
 import { PipelineCompilationRecords } from '../pipeline-compilation-records';
-import { backgroundPipelineWarmupConcurrency } from '../pipeline-library';
+import {
+  backgroundPipelineWarmupConcurrency,
+  FOREGROUND_SHADER_BATCH_BYTES,
+} from '../pipeline-library';
 import { createMockGpu } from './__mocks__/gpu-device';
 
 // Observe the real Node hash without adding Node ambient types to the browser RHI.
@@ -545,6 +548,125 @@ async function backgroundArchive(count: number) {
     JSON.stringify(a.device.pipelineLibrary.export().unwrap()),
   ) as PipelineLibraryManifest;
 }
+
+/** Four startup pipelines whose sources are each a third of the shader batch budget. */
+async function batchedStartup() {
+  const pad = ' '.repeat(Math.ceil(FOREGROUND_SHADER_BATCH_BYTES / 3));
+  const a = await fixture();
+  for (let i = 0; i < 4; i++) a.device.createRenderPipeline(a.descriptor(`${pad}${i}`)).unwrap();
+  const archive = JSON.parse(
+    JSON.stringify(a.device.pipelineLibrary.export().unwrap()),
+  ) as PipelineLibraryManifest;
+  expect(archive.shaders).toHaveLength(4);
+  const b = await fixture();
+  const pending: {
+    code: string;
+    resolve(info: GPUCompilationInfo): void;
+    reject(cause: unknown): void;
+  }[] = [];
+  const codeOf = new Map<GPUShaderModule, string>();
+  const modules = vi
+    .spyOn(b.raw, 'createShaderModule')
+    .mockImplementation((descriptor: GPUShaderModuleDescriptor) => {
+      const module = {
+        getCompilationInfo: () =>
+          new Promise<GPUCompilationInfo>((resolve, reject) =>
+            pending.push({ code: descriptor.code, resolve, reject }),
+          ),
+      } as GPUShaderModule;
+      codeOf.set(module, descriptor.code);
+      return module;
+    });
+  const firstBatch = async () => {
+    await vi.waitFor(() => expect(pending).toHaveLength(3));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    // The fourth module waits for the first batch; no pipeline precedes its modules.
+    expect(modules).toHaveBeenCalledTimes(3);
+    expect(b.render).not.toHaveBeenCalled();
+  };
+  const compiled = (messages: readonly object[] = []) => {
+    for (const row of pending.splice(0)) row.resolve({ messages } as unknown as GPUCompilationInfo);
+  };
+  return { archive, b, pending, codeOf, modules, firstBatch, compiled };
+}
+
+it('admits blocking startup shader modules in manifest order, in byte batches gated by native compilation', async () => {
+  const { archive, b, codeOf, modules, firstBatch, compiled } = await batchedStartup();
+  const prepared = b.device.pipelineLibrary.prepare(archive);
+  await firstBatch();
+  compiled();
+  await vi.waitFor(() => expect(modules).toHaveBeenCalledTimes(4));
+  expect((await prepared).unwrap().warmup).toMatchObject({ requested: 4, completed: 4, failed: 0 });
+  // Creation order and module references are the unbatched manifest order.
+  expect(modules.mock.calls.map(([d]) => d.code)).toEqual(archive.shaders.map((s) => s.code));
+  expect(b.render).toHaveBeenCalledTimes(4);
+  const expected = archive.renderPipelines.map((d) => archive.shaders[d.vertex.module]?.code);
+  expect(b.render.mock.calls.map(([d]) => codeOf.get(d.vertex.module))).toEqual(
+    expect.arrayContaining(expected),
+  );
+});
+
+it('keeps WGSL compile errors on the pipeline failure path when startup modules are batched', async () => {
+  const { archive, b, codeOf, firstBatch, compiled } = await batchedStartup();
+  const broken = archive.shaders[0]?.code;
+  b.render.mockImplementation(async (d) => {
+    if (codeOf.get(d.vertex.module) === broken) throw new Error('invalid shader module');
+    return {} as GPURenderPipeline;
+  });
+  const prepared = b.device.pipelineLibrary.prepare(archive);
+  await firstBatch();
+  // Diagnostics only gate admission; the library does not reinterpret them.
+  compiled([{ type: 'error', message: 'expected expression' }]);
+  const batched = await prepared;
+  // Reference: a library below one batch takes the unbatched admission path.
+  const small = await backgroundArchive(4);
+  const u = await fixture();
+  const brokenSmall = small.shaders[0]?.code;
+  const smallCode = new Map<GPUShaderModule, string>();
+  const create = u.raw.createShaderModule.bind(u.raw);
+  vi.spyOn(u.raw, 'createShaderModule').mockImplementation((d) => {
+    const module = create(d);
+    smallCode.set(module, d.code);
+    return module;
+  });
+  u.render.mockImplementation(async (d) => {
+    if (smallCode.get(d.vertex.module) === brokenSmall) throw new Error('invalid shader module');
+    return {} as GPURenderPipeline;
+  });
+  const unbatched = await u.device.pipelineLibrary.prepare(small);
+  expect(batched.ok).toBe(false);
+  expect(unbatched.ok).toBe(false);
+  if (batched.ok || unbatched.ok) throw Error('startup pipeline failure was swallowed');
+  expect(batched.error.code).toBe(unbatched.error.code);
+  expect(batched.error.hint).toBe('invalid shader module');
+  expect(unbatched.error.hint).toBe('invalid shader module');
+  expect(b.render).toHaveBeenCalledTimes(u.render.mock.calls.length);
+});
+
+it('fails blocking startup without issuing pipelines when a batched compilation rejects', async () => {
+  const { archive, b, pending, modules, firstBatch } = await batchedStartup();
+  const prepared = b.device.pipelineLibrary.prepare(archive);
+  await firstBatch();
+  // A lost device rejects native diagnostics; the first rejection is the prepare failure.
+  for (const row of pending.splice(0)) row.reject(new Error('device lost'));
+  const result = await prepared;
+  expect(result.ok).toBe(false);
+  if (result.ok) throw Error('prepare succeeded after rejected compilation');
+  expect(result.error.message).toContain('device lost');
+  expect(modules).toHaveBeenCalledTimes(3);
+  expect(b.render).not.toHaveBeenCalled();
+});
+
+it('stops blocking startup between shader batches after disposal', async () => {
+  const { archive, b, modules, firstBatch, compiled } = await batchedStartup();
+  const prepared = b.device.pipelineLibrary.prepare(archive);
+  await firstBatch();
+  disposeDevice(b.device);
+  compiled();
+  expect((await prepared).ok).toBe(false);
+  expect(modules).toHaveBeenCalledTimes(3);
+  expect(b.render).not.toHaveBeenCalled();
+});
 
 it('keeps background concurrency bounded on small and large machines', () => {
   for (const cores of [undefined, 0, 1, 2, 8, 32, 192, Number.NaN]) {

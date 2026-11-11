@@ -157,7 +157,7 @@ export function registerTemporalSystems(world: World): void {
     RENDER_TEMPORAL_FRAME_COMMIT_SYSTEM,
     commitTemporalFrame,
     RENDER_RECORD_COMMIT_SYSTEM,
-    true,
+    'presented',
   );
   registerViewCommit(
     world,
@@ -165,28 +165,28 @@ export function registerTemporalSystems(world: World): void {
     ({ frameState, internals }) =>
       commitStandardOutputSubmission(frameState, internals.device.queue),
     RENDER_TEMPORAL_FRAME_COMMIT_SYSTEM,
-    true,
+    'presented',
   );
   registerViewCommit(
     world,
     RENDER_TEMPORAL_GPU_COMMIT_SYSTEM,
     commitTemporalGpu,
     RENDER_STANDARD_OUTPUT_COMMIT_SYSTEM,
-    true,
+    'presented',
   );
   registerViewCommit(
     world,
     RENDER_CLOUD_HISTORY_COMMIT_SYSTEM,
     commitCloudHistory,
     RENDER_TEMPORAL_GPU_COMMIT_SYSTEM,
-    true,
+    'presented',
   );
   registerViewCommit(
     world,
     RENDER_TEMPORAL_VIEW_COMMIT_SYSTEM,
     commitTemporalView,
     RENDER_CLOUD_HISTORY_COMMIT_SYSTEM,
-    true,
+    'presented',
   );
   world
     .addSystem(RenderCleanup, {

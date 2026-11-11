@@ -99,6 +99,27 @@ export async function writeFileAtomic(path: string, contents: string): Promise<v
   }
 }
 
+/** The project's `dev start` owner record. */
+export function liveSessionRecordPath(root: string): string {
+  return resolve(root, '.forgeax', 'dev-session.json');
+}
+
+/**
+ * Cheap check for advice only: the project has an owner record whose pid is alive.
+ * It never contacts the owner, so a hung owner still counts as running.
+ */
+export async function liveOwnerRecorded(root: string): Promise<boolean> {
+  try {
+    const record = JSON.parse(await readFile(liveSessionRecordPath(root), 'utf8')) as {
+      readonly pid?: unknown;
+      readonly endpoint?: unknown;
+    } | null;
+    return typeof record?.endpoint === 'string' && processAlive(record.pid);
+  } catch {
+    return false;
+  }
+}
+
 export function processAlive(pid: unknown): boolean {
   if (!Number.isSafeInteger(pid) || (pid as number) <= 0) return false;
   try {

@@ -30,7 +30,7 @@ Import components from `@forgeax/engine/render` and `Transform` from
 | Entity | Components and defaults | Limits |
 |:--|:--|:--|
 | Camera | `Transform` + `Camera { fov }` (vertical radians strictly in `(0, Math.PI)`; convert degrees with `degrees * Math.PI / 180`; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
-| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | Any number: the first owns CSM shadows and the View sun lane; later ones are unshadowed Cluster lights (Three.js semantics) that count toward the local-light budget; no `Transform` needed. `Atmosphere` needs exactly one |
+| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | Any number: the first with `castShadow` (else the first) owns CSM shadows and the View sun lane; later ones are unshadowed Cluster lights (Three.js semantics) that count toward the local-light budget; no `Transform` needed. `Atmosphere` needs exactly one |
 | Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
 | Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
 | Sky | Generate a linear HDR `EquirectAsset` in a Pack; bind it to `SkyboxBackground` and `Skylight` | One asset supplies the background and IBL. Use `Atmosphere` for physical air. |
@@ -39,13 +39,19 @@ Import components from `@forgeax/engine/render` and `Transform` from
 - Materials: build in a Pack with `Materials.standard({ baseColor, roughness, metallic,
   emissive, emissiveIntensity })` or `Materials.unlit(...)`; CSS/hex strings are sRGB,
   numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
-- Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC` with
-  `exposure` about 1.1 for games (`TONEMAP_AGX` is the desaturated base curve, only for a
+- Camera output: `tonemap` defaults to `TONEMAP_NONE`; `TONEMAP_ACES_FILMIC` is the
+  filmic curve (`TONEMAP_AGX` is the desaturated base curve, only for a
   muted grade; presets in the SDK effects/lighting.md). `exposure` is Three's
   `toneMappingExposure` under every curve; Three WebGPU ignores `material.toneMapped`
   (see render README "Three material.toneMapped"). `antialias`
   (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
   are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
+- Colours and ambient units: write sRGB hex through
+  `color.linearRgb(0xRRGGBB)` from `@forgeax/engine/math` (same as `THREE.Color`; `definePack` parameter defaults must stay literal linear `[r, g, b]`);
+  bare tuples are already linear. Skylight is radiance, not irradiance, like Unreal
+  `SkyLight`: Three `HemisphereLight`/`AmbientLight` intensity I is `intensity` I/π.
+  Under `Atmosphere` the ambient is the sky's radiance, so it follows the sun
+  (like Unreal's real-time SkyLight capture); Three's ambient stays fixed.
 - Shadows: set `castShadow: true` on the light, then choose
   `shadowFilter: DirectionalShadowFilterValue.<label>`; opt entities out with
   `ShadowParticipation`. See [Directional shadow entry](#directional-shadow-entry).
@@ -106,7 +112,10 @@ Use one default `Atmosphere` and one `DirectionalLight` for full outdoor air. Au
 in metres, coefficients in inverse metres, and solar intensity as outer-space
 lux. Atmosphere Transform defines the ground reference; Skylight Transform
 selects its independent capture position. Ordinary haze comes from Rayleigh/Mie
-transport; `Fog` adds an extra height medium. Read the
+transport; `Fog` adds an extra height medium. Without `Atmosphere`, `Fog` leaves
+the authored background unfogged; with it, `Fog` also covers the sky as distant
+fog at the atmosphere boundary, so dense fog greys the sky; `Fog.skyOpacity`
+scales that sky fog (1 physical, 0 sky unfogged). Read the
 [physical atmosphere contract](../../packages/render/README.md#atmosphere-and-aerial-perspective).
 
 Keep sky, AP, solar attenuation and captures on the shared optical kernel. AP
@@ -115,10 +124,15 @@ view; medium tables and pinned capture generations belong to Renderer. Verify
 fixed-exposure AP on/off, sun sweeps and colour ROIs against high-sample transport,
 then inspect real RHI Debug work/resources and GPU timings. Single-sample depth
 and the declared device texture budget are required; unavailable is explicit.
-Full `Atmosphere` (`backgroundOnly: false`) is not available on WebGL2: its compute, storage-texture,
-3D and full Standard texture-budget requirements still apply. A portable
-post-processing path does not establish full atmosphere support. The explicit
-background-only mode above has its own raster and real-GPU gates.
+Default full Atmosphere on WebGL2 Forward uses fragment LUT production and the
+existing integer Cluster binding for RGB transport; keep compute/storage caps
+unchanged. Require filterable/renderable RGBA16F, sixteen sampled textures and a
+1024-wide Cluster texture. Run `atmosphere-full-webgl2.browser.test.ts` through
+Browser Focus: its singleton exclusive owner compares actual WebGPU/WebGL2,
+opaque/blended/Sprite AP, Fog/AO, retained cube/planar HDR captures and real WebGL
+loss/recovery. Keep all sixty-frame controls and original image/deadline bounds.
+Desktop evidence does not qualify mobile hardware or FPS; retain native optics,
+ray, transport and 512-step quality owners.
 
 ## Local volumetric fog
 
@@ -918,9 +932,10 @@ search, relative threshold 0.063 and subpixel blend 1. The public
 [comparison page](../../apps/parity/color-lighting/render-defaults.html) and its
 verification script use production shaders and the pinned Three dependency.
 
-Bloom is opt-in and independent of tone mapping. Defaults bloom only
-highlights: threshold 1, intensity 0.5, smooth width 0.01, radius 0 (WebGPU
-BloomNode uses threshold 0 and intensity 1, which blooms the whole frame). Use
+Bloom is opt-in and independent of tone mapping. Defaults follow Unreal:
+threshold -1 (no threshold, every pixel scatters by its energy), intensity 0.5,
+smooth width 0.01, radius 0; a positive threshold blooms only highlights (WebGPU
+BloomNode uses threshold 0 and intensity 1). Use
 `bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
 `bloomThreshold < 0` (range `[-1, 65504]`, Unreal's `-1` = no BloomSetup) disables
 thresholding. Each level downsamples with Unreal's 4-tap HIGH (4x4) filter and the

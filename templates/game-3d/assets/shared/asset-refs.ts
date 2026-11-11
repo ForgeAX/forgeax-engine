@@ -12,11 +12,9 @@ export function assetGuid(packageId: PackageId, sourceKey: string): AssetGuidTyp
 }
 
 export const PACKAGE_IDS = Object.freeze({
-  environment: definePackageId('019fb7ce-3100-7000-8000-000000000000'),
   materials: definePackageId('019fb7ce-3200-7000-8000-000000000000'),
   geometry: definePackageId('019fb7ce-3300-7000-8000-000000000000'),
   scene: definePackageId('019fb7ce-3400-7000-8000-000000000000'),
-  fantasyMeshes: definePackageId('019fb7ce-3500-7000-8000-000000000000'),
   ui: definePackageId('019fb7ce-3600-7000-8000-000000000000'),
   character: definePackageId('019fb7ce-3700-7000-8000-000000000000'),
 });

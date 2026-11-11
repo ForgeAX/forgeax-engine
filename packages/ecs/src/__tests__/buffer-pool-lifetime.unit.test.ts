@@ -76,4 +76,50 @@ describe('managed buffer slot ownership', () => {
     expect(next.value.id).toBe(id);
     expect(next.value.view).toEqual(new Uint8Array(40));
   });
+  it('clears only the tail a growth copy does not overwrite when reusing dirty backing', () => {
+    const pool = new BufferPool();
+    // Park a dirty 2 KiB owned buffer in its size class.
+    const dirty = pool.alloc(2000);
+    if (!dirty.ok) throw dirty.error;
+    dirty.value.view.fill(9);
+    pool.release(dirty.value.id);
+    const grown = pool.alloc(700);
+    if (!grown.ok) throw grown.error;
+    grown.value.view.fill(5);
+    const before = pool.stats().zeroedBytes;
+    expect(pool.grow(grown.value.id, 1500).ok).toBe(true);
+    expect(pool.byteCapacity(grown.value.id)).toBe(2048);
+    // The copied prefix is not cleared first; the reused tail still is.
+    expect(pool.stats().zeroedBytes - before).toBe(2048 - 700);
+    expect([...pool.view(grown.value.id)]).toEqual([...Array(700).fill(5), ...Array(800).fill(0)]);
+    expect(pool.setLogicalLength(grown.value.id, 2048).ok).toBe(true);
+    expect(
+      pool
+        .view(grown.value.id)
+        .subarray(700)
+        .every((b) => b === 0),
+    ).toBe(true);
+  });
+  it('keeps dirty page cells zero past the copied prefix on growth', () => {
+    const pool = new BufferPool();
+    const cells = Array.from({ length: 8 }, () => {
+      const cell = pool.alloc(64);
+      if (!cell.ok) throw cell.error;
+      cell.value.view.fill(3);
+      return cell.value.id;
+    });
+    for (const id of cells) pool.release(id);
+    const small = pool.alloc(10);
+    if (!small.ok) throw small.error;
+    small.value.view.fill(6);
+    expect(pool.grow(small.value.id, 60).ok).toBe(true);
+    expect([...pool.view(small.value.id)]).toEqual([...Array(10).fill(6), ...Array(50).fill(0)]);
+    expect(pool.setLogicalLength(small.value.id, 64).ok).toBe(true);
+    expect(
+      pool
+        .view(small.value.id)
+        .subarray(10)
+        .every((b) => b === 0),
+    ).toBe(true);
+  });
 });

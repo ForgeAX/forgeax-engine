@@ -360,26 +360,11 @@ function videoSourceElement(
   return world.videoFrame(entityKey, clip);
 }
 
-const DIRECT_VIDEO_KEYS = new WeakMap<DynamicTextureStore, Map<number, object>>();
-
-/** texture_external slots sample in source orientation, so their copies use a separate unflipped key. */
-function directVideoKey(store: DynamicTextureStore, clip: AssetHandle<'video'>): object {
-  let keys = DIRECT_VIDEO_KEYS.get(store);
-  if (keys === undefined) {
-    keys = new Map();
-    DIRECT_VIDEO_KEYS.set(store, keys);
-  }
-  let key = keys.get(Number(clip));
-  if (key === undefined) {
-    key = {};
-    keys.set(Number(clip), key);
-  }
-  return key;
-}
-
 /**
- * Copy path for one VideoPlayer field. `slotExternal` selects the unflipped
- * copy that a `texture_external` slot samples when zero-copy import is absent.
+ * Copy path for one VideoPlayer field, also taken by `texture_external` slots
+ * when zero-copy import is absent. Frames keep the source's top-left origin, the
+ * same as image and canvas textures, so one mesh UV set reads both upright (UE
+ * flips only bottom-up BMP samples, MediaShaders.usf:48).
  */
 export function videoTextureView(
   world: RenderResourceScope,
@@ -387,10 +372,8 @@ export function videoTextureView(
   runtime: RenderSystemRuntime,
   entityKey: number,
   clip: AssetHandle<'video'>,
-  slotExternal = false,
 ): TextureView | undefined {
   if (store === undefined) return undefined;
-  const key = slotExternal ? directVideoKey(store, clip) : clip;
   const element = videoSourceElement(world, entityKey, clip);
   // Both upload paths need a host element. Bind the last good (or default)
   // view so the draw survives, but report the dead path once per episode.
@@ -398,16 +381,16 @@ export function videoTextureView(
     if (markVideoUploadFailureEpisode(store, entityKey, clip)) {
       runtime.errorRegistry.fire(new VideoUploadUnsupportedError());
     }
-    return store.getView(key);
+    return store.getView(clip);
   }
   const extent = videoSourceExtent(element);
-  if (extent === undefined) return store.getView(key);
+  if (extent === undefined) return store.getView(clip);
   const { width, height } = extent;
-  const uploaded = store.uploadFrame(key, element, width, height, { flipY: !slotExternal });
-  if (uploaded === undefined) return store.getView(key);
+  const uploaded = store.uploadFrame(clip, element, width, height, { flipY: false });
+  if (uploaded === undefined) return store.getView(clip);
   if (!uploaded.ok) {
     runtime.errorRegistry.fire(uploaded.error);
-    return store.getView(key);
+    return store.getView(clip);
   }
   clearVideoUploadFailureEpisode(store, entityKey, clip);
   return uploaded.value;
@@ -438,14 +421,7 @@ export function videoBindingResource(
       return { kind: 'externalTexture', value: external };
     }
   }
-  const view = videoTextureView(
-    world,
-    runtime.dynamicTextureStore,
-    runtime,
-    entityKey,
-    clip,
-    slotExternal,
-  );
+  const view = videoTextureView(world, runtime.dynamicTextureStore, runtime, entityKey, clip);
   return view === undefined ? undefined : { kind: 'textureView', value: view };
 }
 
@@ -1190,22 +1166,50 @@ function recordIblMaterialBinding(
   for (const entry of iblEntries) {
     const { kind } = entry.resource;
     if (kind === 'externalTexture' || kind === 'accelerationStructure') continue;
-    const value =
-      entry.resource.kind === 'buffer' ? entry.resource.value.buffer : entry.resource.value;
-    if (typeof value !== 'object' || value === null) continue;
-    projected.push({
-      binding: entry.binding,
-      kind: entry.resource.kind,
-      resourceIdentity: getOpaqueResourceIdentity(value as object),
-    });
+    projectIblEntry(
+      projected,
+      entry.binding,
+      entry.resource.kind,
+      entry.resource.kind === 'buffer' ? entry.resource.value.buffer : entry.resource.value,
+    );
   }
+  publishIblBindingReceipt(
+    frameState,
+    receipt,
+    materialBgl,
+    bindGroup,
+    projected,
+    iblEntries[0]?.binding ?? 0,
+    cache,
+  );
+}
+
+function projectIblEntry(
+  projected: IblBindingEntryInspection[],
+  binding: number,
+  kind: IblBindingEntryInspection['kind'],
+  value: unknown,
+): void {
+  if (typeof value !== 'object' || value === null) return;
+  projected.push({ binding, kind, resourceIdentity: getOpaqueResourceIdentity(value as object) });
+}
+
+function publishIblBindingReceipt(
+  frameState: RenderFrameState,
+  receipt: NonNullable<RenderFrameState['iblBindingInspection']>,
+  materialBgl: BindGroupLayout,
+  bindGroup: BindGroup,
+  projected: readonly IblBindingEntryInspection[],
+  skylightBindingStart: number,
+  cache: 'hit' | 'miss',
+): void {
   frameState.iblBindingInspection = {
     ...receipt,
     material: {
       bindGroupIdentity: getOpaqueResourceIdentity(bindGroup as object),
       materialBglIdentity: getOpaqueResourceIdentity(materialBgl as object),
       cache,
-      skylightBindingStart: iblEntries[0]?.binding ?? 0,
+      skylightBindingStart,
       entries: projected,
       reflectionBindings: projected.map((entry) => entry.binding),
     },
@@ -1642,39 +1646,17 @@ function recordIblMaterialBindingHit(
   skylight: SkylightBindGroupResources,
   iblStart: number,
 ): void {
-  recordIblMaterialBinding(
-    frameState,
-    materialBgl,
-    bindGroup,
-    [
-      {
-        binding: iblStart,
-        resource: { kind: 'textureView', value: skylight.irradianceView },
-      },
-      {
-        binding: iblStart + 1,
-        resource: { kind: 'sampler', value: skylight.irradianceSampler },
-      },
-      {
-        binding: iblStart + 2,
-        resource: { kind: 'textureView', value: skylight.prefilterView },
-      },
-      {
-        binding: iblStart + 3,
-        resource: { kind: 'sampler', value: skylight.prefilterSampler },
-      },
-      {
-        binding: iblStart + 4,
-        resource: { kind: 'textureView', value: skylight.brdfLutView },
-      },
-      {
-        binding: iblStart + 5,
-        resource: { kind: 'buffer', value: { buffer: skylight.intensityBuffer } },
-      },
-    ],
-    iblStart,
-    'hit',
-  );
+  const receipt = frameState.iblBindingInspection;
+  if (receipt === undefined) return;
+  // The six Skylight tail entries project directly; no entry list is assembled per reused draw.
+  const projected: IblBindingEntryInspection[] = [];
+  projectIblEntry(projected, iblStart, 'textureView', skylight.irradianceView);
+  projectIblEntry(projected, iblStart + 1, 'sampler', skylight.irradianceSampler);
+  projectIblEntry(projected, iblStart + 2, 'textureView', skylight.prefilterView);
+  projectIblEntry(projected, iblStart + 3, 'sampler', skylight.prefilterSampler);
+  projectIblEntry(projected, iblStart + 4, 'textureView', skylight.brdfLutView);
+  projectIblEntry(projected, iblStart + 5, 'buffer', skylight.intensityBuffer);
+  publishIblBindingReceipt(frameState, receipt, materialBgl, bindGroup, projected, iblStart, 'hit');
 }
 
 /**

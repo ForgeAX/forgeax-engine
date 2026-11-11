@@ -227,12 +227,15 @@ export function createQueuedIntentResolution<I>(
   runtime: number,
   resolve: (published: PublishableIntent) => I | undefined,
 ) {
-  const blocked = new Set<string>();
+  // Player -> emitter ids whose stream already missed this frame.
+  const blocked = new Map<number, Set<string>>();
   return (published: PublishableIntent): I | undefined => {
-    const stream = `${Number(published.player)}:${published.emitter.id}`;
-    const intent = blocked.has(stream) ? undefined : resolve(published);
+    const player = Number(published.player);
+    const streams = blocked.get(player);
+    const intent = streams?.has(published.emitter.id) ? undefined : resolve(published);
     if (intent !== undefined) return intent;
-    blocked.add(stream);
+    if (streams === undefined) blocked.set(player, new Set([published.emitter.id]));
+    else streams.add(published.emitter.id);
     recordVfxMiss(missing, runtime, published.sequence);
     return undefined;
   };

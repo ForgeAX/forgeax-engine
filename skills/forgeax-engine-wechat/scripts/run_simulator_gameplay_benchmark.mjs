@@ -435,10 +435,8 @@ export async function inspectSimulator({
   const input = await readInput();
   if (input.failure) return input;
   Object.assign(state, input);
-  const vase = await owner.read('game-3d.runtime-vase');
-  state.vase = compact
-    ? { vertexCount: vase?.vertexCount, busy: vase?.busy, error: vase?.error }
-    : vase;
+  const vase = await readOptionalRuntimeVase(owner);
+  if (vase !== undefined) state.vase = compactVase(vase, compact);
   if (geometry) {
     const result = owner.ui({ selector: '[data-ui-part]', limit: 512 });
     if (!result.ok) return fail('ui-inspection-failed', result.error);
@@ -738,7 +736,7 @@ function validateState(state, targetPath, identity) {
     'player-observation-invalid',
   );
   check(
-    state.vase && state.vase.vertexCount > 0 && !state.vase.error && !state.vase.busy,
+    state.vase === undefined || (state.vase.vertexCount > 0 && !state.vase.error && !state.vase.busy),
     'ordinary-vase-unavailable',
   );
   return current;
@@ -1579,3 +1577,13 @@ if (
     console.log(JSON.stringify({ success: false, failure: { code: codeOf(error) } }));
     process.exitCode = 1;
   });
+
+// Optional: only projects that install the runtime-pack vase register this read.
+async function readOptionalRuntimeVase(owner) {
+  const reads = (await owner.list?.())?.reads;
+  return reads?.includes('game-3d.runtime-vase') ? owner.read('game-3d.runtime-vase') : undefined;
+}
+
+function compactVase(vase, compact) {
+  return compact ? { vertexCount: vase.vertexCount, busy: vase.busy, error: vase.error } : vase;
+}

@@ -467,19 +467,45 @@ fn cloud_direct_solar_factorX() -> f32 {
         DIRECTIONAL_SHADOW_SIMPLE: simple,
       },
     });
-    const variants = [axes(false, false, false), axes(true, false, false), axes(false, true, true)];
+    const variants = [
+      axes(false, false, false),
+      axes(true, false, false),
+      axes(true, false, true),
+      axes(false, true, true),
+    ];
     const resolve = (request: string, backend: 'webgpu' | 'wgpu-webgl2' = 'webgpu') =>
       resolveMaterialShaderVariantSet(request, variants, backend, backend === 'webgpu');
     expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true')).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
     expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true+TRANSMISSION_AVAILABLE=true')).toContain(
       'DIRECTIONAL_SHADOW_SIMPLE=false',
     );
+    // Probe blending keeps the simple receiver with full lighting; only the
+    // lean-lighting row falls back (variant-permutation-rules.ts).
     expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true+PROBE_BLEND_AVAILABLE=true')).toContain(
-      'DIRECTIONAL_SHADOW_SIMPLE=false',
+      'DIRECTIONAL_SHADOW_SIMPLE=true',
     );
     expect(resolve('DIRECTIONAL_SHADOW_SIMPLE=true', 'wgpu-webgl2')).toContain(
       'DIRECTIONAL_SHADOW_SIMPLE=false',
     );
+  });
+
+  it('keeps the complete published simple receiver row for probe blending', () => {
+    const variants = [true, false].map((simple) => ({
+      defines: {
+        STORAGE_BUFFER_AVAILABLE: true,
+        TRANSMISSION_AVAILABLE: false,
+        PROBE_BLEND_AVAILABLE: true,
+        DIRECTIONAL_SHADOW_SIMPLE: simple,
+      },
+    }));
+    const resolved = resolveMaterialShaderVariantSet(
+      'DIRECTIONAL_SHADOW_SIMPLE=true+PROBE_BLEND_AVAILABLE=true',
+      variants,
+      'webgpu',
+      true,
+    );
+    expect(resolved).toContain('DIRECTIONAL_SHADOW_SIMPLE=true');
+    expect(resolved).toContain('PROBE_BLEND_AVAILABLE=true');
   });
 
   it('resolves LEAN_LIGHTING together with the simple receiver', () => {

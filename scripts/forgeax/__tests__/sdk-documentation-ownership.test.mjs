@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { API_INDEX_MAX_BYTES, renderApiIndex } from '../sdk-api-index.mjs';
+import { API_INDEX_FILE, API_INDEX_MAX_BYTES, renderApiReference } from '../sdk-api-index.mjs';
 import { localSdkDiscoveryLinks } from '../sdk-lib.mjs';
 
 const root = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
@@ -35,8 +35,10 @@ test('shipped entrypoints route narrative reference guides to the canonical Harn
 });
 
 test('generated SDK discovery derives the optional guide route from its source entry', () => {
-  const index = renderApiIndex();
-  assert.ok(Buffer.byteLength(index) <= API_INDEX_MAX_BYTES);
+  const files = renderApiReference();
+  const total = Object.values(files).reduce((sum, text) => sum + Buffer.byteLength(text), 0);
+  assert.ok(total <= API_INDEX_MAX_BYTES);
+  const index = files[API_INDEX_FILE];
   const entry = readFileSync(resolve(root, 'skills/forgeax-engine-sdk/SKILL.md'), 'utf8');
   const guide = entry.match(/\]\(([^)\s]*\/three-equivalents\.md)\)/)?.[1];
   if (guide === undefined) assert.doesNotMatch(index, /Three\.js names map/);

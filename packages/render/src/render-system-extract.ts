@@ -3591,6 +3591,7 @@ export function selectFogFrame(world: World): FogFrame | undefined {
     const valueMode = world[worldRead].getFieldValue(row.entity, Fog, 'mode') as number;
     const valueNear = world[worldRead].getFieldValue(row.entity, Fog, 'near') as number;
     const valueFar = world[worldRead].getFieldValue(row.entity, Fog, 'far') as number;
+    const valueSkyOpacity = world[worldRead].getFieldValue(row.entity, Fog, 'skyOpacity') as number;
     fogCandidates.push({
       entityKey: row.entity,
       color: [
@@ -3604,6 +3605,7 @@ export function selectFogFrame(world: World): FogFrame | undefined {
       mode: fogModeFromU32(valueMode),
       near: valueNear,
       far: valueFar,
+      skyOpacity: valueSkyOpacity,
     });
   });
   const fogSelection = selectFog(fogCandidates);

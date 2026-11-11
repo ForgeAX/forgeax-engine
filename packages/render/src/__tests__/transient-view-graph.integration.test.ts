@@ -21,6 +21,10 @@ import {
   transientViewExecutionEligible,
 } from '../features/transient-view-graph';
 import type { RenderFeature } from '../features/types';
+import {
+  STANDARD_FEATURE_PRE_OPAQUE_PASSES,
+  STANDARD_FEATURE_SCENE_COMPOSITE_PASSES,
+} from '../features/vocabulary';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
 import { prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
@@ -142,7 +146,7 @@ function work(count: number, epoch: number): RenderFeatureWork {
   return { scope: { view: 'main' }, resources, passes };
 }
 
-async function fixture() {
+async function fixture(placement: 'scene' | 'post' = 'post') {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const shader = (await rhi.createShaderModule(device, { code: shaderSource })).unwrap();
   const graphicsLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
@@ -169,6 +173,7 @@ async function fixture() {
     epoch = 0;
   const feature: RenderFeature<undefined> = {
     identity,
+    placement,
     viewGraph: 'transient',
     extract: () => ok(undefined),
     plan: () => ok({ work: [work(count, epoch)] }),
@@ -237,6 +242,8 @@ type Frame = RenderFeatureExecutionFrame & { readonly mesh: Buffer };
 function observe(encoder: RhiCommandEncoder) {
   const vertices: Buffer[] = [],
     indirect: Buffer[] = [],
+    vertexRanges: (readonly [Buffer, number | undefined, number | undefined])[] = [],
+    indirectOffsets: number[] = [],
     copies: [Buffer, Buffer][] = [],
     events: string[] = [];
   const beginRender = encoder.beginRenderPass.bind(encoder);
@@ -246,10 +253,12 @@ function observe(encoder: RhiCommandEncoder) {
       draw = pass.drawIndirect.bind(pass);
     pass.setVertexBuffer = (slot, buffer, offset, bytes) => {
       vertices.push(buffer);
+      vertexRanges.push([buffer, offset, bytes]);
       return set(slot, buffer, offset, bytes);
     };
     pass.drawIndirect = (buffer, offset) => {
       indirect.push(buffer);
+      indirectOffsets.push(offset);
       return draw(buffer, offset);
     };
     return pass;
@@ -280,7 +289,7 @@ function observe(encoder: RhiCommandEncoder) {
     }
   }
   encoder.copyBufferToBuffer = recordCopy;
-  return { vertices, indirect, copies, events };
+  return { vertices, indirect, copies, events, vertexRanges, indirectOffsets };
 }
 
 function parent(
@@ -310,7 +319,11 @@ function parent(
     })
     .unwrap();
   const state = createRenderFeatureProjectionState();
-  const options = { state, resolveTarget: () => ({ texture: color, view }) };
+  const options = {
+    state,
+    placement: initial.execution.placement,
+    resolveTarget: () => ({ texture: color, view }),
+  };
   const context = {
     owner,
     device: f.device,
@@ -340,6 +353,7 @@ describe('transient Standard view graph integration', () => {
     'order',
     'scope',
     'scope-tag',
+    'placement',
   ] as const)('retains the parent graph dependency on %s changes', async (field) => {
     const f = await fixture();
     try {
@@ -367,6 +381,10 @@ describe('transient Standard view graph integration', () => {
         plans[0] = { ...current.plan, scope: 'frame' };
       if (field === 'order')
         executions[0] = { ...current.execution, order: current.execution.order + 1 };
+      if (field === 'placement') {
+        plans[0] = { ...current.plan, placement: 'scene' };
+        executions[0] = { ...current.execution, placement: 'scene' };
+      }
       expect(selectTransientViewPlans(owner, plans, executions, true).topologySignature).not.toBe(
         before,
       );
@@ -374,8 +392,11 @@ describe('transient Standard view graph integration', () => {
       await f.dispose();
     }
   });
-  it('compiles one parent across empty, many, fewer and empty current Host executions', async () => {
-    const f = await fixture(),
+  it.each([
+    'scene',
+    'post',
+  ] as const)('compiles one %s parent across empty, many, fewer and empty current Host executions', async (placement) => {
+    const f = await fixture(placement),
       initial = f.prepare(0, 0),
       p = parent(f, initial);
     const parentGeneration = p.graph.inspect().generation;
@@ -467,8 +488,11 @@ describe('transient Standard view graph integration', () => {
     }
   });
 
-  it('stops the whole frame after a current child recording failure', async () => {
-    const f = await fixture(),
+  it.each([
+    'scene',
+    'post',
+  ] as const)('stops the whole %s frame after a current child recording failure', async (placement) => {
+    const f = await fixture(placement),
       initial = f.prepare(0, 0),
       p = parent(f, initial);
     try {
@@ -499,6 +523,192 @@ describe('transient Standard view graph integration', () => {
       expect(seen.indirect).toEqual([]);
     } finally {
       await p.graph.retire();
+      await f.dispose();
+    }
+  });
+
+  it.each([
+    'scene',
+    'post',
+  ] as const)('rejects a retained %s command slot whose current execution moved stages', async (placement) => {
+    const f = await fixture(placement),
+      initial = f.prepare(0, 0),
+      p = parent(f, initial);
+    try {
+      const current = f.prepare(1, 1),
+        encoder = f.device.createCommandEncoder().unwrap(),
+        seen = observe(encoder);
+      const changed = {
+        ...current.execution,
+        placement: placement === 'scene' ? ('post' as const) : ('scene' as const),
+      };
+      const result = p.graph.execute(
+        {
+          encoder,
+          mesh: f.device.createBuffer({ size: 36, usage: 0x20 }).unwrap(),
+          featureExecutions: [changed],
+        },
+        (pass, encode) => {
+          seen.events.push(pass.name);
+          encode();
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(seen.events).not.toContain('after');
+      expect(seen.indirect).toEqual([]);
+    } finally {
+      await p.graph.retire();
+      await f.dispose();
+    }
+  });
+
+  it('does not admit a plan whose declared placement differs from its execution', async () => {
+    const f = await fixture('scene');
+    try {
+      const current = f.prepare(1, 0);
+      expect(
+        selectTransientViewPlans(
+          {},
+          [current.plan],
+          [{ ...current.execution, placement: 'post' }],
+          true,
+        ).identities.size,
+      ).toBe(0);
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('keeps malformed JavaScript placement values off the native command path', async () => {
+    const f = await fixture('scene');
+    try {
+      const current = f.prepare(1, 0),
+        malformed = { ...current.execution };
+      Object.defineProperty(malformed, 'placement', { value: 'before-temporal' });
+      expect(transientViewExecutionEligible(malformed)).toBe(false);
+      expect(selectTransientViewPlans({}, [current.plan], [malformed], true).identities.size).toBe(
+        0,
+      );
+    } finally {
+      await f.dispose();
+    }
+  });
+
+  it('keeps scene and post slots distinct and honors each contribution placement', async () => {
+    const f = await fixture('scene');
+    let graph: ReturnType<typeof parent>['graph'] | undefined;
+    try {
+      const current = f.prepare(1, 0),
+        scene = current.execution,
+        post = { ...scene, placement: 'post' as const };
+      const builder = new RenderGraphBuilder<Frame>(),
+        owner = {},
+        slots = new Map<string, { complete: boolean; names: Set<string> }>();
+      const texture = builder
+          .createTexture('color', { format: 'rgba8unorm', size: 'surface' })
+          .unwrap(),
+        view = builder.view(texture).unwrap();
+      builder
+        .addRasterPass('clear', {
+          accesses: [{ resource: view, usage: 'color-attachment' }],
+          colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+          encode: () => {},
+        })
+        .unwrap();
+      const context = {
+        owner,
+        device: f.device,
+        surfaceSize: size,
+        ports: [{ resource: view, usage: 'color-attachment' }] as GraphAccess[],
+        slots,
+      };
+      // Put post first in both lists: the scene slot must neither select it nor consume its slot.
+      for (const placement of ['scene', 'post'] as const)
+        projectTransientViewPlans(
+          builder,
+          [post, scene],
+          new Set([identity]),
+          { placement, resolveTarget: () => ({ texture, view }) },
+          context,
+        ).unwrap();
+      expect(slots.size).toBe(2);
+      graph = builder.compile({ device: f.device, surfaceSize: size }).unwrap();
+      const encoder = f.device.createCommandEncoder().unwrap(),
+        seen = observe(encoder);
+      graph
+        .execute({
+          encoder,
+          mesh: f.device.createBuffer({ size: 36, usage: 0x20 }).unwrap(),
+          featureExecutions: [post, scene],
+        })
+        .unwrap();
+      expect(seen.indirect).toHaveLength(2);
+      expect(inspectTransientViewGraphs(owner).commandFrames).toBe(2);
+    } finally {
+      await graph?.retire();
+      await f.dispose();
+    }
+  });
+
+  it('resolves same-named scene buffers and subranges from the current execution', async () => {
+    const f = await fixture('scene'),
+      initial = f.prepare(1, 0),
+      p = parent(f, initial);
+    const vertices = f.device.createBuffer({ size: 48, usage: 0x20 }).unwrap();
+    const indirect = f.device.createBuffer({ size: 32, usage: 0x100 }).unwrap();
+    try {
+      const current: RenderFeaturePlanExecution = {
+        ...initial.execution,
+        passes: initial.execution.passes
+          .filter((pass) => pass.graphics !== undefined)
+          .map((pass) => {
+            const snapshot = required(pass.resolvedGraphics),
+              graphics = required(pass.graphics);
+            return {
+              ...pass,
+              graphics: {
+                ...graphics,
+                draws: graphics.draws.map((draw) =>
+                  draw.kind === 'draw-indirect'
+                    ? {
+                        ...draw,
+                        command: { ...draw.command, offset: 16 },
+                      }
+                    : draw,
+                ),
+              },
+              resolvedGraphics: {
+                ...snapshot,
+                resolve: (reference) => {
+                  const resource = snapshot.resolve(reference);
+                  return resource?.kind === 'vertex-data'
+                    ? { ...resource, handle: vertices, size: 48, byteOffset: 12, byteLength: 36 }
+                    : resource;
+                },
+                resolveGpuBuffer: (reference) => {
+                  const resource = snapshot.resolveGpuBuffer?.(reference);
+                  return resource === undefined ? undefined : { ...resource, buffer: indirect };
+                },
+              },
+            };
+          }),
+      };
+      const encoder = f.device.createCommandEncoder().unwrap(),
+        seen = observe(encoder);
+      p.graph
+        .execute({
+          encoder,
+          mesh: f.device.createBuffer({ size: 36, usage: 0x20 }).unwrap(),
+          featureExecutions: [current],
+        })
+        .unwrap();
+      expect(seen.vertexRanges.at(-1)).toEqual([vertices, 12, 36]);
+      expect(seen.indirect).toEqual([indirect]);
+      expect(seen.indirectOffsets).toEqual([16]);
+    } finally {
+      await p.graph.retire();
+      f.device.destroyBuffer(vertices).unwrap();
+      f.device.destroyBuffer(indirect).unwrap();
       await f.dispose();
     }
   });
@@ -685,6 +895,146 @@ it.each([false, true])('review named pass filter survives commands=%s', async (c
     expect(names.filter((name) => name !== 'scene' && !name.startsWith('feature-view:'))).toEqual([
       raster.name,
     ]);
+  } finally {
+    await graph?.retire();
+    await f.dispose();
+  }
+});
+
+it.each([
+  ...STANDARD_FEATURE_PRE_OPAQUE_PASSES,
+  ...STANDARD_FEATURE_SCENE_COMPOSITE_PASSES,
+])('restores ordinary stage work when %s appears after an empty native frame', async (name) => {
+  const f = await fixture('scene');
+  let graph: ReturnType<typeof parent>['graph'] | undefined;
+  try {
+    const initial = f.prepare(0, 0),
+      owner = {};
+    const before = selectTransientViewPlans(owner, [initial.plan], [initial.execution], true);
+    expect(before.identities.has(identity)).toBe(true);
+    const current = f.prepare(1, 1);
+    const compute = required(
+      current.execution.passes.find((pass) => pass.resolvedGpuCompute !== undefined),
+    );
+    const execution = { ...current.execution, passes: [{ ...compute, name }] };
+    const named = selectTransientViewPlans(owner, [current.plan], [execution], true);
+    expect(named.identities.has(identity)).toBe(false);
+    expect(named.topologySignature).not.toBe(before.topologySignature);
+    expect(current.plan.signature).not.toBe(initial.plan.signature);
+    const builder = new RenderGraphBuilder<Frame>();
+    const color = builder
+      .createTexture('staged-color', { format: 'rgba8unorm', size: 'surface' })
+      .unwrap();
+    const view = builder.view(color).unwrap(),
+      state = createRenderFeatureProjectionState();
+    const options = {
+      state,
+      placement: 'scene' as const,
+      resolveTarget: () => ({ texture: color, view }),
+    };
+    const context = {
+      owner,
+      device: f.device,
+      surfaceSize: size,
+      slots: new Map<string, { complete: boolean; names: Set<string> }>(),
+      ports: [{ resource: view, usage: 'color-attachment' }] as GraphAccess[],
+    };
+    // The named compute work is before target initialization. Its ordinary
+    // buffer dependencies must not acquire unused color/depth attachment reads.
+    projectTransientViewPlans(
+      builder,
+      [execution],
+      named.identities,
+      { ...options, passNames: new Set([name]) },
+      context,
+    ).unwrap();
+    builder
+      .addRasterPass('scene-clear', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+        encode: () => {},
+      })
+      .unwrap();
+    projectTransientViewPlans(builder, [execution], named.identities, options, context).unwrap();
+    graph = builder.compile({ device: f.device, surfaceSize: size }).unwrap();
+    const events: string[] = [];
+    graph
+      .execute(
+        {
+          encoder: f.device.createCommandEncoder().unwrap(),
+          mesh: f.device.createBuffer({ size: 36, usage: 0x20 }).unwrap(),
+          featureExecutions: [execution],
+        },
+        (pass, encode) => {
+          events.push(pass.name);
+          encode();
+        },
+      )
+      .unwrap();
+    expect(events).toEqual([name, 'scene-clear']);
+    const absent = selectTransientViewPlans(owner, [initial.plan], [initial.execution], true);
+    expect(absent.identities.has(identity)).toBe(true);
+    expect(absent.topologySignature).not.toBe(named.topologySignature);
+  } finally {
+    await graph?.retire();
+    await f.dispose();
+  }
+});
+
+it('retains an initially empty generic filtered slot for later named work', async () => {
+  const f = await fixture(),
+    initial = f.prepare(0, 0);
+  let graph: ReturnType<typeof parent>['graph'] | undefined;
+  try {
+    const builder = new RenderGraphBuilder<Frame>(),
+      owner = {};
+    const color = builder
+        .createTexture('generic-color', { format: 'rgba8unorm', size: 'surface' })
+        .unwrap(),
+      view = builder.view(color).unwrap();
+    builder
+      .addRasterPass('scene', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: 'clear', storeOp: 'store' }],
+        encode: () => {},
+      })
+      .unwrap();
+    const selected = selectTransientViewPlans(owner, [initial.plan], [initial.execution], true);
+    projectTransientViewPlans(
+      builder,
+      [initial.execution],
+      selected.identities,
+      { resolveTarget: () => ({ texture: color, view }), passNames: new Set(['future-raster']) },
+      {
+        owner,
+        device: f.device,
+        surfaceSize: size,
+        slots: new Map(),
+        ports: [{ resource: view, usage: 'color-attachment' }],
+      },
+    ).unwrap();
+    graph = builder.compile({ device: f.device, surfaceSize: size }).unwrap();
+    expect(graph.inspect().passes.some((pass) => pass.kind === 'subgraph')).toBe(true);
+    const current = f.prepare(1, 1),
+      raster = required(current.execution.passes.find((pass) => pass.graphics !== undefined));
+    const execution = { ...current.execution, passes: [{ ...raster, name: 'future-raster' }] };
+    const next = selectTransientViewPlans(owner, [current.plan], [execution], true);
+    expect(next.topologySignature).toBe(selected.topologySignature);
+    const events: string[] = [];
+    graph
+      .execute(
+        {
+          encoder: f.device.createCommandEncoder().unwrap(),
+          mesh: f.device.createBuffer({ size: 36, usage: 0x20 }).unwrap(),
+          featureExecutions: [execution],
+        },
+        (pass, encode) => {
+          events.push(pass.name);
+          encode();
+        },
+      )
+      .unwrap();
+    expect(events).toContain('future-raster');
   } finally {
     await graph?.retire();
     await f.dispose();

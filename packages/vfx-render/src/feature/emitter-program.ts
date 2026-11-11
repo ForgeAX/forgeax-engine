@@ -4,7 +4,7 @@ import type { VfxGpuTickIntent } from '@forgeax/engine-vfx';
 import type { RenderFeatureGpuProgramDescriptor } from '../../../render/src/features/prepared-gpu-work';
 import type { VfxComputeBatchProgram } from './batched-compute-program';
 import { rendererSortingMode } from './runtime-uniform.js';
-import type { VfxValidatedStagePlan } from './stage-plan.js';
+import { type VfxValidatedStagePlan, validatedStagePlan } from './stage-plan.js';
 
 type Emitter = VfxGpuTickIntent['emitter'];
 type ComputeDispatches = Extract<
@@ -168,4 +168,34 @@ export function createVfxEmitterProgramOwner(
     programs.set(emitter, prepared);
     return prepared;
   };
+}
+
+const stagePlans = new WeakMap<object, Map<number, ReturnType<typeof validatedStagePlan>>>();
+export function emitterStagePlan(
+  emitter: VfxGpuTickIntent['emitter'],
+  generation: number,
+  immutableEmitters: Readonly<WeakSet<object>>,
+): ReturnType<typeof validatedStagePlan> {
+  if (!immutableEmitters.has(emitter))
+    return validatedStagePlan(emitter.reflection.stages, generation);
+  let plans = stagePlans.get(emitter);
+  if (plans === undefined) {
+    plans = new Map();
+    stagePlans.set(emitter, plans);
+  }
+  let plan = plans.get(generation);
+  if (plan === undefined) {
+    plan = validatedStagePlan(emitter.reflection.stages, generation);
+    // Instance generations advance with recovery; keep the latest few only.
+    if (plans.size >= 4) plans.clear();
+    plans.set(generation, plan);
+  }
+  return plan;
+}
+
+/** Emitters without data-interface or force-field providers own no per-frame provider resources. */
+export function emitterHasNoProviders(emitter: VfxGpuTickIntent['emitter']): boolean {
+  return (
+    (emitter.reflection.dataInterfaces?.length ?? 0) === 0 && emitter.forceFields === undefined
+  );
 }

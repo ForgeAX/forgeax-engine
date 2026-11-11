@@ -700,14 +700,18 @@ Candidate budgets, World bindings and synchronous FixedUpdate admission stay in
 the source realm. The service exists before plugin startup; preparation before
 child readiness returns `dynamic-geometry-gpu-not-ready`, so startup does not
 wait on a child whose initialization depends on that startup finishing.
-Rigid candidates await both mesh upload and the pipelines required by the
-current view's actual scene passes. This wait does not occupy frame credit or
+Rigid candidates await accepted same-queue mesh writes and the pipelines required by the
+current view's actual scene passes. Their ready response permits later drawing on
+that queue; it does not acknowledge GPU completion. This wait does not occupy frame credit or
 the drawing chain: the accepted scene continues to render. A current view graph
 must exist; a missing graph returns a structured readiness refusal. Standalone
 mesh residency without an entity has no material or pipeline preparation.
 
 Mesh readiness reports the actual device generation. Cancellation and release
 retain source ownership until the receiver acknowledges its GPU release fence.
+That original held fence also retains an early-ready allocation. A later queue
+completion failure invalidates the prepared lease and reaches the existing Renderer
+fault and Worker error owners; it never becomes a successful completion receipt.
 Both endpoints bound unresolved preparations, pending release fences and
 standalone leases to 32. Ready dynamic geometry leases remain governed by the
 source Render candidate and mesh-byte budgets; retaining published geometry
@@ -767,9 +771,12 @@ queueing more ticks. The matching completion can consume that demand immediately
 sampling current input and elapsed time without waiting for another refresh.
 Pause/resume discards the old demand and starts from a new browser tick.
 When rendering runs in its own Worker, the Engine Worker can carry the requested
-native animation tick over its existing Host channel. No clock Worker or timer
-is created. Host time, input, visibility and admission remain authoritative; unsupported or replaced
-Engine providers fall back to the owning Window.
+native animation tick over its existing Host channel. Its callback and the owning
+Window's callback serve one demand: the first native callback cancels the other
+lease, so a delayed Worker clock cannot stall a live Host clock. No clock Worker,
+timer heartbeat, additional admission or publication slot is created. Host time,
+input, visibility and admission remain authoritative; unsupported or replaced
+Engine providers retain the owning Window callback.
 After submitting N, the Render Worker can prepare and submit N+1 while N remains
 in flight. CPU draws stay serial; GPU completion no longer blocks the next draw.
 The two slots cover the entire source-to-GPU pipeline, including queued and
@@ -992,6 +999,10 @@ the Render status, closed reason/error `code`, and recovery `hint`. When App
 drives `draw`, a plugin obtains that same receipt from the Render-owned
 `frame-submitted` event. Membership
 timing remains producer-specific and is not generic accepted GPU evidence.
+Under a Render Worker, frame credit returns at GPU completion; the receipt's
+timing follows in its own message once readback resolves, so the latest timing
+can trail the latest completed frame. It carries `skippedFrames`, the frames
+the Worker rendered untimed because every timing slot was in flight.
 
 `CreateAppOptions.outputColorSpace` (`'srgb'` default | `'display-p3'`) is forwarded to
 Render without App policy. Under Worker execution it reaches both the local Renderer and the
@@ -1181,7 +1192,7 @@ const result = await createApp(canvas, {
 
 Systems read time through ECS resources:
 
-- `Time.delta`: validated variable-rate seconds for the current frame.
+- `Time.delta`: validated variable-rate seconds for the current frame. The first frame after `start()` or `resume()` has no measured interval and advances by one nominal frame (1/60 s), so `Time.delta` is always positive on a running loop.
 - `Time.elapsed`: accumulated validated variable-rate seconds.
 - `FixedTime.delta`: fixed simulation interval.
 - `FixedTime.tick`: completed fixed updates.

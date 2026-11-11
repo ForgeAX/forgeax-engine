@@ -85,6 +85,39 @@ Measure each kept change on the real game against the frozen before build. A gai
 
 Publish each conclusion to the track's live record as it lands, including negative, overturned and unknown results, with its ms figure, validity conditions and next step. A recorded negative result stops the next agent from retrying it: r2 kept the IBL skip (+0.5 ms), the transparent-pass store discard (no change) and 11 shelved CPU commits as negative results, and recorded two startup claims overturned by quiet-host reruns.
 
+## Compare engines and run improvement rounds
+
+When the goal is to measure agent efficiency and correctness against a baseline or other engines, or to decide what to improve from many runs, follow engine comparison rounds: comparison objects and fairness, task design, metrics and statistics, blind judging, attribution, the improvement loop, submission, and publishing. Keep making-efficiency results separate from finished-game frame performance, and never claim significance from small samples.
+
+### Run rounds as an experiment
+
+Treat each candidate as a hypothesis and keep iterating (change, same-task replicate, blind judge, attribute) until the blind score is high and stable, then work on making time.
+
+- Give every making agent the judges' rubric and capture schedule verbatim, identical for every engine. Without it each run optimises a random emphasis and the score mostly measures that.
+- One run per condition cannot separate a change from noise; the same baseline has spread by several points out of 20 on one task. Run the candidate at least twice per round. Reference engines and the baseline need not be rerun: reuse their existing captures for the same task in the same blind group, and state that they were made without any guidance the candidate received.
+- Before attributing a score to the engine, read the trajectories: which guided tools the agent actually used (look-dev, self-review, play), how often, and whether it acted on what it saw. A drop with an unused loop is a guidance defect, not a renderer one.
+- Reproduce a suspected visual cause on a copy of the delivered project by changing only parameters; if parameters alone reproduce it, fix guidance or defaults, not the renderer.
+- When slimming game guidance, keep the look-dev loop and the definition of done (open the pictures and pass the self-review against the intended look). Losing that paragraph turned "look and fix" into "pass checks" and cost more than any engine change gained.
+- Do not hand agents pixel-threshold verdicts on how a frame looks; they misfire on menus and overlays and push agents into wrong edits. Keep only factual gates (renderer error, flat frame) and let the agent judge the PNG.
+- Agents copy the guidance's command block and usually trim CLI output with `tail` or a file, so a speed flag that exists only in a CLI hint or a reference page goes unused. Put the iteration form (accelerated time, warm session) and the final acceptance form (release, real time) in the command block itself, and check the trajectories for them.
+- Before putting a speed mode into guidance, check on delivered projects that its pass/fail agrees with the final acceptance mode, not only that it is faster. A lockstep clock gives a state-reading playthrough instant reactions; agents tune game difficulty and scripts to it, then fail in real time and spend the saving retuning, and easier tuning shows fewer events on the judged frames.
+- Judges score relative to the rest of the group: the same unchanged captures move between blind groups. Compare candidates only inside one blind group, re-include the previous best captures there, and measure the noise in that group before reading a difference.
+- Rotate tasks before trusting a candidate. Guidance tuned on one task can lose to reference engines on another through defaults the first task never exercised.
+- A poor visual score rarely has one cause. Check each layer separately: game requirements that pull against one coupled engine feature, defaults the earlier tasks never exercised, supported capabilities the game host or reference cannot reach, guidance that promises a check or limitation that no longer exists, and the trajectory itself (whether the last look hid the problem under a menu, and whether a noticed defect was fixed at its cause). Compare with how the reference engines' agents wrote the same effect.
+- Count making time only when machine load is low; record load with every timing and keep pass/fail regardless.
+- After each round, add what was learned here in general terms; keep the round's numbers in its report.
+
+## Verify optimizations in real use
+
+An optimization is a hypothesis until it is measured on a real consumer project through the same public entry. Unit tests and minimal fixtures prove the mechanism. They do not prove the gain, and they rarely exercise the timing, scale or interaction that real scripts depend on. Real verification does four things:
+
+- It finds features that pass every unit and fixture test but break real consumers. For example, an accelerated clock can pass a trivial fixture yet fail every run of a timing-sensitive playthrough.
+- It calibrates the expected saving against the measured one. A fixture's dominant cost may be absent in a real project, so the real gain can be an order of magnitude smaller.
+- It separates a regression from pre-existing flakiness. Use the previous SDK as a control on the same project and machine, alternate the runs, and repeat.
+- It decides the next step: keep, fix or drop the change. Do this before spending agent runs, since a broken feature an agent adopts contaminates the efficiency measurement.
+
+Before measuring, write the expected effect and a deviation threshold for each item. Run each item on a copy of a delivered project, with the previous SDK as control. Use several runs and medians, and discard timings taken under machine load (pass/fail still counts). Record results against the expectations. When a result deviates substantially or a feature is unusable, find the root cause, fix it at its owner, and re-measure the same items before the real agent run.
+
 ## Close each candidate
 
 Prepare the declared asset, compiler and native-carrier inputs before runtime acceptance. Keep build outputs stable while their consumers are under verification; a changed owner requires the affected checks again.

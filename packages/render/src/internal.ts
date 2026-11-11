@@ -44,6 +44,7 @@ export {
   type PackedRowsMesh,
   packedRowsEligible,
 } from './publication/packed-rows-mesh';
+export { verifyPublicationPrograms } from './publication/programs';
 export { ownReceivedPublicationMaterials } from './publication/received-materials';
 export { RenderPublicationReceiver } from './publication/receiver';
 export {

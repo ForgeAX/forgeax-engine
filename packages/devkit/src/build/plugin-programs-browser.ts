@@ -18,6 +18,75 @@ function assertPortableResources(context: Rolldown.PluginContext, chunk: Rolldow
     throw new TypeError(`plugin program resource requires a portable producer: ${chunk.fileName}`);
 }
 
+/** Modules reachable from a root without crossing an engine capability boundary. */
+function reachableModules(
+  context: Rolldown.PluginContext,
+  capability: (id: string) => boolean,
+  root: string,
+): Set<string> {
+  const seen = new Set<string>();
+  const visit = (id: string) => {
+    if (seen.has(id) || capability(id)) return;
+    const info = context.getModuleInfo(id);
+    if (!info || info.code === null) return;
+    seen.add(id);
+    for (const dependency of info.importedIds) visit(dependency);
+  };
+  visit(root);
+  return seen;
+}
+
+/** Host entries, lazy import targets, and modules shared by programs. */
+function collectHostRoots(
+  context: Rolldown.PluginContext,
+  facades: ReadonlySet<string>,
+  program: (id: string) => boolean,
+  capability: (id: string) => boolean,
+  reach: (root: string) => Set<string>,
+): { entries: Set<string>; lazy: Set<string>; shared: Set<string> } {
+  const entries = new Set<string>();
+  const lazy = new Set<string>();
+  const shared = new Set<string>();
+  for (const id of context.getModuleIds()) {
+    const info = context.getModuleInfo(id);
+    if (!info || capability(id)) continue;
+    if (program(id)) for (const member of reach(id)) shared.add(member);
+    else if (info.isEntry && !facades.has(id)) entries.add(id);
+    for (const dependency of info.dynamicallyImportedIds)
+      if (!program(dependency) && !capability(dependency)) lazy.add(dependency);
+  }
+  return { entries, lazy, shared };
+}
+
+/**
+ * A lazy import is a load boundary only where its target is not already
+ * loaded: drop targets every root running one of their importers reaches.
+ */
+function pruneLoadedLazyTargets(
+  context: Rolldown.PluginContext,
+  entries: ReadonlySet<string>,
+  lazy: Set<string>,
+  graphs: Map<string, Set<string>>,
+): void {
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const target of lazy) {
+      if (entries.has(target)) continue;
+      const importers = context.getModuleInfo(target)?.dynamicImporters ?? [];
+      const loaded = [...graphs].every(
+        ([root, graph]) =>
+          root === target ||
+          !importers.some((importer) => graph.has(importer)) ||
+          graph.has(target),
+      );
+      if (!loaded) continue;
+      lazy.delete(target);
+      graphs.delete(target);
+      changed = true;
+    }
+  }
+}
+
 /** Archive the player's own transformed graph, without reevaluating its bootstrap. */
 export class BrowserPluginProgramArchive {
   readonly entries = new Map<string, string>();
@@ -27,6 +96,7 @@ export class BrowserPluginProgramArchive {
   private readonly modules = new Set<string>();
   private readonly rendered = new Map<string, string>();
   private readonly groups = new Map<string, string>();
+  private readonly hostGroups = new Map<string, string>();
 
   recordRendered(code: string, chunk: Rolldown.RenderedChunk): void {
     if (Object.keys(chunk.modules).some((id) => this.modules.has(id)))
@@ -114,8 +184,12 @@ export class BrowserPluginProgramArchive {
     for (const id of this.entries.values()) visit(id);
   }
 
-  /** Coalesce only modules with identical static entry reachability; lazy boundaries survive. */
-  prepareGroups(context: Rolldown.PluginContext): void {
+  /**
+   * Coalesce only modules with identical static entry reachability; lazy boundaries survive.
+   * `facades` are public Engine facade entries: addresses for programs, not load roots.
+   */
+  prepareGroups(context: Rolldown.PluginContext, facades: ReadonlySet<string> = new Set()): void {
+    this.prepareHostGroups(context, facades);
     const roots = new Set(this.entries.values());
     for (const id of context.getModuleIds()) {
       const info = context.getModuleInfo(id);
@@ -150,6 +224,46 @@ export class BrowserPluginProgramArchive {
     }
   }
 
+  /**
+   * Startup loads a few chunks instead of one per facade dependency set: the
+   * Engine code behind the public facades shares one chunk, and host-only
+   * modules share a chunk per set of host entries and lazy imports that load
+   * them. Modules a program reaches keep the program split.
+   */
+  private prepareHostGroups(context: Rolldown.PluginContext, facades: ReadonlySet<string>): void {
+    const program = (id: string) => this.modules.has(normalizePath(id));
+    const capability = (id: string) =>
+      Boolean(context.getModuleInfo(id)?.meta[engineCapabilityMeta]);
+    const reach = (root: string) => reachableModules(context, capability, root);
+    const { entries, lazy, shared } = collectHostRoots(
+      context,
+      facades,
+      program,
+      capability,
+      reach,
+    );
+    const graphs = new Map([...entries, ...lazy].map((root) => [root, reach(root)] as const));
+    pruneLoadedLazyTargets(context, entries, lazy, graphs);
+    // Programs load facade code in every realm; host-only code stays apart.
+    const facadeReach = new Set<string>();
+    for (const facade of facades) for (const id of reach(facade)) facadeReach.add(id);
+    const memberships = new Map<string, string[]>();
+    for (const id of facadeReach) if (!program(id) && !shared.has(id)) memberships.set(id, []);
+    for (const [root, graph] of [...graphs].sort(([a], [b]) => a.localeCompare(b)))
+      for (const id of graph) {
+        if (program(id) || shared.has(id) || facadeReach.has(id)) continue;
+        const roots = memberships.get(id) ?? [];
+        roots.push(root);
+        memberships.set(id, roots);
+      }
+    this.hostGroups.clear();
+    for (const [id, roots] of memberships)
+      this.hostGroups.set(
+        id,
+        `engine-${createHash('sha256').update(JSON.stringify(roots)).digest('hex').slice(0, 16)}`,
+      );
+  }
+
   groupedOutput(output: Rolldown.OutputOptions): Rolldown.OutputOptions {
     if (
       output.codeSplitting === false ||
@@ -167,7 +281,16 @@ export class BrowserPluginProgramArchive {
         ...splitting,
         includeDependenciesRecursively: false,
         groups: [
-          { name: (id) => this.groups.get(id) ?? null, priority: 100 },
+          {
+            debugName: 'forgeax-program',
+            name: (id) => this.groups.get(id) ?? null,
+            priority: 100,
+          },
+          {
+            debugName: 'forgeax-host',
+            name: (id) => this.hostGroups.get(id) ?? null,
+            priority: 90,
+          },
           ...(splitting.groups ?? []),
         ],
       },

@@ -1207,10 +1207,16 @@ it('matches scroll geometry and descendant hit positions after an ordinary scrol
 });
 
 it('executes the shared authored guide controller and vase controls in both documents', async () => {
-  const guide = new URL('../../../../templates/game-3d/assets/guide.ui.html', import.meta.url);
-  const stylesheet = new URL('../../../../templates/game-3d/assets/guide.ui.css', import.meta.url);
+  const guide = new URL(
+    '../../../../packages/ui/test-fixtures/game-guide/guide.ui.html',
+    import.meta.url,
+  );
+  const stylesheet = new URL(
+    '../../../../packages/ui/test-fixtures/game-guide/guide.ui.css',
+    import.meta.url,
+  );
   const behavior = new URL(
-    '../../../../templates/game-3d/assets/ui/guide-controller.ts',
+    '../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
     import.meta.url,
   );
   // Fetching .html/.css through Vite returns injected HTML / a CSS HMR module.
@@ -1223,9 +1229,12 @@ it('executes the shared authored guide controller and vase controls in both docu
   const [html, css, localization, module] = await Promise.all([
     authored(guide),
     authored(stylesheet),
-    fetch(new URL('../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url)).then(
-      (response) => response.json(),
-    ),
+    fetch(
+      new URL(
+        '../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json',
+        import.meta.url,
+      ),
+    ).then((response) => response.json()),
     import(/* @vite-ignore */ behavior.href) as Promise<{
       createGuideUi(
         asset: UiAsset,

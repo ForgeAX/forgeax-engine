@@ -277,7 +277,7 @@ function captureInput(
           'create or load the mesh through the World asset service',
         ),
       )
-    : ok({ ...input, mesh });
+    : ok({ ...input, mesh, admittedMesh: true });
 }
 
 function physicsPublicationOf(

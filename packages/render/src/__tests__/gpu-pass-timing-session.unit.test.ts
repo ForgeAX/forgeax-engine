@@ -282,9 +282,55 @@ describe('GPU pass timing session', () => {
     const first = session.beginFrame(identity).unwrap();
     const second = session.beginFrame({ ...identity, frameId: 13 });
 
-    expect(second).toMatchObject({ ok: false, error: { code: 'timing-in-flight-exhausted' } });
+    expect(second).toMatchObject({
+      ok: false,
+      error: {
+        code: 'timing-in-flight-exhausted',
+        detail: { maxFramesInFlight: 1, skippedFrames: 1 },
+      },
+    });
     expect(device.queue.onSubmittedWorkDone).not.toHaveBeenCalled();
     expect(first.snapshot()).toMatchObject({ frameId: 12, passes: [] });
+  });
+
+  it('counts every frame skipped while slots wait for readback and resumes when one frees', async () => {
+    const { device } = makeDevice();
+    let releaseMap!: () => void;
+    const mapped = new Promise<void>((resolve) => {
+      releaseMap = resolve;
+    });
+    const session = createGpuPassTimingSession(
+      device,
+      { maxPassesPerFrame: 1, maxFramesInFlight: 1, retentionFrames: 8 },
+      {
+        mapReadback: async () => {
+          await mapped;
+          return ok({
+            getMappedRange: (_offset: number, size: number) => {
+              const bytes = new ArrayBuffer(size);
+              new BigUint64Array(bytes).set([1000n, 2000n]);
+              return ok(bytes);
+            },
+            unmap() {},
+          } as MappedBuffer);
+        },
+      },
+    ).unwrap();
+    const first = session.beginFrame(identity).unwrap();
+    first.recordPass({ passName: 'geometry', passKind: 'raster', executionIndex: 0 });
+    expect(first.encodeTail(encoder())).toMatchObject({ ok: true });
+    first.markSubmitted(Promise.resolve());
+
+    const skipped = [13, 14].map((frameId) => session.beginFrame({ ...identity, frameId }));
+    expect(skipped.map((result) => !result.ok && result.error.detail.skippedFrames)).toEqual([
+      1, 2,
+    ]);
+    releaseMap();
+    await first.observe();
+    expect(session.beginFrame({ ...identity, frameId: 15 }).ok).toBe(true);
+    const next = session.beginFrame({ ...identity, frameId: 16 });
+    expect(next).toMatchObject({ ok: false, error: { detail: { skippedFrames: 3 } } });
+    session.dispose();
   });
 
   it('records actual pass identity and resolves the used pair on the same encoder tail', () => {

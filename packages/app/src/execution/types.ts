@@ -87,9 +87,11 @@ export interface ExecutionAudioReport extends Omit<AudioState, 'lastError'> {
 /**
  * Renderer-independent frame pacing facts owned by the active host loop.
  * `inFlight` is always `submitted - completed`; `highWater` records the
- * greatest observed in-flight depth and `throttledTicks` counts frame-loop
- * ticks that could not acquire the selected owner's frame credit, even if
- * completion resumes their coalesced frame before the next Host callback.
+ * greatest observed depth of admitted, unfinished frames (with a Render Worker
+ * this includes pictures still in preparation or on the GPU, bounded by
+ * `renderPipelineCapacity`) and `throttledTicks` counts frame-loop ticks that
+ * could not acquire the selected owner's frame credit, even if completion
+ * resumes their coalesced frame before the next Host callback.
  */
 export interface ExecutionFrameInspection {
   readonly submitted: number;
@@ -201,7 +203,11 @@ export interface ExecutionDiagnosticsOptions {
   readonly gbufferBatchOrderDiagnostic?: import('@forgeax/engine-render').RenderProfile['gbufferBatchOrderDiagnostic'];
   /** Allow one task turn before a successor draw while a real GPU receipt is pending. */
   readonly renderTaskYield?: 'none' | 'completion' | 'features';
-  /** Bound sealed publications across simulation, preparation and GPU completion. */
+  /**
+   * Bound sealed publications across simulation, preparation and GPU completion.
+   * Default 3: one per stage, so the GPU stays fed; 2 trades throughput for one
+   * frame less queueing, 4 absorbs uneven stages.
+   */
   readonly renderPipelineCapacity?: 2 | 3 | 4;
   /** Compare geometry submission lanes with the same scene and Worker topology. */
   readonly geometryLane?: RenderFrameInput['geometryLane'];

@@ -1334,7 +1334,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(-1, 6);
       expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
@@ -1362,7 +1362,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.whitePoint).toBeCloseTo(4.0, 6);
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(-1, 6);
       expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
@@ -1389,7 +1389,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(pod.antialias).toBe(ANTIALIAS_NONE);
       expect(pod.historyVersion).toBe(0);
       expect(pod.bloom).toBe(BLOOM_DISABLED);
-      expect(pod.bloomThreshold).toBeCloseTo(1, 6);
+      expect(pod.bloomThreshold).toBeCloseTo(-1, 6);
       expect(pod.bloomIntensity).toBeCloseTo(0.5, 6);
       expect(pod.bloomSmoothWidth).toBeCloseTo(0.01, 6);
       expect(pod.bloomRadius).toBeCloseTo(0, 6);
@@ -1515,7 +1515,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(d.historyVersion.default).toBe(0);
       expect(d.targetLayer.default).toBe(0);
       expect(d.bloom.default).toBe(0);
-      expect(d.bloomThreshold.default).toBeCloseTo(1, 6);
+      expect(d.bloomThreshold.default).toBeCloseTo(-1, 6);
       expect(d.bloomIntensity.default).toBeCloseTo(0.5, 6);
       expect(d.bloomSmoothWidth.default).toBeCloseTo(0.01, 6);
       expect(d.bloomRadius.default).toBeCloseTo(0, 6);
@@ -1560,7 +1560,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
         historyVersion: 0,
         targetLayer: 0,
         bloom: 0,
-        bloomThreshold: 1,
+        bloomThreshold: -1,
         bloomIntensity: 0.5,
         bloomSmoothWidth: 0.01,
         bloomRadius: 0,
@@ -1683,7 +1683,7 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(tonemapFromF32(1)).toBe('reinhard-extended');
     });
 
-    it('tonemapFromF32 maps all 8 modes correctly', () => {
+    it('tonemapFromF32 maps all 9 modes correctly', () => {
       expect(tonemapFromF32(2)).toBe('linear');
       expect(tonemapFromF32(3)).toBe('cineon');
       expect(tonemapFromF32(4)).toBe('aces-filmic');
@@ -1691,11 +1691,12 @@ import { extractFrame } from '../../../render/src/render-system-extract-tail';
       expect(tonemapFromF32(6)).toBe('neutral');
       expect(TONEMAP_REINHARD).toBe(7);
       expect(tonemapFromF32(TONEMAP_REINHARD)).toBe('reinhard');
+      expect(tonemapFromF32(8)).toBe('ue-filmic');
     });
 
     it('tonemapFromF32 falls back to "none" for out-of-range numeric (defensive)', () => {
       expect(tonemapFromF32(-1)).toBe('none');
-      expect(tonemapFromF32(8)).toBe('none');
+      expect(tonemapFromF32(9)).toBe('none');
       expect(tonemapFromF32(NaN)).toBe('none');
     });
   });

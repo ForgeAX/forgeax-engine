@@ -4,7 +4,6 @@ import { assetGuid, guidText, PACKAGE_IDS } from '../shared/asset-refs.ts';
 import { joinPluginFiber, mountPluginAsset, type Plugin } from '@forgeax/engine/plugin';
 import { worldDespawnScene } from '@forgeax/engine/scene';
 import type {} from '../shared/scene-refs.ts';
-import { VASE_PLUGIN } from '../runtime-vase/vase-program.ts';
 export const scene: Plugin.Object<{ readonly scene: string; readonly children: readonly string[] }> =
   {
     name: 'game-3d/scene',
@@ -42,9 +41,9 @@ export default definePack({
       config: {
         scene: { $asset: guidText(assetGuid(PACKAGE_IDS.scene, 'scene/showcase')) },
         children: [
-          { $asset: guidText(assetGuid(VASE_PLUGIN, 'plugin/vase')) },
-          { $asset: 'c034cc6c-b31f-5b16-89d6-4db4d05939d8' },
-          { $asset: '2056f194-6791-5504-8ae1-d67c2bdfa28a' },
+          // Feature plugins by GUID: delete a feature folder and remove its line here.
+          { $asset: 'c034cc6c-b31f-5b16-89d6-4db4d05939d8' }, // player/player.pack.ts plugin/player
+          { $asset: '2056f194-6791-5504-8ae1-d67c2bdfa28a' }, // camera/camera.pack.ts plugin/camera
         ],
       },
     },

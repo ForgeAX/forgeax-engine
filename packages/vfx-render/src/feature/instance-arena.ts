@@ -102,9 +102,10 @@ export function createVfxInstanceArena() {
   let nextId = 0;
   const layouts = new Map<string, Layout>();
   const leases = new Map<string, Range>();
+  // Scope -> binding resource name -> the last remapped declaration.
   let bindingLayouts = new Map<
     string,
-    { readonly source: Bindings; readonly resource: Bindings }
+    Map<string, { readonly source: Bindings; readonly resource: Bindings }>
   >();
   let spareBindingLayouts: typeof bindingLayouts = new Map();
   type FrameInput = {
@@ -121,6 +122,22 @@ export function createVfxInstanceArena() {
   const leaseIndex = new Map<string, Map<string, Range>>();
   /** Serial of the open retained frame, consumed by the next pack. */
   let retainedSerial: number | undefined;
+  // Per-pack scratch, cleared where it is filled. Nothing escapes a pack.
+  const packInstances = new Map<string, VfxArenaInstance>();
+  const packInstanceByName = new Map<string, VfxArenaInstance | undefined>();
+  const packShared = new Map<string, Range>();
+  const packLocal = new Map<string, Range>();
+  const packArenas = new Map<string, ArenaBuffer>();
+  const viewScopeKeys = new Map<string, string>();
+  const viewScopeKey = (view: string) => {
+    let key = viewScopeKeys.get(view);
+    if (key === undefined) {
+      if (viewScopeKeys.size >= 64) viewScopeKeys.clear();
+      key = `view:${view}`;
+      viewScopeKeys.set(view, key);
+    }
+    return key;
+  };
   const addLease = (range: Range) => {
     leases.set(range.lease, range);
     let scoped = leaseIndex.get(range.scope);
@@ -168,15 +185,27 @@ export function createVfxInstanceArena() {
   }): readonly RenderFeatureWork[] => {
     const retainedFrame = retainedSerial;
     if (retainedFrame === undefined) begin(input);
-    const instances = new Map<string, VfxArenaInstance>();
+    const instances = packInstances;
+    instances.clear();
     for (const row of input.instances) instances.set(row.prefix, row);
-    const instanceFor = (name: string) => {
+    // Resource names repeat across the works of one pack; resolve each once.
+    const instanceByName = packInstanceByName;
+    instanceByName.clear();
+    const resolveInstance = (name: string) => {
       const marker = name.indexOf('.e-');
       const end = marker < 0 ? -1 : name.indexOf('.', marker + 3);
       if (end >= 0) return instances.get(name.slice(0, end));
       // Internal tests and non-stock naming keep the exact prefix boundary.
       return input.instances.find((row) => name.startsWith(`${row.prefix}.`));
     };
+    const instanceFor = (name: string) => {
+      if (instanceByName.has(name)) return instanceByName.get(name);
+      const instance = resolveInstance(name);
+      instanceByName.set(name, instance);
+      return instance;
+    };
+    const uniformAlignment = input.limits?.minUniformBufferOffsetAlignment ?? 256;
+    const storageAlignment = input.limits?.minStorageBufferOffsetAlignment ?? 256;
     retainedSerial = undefined;
     const retainedFrameIndex = retainedFrame === undefined ? undefined : leaseIndex.get('frame');
     const retainedRange = (index: Map<string, Range> | undefined, name: string) => {
@@ -187,27 +216,38 @@ export function createVfxInstanceArena() {
     };
     // Ordinary arena declarations of this pack. Retained ranges are read from
     // the persistent index instead of being copied into per-frame maps.
-    const shared = new Map<string, Range>();
+    const shared = packShared;
+    shared.clear();
     // The previous pack stays readable while the alternate table is refilled.
     const nextBindingLayouts = spareBindingLayouts;
     nextBindingLayouts.clear();
     const packed = input.work.map((work): RenderFeatureWork => {
-      const scope = work.scope === 'frame' ? 'frame' : `view:${work.scope.view}`;
-      const local = work.scope === 'frame' ? shared : new Map<string, Range>();
+      const scope = work.scope === 'frame' ? 'frame' : viewScopeKey(work.scope.view);
+      let local = shared;
+      if (work.scope !== 'frame') {
+        local = packLocal;
+        local.clear();
+      }
       const retainedLocal =
         retainedFrame === undefined
           ? undefined
           : work.scope === 'frame'
             ? retainedFrameIndex
             : leaseIndex.get(scope);
-      const arenas = new Map<string, ArenaBuffer>();
+      const arenas = packArenas;
+      arenas.clear();
       const resources: Resource[] = [];
+      const previousBindings = bindingLayouts.get(scope);
+      let nextScopeBindings = nextBindingLayouts.get(scope);
+      if (nextScopeBindings === undefined) {
+        nextScopeBindings = new Map();
+        nextBindingLayouts.set(scope, nextScopeBindings);
+      }
+      const keptBindings = nextScopeBindings;
       for (const resource of work.resources) {
         if (resource.kind !== 'buffer') continue;
         const instance = instanceFor(resource.name);
-        const alignment = resource.usage.includes('uniform')
-          ? (input.limits?.minUniformBufferOffsetAlignment ?? 256)
-          : (input.limits?.minStorageBufferOffsetAlignment ?? 256);
+        const alignment = resource.usage.includes('uniform') ? uniformAlignment : storageAlignment;
         const stride = Math.ceil(resource.size / alignment) * alignment;
         const capacity = Math.min(
           16,
@@ -322,7 +362,7 @@ export function createVfxInstanceArena() {
             resources.push(resource);
             continue;
           }
-          const previous = bindingLayouts.get(`${scope}:${resource.name}`);
+          const previous = previousBindings?.get(resource.name);
           if (
             previous?.source === resource &&
             resource.entries.every((entry, index) => {
@@ -339,7 +379,7 @@ export function createVfxInstanceArena() {
             })
           ) {
             resources.push(previous.resource);
-            nextBindingLayouts.set(`${scope}:${resource.name}`, previous);
+            keptBindings.set(resource.name, previous);
             continue;
           }
           const next: Bindings = {
@@ -361,7 +401,7 @@ export function createVfxInstanceArena() {
             : next;
           resources.push(owned);
           if (isOwnedRenderFeatureProgramData(resource))
-            nextBindingLayouts.set(`${scope}:${resource.name}`, {
+            keptBindings.set(resource.name, {
               source: resource,
               resource: owned,
             });

@@ -46,7 +46,11 @@ import {
   componentRequirements,
   expandComponentRequirements,
 } from './component-schema';
-import { validateManagedArrayValues, validateSharedFieldValues } from './component-value-validate';
+import {
+  payloadPassesValueChecks,
+  validateManagedArrayValues,
+  validateSharedFieldValues,
+} from './component-value-validate';
 import { Entity as EntityComponent } from './entity';
 import {
   ENTITY_MAX_INDEX,
@@ -126,7 +130,6 @@ import { SharedRefStore as SharedRefStoreImpl } from './shared-ref-store.js';
 import {
   type Archetype,
   appendArchetypeRow,
-  archetypeComponentIndex,
   archetypeHasComponent,
   removeArchetypeRow,
 } from './storage/archetype';
@@ -165,6 +168,7 @@ import { type UniqueRefStore, UniqueRefStore as UniqueRefStoreImpl } from './uni
 import { copyWorldArray } from './world-array-read';
 import {
   spawnCore,
+  spawnRosterMatches,
   worldAddChild,
   worldIterAncestors,
   worldIterDescendants,
@@ -368,24 +372,7 @@ function sameStoredValue(a: number, b: number): boolean {
   return a === b ? a !== 0 || 1 / a === 1 / b : Number.isNaN(a) && Number.isNaN(b);
 }
 
-/** A spawn roster names exactly `archetype`'s non-Entity components, once each. */
-function spawnRosterMatches(
-  archetype: Archetype,
-  componentDatas: readonly ComponentData[],
-): boolean {
-  const count = componentDatas.length;
-  if (archetype.ids.length !== count + 1) return false;
-  for (let index = 0; index < count; index++) {
-    const component = (componentDatas[index] as ComponentData).component;
-    if (
-      archetype.components[archetypeComponentIndex(archetype, componentId(component))] !== component
-    )
-      return false;
-    for (let other = 0; other < index; other++)
-      if ((componentDatas[other] as ComponentData).component === component) return false;
-  }
-  return true;
-}
+const VALUE_PREFLIGHT_PASSED: Result<void, EcsError> = Object.freeze(ok(undefined));
 
 const NO_LINKED_CHILDREN: readonly EntityHandle[] = Object.freeze([]);
 
@@ -1294,6 +1281,11 @@ export class World {
     component: Component,
     data: Readonly<Record<string, unknown>>,
   ): Result<void, EcsError> {
+    // Common payloads pass every check in one pass; anything else re-runs the
+    // ordered validators below so rejections keep their precedence.
+    if (payloadPassesValueChecks(componentDefinition(component).plan, data)) {
+      return VALUE_PREFLIGHT_PASSED;
+    }
     const assets = visitAssetFields(component, data, this.validateAssetReference);
     if (!assets.ok) return assets;
     const arrayError = validateManagedArrayValues(component, data);

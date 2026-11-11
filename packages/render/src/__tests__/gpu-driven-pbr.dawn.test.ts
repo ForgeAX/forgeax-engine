@@ -563,6 +563,9 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
     .createTextureView(pointShadowTexture, { dimension: 'cube-array' })
     .unwrap();
   const comparisonSampler = device.createSampler({ compare: 'less' }).unwrap();
+  const filteringSampler = device
+    .createSampler({ minFilter: 'linear', magFilter: 'linear' })
+    .unwrap();
   const viewBindGroup = device
     .createBindGroup({
       layout: viewLayout,
@@ -570,6 +573,7 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
         { binding: 0, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
         { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
+        { binding: 17, resource: { kind: 'sampler', value: filteringSampler } },
         { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
         { binding: 6, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 7, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
@@ -589,6 +593,7 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
           },
           { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
           { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
+          { binding: 17, resource: { kind: 'sampler', value: filteringSampler } },
           { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
           {
             binding: 6,

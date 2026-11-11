@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { transformWithOxc } from 'vite';
 import { expect, it, vi } from 'vitest';
+import { gameProjectionSource } from '../host/game-projection-source.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { generatedPlayerQueries } from './generated-player-queries.js';
@@ -156,7 +157,7 @@ it('connects isolated frontend/source ports through the generated App options an
         let canvas = { width: 320, height: 180 };
         let sourceSize = { width: 320, height: 180 };
         const frontend = await evaluate(
-          `${generated.slice(frontendStart, frontendEnd)} host;`,
+          `${gameProjectionSource}\n${generated.slice(frontendStart, frontendEnd)} host;`,
           {
             document: { querySelector: () => ({}), body: {} },
             HTMLElement: class {},

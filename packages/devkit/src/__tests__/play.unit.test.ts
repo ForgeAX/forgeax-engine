@@ -4,25 +4,47 @@ import { resolve } from 'node:path';
 import type { ToolExecutionContext } from '@forgeax/engine-tool-runtime';
 import type { Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { BrowserCaptureRecord, BrowserCaptureSession } from '../browser-capture.js';
+import {
+  type BrowserCaptureRecord,
+  type BrowserCaptureSession,
+  isExternalUrl,
+} from '../browser-capture.js';
 import { captureRenderFailure } from '../capture-render-failure.js';
 import {
+  admitRelease,
   clearPreviousRun,
+  clickBlockedWarning,
   createPlayContext,
+  externalRequestFailure,
+  externalRequestsField,
   finalCaptureCheck,
+  finalFields,
   PLAY_COMPACT_BYTES,
+  PLAY_WARNING_BYTES,
+  PLAY_WARNING_KINDS,
+  type PlayRangeTracker,
   type PlayRecorder,
   type PlayReport,
+  type PlayStepRange,
+  POINTER_LOCK_MOVE_WARNING,
+  parsePlayStepRange,
   playCommand,
   playExpectationLine,
   playFailureError,
   playLockWaitMs,
   playOutputDir,
+  playRerunFields,
   playResultValue,
+  releaseArgsError,
+  rerunCommand,
+  SCENE_PREVIEW_HINT,
   startPlayProgress,
   summarizeValue,
+  warningsField,
 } from '../play.js';
+import { PLAY_CONTEXT_REFERENCE } from '../play-context-reference.js';
 import { acquirePlayLock } from '../play-lock.js';
+import { groupPlayWarnings } from '../play-warnings.js';
 import { createUnifiedCommandContributions } from '../tools/unified-contributions.js';
 
 function recorder(): PlayRecorder {
@@ -30,6 +52,7 @@ function recorder(): PlayRecorder {
     steps: [],
     screenshots: [],
     log: [],
+    warnings: [],
     step: undefined,
     action: undefined,
     failedStep: new WeakMap(),
@@ -42,19 +65,33 @@ function fakeSession(
   reads: readonly string[] = ['game.state'],
   framesPerPoll = 1,
   readLatencyMs = 0,
+  pointerLocked = false,
+  clickTarget: string | null = null,
+  /** Frames complete every 16.7 ms of wall time and waits really sleep. */
+  realTime = false,
 ) {
   const events: string[] = [];
   let frame = 0;
+  const started = Date.now();
   const page = {
     async evaluate(fn: unknown, arg?: unknown) {
       const source = String(fn);
       if (source.includes('frame?.completed')) {
+        if (realTime) return Math.floor((Date.now() - started) / (1000 / 60)) + 1;
         frame += framesPerPoll;
         return frame;
       }
       if (source.includes('.advance?.(')) {
         events.push(`advance ${JSON.stringify(arg)}`);
         return { ok: true, frames: 1 };
+      }
+      if (source.includes('pointerLockElement')) {
+        if (source.includes('movementX')) events.push(`look ${JSON.stringify(arg)}`);
+        return pointerLocked;
+      }
+      if (source.includes('elementFromPoint')) {
+        events.push(`hit-test ${JSON.stringify(arg)}`);
+        return clickTarget;
       }
       if (source.includes('.list()')) return [...reads];
       if (source.includes('.read(')) {
@@ -66,13 +103,15 @@ function fakeSession(
     },
     async waitForTimeout(ms: number) {
       events.push(`wait ${ms}`);
+      if (realTime) await new Promise((done) => setTimeout(done, ms));
     },
     keyboard: {
       down: async (key: string) => events.push(`down ${key}`),
       up: async (key: string) => events.push(`up ${key}`),
     },
     mouse: {
-      move: async (x: number, y: number) => events.push(`move ${x},${y}`),
+      move: async (x: number, y: number, options?: { steps?: number }) =>
+        events.push(`move ${x},${y}${options?.steps === undefined ? '' : ` in ${options.steps}`}`),
       down: async () => events.push('down mouse'),
       up: async () => events.push('up mouse'),
     },
@@ -86,8 +125,9 @@ function fakeSession(
 
 function report(overrides: Partial<PlayReport> = {}): PlayReport {
   return {
-    schemaVersion: '1.0.0',
+    schemaVersion: '1.1.0',
     passed: true,
+    mode: 'private',
     root: '/game',
     script: 'scripts/playthrough.mjs',
     outputDir: '/game/artifacts/play/playthrough',
@@ -112,7 +152,6 @@ function report(overrides: Partial<PlayReport> = {}): PlayReport {
       },
     ],
     viewports: ['1280x720', '1280x600'],
-    layout: [],
     errors: { console: [], page: [], inputWarnings: 0 },
     log: [],
     ...overrides,
@@ -136,10 +175,11 @@ describe('play helper', () => {
     const held = ['wait 50', 'wait 16', 'wait 16'];
     expect(events).toEqual([
       'move 110,45',
+      'hit-test {"x":110,"y":45}',
       'down mouse',
       ...held,
       'up mouse',
-      'move 210,120',
+      'move 210,120 in 4',
       'down Shift',
       'down KeyA',
       'wait 50',
@@ -157,6 +197,203 @@ describe('play helper', () => {
       'up KeyD',
       'up KeyW',
     ]);
+  });
+
+  it('drags in three steps with frame-observed press, motion and release', async () => {
+    const { session, events } = fakeSession(() => ({}));
+    await createPlayContext(session, recorder(), '/tmp/out', 1000).mouse.drag(
+      [0.5, 0.5],
+      [0.65, 0.5],
+      { button: 'right' },
+    );
+    // No timed 50 ms hold: each phase waits two completed frames (one poll here).
+    expect(events).toEqual([
+      'move 110,70',
+      'down mouse',
+      'wait 16',
+      'move 140,70 in 3',
+      'wait 16',
+      'up mouse',
+    ]);
+    const timed = fakeSession(() => ({}), ['game.state'], 1, 0, false, null, true);
+    const play = createPlayContext(timed.session, recorder(), '/tmp/out', 5000);
+    const start = performance.now();
+    await play.mouse.drag([0.5, 0.5], [0.65, 0.5], { button: 'right' });
+    // At 60 frames per second one drag takes about four frames.
+    expect(performance.now() - start).toBeLessThan(150);
+  });
+
+  it('looks by a relative delta, directly under pointer lock', async () => {
+    const locked = fakeSession(() => ({}), ['game.state'], 1, 0, true);
+    await createPlayContext(locked.session, recorder(), '/tmp/out', 1000).mouse.look(100, 0);
+    expect(locked.events).toEqual(['look {"dx":100,"dy":0}', 'wait 16']);
+    const free = fakeSession(() => ({}));
+    const play = createPlayContext(free.session, recorder(), '/tmp/out', 1000);
+    await play.mouse.look(100, 0);
+    await play.mouse.look(0, -20);
+    // Without the lock the cursor moves by the delta from the canvas centre, then onward.
+    expect(free.events.filter((event) => event.startsWith('move'))).toEqual([
+      'move 110,70',
+      'move 210,70',
+      'move 210,70',
+      'move 210,50',
+    ]);
+    await expect(play.mouse.look(Number.NaN, 0)).rejects.toThrow(/finite pixel deltas/);
+  });
+
+  it('warns when mouse.click lands on page content instead of the canvas', async () => {
+    const clear = recorder();
+    await createPlayContext(fakeSession(() => ({})).session, clear, '/tmp/out', 1000).mouse.click([
+      0.5, 0.5,
+    ]);
+    expect(clear.warnings).toEqual([]);
+    const covered = recorder();
+    const { session, events } = fakeSession(
+      () => ({}),
+      ['game.state'],
+      1,
+      0,
+      false,
+      '<div.hud> in UI hud.ui.html',
+    );
+    const play = createPlayContext(session, covered, '/tmp/out', 1000);
+    await play.mouse.click([0.5, 0.5]);
+    await play.mouse.click([0.5, 0.5]);
+    // The click is still delivered; the warning only names what received it.
+    expect(events.filter((event) => event === 'down mouse')).toHaveLength(2);
+    expect(covered.warnings).toEqual([
+      clickBlockedWarning([0.5, 0.5], '<div.hud> in UI hud.ui.html'),
+    ]);
+    const value = playResultValue(
+      report({ warnings: groupPlayWarnings(covered.warnings) }),
+      false,
+    ) as { warnings?: { kind: string; message: string }[] };
+    expect(value.warnings?.[0]?.kind).toBe('mouse.click off canvas');
+    expect(value.warnings?.[0]?.message).toContain(
+      'mouse.click [0.5,0.5] hit <div.hud> in UI hud.ui.html',
+    );
+  });
+
+  it('warns once when mouse.move runs while the page holds pointer lock', async () => {
+    const unlocked = recorder();
+    await createPlayContext(fakeSession(() => ({})).session, unlocked, '/tmp/out', 1000).mouse.move(
+      [0.5, 0.5],
+    );
+    expect(unlocked.warnings).toEqual([]);
+    const locked = recorder();
+    const play = createPlayContext(
+      fakeSession(() => ({}), ['game.state'], 1, 0, true).session,
+      locked,
+      '/tmp/out',
+      1000,
+    );
+    await play.mouse.move([0.5, 0.5]);
+    await play.mouse.move([0.6, 0.5]);
+    expect(locked.warnings).toEqual([POINTER_LOCK_MOVE_WARNING]);
+    const value = playResultValue(
+      report({ warnings: groupPlayWarnings(locked.warnings) }),
+      false,
+    ) as { warnings?: { message: string }[] };
+    expect(value.warnings?.[0]?.message).toContain('setPointerLockAllowed(false)');
+    expect(JSON.stringify(value).length).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
+  });
+
+  it('merges warnings by kind in the order first seen and keeps cause and fix whole', () => {
+    const fix = ' Fix: '.padEnd(300, 'x');
+    const lines = [
+      `screenshot mid: renamed asset: "Crate" was renamed.${fix}`,
+      `screenshot start: stale asset: "Crate" 1 was reloaded.${fix}`,
+      `screenshot mid: stale asset: "Crate" 2 was reloaded.${fix}`,
+      `screenshot end: stale asset: "Crate" 3 was reloaded.${fix}`,
+      `screenshot end: missing texture: "Crate" has no base colour.${fix}`,
+      `screenshot start: unbaked mesh: "Crate" is not baked.${fix}`,
+      `screenshot end: unbaked mesh: "Crate" still is not baked.${fix}`,
+      POINTER_LOCK_MOVE_WARNING,
+    ];
+    const warnings = groupPlayWarnings(lines);
+    expect(warnings.map((warning) => [warning.kind, warning.count, warning.screenshots])).toEqual([
+      ['renamed asset', 1, ['mid']],
+      ['stale asset', 3, ['start', 'mid', 'end']],
+      ['missing texture', 1, ['end']],
+      ['unbaked mesh', 2, ['start', 'end']],
+      ['mouse.move under pointer lock', 1, []],
+    ]);
+    expect(warnings[1]?.message).toMatch(/^stale asset: "Crate" 1/);
+    expect(warnings[1]?.others).toHaveLength(2);
+    expect(warnings[3]?.others).toEqual([lines[6]]);
+    const { warnings: field = [], moreWarningKinds } = warningsField({ warnings });
+    expect(field.map((warning) => warning.kind)).toEqual([
+      'renamed asset',
+      'stale asset',
+      'missing texture',
+      'unbaked mesh',
+    ]);
+    expect(moreWarningKinds).toBe(1);
+    for (const warning of field) {
+      expect(warning.message.endsWith(fix)).toBe(true);
+      expect(warning.others).toBeUndefined();
+    }
+    expect(Buffer.byteLength(JSON.stringify(field))).toBeLessThanOrEqual(PLAY_WARNING_BYTES);
+    // Success value and failure detail carry the report's shape, the report path last.
+    const value = playResultValue(report({ warnings }), false) as Record<string, unknown>;
+    const { warnings: listed, moreWarningKinds: more, ...rest } = value;
+    expect(listed).toEqual(field);
+    expect(more).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify(rest))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
+    expect(Object.keys(value).at(-1)).toBe('report');
+    const failed = playFailureError(
+      report({
+        passed: false,
+        warnings,
+        failure: { code: 'play-step-failed', reason: 'script-error', message: 'boom' },
+      }),
+    );
+    expect((failed?.detail as Record<string, unknown>).warnings).toEqual(field);
+  });
+
+  it('caps the warnings by kind count, bytes and screenshot names and counts the rest', () => {
+    const many = Array.from(
+      { length: PLAY_WARNING_KINDS + 3 },
+      (_unused, index) => `screenshot s: ${'abcdefg'[index]} finding: ${'y'.repeat(900)}`,
+    );
+    const { warnings: field = [], moreWarningKinds } = warningsField({
+      warnings: groupPlayWarnings(many),
+    });
+    expect(Buffer.byteLength(JSON.stringify(field))).toBeLessThanOrEqual(PLAY_WARNING_BYTES);
+    expect(field.length).toBeLessThanOrEqual(PLAY_WARNING_KINDS);
+    expect(moreWarningKinds).toBe(PLAY_WARNING_KINDS + 3 - field.length);
+    // One very long warning still shows, clipped; long screenshot lists end with a count.
+    const shots = Array.from({ length: 9 }, (_unused, index) => `screenshot s${index}: dark: x`);
+    const [only] =
+      warningsField({ warnings: groupPlayWarnings([`dark: ${'z'.repeat(5000)}`, ...shots]) })
+        .warnings ?? [];
+    expect(only?.message.length).toBeLessThan(PLAY_WARNING_BYTES);
+    expect(only?.count).toBe(10);
+    expect(only?.screenshots).toEqual(['s0', 's1', 's2', 's3', 's4', '+4 more']);
+    expect(warningsField({ warnings: [] })).toEqual({});
+  });
+
+  it('points step and startup failures at the scene preview', () => {
+    expect(SCENE_PREVIEW_HINT).toContain('forgeax asset preview --kind scene --guid');
+    const value = playResultValue(
+      report({ warnings: groupPlayWarnings([POINTER_LOCK_MOVE_WARNING]) }),
+      false,
+    ) as Record<string, unknown>;
+    expect(value.scenePreview).toBeUndefined();
+    const failed = playFailureError(
+      report({
+        passed: false,
+        failure: { code: 'play-step-failed', reason: 'wait-timeout', message: 'never' },
+      }),
+    );
+    expect(failed?.hint).toContain(SCENE_PREVIEW_HINT);
+    const startup = playFailureError(
+      report({
+        passed: false,
+        failure: { code: 'play-not-ready', reason: 'startup-failed', message: 'fatal' },
+      }),
+    );
+    expect(startup?.hint).toContain(SCENE_PREVIEW_HINT);
   });
 
   it('rejects every helper after abort and never lets a key release mask the hold error', async () => {
@@ -409,6 +646,10 @@ describe('play result shaping', () => {
         true,
       ),
     ).toBe('ui-missing');
+    // A canvas-only game under --require-ui fails fast with its own code.
+    expect(finalCaptureCheck({ code: 'browser-capture-ui-missing' }, undefined, 0, true)).toBe(
+      'ui-missing',
+    );
     expect(finalCaptureCheck({ code: 'browser-capture-timeout' }, undefined, 0, false)).toBe(
       'final-frame-timeout',
     );
@@ -584,6 +825,124 @@ describe('play output ownership and cancellation', () => {
   });
 });
 
+describe('play in a dev owner session', () => {
+  async function project(name: string): Promise<string> {
+    const root = await mkdtemp(resolve(tmpdir(), `forgeax-play-${name}-`));
+    await writeFile(
+      resolve(root, 'forge.json'),
+      JSON.stringify({ id: name, name: 'Play', schemaVersion: '3.0.0', roots: {} }),
+    );
+    await writeFile(
+      resolve(root, 'package.json'),
+      `{"name":"${name}","forgeax":{"startupTimeoutMs":300}}\n`,
+    );
+    await writeFile(resolve(root, 'ok.mjs'), 'export default async () => {};\n');
+    return root;
+  }
+
+  it('runs in the borrowed page, never closes it and restores its size', async () => {
+    const root = await project('play-session-host');
+    try {
+      const events: string[] = [];
+      let size = { width: 800, height: 450 };
+      const page = {
+        viewportSize: () => size,
+        setViewportSize: async (next: { width: number; height: number }) => {
+          size = next;
+          events.push(`viewport ${next.width}x${next.height}`);
+        },
+        // Input never opens, so the run ends at the input gate.
+        waitForFunction: async () => {
+          throw new Error('timeout');
+        },
+        evaluate: async () => null,
+      };
+      const session = {
+        page: page as unknown as Page,
+        url: 'http://127.0.0.1:5173/',
+        capture: async () => {
+          throw new Error('no frame');
+        },
+        report: () => ({ captures: [], consoleErrors: [], pageErrors: [], inputWarnings: [] }),
+        close: async () => void events.push('close'),
+      } as unknown as BrowserCaptureSession;
+      let opened = 0;
+      const result = await playCommand(
+        { root, script: 'ok.mjs', progress: false, detail: true, session: true },
+        {
+          sessionHost: {
+            open: async () => {
+              opened += 1;
+              return session;
+            },
+          },
+        },
+      );
+      expect(opened).toBe(1);
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: 'play-not-ready',
+          detail: { reason: 'input-closed', play: { mode: 'session' } },
+        },
+      });
+      // The script viewport, then the owner's own size again; the page stays open.
+      expect(events).toEqual(['viewport 1280x720', 'viewport 800x450']);
+      const written = JSON.parse(
+        await readFile(resolve(root, 'artifacts/play/ok/play.json'), 'utf8'),
+      ) as PlayReport;
+      expect(written.mode).toBe('session');
+      expect(written.timings.openMs).toBeTypeOf('number');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing dev owner as session-unavailable and starts nothing', async () => {
+    const root = await project('play-session-absent');
+    try {
+      const result = await playCommand({ root, script: 'ok.mjs', progress: false, session: true });
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          code: 'play-not-ready',
+          hint: expect.stringContaining('forgeax dev start'),
+          detail: { reason: 'session-unavailable', cause: { code: 'live-not-running' } },
+        },
+      });
+      await expect(stat(resolve(root, '.forgeax/dev-session.json'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps --session in the rerun command of a session play', () => {
+    expect(rerunCommand({ script: 'p.mjs', timeScale: 1, mode: 'session' }, 'walk')).toBe(
+      'forgeax project play p.mjs --from walk --session --json',
+    );
+    expect(rerunCommand({ script: 'p.mjs', timeScale: 1 }, 'walk')).toBe(
+      'forgeax project play p.mjs --from walk --json',
+    );
+  });
+});
+
+describe('play help', () => {
+  it('lists every PlayContext member in the project play input schema', () => {
+    const contribution = createUnifiedCommandContributions(tmpdir()).find(
+      ({ descriptor }) => descriptor.id === 'project.play',
+    );
+    const description = (contribution?.descriptor.inputSchema as { description?: string })
+      ?.description;
+    expect(description).toContain("import('@forgeax/engine/devkit').PlayContext");
+    for (const [key, line] of Object.entries(PLAY_CONTEXT_REFERENCE)) {
+      expect(line.startsWith(key)).toBe(true);
+      expect(description).toContain(`play.${line}`);
+    }
+  });
+});
+
 describe('play agent loop', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -634,36 +993,70 @@ describe('play agent loop', () => {
     }
   });
 
-  it('reports layout warnings compactly and keeps them when the byte budget is tight', () => {
-    const layout = Array.from({ length: 5 }, (_unused, index) => ({
-      viewport: '1280x600',
-      kind: 'text-over-panel' as const,
-      a: `#intro "Night ${index} falls over the lighthouse"`,
-      b: '#bottom-bar',
-    }));
-    const value = playResultValue(
-      report({ layout, state: { blob: 'x'.repeat(2_000) }, returned: { more: 'y'.repeat(2_000) } }),
+  it('suggests a faster iteration run on a real-time private play, naming --session only with a live owner', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-play-faster-'));
+    const lines: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      await writeFile(
+        resolve(root, 'forge.json'),
+        JSON.stringify({ id: 'play-faster', name: 'Play', schemaVersion: '3.0.0', roots: {} }),
+      );
+      await writeFile(
+        resolve(root, 'package.json'),
+        '{"name":"play-faster","forgeax":{"startupTimeoutMs":500}}\n',
+      );
+      await playCommand({ root, script: 'absent.mjs' });
+      await mkdir(resolve(root, '.forgeax'), { recursive: true });
+      await writeFile(
+        resolve(root, '.forgeax/dev-session.json'),
+        JSON.stringify({ endpoint: 'http://127.0.0.1:1', pid: process.pid }),
+      );
+      await playCommand({ root, script: 'absent.mjs' });
+      await playCommand({ root, script: 'absent.mjs', timeScale: 4 });
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+    const expectations = lines.filter((line) => line.includes('wait for this command'));
+    expect(expectations).toHaveLength(3);
+    for (const line of expectations) expect(line.trimEnd().includes('\n')).toBe(false);
+    const [plain, owned, scaled] = expectations;
+    expect(plain).toContain('iteration runs can pass --time-scale 4;');
+    expect(plain).toContain('final acceptance stays real-time');
+    expect(plain).not.toContain('--session');
+    expect(owned).toContain('iteration runs can pass --time-scale 4 --session');
+    // A run already using the flags gets no suggestion.
+    expect(scaled).not.toContain('--time-scale');
+  }, 15_000);
+
+  it('adds one next hint to a long passing real-time private run only', () => {
+    const long = { timings: { totalMs: 120_000 } };
+    const value = playResultValue(report(long), false) as Record<string, unknown>;
+    expect(value.next).toBe(
+      'iteration runs can pass --time-scale 4 (and --from <step> once steps have setups); final acceptance stays real-time',
+    );
+    for (const quiet of [
+      report(),
+      report({ ...long, timeScale: 4, final: false, nonFinal: ['time scale 4'] }),
+      report({ ...long, mode: 'session' }),
+      report({ ...long, range: { from: 'walk' }, final: false, nonFinal: ['step range walk..'] }),
+    ])
+      expect('next' in (playResultValue(quiet, false) as object)).toBe(false);
+    // The hint goes first when the budget is tight.
+    const tight = playResultValue(
+      report({ ...long, state: { blob: 'x'.repeat(2_000) }, script: `scripts/${'p'.repeat(119)}` }),
       false,
     ) as Record<string, unknown>;
-    expect(value.layout).toEqual([
-      '1280x600 text-over-panel #intro "Night 0 falls over the lighthouse" vs #bottom-bar',
-      '1280x600 text-over-panel #intro "Night 1 falls over the lighthouse" vs #bottom-bar',
-      '1280x600 text-over-panel #intro "Night 2 falls over the lighthouse" vs #bottom-bar',
-      '+2 more',
-    ]);
-    expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
-    expect('layout' in (playResultValue(report(), false) as object)).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(tight))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
   });
 
-  it('keeps a CJK, long-path worst case within the byte budget, shrinking layout to one line', () => {
+  it('keeps a CJK, long-path worst case within the byte budget', () => {
     // Four CJK ideographs (three UTF-8 bytes each), escaped for the English-only source rule.
     const cjk = '\u706f\u5854\u5b88\u591c'.repeat(60);
-    const layout = Array.from({ length: 20 }, () => ({
-      viewport: '1280x600',
-      kind: 'text-over-panel' as const,
-      a: `#intro "${cjk}"`,
-      b: `#${cjk}`,
-    }));
     const value = playResultValue(
       report({
         root: '/g',
@@ -675,14 +1068,12 @@ describe('play agent loop', () => {
           rendered: true,
           digest: 'sha256:a',
         })),
-        layout,
         state: { [cjk]: cjk },
         returned: { [cjk]: cjk },
       }),
       false,
     ) as Record<string, unknown>;
     expect(Buffer.byteLength(JSON.stringify(value))).toBeLessThanOrEqual(PLAY_COMPACT_BYTES);
-    expect(value.layout).toEqual([expect.stringMatching(/^1280x600 text-over-panel/), '+19 more']);
     const failed = playFailureError(
       report({
         passed: false,
@@ -751,6 +1142,672 @@ describe('play agent loop', () => {
     expect(result).toMatchObject({
       ok: false,
       error: { code: 'tool-invalid-args', expected: '--viewports WxH[,WxH...]' },
+    });
+  });
+});
+
+describe('step ranges', () => {
+  const ranged = (range: PlayStepRange): PlayRecorder & { range: PlayRangeTracker } => ({
+    ...recorder(),
+    range: { range, phase: 'before', index: 0, seen: [] },
+  });
+  /** Four top-level steps with input inside and between them; `withSetup` gives each a setup. */
+  const journey = (play: ReturnType<typeof createPlayContext>, ran: string[], withSetup = true) =>
+    (async () => {
+      for (const name of ['spawn', 'walk', 'jump', 'land']) {
+        await play.step(
+          name,
+          async () => {
+            ran.push(name);
+            await play.keyboard.press(`Key${name[0]?.toUpperCase()}`);
+          },
+          withSetup ? { setup: async () => void ran.push(`${name} setup`) } : {},
+        );
+        await play.keyboard.press('KeyX');
+        await play.wait(5);
+      }
+    })();
+
+  it('parses --from and --steps into a range of names or 1-based positions', () => {
+    expect(parsePlayStepRange({})).toEqual({ ok: true });
+    expect(parsePlayStepRange({ from: 'walk' })).toEqual({ ok: true, value: { from: 'walk' } });
+    expect(parsePlayStepRange({ steps: '2..3' })).toEqual({
+      ok: true,
+      value: { from: '2', to: '3' },
+    });
+    expect(parsePlayStepRange({ steps: 'walk..' })).toEqual({ ok: true, value: { from: 'walk' } });
+    expect(parsePlayStepRange({ steps: '..jump' })).toEqual({
+      ok: true,
+      value: { from: '1', to: 'jump' },
+    });
+    expect(parsePlayStepRange({ steps: 'jump' })).toEqual({
+      ok: true,
+      value: { from: 'jump', to: 'jump' },
+    });
+    for (const bad of [
+      { steps: '3..2' },
+      { steps: '..' },
+      { from: ' ' },
+      { from: 'a', steps: 'b' },
+    ])
+      expect(parsePlayStepRange(bad).ok).toBe(false);
+  });
+
+  it('skips steps before the range without input, runs the first one after its setup and ends after the last', async () => {
+    const rec = ranged({ from: 'walk', to: '3' });
+    const { session, events } = fakeSession(() => ({ phase: 'playing' }));
+    const play = createPlayContext(session, rec, '/tmp/out', 1000);
+    const ran: string[] = [];
+    await expect(journey(play, ran)).rejects.toMatchObject({ name: 'PlayRangeEnd' });
+    // Only the setup of the range's first step runs; spawn and land never run.
+    expect(ran).toEqual(['walk setup', 'walk', 'jump']);
+    const keys = events.filter((event) => event.startsWith('down '));
+    // No spawn input and none between skipped steps; input between range steps still runs,
+    // and the first helper after the last range step ends the script.
+    expect(keys).toEqual(['down KeyW', 'down KeyX', 'down KeyJ']);
+    expect(rec.steps).toEqual([
+      { name: 'spawn', ok: true, ms: 0, skipped: true },
+      expect.objectContaining({ name: 'walk > setup', ok: true }),
+      expect.objectContaining({ name: 'walk', ok: true }),
+      expect.objectContaining({ name: 'jump', ok: true }),
+    ]);
+    expect(rec.range.phase).toBe('after');
+  });
+
+  it('fails fast naming the step and the setup option when the range starts at a step without setup', async () => {
+    const rec = ranged({ from: '3' });
+    const { session, events } = fakeSession(() => ({ phase: 'playing' }));
+    const play = createPlayContext(session, rec, '/tmp/out', 1000);
+    const ran: string[] = [];
+    const error = await journey(play, ran, false).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ reason: 'setup-missing' });
+    expect((error as Error).message).toContain('Step "jump" (#3) has no setup');
+    expect((error as Error).message).toContain('play.step("jump", run, { setup:');
+    expect(ran).toEqual([]);
+    expect(events.filter((event) => event.startsWith('down '))).toEqual([]);
+    // Starting at the first step needs no setup: it is the complete journey.
+    const full = ranged({ from: 'spawn' });
+    const fresh: string[] = [];
+    await journey(createPlayContext(session, full, '/tmp/out', 1000), fresh, false);
+    expect(fresh).toEqual(['spawn', 'walk', 'jump', 'land']);
+  });
+
+  it('remembers the failed top-level step and prints the --from rerun command', async () => {
+    const rec = recorder();
+    const { session } = fakeSession(() => ({ phase: 'menu' }));
+    const play = createPlayContext(session, rec, '/tmp/out', 1000);
+    await play.step('spawn', async () => undefined);
+    await play
+      .step('walk', () =>
+        play.step('reach door', () =>
+          play.waitFor((s: { phase: string }) => s.phase === 'won', { timeoutMs: 1 }),
+        ),
+      )
+      .catch(() => undefined);
+    expect(rec.failedTop).toBe('walk');
+    const failed = playFailureError(
+      report({
+        passed: false,
+        failure: {
+          code: 'play-step-failed',
+          reason: 'wait-timeout',
+          message: 'State predicate stayed false for 1 ms',
+          step: 'walk > reach door',
+          rerunFrom: 'walk',
+        },
+      }),
+    );
+    expect((failed?.detail as Record<string, unknown>).rerun).toBe(
+      'forgeax project play scripts/playthrough.mjs --from walk --json',
+    );
+    expect(failed?.hint).toContain('detail.rerun');
+    // The rerun command and the longer hint still leave room for the step's state and action.
+    const located = playFailureError(
+      report({
+        passed: false,
+        state: { presses: 1, phase: 'playing' },
+        failure: {
+          code: 'play-step-failed',
+          reason: 'wait-timeout',
+          message: 'State predicate stayed false for 500 ms',
+          step: 'collect coin',
+          action: 'collect coin: waitFor',
+          screenshot: '/game/.forgeax/diag/artifacts/play/scripts/playthrough/01-failure.png',
+          rerunFrom: 'collect coin',
+        },
+      }),
+    );
+    expect(located?.detail).toMatchObject({
+      state: { presses: 1 },
+      action: 'collect coin: waitFor',
+      rerun: "forgeax project play scripts/playthrough.mjs --from 'collect coin' --json",
+    });
+    expect(Buffer.byteLength(JSON.stringify(located))).toBeLessThan(1024);
+    expect(rerunCommand({ script: 'scripts/my play.mjs' }, "boss's room")).toBe(
+      "forgeax project play 'scripts/my play.mjs' --from 'boss'\\''s room' --json",
+    );
+    // "walk" is a later step without setup, so the run reruns from the start.
+    expect(playRerunFields(rec)).toEqual({ stepWithoutSetup: 'walk' });
+    // A range run is reported as not final acceptance.
+    const partial = playResultValue(
+      report({ range: { from: 'walk' }, final: false, nonFinal: ['step range walk..'] }),
+      false,
+    );
+    expect(partial).toMatchObject({ final: false, nonFinal: ['step range walk..'] });
+  });
+
+  it('runs the game-3d template playthrough from its later step with a setup', async () => {
+    const path = resolve(
+      import.meta.dirname,
+      '../../../../templates/game-3d/scripts/playthrough.mjs',
+    );
+    const script = ((await import(path)) as { default: (play: unknown) => Promise<unknown> })
+      .default;
+    let reads = 0;
+    const { session, events } = fakeSession(() => {
+      reads += 1;
+      return { position: [reads * 0.2, reads * 0.3, 0], camera: { yaw: 0 }, grounded: true };
+    }, ['game-3d.player']);
+    const rec = ranged({ from: 'jump', to: 'jump' });
+    await expect(script(createPlayContext(session, rec, tmpdir(), 1000))).rejects.toMatchObject({
+      name: 'PlayRangeEnd',
+    });
+    expect(rec.steps.map((step) => step.name)).toEqual([
+      'spawn',
+      'look',
+      'walk',
+      'jump > setup',
+      'jump',
+    ]);
+    expect(events).toContain('down Space');
+    // The header names the iteration rerun and keeps final acceptance real-time.
+    const source = await readFile(path, 'utf8');
+    expect(source).toContain('--from <step>');
+    expect(source).toContain('real time');
+  });
+
+  it('never prints a --from rerun that must fail: a later step without setup reruns from the start', async () => {
+    const { session } = fakeSession(() => ({ phase: 'menu' }));
+    const stuck = async () => {
+      throw new Error('stuck');
+    };
+    const setup = { setup: async () => undefined };
+    const fields = async (
+      rec: PlayRecorder,
+      run: (play: ReturnType<typeof createPlayContext>) => Promise<unknown>,
+    ) => {
+      await run(createPlayContext(session, rec, '/tmp/out', 1000)).catch(() => undefined);
+      return playRerunFields(rec);
+    };
+    expect(
+      await fields(recorder(), async (play) => {
+        await play.step('spawn', async () => undefined);
+        await play.step('walk', stuck);
+      }),
+    ).toEqual({ stepWithoutSetup: 'walk' });
+    expect(
+      await fields(recorder(), async (play) => {
+        await play.step('spawn', async () => undefined);
+        await play.step('walk', stuck, setup);
+      }),
+    ).toEqual({ rerunFrom: 'walk' });
+    expect(await fields(recorder(), (play) => play.step('spawn', stuck))).toEqual({
+      rerunFrom: 'spawn',
+    });
+    // A range run that started at a step with setup reruns from that start.
+    expect(
+      await fields(ranged({ from: 'walk' }), async (play) => {
+        await play.step('spawn', async () => undefined);
+        await play.step('walk', async () => undefined, setup);
+        await play.step('jump', stuck);
+      }),
+    ).toEqual({ rerunFrom: 'walk', stepWithoutSetup: 'jump' });
+    const failed = (overrides: Partial<PlayReport>) =>
+      playFailureError(
+        report({
+          passed: false,
+          failure: {
+            code: 'play-step-failed',
+            reason: 'script-error',
+            message: 'stuck',
+            step: 'walk',
+            stepWithoutSetup: 'walk',
+          },
+          ...overrides,
+        }),
+      )?.detail as Record<string, unknown>;
+    const realTime = failed({});
+    expect(realTime.rerun).toBe('forgeax project play scripts/playthrough.mjs --json');
+    expect(realTime.setupHint).toContain('play.step("walk", run, { setup:');
+    expect(realTime.setupHint).toContain('--from walk');
+    expect(realTime.setupHint).toContain('--time-scale 4');
+    const scaled = failed({ mode: 'session', timeScale: 2, final: false, nonFinal: ['x'] });
+    expect(scaled.rerun).toBe(
+      'forgeax project play scripts/playthrough.mjs --time-scale 2 --session --json',
+    );
+    expect(scaled.setupHint).not.toContain('--time-scale 4');
+    // Real-project sizes: a deep root, a scaled iteration run and long warnings. The
+    // error message, the setup hint and the scene preview pointer all survive.
+    const real = playFailureError(
+      report({
+        passed: false,
+        root: '/private/tmp/workspace/game',
+        script: 'scripts/fail-late.mjs',
+        report: '/private/tmp/workspace/game/artifacts/play/scripts/fail-late/play.json',
+        timeScale: 4,
+        final: false,
+        nonFinal: ['time scale 4'],
+        warnings: [
+          {
+            kind: 'mouse.click off canvas',
+            count: 2,
+            screenshots: [],
+            message: 'mouse.click at 10,10 hit #menu, not the game canvas: '.padEnd(600, 'x'),
+          },
+        ],
+        failure: {
+          code: 'play-step-failed',
+          reason: 'script-error',
+          message: 'injected smoke failure after look',
+          step: 'look',
+          action: 'look: screenshot look-around',
+          stepWithoutSetup: 'look',
+          screenshot:
+            '/private/tmp/workspace/game/.forgeax/diag/artifacts/play/scripts/fail-late/03-failure.png',
+        },
+      }),
+    );
+    const realDetail = real?.detail as Record<string, unknown>;
+    expect(realDetail.message).toBe('injected smoke failure after look');
+    expect(realDetail.setupHint).toContain('play.step("look", run, { setup:');
+    expect(real?.hint).toContain(SCENE_PREVIEW_HINT);
+    // Without warnings the hint carries the pointer too.
+    const plain = playFailureError(
+      report({
+        passed: false,
+        failure: {
+          code: 'play-step-failed',
+          reason: 'script-error',
+          message: 'stuck',
+          step: 'walk',
+        },
+      }),
+    );
+    expect(plain?.hint).toContain(SCENE_PREVIEW_HINT);
+    // The same real-size failure without warnings keeps the full hint and still fits
+    // both the message and the setup hint.
+    const unwarned = playFailureError(
+      report({
+        passed: false,
+        root: '/private/tmp/workspace/game',
+        script: 'scripts/fail-late.mjs',
+        report: '/private/tmp/workspace/game/artifacts/play/scripts/fail-late/play.json',
+        failure: {
+          code: 'play-step-failed',
+          reason: 'script-error',
+          message: 'injected smoke failure after look',
+          step: 'look',
+          action: 'look: screenshot look-around',
+          stepWithoutSetup: 'look',
+          screenshot:
+            '/private/tmp/workspace/game/.forgeax/diag/artifacts/play/scripts/fail-late/03-failure.png',
+        },
+      }),
+    );
+    expect(unwarned?.hint).toContain(SCENE_PREVIEW_HINT);
+    expect(unwarned?.detail).toMatchObject({
+      message: 'injected smoke failure after look',
+      setupHint: expect.stringContaining('play.step("look", run, { setup:'),
+    });
+  });
+});
+
+describe('time scale', () => {
+  /**
+   * A page whose lockstep clock moves game time only by stepped frames; a step request
+   * takes `latencyMs` of real time, like a slow page evaluation.
+   */
+  function lockstep(
+    scale: number,
+    options: { latencyMs?: number; edgeFrame?: number; running?: () => boolean } = {},
+  ) {
+    const { latencyMs = 0, edgeFrame = 10, running = () => true } = options;
+    let frames = 0;
+    const checks: number[] = [];
+    const state = () => ({ frames, edge: frames >= edgeFrame, ready: false });
+    const { session, events } = fakeSession(state);
+    const page = session.page as unknown as {
+      evaluate(fn: unknown, arg?: unknown): Promise<unknown>;
+    };
+    const evaluate = page.evaluate.bind(page);
+    const status = () => ({
+      running: true,
+      scale,
+      stepSeconds: 1 / 60,
+      frames,
+      gameSeconds: frames / 60,
+      wallSeconds: 0,
+      checks: checks.length,
+      heldSeconds: 0,
+    });
+    page.evaluate = async (fn, arg) => {
+      if (!String(fn).includes('clock?.(')) return await evaluate(fn, arg);
+      const request = arg as { action?: string; frames?: number; read?: string };
+      if (request.frames === undefined) {
+        events.push(`clock ${request.action}`);
+        return status();
+      }
+      if (latencyMs > 0) await new Promise((done) => setTimeout(done, latencyMs));
+      if (!running()) return { status: { running: false, error: 'app-dispatch-refused {}' } };
+      frames += request.frames;
+      events.push(`step ${request.frames}`);
+      if (request.read === undefined) return { status: status() };
+      checks.push(frames);
+      return { status: status(), state: state() };
+    };
+    const rec: PlayRecorder = { ...recorder(), timeScale: scale };
+    const play = createPlayContext(session, rec, tmpdir(), 1000);
+    return { play, rec, events, checks, frames: () => frames };
+  }
+
+  it('checks a predicate every 3 frames of game time whatever the evaluation latency', async () => {
+    const runs = [];
+    for (const latencyMs of [0, 40]) {
+      const run = lockstep(4, { latencyMs, edgeFrame: 10 });
+      const started = Date.now();
+      const reached = await run.play.keyboard.hold('KeyW', (s: { edge: boolean }) => s.edge);
+      runs.push({
+        reached,
+        checks: run.checks,
+        events: run.events.filter((event) => !event.startsWith('read')),
+        ms: Date.now() - started,
+      });
+    }
+    const [fast, slow] = runs;
+    // The key goes down before frame 1 and up right after the first check that holds.
+    expect(fast?.events).toEqual(['down KeyW', 'step 3', 'step 3', 'step 3', 'step 3', 'up KeyW']);
+    expect(fast?.checks).toEqual([3, 6, 9, 12]);
+    expect(fast?.reached).toEqual({ frames: 12, edge: true, ready: false });
+    // A slow page changes how long the run takes, never which frames it checks.
+    expect(slow?.events).toEqual(fast?.events);
+    expect(slow?.checks).toEqual(fast?.checks);
+    expect(slow?.reached).toEqual(fast?.reached);
+    expect(slow?.ms ?? 0).toBeGreaterThanOrEqual(4 * 40 - 5);
+  });
+
+  it('steps waits and timed holds as game time and never sleeps on the wall clock', async () => {
+    const run = lockstep(4);
+    await run.play.wait(1000);
+    expect(run.frames()).toBe(60);
+    await run.play.wait(2500);
+    expect(run.frames()).toBe(210);
+    await run.play.keyboard.hold('KeyW', 500);
+    expect(run.frames()).toBe(240);
+    expect(run.events).toEqual([
+      'step 60',
+      'step 60',
+      'step 60',
+      'step 30',
+      'down KeyW',
+      'step 30',
+      'up KeyW',
+    ]);
+    expect(run.rec.clock).toMatchObject({ running: true, scale: 4, frames: 240 });
+  });
+
+  it('times a wait out after its game time in frames, not wall time', async () => {
+    const run = lockstep(4, { latencyMs: 30 });
+    const timedOut = await run.play
+      .waitFor((state: { ready: boolean }) => state.ready, { timeoutMs: 100 })
+      .catch((error: unknown) => error);
+    expect(timedOut).toMatchObject({
+      reason: 'wait-timeout',
+      message: 'State predicate stayed false for 100 ms of game time',
+      state: { frames: 6 },
+    });
+    expect(run.checks).toEqual([3, 6]);
+  });
+
+  it('holds presses and clicks for whole stepped frames', async () => {
+    const run = lockstep(2);
+    await run.play.keyboard.press('Shift+KeyA');
+    await run.play.mouse.click([0.5, 0.5]);
+    await run.play.mouse.look(5, 0);
+    expect(run.events.filter((event) => !event.startsWith('hit-test'))).toEqual([
+      'down Shift',
+      'down KeyA',
+      'step 3',
+      'up KeyA',
+      'up Shift',
+      'move 110,70',
+      'down mouse',
+      'step 3',
+      'up mouse',
+      'look {"dx":5,"dy":0}',
+      'move 110,70',
+      'move 115,70',
+      'step 2',
+    ]);
+  });
+
+  it('fails a wait with clock-failed once the page clock stopped', async () => {
+    let stopped = false;
+    const halted = lockstep(4, { running: () => !stopped });
+    stopped = true;
+    await expect(halted.play.wait(100)).rejects.toMatchObject({
+      reason: 'clock-failed',
+      message: expect.stringContaining('app-dispatch-refused'),
+    });
+  });
+
+  it('keeps real-time waits on the wall clock without touching the page clock', async () => {
+    const { session, events } = fakeSession(() => ({}));
+    const play = createPlayContext(session, recorder(), tmpdir(), 1000);
+    await play.wait(300);
+    expect(events).toEqual(['wait 300']);
+  });
+
+  it('records the scale, marks a scaled run non-final and keeps the scale in the rerun', () => {
+    expect(finalFields({})).toEqual({ timeScale: 1 });
+    const fields = finalFields({
+      timeScale: 4,
+      clock: {
+        running: false,
+        scale: 4,
+        stepSeconds: 1 / 60,
+        frames: 240,
+        gameSeconds: 4,
+        wallSeconds: 1,
+        checks: 80,
+        heldSeconds: 0.25,
+      },
+    });
+    expect(fields).toEqual({
+      timeScale: 4,
+      clock: {
+        stepSeconds: 1 / 60,
+        frames: 240,
+        gameSeconds: 4,
+        wallSeconds: 1,
+        checks: 80,
+        heldSeconds: 0.25,
+      },
+      final: false,
+      nonFinal: ['time scale 4'],
+    });
+    expect(rerunCommand({ script: 'scripts/p.mjs', timeScale: 4 }, 'walk')).toBe(
+      'forgeax project play scripts/p.mjs --from walk --time-scale 4 --json',
+    );
+    expect(rerunCommand({ script: 'scripts/p.mjs', timeScale: 1 }, 'walk')).toBe(
+      'forgeax project play scripts/p.mjs --from walk --json',
+    );
+    const value = playResultValue(report({ ...fields }), false);
+    expect(value).toMatchObject({ final: false, nonFinal: ['time scale 4'] });
+  });
+
+  it('rejects a time scale outside its bounds before starting anything', async () => {
+    for (const timeScale of [0, -1, 17, Number.NaN]) {
+      const result = await playCommand({ root: tmpdir(), script: 'x.mjs', timeScale });
+      expect(result).toMatchObject({
+        ok: false,
+        error: { code: 'tool-invalid-args', expected: expect.stringContaining('--time-scale') },
+      });
+    }
+  });
+});
+
+describe('release play', () => {
+  it('refuses development-only flags and a missing build before starting anything', async () => {
+    const root = await mkdtemp(resolve(tmpdir(), 'forgeax-play-release-'));
+    try {
+      const scaled = await playCommand({ root, script: 'x.mjs', release: true, timeScale: 4 });
+      expect(scaled).toMatchObject({
+        ok: false,
+        error: {
+          code: 'tool-invalid-args',
+          detail: { reason: 'release-unsupported-flag', flags: ['--time-scale'] },
+        },
+      });
+      expect(releaseArgsError({ release: true, session: true }, 1)?.detail).toMatchObject({
+        flags: ['--session'],
+      });
+      expect(releaseArgsError({ release: false, session: true }, 4)).toBeUndefined();
+      expect(releaseArgsError({ release: true, headers: 'none' }, 1)).toBeUndefined();
+      expect(releaseArgsError({ release: false, headers: 'none' }, 1)?.detail).toMatchObject({
+        reason: 'release-headers-without-release',
+      });
+      expect(
+        releaseArgsError({ release: true, headers: 'open' as 'none' }, 1)?.detail,
+      ).toMatchObject({ reason: 'release-headers-invalid', headers: 'open' });
+      const missing = await playCommand({ root, script: 'x.mjs', release: true });
+      expect(missing).toMatchObject({
+        ok: false,
+        error: {
+          code: 'play-not-ready',
+          hint: expect.stringContaining('forgeax project build'),
+          detail: { reason: 'release-missing', dist: 'dist' },
+        },
+      });
+      // No play output and no lock: the refusal came before the run.
+      await expect(stat(resolve(root, '.forgeax/play/lock.json'))).rejects.toThrow();
+      await mkdir(resolve(root, 'out'), { recursive: true });
+      await writeFile(resolve(root, 'out/forgeax-dist.json'), '{"schemaVersion":"0"}');
+      const invalid = await admitRelease(root, 'out');
+      expect(invalid).toMatchObject({
+        ok: false,
+        error: {
+          code: 'play-not-ready',
+          detail: {
+            reason: 'release-invalid',
+            dist: 'out',
+            cause: { code: 'dist-manifest-invalid' },
+          },
+        },
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies only other hosts as external', () => {
+    for (const url of [
+      'http://127.0.0.1:4173/assets/a.js',
+      'http://localhost:5173/',
+      'ws://[::1]:9000/',
+      'http://game.localhost/x',
+      'data:text/plain,hi',
+      'blob:http://127.0.0.1/abc',
+    ])
+      expect(isExternalUrl(new URL(url)), url).toBe(false);
+    for (const url of ['https://example.com/x', 'wss://cdn.example.org/s', 'http://10.0.0.2/'])
+      expect(isExternalUrl(new URL(url)), url).toBe(true);
+  });
+
+  it('fails an otherwise passing run on external requests and names them', () => {
+    expect(externalRequestFailure([])).toBeUndefined();
+    const failure = externalRequestFailure(['https://example.com/font.woff2']);
+    expect(failure).toMatchObject({ code: 'play-runtime-failed', reason: 'external-request' });
+    const urls = Array.from(
+      { length: 12 },
+      (_, i) => `https://example.com/${'x'.repeat(200)}/${i}`,
+    );
+    const field = externalRequestsField(urls);
+    expect(field).toHaveLength(11);
+    expect(field.at(-1)).toBe('+2 more');
+    expect(field.every((url) => url.length <= 160)).toBe(true);
+    const failed = report({
+      passed: false,
+      mode: 'release',
+      dist: 'dist',
+      externalRequests: field,
+      ...(failure === undefined ? {} : { failure }),
+    });
+    const error = playFailureError(failed);
+    expect(error).toMatchObject({
+      code: 'play-runtime-failed',
+      hint: expect.stringContaining('externalRequests'),
+      detail: { reason: 'external-request', externalRequests: expect.any(Array) },
+    });
+    expect(JSON.stringify(error).length).toBeLessThanOrEqual(PLAY_COMPACT_BYTES + 100);
+    expect(playResultValue(report({ mode: 'release', dist: 'dist' }), false)).toMatchObject({
+      mode: 'release',
+    });
+    expect(
+      rerunCommand({ script: 'p.mjs', timeScale: 1, mode: 'release', dist: 'dist' }, 'b'),
+    ).toBe('forgeax project play p.mjs --from b --release --json');
+    expect(rerunCommand({ script: 'p.mjs', timeScale: 1, mode: 'release', dist: 'out' })).toBe(
+      'forgeax project play p.mjs --release --dist out --json',
+    );
+    expect(
+      playResultValue(report({ mode: 'release', dist: 'dist', headers: 'none' }), false),
+    ).toMatchObject({ mode: 'release', headers: 'none' });
+    expect(
+      rerunCommand({
+        script: 'p.mjs',
+        timeScale: 1,
+        mode: 'release',
+        dist: 'dist',
+        headers: 'none',
+      }),
+    ).toBe('forgeax project play p.mjs --release --headers none --json');
+  });
+
+  it('reads the registered projection on a release page and refuses development-only stepping', async () => {
+    const calls: unknown[] = [];
+    const page = {
+      evaluate: async (_fn: unknown, arg?: unknown) => {
+        calls.push(arg);
+        return arg === undefined ? ['game.round'] : { phase: 'playing' };
+      },
+    } as unknown as Page;
+    const rec = { ...recorder(), release: true };
+    const play = createPlayContext({ page } as BrowserCaptureSession, rec, '/tmp/out', 1000);
+    // One script serves both runs: the read projection is on every build.
+    expect(play.release).toBe(true);
+    expect(
+      createPlayContext({ page } as BrowserCaptureSession, recorder(), '/tmp/out', 1000).release,
+    ).toBe(false);
+    await expect(play.state()).resolves.toEqual({ phase: 'playing' });
+    await expect(play.state('game.round')).resolves.toEqual({ phase: 'playing' });
+    await expect(
+      play.waitFor((s: unknown) => (s as { phase: string }).phase === 'playing', {
+        timeoutMs: 200,
+      }),
+    ).resolves.toBeDefined();
+    await expect(play.advance(1)).rejects.toMatchObject({
+      reason: 'advance-failed',
+      message: expect.stringContaining('release build'),
+    });
+    // A release page whose game registers no read says so instead of blaming the build.
+    const none = createPlayContext(
+      { page: { evaluate: async () => [] } as unknown as Page } as BrowserCaptureSession,
+      { ...recorder(), release: true },
+      '/tmp/out',
+      1000,
+    );
+    await expect(none.state()).rejects.toMatchObject({
+      reason: 'state-unavailable',
+      message: expect.stringContaining('registerRead'),
     });
   });
 });

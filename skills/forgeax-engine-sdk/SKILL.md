@@ -25,32 +25,106 @@ Reach a first correct edit with this short path, not by reading large skills up 
    relevant section. Project layout, assets and setup live in the
    game project guide; acceptance, release and
    blocked checks in the game delivery guide.
-5. A Three.js effect: look up its native equivalent and gaps in
+5. Look-dev: after the scene first builds and after every light, material, fog, sky, post
+   or camera edit, run `dev look` and answer the [visual self-review](#visual-self-review)
+   before moving on to gameplay; `project play` screenshots are for gameplay acceptance.
+6. A Three.js effect: look up its native equivalent and gaps in
    `references/three-equivalents.md` before simplifying it.
+
+### One engine plugin and one HUD, end to end
+
+The engine root builds the scene and owns the game state; the frontend root owns the DOM.
+They talk over `gameHost.port`, and `project play` reads the registered projection.
+Export each plugin from a `*.pack.ts` as a `kind: 'plugin'` output and select it in
+`forge.json#roots` (as the templates do).
+
+```ts
+import type {} from '@forgeax/engine/app';
+import type {} from '@forgeax/engine/assets-runtime';
+import { Update } from '@forgeax/engine/ecs';
+import { createBoxGeometry } from '@forgeax/engine/geometry';
+import type { Plugin } from '@forgeax/engine/plugin';
+import { Materials, MeshFilter, MeshRenderer } from '@forgeax/engine/render';
+import { Transform } from '@forgeax/engine/scene';
+
+// Engine root: builds the scene, pushes HUD state and exposes a read projection.
+export const game: Plugin.Object<{}> = {
+  name: 'my-game/engine',
+  inject: ['world', 'assets', 'gameHost'],
+  apply(ctx) {
+    const { world, assets, gameHost: host } = ctx;
+    ctx.effect(function* () {
+      host!.setPointerLockAllowed?.(false); // cursor-aimed game: no mouse-look lock
+      const mesh = assets!.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
+      yield () => assets!.release(mesh).unwrap();
+      const material = assets!.create(Materials.standard({ baseColor: [0.8, 0.3, 0.2, 1] })).unwrap();
+      yield () => assets!.release(material).unwrap();
+      const box = world.spawn(
+        { component: Transform, data: { pos: [0, 0.5, 0] } },
+        { component: MeshFilter, data: { assetHandle: mesh } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      ).unwrap();
+      yield () => world.despawn(box).unwrap();
+      let score = 0;
+      world.addSystem(Update, {
+        name: 'my-game/hud', queries: [],
+        fn: () => host!.port?.postMessage({ channel: 'hud', state: { score: ++score } }),
+      }).unwrap();
+      yield () => world.removeSystem(Update, 'my-game/hud').unwrap();
+      const unregister = host!.gameProjection?.registerRead({ id: 'my-game.state', title: 'Score', read: () => ({ score }) });
+      if (unregister) yield unregister;
+    });
+  },
+};
+
+// Frontend root: owns the DOM and listens on the same channel.
+export const hud: Plugin.Object<{}> = {
+  name: 'my-game/hud',
+  inject: ['gameHost'],
+  apply(ctx) {
+    const host = ctx.gameHost!;
+    ctx.effect(function* () {
+      const port = host.presentationPort ?? host.port;
+      const label = host.uiRoot?.appendChild(document.createElement('div'));
+      const receive = (event: MessageEvent) => {
+        if (event.data?.channel === 'hud' && label) label.textContent = `Score ${event.data.state.score}`;
+      };
+      port?.addEventListener('message', receive);
+      port?.start();
+      yield () => { port?.removeEventListener('message', receive); label?.remove(); };
+    });
+  },
+};
+```
 
 Large skills (`forgeax-engine-cli`, `forgeax-engine-render-pipeline`,
 `forgeax-engine-debug`, `forgeax-engine-material`, `forgeax-engine-app`) are references:
-search them for the needed heading instead of reading them whole, and do not re-read a
+search them for the needed heading instead of reading them whole, and reuse a
 file already in context.
 
 ## Visual self-review
 
 For look-dev use `forgeax dev look --hide-ui true --json` after each lighting, material,
 fog or camera edit (seconds against a running `dev start --headless true`; it waits for
-your edit and reports luma, saturation, contrast, clipping and subject separation with
-findings); use `project play` only for gameplay acceptance. After the first look, and
+your edit and flags only a renderer error or a flat frame; you judge the PNG); use `project play` only for gameplay acceptance. To look at a scene without
+playing or a running owner, use `forgeax asset preview --kind scene --guid <guid> --json`; it renders
+the SceneAsset through its authored camera. After the first look, and
 again before delivery, open the PNG and answer each question in one sentence; fix every
 "no", then look again:
 
-1. Brightness: does the frame read as the brief's time of day (daylight bright, night dark
-   with lit pools), with no blown-out white or crushed black areas?
-2. Saturation: are colours as vivid as the brief implies? A pale or grey frame usually
+1. Brightness: does the frame read as the intended time of day (daylight bright, night dark
+   with lit pools), with no blown-out white or crushed black areas? Judge the scene with
+   `--hide-ui true`: a menu overlay darkens the frame and hides both.
+2. Saturation: are colours as vivid as the intended look? A pale or grey frame usually
    means fog over the subject, a cool `Skylight` fill or AgX.
 3. Contrast: does the subject stand out from its background? A flat slab or empty void
    behind it needs a `SkyboxBackground` with an authored sky asset or set dressing.
-4. Mood: do palette and lighting match the brief's words (warm, eerie, neon, cosy)?
+4. Mood: do palette and lighting match the intended mood (warm, eerie, neon, cosy)?
 5. Framing: does the subject fill about half the frame, with nothing clipping the near
-   plane or blocking the camera, and the HUD off the subject?
+   plane or blocking the camera, and the HUD off the subject? For a follow camera, also
+   look from a spot where a tree, rock or wall lies between the camera and the player.
+6. Subject: do the player character and key props look like what the game is about? The
+   template character is a placeholder robot; for any other hero, rebuild its mesh and materials in `character.pack.ts`.
 
 ## First five minutes: understand before authoring
 
@@ -66,7 +140,7 @@ release or a specialized task. Follow that selected scope and stop condition. SD
 archive verification does not replace game acceptance.
 
 > [!IMPORTANT]
-> Available is not enabled. A package in the SDK means the capability can be selected; a game enables it only through its `forge.json`, plugin composition, ECS components, assets, renderer features, or build configuration. Do not install or register every capability.
+> Available is not enabled. A package in the SDK means the capability can be selected; a game enables it only through its `forge.json`, plugin composition, ECS components, assets, renderer features, or build configuration. Install and register only the capabilities the game uses.
 
 Translate the requested game into a small capability adoption plan before editing:
 
@@ -171,8 +245,8 @@ requires the public Release and every other enabled stage.
 > Select the release flow first:
 > name the flow (development, rc cut/fix, rc promotion or stable hotfix), version,
 > source SHA and npm tag before pushing a release branch or dispatching a workflow.
-> If the user's request leaves any of them open, ask the user; never guess a
-> channel or version.
+> If the user's request leaves any of them open, ask the user to choose the
+> channel and version.
 
 ## Plugin asset authoring
 

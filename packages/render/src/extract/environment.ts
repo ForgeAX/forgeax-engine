@@ -70,6 +70,8 @@ export interface FogCandidate {
   readonly near: number;
   /** Linear-mode full-fog depth (world units). */
   readonly far: number;
+  /** Scale of the fog opacity on background pixels under an Atmosphere, in [0, 1]. */
+  readonly skyOpacity: number;
 }
 
 export type EnvironmentSource =
@@ -179,6 +181,17 @@ function validateFogScalars(candidate: FogCandidate): FogParameterIssue | undefi
     return {
       field: 'maxOpacity',
       value: candidate.maxOpacity,
+      expected: 'a finite number in [0, 1]',
+    };
+  }
+  if (
+    !Number.isFinite(candidate.skyOpacity) ||
+    candidate.skyOpacity < 0 ||
+    candidate.skyOpacity > 1
+  ) {
+    return {
+      field: 'skyOpacity',
+      value: candidate.skyOpacity,
       expected: 'a finite number in [0, 1]',
     };
   }

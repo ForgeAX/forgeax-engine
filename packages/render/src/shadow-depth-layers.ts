@@ -136,6 +136,11 @@ export class ShadowDepthLayers {
     return this.device.queue.submit([finished.value]).ok ? new Set(carried) : new Set();
   }
 
+  /** Identity of the current physical allocation; querying never allocates a view. */
+  allocation(label: string): Texture | undefined {
+    return this.arrays.get(label)?.texture;
+  }
+
   /** Physical resident bytes, including arrays imported by a compiled graph. */
   byteSize(label: string): number {
     const array = this.arrays.get(label);

@@ -163,9 +163,36 @@ async function fixture(nativeCards = false, cardBudget = 4096) {
         loadReference: async () => true,
       }).load({ guid, specializationKey: record.specializationKey ?? '' });
       assert(ready.status === 'Ready');
-      return prepareRuntimeAssetPublication([
-        { guid, asset: { ...materialAsset, cooked: ready.record } as MaterialAsset },
-      ]);
+      // Deliver every cooked program through the real compact artifact route.
+      // Each Registry still reads, verifies, decodes and adopts its own publication.
+      const artifacts = Object.fromEntries(
+        ready.record.programs.map(({ artifact }) => [
+          artifact.path,
+          {
+            path: artifact.path,
+            mediaType: artifact.mediaType,
+            contentEncoding: 'identity' as const,
+            byteLength: artifact.bytes.byteLength,
+            integrity: { algorithm: 'sha256' as const, digest: artifact.digest },
+          },
+        ]),
+      );
+      const programs = ready.record.programs.map(({ artifact, ...program }) => ({
+        ...program,
+        artifact: { path: artifact.path, mediaType: artifact.mediaType, digest: artifact.digest },
+      }));
+      return prepareRuntimeAssetPublication(
+        [
+          {
+            guid,
+            asset: { ...materialAsset, cooked: { ...ready.record, programs } } as MaterialAsset,
+            artifacts,
+          },
+        ],
+        Object.fromEntries(
+          ready.record.programs.map(({ artifact }) => [artifact.path, artifact.bytes]),
+        ),
+      );
     })();
     (await nativeCardPublication)(assets);
     const loaded = (await assets.load(guid, 'material')).unwrap();

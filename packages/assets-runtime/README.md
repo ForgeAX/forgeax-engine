@@ -253,6 +253,10 @@ reads and prevents late cache refill. `invalidate`, `invalidateAll` and Catalog
 reconciliation affect source reads; accepted runtime content changes through
 explicit reload. `trimReadCache` drops disposable completed reads.
 
+Publication reference checks index each shared output table once per check,
+including deferred references. The index is discarded when the check returns;
+subsequent reads still validate current dependency digests and generations.
+
 Verified Pack documents are held strongly through a burst of sibling reads, then
 kept through weak references after two seconds without a read. When the host
 reports memory pressure, `trimReadCache` demotes those documents immediately.

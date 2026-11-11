@@ -85,6 +85,7 @@ export function prepareTypedScenePipelineDemand(
         atmosphereCapture: false,
       }),
       coverageOnly,
+      seededDepth: demand.seededDepth === true,
       visibleSurface: context.visibleSurface,
       // Keep the normal typed pass's explicit preparation contract.
       onSelected: (entry, index) => {
@@ -109,6 +110,7 @@ export function prepareTypedScenePipelineDemand(
       coverageOnly,
       ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
       transparentDepthWrite: demand.transparentDepthWrite,
+      seededDepth: demand.seededDepth === true,
     },
     sampleCount,
     formats,

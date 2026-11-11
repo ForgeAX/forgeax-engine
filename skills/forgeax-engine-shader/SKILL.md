@@ -102,7 +102,8 @@ MaterialAsset shader. Its public mode IDs are exported as
 
 The named curves are `linear`, `reinhard`, `cineon`, `aces-filmic`, `agx`, and
 `neutral`, matching Three r184. `reinhard-extended` is the separate ForgeAX
-luminance-domain curve. Every active mode receives linear HDR color and
+luminance-domain curve; `ue-filmic` is Unreal's default Filmic curve and
+settings. Every active mode receives linear HDR color and
 exposure, writes linear LDR color, and relies on the display attachment for the
 final encoded output. The WGSL formulas live in
 [`src/tonemap.wgsl`](../../packages/shader/src/tonemap.wgsl); do not copy them

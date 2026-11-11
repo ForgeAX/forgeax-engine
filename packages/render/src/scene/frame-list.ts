@@ -106,11 +106,40 @@ export abstract class FrameListBase<T> implements FrameList<T> {
 
 /** A fixed input and projection; construction does no work proportional to input size. */
 export class FrameProjection<T, U> extends FrameListBase<U> {
+  readonly #rowReader: object | undefined;
+  readonly #source: FrameList<T>;
+  readonly #project: (value: T, index: number) => U;
   constructor(
     readonly source: FrameList<T>,
     private readonly project: (value: T, index: number) => U,
+    rowReader?: object,
   ) {
     super();
+    this.#rowReader = rowReader;
+    this.#source = source;
+    this.#project = project;
+  }
+  /** Only the unchanged native projection can delegate to its captured column reader. */
+  static rowReaderOf(list: FrameList<unknown>, at: unknown): object | undefined {
+    if (!(#rowReader in list) || at !== frameProjectionAt) return undefined;
+    const prototype = Object.getPrototypeOf(list);
+    if (
+      (prototype !== FrameProjection.prototype &&
+        prototype !== RetainedFrameProjection.prototype) ||
+      Object.getOwnPropertyDescriptor(list, 'length') !== undefined ||
+      Object.getOwnPropertyDescriptor(FrameProjection.prototype, 'length')?.get !==
+        frameProjectionLength ||
+      (prototype === RetainedFrameProjection.prototype &&
+        Object.getOwnPropertyDescriptor(prototype, 'length') !== undefined)
+    )
+      return undefined;
+    // Descriptor reads do not invoke overridden getters before the ordinary fallback.
+    if (
+      Object.getOwnPropertyDescriptor(list, 'source')?.value !== list.#source ||
+      Object.getOwnPropertyDescriptor(list, 'project')?.value !== list.#project
+    )
+      return undefined;
+    return list.#rowReader;
   }
   get length(): number {
     return this.source.length;
@@ -126,6 +155,12 @@ export class FrameProjection<T, U> extends FrameListBase<U> {
     return new ProjectionIterator(this.source[Symbol.iterator](), this.project);
   }
 }
+
+const frameProjectionAt = FrameProjection.prototype.at;
+const frameProjectionLength = Object.getOwnPropertyDescriptor(
+  FrameProjection.prototype,
+  'length',
+)?.get;
 
 /**
  * Projects each source step into one reused result object; consumers read the
@@ -180,8 +215,9 @@ export class RetainedFrameProjection<T, U> extends FrameProjection<T, U> {
     project: (value: T, index: number) => U,
     /** Facts the owner maintained while writing the rows, so consumers need not walk them. */
     readonly facts?: RetainedRowFacts<U>,
+    rowReader?: object,
   ) {
-    super(source, project);
+    super(source, project, rowReader);
   }
 }
 

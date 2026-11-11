@@ -144,9 +144,9 @@ it('opens native editing only on input or label taps and keeps invalid feedback 
 it('recreates the ordinary guide while retiring native editors and borrowed-port listeners', async () => {
   const authored = (path: string) => readFile(new URL(path, import.meta.url), 'utf8');
   const [html, css, localization, font, controller] = await Promise.all([
-    authored('../../../../templates/game-3d/assets/guide.ui.html'),
-    authored('../../../../templates/game-3d/assets/guide.ui.css'),
-    authored('../../../../templates/game-3d/assets/guide.ui.i18n.json'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.html'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.css'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json'),
     readFile(
       new URL(
         '../../../devkit/node_modules/@fontsource-variable/noto-sans-sc/files/noto-sans-sc-latin-wght-normal.woff2',
@@ -154,7 +154,10 @@ it('recreates the ordinary guide while retiring native editors and borrowed-port
       ),
     ),
     import(
-      new URL('../../../../templates/game-3d/assets/ui/guide-controller.ts', import.meta.url).href
+      new URL(
+        '../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
+        import.meta.url,
+      ).href
     ) as Promise<{
       createGuideUi(
         asset: { guid: string; html: string; css: string; localization: object },

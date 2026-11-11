@@ -23,6 +23,7 @@ import {
 } from '@forgeax/engine-shader';
 import { isShaderCompilerProfile, type ManifestEntry } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
+import { FORWARD_DEPTH_SEED_WGSL } from '../pipeline/forward-depth-seed';
 import type { RhiBackendPack } from './backend-contract';
 import {
   prewarmSsrWithDepthPyramid,
@@ -36,7 +37,11 @@ import type { GpuResidencyCache } from '../device/gpu-residency';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import type { DeviceScope, RhiErrorListenerRegistry } from '../lifecycle';
 import { deriveStandardClusterReflectedAbi } from '../light-buffer-layout';
-import { type PbrPipelineLayoutBundle, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
+import {
+  isCanonicalStandardPbrMaterialShader,
+  type PbrPipelineLayoutBundle,
+  SKIN_MATERIAL_SHADER_ID,
+} from '../pbr-pipeline';
 import {
   buildLinearLdrMaterialSpecTable,
   buildSpecConstTable,
@@ -477,13 +482,17 @@ export async function buildReadyWebGPU(
   const registry = getShader();
   const manifestEntries: ManifestEntry[] = [...registry.entries()];
   const materialEntries = [...registry.materialShaderManifestEntries()];
-  const clusterVariants = materialEntries.flatMap((entry) =>
-    entry.variants.filter(
-      (variant) =>
-        variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
-        variant.defines.STORAGE_BUFFER_AVAILABLE === true,
-    ),
-  );
+  // Standard PBR owns the light-record ABI. Unlit can consume the same texture
+  // for atmosphere without declaring a storage-backed light record or uniform.
+  const clusterVariants = materialEntries
+    .filter((entry) => isCanonicalStandardPbrMaterialShader(entry.identifier))
+    .flatMap((entry) =>
+      entry.variants.filter(
+        (variant) =>
+          variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
+          variant.defines.STORAGE_BUFFER_AVAILABLE === true,
+      ),
+    );
   const clusterVariantsPublished = clusterVariants.every(
     (variant) =>
       typeof variant.hash === 'string' &&
@@ -744,6 +753,19 @@ export async function buildReadyWebGPU(
       seedShaderModule,
     );
     await prewarmUtilityPrograms();
+    // Forward seeds `main` from its depth prepass on the first frame; compile
+    // the seed program with the other global shaders so that frame never
+    // meets a pending module (UE compiles global shaders before rendering).
+    seedShaderModule(
+      'forward_depth_seed',
+      await compileModule(
+        FORWARD_DEPTH_SEED_WGSL,
+        'forward_depth_seed',
+        "Forward depth seed shader module 'forward_depth_seed' compiled",
+        'inspect FORWARD_DEPTH_SEED_WGSL and check device.features',
+      ),
+      FORWARD_DEPTH_SEED_WGSL,
+    );
     const standard = await compileStandardPbr(entries);
     seedPbrSourceAliases(registry, entries.pbr.wgsl, standard.pbr, seedShaderModule);
     const unlit = await compileUnlitModules(

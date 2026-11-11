@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { isShaderReflection, type ShaderReflection } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
-import { readShaderManifestPublication, shaderSourceDigestInput } from '../manifest-publication';
+import {
+  readOwnedShaderManifestPublication,
+  readShaderManifestPublication,
+  shaderSourceDigestInput,
+} from '../manifest-publication';
 
 function reflection(uvSetCount = 0) {
   return {
@@ -111,4 +115,25 @@ it('does not merge non-plain extension values or introduce cross-publication ret
   const first = await admit([reflection()]);
   const second = await admit([reflection()]);
   expect(second[0]?.boundGlobals).not.toBe(first[0]?.boundGlobals);
+});
+
+it('shares repeated immutable subtrees for deferred owned reflections while retaining row identity', async () => {
+  const input = JSON.parse(JSON.stringify(publication([reflection(0), reflection(1)])));
+  const result = (await readOwnedShaderManifestPublication(input)) as {
+    entries: { reflection: ShaderReflection }[];
+  };
+  const [first, second] = result.entries.map((entry) => entry.reflection);
+  expect(first).not.toBe(second);
+  expect(first?.uvSetCount).toBe(0);
+  expect(second?.uvSetCount).toBe(1);
+  expect(first?.boundGlobals).toBe(second?.boundGlobals);
+  expect(Object.isFrozen(first?.boundGlobals[0]?.typeDescriptor)).toBe(true);
+  const next = (await readOwnedShaderManifestPublication(
+    JSON.parse(JSON.stringify(publication([reflection(0), reflection(1)]))),
+  )) as typeof result;
+  expect(next.entries[0]?.reflection.boundGlobals).not.toBe(first?.boundGlobals);
+  const malformed = (await readOwnedShaderManifestPublication(
+    publication([{ ...reflection(), schemaVersion: 'invalid' }]),
+  )) as typeof result;
+  expect(() => malformed.entries[0]?.reflection).toThrow('Invalid shader manifest publication');
 });

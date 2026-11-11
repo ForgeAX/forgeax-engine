@@ -465,5 +465,9 @@
     }
   ],
   "interruptedOwners": ["direct-light"],
-  "unstartedOwners": []
+  "unstartedOwners": [],
+  "reservedOwners": {
+    "direct-light": 219.011
+  },
+  "ownerForecastSourceHead": "3d396763e7ee1102f329ba686138371a7ca04167"
 }

@@ -117,6 +117,31 @@ export function validateInstanceTransforms(
   return undefined;
 }
 
+/**
+ * `validateInstanceTransforms` fused with the unchanged-column test: one typed
+ * pass returns the same error (first non-finite index) or whether every value
+ * is `Object.is`-equal to `prior` (a same-length column; `undefined` = none).
+ */
+function scanInstanceTransforms(
+  transforms: ArrayLike<number>,
+  prior: Float32Array | undefined,
+): InstanceProjectionError | boolean {
+  const length = transforms.length;
+  if (length % MATRIX_STRIDE !== 0) return new InstanceTransformsStrideMismatchError(length);
+  let same = prior !== undefined && prior.length === length;
+  for (let index = 0; index < length; index++) {
+    const value = transforms[index] as number;
+    if (!Number.isFinite(value))
+      return new InstanceTransformsError({ actualLength: length, nonFiniteIndex: index });
+    if (same) {
+      const old = (prior as Float32Array)[index] as number;
+      // Object.is on finite numbers: equal, and equal sign when zero.
+      if (old !== value || (value === 0 && 1 / old !== 1 / value)) same = false;
+    }
+  }
+  return same;
+}
+
 const uniqueIdentities = new WeakMap<Uint32Array, boolean>();
 
 /**
@@ -317,13 +342,9 @@ export class InstanceProjectionStore {
     }
     this.work.fullProjections += 1;
     this.work.rows += transforms.length / MATRIX_STRIDE;
-    const invalid = validateInstanceTransforms(transforms);
-    if (invalid !== undefined) return invalid;
-    if (
-      previous !== undefined &&
-      previous.transforms.length === transforms.length &&
-      previous.transforms.every((value, index) => Object.is(value, transforms[index]))
-    ) {
+    const scan = scanInstanceTransforms(transforms, previous?.transforms);
+    if (typeof scan !== 'boolean') return scan;
+    if (previous !== undefined && scan) {
       if (rows === undefined || previous.sourceEpoch === rows.epoch) return previous;
       // Same values, newly proven source epoch: re-publish the revision so the
       // next projection can take the dirty-row path.

@@ -54,13 +54,7 @@ struct ClusterUniform {
 #else
 // The CPU membership producer packs the same bytes into one rgba32uint texture:
 // 256 light records, then grid offset/count pairs, then the complete index list.
-@group(2) @binding(3) var cluster_data_texture : texture_2d<u32>;
-
-fn load_cluster_texel(texel: u32) -> vec4<u32> {
-  return textureLoad(cluster_data_texture, vec2<i32>(
-    i32(texel % cluster_uniform.texture.w), i32(texel / cluster_uniform.texture.w),
-  ), 0);
-}
+#import forgeax_standard::cluster_texture_data::{cluster_data_texture, load_cluster_texel}
 
 fn load_cluster_word(word: u32) -> u32 {
   return load_cluster_texel(word >> 2u)[word & 3u];

@@ -10,6 +10,7 @@ import type {
   BindGroupLayout,
   BindGroupLayoutDescriptor,
   Buffer,
+  RhiCommandEncoder,
   RhiError,
   Sampler,
   Texture,
@@ -97,12 +98,22 @@ interface HdrpStorageBuffers extends HdrpResourceBase {
   readonly lightBoundsBytes: number;
 }
 
+/** Publication belongs to the physical texture; graph rebuilds cannot preserve stale content. */
+export interface AtmosphereTextureContent {
+  submittedKey?: string;
+  recordedKey?: string;
+  recordedEncoder?: RhiCommandEncoder;
+}
 interface HdrpTextureBuffers extends HdrpResourceBase {
   readonly kind: 'texture';
   readonly texture: Texture;
   readonly view: TextureView;
   readonly layout: ReturnType<typeof standardClusterTextureLayout>;
   readonly table: ClusterTextureTable;
+  readonly atmosphereContent: {
+    medium: AtmosphereTextureContent;
+    aerial: AtmosphereTextureContent;
+  };
 }
 
 export type HdrpBuffers = HdrpStorageBuffers | HdrpTextureBuffers;
@@ -150,7 +161,8 @@ function isReusableHdrpBundle(
       aoLayout.height === aoExtent.height &&
       (cached.kind !== 'texture' ||
         (cached.layout.screen?.width === aoExtent.screen?.width &&
-          cached.layout.screen?.height === aoExtent.screen?.height)));
+          cached.layout.screen?.height === aoExtent.screen?.height &&
+          (cached.layout.atmosphere !== undefined) === (aoExtent.atmosphere === true))));
   return (
     publicationMatches &&
     (cached.kind === 'storage'
@@ -357,6 +369,7 @@ function createHdrpTextureBuffers(
   }
   return {
     kind: 'texture',
+    atmosphereContent: { medium: {}, aerial: {} },
     clusterTransportGeneration: allocateClusterTransportGeneration(),
     device,
     texture: texture.value,

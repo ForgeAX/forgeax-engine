@@ -8,6 +8,250 @@ import { parse } from 'yaml';
 import { DawnSequencer } from '../../../config/vitest-dawn-sequencer.ts';
 import { runGroups } from '../../lib/run-bounded-groups.mjs';
 
+const coldCoverageFiles = [
+  'packages/app/__tests__/builtin-systems.test.ts',
+  'packages/codec/scripts/__tests__/fetch-basis.test.mjs',
+  'packages/three/src/__tests__/api-audit.test.ts',
+];
+const coldOwnerLabels = [
+  `${coldCoverageFiles.map((file) => `@forgeax/engine-${file.split('/')[1]}`).join(',')}:${coldCoverageFiles.join(',')}`,
+];
+
+// Preserve the admitted cohort's launch order while substituting each receipt's
+// complete costs and explicit reservations. Clearing observations also changes
+// coverageGroupOrder and replays an execution order the producer never uses.
+test('nightly 42778322662 retains complete children and every unfinished forecast', (t) => {
+  const receipt = JSON.parse(
+    readFileSync(new URL('./fixtures/coverage-completed-42778322662.json', import.meta.url)),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 54);
+  assert.equal(Object.keys(receipt.reservedSeconds).length, 7);
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const observed = groups.map((group) => ({
+    ...group,
+    replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
+  }));
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  t.diagnostic(`complete-child replay seconds: ${finishes.map((seconds) => seconds.toFixed(2))}`);
+  assert.ok(Math.max(...finishes) <= receipt.budgetSeconds, `retain setup headroom: ${finishes}`);
+  const ledger = JSON.parse(readFileSync('scripts/ci/coverage-completed-child-seconds.json'));
+  const replay = ledger.replayRuns.findIndex((run) => run.runId === receipt.runId);
+  assert.deepEqual(ledger.replayRuns[replay]?.completedSeconds, receipt.completedSeconds);
+  assert.deepEqual(ledger.replayRuns[replay]?.reservedSeconds, receipt.reservedSeconds);
+  for (const group of groups) {
+    assert.equal(
+      group.replaySeconds[replay],
+      receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label],
+    );
+  }
+});
+
+test('cold source and TypeScript files drain neighboring instrumented children', async () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const cold = (group) => group.files.some((file) => coldCoverageFiles.includes(file));
+  const owners = groups.filter(cold);
+  assert.equal(owners.length, 1);
+  const active = new Set();
+  const results = await runGroups({
+    groups,
+    concurrency: 2,
+    order: scheduledGroupOrder(groups, { coverage: true, localGpuLease: false }),
+    isExclusive: isExclusiveCoverageGroup,
+    runGroupImpl: async (group) => {
+      if (cold(group)) assert.equal(active.size, 0, group.label);
+      else assert.ok(![...active].some(cold), group.label);
+      active.add(group);
+      await new Promise(setImmediate);
+      if (cold(group)) assert.equal(active.size, 1, group.label);
+      active.delete(group);
+      return group.label;
+    },
+  });
+  assert.equal(results.length, 61);
+  assert.equal(new Set(results).size, 61);
+  for (const file of coldCoverageFiles) {
+    const [owner] = owners.filter((group) => group.files.includes(file));
+    assert.deepEqual(owner.files, coldCoverageFiles);
+    assert.ok(
+      groups
+        .filter((group) => group !== owner)
+        .every((group) => group.files.length > 0 || group.excludes.includes(file)),
+    );
+    assert.ok(
+      buildGroupArgs({
+        cliPath: 'vitest.mjs',
+        group: owner,
+        maxWorkers: 1,
+        coverage: true,
+        coverageDir: 'coverage',
+        reportPath: 'vitest.json',
+      }).includes('--coverage'),
+    );
+    assert.equal(owner.observedSeconds, undefined, 'a failed child supplies no timing observation');
+    assert.equal(owner.weight, 0, 'historical project receipts already contain this case work');
+    assert.equal(
+      owner.reservationWeight,
+      65,
+      'current admission retains one complete cold process',
+    );
+    const project = `@forgeax/engine-${file.split('/')[1]}`;
+    const selected = coverageGroups([project], 8);
+    assert.ok(selected.every((group) => group.projects.every((name) => name === project)));
+    assert.deepEqual(
+      selected.filter((group) => group.files.length).map((group) => group.files),
+      [[file]],
+    );
+  }
+});
+
+test('scriptable publication regressions share the existing exclusive Pack owner', async () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const files = [
+    'packages/pack/src/__tests__/material-surface-publication.unit.test.ts',
+    'packages/pack/src/__tests__/scriptable-pack-json.integration.test.ts',
+    'packages/vite-plugin-pack/src/__tests__/authored-pack-serving.regression.test.ts',
+  ];
+  const owner = groups.find((group) => group.files.includes(files[1]));
+  assert.deepEqual(owner.files, files);
+  assert.deepEqual(owner.projects, ['@forgeax/engine-pack', '@forgeax/engine-vite-plugin-pack']);
+  assert.equal(owner.label, `@forgeax/engine-pack:${files[0]}`);
+  assert.equal(owner.reservationWeight, 65, 'reserve all cases and one cold startup');
+  assert.equal(owner.observedSeconds, 18.73, 'retain the original complete child observation');
+  for (const file of files) {
+    assert.equal(groups.filter((group) => group.files.includes(file)).length, 1);
+    assert.ok(
+      groups
+        .filter((group) => group.files.length === 0)
+        .every((group) => group.excludes.includes(file)),
+    );
+  }
+  const active = new Set();
+  await runGroups({
+    groups,
+    concurrency: 2,
+    order: scheduledGroupOrder(groups, { coverage: true, localGpuLease: false }),
+    isExclusive: isExclusiveCoverageGroup,
+    runGroupImpl: async (group) => {
+      if (group === owner) assert.equal(active.size, 0);
+      else assert.ok(!active.has(owner));
+      active.add(group);
+      await new Promise(setImmediate);
+      active.delete(group);
+    },
+  });
+});
+
+test('run 42746576077 fits complete coverage children and preserves missing-owner forecasts', (t) => {
+  const receipt = JSON.parse(
+    readFileSync(new URL('./fixtures/coverage-completed-42746576077.json', import.meta.url)),
+  );
+  const groups = coverageGroups(allProjectNames(), 8);
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const observed = groups.map((group) => ({
+    ...group,
+    replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
+  }));
+  assert.equal(Object.keys(receipt.completedSeconds).length, 54);
+  assert.equal(assignment.length, 61);
+  for (const group of groups) {
+    const seconds = receipt.completedSeconds[group.label];
+    if (seconds !== undefined) {
+      assert.ok(
+        (group.reservationWeight ?? group.weight) >= Math.ceil(seconds / 5) * 5,
+        `${group.label}: current capacity retains the later complete measurement`,
+      );
+    }
+  }
+  assert.equal(
+    Object.keys(receipt.completedSeconds).length +
+      Object.keys(receipt.reservedSeconds).length +
+      coldOwnerLabels.length,
+    groups.length,
+  );
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  t.diagnostic(`complete-child replay seconds: ${finishes.map((v) => v.toFixed(2))}`);
+  assert.ok(
+    Math.max(...finishes) <= receipt.budgetSeconds,
+    `retain the coverage window: ${finishes}`,
+  );
+});
+
+for (const runId of [
+  42606093924, 42625076170, 42646783761, 42833835009, 42877243264, 42891433204,
+]) {
+  test(`run ${runId} retains complete children and every unfinished reservation`, (t) => {
+    const receipt = JSON.parse(
+      readFileSync(new URL(`./fixtures/coverage-completed-${runId}.json`, import.meta.url), 'utf8'),
+    );
+    const groups = coverageGroups(allProjectNames(), 8);
+    const missing = [
+      ...(receipt.failedGroups ?? []),
+      ...(receipt.interruptedGroups ?? []),
+      ...(receipt.unstartedGroups ?? []),
+    ];
+    assert.deepEqual(
+      // Older receipts include the cold files in project children. A newer
+      // receipt may measure the separately admitted cold owner directly.
+      [
+        ...new Set([...Object.keys(receipt.completedSeconds), ...missing, ...coldOwnerLabels]),
+      ].sort(),
+      groups.map((group) => group.label).sort(),
+      'every complete owner remains accounted for exactly once',
+    );
+    for (const label of missing) {
+      assert.equal(receipt.completedSeconds[label], undefined);
+      assert.ok(receipt.reservedSeconds[label] > 0);
+    }
+    const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+    const observed = groups.map((group) => ({
+      ...group,
+      replaySeconds: [
+        receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label],
+      ],
+    }));
+    const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+    assert.ok(
+      Math.max(...finishes) <= receipt.budgetSeconds,
+      `retain the original execution bound: ${finishes}`,
+    );
+    const ledger = JSON.parse(
+      readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+    );
+    const admitted = ledger.replayRuns.find((run) => run.runId === runId);
+    assert.deepEqual(admitted?.completedSeconds, receipt.completedSeconds);
+    assert.deepEqual(admitted?.reservedSeconds, receipt.reservedSeconds);
+    assert.notEqual(ledger.latestRun, runId, 'a partial run never replaces the seed');
+    t.diagnostic(`complete-child replay seconds: ${finishes.map((seconds) => seconds.toFixed(2))}`);
+  });
+}
+
+test('forecast seeds require the exact roster, admission and every retained window', () => {
+  const groups = coverageGroups(allProjectNames(), 8);
+  const ledger = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
+  const seed = ledger.placementSeeds.find((seed) => seed.typecheck === false);
+  assert.equal(seed.kind, 'forecast-only', 'a placement forecast is not executed CI evidence');
+  assert.ok(coveragePlacementSeed(groups, 4, false, seed));
+  assert.equal(coveragePlacementSeed(groups, 3, false, seed), null);
+  assert.equal(coveragePlacementSeed(groups, 4, true, seed), null);
+  assert.equal(coveragePlacementSeed(groups.slice(1), 4, false, seed), null);
+  const renamed = groups.map((group, index) =>
+    index === 0 ? { ...group, label: `${group.label}-changed` } : group,
+  );
+  assert.equal(coveragePlacementSeed(renamed, 4, false, seed), null);
+  const invalidLane = { ...seed, assignment: { ...seed.assignment, [groups[0].label]: 4 } };
+  assert.equal(coveragePlacementSeed(groups, 4, false, invalidLane), null);
+  const collapsed = {
+    ...seed,
+    assignment: Object.fromEntries(groups.map((group) => [group.label, 0])),
+  };
+  assert.equal(coveragePlacementSeed(groups, 4, false, collapsed), null);
+  const slower = groups.map((group) => ({ ...group, observedSeconds: 10_000 }));
+  assert.equal(coveragePlacementSeed(slower, 4, false, seed), null);
+});
+
 test('run 42411246807 keeps 57 complete children within the unchanged coverage window', (t) => {
   const receipt = JSON.parse(
     readFileSync(
@@ -24,11 +268,10 @@ test('run 42411246807 keeps 57 complete children within the unchanged coverage w
   const assignment = assignCoverageShards(groups, 4, { typecheck: false });
   const observed = groups.map((group) => ({
     ...group,
-    observedSeconds: undefined,
     replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
   }));
   const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
-  assert.equal(assignment.length, 60, 'retain every complete coverage owner');
+  assert.equal(assignment.length, 61, 'retain every complete coverage owner');
   assert.ok(
     Math.max(...finishes) <= receipt.budgetSeconds,
     `fit the original execution window with all measured work and missing forecasts: ${finishes}`,
@@ -43,6 +286,114 @@ test('run 42411246807 keeps 57 complete children within the unchanged coverage w
     ledger.latestRun,
     receipt.runId,
     'a partial run does not replace the complete seed',
+  );
+  t.diagnostic(`complete-child replay seconds: ${finishes.map((seconds) => seconds.toFixed(2))}`);
+});
+
+test('nightly 42861855047 rebalances 56 complete children within the unchanged coverage window', (t) => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-42861855047.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 56);
+  assert.equal(Object.keys(receipt.reservedSeconds).length, 5);
+  for (const label of [...receipt.interruptedGroups, ...receipt.unstartedGroups]) {
+    assert.equal(receipt.completedSeconds[label], undefined, 'unfinished work supplies no sample');
+    assert.ok(receipt.reservedSeconds[label] > 0, 'retain the admitted missing-owner forecast');
+  }
+
+  const groups = coverageGroups(allProjectNames(), 8);
+  const accounted = [
+    ...Object.keys(receipt.completedSeconds),
+    ...receipt.interruptedGroups,
+    ...receipt.unstartedGroups,
+  ].sort();
+  assert.deepEqual(
+    accounted,
+    groups.map((group) => group.label).sort(),
+    'every complete coverage owner is accounted for exactly once',
+  );
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const observed = groups.map((group) => ({
+    ...group,
+    observedSeconds: undefined,
+    replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
+  }));
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  assert.equal(assignment.length, 61, 'retain every complete coverage owner');
+  assert.ok(
+    Math.max(...finishes) <= receipt.budgetSeconds,
+    `fit the original execution window with all measured work and missing forecasts: ${finishes}`,
+  );
+
+  const ledger = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
+  const admitted = ledger.replayRuns.filter((run) => run.runId === receipt.runId);
+  assert.equal(admitted.length, 1, 'record this partial cohort once');
+  assert.deepEqual(admitted[0].completedSeconds, receipt.completedSeconds);
+  assert.deepEqual(admitted[0].reservedSeconds, receipt.reservedSeconds);
+  assert.notEqual(
+    ledger.latestRun,
+    receipt.runId,
+    'a partial run never replaces the complete seed',
+  );
+  t.diagnostic(`complete-child replay seconds: ${finishes.map((seconds) => seconds.toFixed(2))}`);
+});
+
+test('main 42870354116 rebalances 60 complete children within the unchanged coverage window', (t) => {
+  const receipt = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/coverage-completed-42870354116.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.equal(Object.keys(receipt.completedSeconds).length, 60);
+  assert.equal(Object.keys(receipt.reservedSeconds).length, 1);
+  assert.equal(receipt.interruptedGroups.length, 1);
+  assert.equal(receipt.unstartedGroups.length, 0);
+  for (const label of [...receipt.interruptedGroups, ...receipt.unstartedGroups]) {
+    assert.equal(receipt.completedSeconds[label], undefined, 'unfinished work supplies no sample');
+    assert.ok(receipt.reservedSeconds[label] > 0, 'retain the admitted missing-owner forecast');
+  }
+
+  const groups = coverageGroups(allProjectNames(), 8);
+  const accounted = [
+    ...Object.keys(receipt.completedSeconds),
+    ...receipt.interruptedGroups,
+    ...receipt.unstartedGroups,
+  ].sort();
+  assert.deepEqual(
+    accounted,
+    groups.map((group) => group.label).sort(),
+    'every complete coverage owner is accounted for exactly once',
+  );
+  const assignment = assignCoverageShards(groups, 4, { typecheck: false });
+  const observed = groups.map((group) => ({
+    ...group,
+    observedSeconds: undefined,
+    replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
+  }));
+  const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
+  assert.equal(assignment.length, 61, 'retain every complete coverage owner');
+  assert.ok(
+    Math.max(...finishes) <= receipt.budgetSeconds,
+    `fit the original execution window with all measured work and the missing forecast: ${finishes}`,
+  );
+
+  const ledger = JSON.parse(
+    readFileSync(new URL('../coverage-completed-child-seconds.json', import.meta.url), 'utf8'),
+  );
+  const admitted = ledger.replayRuns.filter((run) => run.runId === receipt.runId);
+  assert.equal(admitted.length, 1, 'record this partial cohort once');
+  assert.deepEqual(admitted[0].completedSeconds, receipt.completedSeconds);
+  assert.deepEqual(admitted[0].reservedSeconds, receipt.reservedSeconds);
+  assert.notEqual(
+    ledger.latestRun,
+    receipt.runId,
+    'a partial run never replaces the complete seed',
   );
   t.diagnostic(`complete-child replay seconds: ${finishes.map((seconds) => seconds.toFixed(2))}`);
 });
@@ -63,11 +414,10 @@ test('run 42364652946 keeps 56 complete children within the unchanged coverage w
   const assignment = assignCoverageShards(groups, 4, { typecheck: false });
   const observed = groups.map((group) => ({
     ...group,
-    observedSeconds: undefined,
     replaySeconds: [receipt.completedSeconds[group.label] ?? receipt.reservedSeconds[group.label]],
   }));
   const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
-  assert.equal(assignment.length, 60, 'retain every complete coverage owner');
+  assert.equal(assignment.length, 61, 'retain every complete coverage owner');
   assert.ok(
     Math.max(...finishes) <= receipt.budgetSeconds,
     `fit the original execution window with all measured work and missing forecasts: ${finishes}`,
@@ -110,7 +460,7 @@ test('run 42156576858 retains setup headroom after the slow Modeling wave', (t) 
     replaySeconds: [receipt.completedSeconds[group.label]],
   }));
   const finishes = coverageAssignmentLaneFinishes(observed, assignment, 4, false, true, 0);
-  assert.equal(assignment.length, 60, 'retain every complete coverage owner');
+  assert.equal(assignment.length, 61, 'retain every complete coverage owner');
   assert.ok(
     Math.max(...finishes) <= receipt.budgetSeconds,
     `retain the original setup headroom with every measured child: ${finishes}`,
@@ -197,6 +547,7 @@ import {
   coverageGroupMaxWorkers,
   coverageGroupOrder,
   coverageGroups,
+  coveragePlacementSeed,
   isExclusiveCoverageGroup,
   parseArgs,
   projectGroups,
@@ -521,6 +872,19 @@ test('modeling tier budgets remain mandatory and uninstrumented outside coverage
   assert.ok(gate, 'the required performance job must run the complete tier-budget file');
   assert.ok(gate.run.includes('--project=@forgeax/engine-modeling'));
   assert.ok(gate.run.includes('--coverage.enabled=false'));
+  assert.ok(gate.run.includes('node scripts/ci/run-vitest-projects.mjs run'));
+  assert.ok(gate.run.includes('node scripts/ci/run-with-runner-cpu-affinity.mjs --'));
+  assert.ok(gate.run.includes('--typecheck.enabled=false'));
+  assert.ok(gate.run.includes('--passWithNoTests=false'));
+  const capacity = workflow.jobs['coverage-perf'].steps.find(
+    (step) => step.run === 'node scripts/ci/verify-runner-pool-capacity.mjs --pool heavy',
+  );
+  assert.ok(capacity, 'absolute budgets must verify the actual heavy capacity');
+  assert.equal(capacity.if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.ok(
+    workflow.jobs['coverage-perf'].steps.indexOf(capacity) <
+      workflow.jobs['coverage-perf'].steps.indexOf(gate),
+  );
   assert.notEqual(gate['continue-on-error'], true);
   assert.ok(!/testTimeout|testNamePattern|--exclude/.test(gate.run));
 });
@@ -536,7 +900,7 @@ test('cold Render cooking stays complete in the existing exclusive owner', () =>
   const owner = groups.find((group) => group.files.includes(files[0]));
   assert.deepEqual(owner.files, files);
   assert.equal(owner.label, `@forgeax/engine-render:${files.slice(0, 2).join(',')}`);
-  assert.equal(owner.weight, 100, 'retain historical two-file cost');
+  assert.equal(owner.weight, 110, 'retain the larger completed owner observation');
   assert.equal(owner.reservationWeight, 160, 'reserve new work without inventing a sample');
   assert.ok(isExclusiveCoverageGroup(owner));
   for (const partition of groups.filter((group) => group.shard)) {
@@ -807,7 +1171,7 @@ test('current and retained complete coverage receipts bound all four replay fore
     Math.max(...lanes) <= 2300,
     `the runtime-only four-job replay must stay below 2300s before remaining setup; got ${lanes}`,
   );
-  assert.equal(groups.length, 60, 'retain every reserved complete child');
+  assert.equal(groups.length, 61, 'retain every reserved complete child');
   assert.equal(
     groups.filter((group) => group.observedSeconds !== undefined).length,
     Object.keys(latestReceipt.completedSeconds).length,
@@ -870,7 +1234,7 @@ test('completed run 41828488495 leaves the interrupted compiler its full reserve
   const groups = coverageGroups(allProjectNames(), 8);
   assert.deepEqual(
     groups.map((group) => group.label).sort(),
-    [...Object.keys(receipt.completedSeconds), receipt.interruptedGroup].sort(),
+    [...Object.keys(receipt.completedSeconds), receipt.interruptedGroup, ...coldOwnerLabels].sort(),
     'retain all complete owners and the interrupted compiler without inventing a sample',
   );
   const assignment = assignCoverageShards(groups, 4, { typecheck: false });
@@ -1001,7 +1365,10 @@ for (const { runId, completedCount } of [
     );
     assert.equal(Object.keys(receipt.completedSeconds).length, completedCount);
     const groups = coverageGroups(allProjectNames(), 8);
-    const pending = groups.filter((group) => !(group.label in receipt.completedSeconds));
+    const pending = groups.filter(
+      (group) =>
+        !(group.label in receipt.completedSeconds) && !coldOwnerLabels.includes(group.label),
+    );
     assert.deepEqual(
       pending.map((group) => group.label).sort(),
       Object.keys(receipt.reservedSeconds).sort(),
@@ -1012,9 +1379,12 @@ for (const { runId, completedCount } of [
       parallel: Array(2).fill(lane === 0 && typecheck ? 185 : 0),
       exclusive: 0,
     }));
-    for (const index of coverageGroupOrder(groups)) {
+    for (const index of coverageGroupOrder(groups, typecheck)) {
       const group = groups[index];
-      const seconds = receipt.completedSeconds[group.label] ?? group.weight;
+      const seconds =
+        receipt.completedSeconds[group.label] ??
+        receipt.reservedSeconds[group.label] ??
+        group.weight;
       const lane = lanes[assignment[index]];
       if (isExclusiveCoverageGroup(group)) lane.exclusive += seconds;
       else lane.parallel[lane.parallel[0] <= lane.parallel[1] ? 0 : 1] += seconds;
@@ -1158,9 +1528,17 @@ test('completed modeling children retain measured file and process work', () => 
   const timings = JSON.parse(
     readFileSync('scripts/ci/modeling-coverage-file-seconds.json', 'utf8'),
   );
-  // All sixteen children completed in run 41526304488, even though later
-  // unrelated coverage work reached the enclosing job deadline.
+  assert.ok(timings.runs.includes(42877243264));
+  // All sixteen partitions and three isolated Modeling owners completed in
+  // run 42877243264 despite an unrelated coverage shard reaching its deadline.
   for (const [file, seconds] of [
+    ['packages/modeling/examples/mech-gt/__tests__/s6c.unit.test.ts', 233.607],
+    [
+      'packages/modeling/examples/maid-whale/__tests__/g6-faceted.import.integration.test.ts',
+      275.552,
+    ],
+    ['packages/modeling/examples/case/__tests__/materials.unit.test.ts', 37.565],
+    ['packages/modeling/src/__tests__/material-id-slots.unit.test.ts', 1.19],
     ['packages/modeling/examples/scifi-mech/__tests__/scifi-mech.watertight.unit.test.ts', 118.96],
     ['packages/modeling/examples/joint-boot/__tests__/boot.pack.integration.test.ts', 133.492],
     ['packages/modeling/src/__tests__/bake-parallel.integration.test.ts', 61.812],
@@ -1316,13 +1694,58 @@ test('prioritizes long coverage groups and preserves canonical order for ties', 
   assert.deepEqual(coverageGroupOrder(groups), [1, 2, 3, 0]);
 });
 
+test('coverage order averages budget-normalized costs across applicable replay windows', () => {
+  const groups = [
+    {
+      weight: 100,
+      replaySeconds: [100],
+      replayBudgetSeconds: [2300],
+      replayTypechecks: [false],
+    },
+    {
+      weight: 90,
+      replaySeconds: [300],
+      replayBudgetSeconds: [2300],
+      replayTypechecks: [false],
+    },
+    {
+      weight: 1,
+      startEarly: true,
+      replaySeconds: [1],
+      replayBudgetSeconds: [2300],
+      replayTypechecks: [false],
+    },
+  ];
+  assert.deepEqual(coverageGroupOrder(groups, false), [2, 1, 0]);
+  assert.deepEqual(coverageGroupOrder(groups, true), [2, 0, 1]);
+});
+
+test('coverage shard scheduling preserves the full-roster replay order', () => {
+  const groups = [
+    { weight: 1, files: [] },
+    { weight: 100, files: [] },
+  ];
+  assert.deepEqual(
+    scheduledGroupOrder(groups, {
+      coverage: true,
+      localGpuLease: false,
+      coverageOrder: [0, 1],
+    }),
+    [0, 1],
+  );
+});
+
 test('each complete broad project half starts before fine-partition backfill', () => {
   const groups = coverageGroups(allProjectNames(), 8);
   for (const typecheck of [true, false]) {
     const assignment = assignCoverageShards(groups, 4, { typecheck });
     for (let shard = 0; shard < 4; shard++) {
       const children = groups.filter((_group, index) => assignment[index] === shard);
-      const order = scheduledGroupOrder(children, { coverage: true, localGpuLease: false });
+      const order = scheduledGroupOrder(children, {
+        coverage: true,
+        localGpuLease: false,
+        typecheck,
+      });
       assert.ok(
         children[order[0]].shard?.endsWith('/2'),
         'run 41579286478 started Render half two after 25 minutes of Modeling backfill',
@@ -1950,7 +2373,7 @@ test('coverage qualification retains raw reservations and admits their larger cu
   const assignment = [0, 0];
   assert.deepEqual(coverageAssignmentLaneFinishes(groups, assignment, 1, false, true, 0), [15]);
   assert.deepEqual(
-    coverageAssignmentLaneFinishes(groups, assignment, 1, false, true, 0, true, true),
+    coverageAssignmentLaneFinishes(groups, assignment, 1, false, true, 0, true, 'retained-max'),
     [35],
   );
   assert.deepEqual(
@@ -2048,6 +2471,7 @@ test('run 42351811353 keeps completed slow-run observations within existing setu
       ...Object.keys(receipt.completedSeconds),
       ...receipt.interruptedGroups,
       ...receipt.unstartedGroups,
+      ...coldOwnerLabels,
     ].sort(),
     groups.map((group) => group.label).sort(),
     'all sixty complete owners remain accounted for exactly once',
@@ -2092,6 +2516,7 @@ test('run 42367192490 keeps another completed slow Modeling wave within existing
       ...Object.keys(receipt.completedSeconds),
       ...receipt.interruptedGroups,
       ...receipt.unstartedGroups,
+      ...coldOwnerLabels,
     ].sort(),
     groups.map((group) => group.label).sort(),
     'all sixty complete owners remain accounted for exactly once',

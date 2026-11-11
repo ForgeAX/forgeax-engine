@@ -105,7 +105,7 @@ export function registerGpuDrivenSettlement(world: World): void {
       if (consumed !== undefined && !consumed.ok) internals.errorRegistry.fire(consumed.error);
     },
     RENDER_FOG_COMMIT_SYSTEM,
-    true,
+    'scene',
   );
   world
     .addSystem(RenderCleanup, {

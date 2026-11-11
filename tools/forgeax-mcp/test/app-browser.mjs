@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { existsSync } from 'node:fs';
 import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,7 +16,8 @@ import { installTestCanvasBudget } from '../../../scripts/test/browser-canvas-bu
 import { reduceTestProject } from '../../../scripts/test/reduce-test-project.mjs';
 import testQuality from '../../../scripts/test/render-quality.json' with { type: 'json' };
 import { assertNoRuntimeFailure, assertRenderBudget, assertScenePixels, waitForViewProjectReady } from './app/acceptance.mjs';
-import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
+import { probeRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
+import { installRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 const sourceProject = resolve(process.argv[2]);
 const engine = resolve(import.meta.dirname, '../../..');
 const evidence = resolve(process.argv[3] ?? '/tmp/forgeax-mcp-app-browser');
@@ -28,6 +30,8 @@ await cp(sourceProject, project, {
   filter: (path) => !['node_modules', '.forgeax', '.git'].includes(path.split('/').at(-1)),
 });
 if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') await reduceTestProject(project);
+// The starter template no longer ships the runtime-pack demo; install the engine-owned one.
+if (!existsSync(join(project, 'assets/runtime-vase'))) await installRuntimeVase(project);
 await symlink(join(engine, 'node_modules'), join(project, 'node_modules'), 'dir');
 const execute = promisify(execFile);
 const records = [],
@@ -242,10 +246,13 @@ try {
   });
   records.push({ initialHostState });
   console.error('MCP App initial Host state: ' + JSON.stringify(initialHostState));
-  // Project restoration replaces the header's connected label. It belongs to
-  // the Preview's existing readiness budget, not the native Host connection gate.
-  // The header also presents restoration, so use the native project's retained state.
-  await waitForViewProjectReady(view, 'template-game-3d', initialPreviewDeadline);
+  // Project service production publishes a target before its browser is running.
+  // Keep those bounded phases separate and use the retained native owner, not
+  // the header that also presents restoration.
+  await waitForViewProjectReady(view, 'template-game-3d', initialPreviewDeadline, {
+    startupTimeoutMs: 120000,
+    onStage: state => records.push({ projectReadiness: state }),
+  });
   const playCycle = async (cycle) => {
     const playStarted = performance.now();
     await view.getByRole('button', { name: 'Play', exact: true }).click();
@@ -338,7 +345,7 @@ try {
   if (!(await sceneCard.isVisible()))
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
   await sceneCard.dblclick();
-  await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
   targetId = await view
     .locator('iframe[data-forgeax-mcp-preview]')
     .getAttribute('data-forgeax-mcp-preview');
@@ -371,18 +378,19 @@ try {
   await view.locator('html[data-theme="dark"]').waitFor();
   if (!(await view.getByTestId('panel-content-browser').isVisible()))
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
+  await view.getByRole('button', { name: 'ui', exact: true }).first().dblclick();
   await view
-    .getByRole('button', { name: /guide/i })
+    .getByRole('button', { name: /^guide\.ui\.html/i })
     .first()
     .dblclick();
   const htmlPreview = view.getByTestId('html-ui-preview');
   await htmlPreview.waitFor({ state: 'visible' });
-  const htmlFrame = htmlPreview.locator('iframe[title="assets/guide.ui.html"]');
+  const htmlFrame = htmlPreview.locator('iframe[title="assets/ui/guide.ui.html"]');
   await htmlFrame.waitFor();
   assert.equal(await htmlFrame.getAttribute('sandbox'), 'allow-scripts');
   // Qualify the authored UI in its actual sandboxed document. Inspector chrome
   // can change without changing preview readiness or the authored content.
-  const guideTitle = view.frameLocator('iframe[title="assets/guide.ui.html"]').locator('[data-ui-part="guide-title"]');
+  const guideTitle = view.frameLocator('iframe[title="assets/ui/guide.ui.html"]').getByText('3C starter', { exact: true });
   await guideTitle.waitFor({ state: 'visible' });
   assert.equal(await guideTitle.textContent(), '3C starter');
   assert.equal(await guideTitle.locator('..').evaluate(element => getComputedStyle(element).display), 'grid',
@@ -390,10 +398,10 @@ try {
   assert.equal(await view.getByTestId('html-ui-inspector').locator('[role="alert"]').count(), 0);
   await page.screenshot({ path: join(evidence, 'html.png') });
   await view.locator('[role="tab"][data-page-id="page-scene"]').click();
-  await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
   await page.screenshot({ path: join(evidence, 'view.png') });
   await playCycle(1);
-  await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
   await view.getByRole('button', { name: 'Play', exact: true }).click();
   const preparingPlay = view.locator('iframe[data-forgeax-scene-play]');
   await preparingPlay.waitFor({ state: 'attached', ...playSessionTimeout });
@@ -432,7 +440,7 @@ try {
     await view.getByText(/^(内容浏览器|Content Browser)$/).click();
   await view.getByRole('button', { name: 'assets', exact: true }).first().click();
   await view.getByRole('button', { name: /^scene\/showcase (场景|Scene)$/ }).dblclick();
-  await view.getByRole('treeitem', { name: /Mirror Sphere (网格|Mesh)/ }).waitFor();
+  await view.getByRole('treeitem', { name: /Lacquer Collision Cube (网格|Mesh)/ }).waitFor();
   console.error('MCP App stage: recovered scene ready');
   await completeFrames();
   const recoveredCapture = await cli('view workspace preview capture', { targetId, targetGeneration: 1 });
@@ -468,6 +476,16 @@ try {
         visibility: document.visibilityState,
         nativeViewConnected: globalThis.__forgeaxViewReady?.mounted?.transport?.connected,
         nativeViewError: globalThis.__forgeaxViewReady?.error,
+        projectReadiness: (() => {
+          const mounted = globalThis.__forgeaxViewReady?.mounted;
+          const state = mounted?.frontendHost?.context?.get('viewOperationClient', false)
+            ?.projectSession?.getSnapshot();
+          const snapshot = state?.snapshot;
+          return state && { busy: state.busy, restoring: state.restoring, hasError: state.error !== null,
+            projectId: snapshot?.project?.id, targetId: snapshot?.projectTarget?.targetId,
+            hasUrl: !!snapshot?.projectTarget?.url, projectPhase: snapshot?.projectPhase,
+            browserGeneration: snapshot?.browserGeneration, workspaceTargetLost: snapshot?.workspaceTargetLost };
+        })(),
         statusNodes: [...document.querySelectorAll('[role="status"]')].map(element => {
           const rect = element.getBoundingClientRect();
           const style = getComputedStyle(element);

@@ -1,6 +1,6 @@
 import { model, sel, type DesignedContact, type Model, type Tuple3 } from '@forgeax/engine/modeling';
-import { createPlayerRig, nativeJointName as native } from './player-rig.ts';
-import { CONVOY_LAYOUT, type ConvoyLayout } from './convoy-layout.ts';
+import { createPlayerRig, nativeJointName as native } from '../shared/player-rig.ts';
+import { CONVOY_LAYOUT, type ConvoyLayout } from '../shared/convoy-layout.ts';
 import { addConvoyPart, appendConvoyParts, type ConvoyBinding } from './convoy-parts.ts';
 
 /** Load-bearing members stay geometry; tread, fasteners and surface finish bake down. */

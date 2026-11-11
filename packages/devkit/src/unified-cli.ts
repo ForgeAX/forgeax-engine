@@ -10,6 +10,7 @@ import {
 } from '@forgeax/engine-tool-runtime';
 import { createDevkitCliStartup } from './cli-host.js';
 import { compactCliResult } from './cli-presentation.js';
+import { ignoreProjectState } from './project-state-ignore.js';
 
 export interface UnifiedCliResult {
   readonly ok: boolean;
@@ -154,7 +155,10 @@ function applyCliToken(
     return 0;
   }
   if (!flag.startsWith('--')) {
-    state.path.push(flag);
+    // `help "project preview"` names the same path as `help project preview`; outside
+    // help a token may be a positional value, so it stays whole.
+    if (helpRequested) state.path.push(...flag.split(/\s+/).filter((part) => part !== ''));
+    else state.path.push(flag);
     return 0;
   }
   if (CLI_BOOLEAN_FLAGS.has(flag)) {
@@ -325,6 +329,7 @@ export async function runUnifiedCli(
   let startup: Awaited<ReturnType<typeof createHostStartup>> | undefined;
   let cli: ReturnType<typeof createDevkitCliStartup> | undefined;
   let rawCommand = '';
+  let projectRoot: string | undefined;
   try {
     // Select the project before Host startup so an external --root creates one
     // Host for that target. A malformed request still starts the default Host
@@ -348,6 +353,7 @@ export async function runUnifiedCli(
     startup = await createHostStartup({ startupPlugins: [createToolApiPlugin(), cli.plugin] });
     if (!parsedResult.ok) throw parsedResult.error;
     const parsed = parsedResult.value;
+    projectRoot = parsed.root;
     const present = (result: UnifiedCliResult, args?: unknown): UnifiedCliResult =>
       options.presentation === 'compact' && !parsed.detail
         ? compactCliResult(result, { root: parsed.root, args, tree: parsed.tree })
@@ -424,6 +430,8 @@ export async function runUnifiedCli(
     return errorResult(error, rawCommand);
   } finally {
     await startup?.dispose();
+    // Commands create `.forgeax/` on demand; keep it out of git whichever made it.
+    await ignoreProjectState(projectRoot);
   }
 }
 

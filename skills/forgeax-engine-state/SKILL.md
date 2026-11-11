@@ -37,7 +37,7 @@ The `transitionStatesSystem` runs every frame (registered by `registerStatesPlug
 | `forgeax dev eval` | Unified live command | query state tokens in the current World |
 
 > [!IMPORTANT]
-> `StateErrorCode` is a 4-member closed union: `'state-already-defined'` | `'state-not-registered'` | `'invalid-variant'` | `'state-default-required'`. SSOT at `packages/state/src/errors.ts` -- do not copy.
+> `StateErrorCode` is a 4-member closed union: `'state-already-defined'` | `'state-not-registered'` | `'invalid-variant'` | `'state-default-required'`. SSOT at `packages/state/src/errors.ts` -- read it there.
 
 ## Transition pipeline (per-token, per-frame)
 

@@ -13,6 +13,7 @@ export interface ScenePipelineDemand {
   readonly fragmentEntryPoint: string | undefined;
   readonly coverageOnly: boolean;
   readonly transparentDepthWrite: boolean;
+  readonly seededDepth?: boolean;
   readonly selection?: ScenePassSelection;
 }
 

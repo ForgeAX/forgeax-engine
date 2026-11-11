@@ -10,9 +10,11 @@ import { devCommand } from '../src/commands.js';
 import { disposeDevKitHosts } from '../src/host.js';
 import { createBrowserCapture, type BrowserCaptureSession } from '../src/browser-capture.js';
 // @ts-expect-error The template's shared browser probe is native JavaScript.
-import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
+import { probeRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
 // @ts-expect-error The template's shared browser probe is native JavaScript.
-import { probeMobileControls } from '../../../templates/game-3d/scripts/mobile-controls-probe.mjs';
+import { probeMobileControls } from '../../../scripts/template-probes/game-3d/mobile-controls-probe.mjs';
+// @ts-expect-error The engine-owned runtime vase overlay is native JavaScript.
+import { installRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 
 declare const __forgeaxGameInspection: {
   list(): Promise<{ reads: string[] }>;
@@ -66,6 +68,7 @@ it.for([false, true])('game-3d vase and mobile controls with Engine Worker=%s', 
     await rm(evidence, { recursive: true, force: true });
     await mkdir(evidence, { recursive: true });
     await cp(resolve(repository, 'templates/game-3d/assets'), resolve(root, 'assets'), { recursive: true });
+    await installRuntimeVase(root);
     if (process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1') {
       await reduceTestProject(root);
     }

@@ -156,13 +156,14 @@ async function fixture(
       .unwrap(),
   });
   let pending: PreparedGpuDrivenFrame | undefined;
-  const prepare = (directionalShadowSimple = false) => {
+  const prepare = (directionalShadowSimple = false, leanLighting = false) => {
     pending?._abortResourceReplacement?.();
     const prepared = production
       .prepare(
         admitGpuFixture({
           ...inputs,
-          ...(directionalShadowSimple ? { directionalShadowSimple } : {}),
+          directionalShadowSimple,
+          leanLighting,
           materialArtifact: artifact,
           ...(mixedMedium ? { materialArtifacts, materialPipelineFactory } : {}),
           scene: {
@@ -469,13 +470,29 @@ it('does not reopen admitted material artifacts when a lazy mesh layout fails', 
 it('does not reuse the raster graph across a simple-receiver flip', async () => {
   const f = await fixture(2, 'triangle-list');
   try {
-    // The forward pipelines bake DIRECTIONAL_SHADOW_SIMPLE (+ LEAN_LIGHTING);
-    // an IES or cookie light arriving at runtime flips the frame off it.
+    // Directional receiver proof changes independently from light modifiers.
     const general = f.prepare().topologySignature();
     const simple = f.prepare(true).topologySignature();
     expect(simple).not.toBe(general);
     expect(f.prepare(true).topologySignature()).toBe(simple);
     expect(f.prepare().topologySignature()).toBe(general);
+  } finally {
+    f.close();
+  }
+});
+
+it('reprojects the raster graph when modifiers change while the receiver stays simple', async () => {
+  const f = await fixture(2, 'triangle-list');
+  try {
+    const lean = f.prepare(true, true).topologySignature();
+    const full = f.prepare(true, false).topologySignature();
+    expect(full).not.toBe(lean);
+    expect(f.prepare(true, false).topologySignature()).toBe(full);
+    expect(f.prepare(true, true).topologySignature()).toBe(lean);
+    // A general receiver cannot select a lean row in the publication.
+    expect(f.prepare(false, true).topologySignature()).toBe(
+      f.prepare(false, false).topologySignature(),
+    );
   } finally {
     f.close();
   }

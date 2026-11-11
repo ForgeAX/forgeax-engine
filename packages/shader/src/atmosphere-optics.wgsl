@@ -4,6 +4,7 @@
 // RGB linear radiance throughout; exposure belongs to the output transform.
 #import forgeax_view::common::{AtmosphereMedium}
 #import forgeax_atmosphere::visibility::{atmosphere_scene_visibility}
+#import forgeax_atmosphere::table_access::{atmosphere_table_dimensions, atmosphere_table_sample}
 
 struct AtmosphereOpticalSample {
   extinction: vec3<f32>,
@@ -15,6 +16,16 @@ struct AtmosphereTransport {
   transmittance: vec3<f32>,
 };
 const ATMOSPHERE_PI: f32 = 3.141592653589793;
+
+// Scattered sky light is driven by the sun's luminance, not its authored hue.
+// The medium already reddens a low sun through its own transmittance; a warm
+// tint multiplied over the blue Rayleigh sky would cancel the blue and turn it
+// grey. Direct light, the visible disc and Fog in-scatter keep the authored
+// colour. A neutral (grey or white) sun passes through bit-for-bit.
+fn atmosphere_sun_luminance(light: vec3<f32>) -> vec3<f32> {
+  if light.r == light.g && light.g == light.b { return light; }
+  return vec3<f32>(dot(light, vec3<f32>(0.2126, 0.7152, 0.0722)));
+}
 
 fn atmosphere_position(m: AtmosphereMedium, worldPosition: vec3<f32>) -> vec3<f32> {
   return worldPosition * 0.001 - m.originRadius.xyz + vec3<f32>(0.0, m.originRadius.w, 0.0);
@@ -91,7 +102,17 @@ fn atmosphere_transmittance_ray(m: AtmosphereMedium, uv: vec2<f32>) -> vec2<f32>
   let mu=select(1.0, ((top-radius)*(top+radius)-distance*distance)/max(2.0*radius*distance,1e-8), distance>0.00001);
   return vec2<f32>(radius,clamp(mu,-1.0,1.0));
 }
-fn atmosphere_solar_transmittance(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>, lut: texture_2d<f32>, filtering: sampler) -> vec3<f32> {
+fn atmosphere_solar_transmittance(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>, lut:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, filtering: sampler) -> vec3<f32> {
   if atmosphere_planet_visibility(m,p,sun)<0.5 { return vec3<f32>(0.0); }
   var position=p;
   let top=m.originRadius.w+m.geometry.x;
@@ -101,15 +122,45 @@ fn atmosphere_solar_transmittance(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f
     position += sun*interval.x;
   }
   let uv=atmosphere_transmittance_uv(m,position,sun);
-  return textureSampleLevel(lut,filtering,atmosphere_sub_uv(uv,textureDimensions(lut)),0.0).rgb;
+  return atmosphere_table_sample(lut,filtering,atmosphere_sub_uv(uv,atmosphere_table_dimensions(lut,0u)),0u);
 }
-fn atmosphere_multi_source(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>, lut: texture_2d<f32>, filtering: sampler) -> vec3<f32> {
+fn atmosphere_multi_source(m: AtmosphereMedium, p: vec3<f32>, sun: vec3<f32>, lut:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, filtering: sampler) -> vec3<f32> {
   let mu=dot(normalize(p),sun);
   let uv=vec2<f32>(mu*0.5+0.5,atmosphere_height(m,p)/m.geometry.x);
-  return textureSampleLevel(lut,filtering,atmosphere_sub_uv(uv,textureDimensions(lut)),0.0).rgb*m.geometry.y;
+  return atmosphere_table_sample(lut,filtering,atmosphere_sub_uv(uv,atmosphere_table_dimensions(lut,1u)),1u)*m.geometry.y;
 }
 // Sky View, AP, capture and direct reference all use this finite-segment kernel.
-fn atmosphere_integrate_phases(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance: texture_2d<f32>, multiple: texture_2d<f32>, filtering: sampler, sampleCount: u32, opticalScale: f32, phases: vec2<f32>) -> AtmosphereTransport {
+fn atmosphere_integrate_phases(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, multiple:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, filtering: sampler, sampleCount: u32, opticalScale: f32, phases: vec2<f32>) -> AtmosphereTransport {
   let interval=atmosphere_interval(m,origin,direction,distance);
   var result=AtmosphereTransport(vec3<f32>(0.0),vec3<f32>(1.0));
   let count=max(sampleCount,1u);
@@ -131,7 +182,27 @@ fn atmosphere_integrate_phases(m: AtmosphereMedium, origin: vec3<f32>, direction
   return result;
 }
 
-fn atmosphere_integrate(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance: texture_2d<f32>, multiple: texture_2d<f32>, filtering: sampler, sampleCount: u32, opticalScale: f32) -> AtmosphereTransport {
+fn atmosphere_integrate(m: AtmosphereMedium, origin: vec3<f32>, direction: vec3<f32>, distance: f32, sun: vec3<f32>, irradiance: vec3<f32>, transmittance:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, multiple:
+#ifdef STORAGE_BUFFER_AVAILABLE
+texture_2d<f32>
+#else
+#ifdef CLUSTER_FORWARD_AVAILABLE
+texture_2d<u32>
+#else
+texture_2d<f32>
+#endif
+#endif
+, filtering: sampler, sampleCount: u32, opticalScale: f32) -> AtmosphereTransport {
   let mu=dot(direction,sun);
   return atmosphere_integrate_phases(m,origin,direction,distance,sun,irradiance,transmittance,multiple,filtering,sampleCount,opticalScale,vec2<f32>(atmosphere_rayleigh_phase(mu),atmosphere_mie_phase(mu,m.mie.w)));
 }

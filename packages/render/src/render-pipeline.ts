@@ -252,7 +252,10 @@ export interface RenderPipelineTopology {
       | undefined;
     /** Shape-only barrel admission; numeric mapping stays per-frame data. */
     readonly barrelDistortion?: boolean | undefined;
+    /** Vignette and grain after tone mapping. */
     readonly lensEffects?: boolean | undefined;
+    /** Scene color fringe before Bloom and tone mapping. */
+    readonly chromaticAberration?: boolean | undefined;
     readonly lensFlare?: boolean | undefined;
     readonly outline?: boolean | undefined;
   };
@@ -511,6 +514,7 @@ export interface RenderPipelineGpuDrivenProjection {
     fragmentEntryPoint?: string,
     coverageOnly?: boolean,
     sampleCount?: 1 | 4,
+    seededDepth?: boolean,
   ) => void;
   /** @internal Poll the registered real PSOs before any graph pass is encoded. */
   readonly preparePipelines?: (
@@ -535,6 +539,8 @@ export interface RenderPipelineGpuDrivenProjection {
      * Every other pass draws the full visible set.
      */
     phase?: GpuDrivenDrawPhase,
+    /** The loaded depth is the exact prepass raster (see seededDepthRenderState). */
+    seededDepth?: boolean,
   ): void;
   /**
    * Present when the projection reserved two-phase occlusion. The caller adds

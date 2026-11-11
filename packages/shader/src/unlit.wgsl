@@ -20,6 +20,7 @@
 
 #pragma variant_axis STORAGE_BUFFER_AVAILABLE
 #pragma variant_axis ATMOSPHERE_AVAILABLE
+#pragma variant_axis CLUSTER_FORWARD_AVAILABLE
 #pragma variant_axis VERTEX_COLOR_AVAILABLE
 #pragma variant_axis COVERAGE_ONLY
 #pragma variant_axis SKINNING_DISABLED

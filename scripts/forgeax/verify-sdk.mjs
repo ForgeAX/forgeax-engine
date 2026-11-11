@@ -11,6 +11,7 @@ import {
   artifact,
   assertNoRetiredPackageFiles,
   filesUnder,
+  ignoresProjectState,
   isPnpmSqliteStoreArtifact,
   mapConcurrent,
   SDK_CAPABILITIES,
@@ -309,6 +310,10 @@ for (const { id: template } of SDK_TEMPLATES) {
   await readFile(resolve(templateRoot, 'tsconfig.json'));
   await readFile(resolve(templateRoot, 'README.md'));
   await readFile(resolve(templateRoot, 'docs', 'feedback.md'));
+  // A new project must not commit DevKit caches and run records.
+  if (!ignoresProjectState(await readFile(resolve(templateRoot, '.gitignore'), 'utf8'))) {
+    throw new Error(`sdk-template-state-not-ignored: ${template}`);
+  }
 }
 
 for (const path of [
@@ -320,6 +325,8 @@ for (const path of [
   'skills/forgeax-engine-cli/SKILL.md',
   'skills/forgeax-engine-rhi-debug/SKILL.md',
   'skills/forgeax-engine-sdk/references/api-index.md',
+  'skills/forgeax-engine-sdk/references/api/core.md',
+  'skills/forgeax-engine-sdk/references/api/play.md',
   'skills/forgeax-engine-sdk/references/feature-catalog.md',
   'templates/empty/AGENTS.md',
   'templates/empty/.gitignore',
@@ -504,7 +511,14 @@ if (selected('project')) {
   const shippedBuildCache = await buildCacheEntries(project);
   if (!shippedBuildCache.some((entry) => entry.startsWith('scriptable-pack-products/')))
     throw new Error('sdk-new-template-build-cache-missing');
-  await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/api-index.md'));
+  // The API directory links one file per domain; every link must resolve in the project.
+  const apiReferenceRoot = resolve(project, 'skills/forgeax-engine-sdk/references');
+  const apiDirectory = await readFile(resolve(apiReferenceRoot, 'api-index.md'), 'utf8');
+  const apiDomainFiles = [...apiDirectory.matchAll(/\]\((api\/[a-z0-9-]+\.md)\)/g)].map(
+    (match) => match[1],
+  );
+  if (apiDomainFiles.length === 0) throw new Error('sdk-api-index-domains-missing');
+  for (const file of apiDomainFiles) await readFile(resolve(apiReferenceRoot, file));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/references/feature-catalog.md'));
   await readFile(resolve(project, 'skills/forgeax-engine-sdk/SKILL.md'));
   const projectWorkspace = await readFile(resolve(project, 'pnpm-workspace.yaml'), 'utf8');

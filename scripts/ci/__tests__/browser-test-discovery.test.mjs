@@ -79,10 +79,7 @@ test('actual Browser optimizers resolve runtime, guide, Parity and native Worker
         'config/vitest.browser.config.ts', runtime],
       ['packages/ui-blitz/src/__tests__/dom.browser.test.ts',
         'config/vitest.browser.config.ts', [...runtime,
-          ['packages/pack/package.json', '@noble/hashes/legacy.js'],
-          ['packages/pack/package.json', '@noble/hashes/utils.js'],
-          ['packages/pack/package.json', 'acorn'],
-          ['packages/pack/package.json', 'uuidv7'],
+          // The guide fixture owns its channel protocol; it reaches UI, not Pack.
           ['packages/ui/package.json', 'i18next'],
         ]],
       ['apps/parity/color-lighting/cases/extended-lighting/__tests__/probe.browser.test.ts',

@@ -49,21 +49,23 @@ describe('directional PCSS receiver variant', () => {
   }, 120_000);
 
   it.each([
-    false,
-    true,
-  ])('publishes the composed PCSS-on forward storage row (DIRECTIONAL_SHADOW_SIMPLE=%s)', {
+    { simple: false, lean: false, probe: false },
+    { simple: true, lean: true, probe: false },
+    { simple: true, lean: false, probe: false },
+    { simple: true, lean: false, probe: true },
+  ])('publishes receiver $simple with lean $lean and ProbeBlend $probe', {
     timeout: 60_000,
-  }, async (simple) => {
+  }, async ({ simple, lean, probe }) => {
     const manifest = await engineManifest();
     const standard = manifest.materialShaders.find(
       (entry) => entry.identifier === 'forgeax::default-standard-pbr',
     );
     expect(standard).toBeDefined();
-    // LEAN_LIGHTING is bound 1:1 to DIRECTIONAL_SHADOW_SIMPLE by the permutation rules.
     const key = rowKey({
       ...FORWARD_STORAGE_ROW,
       DIRECTIONAL_SHADOW_SIMPLE: simple,
-      LEAN_LIGHTING: simple,
+      LEAN_LIGHTING: lean,
+      PROBE_BLEND_AVAILABLE: probe,
     });
     const row = standard?.variants.find((variant) => variant.definesKey === key);
     expect(row, key).toBeDefined();
@@ -73,6 +75,12 @@ describe('directional PCSS receiver variant', () => {
     // receiver removes both before codegen.
     expect(/fn _samplePcssForCascade\w*\(/.test(code)).toBe(!simple);
     expect(/fn _pickCascadeLayer\w*\(/.test(code)).toBe(!simple);
+    // Full lighting keeps the actual RectArea, IES and Cookie sample paths.
+    for (const resource of ['cookieTexture', 'ltcGgxTexture']) {
+      expect(new RegExp(`textureSampleLevel\\(${resource}\\w*,`).test(code)).toBe(!lean);
+    }
+    expect(/textureSampleLevel\(iesProfileTexture\w*,/.test(code)).toBe(true);
+    expect(code.includes('probeBlendRecords')).toBe(probe);
   });
 
   // wgpu-webgl2 resolves PCSS on (`directionalPcssCapable`), so the storage-free

@@ -1,4 +1,4 @@
-/** Five atmosphere textures extend the full physical Standard layout of 27. */
+/** Native View layout extension; portable atmosphere reuses the Cluster texture. */
 export const ATMOSPHERE_REQUIRED_SAMPLED_TEXTURES = 32;
 export function atmosphereAvailable(
   storageBuffer: boolean,

@@ -10,8 +10,8 @@ import { Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import { drawSceneFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
-import { drawPublished } from './draw-published';
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
@@ -185,9 +185,9 @@ it('advances uniform Skin history after accepted submissions without other frame
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     for (let frame = 0; frame < 3; frame++) {
-      const receipt = await drawPublished(renderer, world);
-      if (!receipt.ok) throw receipt.error;
-      const completed = await receipt.value.completed;
+      world.update(1 / 60).unwrap();
+      const receipt = await drawSceneFrame(renderer, attached.value);
+      const completed = await receipt.completed;
       if (!completed.ok) throw completed.error;
     }
     expect(errors).toEqual([]);

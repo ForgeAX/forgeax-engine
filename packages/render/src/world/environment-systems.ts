@@ -43,14 +43,14 @@ export function registerEnvironmentSystems(world: World): void {
       frameState.environmentGeneration = undefined;
     },
     RENDER_RECORD_COMMIT_SYSTEM,
-    true,
+    'scene',
   );
   registerViewCommit(
     world,
     RENDER_ATMOSPHERE_COMMIT_SYSTEM,
     ({ frameState }) => settleAtmospherePublish(frameState, true),
     RENDER_ENVIRONMENT_COMMIT_SYSTEM,
-    true,
+    'scene',
   );
   registerViewCommit(
     world,
@@ -62,7 +62,7 @@ export function registerEnvironmentSystems(world: World): void {
       commitSubmittedVolumetricFog(internals, frameState, staged);
     },
     RENDER_ATMOSPHERE_COMMIT_SYSTEM,
-    true,
+    'scene',
   );
   world
     .addSystem(RenderCleanup, {

@@ -9,7 +9,7 @@ import {
   createBarrelDistortionRenderFeature,
 } from '../features/barrel-distortion';
 import type { RenderFeatureHost } from '../features/host';
-import { LENS_EFFECTS_PROGRAM } from '../features/lens-effects';
+import { CHROMATIC_ABERRATION_PROGRAM, LENS_EFFECTS_PROGRAM } from '../features/lens-effects';
 import { LENS_FLARE_PROGRAMS } from '../features/lens-flare';
 import { createMotionBlurFeature } from '../features/motion-blur/motion-blur-feature';
 import { OUTLINE_PROGRAMS } from '../features/outline/shaders';
@@ -23,6 +23,7 @@ import {
 import type { RendererState } from '../render-system';
 
 const STANDARD_POST_PROCESS_PROGRAMS = [
+  CHROMATIC_ABERRATION_PROGRAM,
   LENS_EFFECTS_PROGRAM,
   ...LENS_FLARE_PROGRAMS,
   ...OUTLINE_PROGRAMS,

@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { APP_VERSION } from '../src/contract.ts';
@@ -70,16 +71,16 @@ try {
     assert.match(await readFile(join(plugin, 'dist/preview-runtime.mjs'), 'utf8'), /preparePlatform/);
     // A packaged compiler must load outside the checkout and build real source.
     execFileSync(process.execPath, ['--input-type=module', '-e',
-      `const {build}=await import(${JSON.stringify(join(plugin,'node_modules/vite/dist/node/index.js'))});
+      `const {build}=await import(${JSON.stringify(pathToFileURL(join(plugin,'node_modules/vite/dist/node/index.js')).href)});
        const result=await build({configFile:false,logLevel:'silent',build:{write:false,
          rolldownOptions:{input:'virtual-entry'},},plugins:[{name:'fixture',resolveId:id=>id==='virtual-entry'?id:null,
          load:id=>id==='virtual-entry'?'export const value = 42':null}]});
        if(!result.output.some(item=>item.type==='chunk'))throw new Error('No compiled output');
-       const {build:buildProgram}=await import(${JSON.stringify(join(plugin,'node_modules/esbuild/lib/main.js'))});
+       const {build:buildProgram}=await import(${JSON.stringify(pathToFileURL(join(plugin,'node_modules/esbuild/lib/main.js')).href)});
        const program=await buildProgram({stdin:{contents:'export const nativeProgram = 42;'},bundle:true,
          platform:'browser',format:'esm',write:false});
        if(!program.outputFiles[0].text.includes('nativeProgram'))throw new Error('No native program output');
-       const {bundlePackProgram}=await import(${JSON.stringify(join(plugin,'src/app/program-bundler.mjs'))});
+       const {bundlePackProgram}=await import(${JSON.stringify(pathToFileURL(join(plugin,'src/app/program-bundler.mjs')).href)});
        const source=await bundlePackProgram({program:${JSON.stringify(preparePackProgram({entry:'entry.mjs',export:'value',modules:{'entry.mjs':'export const value = 42;'}}).unwrap())},imports:{},exports:{},bindingId:'package-smoke'});
        const compiled=(await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'))).default;
        if(compiled.load('entry.mjs').value!==42)throw new Error('Packaged program did not execute');`], {cwd:temp,stdio:'pipe'});

@@ -35,6 +35,7 @@ import {
   type ExecutionFaultMessage,
   type ExecutionFrameMessage,
   FrameCreditLedger,
+  renderPipelineCapacityOf,
 } from './protocol';
 import { createExecutionReport, executionAudioReport } from './report';
 import type {
@@ -600,12 +601,9 @@ export async function createWorkerExecutionApp(
   // Ascending ids of issued update-only steps, which the Render Worker never
   // completes; render back-pressure counts only the pictures still in flight.
   let updateOnlyFrames: number[] = [];
-  const renderPipelineCapacity =
-    executionOptions.diagnostics?.renderPipelineCapacity === 4
-      ? 4
-      : executionOptions.diagnostics?.renderPipelineCapacity === 3
-        ? 3
-        : 2;
+  const renderPipelineCapacity = renderPipelineCapacityOf(
+    executionOptions.diagnostics?.renderPipelineCapacity,
+  );
   type AdmissionMessage =
     | Extract<
         EngineToHostMessage,
@@ -647,33 +645,41 @@ export async function createWorkerExecutionApp(
       capacity: renderPipelineCapacity,
     });
   };
-  const renderBlocked = (): boolean => {
-    if (report.render === undefined) return false;
-    if (report.render.state === 'rebuilding') return true;
+  // Admitted pictures not yet GPU-complete; without split rendering only the
+  // simulation credit is in flight.
+  const pipelineDepth = (): number => {
+    const frame = ledger.inspect();
+    if (report.render === undefined) return frame.inFlight;
     const floor = Math.max(renderRecoveryFloor, report.render.completedFrame);
     const settled = updateOnlyFrames.findIndex((frameId) => frameId > floor);
     updateOnlyFrames.splice(0, settled === -1 ? updateOnlyFrames.length : settled);
-    return ledger.inspect().submitted - floor - updateOnlyFrames.length >= renderPipelineCapacity;
+    return Math.max(frame.inFlight, frame.submitted - floor - updateOnlyFrames.length);
   };
-  const admitFrame = (): void => {
+  const renderBlocked = (): boolean => {
+    if (report.render === undefined) return false;
+    if (report.render.state === 'rebuilding') return true;
+    return pipelineDepth() >= renderPipelineCapacity;
+  };
+  /** True when the due frame was issued or cannot be issued in this state. */
+  const admitFrame = (): boolean => {
     if (state !== 'running') {
       traceAdmission('host-admission', 'not-running');
-      return;
+      return true;
     }
     if (ledger.hasCreditInFlight) {
       traceAdmission('host-admission', 'simulation-in-flight');
-      return;
+      return false;
     }
     if (renderBlocked()) {
       traceAdmission('host-admission', 'render-blocked');
-      return;
+      return false;
     }
     // Sample input and native platform time at admission, including when an
     // ACK releases a tick that became due while a Worker still owned credit.
     const time = platform.now();
     if (!time.ok) {
       failPlatform(time.error);
-      return;
+      return true;
     }
     frameDue = false;
     const timestamp = time.value;
@@ -681,7 +687,14 @@ export async function createWorkerExecutionApp(
     lastTimestamp = timestamp;
     pacer.admitted(frameDueAt ?? timestamp);
     frameDueAt = undefined;
-    if (postFrame(deltaSeconds, timestamp / 1_000)) scheduleFrame();
+    // Lease the next tick ahead of the frame. The Engine Worker serves both on
+    // one ordered channel and updates the World synchronously, so a lease that
+    // followed the frame would be registered only after that update and a
+    // display tick falling inside a long update would be lost.
+    scheduleFrame();
+    // A lease the platform refused has already faulted the session.
+    if (state === 'running') postFrame(deltaSeconds, timestamp / 1_000);
+    return true;
   };
   /**
    * Issues one frame with credit; an omitted sample time lets the Worker
@@ -702,6 +715,7 @@ export async function createWorkerExecutionApp(
       temporalResetAfterFrame !== undefined,
       render,
     );
+    ledger.observeDepth(pipelineDepth());
     report = { ...report, frame: ledger.inspect() };
     if (frame === undefined) {
       traceAdmission('host-admission', 'not-issued');
@@ -784,7 +798,10 @@ export async function createWorkerExecutionApp(
     frameDue = true;
     frameDueAt = time.value;
     traceAdmission('host-tick-due', 'callback');
-    admitFrame();
+    if (admitFrame()) return;
+    // Completion resumes this coalesced tick; count the wait once, as the
+    // single-realm frame loop does. report() reads the live ledger.
+    ledger.recordThrottledTick();
   };
   const rescheduleNativeFrame = (): void => {
     cancelHostFrame = undefined;
@@ -797,11 +814,40 @@ export async function createWorkerExecutionApp(
       return;
     }
     if (cancelHostFrame !== undefined) return;
-    const nativeLease = session.requestFrame?.(onNativeFrame, rescheduleNativeFrame);
-    const requested =
-      nativeLease === undefined ? platform.requestFrame(onNativeFrame) : ok(nativeLease);
-    if (requested.ok) cancelHostFrame = requested.value;
-    else failPlatform(requested.error);
+    // A supported Worker rAF can lag the Host display callback. Keep
+    // one admission demand, fulfilled by the first native display callback;
+    // neither clock may admit another frame after its sibling wins.
+    let pending = true;
+    let hostLease: (() => void) | undefined;
+    let workerLease: (() => void) | undefined;
+    const cancel = () => {
+      if (!pending) return;
+      pending = false;
+      hostLease?.();
+      workerLease?.();
+    };
+    const ready = () => {
+      if (!pending) return;
+      cancel();
+      onNativeFrame();
+    };
+    const requested = platform.requestFrame(ready);
+    if (requested.ok) {
+      hostLease = requested.value;
+      if (!pending) {
+        hostLease();
+        return;
+      }
+      cancelHostFrame = cancel;
+      const nativeLease = session.requestFrame?.(ready, () => {});
+      if (pending) workerLease = nativeLease;
+      else nativeLease?.();
+    } else {
+      // Preserve a working Worker provider when the Host has no native clock.
+      const nativeLease = session.requestFrame?.(onNativeFrame, rescheduleNativeFrame);
+      if (nativeLease !== undefined) cancelHostFrame = nativeLease;
+      else failPlatform(requested.error);
+    }
   };
 
   const failPlatform = (cause: unknown): void => {
@@ -1448,6 +1494,7 @@ export async function createWorkerExecutionApp(
     report: () =>
       cloneExecutionReport({
         ...report,
+        frame: ledger.inspect(),
         audio: executionAudioReport(audio.state()),
       }),
     rebuild: () => {

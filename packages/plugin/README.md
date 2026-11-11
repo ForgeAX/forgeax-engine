@@ -33,7 +33,7 @@ definition. Larger implementations can live in ordinary TypeScript modules refer
 Pack. There is no required `plugin.ts` filename or independent file-based activation path.
 
 `build()` generates definitions and configuration; runtime `apply()` owns the reversible work.
-See the feature Packs in [game-3d](../../templates/game-3d/README.md#behavior-packs) for same-file,
+See the feature Packs in [game-3d](../../templates/game-3d/docs/guide.md#behavior-packs) for same-file,
 separate-module, and npm implementations with cross-Pack GUID references.
 
 `assets.load(guid, 'plugin')` returns a definition handle without evaluating its code or preloading deferred references; `assets.read(handle)` returns detached definition content. Release the caller handle when finished. Runtime edits affect later activations and do not reconfigure existing Fibers. `mountPluginAsset(ctx, guid)` resolves a compiled implementation, clones configuration, establishes asset origin before installation, and returns the actual native Fiber in a Result. The host injects `assets.readPluginDefinition` and `pluginPrograms`; this package does not import the asset runtime.

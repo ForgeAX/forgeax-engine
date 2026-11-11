@@ -117,7 +117,7 @@ describe('observation pixels', () => {
   it('reads Camera bloom fields with the Camera schema defaults', () => {
     expect(bloomSettingsFromCamera({})).toEqual({
       enabled: false,
-      threshold: 1,
+      threshold: -1,
       smoothWidth: 0.01,
       intensity: 0.5,
     });

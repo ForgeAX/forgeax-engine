@@ -6,7 +6,10 @@ import {
   type RasterPipelineShape,
 } from '../gpu-driven/production-raster-classes';
 
-it('draws the general directional receiver while the simple scene-index receiver builds', () => {
+it.each([
+  false,
+  true,
+])('preserves lean=%s while the simple scene-index receiver builds', (leanLighting) => {
   const general = { label: 'general' };
   const simple = { label: 'simple' };
   let simpleReady = false;
@@ -39,6 +42,7 @@ it('draws the general directional receiver while the simple scene-index receiver
     preparationFactory: undefined,
     visibleSurface: false,
     directionalShadowSimple: true,
+    leanLighting,
   } as unknown as RasterPipelineShape;
   const { pipelineFor } = createRasterPipelines(shape);
   // A frame that just turned simple (e.g. the light stopped casting) is not held.
@@ -48,7 +52,7 @@ it('draws the general directional receiver while the simple scene-index receiver
     (call) => (call[7] as MaterialShaderArtifact).variantSet,
   );
   expect(selected).toEqual([
-    'DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=true',
+    `DIRECTIONAL_SHADOW_SIMPLE=true+LEAN_LIGHTING=${leanLighting}`,
     'DIRECTIONAL_SHADOW_SIMPLE=false+LEAN_LIGHTING=false',
   ]);
   // The fallback is not retained; the simple receiver takes over once built.

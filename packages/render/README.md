@@ -426,7 +426,7 @@ preparation dependency has finished.
 Candidate preparation retries only the current shader-module or native PSO owner's live pending signal. Module completion, invalidation and device retirement end
 that signal; compile and descriptor failures still reject the candidate.
 
-Published candidates can reuse the installed graph's exact typed demand without another Record when every ordinary PSO lookup is already ready; current accepted view facts are rechecked at lease admission, and upload completion still waits for its GPU fence. Unknown/custom demand retains the Record route.
+Published candidates can reuse the installed graph's exact typed demand without another Record when every ordinary PSO lookup is already ready; current accepted view facts are rechecked at lease admission. Mesh readiness requires accepted writes on the same queue and the actual current pipelines, not GPU completion of those writes or unrelated earlier submissions. The original held queue fence still retains physical allocations and source payloads through cancellation or retirement. A rejected completion invalidates its prepared leases and faults the owning Renderer; it is not a successful upload receipt. Unknown/custom demand retains the Record route.
 
 `Renderer.inspect().featureGraph.candidatePipelines` reports initial warm attempts, ready results, queued fallbacks, unavailable accepted demand and unsupported graphs; final currentness checks do not increment these counters.
 
@@ -1365,7 +1365,18 @@ must be 0 for the other modes; `linear` needs `0 <= near < far` and ignores
 `Color`. `color`, `maxOpacity` and the law fields are selected from the
 frame's resource owner. Disabled fog (zero opacity, zero exponential density or
 an empty linear range) records no fog pass; there is no 3D texture, froxel grid
-or temporal history. The authored sky remains unchanged.
+or temporal history. Without an `Atmosphere`, the authored background is not
+fogged; only finite surfaces receive fog. With an `Atmosphere`, fog also covers
+the sky: background pixels take height fog at the view ray's exit from the
+atmosphere, as distant fog, so dense fog greys the sky. The fog source radiance
+is `color` plus the atmosphere's distant sky light and in-scattered sunlight;
+`color` defaults to black, as Unreal's height fog, so the atmosphere alone lights
+it. Without an `Atmosphere`, `color` is the whole fog color.
+`skyOpacity` (default 1, in `[0, 1]`) scales the fog opacity on those
+background pixels only: 1 is the physical distant fog, 0 leaves the sky
+unfogged, and finite surfaces are fogged the same either way. Without an
+`Atmosphere` it has no effect. An out-of-range value reports
+`environment-selection-invalid` naming `skyOpacity`.
 SMAA, FXAA, TAA and no-AA use single-sample depth; MSAA is rejected until a
 matching depth resolve is available. Use `VolumetricFog` for spatial density and
 lighting/scattering effects; the meadow-style distance haze needs only `Fog`.
@@ -2162,9 +2173,8 @@ glint (Three.js `Water` specular, widened by the wave-normal footprint), samples
 Skylight prefiltered environment along the reflection direction, and fogs its own light.
 Bind the same generated HDR equirect asset to `SkyboxBackground` and `Skylight` so
 the visible sky and water reflection share one source.
-Generate a fixed sky in a build-time Pack, as in the Game 3D template's
-`assets/environment.pack.ts`; use `Atmosphere` for a physical sky that changes
-with the sun. `GradientSky` and its presets have been removed. A solid fallback
+Generate a fixed sky in a build-time Pack; use `Atmosphere` for a physical sky that changes
+with the sun, as the Game 3D template does. `GradientSky` and its presets have been removed. A solid fallback
 uses `Camera.clearColor` and passes through exposure and tone mapping.
 
 #### Visible surface observation
@@ -3082,6 +3092,12 @@ admitted profile, `status` is `accepted | fallback | rejected`, and
 `filterTapUpperBound`, `seamTapUpperBound`, `deviceGeneration`, and
 `graphGeneration` are inspection facts, not additional author controls.
 
+A queue-accepted preparation-only submission, such as an unfinished IBL projection,
+records no scene or shadow work. Its settlement reports `sceneSubmitted: false`
+and no current shadow pixel evidence, without inventing a shadow candidate
+error. Rejected submissions, recording failures and invalid light configuration
+retain their directional-shadow errors.
+
 `renderer.inspect().shadowRaster` reports the last submitted frame's shadow
 raster work across directional, point, and spot views. `passCount` counts the
 views that re-rastered and `drawCount` sums their draw commands. Each
@@ -3263,6 +3279,8 @@ a tent profile. `DirectionalLight.intensity` is outer-space illuminance in lux.
 The same medium attenuates direct solar lighting, the visible disc and finite
 camera-to-surface paths. Geometry and cloud visibility affect single scattering;
 the multiple-scattering closure remains a low-frequency spherical approximation.
+Background rays below the horizon end on a virtual ground lit by the attenuated
+sun with `groundAlbedo` (Lambertian; sky irradiance on that ground is omitted).
 
 ### Atmosphere and aerial perspective
 
@@ -3280,7 +3298,7 @@ to match a fixed sky colour. Ordinary outdoor haze needs no additional `Fog`.
 | `mieAnisotropy` | 0.8 | Henyey-Greenstein phase asymmetry |
 | `absorption`, `absorptionPeakHeight`, `absorptionHalfWidth` | (0.650, 1.881, 0.085)e-6 /m; 25,000 m; 15,000 m | Ozone-like absorption |
 | `groundAlbedo`, `multipleScattering` | RGB 0.4; 1 | Ground bounce and high-order scattering scale |
-| `sunAngularRadius` | 0.004675 rad | Disc radius; zero hides the disc |
+| `sunAngularRadius` | 0.004675 rad | Disc radius; zero hides the disc. Disc radiance is the sun illuminance over the disc solid angle, capped at 100 × the sun colour (the default disc would otherwise be about 14,500 ×) |
 | `aerialPerspectiveStart`, `aerialPerspectiveDistanceScale` | 0 m; 1 | Skipped prefix and optical-distance scale |
 
 The component schema and extraction validation own supported ranges. Removed
@@ -3293,7 +3311,7 @@ Earth fixture, exposure is 1/5,000 with ACES Filmic output.
 | Transmittance | 256 x 64 RGBA16F | Medium geometry and density |
 | Multiple scattering | 32 x 32 RGBA16F | Medium and ground albedo |
 | Sky View | 192 x 208 RGBA16F | Observer, sun and local visibility |
-| Aerial perspective | Two 32-cubed RGBA16F volumes | View, sun and local visibility |
+| Aerial perspective | Native: two 32-cubed RGBA16F volumes; no-storage Forward: 32-cubed packed RGB transport in the Cluster texture | View, sun and local visibility |
 | Distant sky illumination | 1 x 1 RGBA16F | Atmosphere and sun; fixed ground reference |
 
 Radiance LUTs store unit-white-sun transport and consumers multiply the frozen
@@ -3354,12 +3372,33 @@ across WebGPU compute, WebGPU raster and actual WebGL2 raster, including an
 independent vertical Beer-law integral. Native Atmosphere optics, ray, transport
 and 512-step quality tests retain their original assertions.
 
-Full Atmosphere requires compute, filterable/storage RGBA16F, 3D sampling and a
-32-sampled-texture device budget for the complete Standard material layout.
+Default full Atmosphere has two GPU execution paths with the same transport
+kernel and 64-step integration budget:
+
+| Device path | Requirements | Material transport |
+|:--|:--|:--|
+| Native storage layout | Compute, filterable/storage RGBA16F, 3D sampling and 32 sampled textures | Ordinary LUTs and two 3D AP volumes |
+| No-storage Forward, including WebGL2 | Renderable/filterable RGBA16F, 16 sampled textures and a 1024-wide integer Cluster texture | Fragment LUT production and a GPU-owned 50-row Cluster footer; manual bilinear/trilinear reads |
+
+The footer packs the same medium tables, distant sky and RGB AP without adding
+another material texture binding. Its logical allocation is 819,200 bytes,
+294,912 bytes more than the two native AP volumes; these are resource descriptor
+bytes, not measured VRAM. Disabled full Atmosphere allocates no footer. Accepted
+submissions publish cached contents; unchanged frames do not regenerate tables.
+The backend continues reporting compute, storage and timestamp capabilities
+accurately. `backgroundOnly` remains an explicit authoring choice.
+
+`atmosphere-full-webgl2.browser.test.ts` exercises real WebGPU and WebGL2 paths:
+opaque and blended AP, Sprite transport, direct solar lighting, Fog/AO coexistence,
+medium/sun/camera edits, resize, pinned six-face cube and planar HDR captures,
+steady-state RHI Debug work, and real WebGL context loss followed by sixty completed
+recovered frames. Desktop pixel evidence does not qualify mobile hardware or FPS.
+
 Missing capabilities return structured unavailable; there is no silent old-sky
-fallback. The first delivery accepts single-sample scene depth; choose TAA,
-FXAA or no AA. GPU observations name the `atmosphere-*` passes and report
-unavailable timestamps explicitly.
+fallback. Full Atmosphere accepts single-sample scene depth; choose TAA, FXAA or
+no AA. GPU observations name the `atmosphere-*` passes and report unavailable
+timestamps explicitly. Existing cooked materials must be recooked to include the
+updated shader closure; runtime consumers do not cook shaders.
 The source lifecycle inspection and graph resource accounting describe different
 owners: a source revision is not a claim that its GPU cube was submitted.
 
@@ -3591,6 +3630,11 @@ A timing error exposes the closed `code` union plus `expected`, `hint`, and
 observing a later receipt. `latestKnownGood` is a separate reference and never
 changes the current status or completeness. Omitting `timings` from `include`
 returns receipt metadata without materializing timing facts.
+
+Timestamp readback never holds frame submission. When all `maxFramesInFlight`
+timing slots still wait for readback, the next frame renders untimed: its
+observation is `failed` with `timing-in-flight-exhausted`, and
+`error.detail.skippedFrames` counts every frame the session skipped this way.
 
 Run the paired real-GPU benchmark with the Dawn host:
 
@@ -4878,6 +4922,10 @@ reuse the accepted native texture; a replacement keeps any in-flight version ali
 Both standalone and fused tone/LUT passes read the current frame's accepted binding.
 Changing texels reuses the graph and pipeline layout; changing LUT dimensions rebuilds
 the graph's imported texture descriptor.
+The LUT is a display LUT, as in UE's LDR grading (`PostProcessCombineLUTs.usf`): the
+tone-mapped colour is sRGB-encoded, indexed at texel centres (`c * (N - 1) / N + 0.5 / N`),
+and the texels are read as sRGB-encoded output. A standard `.cube` identity is therefore a
+no-op, and the strength blend happens in linear.
 
 > [!NOTE]
 > Render Workers resolve the LUT through the accepted asset publication.
@@ -5391,18 +5439,30 @@ and source-level falsifier paths.
 Bloom is a Camera-owned Standard post feature. `bloom` selects the enabled
 path, while `bloomIntensity` is bounded to `[0, 8]`, `bloomThreshold` to
 `[-1, 65504]`, `bloomSmoothWidth` to `[0, 1]`, and `bloomRadius` to `[0, 1]`.
-The defaults bloom only highlights: threshold `1` (above-white scene-linear
-luminance), intensity `0.5`, smooth width `0.01`, and radius `0`. Three r184
-WebGPU BloomNode instead defaults to threshold `0` and intensity `1`, which
-blooms the whole frame; pass those values explicitly to reproduce it. Bloom is
+The defaults follow Unreal: threshold `-1` (no threshold, so every pixel
+scatters in proportion to its energy), intensity `0.5`, smooth width `0.01`,
+and radius `0`. Set a positive threshold (scene-linear luminance) to bloom only
+highlights; Three r184 WebGPU BloomNode defaults to threshold `0` and intensity
+`1`; pass those values explicitly to reproduce it. Bloom is
 off by default; the disabled value and intensity `0` are exact zero-work cases.
 Enabling Bloom creates the HDR chain even with `TONEMAP_NONE`.
+`bloomIntensity` is the fraction of above-threshold light scattered back as
+glow: the five level weights are normalised to sum to one, so `bloomRadius`
+only reshapes the halo and never changes its energy. Three's UnrealBloomPass
+adds the unnormalised weights (about three times as much); its strength `s`
+corresponds to `bloomIntensity = 3 × s` only when its input is clamped
+emissive, so with full-HDR emissive start from a much smaller value.
+The prefilter bounds each input tap at `64 × max(bloomThreshold, 1)` luminance
+(hue kept), so one extreme pixel such as a sun disc or a specular spike blooms
+like a bright highlight instead of washing out the frame. Content below that
+bound blooms exactly like Three r184 BloomNode. Scenes authored in physical
+units (for example 100,000-lux sun with a tiny exposure) raise `bloomThreshold`
+to their own white level, which raises the bound with it.
 
 A negative `bloomThreshold` disables the luminance threshold entirely (the whole
 frame blooms, weighted only by `bloomIntensity`), exactly like Unreal's
-`BloomThreshold = -1`, which skips PostProcessBloom.usf BloomSetup. Unreal makes
-that its default; ForgeaX keeps the default `1` so existing authored scenes look
-the same, and the value `-1` is the Unreal-compatible spelling.
+`BloomThreshold = -1`, which skips PostProcessBloom.usf BloomSetup. This is the
+default; scenes authored against the old default `1` set it explicitly.
 
 Migration: `bloomSoftKnee` becomes the absolute `bloomSmoothWidth`, and
 `bloomScatter` becomes `bloomRadius`. Their meanings changed with the filter;
@@ -6227,7 +6287,7 @@ layer or transmission receives Forward and ShadowCaster; blending follows the
 same forward-only policy. This section is about the Standard lane, not the
 separate Points/Lines admission rule above. See the
 [`shader Surface contract`](../shader/README.md#standard-surface-contract) and
-the [`game-3d` import example](../../templates/game-3d/README.md#import-first-surface-material-example)
+the [`game-3d` import example](../../templates/game-3d/docs/guide.md#import-first-surface-material-example)
 for the source and Pack route. Water and other participating media use the
 separate [Single-layer medium Surface](#single-layer-medium-surface) ABI and
 runtime route.
@@ -6480,13 +6540,23 @@ never thrown. A view's adopted graph settles first in RenderCommit:
 reinstalls its previous graph, generations and Feature plans, stashing a graph that
 waits on pipeline preparation. It advances the view's `frameNumber` once per recorded
 attempt and stores a frame-stamped `settled`/`failed` outcome on `ViewGraphCandidate`.
-Shared Feature work compiles in `render-feature-graph-compile` (RenderRecord)
-from the sealed Feature frame. Recording executes only that compile receipt,
+Shared Feature work prepares in `render-feature-graph-compile` (RenderRecord)
+from the sealed Feature frame. Recording executes only that frame's receipt,
 after scene-input captures; the receipt supplies its submitted plans. An
 encode failure is `render-feature-stage-failed` with `stage: 'record'`, kept as
-data without poisoning the World. `render-feature-graph-retire` transfers an
-encoded graph to the submission retirement queue before its completion fence
-settles; an unused graph retires immediately. The frame must already be open
+data without poisoning the World.
+
+| Feature work | Preparation and lifetime | Current execution |
+|:--|:--|:--|
+| Native frame compute/copy using external prepared buffers | A zero-resource command graph belongs to the device scope; each frame keeps its own receipt and leases, including passless fullscreen registrations | Read the current sealed passes, buffers, dispatches and copy barriers, including changing emitter rosters |
+| Shared scene inputs, raw work or unsupported resource contracts | Compile the complete shared graph for that frame | Preserve ordinary graph validation, target dependencies and recording failures |
+| Eligible Standard transient view work | Keep its original `scene` or `post` contribution and parent color/depth ports; named cloud stages use the ordinary dependency path | Resolve current commands at that same stage; scene radiance remains before TAA and unrelated empty cloud segments acquire no scene-target reads |
+
+`render-feature-graph-retire` transfers an encoded frame-owned graph to the
+submission retirement queue before its completion fence settles; an unused
+frame-owned graph retires immediately. Native command graphs retire with their
+device scope. `featureGraph.sharedFrame` reports preparation routes separately
+from submitted plans and GPU completion. The frame must already be open
 before its recording coordinator starts, as in the Renderer frame entry.
 `render-graph-compile` reads the current Standard lighting, topology, SSR, GI,
 GPU raster lane, Feature plan and Pass plans from their view components. Its
@@ -7517,6 +7587,11 @@ The public mode names are the same names used by the Three r184 oracle:
 | `agx` | `TONEMAP_AGX` | AgX curve |
 | `neutral` | `TONEMAP_NEUTRAL` | Khronos neutral curve |
 
+`TONEMAP_UE_FILMIC` (`ue-filmic`) has no Three counterpart: it is Unreal's default
+Filmic tone curve with Unreal's default post-process settings (slope 0.88, toe
+0.55, shoulder 0.26, black clip 0, white clip 0.04, blue correction 0.6, expand
+gamut 1), including the ACES glow and red modifiers.
+
 `TONEMAP_REINHARD_EXTENDED` is the existing ForgeAX luminance-domain curve. Its
 separate `reinhard-extended` name is intentional: it is not a second formula
 hidden behind the Three `reinhard` name.
@@ -7586,13 +7661,13 @@ goes through exposure and the tone curve like any surface. This differs from
 Three.js, whose `scene.background` colour is display-referred. The default
 `[0, 0, 0, 0]` is transparent: on a premultiplied surface (the WebGPU canvas)
 the page behind the canvas shows through tone mapping, FXAA, TAA and bloom.
-Analytic fog skips background pixels and tints geometry only. A surface without
+Without an `Atmosphere`, analytic fog skips background pixels and tints geometry
+only. A surface without
 premultiplied alpha presents opaque, where a transparent clear shows black.
 
 For a procedural sky, generate an ordinary linear HDR `EquirectAsset` in a Pack
 and bind the same asset to `SkyboxBackground` and `Skylight`. This reuses the
 existing background, irradiance and prefiltered reflection route.
-`templates/game-3d/assets/environment.pack.ts` demonstrates this asset route.
 Use `Atmosphere` when the scene needs the physical atmosphere model.
 
 ### Material output and Forward graph composition
@@ -8751,8 +8826,10 @@ normal World path.
 
 ## Standard camera lens effects
 
-Add `LensEffects` to the active camera to combine vignette, directional chromatic
-aberration and animated monochrome grain in one output-resolution pass. Each
+Add `LensEffects` to the active camera for vignette, radial chromatic aberration
+and animated monochrome grain. The fringe is a linear-HDR `chromatic-aberration`
+pass before Bloom and tone mapping; vignette and grain share one output-resolution
+`lens-effects` pass. Each
 intensity is independently adjustable through ordinary World writes; gameplay
 systems own hit pulses, sprint ramps and fade timing.
 
@@ -8762,8 +8839,8 @@ systems own hit pulses, sprint ramps and fade timing.
 | `vignetteRadius` | 0.5 | Finite `[0, 1]`; unaffected inner radius, center 0 and corners 1 |
 | `vignetteSoftness` | 0.5 | Finite `[0.001, 1]`; smooth transition width in normalized viewport radius |
 | `vignetteColor` | `[0, 0, 0]` | Three finite linear RGB channels in `[0, 1]`; red supports hit feedback |
-| `chromaticAberration` | 0 | Finite `[0, 32]` output pixels; offset per red/blue channel |
-| `chromaticAberrationAngle` | 0 | Finite `[-pi, pi]` radians; counterclockwise sample direction, matching Three.js |
+| `chromaticAberration` | 0 | Finite `[0, 5]` percent, as UE `SceneFringeIntensity`; radial fringe growing toward the corners |
+| `chromaticAberrationStartOffset` | 0 | Finite `[0, 1]` normalized distance from the centre where the fringe starts, as UE `ChromaticAberrationStartOffset` |
 | `grainIntensity` | 0 | Finite `[0, 1]`; Three.js FilmShader multiplicative noise mix |
 | `grainSize` | 1 | Finite `[1, 8]` output pixels per grain cell |
 
@@ -8787,31 +8864,38 @@ world.set(camera, LensEffects, {
 }).unwrap();
 ```
 
-The Standard order is tone/LUT, outline, barrel distortion, FXAA, `lens-effects`,
-then the single output encoding. Grain is added after antialiasing, so temporal
-history and FXAA do not smear it. Chromatic aberration preserves the center
-green/alpha sample; red/blue sample in opposite directions with clamped edges.
+The Standard order is temporal, DoF, `chromatic-aberration`, Bloom, tone/LUT,
+outline, barrel distortion, FXAA, `lens-effects`, then the single output encoding.
+Grain is added after antialiasing, so temporal history and FXAA do not smear it.
+Chromatic aberration follows UE's scene color fringe (`PostProcessTonemap.usf:318-341`,
+`PostProcessTonemap.cpp:709-733` `ChromaticAberrationParams`). UE fringes the linear scene
+color before Bloom is added (`:525-526`) and before tone mapping, so bright HDR edges split
+before the curve compresses them; here the fringed image also feeds Bloom's downsample chain,
+whereas UE samples Bloom from its own unfringed input. In the `[-1, 1]` lens viewport, red and green sample at
+`lens - sign(lens) * max(|lens| - start, 0) * scale`, with scales proportional to the primary
+wavelength distance from blue (611.3 / 549.1 / 464.3 nm) and divided by `1 - start`; blue and alpha
+stay at the pixel centre, so the image centre is untouched and fringes grow toward the corners.
 This does not replace the displayed geometry/picking mapping or transform DOM HUDs.
 The reference is Three.js at [`b745e6c`](https://github.com/mrdoob/three.js/tree/b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2/examples/jsm/shaders):
 
 | Three.js reference | Engine adaptation |
 |:--|:--|
 | `VignetteShader` | Centered RGB tint blend; explicit radius/softness replace offset/darkness for hit feedback |
-| `RGBShiftShader` | Same opposite R/B samples and center G/alpha; distance uses output pixels and Y follows top-left textures |
 | `FilmShader` | Same `mix(base, base + base * clamp(0.1 + noise, 0, 1), intensity)`; black stays black and increasing intensity also brightens the image |
 
 Grain uses output pixels and the captured renderer frame number, so a fresh-device
 RHI Debug replay reproduces the same pattern without a wall clock or random texture. Its integer hash replaces Three.js's time-driven floating-point random function; grayscale conversion is outside this effect.
 
 Absent components and three zero intensities declare no lens pass, intermediate
-texture or GPU upload. Invalid fields fail before graph admission with
+texture or GPU upload; a zero fringe drops only `chromatic-aberration`, and zero
+vignette and grain drop only `lens-effects`. Invalid fields fail before graph admission with
 `lens-effects-invalid-parameter` and structured field/value/bounds. The existing
 Renderer owns capability admission, graph replacement, in-flight retirement and
 recovery; this effect needs `rgba16floatRenderable` just like the other Standard
 linear-LDR companions.
 
-Inspect `renderer.inspect().perFramePassNames` for the single `lens-effects`
-pass. The shared `lens-effects.fixture.ts` Browser/Dawn regression captures live
+Inspect `renderer.inspect().perFramePassNames` for the `chromatic-aberration`
+and `lens-effects` passes. The shared `lens-effects.fixture.ts` Browser/Dawn regression captures live
 frames, inspects the effect's bindings/work item, compares fresh replay pixels,
 and rejects a tape with its draw removed. Evidence is saved under
 `artifacts/lens-effects/{browser,dawn}/`.
@@ -9448,7 +9532,7 @@ ordinary frame graph, encoder and submission.
 |:--|:--|:--|
 | `normal`, `distance` | World plane `dot(normal, position) + distance = 0`; normal faces the retained half space | `[0, 1, 0]`, `0` |
 | `clipBias` | Meters trimmed from the retained half space at its boundary | `0.001` |
-| `distortion` | Screen-UV warp of the mirror lookup per unit tilt of the receiving shading normal (normal map or Surface ripples); `0` is an undistorted mirror. Finite and nonnegative. | `0` |
+| `distortion` | Normal distortion radius in world units (Unreal `NormalDistortionStrength`): the view ray reflects off the receiving shading normal (normal map or Surface ripples) and the mirror is sampled where it meets a sphere of this radius around the pixel. `0` or a flat normal is an undistorted mirror. Finite and nonnegative. | `0` |
 | `updateIntervalFrames` | Minimum renderer frame interval between captures | `1` |
 | `requestVersion` | Increment to refresh before the next scheduled interval | `0` |
 | `PlanarReflection.target` | Distinct sampled 2D reflection output (`3d`/`2d-array` targets are rejected); width/height control capture resolution. Unset (`0`): the Renderer owns the target | Renderer-owned |
@@ -9521,11 +9605,10 @@ A custom Standard Surface opts in the same way:
 `Materials.standard({ surfaceModule, parameters, values, planarReflection: true })`
 adds the engine-owned field (do not declare it yourself) and keeps the Surface
 forward-only. The Surface drives the wet look per pixel: `normalWS` ripples
-from `SurfaceInput.frameTime` distort the lookup by `PlanarReflection.distortion`,
-and `roughness` fades the mirror into the prefiltered environment (or, with
-`generateMipmaps`, blurs it), so dry patches stay matte while puddles reflect. Three.js reference:
-`screenUV.add(normal.xy.mul(warp))` into a `ReflectorNode`, roughness-blended
-(Threejs-Punk wet ground). Plane membership still uses the geometric normal,
+from `SurfaceInput.frameTime` distort the lookup by `PlanarReflection.distortion`
+(Unreal's virtual-sphere normal distortion), and `roughness` fades the mirror
+into the prefiltered environment (or, with `generateMipmaps`, blurs it), so dry
+patches stay matte while puddles reflect. Plane membership still uses the geometric normal,
 and the distorted lookup is clamped to the capture.
 
 ```wgsl
@@ -9788,7 +9871,7 @@ handle.release(); // terminal; never destroys the caller's texture, element or f
 |:--|:--|
 | Admission | `gpu-texture`: filterable color format, single-sampled 2D with one layer, `TEXTURE_BINDING`, same device. `video`: an `HTMLVideoElement` or `VideoFrame`. Failures return `ExternalTextureInvalidError` (`external-texture-invalid`, `detail.reason` in `format`, `dimension`, `usage`, `device-mismatch`, `device-lost`, `source-unsupported`, `capability-absent`). |
 | Binding | `texture_external` slots derive an `externalTexture` BGL entry from the one `paramSchema`. A video binds a fresh `GPUExternalTexture` each frame (memoized across slots within the frame); only bind groups containing such a slot are rebuilt per frame. A `gpu-texture` binds its view into either slot kind. |
-| Capability absent | `caps.externalTexture === false` (Dawn node, rhi-wgpu) keeps the same layout and shader and binds a copied view (source orientation preserved in `texture_external` slots; ordinary slots flip to UV-up, like `CanvasTexture`). |
+| Capability absent | `caps.externalTexture === false` (Dawn node, rhi-wgpu) keeps the same layout and shader and binds a copied view. Every slot kind samples the copy in the source's top-left orientation, as image textures do (UE flips only bottom-up BMP samples, `MediaShaders.usf:48`). |
 | State failures | `ExternalTextureStateInvalidError` (`external-texture-state-invalid`) is reported once on the error channel per state and the slot keeps its default: `released`, `stale-generation` (a `gpu-texture` after device recovery; `replace` with a texture from the new `nativeDevice()`), `source-expired` (closed `VideoFrame` or undecoded element), `foreign-renderer`. `replace`/`release` return the same error synchronously. |
 | Ownership | The source is a copyable runtime token owned by the importing Renderer. Asset copies preserve it; another Renderer rejects it. Pack output rejects source bindings, and Worker publication rejects external imports as `unsupported`. |
 | RHI Debug | The recorder CPU-snapshots each imported video frame into a recorded `rgba8unorm` texture and records its view in place of the external binding, so a tape replays the exact frame on a fresh device with no media object. Bind groups cached before capture with an external slot are patched to the snapshot view and replayed inside the frame. A borrowed `gpu-texture` enters the tape as `createTexture`; its bytes are seeded only when the caller granted `COPY_SRC`. |

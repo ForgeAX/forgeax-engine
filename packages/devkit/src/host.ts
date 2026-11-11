@@ -18,12 +18,7 @@ import {
 } from '@forgeax/engine-import';
 import { encodeCatalogWire } from '@forgeax/engine-pack';
 import type { PackError } from '@forgeax/engine-pack/errors';
-import {
-  declaredPackAssets,
-  type ScanInventory,
-  STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
-  scanInventory,
-} from '@forgeax/engine-pack/scanner';
+import { declaredPackAssets, type ScanInventory } from '@forgeax/engine-pack/scanner';
 import { projectScriptablePackSceneComponents } from '@forgeax/engine-pack/source';
 import {
   createScriptablePackSourceSnapshot,
@@ -55,6 +50,7 @@ import {
   type HotUpdateOptions,
   type InlineConfig,
   type Plugin,
+  type PreviewServer,
   type ResolvedConfig,
   type ViteDevServer,
   build as viteBuild,
@@ -62,11 +58,7 @@ import {
 } from 'vite';
 import { type WebSocket, WebSocketServer } from 'ws';
 import { animationPlayback, environmentAnimationPlayback } from './animation-playback.js';
-import {
-  assetLibrarySourceIdentity,
-  findEngineWorkspaceRoot,
-  owningAssetLibrary,
-} from './asset-libraries.js';
+import { assetLibrarySourceIdentity, findEngineWorkspaceRoot } from './asset-libraries.js';
 import { loadProjectCookers } from './build/cookers.js';
 import { executionBootstrapEntry } from './build/execution-bootstrap.js';
 import { executionWorkerEntries, runtimeDependencyEntries } from './build/execution-workers.js';
@@ -74,7 +66,6 @@ import { materialBuildCapabilityGuard } from './build/material-profile.js';
 import {
   assertPluginSourceInputs,
   discoverPluginAssets,
-  isPluginAssetSourceIgnoredPath,
   type PluginSourceInventory,
   publishedPluginInventory,
 } from './build/plugin-assets.js';
@@ -92,7 +83,7 @@ import {
   writeWechatProject,
 } from './build/wechat.js';
 import { PLAYER_DELIVERY_FILE, prepareDist } from './delivery-dist.js';
-import { verifyDist, writeDistManifest } from './dist.js';
+import { type DistManifest, verifyDist, writeDistManifest } from './dist.js';
 import {
   enginePackageRuntimeIdentity,
   inspectEngineWorkspace,
@@ -121,9 +112,11 @@ import {
 } from './host-binding.js';
 import { DEFAULT_IMPORTERS } from './importers.js';
 import { LIVE_BRIDGE_OWNER_PARAM } from './live-bridge-url.js';
+import { createPlayClock } from './play-clock.js';
 import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
+import { projectSourceRoots, scanProjectSources } from './project-source-scan.js';
 import { DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
 import { traceDevStartup } from './startup-timing.js';
 import { projectToolProjection } from './tools/project-tools.js';
@@ -823,20 +816,19 @@ const bridge = {
         return entry.definition.read();
       },
     };
-    if (import.meta.env.DEV) {
-      globalThis.__forgeaxGameInspection = inspection;
-      ctx.effect(() => () => {
-        if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
-        gameProjectionDefinitions.clear();
-      }, 'devkit/source-inspection');
-    }
+    // Read-only on every build: list and read expose only what the game registered with registerRead.
+    globalThis.__forgeaxGameInspection = inspection;
+    ctx.effect(() => () => {
+      if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
+      gameProjectionDefinitions.clear();
+    }, 'devkit/source-inspection');
     ctx.provide('gameHost', {
       ...(ctx.executionBootstrapHost.canvas === undefined ? {} : { canvas: ctx.executionBootstrapHost.canvas }),
       drawingBufferSize: () => ctx.executionBootstrapHost.drawingBufferSize(),
       assets: ctx.assets,
       ...(ctx.executionBootstrapHost.port === undefined ? {} : { port: ctx.executionBootstrapHost.port }),
       app: { world: ctx.world, assets: ctx.assets },
-      ...(import.meta.env.DEV ? { gameProjection } : {}),
+      gameProjection,
       setPointerLockAllowed: (allowed) => ctx.executionBootstrapHost.setPointerLockAllowed(allowed),
     } satisfies GameHost);
   },
@@ -1352,13 +1344,18 @@ async function advanceGameTime(app, { seconds, stepSeconds, timeoutMs, render = 
   const deadline = performance.now() + timeoutMs;
   const channel = new MessageChannel();
   const yieldTask = () => new Promise((resolve) => { channel.port1.onmessage = resolve; channel.port2.postMessage(0); });
-  const paused = app.pause().ok;
+  // A running play clock owns the paused App: it stays paused afterwards, and the
+  // clock counts the stepped time.
+  const clock = playClock?.status().running === true ? playClock : undefined;
+  const releaseClock = clock?.suspend();
+  const paused = app.pause().ok && clock === undefined;
   let stepped = 0;
+  let steppedSeconds = 0;
   try {
     while (stepped < frames) {
       const delta = Math.min(stepSeconds, seconds - stepped * stepSeconds);
       const result = app.stepFrame(delta, { render: render || stepped === frames - 1 });
-      if (result.ok) { stepped += 1; continue; }
+      if (result.ok) { stepped += 1; steppedSeconds += delta; continue; }
       if (result.error.detail?.reason !== 'credit' || performance.now() > deadline)
         return { ok: false, frames: stepped, error: result.error.code + ' ' + JSON.stringify(result.error.detail) };
       await yieldTask();
@@ -1367,12 +1364,42 @@ async function advanceGameTime(app, { seconds, stepSeconds, timeoutMs, render = 
   } finally {
     channel.port1.close();
     if (paused) app.resume();
+    releaseClock?.(steppedSeconds);
   }
+}
+// Development play time scale: one lockstep clock per page (play-clock.ts).
+${createPlayClock.toString()}
+let playClock;
+function clockGameTime(app, request) {
+  if (!import.meta.env.DEV) return { running: false, error: 'the time scale runs only on a development host' };
+  if (request?.action === 'start') {
+    playClock?.stop();
+    playClock = createPlayClock(app, request.scale, request.stepSeconds, {
+      now: () => performance.now(),
+      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      // A posted message runs without the setTimeout nesting clamp.
+      idle: () => new Promise((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+        channel.port2.postMessage(0);
+      }),
+    });
+    return playClock.status();
+  }
+  if (request?.action === 'step')
+    return playClock?.step(request.frames) ?? { running: false, error: 'the play clock is not started' };
+  if (request?.action === 'stop') {
+    const status = playClock?.stop();
+    playClock = undefined;
+    return status ?? { running: false };
+  }
+  return playClock?.status() ?? { running: false };
 }
 function exposeGameInspection(app) {
   const rendererErrors = trackRendererErrors(app, import.meta.env.DEV);
   const inspection = {
     advance: request => advanceGameTime(app, request),
+    clock: request => clockGameTime(app, request),
     ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
     list() {
       return {
@@ -1725,6 +1752,8 @@ const appBootstrapPlugin = {
         uiRoot: uiRoot instanceof HTMLElement ? uiRoot : document.body,
         controlMode,
         setPointerLockAllowed: (allowed: boolean) => app.input?.setPointerLockAllowed?.(allowed),
+        // Frontend plugins register page-realm projections; inspection merges them with the Engine Worker's.
+        gameProjection,
       } satisfies import('@forgeax/engine/app').GameHost;
       ctx.provide('gameHost', host);
       ctx.effect(() => () => assembly.value.dispose(), 'devkit/host-assets');
@@ -1733,11 +1762,20 @@ const appBootstrapPlugin = {
         const sourceRead = (method: 'list' | 'read', id?: string) => app.remoteEval === undefined
           ? localInspection?.[method](id)
           : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
+        const pageReads = () => Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id);
         const inspection = {
           advance: request => advanceGameTime(app, request),
+          clock: request => clockGameTime(app, request),
           ui: request => inspectUi(globalThis.__forgeaxGameInspection === inspection && appState.current === app ? document.body : undefined, request),
-          list: () => import.meta.env.DEV ? sourceRead('list') : { reads: [] },
-          read: (id: string) => sourceRead('read', id),
+          list: async () => {
+            if (!import.meta.env.DEV) return { reads: [] };
+            const source = await sourceRead('list');
+            return { reads: [...pageReads(), ...(Array.isArray(source?.reads) ? source.reads : [])] };
+          },
+          read: (id: string) => {
+            const entry = gameProjectionDefinitions.get(id);
+            return entry?.kind === 'read' ? entry.definition.read() : sourceRead('read', id);
+          },
           renderer: () => {
             const execution = app.execution.report();
             const local = 'renderer' in app ? app.renderer.inspect() : undefined;
@@ -1749,7 +1787,32 @@ const appBootstrapPlugin = {
         ctx.effect(() => () => {
           rendererErrors.unsubscribe();
           if (globalThis.__forgeaxGameInspection === inspection) delete globalThis.__forgeaxGameInspection;
+          gameProjectionDefinitions.clear();
         }, 'devkit/host-inspection');
+      }
+      else {
+        // A release build keeps only the read-only projection: no advance, clock, ui or renderer.
+        const releaseSourceRead = (method: 'list' | 'read', id?: string) => app.remoteEval === undefined
+          ? undefined
+          : app.remoteEval('globalThis.__forgeaxGameInspection.' + method + '(' + (id === undefined ? '' : JSON.stringify(id)) + ')');
+        const releaseInspection = {
+          list: async () => {
+            const source = await releaseSourceRead('list');
+            const page = Array.from(gameProjectionDefinitions.entries()).filter(([, entry]) => entry.kind === 'read').map(([id]) => id);
+            return { reads: [...page, ...(Array.isArray(source?.reads) ? source.reads : [])] };
+          },
+          read: (id: string) => {
+            const entry = gameProjectionDefinitions.get(id);
+            if (entry?.kind === 'read') return entry.definition.read();
+            if (app.remoteEval === undefined) throw new Error('forgeax: game read projection not found ' + id);
+            return releaseSourceRead('read', id);
+          },
+        };
+        globalThis.__forgeaxGameInspection = releaseInspection;
+        ctx.effect(() => () => {
+          if (globalThis.__forgeaxGameInspection === releaseInspection) delete globalThis.__forgeaxGameInspection;
+          gameProjectionDefinitions.clear();
+        }, 'devkit/host-release-inspection');
       }
     }
     if (workspaceTarget) {
@@ -1845,7 +1908,7 @@ const appBootstrapPlugin = {
           controlMode,
           setPointerLockAllowed: (allowed) => app.input?.setPointerLockAllowed?.(allowed),
           startupTimeoutMs: ${startupTimeout},
-          ...(import.meta.env.DEV ? { gameProjection } : {}),
+          gameProjection,
         }));
         if (engineRoot !== null) {
           const mounted = await activateExecutionRoot(ctx, {
@@ -2418,6 +2481,44 @@ export async function startDevProjectWithHost(
   }
 }
 
+/**
+ * The static HTTP server of a verified browser distribution, with the isolation headers
+ * a release page needs; `project preview` and `project play --release` share it.
+ * `none` sends no isolation headers, like a plain static host.
+ */
+export async function serveBrowserDist(
+  root: string,
+  distRoot: string,
+  manifest: DistManifest,
+  port: { readonly port: number; readonly strictPort: boolean },
+  /** `private` binds loopback only and stays silent, for a server play owns. */
+  scope: 'preview' | 'private' = 'preview',
+  headers: 'isolated' | 'none' = 'isolated',
+): Promise<PreviewServer> {
+  return await vitePreview({
+    root,
+    configFile: false,
+    ...(scope === 'private' ? { logLevel: 'silent' as const } : {}),
+    base: manifest.base,
+    plugins: [startupCacheHttp(), await preparePreviewHttpArtifacts(distRoot, manifest)],
+    preview: {
+      open: false,
+      ...(scope === 'private' ? { host: '127.0.0.1' } : {}),
+      ...port,
+      ...(headers === 'none'
+        ? {}
+        : {
+            headers: {
+              'Cross-Origin-Opener-Policy': 'same-origin',
+              'Cross-Origin-Embedder-Policy': 'require-corp',
+              'Cross-Origin-Resource-Policy': 'cross-origin',
+            },
+          }),
+    },
+    build: { outDir: distRoot },
+  });
+}
+
 /** Start static dist preview under one DevKit plugin and verify its manifest first. */
 export async function startPreviewProjectWithHost(
   options: PreviewOptions = {},
@@ -2458,26 +2559,12 @@ export async function startPreviewProjectWithHost(
               return;
             }
             try {
-              const port = resolveProjectPort(options.port);
-              const server = await vitePreview({
+              const server = await serveBrowserDist(
                 root,
-                configFile: false,
-                base: verified.value.base,
-                plugins: [
-                  startupCacheHttp(),
-                  await preparePreviewHttpArtifacts(distRoot, verified.value),
-                ],
-                preview: {
-                  open: false,
-                  ...port,
-                  headers: {
-                    'Cross-Origin-Opener-Policy': 'same-origin',
-                    'Cross-Origin-Embedder-Policy': 'require-corp',
-                    'Cross-Origin-Resource-Policy': 'cross-origin',
-                  },
-                },
-                build: { outDir: distRoot },
-              });
+                distRoot,
+                verified.value,
+                resolveProjectPort(options.port),
+              );
               ctx.effect(() => () => server.close(), 'devkit/preview-server');
               if (options.json !== true) server.printUrls();
               result = {
@@ -3063,8 +3150,7 @@ export async function createViteConfig(
     const realProjectRoot = await realpath(facts.root);
     const realGeneratedRoot = await realpath(generated);
     const projectRoots = facts.assetRoots.map((root) => resolve(facts.root, root));
-    const libraryRoots = facts.assetLibraries.map((library) => library.root);
-    const sourceRoots = [...projectRoots, ...libraryRoots];
+    const sourceRoots = projectSourceRoots(facts);
     const failedSources = new Set<string>();
     const ignorePath = projectSourceIgnorePath(bootstrapRoot, failedSources);
     const sourceSnapshot = await admitInitialSourceSnapshot(
@@ -3078,17 +3164,8 @@ export async function createViteConfig(
     // Only metadata of a byte-identical source closure crosses invocations.
     timing('project-inventory-start');
     const [scanned, engineWorkspaceResolver] = await Promise.all([
-      scanInventory(sourceRoots, {
-        ignorePath: (path) =>
-          isPluginAssetSourceIgnoredPath(
-            owningAssetLibrary(facts.assetLibraries, path)?.root ?? facts.root,
-            path,
-          ),
-        scriptablePack: {
-          ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
-          metadataOnly: true,
-          sourceSnapshot,
-        },
+      scanProjectSources(facts, sourceRoots, {
+        sourceSnapshot,
         ...previewSourceFailureOptions(serving && workspacePreview, failedSources),
       }),
       createEngineWorkspaceResolver(facts.root),
@@ -3275,7 +3352,7 @@ export async function createViteConfig(
       ...(serving ? [previewInputsPlugin(pack)] : []),
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),
-      executionWorkerEntries(undefined, delivery),
+      executionWorkerEntries(undefined, delivery, realGeneratedRoot),
       executionBootstrapEntry(realGeneratedRoot),
       ...(serving ? [generatedHostOwnerPlugin(generated)] : []),
       ...engineWorkspacePlugins,

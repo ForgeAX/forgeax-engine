@@ -189,8 +189,8 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     reason: 'visible-surface (gbuffer-resolve) variants keep the general receiver',
   },
   // The simple receiver is published only for the plain storage-lane forward
-  // profile. Transmission, probe blending and the no-storage (WebGL2) lane
-  // keep the general receiver; the request side consults this table before
+  // profile. Transmission and the no-storage (WebGL2) lane keep the general
+  // receiver; probe blending permits only full lighting. The request checks this table before
   // selecting DIRECTIONAL_SHADOW_SIMPLE=true, so no request misses a row.
   {
     axis: 'DIRECTIONAL_SHADOW_SIMPLE',
@@ -201,8 +201,8 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
   {
     axis: 'DIRECTIONAL_SHADOW_SIMPLE',
     value: false,
-    when: { PROBE_BLEND_AVAILABLE: true },
-    reason: 'probe-blend draws keep the general receiver (publication budget)',
+    when: { PROBE_BLEND_AVAILABLE: true, LEAN_LIGHTING: true },
+    reason: 'probe-blend draws retain full lighting on the simple receiver (publication budget)',
   },
   {
     axis: 'DIRECTIONAL_SHADOW_SIMPLE',
@@ -219,21 +219,13 @@ export const VARIANT_PERMUTATION_RULES: readonly VariantPermutationRule[] = [
     when: { CLIPPING_PLANES: true },
     reason: 'discarding draws keep the general receiver (publication budget)',
   },
-  // LEAN_LIGHTING (no IES / Cookie / projector / rect / extra directional
-  // slots, no atmosphere and no live cloud shadow this frame) rides the
-  // DIRECTIONAL_SHADOW_SIMPLE row: the record stage requests both together,
-  // so the axis is bound 1:1 and adds no published rows.
+  // Lean lighting remains opt-in within the simple receiver domain. A simple
+  // directional receiver can independently keep full extended lighting.
   {
     axis: 'LEAN_LIGHTING',
     value: false,
     when: { DIRECTIONAL_SHADOW_SIMPLE: false },
     reason: 'lean lighting is published only on the simple-receiver row',
-  },
-  {
-    axis: 'LEAN_LIGHTING',
-    value: true,
-    when: { DIRECTIONAL_SHADOW_SIMPLE: true },
-    reason: 'the simple-receiver row is published only with lean lighting',
   },
 ];
 

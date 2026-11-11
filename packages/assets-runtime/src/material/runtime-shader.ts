@@ -5,8 +5,9 @@ import type {
 import { materialProgramContextKey } from '@forgeax/engine-pack/material-cook';
 import {
   type MaterialArtifactConflictError,
-  MaterialArtifactRegistry,
+  type MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
+  materialArtifactConflict,
   type ShaderRegistry,
 } from '@forgeax/engine-shader';
 import type {
@@ -329,45 +330,49 @@ export function installMaterialReadyShaders(
     const { default: _default, ...parameter } = entry;
     return parameter;
   });
-  const entries = readiness.record.programs.map((program) => {
+  // Preflight against the held set plus earlier entries of this record before
+  // mutating either registry. A published digest identifies content, so a key
+  // already held compares metadata only and reuses the private bytes held for it.
+  const pending = new Map<string, MaterialRuntimeArtifact>();
+  const admissions = readiness.record.programs.map((program) => {
     if (program.artifact.bytes.byteLength === 0)
       throw new Error(`MaterialReady ${readiness.record.guid} contains an empty shader program`);
     const pass = readiness.record.resolved.passes.find((pass) =>
       program.selections.some((selection) => selection.pass === pass.name),
     );
     const abi = program.selections.find((selection) => selection.abi !== undefined)?.abi;
-    const artifact: MaterialRuntimeArtifact = {
-      key: program.specializationKey,
-      bytes: new Uint8Array(program.artifact.bytes),
-      digest: program.artifact.digest,
-      metadata: Object.freeze({
-        module: pass?.program.module,
-        paramSchema,
-        ...(abi === undefined ? {} : { abi, receipt: abi }),
-      }),
+    const metadata = Object.freeze({
+      module: pass?.program.module,
+      paramSchema,
+      ...(abi === undefined ? {} : { abi, receipt: abi }),
+    });
+    const key = program.specializationKey;
+    const digest = program.artifact.digest;
+    const previous = pending.get(key) ?? artifactRegistry.get(key);
+    const candidate = { key, bytes: program.artifact.bytes, digest, metadata };
+    if (previous !== undefined) {
+      const conflict = materialArtifactConflict(previous, candidate);
+      if (conflict !== undefined) throw conflictError(conflict);
+    }
+    // The registry owns a private copy of new content; callers keep theirs.
+    const artifact: MaterialRuntimeArtifact =
+      previous === undefined
+        ? { ...candidate, bytes: new Uint8Array(program.artifact.bytes) }
+        : { ...candidate, bytes: previous.bytes };
+    if (previous === undefined) pending.set(key, artifact);
+    const input = {
+      bytes: artifact.bytes,
+      digest,
+      paramSchema,
+      ...(abi === undefined ? {} : { receipt: abi }),
     };
-    return {
-      artifact,
-      input: {
-        bytes: artifact.bytes,
-        digest: program.artifact.digest,
-        paramSchema,
-        ...(abi === undefined ? {} : { receipt: abi }),
-      },
-    };
-  });
-  const validation = new MaterialArtifactRegistry();
-  for (const { artifact, input } of entries) {
-    const previous = artifactRegistry.get(artifact.key);
-    if (previous !== undefined) validation.register(previous).unwrap();
-    const checked = validation.register(artifact);
-    if (!checked.ok) throw conflictError(checked.error);
-    const accepted = shaderRegistry.validateMaterialArtifactBytes(artifact.key, input);
+    const accepted = shaderRegistry.validateMaterialArtifactBytes(key, input);
     if (!accepted.ok) throw conflictError(accepted.error);
-  }
-  for (const { artifact, input } of entries) {
-    artifactRegistry.register(artifact).unwrap();
-    shaderRegistry.installMaterialArtifactBytes(artifact.key, input);
+    return { artifact, input, newArtifact: previous === undefined, newProgram: !accepted.value };
+  });
+  for (const { artifact, input, newArtifact, newProgram } of admissions) {
+    if (newArtifact) artifactRegistry.register(artifact).unwrap();
+    if (newProgram) shaderRegistry.installMaterialArtifactBytes(artifact.key, input);
   }
   return projectMaterialRecord(readiness.record);
 }

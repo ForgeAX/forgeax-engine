@@ -755,21 +755,19 @@ export function buildPbrViewBglEntries(caps: PbrCaps): GPUBindGroupLayoutEntry[]
   });
   // Cloud direct-solar transport is a renderer-owned view resource. The
   // minimum 16-texture profile has no spare sampled texture lane; its shader
-  // variant returns the direct-sun fallback without declaring this pair.
+  // variant omits the cloud map; atmosphere shares the filtering sampler.
   if (!lowLimitCloudBindings) {
-    entries.push(
-      {
-        binding: 16,
-        visibility: GPU_SHADER_STAGE_FRAGMENT,
-        texture: { sampleType: 'float', viewDimension: '2d' },
-      },
-      {
-        binding: 17,
-        visibility: GPU_SHADER_STAGE_FRAGMENT,
-        sampler: { type: 'filtering' },
-      },
-    );
+    entries.push({
+      binding: 16,
+      visibility: GPU_SHADER_STAGE_FRAGMENT,
+      texture: { sampleType: 'float', viewDimension: '2d' },
+    });
   }
+  entries.push({
+    binding: 17,
+    visibility: GPU_SHADER_STAGE_FRAGMENT,
+    sampler: { type: 'filtering' },
+  });
   return entries;
 }
 

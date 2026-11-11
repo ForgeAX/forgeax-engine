@@ -166,9 +166,13 @@ export function observeShadowArtifacts(
   batches: readonly Pick<PreparedBatch, 'batch' | 'artifact'>[],
 ): ShadowArtifactObservations {
   const next = new Map<string, ShadowArtifactObservation | undefined>();
+  // Batches sharing one material key and artifact observe it once per call.
+  const observedFrom = new Map<string, PreparedBatch['artifact']>();
   let changed = false;
   for (const { batch, artifact } of batches) {
     const key = shadowMaterialKey(batch);
+    if (observedFrom.has(key) && observedFrom.get(key) === artifact) continue;
+    observedFrom.set(key, artifact);
     const observed = observeShadowArtifact(previous.get(key), artifact);
     next.set(key, observed);
     if (!previous.has(key) || previous.get(key)?.key !== observed?.key) changed = true;

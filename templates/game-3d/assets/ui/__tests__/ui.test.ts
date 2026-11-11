@@ -5,51 +5,31 @@ import { uiAssetContribution } from '@forgeax/engine/ui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ui as uiPlugin } from '../ui.pack.ts';
 
-const { dispose, mountUi, label, toggle, signal, button, status, player, disposeVase, installPlayerControls, installVaseControls } = vi.hoisted(() => {
-  const signal = new AbortController().signal;
-  const dispose = vi.fn();
-  const toggle = vi.fn();
-  const label = { textContent: '' };
-  const button = { setAttribute: vi.fn() };
-  const status = { textContent: '' };
-  const player = { dispose: vi.fn(), reset: vi.fn(), setEnabled: vi.fn() };
-  const disposeVase = vi.fn();
-  return { dispose, toggle, label, signal, button, status, player, disposeVase,
-    installPlayerControls: vi.fn((_root: ShadowRoot, _port: MessagePort) => player),
-    installVaseControls: vi.fn((_root: ShadowRoot, _port: MessagePort) => ({ localize: vi.fn(), dispose: disposeVase })),
-    mountUi: vi.fn(() => ({ ok: true, value: {
-    dispose, signal, host: { classList: { toggle }, shadowRoot: { querySelector: (selector: string) => {
-      if (selector === '[data-ui-slot="lock"]') return label;
-      if (selector === '[data-ui-part="vase-controls"] button') return button;
-      if (selector === '[data-ui-part="vase-status"]') return status;
-      return null;
-    } } },
-  } })) };
-});
+const { dispose, mountUi, label, hint, toggle, hud, touch } = vi.hoisted(() => ({
+  touch: { dispose: vi.fn(), reset: vi.fn(), setEnabled: vi.fn() },
+  dispose: vi.fn(), toggle: vi.fn(), label: { textContent: '' }, hint: { textContent: '' },
+  hud: { dispose: vi.fn() },
+  mountUi: vi.fn(() => ({ ok: true, value: {
+    dispose, signal: new AbortController().signal,
+    host: { classList: { toggle }, shadowRoot: { querySelector: (s: string) => (s === '[data-ui-slot="lock"]' ? label : s === '[data-ui-slot="hint"]' ? hint : null) } },
+  } })),
+}));
+const installPlayerHud = vi.hoisted(() => vi.fn(() => hud));
+const installPlayerControls = vi.hoisted(() => vi.fn(() => touch));
 vi.mock('../player-controls.ts', () => ({ installPlayerControls }));
-vi.mock('../vase-controls.ts', () => ({ installVaseControls }));
+vi.mock('../player-hud.ts', () => ({ installPlayerHud }));
 vi.mock('@forgeax/engine/ui', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@forgeax/engine/ui')>()),
   mountUi,
 }));
-vi.mock('@forgeax/engine/ui/localization', () => ({
-  createUiLocalization: async () => ({ ok: true, value: { t: (key: string) => key === 'vase.unavailable' ? 'Vase generation is unavailable in this host.' : key === 'lock' ? 'Camera locked' : key === 'touchUnavailable' ? 'Touch controls need a connected game' : key === 'touch' ? 'Touch to interact' : 'Click to lock camera' } }),
-  bindUiLocalization: (_ui: unknown, _i18n: unknown, render: () => void) => { render(); return () => {}; },
-}));
-vi.mock('../../shared/guid.ts', () => ({
-  authoredGuid: () => ({ ok: true, value: new Uint8Array(16) }),
-}));
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-  vi.clearAllMocks();
-});
+afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
+
+const GUIDE = '019fb7ce-3600-7000-8000-000000000001';
 
 function hostFixture(ports: { port?: MessagePort; presentationPort?: MessagePort } = {}) {
   const events = new EventTarget();
   let mode: 'pointer' | 'pointer-locked' | 'touch' = 'pointer';
-  const root = {};
   const controlMode = {
     read: () => mode,
     subscribe: (listener: () => void) => {
@@ -58,61 +38,36 @@ function hostFixture(ports: { port?: MessagePort; presentationPort?: MessagePort
     },
   };
   const ctx = new Context();
-  const guid = '019fb7ce-3600-7000-8000-000000000001';
   const packageUrl = 'https://game-3d.invalid/ui.pack.json';
-  const sourcePath = 'ui.pack.json';
   const kind = uiAssetContribution.kind.kind;
   const { pack, publication } = createRuntimePackPublication({
-    scopeId: 'asset-runtime',
-    sourcePath,
-    sourceRevision: '1',
-    packageUrl,
-    pack: {
-      assets: [{
-        guid, kind, payload: { guid, html: '<main></main>', css: '' }, refs: [], artifacts: {},
-      }],
-    },
+    scopeId: 'asset-runtime', sourcePath: 'ui.pack.json', sourceRevision: '1', packageUrl,
+    pack: { assets: [{ guid: GUIDE, kind, payload: { guid: GUIDE, html: '<main></main>', css: '' }, refs: [], artifacts: {} }] },
   });
   const assets = new AssetRegistry({
     catalog: createCatalogSource({
-      entries: [{ guid, kind, packageUrl, sourcePath, publication }],
+      entries: [{ guid: GUIDE, kind, packageUrl, sourcePath: 'ui.pack.json', publication }],
       fetch: async () => new Response(JSON.stringify(pack)),
     }),
   });
-  vi.spyOn(assets, 'load');
   vi.spyOn(assets, 'release');
-  ctx.provide('gameHost', { uiRoot: root, controlMode, ...ports } as never);
+  ctx.provide('gameHost', { uiRoot: {}, controlMode, ...ports } as never);
   ctx.provide('assets', assets);
   ctx.effect(() => () => assets.dispose());
-  return { ctx, assets, root, controlMode, setMode(value: typeof mode) { mode = value; events.dispatchEvent(new Event('change')); } };
+  return { ctx, assets, setMode(value: typeof mode) { mode = value; events.dispatchEvent(new Event('change')); } };
 }
 
 describe('game-3d Host UI lifecycle', () => {
-  it.each(['worker', 'same-realm'] as const)('routes both controllers through the %s presentation endpoint', async (realm) => {
+  it('wires the HUD through the presentation port and releases them on dispose', async () => {
     const channel = new MessageChannel();
-    const { ctx, assets, setMode } = hostFixture(realm === 'worker'
-      ? { port: channel.port1 }
-      : { port: channel.port2, presentationPort: channel.port1 });
+    const { ctx, assets } = hostFixture({ port: channel.port2, presentationPort: channel.port1 });
     try {
-      setMode('touch');
-      const fiber = await ctx.plugin(uiPlugin, { guide: '019fb7ce-3600-7000-8000-000000000001' });
-      expect(installPlayerControls).toHaveBeenCalledTimes(1);
-      expect(installPlayerControls.mock.calls[0]?.[1]).toBe(channel.port1);
-      expect(installVaseControls).toHaveBeenCalledTimes(1);
-      expect(installVaseControls.mock.calls[0]?.[1]).toBe(channel.port1);
-      expect(label.textContent).toBe('Touch to interact');
-      expect(player.setEnabled).toHaveBeenLastCalledWith(true);
-      const loaded = (await vi.mocked(assets.load).mock.results[0]?.value).unwrap();
-      expect(assets.validate(loaded).ok).toBe(true);
+      const fiber = await ctx.plugin(uiPlugin, { guide: GUIDE });
+      expect((installPlayerHud.mock.calls as unknown[][])[0]?.[1]).toBe(channel.port1);
       await fiber.dispose();
       expect(assets.release).toHaveBeenCalledTimes(1);
-      expect(assets.release).toHaveBeenCalledWith(loaded);
-      // The plugin returns its hold; the source cache lives with the Registry.
-      expect(assets.validate(loaded).ok).toBe(true);
-      expect(player.dispose).toHaveBeenCalledTimes(1);
-      expect(disposeVase).toHaveBeenCalledTimes(1);
-      await ctx.fiber.dispose();
-      expect(assets.validate(loaded).ok).toBe(false);
+      expect(hud.dispose).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
     } finally {
       await ctx.fiber.dispose();
       channel.port1.close();
@@ -120,54 +75,36 @@ describe('game-3d Host UI lifecycle', () => {
     }
   });
 
-  it('disposes the mounted UI when input listener installation fails', async () => {
-    const { ctx, controlMode } = hostFixture();
-    try {
-      vi.spyOn(controlMode, 'subscribe').mockImplementationOnce(() => {
-        throw new Error('listener unavailable');
-      });
-      await expect(ctx.plugin(uiPlugin, { guide: '019fb7ce-3600-7000-8000-000000000001' })).rejects.toThrow('listener unavailable');
-      expect(dispose).toHaveBeenCalledTimes(1);
-    } finally {
-      await ctx.fiber.dispose();
-    }
-  });
-
-  it('updates from Host pointer lock without a World and removes listeners on each disposal', async () => {
-    const { ctx, root, setMode } = hostFixture();
-    try {
-      for (let cycle = 0; cycle < 2; cycle += 1) {
-        setMode('pointer');
-        const fiber = await ctx.plugin(uiPlugin, { guide: '019fb7ce-3600-7000-8000-000000000001' });
-        expect(label.textContent).toContain('Click to lock camera');
-        expect(mountUi).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ root }));
-        setMode('pointer-locked');
-        expect(label.textContent).toContain('Camera locked');
-        expect(toggle).toHaveBeenLastCalledWith('locked', true);
-        await fiber.dispose();
-        expect(dispose).toHaveBeenCalledTimes(cycle + 1);
-        setMode('pointer');
-
-        expect(label.textContent).toContain('Camera locked');
-      }
-    } finally {
-      await ctx.fiber.dispose();
-    }
-  });
-
-  it('uses actual touch capability without global document or synthetic pointer lock', async () => {
+  it('follows pointer lock and touch mode without a World', async () => {
     const { ctx, setMode } = hostFixture();
     try {
+      const fiber = await ctx.plugin(uiPlugin, { guide: GUIDE });
+      expect(label.textContent).toContain('Click to lock camera');
+      expect(installPlayerHud).not.toHaveBeenCalled();
+      setMode('pointer-locked');
+      expect(label.textContent).toContain('Camera locked');
+      expect(toggle).toHaveBeenLastCalledWith('locked', true);
+      expect(toggle).toHaveBeenCalledWith('aim', false);
+      expect(toggle).not.toHaveBeenCalledWith('aim', true);
       setMode('touch');
-      const fiber = await ctx.plugin(uiPlugin, { guide: '019fb7ce-3600-7000-8000-000000000001' });
-      expect(label.textContent).toBe('Touch controls need a connected game');
-      expect(toggle).toHaveBeenCalledWith('controls-ready', false);
-      expect(toggle).toHaveBeenCalledWith('vase-open', false);
-      expect(toggle).toHaveBeenLastCalledWith('locked', false);
-      expect(installPlayerControls).not.toHaveBeenCalled();
-      expect(installVaseControls).not.toHaveBeenCalled();
-      expect(button.setAttribute).toHaveBeenCalledWith('disabled', '');
-      expect(status.textContent).toBe('Vase generation is unavailable in this host.');
+      expect(hint.textContent).toContain('Stick move');
+      expect(hint.textContent).not.toContain('WASD');
+      await fiber.dispose();
+    } finally { await ctx.fiber.dispose(); }
+  });
+
+  it('shows the crosshair only when enabled and the pointer is locked', async () => {
+    const { ctx, setMode } = hostFixture();
+    try {
+      const fiber = await ctx.plugin(uiPlugin, { guide: GUIDE, crosshair: true });
+      expect(toggle).toHaveBeenCalledWith('aim', false);
+      expect(toggle).not.toHaveBeenCalledWith('aim', true);
+      toggle.mockClear();
+      setMode('pointer-locked');
+      expect(toggle).toHaveBeenCalledWith('aim', true);
+      toggle.mockClear();
+      setMode('pointer');
+      expect(toggle).toHaveBeenCalledWith('aim', false);
       await fiber.dispose();
     } finally { await ctx.fiber.dispose(); }
   });

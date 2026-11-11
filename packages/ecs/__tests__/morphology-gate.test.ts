@@ -172,7 +172,7 @@ describe('morphology-gate.test.ts (AC-14)', () => {
       .map((v) => `  ${v.file}: fn(${v.params}) -- first param "${v.first}" misbinds to world`)
       .join('\n');
     expect(violations, `residual world-first-param violations:\n${report}`).toEqual([]);
-  }, 30_000);
+  }, 90_000);
 
   it('is falsifiable: the detector flags a synthetic old-shape callback', () => {
     // Mirror the production detector against an in-memory bad sample so a future

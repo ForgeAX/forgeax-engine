@@ -113,6 +113,13 @@ export interface Query<
    */
   at(entity: EntityHandle): QueryRow<R, W, O> | undefined;
   spans(): Result<Iterable<QuerySpan<R, W>>, QuerySpanUnavailableError>;
+  /**
+   * Accept every change visible now without visiting it: the next temporal
+   * (`changed` / `added`) iteration starts after the current mutation epoch,
+   * exactly as if this query had been iterated to completion here. Applies the
+   * same readability and active-iteration guards as starting an iteration.
+   */
+  markObserved(): void;
   /** Borrow physical numeric columns with an explicit range or sparse row index. Read-only, non-temporal descriptors. */
   batches(): Result<Iterable<QueryBatch<R, W, O>>, QueryBatchUnavailableError>;
   combinations(k?: number): Iterable<readonly QueryRow<R, W, O>[]>;
@@ -599,6 +606,18 @@ class ExecutableQuery<
     const archetype = this.world[worldInternal].getEntityArchetype(entity);
     if (archetype === undefined || !this.archetypeMatches(archetype)) return undefined;
     return new QueryRowFacade<R, W, O>(this.world).bind(entity, archetype);
+  }
+
+  markObserved(): void {
+    // A completed drain commits the mutation epoch captured when it began; with
+    // no row visited in between that is the epoch at this call.
+    this.beginIteration();
+    try {
+      this.assertReadableChanges();
+      this.lastObservedEpoch = this.world[worldInternal].getMutationEpoch();
+    } finally {
+      this.active = false;
+    }
   }
 
   private static readonly SpanIterator = class<

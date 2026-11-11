@@ -12,6 +12,21 @@ export interface MountOptions {
   readonly onAction?: (name: string, event: Event) => void;
 }
 
+/**
+ * Elements that receive pointer input by default inside a mounted UI asset:
+ * controls, action targets, ARIA widgets and modal dialogs (which block the game
+ * beneath them). All other content is click-through to the canvas unless its
+ * CSS sets `pointer-events: auto`.
+ */
+const UI_INTERACTIVE_SELECTOR = [
+  'button, a[href], input, select, textarea, label, summary, [tabindex], [data-ui-action]',
+  '[contenteditable]:not([contenteditable="false" i]), audio[controls], video[controls]',
+  'dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]',
+  '[role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="switch"]',
+  '[role="slider"], [role="spinbutton"], [role="tab"], [role="menuitem"], [role="option"]',
+  '[role="listbox"], [role="combobox"], [role="textbox"], [role="scrollbar"]',
+].join(', ');
+
 export function mountUi(asset: UiAsset, options: MountOptions): UiResult<UiInstance> {
   if (typeof AbortController === 'undefined')
     return uiError('invalid-environment', 'AbortController is unavailable');
@@ -119,9 +134,15 @@ export function mountUi(asset: UiAsset, options: MountOptions): UiResult<UiInsta
   const controlDefaults = cssSupport?.supports('selector(input::-webkit-inner-spin-button)')
     ? ':where(input[type="number" i]:not(:disabled):not([readonly]))::-webkit-inner-spin-button{opacity:1}\n'
     : '';
-  style.textContent = controlDefaults + projected.value.css;
+  // The mount layers are click-through, so empty areas and display-only content
+  // (HUD text, panels, overlays) keep reaching the canvas; interactive elements
+  // and their descendants receive input. Zero specificity keeps any authored
+  // pointer-events declaration authoritative.
+  const inputDefaults = `:where([data-ui-content] :is(${UI_INTERACTIVE_SELECTOR})) { pointer-events: auto; }\n`;
+  style.textContent = inputDefaults + controlDefaults + projected.value.css;
   shadow.append(style);
   const content = document.createElement('div');
+  content.dataset.uiContent = '';
   content.innerHTML = projected.value.html;
   content.style.height = '100%';
   content.style.pointerEvents = 'none';

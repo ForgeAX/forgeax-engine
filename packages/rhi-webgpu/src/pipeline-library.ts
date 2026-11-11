@@ -75,6 +75,15 @@ export function backgroundPipelineWarmupConcurrency(
   return Math.max(1, Math.min(4, Math.floor(cores / 8)));
 }
 
+/**
+ * Blocking warmup admits shader modules in WGSL byte batches and waits for each
+ * batch's native compilation before submitting more, so a large startup library
+ * (hundreds of modules, tens of MB of WGSL) is not handed to the GPU process in
+ * one task. Pipelines are still issued only after every module exists, and the
+ * last partial batch is compiled by pipeline creation as before.
+ */
+export const FOREGROUND_SHADER_BATCH_BYTES = 2 * 1024 * 1024;
+
 const BACKGROUND_REQUEST_GAP_MS = 8;
 const backgroundTurn = (): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, BACKGROUND_REQUEST_GAP_MS));
@@ -337,7 +346,8 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       return undefined;
     }
     const state = pipelineDescriptorState(kind, recipe as unknown as Record<string, unknown>);
-    const key = this.programKey(state, layout as number | 'auto', recipe);
+    const stages = this.stageKey(state.kind, layout as number | 'auto', recipe);
+    const key = `${stages}:${state.key}`;
     let program = this.programs.find(key);
     if (program === undefined) {
       program = {
@@ -348,7 +358,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         recipe,
         ready: false,
       };
-      this.programs.add(key, program);
+      this.programs.add(key, program, stages);
       this.collectRecord(program);
     }
     return program;
@@ -373,17 +383,13 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       (dependencies.fragment !== undefined && fragment === undefined)
     )
       return undefined;
-    for (const program of this.programs.values()) {
-      if (program.kind !== 'render' || !('vertex' in program.recipe)) continue;
-      const recipe = program.recipe;
-      if (
-        recipe.layout === layout &&
-        recipe.vertex.module === vertex &&
-        recipe.fragment?.module === fragment &&
-        matches(program.state)
-      )
-        return program.state;
-    }
+    // Stage dependencies form the program key prefix: visit only that group.
+    const group = this.stageKey('render', layout, {
+      vertex: { module: vertex },
+      ...(fragment === undefined ? {} : { fragment: { module: fragment } }),
+    });
+    for (const program of this.programs.grouped(group))
+      if ('vertex' in program.recipe && matches(program.state)) return program.state;
     return undefined;
   }
   private programKey(
@@ -395,7 +401,19 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
       compute?: { module: number };
     },
   ): string {
-    return `${state.kind}:${layout}:${stages.vertex?.module ?? '-'}:${stages.fragment?.module ?? '-'}:${stages.compute?.module ?? '-'}:${state.key}`;
+    return `${this.stageKey(state.kind, layout, stages)}:${state.key}`;
+  }
+  /** Kind, layout and stage modules: the dependency prefix of a program key. */
+  private stageKey(
+    kind: PipelineRecipeState['kind'],
+    layout: number | 'auto',
+    stages: {
+      vertex?: { module: number };
+      fragment?: { module: number };
+      compute?: { module: number };
+    },
+  ): string {
+    return `${kind}:${layout}:${stages.vertex?.module ?? '-'}:${stages.fragment?.module ?? '-'}:${stages.compute?.module ?? '-'}`;
   }
   private select(
     state: PipelineRecipeState,
@@ -957,7 +975,7 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         throw new Error('Native asynchronous pipeline compilation is unavailable');
       const shaders = background
         ? await this.backgroundShaders(descriptors, concurrency)
-        : descriptors.map((d) => this.createShaderModule(d));
+        : await this.foregroundShaders(descriptors);
       this.installComputeEntryProjections(manifest, shaders);
       const groups: GPUBindGroupLayout[] = [];
       for (const descriptor of manifest.bindGroupLayouts) {
@@ -1093,6 +1111,27 @@ export class WebGpuPipelineLibrary implements PipelineLibrary {
         background ? 'background-warmup' : 'startup-warmup',
       );
     };
+  }
+
+  // forgeax-async-whitelist: dom-native - native shader compilation completion bounds the next batch.
+  private async foregroundShaders(
+    descriptors: readonly GPUShaderModuleDescriptor[],
+  ): Promise<GPUShaderModule[]> {
+    const shaders: GPUShaderModule[] = [];
+    let batch: GPUShaderModule[] = [],
+      bytes = 0;
+    for (const descriptor of descriptors) {
+      const module = this.createShaderModule(descriptor);
+      shaders.push(module);
+      batch.push(module);
+      bytes += descriptor.code.length;
+      if (bytes < FOREGROUND_SHADER_BATCH_BYTES) continue;
+      await Promise.all(batch.map((m) => this.getCompilationInfo(m)));
+      this.active();
+      batch = [];
+      bytes = 0;
+    }
+    return shaders;
   }
 
   private async backgroundShaders(

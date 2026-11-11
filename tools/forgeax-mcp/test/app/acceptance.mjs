@@ -55,7 +55,7 @@ export async function assertScenePixels(page, png, label, budget) {
 }
 
 // The header can show connection or restoration; the retained owners decide readiness.
-export function nativeViewProjectReady(projectId) {
+export function nativeViewProjectReady({ projectId, targetId }) {
   const ready = globalThis.__forgeaxViewReady;
   if (ready?.error) throw new Error('The native View Host failed during activation');
   const mounted = ready?.mounted;
@@ -63,19 +63,61 @@ export function nativeViewProjectReady(projectId) {
   const state = client?.projectSession?.getSnapshot();
   if (state?.error) throw new Error('The native View project failed during restoration');
   const target = state?.snapshot?.projectTarget;
+  if (state?.snapshot?.projectPhase === 'failed' || state?.snapshot?.workspaceTargetLost)
+    throw new Error('The native View project target failed or was lost');
+  if (target?.targetId !== targetId)
+    throw new Error('The native View project target changed during startup');
   return mounted?.transport?.connected === true && state?.busy === false &&
     state?.restoring === false && state?.error === null &&
+    state.snapshot.projectPhase === 'running' &&
     state.snapshot.project?.id === projectId &&
     typeof target?.targetId === 'string' && target.targetId.length > 0 &&
     typeof target.url === 'string' && target.url.length > 0;
 }
 
-export async function waitForViewProjectReady(view, projectId, deadline) {
+// A published target can still be starting. Cold Pack/server production belongs
+// before this boundary; the browser then has its own fixed readiness budget.
+export function nativeViewProjectTarget(projectId) {
+  const ready = globalThis.__forgeaxViewReady;
+  if (ready?.error) throw new Error('The native View Host failed during activation');
+  const mounted = ready?.mounted;
+  const state = mounted?.frontendHost?.context?.get('viewOperationClient', false)
+    ?.projectSession?.getSnapshot();
+  if (state?.error) throw new Error('The native View project failed during restoration');
+  const snapshot = state?.snapshot;
+  if (snapshot?.projectPhase === 'failed' || snapshot?.workspaceTargetLost)
+    throw new Error('The native View project target failed or was lost');
+  const target = snapshot?.projectTarget;
+  return mounted?.transport?.connected === true && snapshot?.project?.id === projectId &&
+    typeof target?.targetId === 'string' && target.targetId.length > 0 &&
+    typeof target.url === 'string' && target.url.length > 0 ? target.targetId : false;
+}
+
+export async function waitForViewProjectReady(view, projectId, deadline,
+  { startupTimeoutMs, onStage } = {}) {
+  if (startupTimeoutMs !== undefined)
+    assert.ok(Number.isFinite(startupTimeoutMs) && startupTimeoutMs > 0);
+  const started = performance.now();
+  let stage = 'project-target';
+  await onStage?.({ stage, projectId, elapsedMs: 0 });
   const owner = await view.owner().elementHandle({ timeout: Math.max(1, deadline - performance.now()) });
   try {
     const frame = await owner.contentFrame();
     assert.ok(frame, 'The native View document must remain attached');
-    await frame.waitForFunction(nativeViewProjectReady, projectId,
-      { timeout: Math.max(1, deadline - performance.now()) });
+    const published = await frame.waitForFunction(nativeViewProjectTarget, projectId,
+      { polling: 25, timeout: Math.max(1, deadline - performance.now()) });
+    let targetId;
+    try { targetId = await published.jsonValue(); }
+    finally { await published.dispose(); }
+    stage = 'project-startup';
+    const readyDeadline = startupTimeoutMs === undefined ? deadline : performance.now() + startupTimeoutMs;
+    await onStage?.({ stage, projectId, targetId, elapsedMs: performance.now() - started });
+    // Never restart this deadline after detach/starting or adopt another target.
+    await frame.waitForFunction(nativeViewProjectReady, { projectId, targetId },
+      { polling: 25, timeout: Math.max(1, readyDeadline - performance.now()) });
+    await onStage?.({ stage: 'project-ready', projectId, targetId, elapsedMs: performance.now() - started });
+  } catch (error) {
+    await onStage?.({ stage: `${stage}-failed`, projectId, elapsedMs: performance.now() - started });
+    throw error;
   } finally { await owner.dispose(); }
 }

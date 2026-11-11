@@ -13,11 +13,17 @@ import {
 } from '@forgeax/engine-pack/build';
 import { createAssetVerificationReport, scanEntries } from '@forgeax/engine-pack/cli-asset';
 import { AssetGuid } from '@forgeax/engine-pack/guid';
+import type { ScanInventory } from '@forgeax/engine-pack/scanner';
 import { validateMeta } from '@forgeax/engine-pack/schema';
-import { isValidAssetGuidString, readCatalogRows } from '@forgeax/engine-types';
+import { isValidAssetGuidString, ok, readCatalogRows } from '@forgeax/engine-types';
 import { verifyDist } from './dist.js';
 import { DEFAULT_IMPORTERS } from './importers.js';
 import { commandError, readProjectFacts } from './project.js';
+import {
+  projectSourceFailure,
+  projectSourceRoots,
+  scanProjectSources,
+} from './project-source-scan.js';
 import type {
   AssetAddOptions,
   AssetInspectOptions,
@@ -26,6 +32,7 @@ import type {
   CommandError,
   CommandResult,
   ProjectCommandOptions,
+  ProjectFacts,
 } from './types.js';
 
 const sourceFormats = DEFAULT_IMPORTERS.flatMap((importer) =>
@@ -343,7 +350,11 @@ function packIndexFailure(
   });
 }
 
-async function decodeCatalogDocument(bytes: Uint8Array) {
+/**
+ * Decode a generated Pack index document. Builds may store `dist/pack-index.json`
+ * as UTF-8 JSON or as one zstd frame; every reader goes through this decoder.
+ */
+export async function decodeCatalogDocument(bytes: Uint8Array) {
   const text = await decodeDocumentText(bytes);
   return text.ok ? decodeCatalogWire(JSON.parse(text.value)) : text;
 }
@@ -442,6 +453,7 @@ async function readPackIndexMaterialized(
 
 async function packGateway(
   facts: Extract<Awaited<ReturnType<typeof readProjectFacts>>, { readonly ok: true }>['value'],
+  inventory?: ScanInventory,
 ) {
   const materialized = await readPackIndexMaterialized(facts.root);
   if (!materialized.ok) return materialized;
@@ -452,8 +464,31 @@ async function packGateway(
       scanRoots: facts.assetRoots,
       materialized: () => materialized.value.materialized,
       additionalKnownGuids: () => materialized.value.knownGuids,
+      ...(inventory === undefined ? {} : { inventory: async () => ok(inventory) }),
     }),
   };
+}
+
+/**
+ * Loads every authored Pack exactly as `project play` admits it (the live
+ * generation contract, scene components and declaration schema), then verifies
+ * the declared refs, without starting Vite or a browser.
+ */
+export async function checkProjectSources(facts: ProjectFacts): Promise<CommandResult<number>> {
+  try {
+    const scanned = await scanProjectSources(facts, projectSourceRoots(facts));
+    if (!scanned.ok) return { ok: false, error: projectSourceFailure(scanned.error) };
+    const gateway = await packGateway(facts, scanned.value);
+    if (!gateway.ok) return gateway;
+    const verified = await gateway.value.execute({
+      operation: 'asset.verify',
+      requestId: randomUUID(),
+    });
+    if (!verified.ok) return ownerFailure(verified.error);
+    return { ok: true, value: scanned.value.declarations.size };
+  } catch (cause) {
+    return { ok: false, error: projectSourceFailure(cause) };
+  }
 }
 
 async function packSourceList(options: ProjectCommandOptions) {

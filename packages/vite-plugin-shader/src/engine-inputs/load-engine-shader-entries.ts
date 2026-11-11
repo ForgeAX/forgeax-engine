@@ -303,6 +303,8 @@ export async function loadEngineShaderEntries() {
     'forgeax_view::atmosphere': readSource('view-atmosphere.wgsl'),
     'forgeax_atmosphere::visibility': readSource('atmosphere-visibility.wgsl'),
     'forgeax_atmosphere::sampling': readSource('atmosphere-sampling.wgsl'),
+    'forgeax_atmosphere::table_access': readSource('atmosphere-table-access.wgsl'),
+    'forgeax_standard::cluster_texture_data': readSource('cluster-texture-data.wgsl'),
     'forgeax_atmosphere::optics': readSource('atmosphere-optics.wgsl'),
     'forgeax_atmosphere::coordinates': readSource('atmosphere-coordinates.wgsl'),
     'forgeax_atmosphere::table_kernels': readSource('atmosphere-table-kernels.wgsl'),

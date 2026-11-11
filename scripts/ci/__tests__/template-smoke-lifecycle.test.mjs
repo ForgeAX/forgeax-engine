@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { serializeBrowserConsoleValue } from '../../../apps/preview/scripts/serialize-browser-console-value.mjs';
 import { selectTemplateAssetRoots } from '../../../apps/preview/src/template-asset-roots.ts';
-import { waitForRuntimeVaseRender } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
+import { waitForRuntimeVaseRender } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
 
 const source = readFileSync(
   new URL('../../../apps/preview/scripts/smoke-templates.mjs', import.meta.url),
@@ -257,6 +257,93 @@ test('Preview console evidence keeps native Error messages, stacks and nested st
   assert.deepEqual(JSON.parse(JSON.stringify(result.detail.cause.cause.detail)), inner.detail);
 });
 
+test('Preview installs the runtime vase in the selected full-quality smoke project', async () => {
+  const { cp, mkdtemp, readFile, rm, symlink, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { sep } = await import('node:path');
+  const { reduceTestProject } = await import('../../test/reduce-test-project.mjs');
+  const { installRuntimeVase } = await import(
+    '../../template-probes/game-3d/runtime-vase/install.mjs'
+  );
+  const ROOT = resolve(import.meta.dirname, '../../..');
+  const ARTIFACT_DIR = await mkdtemp(resolve(tmpdir(), 'preview-full-project-test-'));
+  const loop = source.slice(source.indexOf('for (const template of templates)'));
+  const preparation = loop.slice(
+    loop.indexOf('    if (CI_LIGHTWEIGHT'),
+    loop.indexOf('    startServer(template.slug);'),
+  );
+  const config = readFileSync(
+    new URL('../../../apps/preview/vite.config.ts', import.meta.url),
+    'utf8',
+  );
+  const rootSelection = config.slice(
+    config.indexOf('const smokeRoot ='),
+    config.indexOf('const smokeSlug ='),
+  );
+  const sourceRoot = resolve(ROOT, 'templates/game-3d');
+  const originalScene = await readFile(resolve(sourceRoot, 'assets/scene.pack.ts'), 'utf8');
+  const originalWorld = await readFile(resolve(sourceRoot, 'assets/world/world.pack.ts'), 'utf8');
+  try {
+    const scope = {
+      CI_LIGHTWEIGHT: false,
+      ROOT,
+      ARTIFACT_DIR,
+      PROJECTS: [{ slug: 'game-3d', root: sourceRoot }],
+      template: { slug: 'game-3d' },
+      evidence: {},
+      cp,
+      mkdtemp,
+      readFile,
+      rm,
+      symlink,
+      writeFile,
+      resolve,
+      sep,
+      reduceTestProject,
+      installRuntimeVase,
+    };
+    const root = await runInNewContext(
+      `(async () => { let templateSmokeRoot; ${functionSource('async function prepareTemplateSmokeProject(slug)', 'const appendServerOutput =')} ${preparation} return templateSmokeRoot; })()`,
+      scope,
+    );
+    assert.ok(
+      root,
+      'the release smoke must prepare its runtime-pack fixture without lightweight mode',
+    );
+    const selected = runInNewContext(`${rootSelection}; smokeRoot;`, {
+      process: {
+        env: {
+          FORGEAX_TEMPLATE_SMOKE: '1',
+          FORGEAX_TEMPLATE_SMOKE_SLUGS: 'game-3d',
+          FORGEAX_TEMPLATE_SMOKE_ROOT: root,
+        },
+      },
+      resolve,
+    });
+    assert.equal(selected, root, 'Vite must serve the prepared full-quality project');
+    assert.match(
+      await readFile(resolve(selected, 'assets/world/world.pack.ts'), 'utf8'),
+      /2ad7eb74-815c-5129-b7b7-be05e171b788/,
+    );
+    assert.match(
+      await readFile(resolve(selected, 'assets/ui/guide.ui.html'), 'utf8'),
+      /Reshape vase/,
+    );
+    assert.equal(
+      await readFile(resolve(selected, 'assets/scene.pack.ts'), 'utf8'),
+      originalScene,
+      'release quality stays authored',
+    );
+    assert.equal(
+      await readFile(resolve(sourceRoot, 'assets/world/world.pack.ts'), 'utf8'),
+      originalWorld,
+      'the shipped starter remains unchanged',
+    );
+  } finally {
+    await rm(ARTIFACT_DIR, { recursive: true, force: true });
+  }
+});
+
 test('Preview CI shares reduced workloads in disposable complete projects', () => {
   execFileSync(
     process.execPath,
@@ -269,7 +356,9 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
     import { resolve, sep } from 'node:path';
     import { tmpdir } from 'node:os';
     const { reduceTestProject } = await import('./scripts/test/reduce-test-project.mjs');
+    const { installRuntimeVase } = await import('./scripts/template-probes/game-3d/runtime-vase/install.mjs');
     const ROOT = process.cwd();
+    const CI_LIGHTWEIGHT = true;
     const ARTIFACT_DIR = await mkdtemp(resolve(tmpdir(), 'preview-ci-project-test-'));
     const PROJECTS = [
       { slug: 'game-3d', root: resolve(ROOT, 'templates/game-3d') },
@@ -281,7 +370,7 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
     ${functionSource('async function prepareTemplateSmokeProject(slug)', 'const appendServerOutput =')}
     try {
       const root = await prepareTemplateSmokeProject('game-3d');
-      assert.equal(await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8'), original.replace('DirectionalLight: {', 'DirectionalLight: {cascadeCount: 1,mapSize: 256,'));
+      assert.equal(await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8'), original.replaceAll('DirectionalLight: {', 'DirectionalLight: {cascadeCount: 1,mapSize: 256,'));
       assert.equal(await readFile(resolve(ROOT, 'templates/game-3d/assets/scene.pack.ts'), 'utf8'), original);
       const descriptor = JSON.parse(await readFile(resolve(root, 'forge.json'), 'utf8'));
       assert.equal(descriptor.id, 'template-game-3d');
@@ -315,7 +404,7 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
       };
       assert.deepEqual(normalize(effect), normalize(originalEffect), 'all emitters, programs, materials, bounds and timing remain');
       const geometry = await readFile(resolve(root, 'assets/geometry.pack.ts'), 'utf8');
-      assert.ok(geometry.includes('createSphereGeometry(0.9, 16, 12)'));
+      assert.equal(geometry, await readFile(resolve(ROOT, 'templates/game-3d/assets/geometry.pack.ts'), 'utf8'), 'the smoke copy keeps the template meshes');
       await reduceTestProject(root, { shadowMapSize: 128, cascadeCount: 1 });
       const override = await readFile(resolve(root, 'assets/scene.pack.ts'), 'utf8');
       assert.ok(override.includes('mapSize: 128,'));
@@ -342,7 +431,9 @@ test('Preview CI shares reduced workloads in disposable complete projects', () =
 
       assert.equal(await readFile(resolve(lab, 'assets/plugins/camera-controller.ts'), 'utf8'), await readFile(resolve(ROOT, 'apps/game-capability-lab/assets/plugins/camera-controller.ts'), 'utf8'));
       assert.equal(await readFile(resolve(root, 'assets/player/player.ts'), 'utf8'), await readFile(resolve(ROOT, 'templates/game-3d/assets/player/player.ts'), 'utf8'));
-      assert.equal(await readFile(resolve(root, 'assets/runtime-vase/vase-program.ts'), 'utf8'), await readFile(resolve(ROOT, 'templates/game-3d/assets/runtime-vase/vase-program.ts'), 'utf8'));
+      assert.equal(await readFile(resolve(root, 'assets/runtime-vase/vase-program.ts'), 'utf8'), await readFile(resolve(ROOT, 'scripts/template-probes/game-3d/runtime-vase/assets/runtime-vase/vase-program.ts'), 'utf8'));
+      assert.ok((await readFile(resolve(root, 'assets/world/world.pack.ts'), 'utf8')).includes('runtime-vase/vase.pack.ts'));
+      assert.ok(!(await readFile(resolve(ROOT, 'templates/game-3d/assets/world/world.pack.ts'), 'utf8')).includes('runtime-vase'), 'the starter template stays slim');
     } finally { await rm(ARTIFACT_DIR, { recursive: true, force: true }); }
   `,
     ],

@@ -18,16 +18,15 @@ it('resolves feature-owned behavior Packs with separate engine and host closures
     'plugin/physics',
     'plugin/player',
     'plugin/scene',
-    'plugin/vase',
   ]);
   expect(host.map((record) => record.sourceKey)).toEqual(['plugin/host']);
   const guideMeta = JSON.parse(
-    await readFile(resolve(root, 'assets/guide.ui.html.meta.json'), 'utf8'),
+    await readFile(resolve(root, 'assets/ui/guide.ui.html.meta.json'), 'utf8'),
   );
   expect(host[0]?.definition.asset.config).toMatchObject({
     guide: guideMeta.subAssets[0].guid,
   });
-  expect(new Set([...engine, ...host].map((record) => record.sourcePath)).size).toBe(7);
+  expect(new Set([...engine, ...host].map((record) => record.sourcePath)).size).toBe(6);
   expect(
     engine.find((record) => record.sourceKey === 'plugin/player')?.definition.asset.config,
   ).toMatchObject({ speed: 5.5, jumpSpeed: 6.25, gravity: 17, walk: expect.any(String) });
@@ -37,9 +36,9 @@ it('resolves feature-owned behavior Packs with separate engine and host closures
   expect(uiFiles).toEqual(
     expect.arrayContaining([
       'assets/ui/ui.pack.ts',
-      'assets/guide.ui.html',
-      'assets/guide.ui.css',
-      'assets/guide.ui.html.meta.json',
+      'assets/ui/guide.ui.html',
+      'assets/ui/guide.ui.css',
+      'assets/ui/guide.ui.html.meta.json',
     ]),
   );
   expect(uiFiles).not.toContain('assets/game.pack.ts');
@@ -54,7 +53,7 @@ it('resolves feature-owned behavior Packs with separate engine and host closures
       'assets/player/player.pack.ts',
       'assets/player/player.ts',
       'assets/camera/camera.pack.ts',
-      'assets/character.pack.ts',
+      'assets/player/character.pack.ts',
       'assets/scene.pack.ts',
     ]),
   );

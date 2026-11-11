@@ -67,6 +67,35 @@ function publication() {
 }
 
 describe('shader publication admission', () => {
+  it('owns one immutable receipt per publication row before verification yields', async () => {
+    const receipt = { byteLength: 64, nested: { fields: ['position', 'normal'] } };
+    const input = {
+      ...publication(),
+      receipts: [receipt],
+      materialShaders: [
+        {
+          ...publication().materialShaders[0],
+          receiptIndex: 0,
+          variants: [{ ...publication().materialShaders[0]?.variants[0], receiptIndex: 0 }],
+        },
+      ],
+    };
+    const pending = readShaderManifestPublication(input);
+    receipt.nested.fields[0] = 'mutated';
+    const result = (await pending) as {
+      materialShaders: { receipt: typeof receipt; variants: { receipt: typeof receipt }[] }[];
+    };
+    const accepted = result.materialShaders[0]?.receipt;
+    expect(accepted?.nested.fields).toEqual(['position', 'normal']);
+    expect(accepted).not.toBe(receipt);
+    expect(Object.isFrozen(accepted?.nested.fields)).toBe(true);
+    expect(result.materialShaders[0]?.variants[0]?.receipt).toBe(accepted);
+    const next = (await readShaderManifestPublication(input)) as typeof result;
+    expect(next.materialShaders[0]?.receipt.nested.fields[0]).toBe('mutated');
+    expect(next.materialShaders[0]?.receipt).not.toBe(accepted);
+    expect(accepted?.nested.fields[0]).toBe('position');
+  });
+
   it('owns shared entry-read facts before awaiting and rejects invalid or unused references', async () => {
     const fields = ['roughness'];
     const reads = [

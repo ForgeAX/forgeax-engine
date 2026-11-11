@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { LookRequestError, parseLookRequest } from '../live-look.js';
-import { LOOK_THRESHOLDS, lookFindings, summarizeLook } from '../look-report.js';
+import { lookFindings, summarizeLook } from '../look-report.js';
 
 const WIDTH = 64;
 const HEIGHT = 32;
@@ -20,67 +20,42 @@ function frame(surround: Rgb, centre: Rgb = surround): Uint8Array {
 }
 
 const look = (surround: Rgb, centre?: Rgb) => summarizeLook(frame(surround, centre), WIDTH, HEIGHT);
-const findings = (surround: Rgb, centre?: Rgb) =>
-  lookFindings(look(surround, centre), null).map((finding) => finding.split(':')[0]);
 
 describe('summarizeLook', () => {
-  it('measures luma, saturation and contrast of the whole frame and its centre box', () => {
-    const metrics = look([0, 0, 0], [255, 255, 255]);
-    // A quarter of the pixels are white.
-    expect(Math.abs(metrics.luma - 63.75)).toBeLessThanOrEqual(0.1);
-    expect(metrics.contrast).toBeCloseTo(110.4, 1);
-    expect(metrics.clipped).toBe(0.25);
-    expect(metrics.crushed).toBe(0.75);
-    expect(metrics.centre).toEqual({ luma: 255, saturation: 0 });
-    expect(metrics.surround).toEqual({ luma: 0, saturation: 0 });
-    expect(metrics.flat).toBe(false);
-    const red = look([255, 0, 0]);
-    expect(red.saturation).toBe(1);
-    expect(red.luma).toBeCloseTo(54.2, 1);
-  });
-
-  it('reports one flat colour as flat whatever the colour', () => {
+  it('reports the size and calls one flat colour flat whatever the colour', () => {
+    expect(look([0, 0, 0], [255, 255, 255])).toEqual({ width: WIDTH, height: HEIGHT, flat: false });
     expect(look([255, 255, 255]).flat).toBe(true);
     expect(look([12, 80, 30]).flat).toBe(true);
-    expect(lookFindings(look([255, 255, 255]), null)).toEqual([
-      'flat frame: one colour, so nothing rendered or an overlay covers the canvas',
-    ]);
   });
 });
 
 describe('lookFindings', () => {
-  it('reports nothing for a bright, saturated frame whose subject stands out', () => {
-    expect(findings([60, 120, 50], [250, 190, 90])).toEqual([]);
+  it('says nothing about how a rendered frame looks', () => {
+    // Washed out, dark or saturated: the picture is judged by opening the PNG.
+    for (const [surround, centre] of [
+      [
+        [200, 205, 198],
+        [194, 199, 193],
+      ],
+      [
+        [4, 4, 8],
+        [20, 18, 30],
+      ],
+      [
+        [60, 120, 50],
+        [250, 190, 90],
+      ],
+    ] as const)
+      expect(lookFindings(look(surround, centre), null)).toEqual([]);
   });
 
-  it('names a washed-out frame: pale, grey, low contrast and no subject separation', () => {
-    expect(findings([200, 205, 198], [194, 199, 193])).toEqual([
-      'low saturation',
-      'low contrast',
-      'weak subject separation',
+  it('reports a flat frame, and a recent renderer error before it', () => {
+    expect(lookFindings(look([255, 255, 255]), null)).toEqual([
+      'flat frame: one colour, so nothing rendered or an overlay covers the canvas',
     ]);
-  });
-
-  it('names dark, blown-out and crushed frames', () => {
-    expect(findings([4, 4, 6], [90, 70, 40])).toEqual(
-      expect.arrayContaining(['dark', 'crushed shadows']),
-    );
-    expect(findings([255, 255, 255], [120, 200, 80])).toEqual(
-      expect.arrayContaining(['very bright', 'blown highlights']),
-    );
-  });
-
-  it('puts a recent renderer error before every pixel statistic', () => {
-    const metrics = look([200, 205, 198], [190, 196, 192]);
-    expect(lookFindings(metrics, { code: 'render-publication-invalid' })).toEqual([
+    expect(lookFindings(look([255, 255, 255]), { code: 'render-publication-invalid' })).toEqual([
       'renderer error render-publication-invalid: the frame is not the scene; repair it first',
     ]);
-  });
-
-  it('keeps its thresholds inside the encoded ranges', () => {
-    expect(LOOK_THRESHOLDS.dark).toBeLessThan(LOOK_THRESHOLDS.bright);
-    expect(LOOK_THRESHOLDS.lowSaturation).toBeGreaterThan(0);
-    expect(LOOK_THRESHOLDS.lowSaturation).toBeLessThan(1);
   });
 });
 

@@ -726,9 +726,10 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     expect(hdrCenter[1]).toBeGreaterThan(0.3);
     expect(hdrCenter[2]).toBeGreaterThan(0.1);
     expect(hdrCenter[3]).toBeCloseTo(0.5, 2);
-    // The channel-swap LUT is deliberately enabled for this frame, so the
-    // linear-LDR sample is [0, 0.5, 1] rather than the pre-LUT HDR ordering.
-    expect(ldrCenter[0]).toBeLessThan(0.05);
+    // The channel-swap LUT is deliberately enabled for this frame. It is indexed in
+    // sRGB at texel centres, so the 2x2x2 cube is an exact swap: clamped tone [1, 0.5, 0.25] becomes [0.25, 0.5, 1].
+    expect(ldrCenter[0]).toBeGreaterThan(0.2);
+    expect(ldrCenter[0]).toBeLessThan(0.3);
     expect(ldrCenter[1]).toBeGreaterThan(0.45);
     expect(ldrCenter[1]).toBeLessThan(0.55);
     expect(ldrCenter[2]).toBeGreaterThan(0.95);

@@ -3,7 +3,10 @@ import { shadowCameraCullDilation } from '../gpu-driven/shadow-views';
 import {
   runGpuDrivenInactiveBatchEvidence,
   runGpuDrivenLodReadbackGenerationEvidence,
+  runGpuDrivenMultiBatchVisibleOrderEvidence,
   runGpuDrivenShadowCameraCullEvidence,
+  runGpuDrivenSharedMemberGrowthEvidence,
+  runGpuDrivenSharedMemberSubmeshEvidence,
   runGpuDrivenSkinVisibleAddressEvidence,
   runGpuDrivenViewGpuEvidence,
   runGpuDrivenViewLifecycleEvidence,
@@ -12,6 +15,23 @@ import {
 } from './gpu-driven-view-gpu-evidence';
 
 describe('GPU-driven View Dawn', () => {
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('keeps shared submesh visible members and Surface addresses with %s passes', async (mode) => {
+    const result = await runGpuDrivenSharedMemberSubmeshEvidence(mode);
+    expect(result.batchCount).toBe(96);
+    expect(result.candidateCount).toBe(288);
+    expect(result.uniqueMemberships).toBe(1);
+    for (const batch of result.batches) expect(batch.actual).toEqual(batch.expected);
+    const growth = await runGpuDrivenSharedMemberGrowthEvidence(mode);
+    expect(growth.map((frame) => frame.candidateCount)).toEqual([34, 94]);
+    expect(growth.map((frame) => frame.uniqueMembers)).toEqual([4, 4]);
+    expect(growth[1]?.capacities).toEqual(growth[0]?.capacities);
+    for (const frame of growth)
+      for (const batch of frame.batches) expect(batch.actual).toEqual(batch.expected);
+  });
+
   it.each([
     'separate',
     'combined',
@@ -74,6 +94,28 @@ describe('GPU-driven View Dawn', () => {
     // drawn order must not depend on which cull invocation finished first.
     const expected = Array.from({ length: instanceCount }, (_, i) => i).filter((i) => i % 3 !== 2);
     for (const frame of rows) expect(frame).toEqual(expected);
+  });
+
+  it.each([
+    'separate',
+    'combined',
+  ] as const)('keeps multi-batch tile order after partial updates with %s passes', async (mode) => {
+    const frames = await runGpuDrivenMultiBatchVisibleOrderEvidence(mode);
+    expect(frames.map((frame) => frame.stage)).toEqual([
+      'initial',
+      'grow-first',
+      'pose-middle',
+      'shrink-first',
+      'quiet',
+    ]);
+    for (const frame of frames)
+      for (const batch of frame.batches) {
+        expect(batch.actual, `${frame.stage} group ${batch.group}`).toEqual(batch.expected);
+      }
+    const bases = frames.map(
+      (frame) => frame.batches.find((batch) => batch.group === 1)?.firstCandidate,
+    );
+    expect(bases).toEqual([37, 68, 68, 13, 13]);
   });
 
   it('survives 60 frames of spawn/despawn capacity crossings without stale buffers', async () => {

@@ -63,6 +63,7 @@ export {
   type MaterialArtifactInspection,
   MaterialArtifactRegistry,
   type MaterialRuntimeArtifact,
+  materialArtifactConflict,
 } from './material/artifact-registry.js';
 export {
   createMaterialProgramArtifactReceipt,

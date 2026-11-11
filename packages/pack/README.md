@@ -519,7 +519,9 @@ without a factory cook without a store.
 
 `forgeax asset inspect --subject <source.pack.ts> --root <project> --json` executes module initialization, validates the default export, and projects canonical Meta without calling `build`. `@forgeax/engine-pack/source-node` accepts a host executor with `load` and optional `dispose`; `timeoutMs` bounds module initialization and `buildTimeoutMs` bounds one `build(context)` call. A build timeout returns one structured `pack-source-load-failed` Result with `detail.phase: 'build'`, the configured `timeoutMs`, and deterministic cleanup of the isolated worker and compile root.
 
-Trusted production and Workspace authoring share the finite 120-second build bound (`SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`), so a complete geometry recipe does not inherit the low-level loader's 15-second default. Both module initialization and build expiration still retire their isolated execution lease; runtime loading fences are independent of these offline limits.
+Trusted production and Workspace authoring share the finite 120-second build bound (`SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`), so a complete geometry recipe does not inherit the low-level loader's 15-second default. A slow host or a heavy offline recipe (derived distance fields, generated geometry) raises it with `FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`, an integer number of milliseconds from 120000 to 1800000 (`scriptablePackBuildTimeoutMs`); any other value fails the build instead of removing the bound. Both module initialization and build expiration still retire their isolated execution lease; runtime loading fences are independent of these offline limits.
+
+`STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS` resolves the same host build bound for inventory. Metadata-only loads retain their digest-keyed memo because this build deadline applies only when a retained definition executes `build()`.
 
 Build workers execute the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
 
@@ -538,8 +540,10 @@ canonicalization and own `__proto__` keys; delayed imports never reopen author f
 Once module loading settles, the Worker releases its captured source and transpile
 text, including the initial `workerData` payload. Successful loading first returns
 derived text to the host snapshot; builds and delayed literal imports use the
-compiled closure on disk. The executor retains its existing 256 MiB
-old-generation limit.
+compiled closure on disk. Each build-tool executor has a bounded 1024 MiB
+old-generation limit and a 64 MiB young-generation limit. These limits apply to
+isolated Pack production workers, not the game runtime. Module/build deadlines,
+pool concurrency, task recycling and disposal retain their existing policies.
 
 Path-only scans and explicit `metadataOnly` inventories read at most four ScriptablePack modules concurrently, each in its own isolated worker. They settle all started reads before reporting failure and publish declarations in source order. Inventories retaining build closures and scans using a caller-owned executor remain serial; metadata parallelism never shares or recycles those live leases.
 
@@ -1101,6 +1105,12 @@ timeout. Cleanup waits for in-flight directory preparation before removing it;
 only a completed reusable lease clears the executor's disposal state.
 Directory allocation failures retain the structured module-load error and
 still retire the Worker, including when no temporary output was created.
+
+Captured JSON inputs are staged in that same load lease instead of cloned as
+source text into the Worker. Ordinary imports retain JSON parse/stringify
+canonicalization; `?raw` retains the original text. Artifact integrity is checked
+before use, without returning to a changed author file. Custom executors and
+loads without an explicit source snapshot retain their existing input route.
 
 Author-closure transfer uses the same relative source candidate order as scriptable execution, including `.js` to `.ts`, `.mjs` to `.mts`, `.cjs` to `.cts` and extensionless index resolution.
 

@@ -32,7 +32,6 @@ const monorepoRoot = resolve(here, '..', '..');
 const previewPort = resolveProjectPort(undefined);
 const templatesDir = resolve(monorepoRoot, 'templates');
 const smokeRoot = process.env.FORGEAX_TEMPLATE_SMOKE === '1'
-  && process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1'
   && process.env.FORGEAX_TEMPLATE_SMOKE_ROOT
   ? resolve(process.env.FORGEAX_TEMPLATE_SMOKE_ROOT)
   : undefined;
@@ -208,7 +207,7 @@ export default defineConfig(async ({ command }) => {
   const runtimeBinding = createStandaloneRuntimeAssetBinding('preview');
   const convoyCookers = [];
   let projectCookers: Awaited<ReturnType<typeof loadPreviewProjectCookers>> | undefined;
-  if (packRoots.includes(resolve(game3dRoot, 'assets', 'character.pack.ts'))) {
+  if (packRoots.includes(resolve(game3dRoot, 'assets', 'player', 'character.pack.ts'))) {
     projectCookers = await loadPreviewProjectCookers(game3dRoot, resolve(monorepoRoot, 'shared-build-inputs', 'ddc'));
     convoyCookers.push(...projectCookers.session.cookers);
   }

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
@@ -246,6 +246,13 @@ describe('unified CLI', () => {
       error: { code: 'cli-input-file-read-failed', detail: { path: missing } },
     });
   });
+  it('leaves an ignore file in the project state directory a command used', async () => {
+    const root = await fixtureRoot();
+    await mkdir(join(root, '.forgeax'));
+    expect((await runUnifiedCli(['asset', 'list', '--root', root, '--json'])).ok).toBe(true);
+    expect(await readFile(join(root, '.forgeax', '.gitignore'), 'utf8')).toMatch(/^\*$/m);
+  });
+
   it('runs read-only asset discovery without a caller-minted mutation request id', async () => {
     const root = await fixtureRoot();
     const listed = await runUnifiedCli(['asset', 'list', '--root', root, '--json']);
@@ -296,6 +303,28 @@ describe('unified CLI', () => {
     });
     const missing = await runUnifiedCli(['asset', 'guid', '--root', root, '--json']);
     expect(missing).toMatchObject({ ok: false });
+  });
+
+  it('shows the scene kind in asset list and asset preview help', async () => {
+    const root = await fixtureRoot();
+    const preview = await runUnifiedCli(['help', 'asset', 'preview', '--root', root, '--json']);
+    expect(preview.ok).toBe(true);
+    const previewText = JSON.stringify(preview.value);
+    expect(previewText).toContain('--kind scene renders a SceneAsset through its authored camera');
+    expect(previewText).toContain('"kind":"scene"');
+    const list = await runUnifiedCli(['help', 'asset', 'list', '--root', root, '--json']);
+    expect(list.ok).toBe(true);
+    expect(JSON.stringify(list.value)).toContain('asset preview --kind scene --guid <guid>');
+  });
+
+  it('resolves a quoted multi-word help path like its split form', async () => {
+    const root = await fixtureRoot();
+    const split = await runUnifiedCli(['help', 'project', 'preview', '--root', root, '--json']);
+    expect(split.ok).toBe(true);
+    for (const quoted of ['project preview', ' project  preview ']) {
+      const joined = await runUnifiedCli(['help', quoted, '--root', root, '--json']);
+      expect(joined).toEqual(split);
+    }
   });
 
   it('accepts the documented dry-run flag on the unified asset import command', async () => {

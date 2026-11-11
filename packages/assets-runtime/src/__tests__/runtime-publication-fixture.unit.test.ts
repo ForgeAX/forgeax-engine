@@ -1,6 +1,7 @@
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import * as packRuntime from '@forgeax/engine-pack/runtime';
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import type { MaterialAsset } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../index';
 import { runtimeAssets } from '../internal';
@@ -133,5 +134,62 @@ it('losslessly tables fixture programs while retaining independent real decode a
     publication.mockRestore();
     first.dispose();
     second.dispose();
+  }
+});
+
+it.each([
+  'inline',
+  'external',
+  'corrupt',
+  'missing',
+] as const)('keeps real publication and program integrity admission for %s fixture bytes', async (mode) => {
+  const record = materialRecordFixture();
+  const artifact = record.programs[0]?.artifact;
+  if (artifact === undefined) throw new Error('missing program');
+  const compact = {
+    ...record,
+    programs: record.programs.map(({ artifact: { bytes: _bytes, ...artifact }, ...program }) => ({
+      ...program,
+      artifact,
+    })),
+  };
+  const bytes = new Uint8Array(artifact.bytes);
+  if (mode === 'corrupt') bytes[0] = (bytes[0] ?? 0) ^ 1;
+  const install = prepareRuntimeAssetPublication(
+    [
+      {
+        guid: record.guid,
+        asset: {
+          kind: 'material',
+          ...record.resolved,
+          cooked: mode === 'inline' ? record : compact,
+        } as MaterialAsset,
+        ...(mode === 'inline'
+          ? {}
+          : {
+              artifacts: {
+                [artifact.path]: {
+                  path: artifact.path,
+                  mediaType: artifact.mediaType,
+                  contentEncoding: 'identity',
+                  byteLength: artifact.bytes.byteLength,
+                  integrity: { algorithm: 'sha256', digest: artifact.digest },
+                },
+              },
+            }),
+      },
+    ],
+    mode === 'missing' || mode === 'inline' ? {} : { [artifact.path]: bytes },
+  );
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  try {
+    install(assets);
+    const loaded = await assets.load(record.guid, 'material');
+    expect(loaded.ok).toBe(mode === 'inline' || mode === 'external');
+    if (loaded.ok) assets.release(loaded.value).unwrap();
+  } finally {
+    assets.dispose();
   }
 });

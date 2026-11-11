@@ -7,7 +7,8 @@ import { ok } from '@forgeax/engine/types';
 import type {} from '@forgeax/engine/app';
 import { createGuideUi } from './guide-controller.ts';
 
-export const ui: Plugin.Object<{ readonly guide: string }> = {
+/** `crosshair: true` shows the screen-centre crosshair while the pointer is locked (off by default). */
+export const ui: Plugin.Object<{ readonly guide: string; readonly crosshair?: boolean }> = {
   name: 'game-3d/ui',
   inject: ['assets', 'gameHost'],
   async apply(ctx, config) {
@@ -18,7 +19,9 @@ export const ui: Plugin.Object<{ readonly guide: string }> = {
       const loaded = await assets.load(config.guide, uiAssetContribution.kind);
       if (!loaded.ok) throw loaded.error;
       yield () => assets.release(loaded.value).unwrap();
-      const ui = await createGuideUi(assets.read(loaded.value).unwrap(), ctx.gameHost!);
+      const ui = await createGuideUi(assets.read(loaded.value).unwrap(), ctx.gameHost!, {
+        crosshair: config.crosshair === true,
+      });
       yield () => ui.dispose();
     });
   },

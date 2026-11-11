@@ -112,8 +112,8 @@ try {
   const released = await command('camera', 'release');
   assert.equal(released.ok, true, JSON.stringify(released));
   assert.equal(released.value.control, 'game');
-  // The guide title is now owned by its authored translation resource.
-  const messages = join(root, 'assets', 'guide.ui.i18n.json');
+  // The guide title lives in the authored UI html.
+  const messages = join(root, 'assets', 'ui', 'guide.ui.html');
   const original = await readFile(messages, 'utf8');
   await writeFile(`${messages}.tmp`, original.replace('3C starter', 'SYNC INITIAL'));
   await rename(`${messages}.tmp`, messages);
@@ -149,17 +149,18 @@ try {
   );
   await writeFile(messages, original.replace('3C starter', 'SYNC FINAL'));
   const third = await ready(second.revision);
-  const capture = await command(
-    'capture',
+  const verification = await command(
+    'verify',
     '--revision',
     third.revision,
     '--output',
     join(evidence, 'final.png'),
   );
-  assert.equal(capture.ok, true);
-  const report = JSON.parse(await readFile(capture.value.report.uri, 'utf8'));
+  assert.equal(verification.ok, true, JSON.stringify(verification));
+  assert.equal(verification.value.verified, 'runtime');
+  const report = JSON.parse(await readFile(verification.value.report.uri, 'utf8'));
   assert.match(report.record.runtime.domUi.textWitness, /SYNC FINAL/);
-  assert.equal(capture.value.pixels.rendered, true);
+  assert.equal(verification.value.pixels.rendered, true);
 
   // Asset membership is an authored input even when its bytes are not imported
   // by a program. Unrelated root files are outside the accepted compiler scope.

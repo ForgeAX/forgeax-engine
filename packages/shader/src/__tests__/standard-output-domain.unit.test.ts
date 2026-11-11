@@ -33,7 +33,11 @@ describe('Standard output shader domain contract', () => {
   it('fails closed when a route has no declared output encoding owner', () => {
     const source = `${outputEncoding}\n${tonemap}`;
     expect(source.match(/fn encodeOutput/g)).toHaveLength(1);
-    expect(source.match(/linearToSrgbOetf\s*\(/g)).toHaveLength(1);
+    // Output encoding has one owner; the tonemap pass only uses the OETF to index
+    // the display LUT in sRGB (sampleOutputLut), never to encode the attachment.
+    expect(outputEncoding.match(/linearToSrgbOetf\s*\(/g)).toHaveLength(1);
+    expect(tonemap.match(/linearToSrgbOetf\s*\(/g)).toHaveLength(1);
+    expect(tonemap).toMatch(/fn sampleOutputLut[^}]*linearToSrgbOetf\s*\(/);
     expect(source).not.toMatch(/srgb.*attachment.*and.*explicit|explicit.*and.*srgb.*attachment/i);
   });
 });

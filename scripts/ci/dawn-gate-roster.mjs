@@ -46,7 +46,7 @@ export const DAWN_ISOLATED_GROUPS = [
     // The complete S6 capture journey owns a fresh native parent process;
     // keep both case tests and their original budgets outside ordinary backfill.
     id: 'modeling-s6',
-    // The complete owner has a 394-second retained maximum. Reserve ten
+    // Run 429298 measured a 443-second full-profile capture. Reserve ten
     // minutes so it still starts before ordinary backfill with time for drift.
     placementReserveSeconds: 600,
     files: ['packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts'],
@@ -168,33 +168,45 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-1',
-    'screen-probe',
-    'gi-2',
-    'compact-3',
+    'compact-1',
     'rect-source',
     'shadow-fields',
     'heavy-1',
     'heavy-2',
-    'renderer',
-    'modeling-s6',
+    'nested-discard',
     'gpu-timing',
+    'vfx-depth',
   ]),
   Object.freeze([
     'ordinary-2',
+    'modeling-s6',
     'heavy-3',
     'heavy-4',
     'shadow-quality',
     'specular-aa',
-    'transmission',
-    'compact-1',
-    'feature-depth',
+    'compact-3',
     'timing-lifecycle',
     'gi-6',
-    'vfx-depth',
-    'nested-discard',
+    'renderer',
   ]),
-  Object.freeze(['ordinary-3', 'modeling-show', 'compact-2', 'direct-light', 'gi-4', 'gi-1']),
-  Object.freeze(['ordinary-4', 'surface-pipelines', 'gi-5', 'gi-3']),
+  Object.freeze([
+    'ordinary-3',
+    'modeling-show',
+    'compact-2',
+    'direct-light',
+    'gi-4',
+    'gi-1',
+    'transmission',
+    'gi-2',
+  ]),
+  Object.freeze([
+    'ordinary-4',
+    'surface-pipelines',
+    'gi-5',
+    'gi-3',
+    'screen-probe',
+    'feature-depth',
+  ]),
 ]);
 
 export const DAWN_GATE_GROUPS = [

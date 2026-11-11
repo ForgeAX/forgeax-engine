@@ -170,4 +170,42 @@ describe('renderer instance projection', () => {
     });
     expect(validateInstanceTransforms(new Float32Array())).toBeUndefined();
   });
+
+  it('validates and compares a whole column in one pass with Object.is semantics', () => {
+    const world = new World();
+    const store = new InstanceProjectionStore();
+    const base = new Float32Array([...matrices(0), ...matrices(1)]);
+    const first = project(store, world, 1, base);
+    // Identical values keep the revision and its buffer.
+    expect(project(store, world, 1, base.slice())).toBe(first);
+    // -0 differs from +0 under Object.is, so it is a new revision.
+    const signed = base.slice();
+    signed[12] = -0;
+    const second = project(store, world, 1, signed);
+    expect(second.revision).toBe(first.revision + 1);
+    expect(Object.is(second.transforms[12], -0)).toBe(true);
+    // A value that only matches after f32 rounding is still a change.
+    const wide = Array.from(signed);
+    wide[13] = 0.1;
+    expect(projected(store.project(world, 1, wide)).revision).toBe(second.revision + 1);
+    // Errors match validateInstanceTransforms, including a non-finite value
+    // after an earlier mismatch and one inside an otherwise equal column.
+    for (const at of [3, 29]) {
+      const bad = Array.from(second.transforms);
+      bad[1] = 5;
+      bad[at] = Number.POSITIVE_INFINITY;
+      expect(store.project(world, 1, bad)).toMatchObject({
+        code: 'instance-transforms-invalid',
+        detail: { actualLength: 32, nonFiniteIndex: at },
+      });
+      const equalButBad = Array.from(second.transforms);
+      equalButBad[at] = NaN;
+      expect(store.project(world, 1, equalButBad)).toMatchObject(
+        validateInstanceTransforms(equalButBad) as object,
+      );
+    }
+    expect(store.project(world, 1, new Float32Array(20))).toMatchObject({
+      code: 'instance-transforms-stride-mismatch',
+    });
+  });
 });

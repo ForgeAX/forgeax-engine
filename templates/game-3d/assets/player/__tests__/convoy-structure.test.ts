@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { decodeSnapshot } from '@forgeax/engine/modeling';
-import { PLAYER_COLLIDER } from '../player-rig.ts';
+import { PLAYER_COLLIDER } from '../../shared/player-rig.ts';
 import { buildConvoy, convoyPath, convoyMotion, CONVOY_NORMALS } from '../convoy-model.ts';
 
 let built: ReturnType<typeof buildConvoy>;

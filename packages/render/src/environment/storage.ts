@@ -224,7 +224,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
         0x17,
       ),
       captureSky: texture(runtime, scope, 'atmosphere-capture-sky', 192, 208, 1, 1, 0x1c),
-      distantSkyLight: texture(runtime, scope, 'atmosphere-distant-sky-light', 1, 1, 1, 1, 0x0c),
+      distantSkyLight: texture(runtime, scope, 'atmosphere-distant-sky-light', 1, 1, 1, 1, 0x1c),
       params: buffer(runtime, scope, 'atmosphere-params', VIEW_UNIFORM_BYTES, 0x48),
       vertices: owner.vertices,
       iblParams: owner.iblParams,

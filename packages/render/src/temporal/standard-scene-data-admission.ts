@@ -163,6 +163,47 @@ export interface StandardSceneDataAdmissionInput {
   readonly contributors: readonly StandardSceneDataContributor[];
 }
 
+/** Internal view-producer envelope; raw callers retain their ordinary observation route. */
+export class ProducedStandardSceneDataAdmissionInput implements StandardSceneDataAdmissionInput {
+  declare readonly viewIdentity: StandardSceneDataAdmissionInput['viewIdentity'];
+  declare readonly generation: StandardSceneDataAdmissionInput['generation'];
+  declare readonly deviceGeneration: StandardSceneDataAdmissionInput['deviceGeneration'];
+  declare readonly standardPipeline: StandardSceneDataAdmissionInput['standardPipeline'];
+  declare readonly cameraAvailable: StandardSceneDataAdmissionInput['cameraAvailable'];
+  declare readonly lane: StandardSceneDataAdmissionInput['lane'];
+  declare readonly renderPath: StandardSceneDataAdmissionInput['renderPath'];
+  readonly contributors: StandardSceneDataContributor[] = [];
+  #fixedHeader = false;
+  #captured = false;
+
+  capture(header: Omit<StandardSceneDataAdmissionInput, 'contributors'>): void {
+    if (this.#captured) throw new Error('SceneData producer header was already captured');
+    this.#captured = true;
+    const descriptors = Object.getOwnPropertyDescriptors(header);
+    // Derive this check from the input itself, without a second header vocabulary.
+    // Copy descriptors rather than reading a custom header getter during proof setup.
+    this.#fixedHeader = Reflect.ownKeys(descriptors).every((key) => {
+      const descriptor = Reflect.get(descriptors, key) as PropertyDescriptor;
+      if (typeof key !== 'string' || !('value' in descriptor)) return false;
+      const value: unknown = descriptor.value;
+      return (
+        value === null ||
+        value === undefined ||
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean'
+      );
+    });
+    Object.defineProperties(this, descriptors);
+    Object.freeze(this);
+  }
+
+  static hasFixedHeader(input: StandardSceneDataAdmissionInput): boolean {
+    // A Proxy around the envelope does not carry its private producer authority.
+    return #fixedHeader in input && input.#fixedHeader;
+  }
+}
+
 // Only this producer's frozen primitive observations can reuse a prior proof.
 // Raw/custom contributors keep the complete ordinary getter and diagnostic route.
 const ownedContributors = new WeakSet<StandardSceneDataContributor>();
@@ -170,11 +211,12 @@ const contributorProgram = Symbol('StandardSceneDataContributor.program');
 type ProducedContributor = StandardSceneDataContributor & {
   [contributorProgram]?: StandardSceneDataContributorProgramFact;
 };
-type AvailableProof = {
+type AdmissionProof = {
+  readonly kind: 'available' | 'unavailable';
   readonly header: Omit<StandardSceneDataAdmissionInput, 'contributors'>;
   readonly contributors: readonly StandardSceneDataContributor[];
 };
-const availableProofs = new GenerationalWeakMap<StandardSceneSurfaceAdmission, AvailableProof>();
+const admissionProofs = new GenerationalWeakMap<StandardSceneSurfaceAdmission, AdmissionProof>();
 
 function rememberAvailableProof(
   admitted: StandardSceneSurfaceAdmission,
@@ -183,14 +225,60 @@ function rememberAvailableProof(
   if (!input.contributors.every((row) => ownedContributors.has(row))) return;
   const { contributors, ...header } = input;
   // Retain the producer observations themselves, not a second primitive-field roster.
-  availableProofs.set(admitted, { header, contributors: Object.freeze(contributors.slice()) });
+  admissionProofs.set(admitted, {
+    kind: 'available',
+    header,
+    contributors: Object.freeze(contributors.slice()),
+  });
 }
 
-/** The prior available proof's immutable producer observations, in contribution order. */
+/** The prior complete proof's immutable producer observations, in contribution order. */
 export function standardSceneSurfaceContributorBaseline(
   admitted: StandardSceneSurfaceAdmission | undefined,
 ): readonly StandardSceneDataContributor[] | undefined {
-  return admitted === undefined ? undefined : availableProofs.get(admitted)?.contributors;
+  return admitted === undefined ? undefined : admissionProofs.get(admitted)?.contributors;
+}
+
+/** Complete diagnostic authority comes from the retained program producer, not shallow freeze. */
+function completeNegativeContributor(row: StandardSceneDataContributor): boolean {
+  if (!ownedContributors.has(row)) return false;
+  const program = (row as ProducedContributor)[contributorProgram];
+  const facts = row.facts;
+  return (
+    program !== undefined &&
+    facts !== undefined &&
+    !facts.materialSnapshotMissing &&
+    facts.selectedPassFound &&
+    // The private marker is issued only after fixedProgramSnapshot's deep, plain,
+    // dense program proof. These exact links cover all nested diagnostic facts.
+    facts.publishedFragmentEntries === program.fragmentEntryPoints &&
+    facts.publicationIdentity === program.publicationIdentity &&
+    facts.selectedProgramFacts === program.program &&
+    facts.programCandidates !== undefined &&
+    Object.isFrozen(facts.programCandidates) &&
+    facts.programCandidates.length === 1 &&
+    facts.programCandidates[0] === program
+  );
+}
+
+function rememberUnavailableProof(
+  admitted: StandardSceneSurfaceAdmission,
+  input: StandardSceneDataAdmissionInput,
+): void {
+  if (
+    admitted.status !== 'unavailable' ||
+    admitted.reason !== 'coverage-incomplete' ||
+    !ProducedStandardSceneDataAdmissionInput.hasFixedHeader(input) ||
+    !input.contributors.every(completeNegativeContributor)
+  )
+    return;
+  const { contributors, ...header } = input;
+  admissionProofs.set(admitted, {
+    kind: 'unavailable',
+    header: Object.freeze(header),
+    // The live producer can continue filling/replacing its array. The proof cannot.
+    contributors: Object.freeze(contributors.slice()),
+  });
 }
 
 function ownContributor(
@@ -233,8 +321,13 @@ function reusableAdmission(
   previous: StandardSceneSurfaceAdmission | undefined,
 ): boolean {
   if (previous === undefined) return false;
-  const proof = availableProofs.get(previous);
+  const proof = admissionProofs.get(previous);
   if (proof === undefined) return false;
+  if (
+    proof.kind === 'unavailable' &&
+    !ProducedStandardSceneDataAdmissionInput.hasFixedHeader(input)
+  )
+    return false;
   const header = proof.header;
   if (
     input.viewIdentity !== header.viewIdentity ||
@@ -250,7 +343,10 @@ function reusableAdmission(
   for (let index = 0; index < input.contributors.length; index++) {
     const row = input.contributors[index],
       prior = proof.contributors[index];
-    if (row === undefined || prior === undefined || !sameContributorProof(row, prior)) return false;
+    if (row === undefined || prior === undefined) return false;
+    if (proof.kind === 'unavailable') {
+      if (row !== prior) return false;
+    } else if (!sameContributorProof(row, prior)) return false;
   }
   return true;
 }
@@ -382,7 +478,7 @@ export function createStandardSceneSurfaceAdmission(
     rememberAvailableProof(admitted, input);
     return admitted;
   }
-  return Object.freeze({
+  const admitted: StandardSceneSurfaceAdmission = Object.freeze({
     ...base,
     renderPath: input.renderPath,
     status: 'unavailable',
@@ -392,6 +488,8 @@ export function createStandardSceneSurfaceAdmission(
     missingContributors: hasProducer ? missingContributors : Object.freeze([]),
     omittedMissingContributorCount: hasProducer ? omittedMissingContributorCount : 0,
   });
+  rememberUnavailableProof(admitted, input);
+  return admitted;
 }
 
 type SurfaceContributorRejection = {
@@ -503,15 +601,23 @@ function surfaceContributorDiagnostic(
   });
 }
 
+type ContributorRow = Pick<RenderableSnapshot, 'morph' | 'skinBinding'>;
+type ContributorMaterials = Pick<RenderableSnapshot, 'material' | 'materials'>;
+type ContributorSource = ContributorRow &
+  ContributorMaterials &
+  Pick<RenderableSnapshot, 'worldId' | 'entityKey'>;
+
 function materialForDispatch(
-  row: RenderableSnapshot | undefined,
+  row: ContributorMaterials | undefined,
   materialHandle: number,
 ): MaterialResource | undefined {
   if (row === undefined) return undefined;
-  return (
-    row.materials.find((material) => material.snapshot.materialHandle === materialHandle) ??
-    (row.material.snapshot.materialHandle === materialHandle ? row.material : undefined)
-  );
+  const materials = row.materials;
+  for (let index = 0; index < materials.length; index++) {
+    const material = materials[index] as MaterialResource;
+    if (material.snapshot.materialHandle === materialHandle) return material;
+  }
+  return row.material.snapshot.materialHandle === materialHandle ? row.material : undefined;
 }
 
 function passForDispatch(
@@ -551,7 +657,7 @@ function isRequiredSurfaceDispatch(
 }
 
 function deformationForContributor(
-  row: RenderableSnapshot | undefined,
+  row: ContributorRow | undefined,
   geometry: string,
 ): StandardSceneDataContributor['deformation'] {
   if (row?.morph !== undefined) return 'morph';
@@ -565,7 +671,7 @@ type StandardSceneDataDispatch = Pick<
 >;
 
 export function standardSceneDataContributorForDispatch(
-  row: RenderableSnapshot | undefined,
+  row: ContributorSource | undefined,
   dispatch: StandardSceneDataDispatch,
   lane: 'forward' | 'deferred',
   previous?: StandardSceneDataContributor,
@@ -574,11 +680,32 @@ export function standardSceneDataContributorForDispatch(
   // passes that actually contribute. The existing dispatch is the sole source.
   const worldId = row?.worldId ?? -1;
   const entityKey = row?.entityKey ?? -1;
+  return standardSceneDataContributorFromColumns(
+    row,
+    row,
+    worldId,
+    entityKey,
+    dispatch,
+    lane,
+    previous,
+  );
+}
+
+/** Native Scene columns share the judgement without assembling a snapshot-shaped wrapper. */
+export function standardSceneDataContributorFromColumns(
+  row: ContributorRow | undefined,
+  materials: ContributorMaterials | undefined,
+  worldId: number,
+  entityKey: number,
+  dispatch: StandardSceneDataDispatch,
+  lane: 'forward' | 'deferred',
+  previous?: StandardSceneDataContributor,
+): StandardSceneDataContributor | undefined {
   const materialHandle = dispatch.materialHandle;
   const passIndex = dispatch.passIndex;
   const materialShaderId = dispatch.materialShaderId;
   const tags = dispatch.tags;
-  const material = materialForDispatch(row, materialHandle);
+  const material = materialForDispatch(materials, materialHandle);
   if (
     material === undefined
       ? !matchPass(tags, lane === 'deferred' ? DEFERRED_PASS_SELECTOR : FORWARD_PASS_SELECTOR)
@@ -643,7 +770,7 @@ function contributorSourceTuple(
 }
 
 function missingSnapshotContributor(
-  row: RenderableSnapshot | undefined,
+  row: ContributorRow | undefined,
   sourceTuple: StandardSceneDataContributorTuple,
   materialShaderId: string | undefined,
   expectedFragmentEntry: string,
@@ -678,7 +805,7 @@ function missingSnapshotContributor(
 
 function selectedPassMissingContributor(
   material: MaterialResource,
-  row: RenderableSnapshot | undefined,
+  row: ContributorRow | undefined,
   sourceTuple: StandardSceneDataContributorTuple,
   materialShaderId: string | undefined,
   tags: Record<string, string>,
@@ -721,7 +848,7 @@ function selectedPassMissingContributor(
 
 function selectedPassContributor(
   material: MaterialResource,
-  row: RenderableSnapshot | undefined,
+  row: ContributorRow | undefined,
   sourceTuple: StandardSceneDataContributorTuple,
   materialShaderId: string | undefined,
   tags: Record<string, string>,

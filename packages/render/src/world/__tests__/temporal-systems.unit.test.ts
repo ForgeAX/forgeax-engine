@@ -1,6 +1,7 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import { expect, it, vi } from 'vitest';
 import { TemporalViewHistory } from '../../temporal/frame';
+import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { ViewRecorder, ViewSubmission } from '../render-views';
 import { beginRenderFrame, createRenderWorld, endRenderFrame, RenderCommit } from '../render-world';
 import {
@@ -70,12 +71,22 @@ function fixture() {
       },
     )
     .unwrap();
+  adoptViewRecordHistory(world, view);
   /** One frame: the view stages every temporal candidate, then its submission settles. */
   const frame = (
     number: number,
-    submission: { accepted: boolean; attempt?: number; scene?: boolean },
+    submission: {
+      accepted: boolean;
+      attempt?: number;
+      scene?: boolean;
+      presentation?: 'pending' | 'ready';
+    },
   ) => {
     beginRenderFrame(world, number);
+    const { presentation = 'ready', ...facts } = submission;
+    const history = viewRecordHistory(world, view);
+    if (history === undefined) throw new Error('missing record history');
+    history.presentation = presentation;
     stagedFrame = true;
     gpu.pendingIndex = 1;
     frameState.temporalGpuState = gpu;
@@ -86,7 +97,7 @@ function fixture() {
         scene: true,
         temporal: false,
         attempt: number,
-        ...submission,
+        ...facts,
       })
       .unwrap();
     endRenderFrame(world);
@@ -164,6 +175,15 @@ it('an accepted preparation-only attempt (no scene picture) never advances histo
   // No Standard output pass ran: its staged GPU resources stay pending for the
   // next scene attempt instead of being reallocated by every preparation barrier.
   expect(standardOutput.retire).not.toHaveBeenCalled();
+});
+
+it('a submitted but pending picture discards every temporal candidate', () => {
+  const { frameState, transaction, gpu, frame } = fixture();
+  frame(1, { accepted: true, presentation: 'pending' });
+  expect(transaction.commit.mock.calls.every(([arg]) => arg.accepted === false)).toBe(true);
+  expect(frameState.temporalView.accepted).toBeUndefined();
+  expect(gpu.valid).toBe(false);
+  expect(frameState.cloudHistoryActive).toBe(false);
 });
 
 it('a view that never reached its submission is discarded, not committed, at cleanup', () => {

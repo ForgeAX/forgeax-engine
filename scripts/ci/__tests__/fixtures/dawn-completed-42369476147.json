@@ -446,5 +446,9 @@
       "reservedProcessSeconds": 2058.532,
       "allocation": "proportional latest complete ordinary-cohort file costs, raised to its admitted complete ordinary-4 process forecast; these are forecasts, not measurements"
     }
-  ]
+  ],
+  "reservedOwners": {
+    "direct-light": 219.011
+  },
+  "ownerForecastSourceHead": "3d396763e7ee1102f329ba686138371a7ca04167"
 }

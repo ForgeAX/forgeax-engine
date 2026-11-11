@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { stageViewToolPackage, VIEW_TOOL_FILES } from '../sdk-view.mjs';
@@ -106,11 +106,21 @@ test('the packed tool loads the real cold-import dependency outside its source c
   const execute = promisify(execFile);
   try {
     await stageViewToolPackage(f.view, f.output, '1.2.3');
-    await execute(
-      'npm',
-      ['pack', '--ignore-scripts', '--json', '--pack-destination', f.directory],
-      { cwd: f.output },
-    );
+    const packArguments = ['pack', '--ignore-scripts', '--json', '--pack-destination', f.directory];
+    let npm = 'npm';
+    if (process.platform === 'win32') {
+      const npmCli = resolve(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+      try {
+        await access(npmCli);
+      } catch (cause) {
+        throw new Error(`SDK pack test requires the npm CLI bundled with Node: ${npmCli}`, {
+          cause,
+        });
+      }
+      npm = process.execPath;
+      packArguments.unshift(npmCli);
+    }
+    await execute(npm, packArguments, { cwd: f.output });
     const archives = (await readdir(f.directory)).filter((name) => name.endsWith('.tgz'));
     assert.equal(archives.length, 1, 'npm pack must produce exactly one archive');
     const [filename] = archives;

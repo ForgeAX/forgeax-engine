@@ -141,6 +141,10 @@ function assertAtmosphereAdmission(
     frameState.environmentFrame?.source.kind !== 'atmosphere' ||
     (frameState.environmentFrame.source.atmosphere.backgroundOnly &&
       internals.device.caps.rgba16floatRenderable) ||
+    (!internals.device.caps.storageBuffer &&
+      internals.device.caps.rgba16floatRenderable &&
+      (internals.device.limits.maxTextureDimension2D ?? 0) >= 1024 &&
+      (internals.device.limits.maxSampledTexturesPerShaderStage ?? 0) >= 16) ||
     (pipelineState.atmosphereAvailable === true &&
       internals.device.caps.compute &&
       internals.device.caps.storageTexture &&

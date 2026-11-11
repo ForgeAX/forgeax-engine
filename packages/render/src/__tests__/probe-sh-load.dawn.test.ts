@@ -22,6 +22,7 @@ const shaderRoot = resolve('packages/shader/src');
 const imports = Object.fromEntries(
   [
     'atmosphere-coordinates',
+    'atmosphere-table-access',
     'atmosphere-optics',
     'atmosphere-sampling',
     'atmosphere-visibility',
@@ -40,6 +41,7 @@ const imports = Object.fromEntries(
     'lighting-spot-projector',
     'shadow-pcf',
     'standard-lighting',
+    'cluster-texture-data',
     'standard-cluster',
     'view-atmosphere',
     'common',

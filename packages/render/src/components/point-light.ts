@@ -57,6 +57,16 @@ export function validatePointLightDecay(value: number): ResourceInvalidValueErro
  * retain their existing near-light safety floors. Exposure is
  * applied after lighting and never multiplied into intensity.
  *
+ * Magnitudes: DirectionalLight `intensity` is already illuminance (lux), while a
+ * point light lands `intensity / d^2` lux on a surface `d` metres away (decay 2,
+ * inside its range). Compare that with the directional lux the scene is exposed for:
+ *
+ * | intensity | 0.25 m  | 0.5 m  | 1 m   | 2 m    | 4 m     |
+ * |-----------|---------|--------|-------|--------|---------|
+ * | 1 cd      | 16 lx   | 4 lx   | 1 lx  | 0.25 lx| 0.06 lx |
+ * | 8 cd      | 128 lx  | 32 lx  | 8 lx  | 2 lx   | 0.5 lx  |
+ * | 50 cd     | 800 lx  | 200 lx | 50 lx | 12.5 lx| 3.1 lx  |
+ *
  * @example Spawn a single point light at (5, 3, 5):
  *   world.spawn(
  *     { component: Transform, data: { pos: [5, 3, 5] } },

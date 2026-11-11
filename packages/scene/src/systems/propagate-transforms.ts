@@ -1450,9 +1450,7 @@ export function propagateTransforms(world: World): Result<void, SceneError> {
     }
     const hierarchy = propagateHierarchy(world, scratch, structural, globalEdited, flat.value);
     // Consume our own derived publications, while preserving later external edits.
-    for (const _span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
-      /* observation only */
-    }
+    scratch.dirtyGlobals?.markObserved();
     return hierarchy;
   } catch (cause) {
     // Private temporal readers may already have accepted discovery before a
@@ -1471,9 +1469,8 @@ export const PropagateTransforms: SystemHandle<readonly []> = defineSystem({
     const result = propagateTransforms(world);
     if (!result.ok) throw result.error;
     publishPresentationTransforms(world);
-    for (const _span of scratchFor(world).dirtyGlobals?.spans().unwrap() ?? []) {
-      /* consume this owner's presentation writes */
-    }
+    // Consume this owner's presentation writes.
+    scratchFor(world).dirtyGlobals?.markObserved();
   },
 });
 

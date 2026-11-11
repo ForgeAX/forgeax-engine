@@ -98,6 +98,8 @@ import { materialPipelineRequestPending } from './material/pipeline-preparation-
 import {
   MaterialPipelineRequestCache,
   materialPipelineRequestFacts,
+  type PendingMaterialPipelineRequest,
+  requestMaterialPipeline,
 } from './material/pipeline-request-cache';
 import {
   type PreparedRenderPipelineOwner,
@@ -237,6 +239,7 @@ import {
 } from './material/pipeline-helpers';
 import {
   allowsUnlitPreparedFallback,
+  buildPipelineColorFormats,
   invokeDeviceCreateShaderModule,
   type LayoutKind,
   makeShaderDeviceAdapter,
@@ -339,41 +342,7 @@ import {
   resolveWebGPUVertexBufferLayouts,
 } from './webgpu-vertex-layouts';
 
-export type { BundlerOptions } from './bundler-contract';
-export type {
-  LayoutKind,
-  MaterialShaderBindingContract,
-  MaterialShaderVertexInputContract,
-} from './material-shader-policy';
-export {
-  allowsUnlitPreparedFallback,
-  isSharedMaterialUserRegionCompatible,
-  normalizeMaterialShaderVariantSet,
-  requiresPreparedMaterialShader,
-  resolveMaterialShaderBackendArtifactKey,
-  resolveMaterialShaderBindingContract,
-  resolveMaterialShaderUvSetCount,
-  resolveMaterialShaderVariantSet,
-  resolveMaterialShaderVertexInputContract,
-  selectNoColorPbrVariant,
-  selectPipelineLayoutForVariant,
-  stripCloudShadowBindingsForLowLimit,
-} from './material-shader-policy';
-export {
-  createMeshSsboGrowController,
-  deriveStorageBufferCeiling,
-  INITIAL_MESH_SSBO_SLOT_COUNT,
-  requireMeshSsboBuffer,
-} from './mesh-ssbo-grow';
-export { exposeRenderer } from './renderer-facade';
-export {
-  selectGpuDrivenSceneIndexVariant,
-  selectHdrpPbrPrewarmVariants,
-  selectProbePrewarmVariants,
-  selectSkinPrewarmVariants,
-  selectStandardPbrTransmissionPrewarmVariants,
-} from './shader-prewarm-policy';
-export { disposeObservationCaptureSet } from './webgpu-renderer-observation';
+export * from './webgpu-renderer-exports';
 
 /** Bundler injection and construction from the selected backend pack. */
 export async function tryCreateRendererFromBackend(
@@ -1352,8 +1321,8 @@ async function makeWebGPURenderer(
     sampleCount: number = 1,
     // Transparent split passes use the swap-chain storage view. Preserve its
     // explicit non-sRGB format in both the PSO key and descriptor; HDR and
-    // depth-only passes select their own attachment formats.
-    colorFormatOverride?: GPUTextureFormat,
+    // depth-only passes select their own attachment formats; `null` is colorless.
+    colorFormatOverride?: GPUTextureFormat | null,
     // Prepared graphics passes use `null` to request an explicit color-only
     // pipeline; omitted preserves the material forward depth default.
     depthFormatOverride?: GPUTextureFormat | null,
@@ -1441,14 +1410,12 @@ async function makeWebGPURenderer(
             ? undefined
             : (descriptor) => prepared.request(cacheKey, preparedSource, descriptor),
         colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat,
-        colorFormats:
-          additionalColorFormats === undefined
-            ? undefined
-            : [
-                renderState?.outputs?.[0]?.format ??
-                  (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
-                ...additionalColorFormats,
-              ],
+        colorFormats: buildPipelineColorFormats(
+          colorFormatOverride === null,
+          additionalColorFormats,
+          renderState?.outputs?.[0]?.format ??
+            (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
+        ),
         depthFormat:
           depthFormatOverride === null
             ? undefined
@@ -1546,8 +1513,8 @@ async function makeWebGPURenderer(
     // must override. Threaded into both the cache key (via the spec's
     // `attachments.colorFormats`) and the actual PSO descriptor. Ignored
     // for `isHdr=true` (HDR sub-pass uses rgba16float) and
-    // `passKind='shadow-caster'` (depth-only, no color attachment).
-    colorFormatOverride?: GPUTextureFormat,
+    // `passKind='shadow-caster'` (depth-only, no color attachment); `null` = colorless.
+    colorFormatOverride?: GPUTextureFormat | null,
     // feat-20260629-multi-uv-set-support m3-w5: shader-declared UV set count,
     // forwarded to PipelineSpec.geometry.shaderUvSetCount for clamp-to-last
     // alias. Undefined = fallback to mesh-provided count (no clamping).
@@ -1630,6 +1597,7 @@ async function makeWebGPURenderer(
         additionalColorFormats,
         depthFormatOverride,
         sampleCount,
+        colorFormatOverride === null,
       ),
       geometry: materialPipelineGeometry(
         topology,
@@ -1868,7 +1836,7 @@ async function makeWebGPURenderer(
   };
   const pipelineRequests = new WeakMap<
     RendererPipelineCacheState,
-    MaterialPipelineRequestCache<RenderPipeline>
+    MaterialPipelineRequestCache<RenderPipeline | PendingMaterialPipelineRequest>
   >();
   const pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1] = [];
   // Array form: per-draw callers pass their argument list without re-spreading.
@@ -1907,13 +1875,13 @@ async function makeWebGPURenderer(
       currentPipelineState(),
       currentBuildDevice(),
     );
-    const cached = requests.get(facts);
-    if (cached !== undefined) return cached;
-    if (lookupOnly) return null;
-    const stored = facts.slice();
-    const pipeline = buildMaterialShaderPipeline(...args);
-    if (pipeline !== null) requests.set(stored, pipeline);
-    return pipeline;
+    return requestMaterialPipeline(
+      requests,
+      facts,
+      lookupOnly,
+      () => buildMaterialShaderPipeline(...args),
+      () => preparedPipelineOwners.get(owner),
+    );
   };
   const getMaterialShaderPipeline = (
     ...args: Parameters<typeof buildMaterialShaderPipeline>
@@ -2906,11 +2874,13 @@ async function makeWebGPURenderer(
       unheldQueueCompletion === undefined
         ? undefined
         : raceFrameContinuation(
+            // Reflection fallback settlement consumes the held queue fence and
+            // belongs to `completed`; credit follows the GPU work alone.
             settleFrameCompletion(
               receiptFrameId,
               receiptGeneration,
               unheldQueueCompletion,
-              reflectionFallbackCompletion,
+              undefined,
             ),
             continuation,
             receiptFrameId,
@@ -3060,7 +3030,14 @@ async function makeWebGPURenderer(
       receiver: publicationReceiver,
       getGpuStore: () => gpuStore,
       currentGeneration: () => activeDeviceScope.generation,
-      completeUploads: () => internals.device.queue.onSubmittedWorkDone(),
+      completeUploads: () => {
+        const failure = drawHealthError();
+        if (failure !== undefined) throw failure;
+        const generation = activeDeviceScope.generation;
+        const completed = internals.device.queue.onSubmittedWorkDone();
+        watchQueueCompletion(completed, undefined, generation);
+        return completed;
+      },
       isCurrentFrame: (receipt) =>
         !uiOnlyFrame &&
         latestReceipt === receipt &&

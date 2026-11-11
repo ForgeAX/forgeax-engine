@@ -62,9 +62,9 @@ export function createPhoneGameplayObserver(options, wx, observer = createGamepl
         Math.abs(player.position[2]) > 10
       )
         throw new Error('Neutral grounded player inside +/-10 required');
-      const vase = await owner.read('game-3d.runtime-vase');
+      const vase = await readOptionalRuntimeVase(owner);
       before.vase = vase;
-      if (!(vase?.vertexCount > 0) || vase.busy || vase.error)
+      if (runtimeVaseUnavailable(vase))
         throw new Error('Runtime vase unavailable');
       const ui = owner.ui({ selector: '[data-ui-part]', limit: 512 });
       before.uiResult = ui;
@@ -127,4 +127,14 @@ export function createPhoneGameplayObserver(options, wx, observer = createGamepl
       return result;
     },
   };
+}
+
+// Optional: only projects that install the runtime-pack vase register this read.
+async function readOptionalRuntimeVase(owner) {
+  const reads = (await owner.list?.())?.reads;
+  return reads?.includes('game-3d.runtime-vase') ? owner.read('game-3d.runtime-vase') : undefined;
+}
+
+function runtimeVaseUnavailable(vase) {
+  return vase !== undefined && (!(vase?.vertexCount > 0) || vase.busy || vase.error);
 }

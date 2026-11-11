@@ -1,6 +1,14 @@
-import { World } from '@forgeax/engine-ecs';
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
+import type { TextureView } from '@forgeax/engine-rhi';
+import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
+import {
+  emptyFrameRecordingOutputs,
+  resetFrameRecordingOutputs,
+} from '../../record/frame-snapshot';
 import type { RecordAttempt } from '../../render-system-record-attempt';
+import { ShadowDepthLayers } from '../../shadow-depth-layers';
+import { viewDirectionalShadow } from '../../view-inspection';
 import { RENDER_CAPTURE_GRAPH_RETIRE_SYSTEM } from '../capture-graph-systems';
 import { RENDER_DISPLAY_DISCARD_SYSTEM } from '../display-submission-systems';
 import { RENDER_FEATURE_GRAPH_RETIRE_SYSTEM } from '../feature-graph-systems';
@@ -9,6 +17,7 @@ import { RENDER_GRAPH_SUBMISSION_ABORT_SYSTEM } from '../graph-submission-system
 import { RENDER_GRAPH_COMPILE_RELEASE_SYSTEM } from '../graph-systems';
 import { RENDER_POST_CLEANUP_SYSTEM } from '../post-systems';
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
+import { ViewCascadeFit } from '../render-lights';
 import { RenderView, ViewRecorder, ViewSubmission } from '../render-views';
 import {
   beginRenderFrame,
@@ -26,6 +35,7 @@ import {
   retireAfterSubmission,
 } from '../submission-systems';
 import { RENDER_TEMPORAL_DISCARD_SYSTEM } from '../temporal-systems';
+import type { ViewSettlementOwner } from '../view-settlement';
 import { RENDER_SETTLEMENT_CLEANUP_SYSTEMS } from '../view-settlement';
 
 function deferred() {
@@ -52,21 +62,62 @@ function accept(world: World, accepted: boolean): void {
  * and error registry, its ViewSubmission and ViewRecordHistory. `stage` stages
  * an attempt the way the recording's `finally` does.
  */
-function recordedView(options: { readonly pipeline?: boolean } = {}) {
+function recordedView(
+  options: {
+    readonly pipeline?: boolean;
+    readonly shadow?: { readonly layers: ShadowDepthLayers; readonly view: TextureView };
+  } = {},
+) {
   // Only the submission lifecycle runs: the other per-view settlement systems
   // would read the real owner this fake stands for.
   const world = new World();
   registerSubmissionSystems(world);
   const order: string[] = [];
+  const lights = {
+    pointShadow: [],
+    spot: [],
+    ...(options.shadow === undefined
+      ? {}
+      : {
+          cascades: {
+            directionalShadowQuality: { kind: 'pcf-vogel' as const },
+            cascadeCount: 3,
+            lightViewProj: [new Float32Array(16), new Float32Array(16), new Float32Array(16)],
+          },
+        }),
+  };
+  const graph = {
+    targets: { graphGeneration: 8 },
+    graph: {
+      inspect: vi.fn(() => ({
+        passes: [
+          { name: 'shadowCascade0' },
+          { name: 'shadowCascade1' },
+          { name: 'shadowCascade2' },
+        ],
+      })),
+    },
+  };
   const owner = {
     frameState: {
       pipelinePreparationPending: false,
-      compiledFrameGraph: options.pipeline === false ? null : {},
-      frameOutputs: { directionalShadowView: null },
+      compiledFrameGraph: options.pipeline === false ? null : graph,
+      frameOutputs: {
+        ...emptyFrameRecordingOutputs(),
+        directionalShadowView: options.shadow?.view ?? null,
+      },
+      directionalShadowCache: null,
+      shadowDepthLayers: options.shadow?.layers,
+      graphGeneration: 8,
     },
     internals: {
       errorRegistry: { fire: vi.fn() },
-      getPipelineState: () => (options.pipeline === false ? null : {}),
+      getPipelineState: () =>
+        options.pipeline === false ? null : { perPassResources: { shadowMapSize: 32 } },
+      deviceScope: { generation: 7 },
+      observationFrameId: 41,
+      renderWorld: world,
+      viewEntity: undefined as EntityHandle | undefined,
       gpuStore: {},
     },
     scene: {
@@ -89,6 +140,14 @@ function recordedView(options: { readonly pipeline?: boolean } = {}) {
       },
     )
     .unwrap();
+  owner.internals.viewEntity = view;
+  if (options.shadow !== undefined)
+    world
+      .addComponent(view, {
+        component: ViewCascadeFit,
+        data: { fit: world.allocUniqueRef('ViewCascadeFit', { lights }) },
+      })
+      .unwrap();
   adoptViewRecordHistory(world, view);
   const history = viewRecordHistory(world, view) as NonNullable<
     ReturnType<typeof viewRecordHistory>
@@ -111,7 +170,7 @@ function recordedView(options: { readonly pipeline?: boolean } = {}) {
       outcome: submitted
         ? {
             frame: {},
-            lights: { pointShadow: [], spot: [] },
+            lights,
             cameraCount: input.cameraCount ?? 0,
             presentation: { presentation: 'ready', reason: undefined },
             presentationRenderables: [],
@@ -140,7 +199,7 @@ function recordedView(options: { readonly pipeline?: boolean } = {}) {
     });
     return attempt;
   };
-  return { world, view, owner, history, stage, order };
+  return { world, view, owner, history, stage, order, graph };
 }
 
 function queue() {
@@ -148,7 +207,222 @@ function queue() {
   return { work, queue: { onSubmittedWorkDone: vi.fn(() => work.promise) } };
 }
 
+async function shadowRecordedView() {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const layers = new ShadowDepthLayers(device);
+  layers.texture('directional-shadow-depth', 32, 3);
+  for (let layer = 0; layer < 3; layer++) layers.rastered('directional-shadow-depth', layer);
+  layers._commit();
+  const fixture = recordedView({
+    shadow: { layers, view: layers.view('directional-shadow-depth') },
+  });
+  const inspect = () => viewDirectionalShadow(fixture.owner as unknown as ViewSettlementOwner);
+  beginRenderFrame(fixture.world, 1);
+  fixture.stage({ frame: 1, accepted: true });
+  accept(fixture.world, true);
+  endRenderFrame(fixture.world);
+  return { ...fixture, layers, inspect };
+}
+
 describe('Render submission lifecycle', () => {
+  it('keeps settled receiver facts while the next attempt resets only recording outputs', async () => {
+    const { owner, graph, layers, inspect } = await shadowRecordedView();
+    try {
+      // Publishing an attempt must not inspect/scan the graph on the draw hot path.
+      expect(graph.graph.inspect).not.toHaveBeenCalled();
+      const held = inspect();
+      expect(held).toMatchObject({
+        status: 'accepted',
+        pixelEvidence: 'available',
+        shadowMapBytes: 12288,
+      });
+      const heldJson = JSON.stringify(held);
+      resetFrameRecordingOutputs(owner.frameState.frameOutputs);
+      expect(inspect()).toEqual(held);
+      expect(inspect()).toMatchObject({
+        settlement: {
+          scope: 'settled-view-record-attempt',
+          renderAttempt: 1,
+          observationFrameId: 41,
+          submitted: true,
+          sceneSubmitted: true,
+          accepted: true,
+        },
+      });
+      expect(Object.isFrozen(held)).toBe(true);
+      expect(JSON.stringify(held)).toBe(heldJson);
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it.each([
+    ['preparation barrier', undefined],
+    ['record failure', new Error('record failed')],
+  ])('publishes rejected evidence for %s with no record outcome', async (_name, failure) => {
+    const { world, owner, stage, layers, inspect } = await shadowRecordedView();
+    try {
+      const held = inspect();
+      beginRenderFrame(world, 2);
+      resetFrameRecordingOutputs(owner.frameState.frameOutputs);
+      stage({ frame: 2, accepted: false, submitted: false, failure });
+      accept(world, false);
+      endRenderFrame(world);
+      expect(inspect()).toMatchObject({
+        status: 'rejected',
+        pixelEvidence: 'not-available',
+        shadowMapBytes: 0,
+        settlement: { renderAttempt: 2, submitted: false, sceneSubmitted: false, accepted: false },
+      });
+      expect(held.status).toBe('accepted');
+      expect(held.pixelEvidence).toBe('available');
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it.each([
+    'pending-outcome',
+    'held-without-outcome',
+    'scene-input-pending',
+  ] as const)('settles %s preparation work without inventing a directional shadow failure', async (kind) => {
+    const { world, owner, stage, layers, inspect } = await shadowRecordedView();
+    try {
+      const held = inspect();
+      beginRenderFrame(world, 2);
+      resetFrameRecordingOutputs(owner.frameState.frameOutputs);
+      const accepted = kind !== 'scene-input-pending';
+      const attempt = stage({ frame: 2, accepted });
+      attempt.sceneSubmitted = false;
+      if (attempt.outcome === undefined) throw new Error('Missing preparation outcome');
+      attempt.outcome.presentation.presentation = 'pending';
+      if (kind === 'held-without-outcome') attempt.outcome = undefined;
+      accept(world, accepted);
+      endRenderFrame(world);
+      expect(inspect()).toMatchObject({
+        status: 'rejected',
+        pixelEvidence: 'not-available',
+        shadowMapBytes: 0,
+        settlement: { renderAttempt: 2, submitted: true, sceneSubmitted: false, accepted },
+      });
+      expect(inspect().error).toBeUndefined();
+      expect(held.status).toBe('accepted');
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it.each([
+    'queue-rejected',
+    'record-failed',
+    'scene-submitted',
+    'ready-without-scene',
+    'light-invalid',
+  ] as const)('retains directional shadow failure evidence for %s', async (kind) => {
+    const { world, owner, stage, layers, inspect } = await shadowRecordedView();
+    try {
+      beginRenderFrame(world, 2);
+      resetFrameRecordingOutputs(owner.frameState.frameOutputs);
+      const accepted = kind !== 'queue-rejected';
+      const attempt = stage({
+        frame: 2,
+        accepted,
+        submitted: kind !== 'queue-rejected',
+        ...(kind === 'record-failed' ? { failure: new Error('record failed') } : {}),
+      });
+      attempt.sceneSubmitted = kind === 'scene-submitted';
+      const lightError = {
+        code: 'shadow-invalid-config',
+        expected: 'valid directional shadow configuration',
+        hint: 'repair the light configuration',
+      };
+      if (attempt.outcome !== undefined) {
+        if (kind === 'light-invalid')
+          Object.assign(attempt.outcome.lights, { directionalShadowError: lightError });
+        attempt.outcome.presentation.presentation =
+          kind === 'ready-without-scene' ? 'ready' : 'pending';
+      }
+      accept(world, accepted);
+      endRenderFrame(world);
+      expect(inspect().error?.code).toBe(
+        kind === 'light-invalid' ? lightError.code : 'directional-shadow-candidate-failed',
+      );
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it('publishes a failed recorded attempt and only a later successful attempt recovers it', async () => {
+    const { world, stage, layers, inspect } = await shadowRecordedView();
+    try {
+      const held = inspect();
+      beginRenderFrame(world, 2);
+      stage({ frame: 2, accepted: false, failure: new Error('failed after recording') });
+      accept(world, false);
+      endRenderFrame(world);
+      expect(inspect()).toMatchObject({
+        status: 'rejected',
+        pixelEvidence: 'not-available',
+        settlement: { renderAttempt: 2 },
+      });
+      beginRenderFrame(world, 3);
+      stage({ frame: 3, accepted: true });
+      accept(world, true);
+      endRenderFrame(world);
+      expect(inspect()).toMatchObject({
+        status: 'accepted',
+        pixelEvidence: 'available',
+        settlement: { renderAttempt: 3 },
+      });
+      expect(held.settlement?.renderAttempt).toBe(1);
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it('invalidates resource loss or a different device generation without mutating held facts', async () => {
+    const { owner, layers, inspect } = await shadowRecordedView();
+    try {
+      const held = inspect();
+      layers.discard('directional-shadow-depth', 1);
+      expect(inspect()).toMatchObject({ status: 'rejected', pixelEvidence: 'not-available' });
+      layers.rastered('directional-shadow-depth', 1);
+      layers._commit();
+      expect(inspect().status).toBe('accepted');
+      owner.internals.deviceScope.generation++;
+      expect(inspect()).toMatchObject({ status: 'rejected', pixelEvidence: 'not-available' });
+      owner.internals.deviceScope.generation--;
+      layers.dispose();
+      expect(inspect()).toMatchObject({ status: 'rejected', pixelEvidence: 'not-available' });
+      expect(held).toMatchObject({
+        status: 'accepted',
+        pixelEvidence: 'available',
+        deviceGeneration: 7,
+      });
+    } finally {
+      layers.dispose();
+    }
+  });
+
+  it('invalidates a settled receiver after a same-size allocation replacement, even when all layers become retained', async () => {
+    const { layers, inspect } = await shadowRecordedView();
+    try {
+      const held = inspect();
+      layers.texture('directional-shadow-depth', 64, 3);
+      layers.texture('directional-shadow-depth', 32, 3);
+      for (let layer = 0; layer < 3; layer++) layers.rastered('directional-shadow-depth', layer);
+      layers._commit();
+      expect(layers.byteSize('directional-shadow-depth')).toBe(held.shadowMapBytes);
+      expect(inspect()).toMatchObject({
+        status: 'rejected',
+        pixelEvidence: 'not-available',
+        shadowMapBytes: 0,
+      });
+      expect(held.status).toBe('accepted');
+    } finally {
+      layers.dispose();
+    }
+  });
   it('schedules record commit/retire and the completion retirement with their data', () => {
     const data = createRenderWorld().scheduleData();
     const commit = data.find((schedule) => schedule.name === 'RenderCommit');
@@ -234,6 +508,19 @@ describe('Render submission lifecycle', () => {
     endRenderFrame(world);
     expect(history.presentation).toBe('pending');
     expect(history.pendingReason).toEqual({ code: 'compiled-graph-unavailable' });
+  });
+
+  it('a submitted scene still pending pipeline preparation does not advance temporal history', () => {
+    const { world, view, owner, history, stage, order } = recordedView();
+    beginRenderFrame(world, 1);
+    stage({ frame: 1, accepted: true });
+    owner.frameState.pipelinePreparationPending = true;
+    accept(world, true);
+    endRenderFrame(world);
+    expect(history.presentation).toBe('pending');
+    expect(history.pendingReason).toEqual({ code: 'pipeline-preparation' });
+    expect(order).toEqual(['temporal-discard', 'end-frame:attempt']);
+    expect(world.get(view, ViewSubmission).unwrap().temporal).toBe(false);
   });
 
   it('a failed submit retires its attempt without committing history', () => {

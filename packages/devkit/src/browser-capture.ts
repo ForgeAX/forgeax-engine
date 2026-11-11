@@ -17,6 +17,8 @@ import {
   type Page,
   type Request,
   type Response,
+  type Route,
+  type WebSocket,
 } from 'playwright';
 import type { ViteDevServer } from 'vite';
 import { type CaptureRendererError, captureRenderFailure } from './capture-render-failure.js';
@@ -193,6 +195,12 @@ export interface BrowserCaptureOpenOptions
   readonly host?: DevKitHostBinding;
   /** Release omits unsafe WebGPU/file-access flags; development preserves the legacy lane. */
   readonly launchProfile?: BrowserLaunchProfile;
+  /**
+   * Blocks every HTTP(S) request of the page context (workers included) to a host other
+   * than loopback before navigation, and reports each blocked URL; a WebSocket to such a
+   * host cannot be blocked here and is reported when it opens.
+   */
+  readonly onExternalRequest?: (url: string) => void;
   /** Budget for catalog publication, navigation and first-frame readiness. Default 120000. */
   readonly startupTimeoutMs?: number;
   /** Vite dependency cache for the private project server; default is Vite's own. */
@@ -506,11 +514,15 @@ export function browserLaunchArgs(
     );
   }
   if (backend !== 'software') return common;
+  // The software lane is a test-host fallback, not the player's browser: Chrome only
+  // exposes a SwiftShader adapter behind the unsafe flag, so every profile needs it.
+  const unsafe = common.includes('--enable-unsafe-webgpu') ? [] : ['--enable-unsafe-webgpu'];
   if (process.platform === 'win32') {
-    return [...common, '--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader'];
+    return [...common, ...unsafe, '--use-webgpu-adapter=swiftshader'];
   }
   return [
     ...common,
+    ...unsafe,
     '--enable-features=Vulkan',
     '--use-vulkan=swiftshader',
     '--use-angle=swiftshader',
@@ -747,9 +759,23 @@ async function waitForCaptureCover(
   await realm.locator('#forgeax-loading').waitFor({ state: 'hidden', timeout });
 }
 
-function rejectCapture(record: BrowserCaptureRecord, reportPath: string): never {
+const REQUIRED_UI_GRACE_MS = 10_000;
+
+function rejectCapture(
+  record: BrowserCaptureRecord,
+  reportPath: string,
+  onlyUiMissing = false,
+): never {
   const renderFailure = captureRenderFailure(record);
   const rendererError = record.runtime.rendererError;
+  if (onlyUiMissing) {
+    fail(
+      'browser-capture-ui-missing',
+      'a mounted game UI element under #game-ui (--require-ui)',
+      'No game UI is mounted. Omit --require-ui for a canvas-only game, or mount the UiAsset.',
+      { checkpoint: record.checkpoint, output: record.output, report: reportPath },
+    );
+  }
   fail(
     'browser-capture-runtime-failed',
     'non-flat canvas pixels, the requested browser backend/checkpoint, and no Engine or browser errors',
@@ -1092,7 +1118,7 @@ async function resolveRequestedBrowser(browser: string | undefined): Promise<str
     fail(
       'browser-capture-browser-missing',
       `a runnable browser at ${browser}`,
-      'Install Chrome/Chromium or pass --browser with an executable path.',
+      'Install Chrome/Chromium, pass --browser with an executable path, or set FORGEAX_BROWSER_EXECUTABLE.',
       { browser },
     );
   }
@@ -1461,6 +1487,67 @@ function startEarlyLaunch(
   return launching;
 }
 
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '[::1]', '::1']);
+
+/** A network URL whose host is not this machine's loopback; data, blob and file stay local. */
+export function isExternalUrl(url: URL): boolean {
+  if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) return false;
+  const host = url.hostname.toLowerCase();
+  return !(
+    LOOPBACK_HOSTS.has(host) ||
+    host.endsWith('.localhost') ||
+    /^127(?:\.\d{1,3}){3}$/.test(host)
+  );
+}
+
+/**
+ * Blocks every non-loopback request of the page context and reports each URL; returns
+ * the cleanups to run when the page is released.
+ */
+async function blockExternalRequests(
+  page: Page,
+  report: ((url: string) => void) | undefined,
+): Promise<readonly (() => void)[]> {
+  if (report === undefined) return [];
+  const context = page.context();
+  const block = (route: Route) => {
+    report(route.request().url());
+    route.abort('blockedbyclient').catch(() => undefined);
+  };
+  const onSocket = (socket: WebSocket) => {
+    if (isExternalUrl(new URL(socket.url()))) report(socket.url());
+  };
+  await context.route(isExternalUrl, block);
+  page.on('websocket', onSocket);
+  return [
+    () => void context.unroute(isExternalUrl, block).catch(() => undefined),
+    () => page.off?.('websocket', onSocket),
+  ];
+}
+
+/**
+ * UI usually mounts right after the first frame. A game that mounts none is reported
+ * by the capture as `ui-missing` instead of spending the whole startup budget here.
+ */
+async function awaitRequiredUi(
+  realm: Page | Frame,
+  readinessDeadline: number,
+  requireUi: boolean,
+): Promise<void> {
+  if (!requireUi) return;
+  await realm
+    .waitForFunction(
+      () =>
+        document.querySelector('#forgeax-fatal')?.checkVisibility() === true ||
+        (document.querySelector('#game-ui')?.childElementCount ?? 0) > 0,
+      undefined,
+      { timeout: Math.max(1, Math.min(REQUIRED_UI_GRACE_MS, readinessDeadline - Date.now())) },
+    )
+    .catch((error: unknown) => {
+      if (!(error instanceof Error) || error.name !== 'TimeoutError') throw error;
+    });
+}
+
 async function openBrowserCaptureSession(
   root: string,
   options: BrowserCaptureOpenOptions,
@@ -1652,6 +1739,9 @@ async function openBrowserCaptureSession(
         const record = requestByObject.get(request);
         if (traceRequests && record !== undefined) observeRequestTiming(request, record);
       };
+      pageListenerCleanups.push(
+        ...(await blockExternalRequests(activePage, options.onExternalRequest)),
+      );
       activePage.on('console', onConsole);
       activePage.on('pageerror', onPageError);
       activePage.on('request', onRequest);
@@ -1680,7 +1770,7 @@ async function openBrowserCaptureSession(
       while (true) {
         await traceDevStartup('browser-canvas-ready', () =>
           activeRealm.waitForFunction(
-            (requireUi) => {
+            () => {
               const startup = (
                 Reflect.get(globalThis, '__forgeaxStartup') as
                   | { inspect?(): StartupUiState }
@@ -1695,14 +1785,13 @@ async function openBrowserCaptureSession(
               const canvas = document.querySelector('canvas');
               if (!(canvas instanceof HTMLCanvasElement) || canvas.width <= 0 || canvas.height <= 0)
                 return false;
-              if (!requireUi) return true;
-              const uiRoot = document.querySelector('#game-ui');
-              return uiRoot !== null && uiRoot.childElementCount > 0;
+              return true;
             },
-            options.requireUi === true,
+            undefined,
             { timeout: Math.max(1, readinessDeadline - Date.now()) },
           ),
         );
+        await awaitRequiredUi(activeRealm, readinessDeadline, options.requireUi === true);
         try {
           return await traceDevStartup('browser-runtime-witness', () =>
             runtimeWitness(activeRealm),
@@ -2019,7 +2108,7 @@ async function openBrowserCaptureSession(
         if (captureBackend !== 'unknown') Object.assign(report, { backend: captureBackend });
         const backendMatches = backend === 'auto' || captureBackend === backend;
         const renderFailure = captureRenderFailure({ pixels, runtime });
-        const ok =
+        const okWithoutUi =
           runtime.canvas !== null &&
           (observe || renderFailure === undefined) &&
           backendMatches &&
@@ -2027,8 +2116,8 @@ async function openBrowserCaptureSession(
           runtime.fatalError === null &&
           (observe || (consoleErrors.length === 0 && pageErrors.length === 0)) &&
           singleHtmlRuntimeClean(target, runtime, requestSummary) &&
-          (expectedReady === undefined || runtime.captureReady === expectedReady) &&
-          (!requireUi || uiPresent);
+          (expectedReady === undefined || runtime.captureReady === expectedReady);
+        const ok = okWithoutUi && (!requireUi || uiPresent);
         const written = await publishCaptureImage(output, diagnosticOutput, png, ok);
         const record: BrowserCaptureRecord = {
           index,
@@ -2041,7 +2130,7 @@ async function openBrowserCaptureSession(
         };
         captures.push(record);
         await updateReport();
-        if (!ok) rejectCapture(record, reportPath);
+        if (!ok) rejectCapture(record, reportPath, okWithoutUi);
         return record;
       },
       report: () => report,

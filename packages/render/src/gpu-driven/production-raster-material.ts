@@ -4,8 +4,10 @@ import type {
   BindGroupLayout,
   Buffer,
   RenderPipeline,
+  RenderPipelineFragmentState,
   Result,
   RhiDevice,
+  ShaderModule,
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
@@ -27,6 +29,7 @@ import {
 } from '../gpu-usage';
 import { materialColorTarget, materialDepthStencil } from '../material-render-state';
 import {
+  colorlessFragmentEntry,
   effectiveStandardSurfaceDiscards,
   materialAbiRasterConstants,
   materialVertexConstants,
@@ -350,10 +353,41 @@ function beginSurfacePageUpload(
 
 type MaterialPipelineFactory = NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>;
 
+function legacyFragmentKey(fragmentEntry: string | null | undefined): string {
+  if (fragmentEntry === null) return 'fs:none';
+  return fragmentEntry ?? '';
+}
+
+/** Fragment stage of the fixed legacy module; `null` entry is a vertex-only PSO. */
+function legacyFragmentState(
+  module: ShaderModule,
+  fragmentEntry: string | null | undefined,
+  constants: Record<string, number> | undefined,
+  targets: readonly TextureFormat[],
+  renderState: MaterialRenderState | undefined,
+): { fragment?: RenderPipelineFragmentState } {
+  if (fragmentEntry === null) return {};
+  return {
+    fragment: {
+      module,
+      // The fixed legacy module predates fs_opaque; fs_main is output-equivalent.
+      entryPoint:
+        fragmentEntry === undefined || fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY
+          ? 'fs_main'
+          : fragmentEntry,
+      ...(constants === undefined ? {} : { constants }),
+      targets: targets.map((targetFormat, index) =>
+        materialColorTarget(targetFormat, renderState, index),
+      ),
+    },
+  };
+}
+
 interface MaterialAbiRasterPipelineInput {
   readonly artifact: MaterialShaderArtifact;
   readonly deformation: 'rigid' | 'skin';
-  readonly format: TextureFormat;
+  /** `null` is the colorless scene prepass: no color target. */
+  readonly format: TextureFormat | null;
   readonly sampleCount: 1 | 4;
   readonly layoutProjection: MeshGpuHandles['layoutProjection'];
   readonly shaderUvSetCount: number;
@@ -386,6 +420,7 @@ export function requestMaterialAbiRasterPipeline(
     : input.deformation === 'skin'
       ? 'gpu-driven-skin'
       : 'gpu-driven-pbr';
+  const surfaceDiscards = effectiveStandardSurfaceDiscards(artifact, input.standardSurfaceDiscards);
   return factory(
     artifact.specializationKey ?? artifact.material,
     false,
@@ -414,12 +449,15 @@ export function requestMaterialAbiRasterPipeline(
     sceneEntry,
     input.additionalColorFormats,
     artifact.vertexEntry,
-    artifact.fragmentEntry,
-    undefined,
-    materialAbiRasterConstants(
-      input.standardTextureMask,
-      effectiveStandardSurfaceDiscards(artifact, input.standardSurfaceDiscards),
+    colorlessFragmentEntry(
+      input.format === null,
+      artifact.variantSet,
+      receipt,
+      surfaceDiscards,
+      artifact.fragmentEntry,
     ),
+    undefined,
+    materialAbiRasterConstants(input.standardTextureMask, surfaceDiscards),
   );
 }
 
@@ -1574,7 +1612,7 @@ export class MaterialAbiRasterAdapter {
   }
 
   pipeline(
-    format: TextureFormat,
+    format: TextureFormat | null,
     sampleCount: 1 | 4,
     layoutProjection: MeshGpuHandles['layoutProjection'],
     shaderUvSetCount: number,
@@ -1643,9 +1681,16 @@ export class MaterialAbiRasterAdapter {
         ? undefined
         : effectiveStandardSurfaceDiscards(selectedArtifact, standardSurfaceDiscards);
     const constants = materialAbiRasterConstants(standardTextureMask, surfaceDiscards);
+    const fragmentEntry = colorlessFragmentEntry(
+      format === null,
+      selectedArtifact.variantSet,
+      receipt,
+      surfaceDiscards,
+      selectedArtifact.fragmentEntry,
+    );
     // Projection identity and shader UV count already determine the aliased
     // layout. Do not build a temporary GPU descriptor just to look up its PSO.
-    const key = `${format}:${additionalColorFormats.join(',')}|${sampleCount}|${layoutProjection.arrayStride}|${topology}|${stripIndexFormat ?? ''}|${JSON.stringify(pipelineRenderState ?? null)}|${selectedArtifact.material}|${selectedArtifact.layoutIdentity}|${receipt.receiptIdentity}|${receipt.generation}|${selectedArtifact.variantSet ?? ''}|${materialArtifactProgramIdentity(selectedArtifact)}|${selectedArtifact.vertexEntry ?? receipt.sceneIndexEntry}|${selectedArtifact.fragmentEntry ?? ''}|${layoutProjection.digest}|uv${pipelineUvSetCount}|textures=${standardTextureMask ?? ''}|discards=${surfaceDiscards ?? ''}`;
+    const key = `${String(format)}:${additionalColorFormats.join(',')}|${sampleCount}|${layoutProjection.arrayStride}|${topology}|${stripIndexFormat ?? ''}|${JSON.stringify(pipelineRenderState ?? null)}|${selectedArtifact.material}|${selectedArtifact.layoutIdentity}|${receipt.receiptIdentity}|${receipt.generation}|${selectedArtifact.variantSet ?? ''}|${materialArtifactProgramIdentity(selectedArtifact)}|${selectedArtifact.vertexEntry ?? receipt.sceneIndexEntry}|${legacyFragmentKey(fragmentEntry)}|${layoutProjection.digest}|uv${pipelineUvSetCount}|textures=${standardTextureMask ?? ''}|discards=${surfaceDiscards ?? ''}`;
     const sceneEntry =
       selectedArtifact.fragmentEntry === 'fs_temporal' ? 'vs_temporal' : receipt.sceneIndexEntry;
     if (sceneEntry === undefined)
@@ -1748,19 +1793,13 @@ export class MaterialAbiRasterAdapter {
           },
         ],
       },
-      fragment: {
-        module: program.module,
-        // The fixed legacy module predates fs_opaque; fs_main is output-equivalent.
-        entryPoint:
-          selectedArtifact.fragmentEntry === undefined ||
-          selectedArtifact.fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY
-            ? 'fs_main'
-            : selectedArtifact.fragmentEntry,
-        ...(constants === undefined ? {} : { constants }),
-        targets: [format, ...additionalColorFormats].map((targetFormat, index) =>
-          materialColorTarget(targetFormat, pipelineRenderState, index),
-        ),
-      },
+      ...legacyFragmentState(
+        program.module,
+        fragmentEntry,
+        constants,
+        format === null ? [] : [format, ...additionalColorFormats],
+        pipelineRenderState,
+      ),
       primitive: {
         topology,
         cullMode: pipelineRenderState?.cullMode ?? 'back',

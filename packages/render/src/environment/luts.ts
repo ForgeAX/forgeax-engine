@@ -18,29 +18,58 @@ import { atmosphereMediumKey, atmosphereStorage, stageAtmospherePublish } from '
 import {
   type AtmosphereVisibility,
   atmosphereVisibilityAccesses,
+  atmosphereVisibilityDirty,
   atmosphereVisibilityGroup,
   atmosphereVisibilityLayout,
 } from './visibility';
 
-export interface GraphAtmosphere {
-  readonly visibility: AtmosphereVisibility;
+export interface GraphAtmosphereTables {
   readonly transmittance: GraphTextureView;
   readonly multipleScattering: GraphTextureView;
   readonly skyView: GraphTextureView;
   readonly captureSky: GraphTextureView;
+}
+interface GraphAtmosphereCommon extends GraphAtmosphereTables {
+  readonly visibility: AtmosphereVisibility;
   readonly distantSkyLight: GraphTextureView;
-  readonly aerialPerspective: GraphTextureView;
-  readonly aerialTransmittance: GraphTextureView;
+}
+export type GraphAtmosphere = GraphAtmosphereCommon &
+  (
+    | {
+        readonly execution: 'compute-volume';
+        readonly aerialPerspective: GraphTextureView;
+        readonly aerialTransmittance: GraphTextureView;
+      }
+    | { readonly execution: 'fragment-cluster'; readonly packed: GraphTextureView }
+  );
+
+export function atmosphereTextures(atmosphere: GraphAtmosphere): GraphTextureView[] {
+  return [
+    atmosphere.transmittance,
+    atmosphere.multipleScattering,
+    atmosphere.skyView,
+    atmosphere.captureSky,
+    atmosphere.distantSkyLight,
+    ...(atmosphere.execution === 'compute-volume'
+      ? [atmosphere.aerialPerspective, atmosphere.aerialTransmittance]
+      : [atmosphere.packed]),
+    ...atmosphereVisibilityAccesses(atmosphere.visibility).map(({ resource }) => resource),
+  ];
 }
 
-export function atmosphereTextures({
-  visibility,
-  ...textures
-}: GraphAtmosphere): GraphTextureView[] {
-  return [
-    ...Object.values(textures),
-    ...atmosphereVisibilityAccesses(visibility).map(({ resource }) => resource),
-  ];
+/** Packed materials read group 2; only the native layout extends View with five textures. */
+export function atmosphereVolumeViews(
+  resources: import('@forgeax/engine-render-graph').GraphResourceResolver,
+  atmosphere: GraphAtmosphere | undefined,
+): import('./bindings').AtmosphereViews | undefined {
+  if (atmosphere?.execution !== 'compute-volume') return undefined;
+  return {
+    transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
+    multipleScattering: resources.textureView(atmosphere.multipleScattering).unwrap(),
+    distantSkyLight: resources.textureView(atmosphere.distantSkyLight).unwrap(),
+    aerialPerspective: resources.textureView(atmosphere.aerialPerspective).unwrap(),
+    aerialTransmittance: resources.textureView(atmosphere.aerialTransmittance).unwrap(),
+  };
 }
 
 /** Medium tables persist; camera-dependent tables belong to this camera graph. */
@@ -176,24 +205,6 @@ export function addAtmosphereLuts(
     const volume = stage.name === 'aerial_perspective';
     const usesVisibility = !stage.shared;
     const localVisibility = stage.name === 'sky_view' || volume ? visibility : {};
-    const visibilityDirty = (frame: RenderPipelineFrame) => {
-      if (localVisibility.cloud !== undefined) return true;
-      if (localVisibility.directional === undefined) return false;
-      const context = frame as _InternalRenderPipelineContext;
-      if (context.directionalShadowCacheMiss !== undefined) return true;
-      for (
-        let index = 0;
-        index < context.pipelineState.perPassResources.shadowCascadeCount;
-        index++
-      ) {
-        if (
-          context.gpuDrivenShadowViews?.invalidationReason({ kind: 'directional', index }) !==
-          undefined
-        )
-          return true;
-      }
-      return false;
-    };
     const parameters =
       stage.name === 'capture_sky_view' || stage.name === 'distant_sky_light'
         ? captureParameters
@@ -217,7 +228,8 @@ export function addAtmosphereLuts(
           : {
               executeIf: (frame: RenderPipelineFrame) =>
                 (frame as _InternalRenderPipelineContext).capturedAtmosphere === undefined &&
-                (visibilityDirty(frame) || submittedViewKey !== viewKey(frame)),
+                (atmosphereVisibilityDirty(frame, localVisibility) ||
+                  submittedViewKey !== viewKey(frame)),
             }),
       encodeDirect: (pass, frame, resources) => {
         if (state === undefined) {
@@ -379,6 +391,7 @@ export function addAtmosphereLuts(
     if (!pass.ok) return pass;
   }
   return ok({
+    execution: 'compute-volume',
     visibility,
     transmittance: transmittance.value,
     multipleScattering: multiple.value,

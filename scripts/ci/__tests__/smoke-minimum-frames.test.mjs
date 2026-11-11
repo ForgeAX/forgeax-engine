@@ -11,6 +11,39 @@ import {
 } from '../../test/ready-render-frame.mjs';
 import * as smoke from '../run-dawn-smoke-roster.mjs';
 
+test('scene acceptance keeps the same lease through preparation and GPU completion', async () => {
+  const { drawSceneFrame } = await import('../../test/ready-render-frame.mjs');
+  const scene = Object.freeze({ generation: 7 });
+  const requests = [];
+  let completed = 0;
+  const renderer = {
+    draw(request) {
+      assert.equal(completed, requests.length);
+      requests.push(request);
+      return {
+        ok: true,
+        value: {
+          frameId: requests.length,
+          presentation: requests.length === 1 ? 'pending' : 'ready',
+          completed: Promise.resolve().then(() => {
+            completed++;
+            return { ok: true };
+          }),
+        },
+      };
+    },
+  };
+  const receipt = await drawSceneFrame(renderer, scene);
+  assert.equal(receipt.frameId, 2);
+  assert.equal(completed, 2);
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.deepEqual(request.leases, [scene]);
+    assert.equal(request.camera.lease, scene);
+    assert.equal(request.environment.lease, scene);
+  }
+});
+
 const head = '0123456789abcdef0123456789abcdef01234567';
 const digest = 'a'.repeat(64);
 const identity = { gateId: 'budget/smoke', commandId: 'smoke' };

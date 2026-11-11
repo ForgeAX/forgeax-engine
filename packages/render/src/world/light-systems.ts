@@ -271,7 +271,7 @@ export function registerShadowSettlement(world: World): void {
     RENDER_SHADOW_COMMIT_SYSTEM,
     commitShadow,
     RENDER_RECORD_COMMIT_SYSTEM,
-    true,
+    'scene',
   );
   world
     .addSystem(RenderCleanup, {

@@ -267,13 +267,19 @@ export function prepareStandardLutGpu(
   return ok({ ...binding, sourceKey, strength: input.strength });
 }
 
+// Same sRGB-domain, texel-centre lookup as fs_tone_lut_encode (engine-shader tonemap.wgsl,
+// UE PostProcessCombineLUTs.usf:200-202,224); the transfer literals match common.wgsl.
 const LUT_STAGE_WGSL = /* wgsl */ `
 @group(1) @binding(0) var lut: texture_3d<f32>;
 @group(1) @binding(1) var lutSampler: sampler;
 @fragment fn color_stage_fs(input: VertexOutput) -> @location(0) vec4<f32> {
   let color = textureSampleLevel(source, sourceSampler, input.uv, 0.0);
-  let mapped = textureSampleLevel(lut, lutSampler, clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 0.0);
-  return vec4<f32>(mix(color.rgb, mapped.rgb, LUT_STRENGTH), color.a);
+  let c = clamp(color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+  let encoded = select(pow(c, vec3<f32>(0.41666)) * 1.055 - vec3<f32>(0.055), c * 12.92, c <= vec3<f32>(0.0031308));
+  let size = f32(textureDimensions(lut).x);
+  let g = textureSampleLevel(lut, lutSampler, encoded * ((size - 1.0) / size) + vec3<f32>(0.5 / size), 0.0).rgb;
+  let mapped = select(pow((g + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), g / 12.92, g <= vec3<f32>(0.04045));
+  return vec4<f32>(mix(color.rgb, mapped, LUT_STRENGTH), color.a);
 }`;
 
 /** Record a fullscreen 3D LUT sample into the same Standard graph. */

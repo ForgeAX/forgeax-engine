@@ -37,8 +37,8 @@ the GPU owner with a fresh epoch/baseline while retaining the source World ident
 World updates wait until the replacement is ready and has publication capacity.
 For confirmed device loss with resident meshes, wait for the receiver's bounded
 disposal acknowledgment before reusing the source World. Cleanup failure,
-timeout or transport loss remains fatal with `meshReleaseUnconfirmed`; do not
-infer GPU release from Worker termination.
+timeout or transport loss remains fatal with `meshReleaseUnconfirmed`; treat
+Worker termination as no evidence of GPU release.
 Recheck both together after asynchronous waits: loss clears the old queue before
 the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
@@ -141,7 +141,10 @@ const report = result.value.execution.report();
 World and Assets stay in the Engine Worker. With `render` enabled, a child owns
 Renderer/WebGPU; source plugins inject World/Assets and use bootstrap
 `configureRenderer` for GPU setup. Declare Feature implementations through the
-bootstrap. Logic N+1 overlaps render N; admission of N+2 waits for N's GPU receipt.
+bootstrap. Native Worker and Host display callbacks serve one frame demand; the
+first callback cancels the other lease. A delayed Worker clock does not hold a
+live Host clock, and frame credit, input sampling and time remain Host-owned.
+Logic N+1 overlaps render N; admission of N+2 waits for N's GPU receipt.
 Kernel workers receive eligible shared numeric spans, independently of render
 placement. Their initialization and module preflight inherit App `startupTimeoutMs`;
 the first source frame uses that same startup policy. Later source admissions retain
@@ -321,7 +324,7 @@ The frame loop reports a failed world update or draw through `app.onError`. It d
 Native startup Hosts with screen UI return `null` from `drawSource` until the
 existing root activation transaction commits. This submits UI-only pending frames
 even after shader initialization. Return `undefined` to admit the primary scene,
-and withdraw it on failure; do not infer readiness from Camera presence or opaque
+and withdraw it on failure; take readiness from this return value, not from Camera presence or opaque
 UI pixels. The same App loop keeps World updates, UI, input, and Reload alive.
 
 ```ts
@@ -466,7 +469,7 @@ await app.dispose();
 - `createApp` returns `Result`; handle `.ok`, `.error.code`, and `.error.hint` before starting.
 - `createRenderer` is lower level. A host using it directly owns `world.update(deltaSeconds)` and `renderer.draw` itself.
 - The app owns browser lifecycle and error fan-out; the World owns game scheduling and time.
-- A demo that freezes after migration exposes an engine or schedule integration failure. Do not add a demo-side callback or manual loop workaround.
+- A demo that freezes after migration exposes an engine or schedule integration failure. Fix the engine or schedule integration instead of a demo-side callback or manual loop.
 
 For exact option, Result, lifecycle, input, and renderer contracts, read `packages/app/README.md`, `packages/app/src/types.ts`, and `packages/app/src/internal/frame-loop.ts`.
 
@@ -479,8 +482,7 @@ report, tolerance, and structured error diagnostics. The schema is
 `packages/app/schema/simulation-inspection.schema.json`.
 
 App does not define record/schema/component state or restore policy. Preview and
-Remote only consume the summary through existing read/eval paths. Do not add
-restore/replay actions or transport raw World, Rapier, or Web Audio objects.
+Remote only consume the summary through existing read/eval paths. Expose only the summary; restore/replay actions and raw World, Rapier, or Web Audio objects stay out of transport.
 
 ## Plugin asset authoring
 

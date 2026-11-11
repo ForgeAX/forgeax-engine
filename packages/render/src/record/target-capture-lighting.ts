@@ -57,6 +57,17 @@ export function disposeTargetCaptures(owner: CubeCaptureGraphState): void {
   owner.work = [];
 }
 
+/** Capture-local lighting must reserve its own packed atmosphere region. */
+function prepareCaptureClusterExtent(view: CaptureLightingView): void {
+  const selected = view.state.environmentFrame?.source;
+  view.state.standardClusterTextureExtent =
+    !view.runtime.device.caps.storageBuffer &&
+    selected?.kind === 'atmosphere' &&
+    !selected.atmosphere.backgroundOnly
+      ? { width: 0, height: 0, atmosphere: true }
+      : undefined;
+}
+
 /** Cluster bounds, uniforms, membership and bindings belong to the captured camera. */
 interface CaptureLightingInput {
   readonly target: object;
@@ -163,6 +174,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       return view.pointsLinesView.buffer;
     },
   };
+  prepareCaptureClusterExtent(view);
   const prepared = prepareFrameLighting(
     view.runtime,
     view.state,

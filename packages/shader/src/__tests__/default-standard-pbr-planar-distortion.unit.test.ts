@@ -14,13 +14,13 @@ function body(name: string): string {
 }
 
 describe('Standard planar reflection normal distortion', () => {
-  it('reads the strength from the planar uniform and the tilt from the shading normal', () => {
+  it('projects the shading-normal reflection ray at the uniform radius (Unreal virtual sphere)', () => {
     const specular = body('standardPlanarSpecular');
-    // Only the tilt away from the plane displaces the lookup; a flat normal is a mirror.
+    // A flat normal's reflected ray runs along the mirror eye's line, so it lands on uv.
     expect(specular).toContain(
-      'shadingNormal - planar.plane.xyz * dot(shadingNormal, planar.plane.xyz)',
+      'position + reflect(-v, shadingNormal) * planar.enabledAndPadding.y',
     );
-    expect(specular).toContain('normalize(to) * length(tilt) * planar.enabledAndPadding.y');
+    expect(specular).toContain('let probe = planar.viewProjection *');
   });
 
   it('keeps plane membership on the geometric normal and distorts with the shading normal', () => {
@@ -28,11 +28,11 @@ describe('Standard planar reflection normal distortion', () => {
     expect(specular).toContain('dot(normal, planar.plane.xyz) < 0.999');
     // Off-screen fragments keep the environment; the distorted lookup stays inside the capture.
     expect(specular.indexOf('any(uv > vec2<f32>(1.0))')).toBeLessThan(
-      specular.indexOf('var lookup'),
+      specular.indexOf('let lookup'),
     );
     expect(specular).toContain('clamp(lookup, vec2<f32>(0.0), vec2<f32>(1.0))');
     expect(shader).toContain(
-      'standardPlanarSpecular(in.worldPos, geometricNormal, physicalNormal, iblRoughness',
+      'standardPlanarSpecular(in.worldPos, geometricNormal, physicalNormal, v, iblRoughness',
     );
   });
 

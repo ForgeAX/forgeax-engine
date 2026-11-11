@@ -258,6 +258,7 @@ export {
   TONEMAP_NONE,
   TONEMAP_REINHARD,
   TONEMAP_REINHARD_EXTENDED,
+  TONEMAP_UE_FILMIC,
   TRANSPARENCY_SORTED,
   TRANSPARENCY_WEIGHTED_BLENDED,
   validateCameraBloom,
@@ -415,6 +416,7 @@ export {
   MeshResidencyError,
   validateDynamicGeometryMeshBudget,
 } from './dynamic-geometry.js';
+export { resolveEntityMaterialHandles } from './entity-materials.js';
 // The environment selector owns this structured recovery error. Keep the
 // class on the public environment path so consumers can branch by `code` and
 // inspect its typed `detail` without importing an owner-private module.

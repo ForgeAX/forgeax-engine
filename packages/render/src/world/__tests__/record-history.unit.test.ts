@@ -1,5 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CameraSnapshot } from '../../render-contract';
 import { adoptViewRecordHistory, viewRecordHistory } from '../record-history';
 import { RenderViewInput, RenderViews, recordViewSubmission, ViewRecorder } from '../render-views';
@@ -44,7 +44,16 @@ function setup(removed = false) {
   const entity = views.ordered[0] as NonNullable<(typeof views.ordered)[0]>;
   adoptViewRecordHistory(world, entity);
   const owner = {
-    internals: { errorRegistry: { fire: () => {} } },
+    frameState: {
+      directionalShadowCache: null,
+      compiledFrameGraph: null,
+      graphGeneration: 0,
+    },
+    internals: {
+      errorRegistry: { fire: vi.fn() },
+      getPipelineState: () => null,
+      deviceScope: { generation: 3 },
+    },
     scene: { discardTemporalFrame: () => {} },
   };
   const state = world.allocUniqueRef('ViewRecorder', { owner });
@@ -57,7 +66,7 @@ function setup(removed = false) {
     history.stage({
       frame,
       generation: 3,
-      attempt: { submitted: true, outcome: undefined } as never,
+      attempt: { submitted: true, sceneSubmitted: false, outcome: undefined } as never,
       accepted,
       failure: undefined,
       ownsProfileFrame: false,
@@ -75,7 +84,7 @@ function setup(removed = false) {
       temporal: false,
     });
   };
-  return { world, history, record };
+  return { world, history, record, errors: owner.internals.errorRegistry.fire };
 }
 
 describe('record history', () => {
@@ -91,9 +100,10 @@ describe('record history', () => {
 
   it('counts and publishes an accepted attempt only through the commit system', () => {
     const run = (removed: boolean, accepted = true) => {
-      const { world, history, record } = setup(removed);
+      const { world, history, record, errors } = setup(removed);
       record(accepted, 1);
       endRenderFrame(world);
+      expect(errors).not.toHaveBeenCalled();
       return history;
     };
     const committed = run(false);

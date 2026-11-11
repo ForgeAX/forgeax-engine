@@ -30,9 +30,75 @@ import type {
   RenderSceneResyncReason,
   RenderSceneSlot,
 } from './render-scene-types';
+import type { RowContent } from './row-contents';
 import { SceneRows, type WorldTransformSpan } from './scene-rows';
 import { SceneSlotFrame } from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
+
+/** Captured native columns; this delegates to existing Mesh binding ownership, never a row cache. */
+class SceneSurfaceRows {
+  constructor(
+    readonly source: SceneSlotFrame,
+    private readonly meshes: MeshFrame,
+    private readonly materials?: MaterialFrame,
+    private readonly unavailable?: FrameSet,
+  ) {
+    Object.freeze(this);
+  }
+
+  /**
+   * Whether `read` hands every index the same identity, content and materials
+   * as `other` and raises the same material judgement; poses are not compared.
+   */
+  readsSameContent(other: SceneSurfaceRows): boolean {
+    return (
+      this.source.contentEpoch !== undefined &&
+      this.source.contentEpoch === other.source.contentEpoch &&
+      this.source.identities === other.source.identities &&
+      this.meshes === other.meshes &&
+      this.materials === other.materials &&
+      this.unavailable === other.unavailable
+    );
+  }
+
+  read<T>(
+    index: number,
+    read: (
+      worldId: number,
+      entityKey: number,
+      content: RowContent | undefined,
+      materials: Pick<RenderableSnapshot, 'material' | 'materials'> | undefined,
+    ) => T,
+  ): T {
+    let found = false;
+    const result = this.source.readContentAt(index, (content, worldId, entityKey, slot) => {
+      found = true;
+      const pending = this.unavailable?.has(slot) === true;
+      const materials = pending ? content : meshDrawMaterials(content, this.meshes, worldId);
+      // The old temporal projector validates accepted materials before judging a contributor.
+      if (!pending && this.materials !== undefined && content.authorVisible !== false)
+        hasDisplacementSource(materials, this.materials);
+      return read(worldId, entityKey, content, materials);
+    });
+    return found ? (result as T) : read(-1, -1, undefined, undefined);
+  }
+}
+
+// Producer projection ownership only; no row, contributor, or result is cached here.
+const surfaceProjectionOwners = new WeakMap<FrameList<RenderableSnapshot>, SceneSurfaceRows>();
+
+/** Custom/overridden indexed projections retain their exact ordinary at call. */
+export function sceneSurfaceRowsOf(
+  list: FrameList<RenderableSnapshot>,
+  at: unknown,
+): SceneSurfaceRows | undefined {
+  const reader = FrameProjection.rowReaderOf(list, at);
+  return reader instanceof SceneSurfaceRows &&
+    surfaceProjectionOwners.get(list) === reader &&
+    SceneSlotFrame.hasNativeAt(reader.source)
+    ? reader
+    : undefined;
+}
 
 /** One view's prepared submission: its rows revision and the slots it drew visible. */
 export interface RenderSceneSubmissionCapture {
@@ -329,15 +395,19 @@ export class RenderScene {
   materialize(): FrameList<RenderableSnapshot> {
     const current = this.frame,
       meshes = this.meshes;
-    if (this.materialized?.value.source !== current || this.materialized.meshes !== meshes)
+    if (this.materialized?.value.source !== current || this.materialized.meshes !== meshes) {
+      const reader = new SceneSurfaceRows(current, meshes);
       this.materialized = {
         meshes,
         value: new RetainedFrameProjection(
           current,
           (record) => meshDrawSnapshot(record.snapshot, meshes),
           this.rows.rowFacts(current, meshes),
+          reader,
         ),
       };
+      surfaceProjectionOwners.set(this.materialized.value, reader);
+    }
     return this.materialized.value;
   }
 
@@ -437,14 +507,17 @@ export class RenderScene {
     };
     // The temporal row keeps its draw projection's LOD levels, so the Scene's
     // maintained facts hold; sparse rows yield the same temporal projection.
+    const reader = new SceneSurfaceRows(current, meshes, materials, unavailable);
     const value =
       unavailable === undefined
         ? new RetainedFrameProjection(
             current,
             project,
             this.rows.rowFacts(current, meshes, project),
+            reader,
           )
-        : new FrameProjection(current, project);
+        : new FrameProjection(current, project, reader);
+    surfaceProjectionOwners.set(value, reader);
     this.temporalMaterialized = {
       current,
       history,
@@ -578,7 +651,9 @@ export class RenderScene {
   private temporalSnapshot(
     slot: RenderSceneSlot,
     resetHistory = false,
-    displacementSource = hasDisplacementSource(meshDrawMaterials(slot.snapshot, this.meshes)),
+    displacementSource = hasDisplacementSource(
+      meshDrawMaterials(slot.snapshot, this.meshes, slot.worldId),
+    ),
   ): RenderableTemporalSnapshot {
     return createTemporalSnapshot(slot, resetHistory, this.frame, this.history, displacementSource);
   }

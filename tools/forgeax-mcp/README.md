@@ -59,8 +59,11 @@ Top-level View access therefore does not imply annotation access inside every ch
 
 Simulation readiness follows the retained native Host and project-session owners,
 not the header status that also describes project restoration. Require the
-expected project, its published target and no pending recovery or error within
-the existing startup budget; retain the complete Scene, Play and lifecycle gates.
+expected project's target publication within 180 seconds, then lock that target
+and wait at most 120 seconds for its running phase and completed restoration.
+Starting observations never renew the deadline; failed, lost or replaced targets
+reject the wait. Owner-state polling does not depend on animation frames. Retain
+the complete Scene, Play and lifecycle gates.
 
 Simulation evidence must record the carrier's `srcdoc`, sandbox and CSP conditions.
 It qualifies that adapter path; actual Codex behavior still requires native

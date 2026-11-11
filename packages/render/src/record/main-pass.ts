@@ -107,6 +107,8 @@ export type MainPassOptions = {
   readonly fragmentEntryPoint?: string;
   /** Select the material temporal entry's binary coverage output. */
   readonly coverageOnly?: boolean;
+  /** The loaded depth is the exact prepass raster of this pass's opaque draws. */
+  readonly seededDepth?: boolean;
   readonly gpuDriven?: {
     readonly projection: RenderPipelineGpuDrivenProjection;
     readonly resources: GraphResourceResolver;
@@ -267,6 +269,7 @@ export function prepareMainPassPipelineDemand(
       msaaActive: sampleCount === 4,
       viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset ?? 0,
       transparentDepthWrite: options.transparentDepthWrite ?? false,
+      seededDepth: options.seededDepth === true,
       oit: oitPhaseForRecordMode(mode),
       ...(options.fragmentEntryPoint === undefined
         ? {}
@@ -581,6 +584,7 @@ export function encodeMainPass(
         matchPass(preparedPass.tags, passSelector) &&
         (recordMode === undefined || matchesRecordMode(material, recordMode)),
       (entry, index) => preparationSubmeshExcluded(entry, index, options?.excludeSelector),
+      options?.seededDepth === true,
     );
   };
   // The late occlusion pass only adds GPU items the HZB revealed; the CPU
@@ -1231,6 +1235,7 @@ function encodeGpuDrivenBatches(
     }),
     options.coverageOnly ?? false,
     gpuDriven.phase ?? 'all',
+    options.seededDepth === true,
   );
 }
 

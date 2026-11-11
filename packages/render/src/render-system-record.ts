@@ -216,16 +216,8 @@ export function prepareRecordScene(
   frame: ExtractedFrame,
   view: RecordView,
 ) {
-  const { cameras, lights } = view;
+  const { cameras } = view;
   const shadowCasterProjection = owner.scene.shadowCasterProjection();
-  const directionalShadow = viewRecordHistory(
-    renderWorldFor(owner.internals),
-    owner.internals.viewEntity,
-  )?.directionalShadow;
-  if (directionalShadow !== undefined) {
-    directionalShadow.candidate = 'failed';
-    directionalShadow.error = lights.directionalShadowError;
-  }
   // `view-reflection-probes` prepared this view's probes and SSR dependencies in RenderPrepare.
   const { probes: reflectionProbes, ssr: ssrDependencies } = consumeViewReflectionProbes(
     renderWorldFor(owner.internals),

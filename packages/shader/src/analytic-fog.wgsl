@@ -14,7 +14,9 @@
   let size = textureDimensions(scene_depth);
   let pixel = clamp(vec2<i32>(input.position.xy), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1));
   let depth = textureLoad(scene_depth, pixel, 0);
-  // The authored sky remains its own background; only finite scene surfaces receive fog.
+  // This pass runs only without an Atmosphere: the authored background is not
+  // fogged, only finite scene surfaces are. With an Atmosphere, the compose pass
+  // owns fog, including distant fog over the sky.
   if depth <= 0.0 { discard; }
   let ndc = vec4<f32>(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0, depth, 1.0);
   let projected = fog_view.inverseViewProj * ndc;

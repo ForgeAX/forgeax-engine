@@ -24,6 +24,7 @@ export function compatibilityLaunch(defaults, phase, env = process.env) {
       '--enable-unsafe-webgpu',
       '--enable-features=Vulkan',
       '--use-vulkan=swiftshader',
+      '--use-angle=swiftshader',
       '--autoplay-policy=no-user-gesture-required',
     ],
   };

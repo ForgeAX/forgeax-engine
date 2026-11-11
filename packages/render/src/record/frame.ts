@@ -42,7 +42,7 @@ import {
   shadowMeshInputCurrent,
   shadowMeshReadsForQuery,
 } from './directional-shadow-cache';
-import { directionalShadowSimpleRequest } from './directional-shadow-simple';
+import { directionalShadowSimple, leanLightingFrame } from './directional-shadow-simple';
 import {
   buildDispatchPlan,
   cleanPerFrameCaches,
@@ -2211,7 +2211,13 @@ function standardClusterTextureExtentForGraph(
   captureOnly: boolean,
 ): RenderFrameState['standardClusterTextureExtent'] {
   const installedGraph = frameState.compiledFrameGraph;
-  if (captureOnly || installedGraph?.graph !== preflightGraph) return undefined;
+  const environment = frameState.environmentFrame?.source;
+  const atmosphere =
+    !internals.device.caps.storageBuffer &&
+    environment?.kind === 'atmosphere' &&
+    !environment.atmosphere.backgroundOnly;
+  if (captureOnly || installedGraph?.graph !== preflightGraph)
+    return atmosphere ? { width: 0, height: 0, atmosphere: true } : undefined;
   const atlas = installedGraph.targets.getColorTargetDescriptor('forward-screen-data');
   const screen =
     atlas === undefined
@@ -2222,11 +2228,12 @@ function standardClusterTextureExtentForGraph(
     frameState.installedPipelineConfig?.ssao?.enabled === true
       ? installedGraph.targets.getColorTargetDescriptor('ssao-raw')
       : undefined;
-  if (ao === undefined && screen === undefined) return undefined;
+  if (ao === undefined && screen === undefined && !atmosphere) return undefined;
   return {
     width: ao?.size.width ?? 0,
     height: ao?.size.height ?? 0,
     ...(screen === undefined ? {} : { screen }),
+    ...(atmosphere ? { atmosphere: true } : {}),
   };
 }
 
@@ -2642,7 +2649,8 @@ export function sealFrameGraph(
     hdrpClusterBindGroup,
     hdrpClusterMembershipBindGroup,
     standardLighting: standard,
-    directionalShadowSimple: directionalShadowSimpleRequest(
+    directionalShadowSimple: directionalShadowSimple(lights),
+    leanLighting: leanLightingFrame(
       lights,
       frameState.environmentFrame?.source.kind,
       cloudShadowProjection,

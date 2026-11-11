@@ -563,6 +563,7 @@ export function recordGeometryDraws(
     material: MaterialSnapshot,
   ) => boolean,
   skipPreparationDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
+  seededDepth = false,
 ): void {
   const recordPresented = createFoldedDrawRecorder(c);
   const {
@@ -631,6 +632,7 @@ export function recordGeometryDraws(
       msaaActive,
       viewBindGroupDynamicOffset,
       transparentDepthWrite,
+      seededDepth,
       oit,
     },
     (action) => profileGeometrySegment(c, passKind, 'pipeline-selection', action),
@@ -747,6 +749,7 @@ export function recordGeometryDraws(
         msaaActive,
         viewBindGroupDynamicOffset,
         transparentDepthWrite,
+        seededDepth,
         oit,
         ...(fragmentEntryPoint === undefined ? {} : { fragmentEntryPoint }),
       },

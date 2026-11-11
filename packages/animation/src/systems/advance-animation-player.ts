@@ -885,13 +885,13 @@ function writeAccumulator(
   acc: JointAccumulator,
   scratch: PoseScratch,
 ): void {
-  const { pos, quat, scale } = scratch;
+  const { pos, quat, scale, stored } = scratch;
   let fields = 0;
   if (acc.sumWPos > 0) {
     pos[0] = acc.posX / acc.sumWPos;
     pos[1] = acc.posY / acc.sumWPos;
     pos[2] = acc.posZ / acc.sumWPos;
-    if (transformValuesChanged(world, target, 'pos', pos)) {
+    if (transformValuesChanged(world, target, 'pos', pos, stored)) {
       fields |= 1;
     }
   }
@@ -906,7 +906,7 @@ function writeAccumulator(
       quat[1] = qy / len;
       quat[2] = qz / len;
       quat[3] = qw / len;
-      if (transformValuesChanged(world, target, 'quat', quat)) {
+      if (transformValuesChanged(world, target, 'quat', quat, stored)) {
         fields |= 2;
       }
     }
@@ -915,7 +915,7 @@ function writeAccumulator(
     scale[0] = acc.scaleX / acc.sumWScale;
     scale[1] = acc.scaleY / acc.sumWScale;
     scale[2] = acc.scaleZ / acc.sumWScale;
-    if (transformValuesChanged(world, target, 'scale', scale)) {
+    if (transformValuesChanged(world, target, 'scale', scale, stored)) {
       fields |= 4;
     }
   }
@@ -928,18 +928,16 @@ function transformValuesChanged(
   target: EntityHandle,
   field: 'pos' | 'quat' | 'scale',
   values: number[],
+  stored: Float32Array,
 ): boolean {
-  const read = world[worldRead];
-  if (read.getArrayLength(target, Transform, field) !== values.length) return true;
+  // One column lookup per field; an absent array or a count other than
+  // `values.length` (including one too large for `stored`) reads as changed.
+  if (world[worldRead].copyArray(target, Transform, field, stored) !== values.length) return true;
   // Compare the f32 destination, including negative zero, so external author
   // writes are restored even when clip time has not moved.
   for (let index = 0; index < values.length; index++) {
     const value = values[index] as number;
-    if (
-      Number.isNaN(value) ||
-      !Object.is(read.getArrayElement(target, Transform, field, index), Math.fround(value))
-    )
-      return true;
+    if (Number.isNaN(value) || !Object.is(stored[index], Math.fround(value))) return true;
   }
   return false;
 }
@@ -997,6 +995,8 @@ interface PoseScratch {
   readonly pos: number[];
   readonly quat: number[];
   readonly scale: number[];
+  /** Destination readback for `transformValuesChanged`; holds the largest Transform vector. */
+  readonly stored: Float32Array;
   readonly partials: readonly { pos?: number[]; quat?: number[]; scale?: number[] }[];
 }
 
@@ -1017,6 +1017,7 @@ function createPoseScratch(): PoseScratch {
     pos,
     quat,
     scale,
+    stored: new Float32Array(4),
     partials: [
       {},
       { pos },

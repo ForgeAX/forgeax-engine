@@ -87,6 +87,30 @@ describe('startup overlay fade', () => {
     }
   });
 
+  it('keeps the game UI interactive when an App binds or unbinds after the first frame', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const page = fixture();
+    const gameUi = document.querySelector<HTMLElement>('#game-ui');
+    if (gameUi === null) throw new Error('startup document is missing #game-ui');
+    try {
+      expect(gameUi.inert).toBe(true);
+      page.present(1);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(gameUi.inert).toBe(false);
+      const late: boolean[] = [];
+      const unbind = page.startup.bindInput((enabled: boolean) => late.push(enabled));
+      expect(late).toEqual([true]);
+      expect(gameUi.inert).toBe(false);
+      unbind();
+      expect(late).toEqual([true, false]);
+      expect(gameUi.inert).toBe(false);
+      expect(page.inputSignal()).toBe('open');
+    } finally {
+      page.startup.destroy();
+    }
+    expect(gameUi.inert).toBe(false);
+  });
+
   it('closes input again when a replacement device cancels the fade', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const page = fixture();

@@ -14,7 +14,7 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { MorphWeights, propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { createStandardPbrArtifactReceipt, MaterialArtifactRegistry } from '@forgeax/engine-shader';
 import { type MaterialAsset, ok, type ShaderEntryPointReads } from '@forgeax/engine-types';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import { installMaterialReadyShaders } from '../../../assets-runtime/src/material/runtime-shader';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
@@ -36,6 +36,7 @@ import { SceneDataUnavailableError } from '../errors/render';
 import type { RenderFeature } from '../features/types';
 import { Materials } from '../materials';
 import { extractFrames } from '../render-system-extract-tail';
+import { SceneSlotFrame } from '../scene/scene-slots';
 import {
   SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
@@ -1774,7 +1775,12 @@ it.each([
     });
     expect(producerIndex).toBeGreaterThanOrEqual(0);
     expect(consumerIndex).toBeGreaterThan(producerIndex);
-    expect(passNames).not.toContain('standard-scene-surface-data');
+    // Forward keeps its depth prepass and seeds `main` with AO off (UE
+    // ShouldForceFullDepthPass); only the AO passes drop out.
+    expect(passNames).toContain('standard-scene-surface-data');
+    expect(passNames.indexOf('forward-depth-seed')).toBeGreaterThan(
+      passNames.indexOf('standard-scene-surface-data'),
+    );
     expect(passNames).not.toContain('ssao-calc');
     expect(passNames).not.toContain('ssao-blur');
     expect(passNames).not.toContain('gtao-calc');
@@ -1939,13 +1945,9 @@ it('reports a wrapped invalid AO radius and recovers the active GTAO graph', asy
       status: 'off',
     });
     const disabledPassNames = fixture.renderer.inspect().output.graphPassNames;
-    for (const passName of [
-      'standard-scene-surface-data',
-      'ssao-calc',
-      'ssao-blur',
-      'gtao-calc',
-      'gtao-blur',
-    ]) {
+    // The depth prepass stays for `main` (UE ShouldForceFullDepthPass); only
+    // the AO passes leave the graph.
+    for (const passName of ['ssao-calc', 'ssao-blur', 'gtao-calc', 'gtao-blur']) {
       expect(disabledPassNames).not.toContain(passName);
     }
 
@@ -2003,6 +2005,38 @@ it('returns producer-missing from a real camera-less Renderer view', async () =>
     expect(fixture.renderer.inspect().output.graphPassNames).not.toContain(
       'standard-scene-surface-data',
     );
+  } finally {
+    await fixture.host.dispose();
+  }
+});
+
+it('repeats the admitted SceneData walk across consecutive World pose publications', async () => {
+  const catalogs: SceneDataCatalog[] = [];
+  const feature = sceneDataConsumer(
+    () => {},
+    () => {},
+    { onCatalog: (catalog) => catalogs.push(catalog) },
+  );
+  const fixture = await createSceneDataRuntime(feature);
+  try {
+    await completeSceneDataFrame(fixture);
+    await completeSceneDataFrame(fixture);
+    const read = vi.spyOn(SceneSlotFrame.prototype, 'readContentAt');
+    try {
+      for (let frame = 1; frame <= 3; frame++) {
+        fixture.world.set(fixture.entity, Transform, { pos: [frame / 10, 0, 0] }).unwrap();
+        fixture.update();
+        read.mockClear();
+        await completeSceneDataFrame(fixture);
+        expect(read).not.toHaveBeenCalled();
+        expect(catalogs.at(-1)?.inspect(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA).status).toBe(
+          'available',
+        );
+      }
+    } finally {
+      read.mockRestore();
+    }
+    expect(fixture.errors).toEqual([]);
   } finally {
     await fixture.host.dispose();
   }

@@ -134,7 +134,8 @@ export function buildFrameGpuDrivenInput(
     shadowCasterProjection,
     sources.profilePhase,
     standard.prepared.renderPath === 'deferred',
-    directionalShadowSimple(sources.lights) && sources.leanLighting === true,
+    directionalShadowSimple(sources.lights),
+    sources.leanLighting === true,
   );
   return {
     meshes,

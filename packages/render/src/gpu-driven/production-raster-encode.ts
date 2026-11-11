@@ -324,6 +324,7 @@ export interface RasterEncodeCall {
   readonly filter: RenderPipelineGpuDrivenFilter | undefined;
   readonly fragmentEntryPoint: string | undefined;
   readonly coverageOnly: boolean;
+  readonly seededDepth: boolean;
   readonly phase: GpuDrivenDrawPhase;
   readonly colorFormats: readonly TextureFormat[];
   /** Actual graph-pass samples; raw projections may retain their declared target count. */

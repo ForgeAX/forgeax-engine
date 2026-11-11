@@ -41,6 +41,8 @@ import {
   type ShadowLayerWork,
   sameShadowCandidates,
 } from './shadow-layer-projection';
+import { ShadowPlanChanges } from './shadow-plan-changes';
+import { memoizedPlanPair } from './shadow-projection-publication';
 import {
   captureShadowViewIdentity,
   shadowViewIdentityKey as identityKey,
@@ -628,6 +630,12 @@ function sameLod(left: GpuDrivenBatch['lod'], right: GpuDrivenBatch['lod']): boo
 
 /** Once shader-read content is proven equal, physical material addresses are not depth facts. */
 function sameShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
+  return a === b || memoizedPlanPair(executionVerdicts, a, b, compareShadowExecution);
+}
+
+const executionVerdicts = new WeakMap<SubmissionPlan, WeakMap<SubmissionPlan, boolean>>();
+
+function compareShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
   if (a.batches.length !== b.batches.length) return false;
   return a.batches.every((left, index) => {
     const right = b.batches.at(index);
@@ -996,6 +1004,7 @@ function partialStaticRects(
   retainedContent: SceneContentCursor,
   plan: SubmissionPlan,
   drawn: (plan: SubmissionPlan) => ShadowDrawnSlots,
+  changes: ShadowPlanChanges<ShadowPreparationCounters>,
 ): readonly ShadowDirtyRect[] | undefined {
   if (
     input.identity.layer !== 'static' ||
@@ -1021,9 +1030,8 @@ function partialStaticRects(
     drawn(previous.submission.plan),
   );
   if (changedContent === 'unbounded') return undefined;
-  const changed = new Set<number>();
-  changedPrimitives(previous.submission.plan, plan, changed, previous.preparation);
-  const changedDraws = scene.slotBoundsSince(retainedContent, changed);
+  const changed = changes.between(previous.submission.plan, plan, previous.preparation);
+  const changedDraws = changes.boundsSince(scene, retainedContent, changed);
   if (changedDraws === 'unbounded') return undefined;
   return shadowDirtyRects(input.matrix, [changedContent, changedDraws]);
 }
@@ -1208,6 +1216,10 @@ export class ShadowViewStatePool {
   >();
   /** Slots each projected plan draws; fixed projections publish theirs. */
   private drawnByPlan = new WeakMap<SubmissionPlan, ShadowDrawnSlots>();
+  /** Plan-pair content differences and their boxes, shared by views of one plan. */
+  private readonly planChanges = new ShadowPlanChanges<ShadowPreparationCounters>(
+    changedPrimitives,
+  );
   /** One plan object per projection; a replaced view takes a fresh one. */
   private planByProjection = new WeakMap<ShadowLayerProjection, SubmissionPlan>();
   private readonly activeKeys = new Set<string>();
@@ -1277,6 +1289,7 @@ export class ShadowViewStatePool {
             retainedContent ?? previous.contentCursor,
             selection.plan,
             (plan) => this.drawnSlots(plan),
+            this.planChanges,
           );
     return this.rebuild(
       key,
@@ -1637,9 +1650,17 @@ export class ShadowViewStatePool {
     const scene = input.scene;
     let adopted = previous.submission.plan;
     if (plan !== previous.submission.plan) {
-      const changed = new Set<number>();
-      changedPrimitives(previous.submission.plan, plan, changed, previous.preparation);
-      if (!boundsMissView(previous.planes, scene.slotBoundsSince(retainedContent, changed))) {
+      const changed = this.planChanges.between(
+        previous.submission.plan,
+        plan,
+        previous.preparation,
+      );
+      if (
+        !boundsMissView(
+          previous.planes,
+          this.planChanges.boundsSince(scene, retainedContent, changed),
+        )
+      ) {
         // Physical source changes were rejected before this content check.
         // A replaced plan changes drawn content, whose old/new bounds still
         // permit a partial static redraw, including casters now drawn dynamically.
@@ -2109,6 +2130,7 @@ export class ShadowViewStatePool {
 
   dispose(): void {
     this.drawnByPlan = new WeakMap();
+    this.planChanges.clear();
     this.planByProjection = new WeakMap();
     const views = new Set([...this.records.values()].map((record) => record.submission.view));
     for (const view of views) view.dispose();

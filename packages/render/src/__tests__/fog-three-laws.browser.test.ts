@@ -143,6 +143,7 @@ const BASE: FogFrame = {
   mode: 'exp',
   near: 65,
   far: 125,
+  skyOpacity: 1,
 };
 
 it('evaluates the Three.js linear and exp2 fog laws on the GPU over view depth', async () => {

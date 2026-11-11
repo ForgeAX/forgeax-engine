@@ -29,6 +29,43 @@ export function effectiveStandardSurfaceDiscards(
     : undefined;
 }
 
+/** Color target of a raster class; an empty attachment set is the colorless scene prepass. */
+export function rasterColorFormat<F extends string>(formats: readonly F[], fallback: F): F | null {
+  if (formats.length === 0) return null;
+  return formats[0] ?? fallback;
+}
+
+/** `null` asks the material PSO factory for no color attachment. */
+export function colorlessFormat<F extends string>(
+  colorless: boolean,
+  format: F | undefined,
+): F | null | undefined {
+  return colorless ? null : format;
+}
+
+/**
+ * Fragment entry of a colorless scene prepass (UE DepthPass PositionOnly).
+ * `null` drops the fragment stage when no coverage source can discard, so the
+ * shared invariant vertex stage alone writes the same depth. Alpha mask, a
+ * custom Surface, material clipping, LOD dither and view clipping keep it.
+ */
+export function colorlessFragmentEntry(
+  colorless: boolean,
+  variantSet: string | undefined,
+  receipt: MaterialShaderArtifact['receipt'],
+  surfaceDiscards: number | undefined,
+  fragmentEntry: string | undefined,
+): string | null | undefined {
+  return colorless &&
+    variantSet?.includes('ALPHA_MASK=false') === true &&
+    receipt !== undefined &&
+    receipt.surface === undefined &&
+    !receipt.materialRow.fields.includes('clippingControl') &&
+    surfaceDiscards === 0
+    ? null
+    : fragmentEntry;
+}
+
 /** Only a View with proven shadow demand (or its absence) specializes reception. */
 export function effectiveStandardShadowReception(
   artifact: MaterialShaderArtifact | undefined,

@@ -81,6 +81,10 @@ describe('post shader color-domain contract', () => {
     );
     expect(functionBody(code, 'encodeFinal')).toContain('ditherUnorm8(encoded.rgb, position.xy)');
     expect(code.indexOf('fn fs_tone_only')).toBeLessThan(code.indexOf('fn fs_encode_only'));
+    // Display LUT: sRGB index at texel centres (UE PostProcessCombineLUTs.usf:200-202).
+    expect(functionBody(code, 'fs_tone_lut_encode')).toContain('sampleOutputLut(toned.rgb)');
+    expect(functionBody(code, 'sampleOutputLut')).toContain('linearToSrgbOetf(');
+    expect(functionBody(code, 'sampleOutputLut')).toContain('(size - 1.0) / size');
   });
 
   it('keeps the sole OETF free of software precision emulation', () => {

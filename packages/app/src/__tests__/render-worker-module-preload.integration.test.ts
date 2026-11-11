@@ -11,6 +11,7 @@ import type {
   HostToEngineMessage,
 } from '../execution/protocol';
 import type { RenderWorkerInput, RenderWorkerOutput } from '../execution/render-worker-protocol';
+import type { ExecutionDiagnosticsOptions } from '../execution/types';
 import { workerSelection } from './execution-fixtures';
 
 function deferred<T>() {
@@ -245,7 +246,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   receive = null;
 });
-async function launch(kernels = false): Promise<void> {
+async function launch(kernels = false, diagnostics?: ExecutionDiagnosticsOptions): Promise<void> {
   await import('../execution/engine-worker-runtime');
   receive = globalThis.onmessage as typeof receive;
   receive?.({
@@ -255,6 +256,7 @@ async function launch(kernels = false): Promise<void> {
       canvas: {},
       bootstrapUrl: 'fixture://root',
       workers: workerSelection({ engine: true, render: true, kernels }),
+      ...(diagnostics === undefined ? {} : { diagnostics }),
     },
   } as MessageEvent<HostToEngineMessage>);
   await state.rootEntered?.promise;
@@ -269,7 +271,7 @@ function worker(): CpuModuleWorker {
 }
 
 it('bounds World updates by sealed publications, including pictures not yet submitted', async () => {
-  await launch();
+  await launch(false, { renderPipelineCapacity: 2 });
   const child = worker();
   child.openModuleGate();
   await child.loaded.promise;

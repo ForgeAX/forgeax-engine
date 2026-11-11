@@ -197,6 +197,7 @@ export function createBrowserProject() {
     ['packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts', []],
     ['packages/runtime/src/__tests__/optional-pipeline-library.browser.test.ts', []],
     ['packages/render/src/__tests__/gpu-driven-stable-command-addresses.browser.test.ts', []],
+    ['packages/render/src/__tests__/transient-scene-taa.browser.test.ts', []],
     ['packages/render/src/record/__tests__/indirect-bundle-retirement.browser.test.ts', []],
     ['packages/app/__tests__/engine-worker-asset-loss.browser.test.ts', []],
     ['packages/app/src/__tests__/auto-exposure-webgl2.browser.test.ts', []],
@@ -291,7 +292,7 @@ export function createBrowserProject() {
         // The complete guide loads its ordinary controller through a runtime URL.
         // Discover its dependencies before that import can reload a running test.
         ...(include.some((file) => file.includes('*') || file.startsWith('packages/ui-blitz/'))
-          ? ['templates/game-3d/assets/ui/guide-controller.ts']
+          ? ['packages/ui/test-fixtures/game-guide/guide-controller.ts']
           : []),
       ],
     },

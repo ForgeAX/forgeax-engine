@@ -6,7 +6,7 @@ const root = resolve(uiRoot, '../..');
 await mkdir(join(uiRoot, '.forgeax'), { recursive: true });
 const temporary = await mkdtemp(join(uiRoot, '.forgeax/localization-types-'));
 try {
-  await copyFile(join(root, 'templates/game-3d/assets/guide.ui.i18n.json'), join(temporary, 'messages.json'));
+  await copyFile(join(root, 'packages/ui/test-fixtures/game-guide/guide.ui.i18n.json'), join(temporary, 'messages.json'));
   await writeFile(join(temporary, 'keys.ts'), `import messages from './messages.json';
 import { createUiLocalization } from '@forgeax/engine-ui/localization';
 declare module 'i18next' {

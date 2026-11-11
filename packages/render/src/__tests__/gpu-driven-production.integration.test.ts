@@ -3141,8 +3141,9 @@ describe('GPU-driven production projection', () => {
     // Storage-buffer LDR frames keep the scene linear until the one output
     // transform writes the encoded surface. The ordinary unprepared mesh
     // remains the CPU residual under common visibility projection, while the
-    // clustered Standard graph and output transform stay active.
-    expect(device.totalDrawCount).toBe(2);
+    // clustered Standard graph and output transform stay active. The residual
+    // also draws in the Forward depth prepass, which one draw seeds into `main`.
+    expect(device.totalDrawCount).toBe(4);
     expect(renderer.renderScene).toMatchObject({
       worldEntitiesScanned: 0,
       fullRebuilds: 1,

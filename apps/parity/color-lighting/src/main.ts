@@ -61,6 +61,7 @@ import {
   TONEMAP_NONE,
   TONEMAP_REINHARD,
   TONEMAP_REINHARD_EXTENDED,
+  TONEMAP_UE_FILMIC,
   type Tonemap,
   type FrameReceipt,
   type Renderer,
@@ -173,6 +174,7 @@ function tonemapToU32(mode: Tonemap): number {
     case 'aces-filmic': return TONEMAP_ACES_FILMIC;
     case 'agx': return TONEMAP_AGX;
     case 'neutral': return TONEMAP_NEUTRAL;
+    case 'ue-filmic': return TONEMAP_UE_FILMIC;
   }
 }
 

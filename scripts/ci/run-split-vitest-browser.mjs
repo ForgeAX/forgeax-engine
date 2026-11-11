@@ -65,6 +65,7 @@ const instancingStaticBrowserFile =
 const thinWrapperBrowserFile = 'packages/app/__tests__/thin-wrapper.browser.test.ts';
 const thinWrapperThrowBrowserFile = 'packages/app/__tests__/thin-wrapper-throw.browser.test.ts';
 const solarAtmosphereBrowserFiles = [
+  'packages/runtime/src/__tests__/atmosphere-full-webgl2.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-calibration.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-fog-time.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-mesh-occlusion.browser.test.ts',
@@ -112,6 +113,8 @@ const shortRendererBootstrapBrowserFiles = new Set([
 ]);
 const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
+const renderWorkerPressureBrowserFile =
+  'packages/app/__tests__/render-worker-pressure.browser.test.ts';
 const shadowQualityBrowserFiles = new Set([
   'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts',
   'packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts',
@@ -170,6 +173,7 @@ const exclusiveRunnerBrowserFiles = new Set([
   // partitioned across four processes that keep the original deadlines.
   ...threeMaterialOutputBrowserFiles,
   'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
+  'packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts',
   'packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts',
   ...solarAtmosphereBrowserFiles,
   'packages/runtime/src/__tests__/volumetric-fog-world-time.browser.test.ts',
@@ -248,6 +252,9 @@ const browserProcessIsolatedFiles = new Set([
   'packages/runtime/src/__tests__/shadow-contact-webgl2-column.browser.test.ts',
   'packages/runtime/src/__tests__/shadow-contact-webgl2-centimeter.browser.test.ts',
   'packages/app/__tests__/render-worker.browser.test.ts',
+  // Run 42870354116 exhausted the shared 300 s child after the recovery and
+  // engine-pressure receipts; keep full-Renderer pressure in its own process.
+  renderWorkerPressureBrowserFile,
   'packages/app/__tests__/render-worker-contract.browser.test.ts',
   'packages/app/__tests__/render-worker-multi-camera.browser.test.ts',
   'packages/app/__tests__/worker-policy.browser.test.ts',

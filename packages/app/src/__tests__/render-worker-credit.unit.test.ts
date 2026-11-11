@@ -711,7 +711,7 @@ it.each([
 it.each([
   false,
   true,
-])('forwards timing and depth experiment %s to the child and retains the latest completed observation', async (featureReadOnlyDepthBatchDiagnostic) => {
+])('forwards timing and depth experiment %s to the child and retains the latest delivered observation', async (featureReadOnlyDepthBatchDiagnostic) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
   const assets = new AssetRegistry({
@@ -793,7 +793,6 @@ it.each([
     kind: 'completed',
     revision: publication.revision,
     buffers: renderPublicationTransfers(publication),
-    gpuPassTiming: observation,
     frame: {
       kind: 'frame-complete',
       worldIdentity: world.identity,
@@ -808,7 +807,25 @@ it.each([
       kernelWaitMs: 0,
     },
   });
-  expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation });
+  // Credit and completion do not wait for readback; timing merges when it arrives.
+  expect(source.inspectGpuPassTiming()).toBeUndefined();
+  worker.emit({
+    kind: 'gpu-pass-timing',
+    frameId: 7,
+    deviceGeneration: 7,
+    gpuPassTiming: observation,
+    skippedFrames: 2,
+  });
+  expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation, skippedFrames: 2 });
+  // A slower readback of an older receipt does not replace newer timing.
+  worker.emit({
+    kind: 'gpu-pass-timing',
+    frameId: 6,
+    deviceGeneration: 7,
+    gpuPassTiming: { status: 'failed', error: { code: 'timestamp-readback-failed' } },
+    skippedFrames: 2,
+  });
+  expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation, skippedFrames: 2 });
   // Render notices bypass the Engine; it only hands the Host the session port.
   expect(messages.some((message) => message.kind === 'render-complete')).toBe(false);
   expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-host-port', epoch: 1 }));
@@ -1116,6 +1133,7 @@ it('forwards only the current child Renderer error without consuming publication
       canvas,
       bootstrapUrl: '',
       workers: workerSelection({ engine: true, render: true, kernels: false }),
+      diagnostics: { renderPipelineCapacity: 2 },
     },
     forwarded,
   );

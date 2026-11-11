@@ -1098,6 +1098,29 @@ function writeClusterMembership(
   }
 }
 
+let gridCursorScratch = new Uint32Array(0);
+
+/**
+ * Write the cluster-major light index list that `bin(..., { writeMembership:
+ * false })` reserved: `clusterGrid` holds each cluster's [offset, count] run
+ * and `lightBounds` the per-light cluster boxes from the same call. The result
+ * equals the list `bin` writes with membership enabled. Cursor scratch is
+ * module-owned because the writer is synchronous.
+ */
+export function writeClusterMembershipFromGrid(
+  lightCount: number,
+  lightBounds: Int32Array,
+  grid: { readonly x: number; readonly y: number; readonly z: number },
+  clusterGrid: Uint32Array,
+  lightIndexList: Uint32Array,
+): void {
+  const clusterCount = grid.x * grid.y * grid.z;
+  if (gridCursorScratch.length < clusterCount) gridCursorScratch = new Uint32Array(clusterCount);
+  const cursors = gridCursorScratch;
+  for (let ci = 0; ci < clusterCount; ci++) cursors[ci] = clusterGrid[ci * 2] ?? 0;
+  writeClusterMembership(lightCount, lightBounds, grid.x, grid.y, cursors, lightIndexList);
+}
+
 export function bin(
   lights: ReadonlyArray<{ readonly position: Vec3; readonly range: number }>,
   view: Mat4,

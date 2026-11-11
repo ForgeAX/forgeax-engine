@@ -1,5 +1,6 @@
 #define_import_path forgeax_atmosphere::visibility
 #import forgeax_view::common::{AtmosphereMedium, View}
+#import forgeax_pbr::shadow_pcf::{shadow_sample_compare}
 #ifdef ATMOSPHERE_UTILITY_SHADOWS
 @group(1) @binding(0) var visibilityShadow: texture_depth_2d_array;
 @group(1) @binding(1) var visibilityCompare: sampler_comparison;
@@ -9,13 +10,23 @@
 #else
 #ifdef ATMOSPHERE_AVAILABLE
 #import forgeax_view::common::{view, shadowMap, shadowSampler}
+#ifndef CLOUD_SHADOW_LOW_LIMIT
 #import forgeax_cloud::layer::{cloudShadowMap, cloudShadowSampler}
+#endif
+#endif
+#ifndef STORAGE_BUFFER_AVAILABLE
+#ifdef CLUSTER_FORWARD_AVAILABLE
+#import forgeax_view::common::{view, shadowMap, shadowSampler}
+#ifndef CLOUD_SHADOW_LOW_LIMIT
+#import forgeax_cloud::layer::{cloudShadowMap, cloudShadowSampler}
+#endif
+#endif
 #endif
 #endif
 
 // Only direct solar scattering is shadowed. The low-frequency multiple
 // scattering closure remains the spherical, unoccluded approximation.
-fn atmosphere_visibility_sample(v:View, m:AtmosphereMedium, p:vec3<f32>, depth:texture_depth_2d_array, comparison:sampler_comparison, cloud:texture_2d<f32>, filtering:sampler)->f32 {
+fn atmosphere_directional_visibility(v:View,m:AtmosphereMedium,p:vec3<f32>,depth:texture_depth_2d_array,comparison:sampler_comparison)->f32 {
   let world=(p-vec3<f32>(0.0,m.originRadius.w,0.0)+m.originRadius.xyz)*1000.0;
   var visibility=1.0;
   let count=min(u32(max(v.cascadeCount,0.0)),4u);
@@ -30,10 +41,15 @@ fn atmosphere_visibility_sample(v:View, m:AtmosphereMedium, p:vec3<f32>, depth:t
     let ndc=clip.xyz/clip.w;
     let uv=ndc.xy*vec2<f32>(0.5,-0.5)+vec2<f32>(0.5);
     if all(uv>=vec2<f32>(0.0)) && all(uv<=vec2<f32>(1.0)) && ndc.z>=0.0 && ndc.z<=1.0 {
-      visibility=textureSampleCompareLevel(depth,comparison,uv,i32(layer),ndc.z+v.depthBias);
+      visibility=shadow_sample_compare(depth,comparison,uv,i32(layer),ndc.z+v.depthBias);
       break;
     }
   }
+  return visibility;
+}
+fn atmosphere_visibility_sample(v:View, m:AtmosphereMedium, p:vec3<f32>, depth:texture_depth_2d_array, comparison:sampler_comparison, cloud:texture_2d<f32>, filtering:sampler)->f32 {
+  var visibility=atmosphere_directional_visibility(v,m,p,depth,comparison);
+  let world=(p-vec3<f32>(0.0,m.originRadius.w,0.0)+m.originRadius.xyz)*1000.0;
   if v.cloudShadowProjection.y>0.5 && v.cloudShadowProjection.z<0.5 && v.cloudShadowProjection.x>0.0 {
     let offset=world-v.cloudShadowOrigin.xyz;
     let uv=vec2<f32>(dot(offset,v.cloudShadowRight.xyz),dot(offset,v.cloudShadowUp.xyz))/v.cloudShadowProjection.x+vec2<f32>(0.5);
@@ -56,8 +72,21 @@ fn atmosphere_scene_visibility(m:AtmosphereMedium, p:vec3<f32>)->f32 {
   return atmosphere_visibility_sample(visibilityView,m,p,visibilityShadow,visibilityCompare,visibilityCloud,visibilityFilter);
 #else
 #ifdef ATMOSPHERE_AVAILABLE
-  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,cloudShadowSampler);
+#ifdef CLOUD_SHADOW_LOW_LIMIT
+  return atmosphere_directional_visibility(view,m,p,shadowMap,shadowSampler);
 #else
+  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,cloudShadowSampler);
+#endif
+#else
+#ifndef STORAGE_BUFFER_AVAILABLE
+#ifdef CLUSTER_FORWARD_AVAILABLE
+#ifdef CLOUD_SHADOW_LOW_LIMIT
+  return atmosphere_directional_visibility(view,m,p,shadowMap,shadowSampler);
+#else
+  return atmosphere_visibility_sample(view,m,p,shadowMap,shadowSampler,cloudShadowMap,cloudShadowSampler);
+#endif
+#endif
+#endif
   return 1.0;
 #endif
 #endif

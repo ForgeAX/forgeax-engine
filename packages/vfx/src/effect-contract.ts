@@ -248,11 +248,28 @@ function validateMap<Values extends VfxValueMap>(
   return validateMapAgainstFields<Values>(fieldList(reflection), values);
 }
 
+// Reflected field lists are immutable contract data; index each once.
+const fieldIndexes = new WeakMap<
+  readonly VfxReflectedField[],
+  ReadonlyMap<string, VfxReflectedField>
+>();
+
+function fieldsByName(
+  reflectedFields: readonly VfxReflectedField[],
+): ReadonlyMap<string, VfxReflectedField> {
+  let index = fieldIndexes.get(reflectedFields);
+  if (index === undefined) {
+    index = new Map(reflectedFields.map((field) => [field.name, field]));
+    fieldIndexes.set(reflectedFields, index);
+  }
+  return index;
+}
+
 function validateMapAgainstFields<Values extends VfxValueMap>(
   reflectedFields: readonly VfxReflectedField[],
   values: VfxValueMap,
 ): Result<Values, VfxEffectContractError> {
-  const fields = new Map(reflectedFields.map((field) => [field.name, field]));
+  const fields = fieldsByName(reflectedFields);
   for (const name of Object.keys(values)) {
     const field = fields.get(name);
     if (field === undefined) {

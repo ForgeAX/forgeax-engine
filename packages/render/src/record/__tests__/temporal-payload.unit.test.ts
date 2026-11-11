@@ -13,7 +13,7 @@ import {
   computeViewProjectionMatrix,
 } from '../helpers';
 import { MESH_PER_ENTITY_STRIDE, uploadMeshSsboBatch } from '../mesh-ssbo';
-import { VIEW_UNIFORM_BYTES, writeViewUbo } from '../view-ubo';
+import { VIEW_UNIFORM_BYTES, VIEW_UNIFORM_SLOT_STRIDE, writeViewUbo } from '../view-ubo';
 
 function uploadEntries(
   queue: RhiQueue,
@@ -198,7 +198,7 @@ describe('temporal GPU payloads', () => {
       light,
       lights,
       [],
-      1280 * 25,
+      VIEW_UNIFORM_SLOT_STRIDE * 25,
     );
     expect(uploads).toHaveLength(11);
     const capture = new Float32Array(uploads[10]?.buffer ?? new ArrayBuffer(0));

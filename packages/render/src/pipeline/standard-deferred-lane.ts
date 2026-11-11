@@ -427,7 +427,7 @@ function addDeferredBackground(
   cloudShadow: RenderPipelineTarget | undefined,
 ): Result<GraphEnvironment | undefined, RenderGraphError> {
   if (topology.atmosphere === true && topology.atmosphereBackgroundOnly === true) {
-    return addAtmosphereBackground(graph, scene, {}, 'sky');
+    return addAtmosphereBackground(graph, scene, {}, { mode: 'sky' });
   }
   if (topology.atmosphere === true)
     return addAtmosphereBackground(graph, scene, { directional, cloud: cloudShadow?.view });

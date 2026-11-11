@@ -42,6 +42,59 @@ function rgba(read: ReplayReadbackResult): number[] {
   );
 }
 
+/** Independent oracle for the radial fringe; shared by the two chromatic samples. */
+function expectChromaticFringe(
+  name: string,
+  live: { width: number; height: number; pixels: readonly number[] },
+  baseline: readonly number[],
+) {
+  const at = (pixels: readonly number[], x: number, y: number, c = 0) =>
+    pixels[(y * live.width + x) * 4 + c] ?? NaN;
+  expect(delta(live.pixels, baseline)).toBeGreaterThan(0.15);
+  // Independent oracle for UE's scene color fringe (PostProcessTonemap.usf:318-341):
+  // red and green sample bilinearly at lens - sign(lens) * max(|lens| - start, 0) * scale,
+  // blue stays at the pixel centre.
+  const start = name === 'chromatic' ? 0 : 0.5;
+  // UE ChromaticAberrationParams: 5 % intensity, wavelength scales over 1 - start.
+  const scaleR = (0.05 * 0.007 * (611.3 - 464.3)) / (1 - start);
+  const scaleG = (0.05 * 0.007 * (549.1 - 464.3)) / (1 - start);
+  const bilinear = (u: number, v: number, c: number) => {
+    const fx = u * live.width - 0.5;
+    const fy = v * live.height - 0.5;
+    const x0 = Math.floor(fx);
+    const y0 = Math.floor(fy);
+    const tx = fx - x0;
+    const ty = fy - y0;
+    const texel = (x: number, y: number) =>
+      at(
+        baseline,
+        Math.max(0, Math.min(live.width - 1, x)),
+        Math.max(0, Math.min(live.height - 1, y)),
+        c,
+      );
+    const top = texel(x0, y0) * (1 - tx) + texel(x0 + 1, y0) * tx;
+    const bottom = texel(x0, y0 + 1) * (1 - tx) + texel(x0 + 1, y0 + 1) * tx;
+    return top * (1 - ty) + bottom * ty;
+  };
+  const pulled = (lens: number, scale: number) =>
+    (lens - Math.sign(lens) * Math.max(Math.abs(lens) - start, 0) * scale) * 0.5 + 0.5;
+  let fringes = 0;
+  for (let y = 0; y < live.height; y++)
+    for (let x = 0; x < live.width; x++) {
+      const lx = ((x + 0.5) / live.width) * 2 - 1;
+      const ly = ((y + 0.5) / live.height) * 2 - 1;
+      const red = bilinear(pulled(lx, scaleR), pulled(ly, scaleR), 0);
+      const green = bilinear(pulled(lx, scaleG), pulled(ly, scaleG), 1);
+      expect(Math.abs(at(live.pixels, x, y, 0) - red)).toBeLessThanOrEqual(0.004);
+      expect(Math.abs(at(live.pixels, x, y, 1) - green)).toBeLessThanOrEqual(0.004);
+      expect(at(live.pixels, x, y, 2)).toBe(at(baseline, x, y, 2));
+      const inside = Math.abs(lx) <= start && Math.abs(ly) <= start;
+      if (inside) expect(at(live.pixels, x, y, 0)).toBe(at(baseline, x, y, 0));
+      if (Math.abs(at(live.pixels, x, y, 0) - at(live.pixels, x, y, 2)) > 0.1) fringes++;
+    }
+  expect(fringes).toBeGreaterThan(10);
+}
+
 /** Shared real renderer path: browser and Dawn execute the same assertions. */
 export async function verifyLensEffects(
   renderer: Renderer,
@@ -144,10 +197,13 @@ export async function verifyLensEffects(
       ['baseline', {}],
       ['vignette', { vignetteIntensity: 0.85 }],
       ['hit', { vignetteIntensity: 0.9, vignetteColor: [0.7, 0, 0] }],
-      ['chromatic', { vignetteIntensity: 0, chromaticAberration: 12 }],
-      ['chromatic-vertical', { chromaticAberrationAngle: Math.PI / 2 }],
-      ['grain', { chromaticAberration: 0, chromaticAberrationAngle: 0, grainIntensity: 0.25 }],
-      ['combined', { vignetteIntensity: 0.65, chromaticAberration: 8, grainIntensity: 0.12 }],
+      ['chromatic', { vignetteIntensity: 0, chromaticAberration: 5 }],
+      ['chromatic-start', { chromaticAberrationStartOffset: 0.5 }],
+      [
+        'grain',
+        { chromaticAberration: 0, chromaticAberrationStartOffset: 0, grainIntensity: 0.25 },
+      ],
+      ['combined', { vignetteIntensity: 0.65, chromaticAberration: 3, grainIntensity: 0.12 }],
       ['zero', { vignetteIntensity: 0, chromaticAberration: 0, grainIntensity: 0 }],
     ] as const) {
       world.set(camera, LensEffects, parameters as Partial<LensEffectsData>).unwrap();
@@ -165,13 +221,18 @@ export async function verifyLensEffects(
       images.set(name, live.pixels);
       const tape = decodeTape(capture.bytes).unwrap();
       const model = buildFrameModel(tape);
+      // The fringe is its own pre-tonemap pass; vignette and grain share the output pass.
+      const current = world.get(camera, LensEffects).unwrap();
+      const fringe = current.chromaticAberration > 0;
+      const output = current.vignetteIntensity > 0 || current.grainIntensity > 0;
+      const marker = name.startsWith('chromatic') ? 'params.greenScale' : 'fn grain_hash';
       const lens = model.works.find((work) =>
-        work.pipeline.shaders.some((shader) => shader.source?.includes('fn grain_hash')),
+        work.pipeline.shaders.some((shader) => shader.source?.includes(marker)),
       );
-      const active = name !== 'baseline' && name !== 'zero';
-      expect(lens !== undefined).toBe(active);
+      expect(lens !== undefined).toBe(name.startsWith('chromatic') ? fringe : output);
       const passes = renderer.inspect().perFramePassNames;
-      expect(passes.filter((pass) => pass === 'lens-effects')).toHaveLength(active ? 1 : 0);
+      expect(passes.filter((pass) => pass === 'lens-effects')).toHaveLength(output ? 1 : 0);
+      expect(passes.filter((pass) => pass === 'chromatic-aberration')).toHaveLength(fringe ? 1 : 0);
       expect(errors).toEqual([]);
       const baseline = images.get('baseline');
       if (!baseline) throw new Error('missing baseline');
@@ -187,35 +248,8 @@ export async function verifyLensEffects(
       }
       if (name === 'hit')
         expect(at(live.pixels, 3, 3, 0)).toBeGreaterThan(at(live.pixels, 3, 3, 1) + 0.4);
-      if (name === 'chromatic' || name === 'chromatic-vertical') {
-        expect(delta(live.pixels, baseline)).toBeGreaterThan(0.15);
-        let fringes = 0;
-        for (let i = 0; i < live.pixels.length; i += 4) {
-          expect(live.pixels[i + 1]).toBe(baseline[i + 1]);
-          if (Math.abs((live.pixels[i] ?? 0) - (live.pixels[i + 2] ?? 0)) > 0.1) fringes++;
-        }
-        expect(fringes).toBeGreaterThan(50);
-        // Independent RGBShiftShader oracle for its two cardinal sample directions.
-        const dx = name === 'chromatic' ? 12 : 0;
-        const dy = name === 'chromatic-vertical' ? -12 : 0;
-        for (let y = 0; y < live.height; y++)
-          for (let x = 0; x < live.width; x++) {
-            const red = at(
-              baseline,
-              Math.max(0, Math.min(live.width - 1, x + dx)),
-              Math.max(0, Math.min(live.height - 1, y + dy)),
-              0,
-            );
-            const blue = at(
-              baseline,
-              Math.max(0, Math.min(live.width - 1, x - dx)),
-              Math.max(0, Math.min(live.height - 1, y - dy)),
-              2,
-            );
-            expect(Math.abs(at(live.pixels, x, y, 0) - red)).toBeLessThanOrEqual(0.002);
-            expect(Math.abs(at(live.pixels, x, y, 2) - blue)).toBeLessThanOrEqual(0.002);
-          }
-      }
+      if (name === 'chromatic' || name === 'chromatic-start')
+        expectChromaticFringe(name, live, baseline);
       if (name === 'grain') {
         const next = await readLive(await draw(true));
         expect(delta(live.pixels, next.pixels)).toBeGreaterThan(0.1);
@@ -257,7 +291,8 @@ export async function verifyLensEffects(
             const resource = model.resources.find(
               (resource) => resource.resourceId === uniform.resourceId,
             );
-            expect(resource?.descriptor).toMatchObject({ desc: { size: 48 } });
+            const paramBytes = name.startsWith('chromatic') ? 16 : 48;
+            expect(resource?.descriptor).toMatchObject({ desc: { size: paramBytes } });
             const output = workOutputs(lens).find((row) => row.role === 'color');
             if (output === undefined) throw new Error('missing replay pixels');
             const reads = (
@@ -275,13 +310,20 @@ export async function verifyLensEffects(
             for (const read of reads)
               expect(read.provenance.selectedWorkIndex).toBe(lens.workIndex);
             const inspected = describeReplayWork(lens, attachment);
-            expect(parameters.bytes.byteLength).toBe(48);
-            expect(
-              new DataView(parameters.bytes.buffer, parameters.bytes.byteOffset).getFloat32(
-                0,
-                true,
-              ),
-            ).toBe(world.get(camera, LensEffects).unwrap().vignetteIntensity);
+            expect(parameters.bytes.byteLength).toBe(paramBytes);
+            const lensData = world.get(camera, LensEffects).unwrap();
+            const firstParam = new DataView(
+              parameters.bytes.buffer,
+              parameters.bytes.byteOffset,
+            ).getFloat32(0, true);
+            // Fringe: UE red scale; output pass: vignette intensity.
+            if (name.startsWith('chromatic'))
+              expect(firstParam).toBeCloseTo(
+                (lensData.chromaticAberration * 0.01 * 0.007 * (611.3 - 464.3)) /
+                  (1 - lensData.chromaticAberrationStartOffset),
+                5,
+              );
+            else expect(firstParam).toBe(lensData.vignetteIntensity);
             expect(lens.drawCall).toMatchObject({ kind: 'draw', vertexCount: 3, instanceCount: 1 });
             await save(
               `${name}-${label}-work.json`,
@@ -315,7 +357,7 @@ export async function verifyLensEffects(
           { compression: 'gzip' },
         ).unwrap();
         const falsified = delta(live.pixels, await replayPixels(missingDraw, 'missing-draw'));
-        expect(falsified).toBeGreaterThan(0.2);
+        expect(falsified).toBeGreaterThan(name.startsWith('chromatic') ? 0.1 : 0.2);
         await save(`${name}-missing-draw.rhitape`, missingDraw);
         reports.push({
           name,
@@ -331,12 +373,23 @@ export async function verifyLensEffects(
         });
       }
     }
-    // Ordinary topology composes with existing spatial warp and antialiasing.
-    world.set(camera, LensEffects, { vignetteIntensity: 0.4, grainIntensity: 0.1 }).unwrap();
+    // Ordinary topology composes with existing spatial warp and antialiasing; the
+    // fringe stays ahead of Bloom and tone mapping as UE (PostProcessTonemap.usf:318-399).
+    world
+      .set(camera, LensEffects, {
+        vignetteIntensity: 0.4,
+        chromaticAberration: 2,
+        grainIntensity: 0.1,
+      })
+      .unwrap();
     world.addComponent(camera, { component: BarrelDistortion, data: { strength: 0.1 } }).unwrap();
-    world.set(camera, Camera, { antialias: 1 }).unwrap();
+    world.set(camera, Camera, { antialias: 1, tonemap: 1, bloom: 1 }).unwrap();
     for (let i = 0; i < 8; i++) await draw();
     const passes = renderer.inspect().perFramePassNames;
+    const fringeAt = passes.indexOf('chromatic-aberration');
+    expect(fringeAt).toBeGreaterThanOrEqual(0);
+    expect(passes.indexOf('bloom-horizontal-0')).toBeGreaterThan(fringeAt);
+    expect(passes.indexOf('fxaa')).toBeGreaterThan(fringeAt);
     expect(passes.indexOf('lens-effects')).toBeGreaterThan(passes.indexOf('fxaa'));
     expect(passes.indexOf('fxaa')).toBeGreaterThan(passes.indexOf('barrel-distortion'));
     expect(passes.filter((pass) => pass === 'standard-output-encoding')).toHaveLength(1);
@@ -355,6 +408,7 @@ export async function verifyLensEffects(
     world.removeComponent(camera, LensEffects).unwrap();
     for (let i = 0; i < 3; i++) await draw();
     expect(renderer.inspect().perFramePassNames).not.toContain('lens-effects');
+    expect(renderer.inspect().perFramePassNames).not.toContain('chromatic-aberration');
     expect(errors).toEqual([]);
     expect(completedFrames).toBeGreaterThanOrEqual(60);
     await save(

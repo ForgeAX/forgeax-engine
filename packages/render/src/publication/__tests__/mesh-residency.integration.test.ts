@@ -206,41 +206,77 @@ it.each([
   f.publisher.dispose();
 });
 
-it('waits for physical upload and reads only an exact current submitted frame', async () => {
+it('admits ordered uploads without their completion and reads only an exact current submitted frame', async () => {
   const f = await gpuFixture();
   const ready = vi.fn();
   const pending = f.prepare(f.input).then((result) => {
     ready();
     return result;
   });
-  await Promise.resolve();
-  expect(ready).not.toHaveBeenCalled();
+  for (let turn = 0; turn < 4; turn++) await Promise.resolve();
+  const readyBeforeCompletion = ready.mock.calls.length;
   f.finish();
   const prepared = (await pending).unwrap();
-  expect(prepared.isCurrent()).toBe(true);
-  const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
-  const entity = required(accepted.frame.renderables.at(0)).entityKey;
-  const entry = { source: required(accepted.frame.renderables.at(0)) };
-  f.bindings.onRenderableDraw([accepted.resources])(entry, 'gpu');
-  expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBeUndefined();
-  f.bindings.commit();
-  expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBe('gpu');
-  expect(prepared.recordStageLane({ ...f.frame() }, entity).ok).toBe(false);
-  const previous = f.frame();
-  f.replaceFrame();
-  expect(prepared.recordStageLane(previous, entity).ok).toBe(false);
-  f.recover();
-  expect(prepared.isCurrent()).toBe(false);
-  expect(prepared.recordStageLane(f.frame(), entity).ok).toBe(false);
-  prepared.release();
-  f.store.destroyAll();
-  f.publisher.dispose();
+  try {
+    expect(readyBeforeCompletion).toBe(1);
+    expect(prepared.isCurrent()).toBe(true);
+    const accepted = f.receiver.accept(encodeRenderPublication(f.packet())).unwrap();
+    const entity = required(accepted.frame.renderables.at(0)).entityKey;
+    const entry = { source: required(accepted.frame.renderables.at(0)) };
+    f.bindings.onRenderableDraw([accepted.resources])(entry, 'gpu');
+    expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBeUndefined();
+    f.bindings.commit();
+    expect(prepared.recordStageLane(f.frame(), entity).unwrap()).toBe('gpu');
+    expect(prepared.recordStageLane({ ...f.frame() }, entity).ok).toBe(false);
+    const previous = f.frame();
+    f.replaceFrame();
+    expect(prepared.recordStageLane(previous, entity).ok).toBe(false);
+    f.recover();
+    expect(prepared.isCurrent()).toBe(false);
+    expect(prepared.recordStageLane(f.frame(), entity).ok).toBe(false);
+  } finally {
+    await prepared.release();
+    f.store.destroyAll();
+    f.publisher.dispose();
+  }
+});
+
+it('retains an early-ready cancelled allocation until its held upload completes', async () => {
+  const f = await gpuFixture();
+  const prepared: Awaited<ReturnType<typeof f.prepare>>[] = [];
+  const pending = f.prepare(f.input).then((result) => {
+    prepared.push(result);
+    return result;
+  });
+  try {
+    for (let turn = 0; turn < 4; turn++) await Promise.resolve();
+    expect(prepared[0]?.ok).toBe(true);
+    const lease = required(prepared[0]).unwrap();
+    const gpu = f.allocation();
+    let released = false;
+    const retiring = Promise.resolve(lease.release()).then(() => {
+      released = true;
+    });
+    await Promise.resolve();
+    expect(lease.isCurrent()).toBe(false);
+    expect(released).toBe(false);
+    expect(gpu.vertexBuffer.isDestroyed).toBe(false);
+    f.finish();
+    await retiring;
+    expect(gpu.vertexBuffer.isDestroyed).toBe(true);
+  } finally {
+    f.finish();
+    const result = await pending;
+    if (result.ok) await result.value.release();
+    f.store.destroyAll();
+    f.publisher.dispose();
+  }
 });
 
 it.each([
   'dispose',
   'recover',
-] as const)('rejects late upload after %s and retires its allocation', async (action) => {
+] as const)('invalidates an early-ready lease after %s and fences its allocation retirement', async (action) => {
   const f = await gpuFixture();
   const pending = f.prepare(f.input);
   const scope = f.receiver.prepareMesh(f.input).unwrap();
@@ -251,19 +287,17 @@ it.each([
     complete = resolve;
   });
   f.store.trackMeshSubmission(submitted);
-  const settled = vi.fn();
-  void pending.then(settled);
+  const prepared = (await pending).unwrap();
   if (action === 'dispose') f.receiver.dispose();
   else f.recover();
+  expect(prepared.isCurrent()).toBe(false);
+  const retiring = prepared.release();
   expect(gpu.vertexBuffer.isDestroyed).toBe(false);
   f.finish();
   await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  expect(settled).not.toHaveBeenCalled();
+  expect(gpu.vertexBuffer.isDestroyed).toBe(false);
   complete();
-  expect(await pending).toMatchObject({
-    ok: false,
-    error: { code: 'mesh-residency-gpu-not-ready' },
-  });
+  await retiring;
   await vi.waitFor(() => expect(gpu.vertexBuffer.isDestroyed).toBe(true));
   scope.release();
   f.store.destroyAll();
@@ -389,7 +423,10 @@ it.each([
   f.finish();
   const prepared = await pending;
   if (action === 'recover') {
-    expect(prepared.ok).toBe(false);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) throw prepared.error;
+    expect(prepared.value.isCurrent()).toBe(false);
+    await prepared.value.release();
     expect(f.store.getMeshGpuHandles(received.meshHandle, peek.resources)).toBeUndefined();
   } else {
     expect(prepared.ok).toBe(true);

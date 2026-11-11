@@ -15,8 +15,8 @@ import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
-import { probeLocalization } from '../../../templates/game-3d/scripts/localization-probe.mjs';
-import { probeRuntimeVase } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
+import { probeRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase-probe.mjs';
+import { installRuntimeVase } from '../../../scripts/template-probes/game-3d/runtime-vase/install.mjs';
 import { serializeBrowserConsoleValue } from './serialize-browser-console-value.mjs';
 import { createStandaloneRuntimeAssetBinding } from '@forgeax/engine-types';
 import { decodeCatalogWire } from '@forgeax/engine/pack';
@@ -164,7 +164,9 @@ async function prepareTemplateSmokeProject(slug) {
       filter: (path) => !['node_modules', '.forgeax', 'dist', '.git'].includes(path.split(sep).at(-1)),
     });
     await symlink(resolve(sourceRoot, 'node_modules'), resolve(root, 'node_modules'), 'dir');
-    await reduceTestProject(root);
+    if (CI_LIGHTWEIGHT) await reduceTestProject(root);
+    // The starter template ships without the runtime-pack demo; smoke installs it.
+    if (slug === 'game-3d') await installRuntimeVase(root);
     return root;
   } catch (error) {
     await rm(root, { recursive: true, force: true });
@@ -1249,9 +1251,10 @@ async function smokeGame3dCollision(evidence) {
       throw new Error(`game-3d collision approach did not advance: ${JSON.stringify({ collisionStart, collisionApproach })}`);
     }
     const approachTick = collisionApproach.simulation?.fixedTick ?? 0;
+    // The collision cube face is ~10.8 m ahead of the spawn: ~118 ticks at walk speed.
     collisionLate = await waitForGame3dFixedTicks(
       approachTick,
-      48,
+      96,
       'game-3d collision continued simulation',
     );
     const lateTick = collisionLate.simulation?.fixedTick ?? approachTick;
@@ -1310,8 +1313,6 @@ async function smokeGame3d(evidence) {
     throw new Error(`game-3d UI asset is incomplete: ${JSON.stringify(ui)}`);
   }
 
-  evidence.localization = await probeLocalization(page, ARTIFACT_DIR);
-
   evidence.runtimeVase = await probeRuntimeVase(page, async () => {
     const result = await page.evaluate(() => globalThis.__forgeaxPreviewInspection.read('game-3d.runtime-vase'));
     if (!result.ok) throw new Error(JSON.stringify(result));
@@ -1349,7 +1350,8 @@ async function smokeGame3d(evidence) {
   if (
     !uiLocked.lockedClass
     || uiLocked.lockText !== 'Camera locked · mouse look active'
-    || uiLocked.crosshairDisplay !== 'block'
+    // The starter keeps its crosshair off unless `ui.pack.ts` opts in with `crosshair: true`.
+    || uiLocked.crosshairDisplay !== 'none'
   ) {
     throw new Error(`game-3d locked UI state is incomplete: ${JSON.stringify(uiLocked)}`);
   }
@@ -1610,9 +1612,9 @@ try {
       sequence: 0,
     };
     templateEvidence.push(evidence);
-    if (CI_LIGHTWEIGHT) {
+    if (CI_LIGHTWEIGHT || template.slug === 'game-3d') {
       templateSmokeRoot = await prepareTemplateSmokeProject(template.slug);
-      evidence.shadowMapSize = testQuality.shadowMapSize;
+      if (CI_LIGHTWEIGHT) evidence.shadowMapSize = testQuality.shadowMapSize;
     }
     startServer(template.slug);
     await waitForServerReady();

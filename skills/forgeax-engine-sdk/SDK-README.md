@@ -97,7 +97,7 @@ pixels measure visual liveness with non-canvas elements hidden, preventing HUD c
 black 3D output; the final PNG still includes the whole page.
 
 Capture fixes viewport/screen, DPR 1, sRGB, light mode, en-US, UTC, and font readiness.
-Bundle the same Web fonts; do not rely on matching system fonts.
+Bundle the Web fonts the game uses so every machine renders the same text.
 
 For cross-machine color regression, use --deterministic and ?forgeaxCapture=1. Games pin random
 seed/logical frame/fonts and set readiness only after Canvas/UI stabilize:

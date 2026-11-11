@@ -142,6 +142,69 @@ export class ComponentNumericValueInvalidError extends Error {
   }
 }
 
+// NaN scans stay monomorphic per payload kind. One shared loop over every
+// Array / TypedArray shape collects megamorphic element-load feedback and
+// deopts repeatedly in a long-running app; per-frame Transform / Instances
+// writes then pay that generic path once per element. Integer views cannot
+// hold NaN and are not scanned at all.
+function firstNaNInFloat32(values: Float32Array): number {
+  for (let index = 0; index < values.length; index++) {
+    const v = values[index] as number;
+    if (Number.isNaN(v)) return index;
+  }
+  return -1;
+}
+
+function firstNaNInFloat64(values: Float64Array): number {
+  for (let index = 0; index < values.length; index++) {
+    const v = values[index] as number;
+    if (Number.isNaN(v)) return index;
+  }
+  return -1;
+}
+
+function firstNaNInArray(values: readonly unknown[]): number {
+  for (let index = 0; index < values.length; index++) {
+    const v = values[index];
+    if (Number.isNaN(v)) return index;
+  }
+  return -1;
+}
+
+/** Other views with a length (e.g. Float16Array, foreign-realm arrays). */
+function firstNaNInArrayLike(values: ArrayLike<unknown>, length: number): number {
+  for (let index = 0; index < length; index++) {
+    const v = values[index];
+    if (Number.isNaN(v)) return index;
+  }
+  return -1;
+}
+
+/** Integer element types cannot hold NaN; their elements need no scan. */
+function holdsOnlyIntegers(value: ArrayBufferView): boolean {
+  return (
+    value instanceof Uint8Array ||
+    value instanceof Uint32Array ||
+    value instanceof Int32Array ||
+    value instanceof Uint16Array ||
+    value instanceof Int16Array ||
+    value instanceof Int8Array ||
+    value instanceof Uint8ClampedArray ||
+    value instanceof BigInt64Array ||
+    value instanceof BigUint64Array
+  );
+}
+
+/** Index of the first NaN element of an array payload, or -1. */
+export function firstNaNIndex(value: unknown): number {
+  if (value instanceof Float32Array) return firstNaNInFloat32(value);
+  if (value instanceof Float64Array) return firstNaNInFloat64(value);
+  if (Array.isArray(value)) return firstNaNInArray(value);
+  if (!ArrayBuffer.isView(value) || holdsOnlyIntegers(value)) return -1;
+  const length = (value as { readonly length?: number }).length;
+  return length === undefined ? -1 : firstNaNInArrayLike(value as never, length);
+}
+
 export function validateNumericFieldValues<S extends ComponentSchema>(
   component: Component<string, S>,
   raw: Partial<Record<string, unknown>> | undefined,
@@ -166,23 +229,15 @@ export function validateNumericFieldValues<S extends ComponentSchema>(
       }
       continue;
     }
-    const length =
-      Array.isArray(value) || ArrayBuffer.isView(value)
-        ? (value as { readonly length?: number }).length
-        : undefined;
-    if (length === undefined) continue;
-    const values = value as ArrayLike<unknown>;
-    for (let index = 0; index < length; index++) {
-      const received = values[index];
-      if (Number.isNaN(received)) {
-        return new ComponentNumericValueInvalidError(
-          entity,
-          component.name,
-          fieldName,
-          received as number,
-          index,
-        );
-      }
+    const index = firstNaNIndex(value);
+    if (index >= 0) {
+      return new ComponentNumericValueInvalidError(
+        entity,
+        component.name,
+        fieldName,
+        (value as ArrayLike<number>)[index] as number,
+        index,
+      );
     }
   }
   return null;

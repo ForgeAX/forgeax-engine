@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createPlayerRig, convoyJointSpecs, nativeJointName, playerJointIndex, playerTargetPath } from '../player-rig.ts';
-import { createConvoyLayout } from '../convoy-layout.ts';
+import { createPlayerRig, convoyJointSpecs, nativeJointName, playerJointIndex, playerTargetPath } from '../../shared/player-rig.ts';
+import { createConvoyLayout } from '../../shared/convoy-layout.ts';
 
 describe('Convoy dimension constraints', () => {
   it.each([{}, { cabWidth: 1.02 }, { cabDepth: 0.71 }, { cabInteriorHeight: 0.40 }, { wheelRadius: 0.245 }, { legGuideLength: 0.69 }])('solves wheel contact, fold reach and telescope engagement for %j', dimensions => {

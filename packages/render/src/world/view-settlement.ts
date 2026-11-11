@@ -20,6 +20,7 @@ import type { CameraSnapshot } from '../render-contract';
 import type { RenderableSnapshot } from '../render-system-extract';
 import type { PersistentRenderScene } from '../scene/render-scene';
 import type { SurfaceSubmissionObservationOwner } from '../surface/submission-observation';
+import { ViewRecordHistory, viewRecordHistory } from './record-history';
 import { ViewRecorder, ViewSubmission } from './render-views';
 import { RenderCommit, renderSubmission } from './render-world';
 import { requireViewField } from './view-field';
@@ -174,20 +175,21 @@ export function ownerOf(world: World, state: Handle<string, 'unique'>): ViewSett
 
 /**
  * Register a RenderCommit system running `commit` for each view whose attempt
- * of this frame was accepted; `scene` additionally requires a submitted scene.
+ * of this frame was accepted. Scene commits require encoded scene work;
+ * presented commits additionally require the verified complete picture.
  */
 export function registerViewCommit(
   world: World,
   name: string,
   commit: (owner: ViewSettlementOwner, world: World) => void,
   after: string,
-  scene = false,
+  scope: 'accepted' | 'scene' | 'presented' = 'accepted',
 ): void {
   world
     .addSystem(RenderCommit, {
       commands: 'none',
       name,
-      queries: [{ read: [ViewRecorder, ViewSubmission] }],
+      queries: [{ read: [ViewRecorder, ViewSubmission], optional: [ViewRecordHistory] }],
       after: [after],
       fn: (world, [views]) => {
         const frame = renderSubmission(world).frame;
@@ -200,7 +202,10 @@ export function registerViewCommit(
             requireViewField(world, entity, ViewSubmission, 'attempt') !== frame
           )
             return;
-          if (scene && !requireViewField(world, entity, ViewSubmission, 'scene')) return;
+          if (scope !== 'accepted' && !requireViewField(world, entity, ViewSubmission, 'scene'))
+            return;
+          if (scope === 'presented' && viewRecordHistory(world, entity)?.presentation !== 'ready')
+            return;
           commit(ownerOf(world, requireViewField(world, entity, ViewRecorder, 'state')), world);
         });
       },

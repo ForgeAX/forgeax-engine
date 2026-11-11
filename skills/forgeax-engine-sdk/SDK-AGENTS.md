@@ -20,7 +20,7 @@ in text mode. Consult the feature catalog
 only when the task needs broader discovery; select the smallest useful capability set.
 
 > [!IMPORTANT]
-> sdk-manifest.json owns archive integrity. packages contains directly readable built packages without tarballs or nested package wrappers. Do not hand-edit SDK staging, offline stores, or manifests.
+> sdk-manifest.json owns archive integrity. packages contains directly readable built packages without tarballs or nested package wrappers. Treat SDK staging, offline stores, and manifests as generated output.
 
 > [!CAUTION]
 > Game work defaults to direct edits in the current project. Start a ForgeAX closed loop only when the user explicitly selects it; installed skills do not authorize it.
@@ -30,7 +30,7 @@ only when the task needs broader discovery; select the smallest useful capabilit
 Before SDK initialization in a container, read Linux unattended validation.
 It covers writable history/pnpm lock directories, headless capture without Xvfb,
 virtual headed capture and non-root Chromium sandboxing. Preserve the first real
-failure; never shim installation into success. A static build with a blocked
+failure and report installation failures as failures. A static build with a blocked
 browser remains unaccepted at runtime. Report unsupported capabilities explicitly
 instead of handing over an unchanged template as their demo.
 
@@ -144,7 +144,7 @@ only extra settling, not a deterministic frame or substitute for pixel evidence.
 Use a Node/Bun SDK command-client scenario for input, assertions, and multiple checkpoints in one session.
 Open browser once, drive native session.page, and call session.capture(name)
 after each named ready marker, then close the session. PNGs append to one
-schema-v2 manifest; do not restart World with repeated one-shot capture or return live Page/session objects.
+schema-v2 manifest; capture within one running World and return serializable results.
 SwiftShader screenshots are not physical-GPU or release-acceptance proof.
 
 - authoring/import/build: [`skills/forgeax-engine-assets/SKILL.md`](skills/forgeax-engine-assets/SKILL.md)
@@ -156,7 +156,7 @@ SwiftShader screenshots are not physical-GPU or release-acceptance proof.
 
 ## Engine and rendering capabilities
 
-App assembles Host, World, Renderer, and plugins. ECS owns game state/time; Render owns extraction/preparation/recording; typed RenderGraph owns resources/passes. RHI prefers browser-native WebGPU and supports wgpu/WASM WebGL2 fallback. A single adapter-unavailable/WebGPU message cannot establish whole-machine failure; inspect final code/hint/detail and route Asset/Shader/Pack/App errors to their owner. Do not swallow startup errors or inject another Canvas game. AssetRegistry consumes importer/cooker GUID catalogs.
+App assembles Host, World, Renderer, and plugins. ECS owns game state/time; Render owns extraction/preparation/recording; typed RenderGraph owns resources/passes. RHI prefers browser-native WebGPU and supports wgpu/WASM WebGL2 fallback. A single adapter-unavailable/WebGPU message cannot establish whole-machine failure; inspect final code/hint/detail and route Asset/Shader/Pack/App errors to their owner. Surface startup errors and keep the game's own Canvas. AssetRegistry consumes importer/cooker GUID catalogs.
 
 Rendering capabilities include procedural sky/ambient, directional/point/spot lights, CSM shadows, PBR/IBL, GPU VFX, and HDR/SSAO/TAA/bloom. Custom GPU effects and compute/raster features use composable WGSL and reflected material schemas.
 

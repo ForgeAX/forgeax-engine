@@ -487,7 +487,9 @@ Android/iOS certification separate; never infer it from UA, launch, typecheck,
 Null or CPU-provider success.
 
 Use `node scripts/ci/run-webgpu-compatibility.mjs` on the pinned Ubuntu carrier
-for compatibility changes. Stable additionally executes the native minimum,
+for compatibility changes. The software Vulkan carrier also selects software
+ANGLE for swap-chain interoperability. Diagnose SharedImage backing failures at
+the carrier before shader edits; keep sandboxing and the full scene assertions. Stable additionally executes the native minimum,
 actual Compatibility Mode and a changing Renderer scene with fresh-device
 pipeline-archive import. WebKit executes the supported WebGL2 scene. Keep the
 four-job placement and ten-minute browser-execution budget; report preparation

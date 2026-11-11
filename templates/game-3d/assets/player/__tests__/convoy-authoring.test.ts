@@ -2,8 +2,11 @@ import { fileURLToPath } from 'node:url';
 import { loadScriptablePack } from '@forgeax/engine/pack/source-node';
 import { expect, it } from 'vitest';
 
-it.each(['scene', 'character'])('loads the %s Pack through isolated source generation', { timeout: 30000 }, async name => {
-  const source = fileURLToPath(new URL(`../../${name}.pack.ts`, import.meta.url));
+it.each([
+  ['scene', '../../scene.pack.ts'],
+  ['character', '../character.pack.ts'],
+])('loads the %s Pack through isolated source generation', { timeout: 30000 }, async (name, path) => {
+  const source = fileURLToPath(new URL(path, import.meta.url));
   const loaded = await loadScriptablePack(source);
   if (!loaded.ok) throw loaded.error;
   if (name === 'character') {

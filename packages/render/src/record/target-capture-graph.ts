@@ -8,8 +8,10 @@ import { err, mipDimension, ok, type Result } from '@forgeax/engine-types';
 import type { PlanarCapture } from '../capture/planar-state';
 import { planarReflectionLevels } from '../capture/planar-target';
 import { addAtmosphereBackground } from '../environment/background';
+import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { atmosphereStorage } from '../environment/storage';
 import { analyticFogSampleCountError } from '../pipeline/analytic-fog-pass';
+import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import {
@@ -121,7 +123,11 @@ function captureShadowReads(shadows: TypedShadowTargets | undefined): GraphAcces
 export function addTargetCaptureGraphPasses(
   builder: RenderGraphBuilder<RenderPipelineFrame>,
   state: CubeCaptureGraphState,
-  lighting?: { readonly shadows: TypedShadowTargets; readonly accesses: readonly GraphAccess[] },
+  lighting?: {
+    readonly shadows: TypedShadowTargets;
+    readonly accesses: readonly GraphAccess[];
+    readonly clusters?: StandardClusterGraphBuffers | null;
+  },
   view?: { readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined },
   encodeMip?: TransmissionBackdropMipEncoder,
 ): Result<GraphTextureView | undefined, RenderGraphError | import('../errors/render').RenderError> {
@@ -254,6 +260,10 @@ export function addTargetCaptureGraphPasses(
               sampleCount: initial.physical.descriptor.sampleCount,
             },
             { directional: lighting?.shadows.directional?.view },
+            {
+              mode: 'full',
+              clusters: lighting?.clusters,
+            },
           )
         : undefined;
     if (environment !== undefined && !environment.ok) return environment;
@@ -287,13 +297,10 @@ export function addTargetCaptureGraphPasses(
         ...(lighting?.accesses ?? []),
         ...(atmosphere === undefined
           ? []
-          : [
-              atmosphere.transmittance,
-              atmosphere.multipleScattering,
-              atmosphere.aerialPerspective,
-              atmosphere.aerialTransmittance,
-              atmosphere.distantSkyLight,
-            ].map((resource) => ({ resource, usage: 'sampled-read' as const }))),
+          : atmosphereTextures(atmosphere).map((resource) => ({
+              resource,
+              usage: 'sampled-read' as const,
+            }))),
         ...(environment === undefined
           ? []
           : [environment.value.irradiance, environment.value.prefilter].map((resource) => ({
@@ -370,25 +377,7 @@ export function addTargetCaptureGraphPasses(
                   internal.validatedOrdered.length > 0 || gpuDriven !== undefined,
                   internal.bindGroupCounts,
                   {
-                    ...(atmosphere === undefined
-                      ? {}
-                      : {
-                          atmosphere: {
-                            transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
-                            multipleScattering: resources
-                              .textureView(atmosphere.multipleScattering)
-                              .unwrap(),
-                            aerialPerspective: resources
-                              .textureView(atmosphere.aerialPerspective)
-                              .unwrap(),
-                            aerialTransmittance: resources
-                              .textureView(atmosphere.aerialTransmittance)
-                              .unwrap(),
-                            distantSkyLight: resources
-                              .textureView(atmosphere.distantSkyLight)
-                              .unwrap(),
-                          },
-                        }),
+                    atmosphere: atmosphereVolumeViews(resources, atmosphere),
                     directionalShadow: resolveShadow(lighting.shadows.directional),
                     spotShadow: resolveShadow(lighting.shadows.spot),
                     shadowMoments: resolveShadow(lighting.shadows.moments),

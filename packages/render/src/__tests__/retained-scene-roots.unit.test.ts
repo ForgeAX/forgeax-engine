@@ -3,7 +3,11 @@ import { box3 } from '@forgeax/engine-math';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, test, vi } from 'vitest';
 import { MaterialResource } from '../material-resource';
-import { defaultMaterialSnapshot, type RenderableSnapshot } from '../render-system-extract';
+import {
+  type DispatchEntry,
+  defaultMaterialSnapshot,
+  type RenderableSnapshot,
+} from '../render-system-extract';
 import { setSceneRow } from '../scene/__tests__/scene-row-writes';
 import {
   FrameProjection,
@@ -15,7 +19,9 @@ import { FrameSet } from '../scene/frame-set';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
-import { SceneSlotFrame, SceneSlots } from '../scene/scene-slots';
+import { RowViews, SceneSlotFrame, SceneSlots } from '../scene/scene-slots';
+import { standardSceneDataContributorForDispatch } from '../temporal/standard-scene-data-admission';
+import { standardSceneDataContributorAt } from '../world/feature-view-systems';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing retained scene fixture value');
@@ -40,6 +46,23 @@ function update(scene: RenderScene, snapshot: RenderableSnapshot): void {
   scene.apply([
     { kind: 'update', worldId: snapshot.worldId, entityKey: snapshot.entityKey, snapshot },
   ]);
+}
+
+function surfaceDispatch(material: MaterialResource, renderableIndex = 0): DispatchEntry {
+  return {
+    entityIndex: 0,
+    renderableIndex,
+    queue: 2000,
+    layer: 0,
+    renderState: undefined,
+    defines: undefined,
+    vertexEntry: undefined,
+    fragmentEntry: undefined,
+    materialHandle: material.snapshot.materialHandle ?? 0,
+    materialShaderId: undefined,
+    passIndex: 0,
+    tags: { LightMode: 'Forward' },
+  };
 }
 
 test('lazy draw callbacks retain identity, submitted pose and material versions through slot reuse', () => {
@@ -302,6 +325,266 @@ test('capturing raw and temporal scene rosters never expands unchanged records',
   } finally {
     iterate.mockRestore();
   }
+});
+
+test('SceneData-only contributor reads leave pose, Mesh draw and temporal rows lazy', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  update(scene, { ...source(7, 3, material), materialOverrides: [material] });
+  scene.adoptMesh(0, 1, createBoxGeometry(2, 2, 2).unwrap());
+  const counters = { hits: 0, misses: 0 };
+  const rows = scene.materializeTemporal(counters, new MaterialFrame(undefined).with(material));
+  const dispatch = surfaceDispatch(material);
+  const read = vi.spyOn(RowViews.prototype, 'read');
+  try {
+    const contributor = standardSceneDataContributorAt(rows, dispatch, 'forward');
+    expect(contributor?.facts?.sourceTuple).toEqual([0, 7, dispatch.materialHandle, 0]);
+    expect(read).not.toHaveBeenCalled();
+    expect(counters).toEqual({ hits: 0, misses: 0 });
+    // A later actual draw still owns the full projection, with identical judgement.
+    const draw = required(rows.at(0));
+    expect(draw.transform.world[12]).toBe(3);
+    expect(draw.localAabb?.[0]).toBe(-1);
+    expect(draw.temporal).toBeDefined();
+    expect(standardSceneDataContributorForDispatch(draw, dispatch, 'forward')).toEqual(contributor);
+    expect(counters.misses).toBe(1);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+test('surface columns retain rank holes, captured generations and consecutive pose frames', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const scene = new RenderScene();
+  for (const key of [1, 2, 3]) update(scene, source(key, key, material));
+  scene.apply([{ kind: 'remove', worldId: 0, entityKey: 2 }]);
+  const held = scene.materialize();
+  const dispatch = surfaceDispatch(material, 1);
+  const read = vi.spyOn(RowViews.prototype, 'read');
+  try {
+    for (let frame = 0; frame < 4; frame++) {
+      scene.apply([
+        {
+          kind: 'update',
+          worldId: 0,
+          entityKey: 3,
+          world: source(3, frame, material).transform.world,
+        },
+      ]);
+      read.mockClear();
+      expect(
+        standardSceneDataContributorAt(scene.materialize(), dispatch, 'forward')?.facts
+          ?.sourceTuple?.[1],
+      ).toBe(3);
+      expect(read).not.toHaveBeenCalled();
+    }
+    scene.apply([{ kind: 'remove', worldId: 0, entityKey: 3 }]);
+    update(scene, source(99, 99, material));
+    expect(standardSceneDataContributorAt(held, dispatch, 'forward')?.facts?.sourceTuple?.[1]).toBe(
+      3,
+    );
+    expect(held.at(1)?.transform.world[12]).toBe(3);
+    const current = scene.materialize();
+    for (let index = 0; index < current.length; index++)
+      expect(
+        standardSceneDataContributorAt(current, surfaceDispatch(material, index), 'forward'),
+      ).toEqual(
+        standardSceneDataContributorForDispatch(
+          current.at(index),
+          surfaceDispatch(material, index),
+          'forward',
+        ),
+      );
+  } finally {
+    read.mockRestore();
+  }
+});
+
+test('surface columns retain unavailable raw materials, accepted-version errors and recovery', () => {
+  const raw = new MaterialResource({ ...defaultMaterialSnapshot(), materialHandle: 101 });
+  const effective = new MaterialResource({ ...defaultMaterialSnapshot(), materialHandle: 202 });
+  const scene = new RenderScene();
+  scene.setTemporalTracking(true);
+  update(scene, { ...source(7, 0, raw), materialOverrides: [effective] });
+  scene.adoptMesh(0, 1, createBoxGeometry(2, 2, 2).unwrap());
+  let pending = true;
+  class LiveUnavailable extends FrameSet {
+    override has() {
+      return pending;
+    }
+  }
+  const rows = scene.materializeTemporal(
+    { hits: 0, misses: 0 },
+    new MaterialFrame(undefined).with(effective),
+    new LiveUnavailable(),
+  );
+  expect(standardSceneDataContributorAt(rows, surfaceDispatch(raw), 'forward')).toEqual(
+    standardSceneDataContributorForDispatch(rows.at(0), surfaceDispatch(raw), 'forward'),
+  );
+  pending = false;
+  expect(standardSceneDataContributorAt(rows, surfaceDispatch(effective), 'forward')).toEqual(
+    standardSceneDataContributorForDispatch(rows.at(0), surfaceDispatch(effective), 'forward'),
+  );
+  const missing = scene.materializeTemporal({ hits: 0, misses: 0 }, new MaterialFrame(undefined));
+  expect(() =>
+    standardSceneDataContributorAt(missing, surfaceDispatch(effective), 'forward'),
+  ).toThrow('Temporal draw has no accepted material version');
+  expect(() => missing.at(0)).toThrow('Temporal draw has no accepted material version');
+});
+
+test('missing native ranks preserve the missing-snapshot contributor judgement', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const scene = new RenderScene();
+  const check = (rows: ReturnType<RenderScene['materialize']>) => {
+    for (const index of [0, 1, -2, Infinity, -Infinity]) {
+      const dispatch = surfaceDispatch(material, index);
+      expect(standardSceneDataContributorAt(rows, dispatch, 'forward')).toEqual(
+        standardSceneDataContributorForDispatch(rows.at(index), dispatch, 'forward'),
+      );
+      expect(
+        standardSceneDataContributorAt(rows, dispatch, 'forward')?.facts?.materialSnapshotMissing,
+      ).toBe(true);
+    }
+  };
+  check(scene.materialize());
+  update(scene, source(7, 0, material));
+  const rows = scene.materialize();
+  for (const index of [1, 100, -2]) {
+    const dispatch = surfaceDispatch(material, index);
+    expect(standardSceneDataContributorAt(rows, dispatch, 'forward')).toEqual(
+      standardSceneDataContributorForDispatch(undefined, dispatch, 'forward'),
+    );
+  }
+});
+
+test.each([
+  'source',
+  'project',
+] as const)('a transferred surface reader preserves the custom %s projection', (kind) => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const scene = new RenderScene();
+  update(scene, source(7, 3, material));
+  const owned = scene.materialize();
+  const reader = FrameProjection.rowReaderOf(owned, owned.at);
+  expect(reader).toBeDefined();
+  const replacement = source(99, 17, material);
+  const project = vi.fn(() => replacement);
+  const custom =
+    kind === 'source'
+      ? new FrameProjection([replacement], project, reader)
+      : new FrameProjection(scene.slotsSnapshot(), project, reader);
+  const dispatch = surfaceDispatch(material);
+  const expected = standardSceneDataContributorForDispatch(custom.at(0), dispatch, 'forward');
+  project.mockClear();
+  const actual = standardSceneDataContributorAt(custom, dispatch, 'forward');
+  expect(actual).toEqual(expected);
+  expect(actual?.facts?.sourceTuple?.[1]).toBe(99);
+  expect(project).toHaveBeenCalledTimes(1);
+});
+
+test('surface fallback observes custom and overridden at getters once with their original receiver', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const scene = new RenderScene();
+  update(scene, source(7, 0, material));
+  const dispatch = surfaceDispatch(material);
+  for (const target of [
+    scene.materialize(),
+    new FrameProjection([source(8, 0, material)], (row) => row),
+  ]) {
+    let gets = 0;
+    Object.defineProperty(target, 'at', {
+      configurable: true,
+      get() {
+        if (++gets > 1) throw new Error('at was read twice');
+        return function (this: unknown) {
+          expect(this).toBe(target);
+          return source(9, 0, material);
+        };
+      },
+    });
+    expect(
+      standardSceneDataContributorAt(target, dispatch, 'forward')?.facts?.sourceTuple?.[1],
+    ).toBe(9);
+    expect(gets).toBe(1);
+  }
+  const rows = scene.materializeTemporal(
+    { hits: 0, misses: 0 },
+    new MaterialFrame(undefined).with(material),
+  );
+  const slots = scene.slotsSnapshot();
+  let gets = 0;
+  const original = slots.at;
+  Object.defineProperty(slots, 'at', {
+    configurable: true,
+    get() {
+      if (++gets > 1) throw new Error('source at was read twice');
+      return original;
+    },
+  });
+  expect(standardSceneDataContributorAt(rows, dispatch, 'forward')?.facts?.sourceTuple?.[1]).toBe(
+    7,
+  );
+  expect(gets).toBe(1);
+  Object.defineProperty(rows, 'at', {
+    get() {
+      throw new Error('borrowed at failure');
+    },
+  });
+  expect(() => standardSceneDataContributorAt(rows, dispatch, 'forward')).toThrow(
+    'borrowed at failure',
+  );
+});
+
+test('surface fallback preserves overridden projection length reads and exceptions', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  const scene = new RenderScene();
+  update(scene, source(7, 0, material));
+  const rows = scene.materialize();
+  Object.defineProperty(rows, 'length', {
+    configurable: true,
+    get() {
+      throw new Error('live length failure');
+    },
+  });
+  expect(() => standardSceneDataContributorAt(rows, surfaceDispatch(material), 'forward')).toThrow(
+    'live length failure',
+  );
+  Object.defineProperty(rows, 'length', { configurable: true, value: 0 });
+  expect(standardSceneDataContributorAt(rows, surfaceDispatch(material), 'forward')).toEqual(
+    standardSceneDataContributorForDispatch(undefined, surfaceDispatch(material), 'forward'),
+  );
+});
+
+test('surface fallback preserves source length normalization and index-getter writes', () => {
+  const material = new MaterialResource(defaultMaterialSnapshot());
+  for (const value of [NaN, undefined, 0]) {
+    const scene = new RenderScene();
+    update(scene, source(7, 0, material));
+    const rows = scene.materialize();
+    Object.defineProperty(scene.slotsSnapshot(), 'length', { value });
+    const dispatch = surfaceDispatch(material, -1);
+    expect(standardSceneDataContributorAt(rows, dispatch, 'forward')).toEqual(
+      standardSceneDataContributorForDispatch(rows.at(-1), dispatch, 'forward'),
+    );
+  }
+  const scene = new RenderScene();
+  update(scene, source(7, 0, material));
+  const rows = scene.materialize();
+  const dispatch = {
+    ...surfaceDispatch(material),
+    get renderableIndex() {
+      Object.defineProperty(scene.slotsSnapshot(), 'at', {
+        get() {
+          throw new Error('index changed source reader');
+        },
+      });
+      return 0;
+    },
+  };
+  expect(() => standardSceneDataContributorAt(rows, dispatch, 'forward')).toThrow(
+    'index changed source reader',
+  );
 });
 
 test('lazy projection preserves exact Array.at boundaries without accidental double wrapping', () => {

@@ -327,6 +327,20 @@ export class AssetRegistry implements AssetReferenceOwner {
     return this.createRuntimeContent(input as Asset, []);
   }
 
+  /**
+   * Create independent runtime content from storage the caller gives up.
+   * Validation and preparation are exactly those of `create`; only ownership
+   * differs. A binary view spanning its whole fixed buffer becomes the asset's
+   * storage instead of being duplicated, so the caller must stop writing those
+   * buffers, and a view it keeps observes later asset writes like any other
+   * borrowed content.
+   */
+  createOwned<T extends Asset>(
+    input: T,
+  ): Result<AssetHandle<T['kind']>, AssetError | MaterialError> {
+    return this.createRuntimeContent(input, [], undefined, undefined, undefined, 'take');
+  }
+
   private prepareWithDecoder(
     kind: string,
     input: unknown,
@@ -389,6 +403,7 @@ export class AssetRegistry implements AssetReferenceOwner {
     sources: ReadonlyMap<string, AssetHandle> = this.#runtimeByGuid,
     replacing?: AssetHandle<T['kind']>,
     sourceContent: (guid: string) => Asset | undefined = (guid) => this.preparedSource(guid),
+    storage: 'copy' | 'take' = 'copy',
   ): Result<AssetHandle<T['kind']>, AssetError | MaterialError> {
     const kind =
       input !== null && typeof input === 'object'
@@ -510,6 +525,7 @@ export class AssetRegistry implements AssetReferenceOwner {
           : linked;
       },
       replacing,
+      storage,
     );
     if (created.ok && kind.value === 'material') {
       const accepted = this.#runtime.borrow<MaterialAsset>(created.value).unwrap();

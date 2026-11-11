@@ -180,7 +180,12 @@ it('batches 260 alternating instance LODs into six WebGL2 page draws without los
     const model = buildFrameModel(decodeTape(tape.bytes).unwrap());
     const indexed = model.works.filter((work) => work.kind === 'drawIndexed');
     const main = indexed.filter((work) => (work.attachments?.colorViewHandleIds.length ?? 0) > 0);
-    const shadow = indexed.filter((work) => work.attachments?.colorViewHandleIds.length === 0);
+    // The Forward depth prepass also draws without colour; shadow casters use fs_shadow.
+    const shadow = indexed.filter(
+      (work) =>
+        work.attachments?.colorViewHandleIds.length === 0 &&
+        work.pipeline.shaders.some((shader) => shader.entryPoint === 'fs_shadow'),
+    );
     const calls = (works: typeof indexed) =>
       works.map(
         (work) =>

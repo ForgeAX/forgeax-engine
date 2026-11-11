@@ -63,6 +63,11 @@ describe('mountUi lifecycle', () => {
       (instance.value.host.shadowRoot?.lastElementChild as HTMLElement | undefined)?.style
         .pointerEvents,
     ).toBe('none');
+    // Only interactive elements opt back into input, at zero specificity.
+    const defaults = instance.value.host.shadowRoot?.querySelector('style')?.textContent ?? '';
+    expect(defaults).toMatch(/^:where\(\[data-ui-content\] :is\(button, a\[href\], input, /);
+    expect(defaults).toContain('[data-ui-action]');
+    expect(defaults).not.toContain('[data-ui-content]) > *');
     instance.value.host.shadowRoot
       ?.querySelector('button')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

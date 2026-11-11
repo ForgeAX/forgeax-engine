@@ -1,7 +1,10 @@
 import { ownRenderFeatureProgramData } from '@forgeax/engine-render/internal';
 import { ok } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
+import type { RenderFeatureResourceDeclaration } from '../../../render/src/features/plan';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
+import { createVfxInstanceArena } from '../feature/instance-arena';
+import { retainEmitterResources } from '../feature/retained-emitter-resources';
 
 function plan(kind: 'owned' | 'mutable' | 'camera' | 'force-fields' | 'events' | 'parameters') {
   const matrix = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -79,7 +82,9 @@ function plan(kind: 'owned' | 'mutable' | 'camera' | 'force-fields' | 'events' |
   const api = {
     program: vi.fn((..._arguments: readonly unknown[]) => {}),
     retain: vi.fn(() => false),
-    admit: vi.fn(() => ({})),
+    admit: vi.fn(
+      (_scope: unknown, _resources: readonly RenderFeatureResourceDeclaration[]) => ({}),
+    ),
     upload: vi.fn(),
   };
   const scope = () => ({ scope: 'frame', resources: [], passes: [] });
@@ -180,11 +185,58 @@ it.each([
   const f = plan(kind);
   expect(f.result.ok).toBe(true);
   expect(f.createNativePlan).toHaveBeenCalledOnce();
-  expect(f.api.admit).not.toHaveBeenCalled();
+  expect(f.api.admit).toHaveBeenCalledOnce();
+  const domain = f.api.admit.mock.calls[0]?.[1];
+  expect(domain?.length).toBeGreaterThan(0);
+  expect(domain?.every((resource) => resource.kind === 'buffer')).toBe(true);
+  expect(
+    domain?.some((resource) => resource.kind === 'buffer' && resource.usage.includes('uniform')),
+  ).toBe(false);
+  expect(
+    domain?.some(
+      (resource) => Object.hasOwn(resource, 'data') || Object.hasOwn(resource, 'uploads'),
+    ),
+  ).toBe(false);
   if (f.result.ok)
     expect(
       f.result.value.work
         .flatMap((work) => work.resources)
         .some((resource) => resource.kind === 'buffer'),
     ).toBe(true);
+});
+
+it('admits exactly the owned core roles, excluding every mutable input and binding', () => {
+  const f = plan('parameters');
+  const arena = createVfxInstanceArena();
+  const instance = { owner: 'fixture', prefix: 'fixture', program: 'program' };
+  const input = {
+    previous: undefined,
+    inputs: 'frame' as const,
+    emitter: f.emitter as never,
+    instance,
+    program: instance.program,
+    tickCapacity: 3,
+    customStride: 0,
+    sharedInstanceBytes: 1024,
+    indirectBytes: 20,
+    arena: arena.beginRetainedFrame({ liveOwners: new Set([instance.owner]), generation: 0 }),
+    admission: f.api as never,
+  };
+  // The existing factory is used unchanged in RED; the extra input is a closed
+  // owner option in the candidate, not a missing method or imported API.
+  const domain = retainEmitterResources(input);
+  if (domain === undefined) throw new Error('Expected retained emitter resources');
+  expect([...domain.byName.keys()].sort()).toEqual(
+    [
+      'fixture.particles',
+      'fixture.alive-indices',
+      'fixture.counters',
+      'fixture.indirect',
+      'fixture.indirect-initial',
+      'fixture.scratch',
+      'fixture.shared-instances',
+    ].sort(),
+  );
+  expect(domain.bindings).toEqual([]);
+  expect(domain.views.size).toBe(0);
 });

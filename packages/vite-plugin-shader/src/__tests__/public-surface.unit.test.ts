@@ -105,7 +105,7 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(VIEW_ABI.moduleId).toBe('forgeax_view::common');
     expect(VIEW_ABI.group).toBe(0);
     expect(VIEW_ABI.binding).toBe(0);
-    expect(VIEW_ABI.byteLength).toBe(1280);
+    expect(VIEW_ABI.byteLength).toBe(1296);
     expect(VIEW_ABI.fields.map((field) => field.name)).toEqual([
       'worldViewProj',
       'inverseViewProj',
@@ -122,10 +122,11 @@ describe('vite-plugin-shader public engine input surface', () => {
       'fogHeightOpacity',
       'atmosphere',
       'atmosphereControl',
+      'fogSky',
     ]);
     expect(VIEW_ABI.fields.at(-1)).toEqual({
-      name: 'atmosphereControl',
-      offsetBytes: 1264,
+      name: 'fogSky',
+      offsetBytes: 1280,
       sizeBytes: 16,
     });
     expect(JSON.stringify(VIEW_ABI)).not.toMatch(/device|buffer|texture/i);

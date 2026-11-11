@@ -1092,8 +1092,8 @@ export function resolveCachedMaterialShaderVariant(
  * missing its manifest row. Shaders declaring them also declare a capability
  * axis, so the capability gate above already admits them.
  */
-// LEAN_LIGHTING follows DIRECTIONAL_SHADOW_SIMPLE: when the simple row is
-// rejected the next pass also drops LEAN_LIGHTING, so both fall back together.
+// Lean lighting stays opt-in within the simple receiver domain. Each requested
+// row is checked independently against the publication rules below.
 const RULE_GATED_OPT_IN_AXES = ['DIRECTIONAL_SHADOW_SIMPLE', 'LEAN_LIGHTING'] as const;
 
 /**
@@ -1116,6 +1116,7 @@ function isProducerOptInAxis(axis: string): boolean {
 function resolveRuleGatedOptIns(
   defines: Record<string, boolean>,
   requested: Readonly<Record<string, boolean>>,
+  variants: readonly { readonly defines: Readonly<Record<string, boolean>> }[],
 ): void {
   for (const axis of RULE_GATED_OPT_IN_AXES) {
     if (!(axis in defines)) continue;
@@ -1123,7 +1124,13 @@ function resolveRuleGatedOptIns(
   }
   for (const axis of RULE_GATED_OPT_IN_AXES) {
     if (defines[axis] !== true) continue;
-    if (isSupportedVariantDefines(defines)) return;
+    if (
+      isSupportedVariantDefines(defines) &&
+      variants.some((variant) =>
+        Object.entries(defines).every(([name, value]) => variant.defines[name] === value),
+      )
+    )
+      return;
     defines[axis] = false;
   }
 }
@@ -1229,7 +1236,7 @@ export function resolveMaterialShaderVariantSet(
                                 (requested[axis] ?? true);
   }
   selectRequiredDiscardSources(filtered);
-  resolveRuleGatedOptIns(filtered, requested);
+  resolveRuleGatedOptIns(filtered, requested, variants);
   const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return sorted.every(([, value]) => value)
     ? requestedVariantSet === undefined
@@ -1382,15 +1389,28 @@ export function materialPipelineAttachments(
   additionalColorFormats: readonly GPUTextureFormat[] | undefined,
   depthFormatOverride: GPUTextureFormat | null | undefined,
   sampleCount: number,
+  /** A depth-only scene prepass binds no color attachment. */
+  colorless = false,
 ): PipelineSpec['attachments'] {
   return {
-    colorFormats:
-      additionalColorFormats === undefined
+    colorFormats: colorless
+      ? []
+      : additionalColorFormats === undefined
         ? colorFormatsForPassKind(passKind, colorFormat)
         : [colorFormat, ...additionalColorFormats],
     depthFormat: materialPipelineDepthFormat(passKind, depthFormatOverride),
     sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
   };
+}
+
+/** Builder color formats: `[]` for a colorless prepass, else primary + additional outputs. */
+export function buildPipelineColorFormats(
+  colorless: boolean,
+  additionalColorFormats: readonly GPUTextureFormat[] | undefined,
+  primary: GPUTextureFormat,
+): GPUTextureFormat[] | undefined {
+  if (colorless) return [];
+  return additionalColorFormats === undefined ? undefined : [primary, ...additionalColorFormats];
 }
 
 /** Depth-only passes default to depth32float; `null` requests a color-only pipeline. */

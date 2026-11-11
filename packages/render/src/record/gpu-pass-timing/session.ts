@@ -959,6 +959,7 @@ export function createGpuPassTimingSession(
     slots.push(slot.value);
   }
   let disposed = false;
+  let skippedFrames = 0;
   let markerResources:
     | { readonly pipeline: ComputePipeline; readonly bindGroup: BindGroup; readonly buffer: Buffer }
     | undefined;
@@ -1034,12 +1035,15 @@ export function createGpuPassTimingSession(
       }
       const slot = slots.find((candidate) => candidate.state === 'idle');
       if (slot === undefined) {
+        // Never wait for a readback to free a slot: this frame renders untimed
+        // and the session counts it, so consumers see every skipped frame.
+        skippedFrames += 1;
         return err(
           reason(
             'timing-in-flight-exhausted',
             'a bounded timing slot is idle',
             'increase maxFramesInFlight or reduce the capture rate',
-            { maxFramesInFlight: normalized.value.maxFramesInFlight },
+            { maxFramesInFlight: normalized.value.maxFramesInFlight, skippedFrames },
           ),
         );
       }

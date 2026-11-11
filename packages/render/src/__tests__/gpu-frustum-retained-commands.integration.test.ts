@@ -111,7 +111,8 @@ it.each([
     expect(first.gpuDriven.indirectDrawCount).toBe(9);
     // Off-screen singleton batches keep their commands: the GPU cull, not a
     // per-frame CPU camera classification, rejects their instance.
-    expect(first.gpuDriven.encodedIndirectDraws).toBe(18);
+    // Early and late Forward depth prepass plus `main`, once per batch.
+    expect(first.gpuDriven.encodedIndirectDraws).toBe(27);
     // A rapid camera reversal reuses the same admitted plan and sees the
     // eight formerly hidden meshes in this frame, with no history delay and
     // without re-encoding a single command.
@@ -125,7 +126,7 @@ it.each([
     if (!reversedDraw.ok) throw reversedDraw.error;
     const reversed = renderer.inspect().renderScene;
     expect(reversed.gpuDriven.batchCount).toBe(9);
-    expect(reversed.gpuDriven.encodedIndirectDraws).toBe(18);
+    expect(reversed.gpuDriven.encodedIndirectDraws).toBe(27);
     expect(reversed.gpuDriven.preparedBundleBuilds).toBe(first.gpuDriven.preparedBundleBuilds);
     expect(reversed.gpuDriven.preparedBundleHits).toBeGreaterThan(
       first.gpuDriven.preparedBundleHits ?? 0,

@@ -1129,12 +1129,16 @@ test('twenty shadow contact cases retain five independent four-filter processes'
   );
 });
 
-test('Render Worker pressure and recovery keep all cases in one independent process', () => {
-  const target = 'packages/app/__tests__/render-worker.browser.test.ts';
-  assert.deepEqual(
-    dryRunGroups().filter((group) => group.includes(target)),
-    [[target]],
-  );
+test('Render Worker recovery and pressure keep separate complete owners', () => {
+  const groups = dryRunGroups();
+  for (const target of [
+    'packages/app/__tests__/render-worker.browser.test.ts',
+    'packages/app/__tests__/render-worker-pressure.browser.test.ts',
+  ]) {
+    const owners = groups.filter((group) => group.includes(target));
+    assert.deepEqual(owners, [[target]], `${target} keeps its own process deadline`);
+    assert.equal(browserGroupRequiresExclusiveRunner(owners[0]), true, target);
+  }
 });
 
 test('Render Worker content owners retain every case in separate complete processes', () => {
@@ -1152,6 +1156,7 @@ test('VFX mesh local lighting and native publication retain independent complete
   const groups = dryRunGroups();
   for (const name of ['vfx-mesh-lighting', 'vfx-mesh-lighting-publication']) {
     const target = `packages/runtime/src/__tests__/${name}.browser.test.ts`;
+    assert.equal(browserGroupRequiresExclusiveRunner([target]), true);
     assert.deepEqual(
       groups.filter((group) => group.includes(target)),
       [[target]],

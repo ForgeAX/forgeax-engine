@@ -55,6 +55,8 @@ import { createMaterialResidencyObserver } from './render-system-residency';
 import { type SsrSpatialAdmission, zeroSsrAdmissionWork } from './ssr/admission';
 import { projectSsrSpatialInspection } from './ssr/inspection';
 import { inspectTemporal, type TemporalInspection } from './temporal/inspection';
+import { inspectSettledDirectionalShadow } from './world/directional-shadow-inspection';
+import { inspectSharedFeatureGraphs } from './world/feature-graph-systems';
 import { viewPhaseInspection } from './world/queue-systems';
 import { viewRecordHistory } from './world/record-history';
 import { resolveViewSsrDependencies } from './world/reflection-systems';
@@ -343,6 +345,8 @@ export function viewBloom(owner: ViewSettlementOwner): BloomInspection {
 
 /** Single production projection of the view's Directional author/extract/record facts. */
 export function viewDirectionalShadow(owner: ViewSettlementOwner): DirectionalShadowInspection {
+  const settled = recordHistoryOf(owner)?.directionalShadow.settled;
+  if (settled !== undefined) return inspectSettledDirectionalShadow(owner, settled);
   const { frameState, internals } = owner;
   const lights = viewLightsOf(renderWorldFor(internals), internals.viewEntity);
   const graph = viewGraphInfo(owner);
@@ -503,9 +507,12 @@ export function viewStandardLut(owner: ViewSettlementOwner): StandardLutState {
 export function viewFeatureGraph(owner: ViewSettlementOwner): RenderFeatureGraphInspection {
   const graph = getRenderFeatureGraphInspection(owner.internals);
   const preparation = owner.frameState.candidatePipelinePreparations;
-  return preparation === undefined
-    ? graph
-    : { ...graph, candidatePipelines: preparation.inspect() };
+  const sharedFrame = inspectSharedFeatureGraphs(renderWorldFor(owner.internals));
+  return {
+    ...graph,
+    ...(sharedFrame === undefined ? {} : { sharedFrame }),
+    ...(preparation === undefined ? {} : { candidatePipelines: preparation.inspect() }),
+  };
 }
 
 /** Live producer, RHI and temporal receipts projected through the view's SSR admission. */

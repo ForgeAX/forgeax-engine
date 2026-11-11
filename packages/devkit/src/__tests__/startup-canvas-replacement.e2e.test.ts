@@ -12,7 +12,7 @@ import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 
 it('keeps the ordinary guide inert while keyboard users enter slow Reload and fatal recovery', async () => {
-  const template = new URL('../../../../templates/game-3d/assets/', import.meta.url);
+  const template = new URL('../../../ui/test-fixtures/game-guide/', import.meta.url);
   const [html, css, localization, bundled] = await Promise.all([
     readFile(new URL('guide.ui.html', template), 'utf8'),
     readFile(new URL('guide.ui.css', template), 'utf8'),
@@ -23,7 +23,7 @@ it('keeps the ordinary guide inert while keyboard users enter slow Reload and fa
       build: {
         write: false,
         lib: {
-          entry: fileURLToPath(new URL('ui/guide-controller.ts', template)),
+          entry: fileURLToPath(new URL('guide-controller.ts', template)),
           formats: ['iife'],
           name: 'fixtureGuideController',
         },

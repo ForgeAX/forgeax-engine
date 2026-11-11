@@ -28,6 +28,12 @@ function moduleIdentity(id: string): string {
 }
 
 export const engineCapabilityMeta = 'forgeax.engineCapability';
+/** Vite plugin API of {@link executionWorkerEntries}. */
+export interface ExecutionWorkerEntriesApi {
+  /** Modules emitted as public Engine facade chunks in this build. */
+  readonly facadeModules: ReadonlySet<string>;
+}
+export const executionWorkerEntriesName = 'forgeax:execution-worker-entries';
 export interface EngineCapabilityMeta {
   readonly specifier: string;
   readonly reference?: string;
@@ -64,10 +70,17 @@ export async function runtimeDependencyEntries(
   return [...entries.values()].filter((entry) => entry !== undefined);
 }
 
-/** Keep runtime entries and URL-loaded project plugins in one module graph. */
+/**
+ * Keep runtime entries and URL-loaded project plugins in one module graph.
+ *
+ * `hostRoot` is the generated player host. In builds its Engine imports join
+ * the player's own module graph, so startup loads bundled Engine chunks rather
+ * than one public facade file per capability; programs still use the facades.
+ */
 export function executionWorkerEntries(
   runtimeImports: readonly string[] = PACK_PROGRAM_ENGINE_IMPORTS,
   delivery: 'browser' | 'native' = 'browser',
+  hostRoot?: string,
 ): Plugin {
   let building = false;
   let base = '/';
@@ -85,7 +98,11 @@ export function executionWorkerEntries(
     return runtimeIdentity;
   };
   const externalPrefix = 'forgeax-host-import:';
+  const hostPrefix = hostRoot === undefined ? undefined : `${normalizePath(resolve(hostRoot))}/`;
+  const hostModule = (filename: string): boolean =>
+    hostPrefix !== undefined && normalizePath(filename).startsWith(hostPrefix);
   const facades = new Map<string, string>();
+  const facadeModules = new Set<string>();
   const imports = new Map<string, string>();
   const admitDevelopmentModule = (id: string): void => {
     const file = id.split('?')[0];
@@ -128,7 +145,8 @@ export function executionWorkerEntries(
     return pending;
   };
   return {
-    name: 'forgeax:execution-worker-entries',
+    name: executionWorkerEntriesName,
+    api: { facadeModules } satisfies ExecutionWorkerEntriesApi,
     enforce: 'pre',
     configResolved(config) {
       base = config.base;
@@ -160,6 +178,7 @@ export function executionWorkerEntries(
       if (!reference) {
         reference = this.emitFile({ type: 'chunk', id: resolved.id, preserveSignature: 'strict' });
         facades.set(identity, reference);
+        facadeModules.add(resolved.id);
       }
       const external = externalPrefix + encodeURIComponent(id);
       const previous = imports.get(external);
@@ -168,6 +187,8 @@ export function executionWorkerEntries(
           `Engine capability resolves to multiple modules in one player: ${id}; previous=${[...facades].find(([, value]) => value === previous)?.[0]}; current=${resolved.id}`,
         );
       imports.set(external, reference);
+      // The host imports the facade module itself: one instance, no facade file at startup.
+      if (hostModule(filename)) return resolved;
       return {
         id: external,
         external: true,
@@ -199,6 +220,7 @@ export function executionWorkerEntries(
             preserveSignature: 'strict',
           });
           facades.set(identity, reference);
+          facadeModules.add(resolved.id);
         }
         if (building && reference) {
           const external = externalPrefix + encodeURIComponent(specifier);

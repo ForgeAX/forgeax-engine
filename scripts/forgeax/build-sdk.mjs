@@ -739,10 +739,11 @@ for (const id of sdkSkillIds) {
   await cp(resolve(root, 'skills', id), resolve(stage, 'skills', id), { recursive: true });
 }
 // Source-derived SDK discovery is generated into the distribution, not committed documentation.
-const { renderApiIndex } = await import('./sdk-api-index.mjs');
+// `api-index.md` is the directory; each domain file lands beside it under `api/`.
+const { writeApiReference } = await import('./sdk-api-index.mjs');
 const sdkReferenceRoot = resolve(stage, 'skills/forgeax-engine-sdk/references');
 await mkdir(sdkReferenceRoot, { recursive: true });
-await writeFile(resolve(sdkReferenceRoot, 'api-index.md'), renderApiIndex());
+writeApiReference(sdkReferenceRoot);
 const capabilityFacts = JSON.parse(
   await readFile(resolve(root, 'schemas/engine-capabilities.json'), 'utf8'),
 );

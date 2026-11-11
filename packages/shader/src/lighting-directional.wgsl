@@ -29,9 +29,10 @@ const PCSS_HIGH_COMPARE_TAPS : u32 = 32u;
 // Cascade-local disk points are fixed, bounded, and shared by raw and compare
 // phases. A rotation derived from the integer receiver texel and cascade keeps
 // the pattern stable without a temporal input.
-// One invocation-owned table keeps tap indexing addressable across native calls.
-// The shader only reads these fixed disk points.
-var<private> PCSS_DISK_OFFSETS : array<vec2<f32>, 32> = array<vec2<f32>, 32>(
+// A module constant, not a private variable: every Standard fragment imports
+// this module, and a private table is initialized per invocation whichever
+// filter profile runs, while the one PCSS tap site indexes the constant.
+const PCSS_DISK_OFFSETS : array<vec2<f32>, 32> = array<vec2<f32>, 32>(
   vec2<f32>(-0.326, -0.945), vec2<f32>(0.236, -0.873), vec2<f32>(0.891, -0.404), vec2<f32>(-0.761, -0.581),
   vec2<f32>(0.612, 0.146), vec2<f32>(-0.148, 0.514), vec2<f32>(-0.527, -0.109), vec2<f32>(0.074, 0.911),
   vec2<f32>(-0.944, 0.238), vec2<f32>(0.444, -0.736), vec2<f32>(0.707, 0.641), vec2<f32>(-0.184, -0.342),

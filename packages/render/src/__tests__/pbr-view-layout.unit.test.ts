@@ -14,12 +14,13 @@ describe('PBR view bind-group layout', () => {
     ).toEqual([0, 10]);
   });
 
-  it('omits cloud shadow bindings on the minimum sampled-texture profile', () => {
+  it('omits the cloud map while retaining the shared medium sampler on the minimum profile', () => {
     const entries = buildPbrViewBglEntries({
       storageBuffer: true,
       extendedLighting: false,
       projectorAvailable: false,
     });
-    expect(entries.some((entry) => entry.binding === 16 || entry.binding === 17)).toBe(false);
+    expect(entries.some((entry) => entry.binding === 16)).toBe(false);
+    expect(entries.find((entry) => entry.binding === 17)?.sampler).toEqual({ type: 'filtering' });
   });
 });

@@ -6,8 +6,8 @@ import {
   createWechatWasmHost,
 } from '@forgeax/engine/platform-wechat';
 import { installGuideUiFixture } from '../../../../packages/platform-wechat/__tests__/guide-ui-fixture.ts';
-import html from '../../../../templates/game-3d/assets/guide.ui.html';
-import css from '../../../../templates/game-3d/assets/guide.ui.css';
+import html from '../../../../packages/ui/test-fixtures/game-guide/guide.ui.html';
+import css from '../../../../packages/ui/test-fixtures/game-guide/guide.ui.css';
 
 // Actual authored HTML/CSS/controls on the native UI owner. Game replies are
 // explicit fixture state; this page does not claim 3D or ordinary-build acceptance.

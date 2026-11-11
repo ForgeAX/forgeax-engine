@@ -60,6 +60,35 @@ export function declaredFragmentEntry(
     : fragmentEntry;
 }
 
+/** Forward prepass entry that writes the Standard surface-data outputs. */
+export const SURFACE_DATA_FRAGMENT_ENTRY = 'fs_ao_input';
+const surfaceDataByProgram = new WeakMap<MaterialShaderProgram, boolean>();
+
+/**
+ * Whether a draw of `materialShaderId` cannot serve the surface-data prepass
+ * entry. Built-in Standard / Unlit programs and cooked Surfaces declare it;
+ * hand-written WGSL that does not stays out of the prepass and is shaded by
+ * the main pass over the seeded depth (UE DepthRendering.cpp: a material
+ * without a depth-only path is rendered by the base pass).
+ */
+export function lacksSurfaceDataEntry(
+  fragmentEntry: string | undefined,
+  materialShaderId: string | undefined,
+  program: MaterialShaderProgram | undefined,
+  builtIn: boolean,
+): boolean {
+  if (fragmentEntry !== SURFACE_DATA_FRAGMENT_ENTRY) return false;
+  if (program === undefined) return !builtIn && materialShaderId !== undefined;
+  if (program.entryPoints !== undefined)
+    return !program.entryPoints.some((candidate) => candidate.name === fragmentEntry);
+  let declared = surfaceDataByProgram.get(program);
+  if (declared === undefined) {
+    declared = program.source.includes(`fn ${SURFACE_DATA_FRAGMENT_ENTRY}(`);
+    surfaceDataByProgram.set(program, declared);
+  }
+  return !declared;
+}
+
 /** A screen receiver overrides only the ordinary Standard entry, never authored shading. */
 export function selectStandardForwardScreenEntry(
   requested: string | undefined,

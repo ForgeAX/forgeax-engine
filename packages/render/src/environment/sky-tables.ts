@@ -14,9 +14,15 @@ import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
-import type { GraphAtmosphere } from './luts';
+import type { GraphAtmosphereTables } from './luts';
 import { atmosphereMediumKey, atmosphereStorage, stageAtmospherePublish } from './storage';
-import { atmosphereVisibilityGroup, atmosphereVisibilityLayout } from './visibility';
+import {
+  type AtmosphereVisibility,
+  atmosphereVisibilityAccesses,
+  atmosphereVisibilityDirty,
+  atmosphereVisibilityGroup,
+  atmosphereVisibilityLayout,
+} from './visibility';
 
 type State = { layout: BindGroupLayout; pipeline: RenderPipeline; sampler: Sampler };
 
@@ -42,10 +48,8 @@ export function addAtmosphereSkyLuts(
     readonly parameters: GraphBuffer;
     readonly dirty: (frame: RenderPipelineFrame) => boolean;
   },
-): Result<
-  Pick<GraphAtmosphere, 'transmittance' | 'multipleScattering' | 'skyView' | 'captureSky'>,
-  RenderGraphError
-> {
+  visibility: AtmosphereVisibility = {},
+): Result<GraphAtmosphereTables, RenderGraphError> {
   const view = graph.importBuffer(
     'atmosphere-sky-view-parameters',
     { size: VIEW_UNIFORM_BYTES, usage: 0x48 },
@@ -87,18 +91,20 @@ export function addAtmosphereSkyLuts(
     );
   };
   for (const stage of [
-    { name: 'transmittance', target: transView.value, inputs: [], captured: false },
+    { name: 'transmittance', target: transView.value, inputs: [], captured: false, visibility: {} },
     {
       name: 'multiple_scattering',
       target: multiView.value,
       inputs: [transView.value],
       captured: false,
+      visibility: {},
     },
     {
       name: 'sky_view',
       target: skyView.value,
       inputs: [transView.value, multiView.value],
       captured: false,
+      visibility,
     },
     ...(captureView === undefined
       ? []
@@ -108,6 +114,7 @@ export function addAtmosphereSkyLuts(
             target: captureView,
             inputs: [transView.value, multiView.value],
             captured: true,
+            visibility: {},
           },
         ]),
   ] as const) {
@@ -120,9 +127,11 @@ export function addAtmosphereSkyLuts(
       ]);
     const parameters =
       stage.captured && captureInput !== undefined ? captureInput.parameters : view.value;
+    const localVisibility: AtmosphereVisibility = stage.visibility;
     const label = stage.captured ? 'capture-sky-view' : stage.name.replaceAll('_', '-');
     const added = graph.addRasterPass(`atmosphere-${label}-fragment`, {
       accesses: [
+        ...atmosphereVisibilityAccesses(localVisibility),
         { resource: parameters, usage: 'uniform-read' },
         ...stage.inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
         { resource: stage.target, usage: 'color-attachment' },
@@ -132,7 +141,9 @@ export function addAtmosphereSkyLuts(
         stage.captured && captureInput !== undefined
           ? captureInput.dirty
           : stage.name === 'sky_view'
-            ? (frame: RenderPipelineFrame) => submittedSkyKey !== skyKey(frame)
+            ? (frame: RenderPipelineFrame) =>
+                atmosphereVisibilityDirty(frame, localVisibility) ||
+                submittedSkyKey !== skyKey(frame)
             : mediumDirty,
       encodeDirect: (pass, frame, resources) => {
         const device = frame.runtime.device;
@@ -218,7 +229,20 @@ export function addAtmosphereSkyLuts(
         pass.setPipeline(state.pipeline);
         pass.setBindGroup(0, group);
         if (stage.name === 'sky_view')
-          pass.setBindGroup(1, atmosphereVisibilityGroup(frame, buffer, 0));
+          pass.setBindGroup(
+            1,
+            atmosphereVisibilityGroup(
+              frame,
+              buffer,
+              0,
+              localVisibility.directional === undefined
+                ? undefined
+                : resources.textureView(localVisibility.directional).unwrap(),
+              localVisibility.cloud === undefined
+                ? undefined
+                : resources.textureView(localVisibility.cloud).unwrap(),
+            ),
+          );
         pass.draw(3);
         if (stage.name === 'sky_view' && !stage.captured) {
           const key = skyKey(frame);

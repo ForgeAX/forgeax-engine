@@ -36,6 +36,7 @@ const fog = (entityKey: number): FogCandidate => ({
   mode: 'exp',
   near: 0,
   far: 100,
+  skyOpacity: 1,
 });
 
 describe('immutable frame plan contract', () => {

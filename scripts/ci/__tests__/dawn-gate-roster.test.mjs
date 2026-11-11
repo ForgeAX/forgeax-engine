@@ -6,9 +6,11 @@ import { test } from 'node:test';
 import { BaseSequencer, createVitest } from 'vitest/node';
 import { parse } from 'yaml';
 import { DawnSequencer, planDawnShards } from '../../../config/vitest-dawn-sequencer.ts';
+import { dawnOrdinaryWorkers, runnerResources } from '../../lib/runner-resources.mjs';
 import { DAWN_COMPACT_TEST_FILES } from '../dawn-compact-roster.mjs';
 import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from '../dawn-gate-roster.mjs';
 import {
+  dawnGroupEnvironment,
   dawnVitestArgs,
   selectDawnGroups,
   selectDawnShard,
@@ -45,6 +47,9 @@ try {
   await nativeVitest.close();
 }
 
+// Replay the explicitly admitted Linux CI executor; local discovery remains serial.
+const shippingPartitions = planDawnShards(nativeSpecifications, root, 2);
+
 function dawnPolicy(vitest) {
   const project = vitest.projects.find((project) => project.name === 'dawn');
   assert.ok(project, 'missing Dawn project');
@@ -76,6 +81,107 @@ function dawnPolicy(vitest) {
     })),
   };
 }
+
+test('Dawn sharding follows the resolved project pool when root CLI workers differ', async () => {
+  const specifications = nativeSpecifications.map(({ moduleId, project }) => ({
+    moduleId,
+    project: { name: project.name, config: { maxWorkers: 2 } },
+  }));
+  const selected = await new DawnSequencer({
+    config: {
+      root,
+      maxWorkers: 1,
+      shard: { index: 1, count: 4 },
+    },
+  }).shard(specifications);
+  assert.deepEqual(
+    selected.map(({ moduleId }) => moduleId),
+    shippingPartitions[0].map(({ moduleId }) => moduleId),
+  );
+  await assert.rejects(
+    new DawnSequencer({ config: { root, shard: { index: 1, count: 4 } } }).shard([
+      {
+        moduleId: specifications[0].moduleId,
+        project: { name: 'dawn', config: { maxWorkers: 96 } },
+      },
+    ]),
+    /exactly one or two/,
+  );
+});
+
+test('the opt-in ordinary pool is bounded and retains separate native forks', () => {
+  const admitted = { cpus: 8, memoryBytes: 16_000_000_000 };
+  assert.equal(dawnOrdinaryWorkers({}, admitted), 1);
+  assert.equal(dawnOrdinaryWorkers({ FORGEAX_DAWN_ORDINARY_WORKERS: '2' }, admitted), 2);
+  for (const requested of ['', '0', '3', '96', '2junk']) {
+    assert.throws(
+      () => dawnOrdinaryWorkers({ FORGEAX_DAWN_ORDINARY_WORKERS: requested }, admitted),
+      /exactly 1 or 2/,
+    );
+  }
+  for (const resources of [
+    { cpus: 7, memoryBytes: admitted.memoryBytes },
+    { cpus: 8, memoryBytes: admitted.memoryBytes - 1 },
+  ]) {
+    assert.throws(
+      () => dawnOrdinaryWorkers({ FORGEAX_DAWN_ORDINARY_WORKERS: '2' }, resources),
+      /at least eight CPUs and 16 GB/,
+    );
+  }
+  for (const group of DAWN_GATE_GROUPS) {
+    const args = dawnVitestArgs(group, { ordinaryWorkers: 2 });
+    const ordinary = group.vitestShard !== undefined;
+    const env = dawnGroupEnvironment(group, { LP_NUM_THREADS: '8' }, 2);
+    assert.equal(env.LP_NUM_THREADS, ordinary ? '4' : '8');
+    assert.equal(env.FORGEAX_SHADER_COMPILE_WORKERS, ordinary ? '1' : undefined);
+    assert.ok(args.includes(`--maxWorkers=${ordinary ? 2 : 1}`));
+    assert.equal(args.includes('--pool=forks'), ordinary);
+    assert.equal(args.includes('--fileParallelism=true'), ordinary);
+    assert.equal(args.includes('--no-file-parallelism'), !ordinary);
+    assert.equal(args.includes('--no-isolate'), group.id.startsWith('heavy-'));
+  }
+});
+
+test('the resolved project consumes the bounded pool policy instead of masking CLI workers', () => {
+  const resources = runnerResources();
+  const admitted = resources.cpus >= 8 && resources.memoryBytes >= 16_000_000_000;
+  for (const selector of [null, ...selectors]) {
+    const env = { ...process.env, FORGEAX_DAWN_ORDINARY_WORKERS: '2' };
+    for (const name of selectors) delete env[name];
+    if (selector) env[selector] = '1';
+    const output = execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { createVitest } from 'vitest/node';
+         let v;
+         try {
+           v = await createVitest('test', {
+             config: 'config/vitest.dawn.config.ts', project: ['dawn'],
+             maxWorkers: 2, fileParallelism: true, pool: 'forks', watch: false,
+           });
+           const c = v.projects.find(p => p.name === 'dawn').config;
+           console.log(JSON.stringify({ workers: c.maxWorkers, pool: c.pool,
+             isolate: c.isolate, testTimeout: c.testTimeout }));
+         } catch (error) { console.log(JSON.stringify({ error: error.message })); }
+         finally { await v?.close(); }`,
+      ],
+      { cwd: root, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const policy = JSON.parse(output.trim());
+    if (!selector && !admitted) {
+      assert.match(policy.error, /at least eight CPUs and 16 GB/);
+    } else {
+      assert.deepEqual(policy, {
+        workers: selector ? 1 : 2,
+        pool: 'forks',
+        isolate: true,
+        testTimeout: 30000,
+      });
+    }
+  }
+});
 
 test('the dedicated entry retains the root Dawn execution policy and source aliases', async () => {
   const vitest = await createVitest('test', {
@@ -332,6 +438,7 @@ test('local, PR and Linux nightly execute the same complete gate', () => {
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression
   const profile = "${{ inputs.nightly_full_profile && '0' || '1' }}";
   assert.equal(step.env.FORGEAX_DAWN_LIGHTWEIGHT, profile);
+  assert.equal(step.env.FORGEAX_DAWN_ORDINARY_WORKERS, '2');
 });
 
 test('Dawn discovery stays deterministic and admits new complete files without a copied roster', () => {
@@ -544,6 +651,23 @@ test('partial run 42369476147 separates complete process costs from inherited fo
   }
 });
 
+test('historical missing-owner forecasts stay frozen when later measurements grow', () => {
+  const timings = JSON.parse(readFileSync('scripts/ci/dawn-file-seconds.json'));
+  const rows = [timings.previousRun, ...timings.replayRuns];
+  const inherited = rows.filter((row) => row.reservedOwners?.['direct-light'] === 219.011);
+  assert.equal(inherited.length, 8);
+  for (const row of inherited) {
+    assert.equal(row.owners['direct-light'], undefined, 'a frozen forecast is not an observation');
+    const fixture = JSON.parse(
+      readFileSync(new URL(`./fixtures/dawn-completed-${row.runId}.json`, import.meta.url)),
+    );
+    assert.deepEqual(row.reservedOwners, fixture.reservedOwners);
+  }
+  const admitted = [...rows, timings.latestRun].find((row) => row.runId === 42778322662);
+  assert.equal(admitted.owners['direct-light'], 350.217);
+  assert.ok(timings.owners['direct-light'] >= 350.217, 'retain the larger current capacity cost');
+});
+
 test('historical missing-file forecasts stay frozen when later measurements grow', () => {
   const timings = JSON.parse(readFileSync(resolve(root, 'scripts/ci/dawn-file-seconds.json')));
   const snapshots = [timings.previousRun, ...timings.replayRuns];
@@ -555,7 +679,12 @@ test('historical missing-file forecasts stay frozen when later measurements grow
     assert.deepEqual(snapshot.owners, fixture.owners);
     assert.deepEqual(snapshot.reservedFiles, fixture.reservedFiles);
     assert.deepEqual(snapshot.fileForecast, fixture.fileForecast);
-    assert.equal(snapshot.fileForecast.sourceHead, '9d67578ad93a06b4883e20b6998485ac540a2a8f');
+    assert.equal(
+      snapshot.fileForecast.sourceHead,
+      snapshot.fileForecast.kind === 'partial-process-reserve'
+        ? snapshot.head
+        : '9d67578ad93a06b4883e20b6998485ac540a2a8f',
+    );
     assert.equal(Object.keys(snapshot.reservedFiles).length, snapshot.fileForecast.fileCount);
     for (const [file, seconds] of Object.entries(snapshot.reservedFiles)) {
       assert.ok(!Object.hasOwn(snapshot.files, file));
@@ -574,6 +703,51 @@ test('historical missing-file forecasts stay frozen when later measurements grow
 });
 
 for (const receipt of [
+  {
+    runId: 42929802533,
+    fileCount: 364,
+    ownerCount: 28,
+    missing: ['shadow-fields'],
+  },
+  {
+    runId: 42817415758,
+    fileCount: 272,
+    ownerCount: 26,
+    missing: ['compact-2', 'gi-4', 'gi-1'],
+  },
+  {
+    runId: 42835598738,
+    fileCount: 364,
+    ownerCount: 26,
+    missing: ['heavy-4', 'specular-aa', 'gi-6'],
+  },
+  {
+    runId: 42786967820,
+    fileCount: 364,
+    ownerCount: 21,
+    missing: [
+      'feature-depth',
+      'gi-6',
+      'heavy-3',
+      'heavy-4',
+      'specular-aa',
+      'timing-lifecycle',
+      'transmission',
+      'vfx-depth',
+    ],
+  },
+  {
+    runId: 42778322662,
+    fileCount: 364,
+    ownerCount: 26,
+    missing: ['compact-2', 'gi-1', 'gi-4'],
+  },
+  {
+    runId: 42443025201,
+    fileCount: 364,
+    ownerCount: 24,
+    missing: ['heavy-1', 'heavy-2', 'shadow-fields', 'gi-2', 'screen-probe'],
+  },
   { runId: 42411246807, fileCount: 364, ownerCount: 28, missing: ['gi-3'] },
   {
     runId: 42394605381,
@@ -634,8 +808,22 @@ for (const receipt of [
     assert.equal(snapshot.runId, receipt.runId);
     assert.equal(Object.keys(snapshot.files).length, receipt.fileCount ?? 354);
     assert.equal(Object.keys(snapshot.owners).length, receipt.ownerCount);
+    if (snapshot.ordinaryReceipts) {
+      const measuredFileWork = Object.values(snapshot.files).reduce(
+        (sum, seconds) => sum + seconds,
+        0,
+      );
+      const workerCount = snapshot.executionPolicy?.ordinaryWorkers ?? 1;
+      const completeProcessWork =
+        workerCount *
+        snapshot.ordinaryReceipts.reduce((sum, row) => sum + row.processWallSeconds, 0);
+      assert.ok(
+        Math.abs(measuredFileWork - completeProcessWork) < 0.001,
+        'ordinary file receipts conserve complete work across each admitted worker',
+      );
+    }
 
-    const ordinaryFiles = configuredPartitions.flatMap((partition) =>
+    const ordinaryFiles = shippingPartitions.flatMap((partition) =>
       partition.map((specification) =>
         relative(root, specification.moduleId).replaceAll('\\', '/'),
       ),
@@ -651,8 +839,13 @@ for (const receipt of [
     const fallback = Math.max(...Object.values(timings.files));
     const fileCost = (file) =>
       snapshot.files[file] ?? snapshot.reservedFiles?.[file] ?? timings.files[file] ?? fallback;
+    const largest = Math.max(
+      ...nativeSpecifications.map(({ moduleId }) =>
+        fileCost(relative(root, moduleId).replaceAll('\\', '/')),
+      ),
+    );
     const laneSeconds = DAWN_GATE_SHARDS.map((owners, lane) => {
-      const ordinarySeconds = configuredPartitions[lane].reduce(
+      const ordinarySeconds = shippingPartitions[lane].reduce(
         (sum, specification) =>
           sum + fileCost(relative(root, specification.moduleId).replaceAll('\\', '/')),
         0,
@@ -661,13 +854,13 @@ for (const receipt of [
         .filter((id) => !id.startsWith('ordinary-'))
         .reduce((sum, id) => {
           const group = DAWN_GATE_GROUPS.find((candidate) => candidate.id === id);
-          const completed = snapshot.owners[id];
+          const admitted = snapshot.owners[id] ?? snapshot.reservedOwners?.[id];
           const retained =
             timings.owners[id] ?? group.files.reduce((total, file) => total + fileCost(file), 0);
-          return sum + (completed ?? Math.max(retained, group.placementReserveSeconds ?? 0));
+          return sum + (admitted ?? Math.max(retained, group.placementReserveSeconds ?? 0));
         }, 0);
       // Retain five seconds for each run's complete shader-profile producer.
-      return ordinarySeconds + ownerSeconds + 5;
+      return ordinarySeconds / 2 + largest / 2 + 60 + ownerSeconds + 5;
     });
 
     assert.ok(
@@ -688,6 +881,8 @@ for (const receipt of [
 }
 
 for (const receipt of [
+  { runId: 42817415758, fileCount: 272 },
+  { runId: 42443025201, fileCount: 364 },
   { runId: 42411246807, fileCount: 364 },
   { runId: 42394605381, fileCount: 364 },
   { runId: 42388664877, fileCount: 364 },
@@ -755,6 +950,32 @@ test('latest Dawn timing ledger retains the preceding maximum measurements', () 
   }
 });
 
+test('later native measurements preserve older uncompleted-owner reservations', () => {
+  const timings = JSON.parse(readFileSync('scripts/ci/dawn-file-seconds.json', 'utf8'));
+  for (const snapshot of [timings.latestRun, timings.previousRun, ...timings.replayRuns]) {
+    if (snapshot.reservedOwners === undefined) continue;
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL(`./fixtures/dawn-completed-${snapshot.runId}.json`, import.meta.url),
+        'utf8',
+      ),
+    );
+    assert.deepEqual(snapshot.reservedOwners, fixture.reservedOwners);
+    if (snapshot.ownerForecastSourceHead !== undefined) {
+      assert.equal(snapshot.ownerForecastSourceHead, '3d396763e7ee1102f329ba686138371a7ca04167');
+      assert.equal(snapshot.ownerForecastSourceHead, fixture.ownerForecastSourceHead);
+    } else {
+      assert.equal(snapshot.forecastSourceRunId, fixture.forecastSourceRunId);
+      assert.ok(timings.runs.includes(snapshot.forecastSourceRunId));
+      assert.ok(snapshot.forecastSourceRunId < snapshot.runId);
+    }
+    for (const [owner, seconds] of Object.entries(snapshot.reservedOwners)) {
+      assert.ok(!Object.hasOwn(snapshot.owners, owner));
+      assert.ok(seconds > 0 && seconds <= timings.owners[owner]);
+    }
+  }
+});
+
 test('long native capture journeys start before ordinary backfill', () => {
   for (const id of ['modeling-s6', 'modeling-show', 'gi-5', 'surface-pipelines', 'direct-light']) {
     const lane = DAWN_GATE_SHARDS.findIndex((owners) => owners.includes(id));
@@ -784,30 +1005,34 @@ test('long native capture journeys start before ordinary backfill', () => {
   );
 });
 
-test('run 42147390301 tail owners stay off the formerly overloaded fourth lane', () => {
+test('native tail placement retains independent headroom across the later cohorts', () => {
   const fourthLane = DAWN_GATE_SHARDS[3];
-  for (const id of ['modeling-s6', 'screen-probe', 'transmission']) {
+  for (const id of ['modeling-s6', 'transmission']) {
     assert.ok(!fourthLane.includes(id), `${id} must use capacity outside the measured slow lane`);
   }
+  assert.ok(
+    fourthLane.includes('screen-probe'),
+    'the complete owner uses the 2026-11-10 fourth-lane headroom',
+  );
 });
 
 test('run 42156059037 timeouts reserve the fourth lane before ordinary backfill', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.deepEqual(DAWN_GATE_SHARDS[3], ['ordinary-4', 'surface-pipelines', 'gi-5', 'gi-3']);
-  for (const id of ['shadow-fields', 'heavy-1', 'heavy-2']) {
+  assert.deepEqual(DAWN_GATE_SHARDS[3], [
+    'ordinary-4',
+    'surface-pipelines',
+    'gi-5',
+    'gi-3',
+    'screen-probe',
+    'feature-depth',
+  ]);
+  for (const id of ['shadow-fields', 'heavy-1', 'heavy-2', 'nested-discard']) {
     assert.equal(laneOf(id), 0, `${id} moves to the measured lane-one headroom`);
   }
-  for (const id of [
-    'compact-1',
-    'feature-depth',
-    'timing-lifecycle',
-    'gi-6',
-    'vfx-depth',
-    'nested-discard',
-  ]) {
+  for (const id of ['compact-3', 'timing-lifecycle', 'gi-6', 'renderer']) {
     assert.equal(laneOf(id), 1, `${id} moves to the measured lane-two headroom`);
   }
-  assert.equal(laneOf('compact-3'), 0, 'run 42411246807 exchanges complete compact owners');
+  assert.equal(laneOf('compact-1'), 0, 'run 42443025201 exchanges complete compact owners');
   for (const id of ['compact-2', 'direct-light', 'gi-4']) {
     assert.equal(laneOf(id), 2, `${id} stays with the reduced third-lane workload`);
   }
@@ -819,13 +1044,21 @@ test('run 42156059037 timeouts reserve the fourth lane before ordinary backfill'
   );
 });
 
-test('run 42277039108 spreads complete native forecasts across ordinary lanes', () => {
+test('run 42835598738 moves complete full-profile depth owners off the saturated second lane', () => {
   const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
-  assert.equal(laneOf('gi-2'), 0);
-  assert.equal(laneOf('transmission'), 1);
+  assert.equal(laneOf('feature-depth'), 3);
+  assert.equal(laneOf('vfx-depth'), 0);
+  assert.ok(!DAWN_GATE_SHARDS[1].includes('feature-depth'));
+  assert.ok(!DAWN_GATE_SHARDS[1].includes('vfx-depth'));
+});
+
+test('run 42929802533 moves the complete S6 capture off the overloaded first Dawn lane', () => {
+  const laneOf = (id) => DAWN_GATE_SHARDS.findIndex((lane) => lane.includes(id));
+  assert.equal(laneOf('gi-2'), 2, 'run 42786967820 moves the complete owner to lane three');
+  assert.equal(laneOf('transmission'), 2, 'run 42786967820 moves the complete owner to lane three');
   assert.equal(laneOf('gi-3'), 3);
   assert.equal(laneOf('gi-1'), 2);
-  assert.equal(laneOf('modeling-s6'), 0);
+  assert.equal(laneOf('modeling-s6'), 1);
   assert.equal(laneOf('gpu-timing'), 0);
   assert.equal(laneOf('gi-4'), 2);
   assert.notEqual(laneOf('gi-4'), laneOf('gi-5'));
@@ -839,19 +1072,28 @@ test('run 42247651279 leaves ordinary-file headroom on the fourth lane', () => {
   const snapshot = JSON.parse(
     readFileSync(new URL('./fixtures/dawn-completed-42164226420.json', import.meta.url), 'utf8'),
   );
-  const seconds = configuredPartitions[3].reduce((sum, file) => {
+  const seconds = shippingPartitions[3].reduce((sum, file) => {
     const path = relative(root, file.moduleId).replaceAll('\\', '/');
     return (
       sum +
       (snapshot.files[path] ?? timings.files[path] ?? Math.max(...Object.values(timings.files)))
     );
   }, 0);
-  assert.ok(seconds <= 1550, `ordinary-4 must shed backfill after its timeout: ${seconds}s`);
+  const largest = Math.max(
+    ...nativeSpecifications.map(({ moduleId }) => {
+      const file = relative(root, moduleId).replaceAll('\\', '/');
+      return (
+        snapshot.files[file] ?? timings.files[file] ?? Math.max(...Object.values(timings.files))
+      );
+    }),
+  );
+  const forecast = seconds / 2 + largest / 2 + 60;
+  assert.ok(forecast <= 1550, `ordinary-4 must shed backfill after its timeout: ${forecast}s`);
 });
 
 test('measured heavy ordinary files spread without extra owners', (t) => {
   const locations = new Map(
-    configuredPartitions.flatMap((partition, lane) =>
+    shippingPartitions.flatMap((partition, lane) =>
       partition.map(({ moduleId }) => [relative(root, moduleId).replaceAll('\\', '/'), lane + 1]),
     ),
   );

@@ -66,12 +66,18 @@ describe('portable implementation support', () => {
 
   it('retains complete guide source and numeric control markup', () => {
     const source = readFileSync(
-      new NodeURL('../../../../../templates/game-3d/assets/guide.ui.css', import.meta.url),
+      new NodeURL(
+        '../../../../../packages/ui/test-fixtures/game-guide/guide.ui.css',
+        import.meta.url,
+      ),
       'utf8',
     );
     expect(parseCssAuthoring(source, 'guide.ui.css').diagnostics).toEqual([]);
     const html = readFileSync(
-      new NodeURL('../../../../../templates/game-3d/assets/guide.ui.html', import.meta.url),
+      new NodeURL(
+        '../../../../../packages/ui/test-fixtures/game-guide/guide.ui.html',
+        import.meta.url,
+      ),
       'utf8',
     );
     expect(parseHtmlAuthoring(html, 'guide.ui.html').diagnostics).toEqual([]);

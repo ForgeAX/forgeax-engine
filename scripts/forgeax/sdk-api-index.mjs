@@ -1,169 +1,269 @@
-// Generates the game-facing SDK API index from Engine sources.
+// Generates the game-facing SDK API reference from Engine sources: a short
+// directory (`api-index.md`) and one small file per domain (`api/<domain>.md`),
+// so an agent reads only the domain its task needs.
 //
-//   node scripts/forgeax/sdk-api-index.mjs                    print the index
-//   node scripts/forgeax/sdk-api-index.mjs --output <path>    write an explicit destination
-//   node scripts/forgeax/sdk-api-index.mjs --check            validate source signatures
-//   node scripts/forgeax/sdk-api-index.mjs --check --output <path>  also check that document
+//   node scripts/forgeax/sdk-api-index.mjs                    print every file
+//   node scripts/forgeax/sdk-api-index.mjs --output <dir>     write <dir>/api-index.md and <dir>/api/*.md
+//   node scripts/forgeax/sdk-api-index.mjs --check            validate source signatures and sizes
+//   node scripts/forgeax/sdk-api-index.mjs --check --output <dir>  also check those documents
 //
-// SECTIONS is the curated allowlist: each entry is an export of a public
+// DOMAINS is the curated allowlist: each section is an export of a public
 // `@forgeax/engine/<facade>` and optionally the members to show. Signatures and
 // component fields are read from source declarations, so a rename, removal or
-// signature change fails `pnpm skills:check` until the index is regenerated.
+// signature change fails `pnpm skills:check` until the reference is regenerated.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// 17 KiB: rendering entries (spot aim, additive blend, shadow opt-out, custom surface +
-// per-frame uniform), procedural geometry factories and the runtime mesh write API.
-export const API_INDEX_MAX_BYTES = 17 * 1024;
+// Whole reference, all files: rendering entries (spot aim, additive blend, shadow opt-out,
+// custom surface + per-frame uniform, Camera exposure, Atmosphere fields, light units),
+// every procedural geometry factory signature and the runtime mesh write API, the
+// playthrough helper (including release play), plus per-file headers. A task reads the
+// directory and one file.
+export const API_INDEX_MAX_BYTES = 27 * 1024;
+// One file is read in a single tool call; keep each well under a context-heavy read.
+export const API_FILE_MAX_BYTES = 6 * 1024;
+/** The directory file; domain files live beside it under `api/`. */
+export const API_INDEX_FILE = 'api-index.md';
 
-const SECTIONS = [
-  [
-    'types',
-    ['ok', 'err', 'Result', 'RenderQueue', 'MaterialRenderState: cullMode depthWriteEnabled blend'],
-  ],
-  [
-    'ecs',
-    [
-      'World: spawn get set addComponent despawn insertResource getResource addSystem removeSystem',
-      'SystemDescriptor: name queries fn after before',
-      'QueryDescriptor: read write with without',
-      'QueryRow: entity get mut',
-      'defineComponent',
-      'TimeResource: delta elapsed',
-      '+Time FixedTime Update FixedUpdate EntityHandle',
+const DOMAINS = [
+  {
+    id: 'core',
+    title: 'Core: imports, results, ECS, plugins, scene, math',
+    covers:
+      'Result, World/systems/queries, Plugin and Context, GameHost, Transform, vec3/quat, packs',
+    sections: [
+      [
+        'types',
+        [
+          'ok',
+          'err',
+          'Result',
+          'RenderQueue',
+          'MaterialRenderState: cullMode depthWriteEnabled blend',
+          '+AssetHandle',
+        ],
+      ],
+      [
+        'ecs',
+        [
+          'World: spawn get set addComponent despawn insertResource getResource addSystem removeSystem',
+          'SystemDescriptor: name queries fn after before',
+          'QueryDescriptor: read write with without',
+          'QueryRow: entity get mut',
+          'defineComponent',
+          'TimeResource: delta elapsed',
+          '+Time FixedTime Update FixedUpdate EntityHandle',
+        ],
+      ],
+      ['plugin', ['Plugin', 'Context: world assets physics gameHost effect']],
+      ['app', ['GameHost: canvas uiRoot assets port gameProjection setPointerLockAllowed']],
+      [
+        'scene',
+        [
+          'Transform',
+          'worldResolveSceneEntity',
+          'sceneEntity',
+          'readPresentationWorldMatrix',
+          'setTransformLookAt',
+          '+Name worldDespawnScene GlobalTransform ChildOf Children PROPAGATE_TRANSFORMS_SYSTEM',
+        ],
+      ],
+      [
+        'math',
+        [
+          'vec3: create add sub scale normalize distance lerp',
+          'quat: create fromEuler fromAxisAngle fromLookAt multiply slerp',
+          'ray: getOrigin getDirection',
+          'rng: create',
+          'EulerOrder',
+          '+vec2 vec4 mat3 mat4 euler color box3 easing noise',
+        ],
+      ],
+      ['pack/source', ['definePack', 'definePackageId']],
     ],
-  ],
-  ['plugin', ['Plugin', 'Context: world assets physics gameHost effect']],
-  ['app', ['GameHost: canvas uiRoot assets setPointerLockAllowed']],
-  [
-    'scene',
-    [
-      'Transform',
-      'worldResolveSceneEntity',
-      'sceneEntity',
-      'readPresentationWorldMatrix',
-      '+Name worldDespawnScene GlobalTransform ChildOf Children PROPAGATE_TRANSFORMS_SYSTEM',
+    gotchas: [
+      'Import from `@forgeax/engine/<facade>` only, never physical `@forgeax/engine-*` packages.',
+      'Expected failures return `Result` (`r.ok ? r.value : r.error`, `.unwrap()` throws): World methods, asset loads, geometry, pack builds.',
+      'Math values are branded `Float32Array`s from `vec3.create(x, y, z)` / `quat.create()`; functions write into `out` and return it. Component data takes plain arrays (`{ pos: [0, 1, 0] }`).',
+      'Pack output keys (sourceKeys) must match {{pack/guid PACK_SOURCE_KEY_RE}} (lower case).',
+      "Declare every service a plugin reads in `inject` (`inject: ['world', 'assets', 'gameHost']`); add systems inside `ctx.effect` and `yield` their removal.",
     ],
-  ],
-  [
-    'math',
-    [
-      'vec3: create add sub scale normalize distance lerp',
-      'quat: create fromEuler fromAxisAngle fromLookAt multiply slerp',
-      'ray: getOrigin getDirection',
-      'rng: create',
-      'EulerOrder',
-      '+vec2 vec4 mat3 mat4 euler color box3 easing noise',
+  },
+  {
+    id: 'render',
+    title: 'Rendering: camera, lights, sky, fog, materials',
+    covers:
+      'Camera and exposure, light units, Atmosphere, Fog, MeshRenderer, Materials, transparency',
+    sections: [
+      [
+        'render',
+        [
+          'perspective(opts): fov aspect near far autoAspect',
+          'orthographic(opts): left right bottom top near far',
+          'Camera: clearColor tonemap exposure exposureMode compensationEv rangeEv rates antialias bloom bloomThreshold bloomIntensity',
+          'DirectionalLight: direction color intensity castShadow',
+          'PointLight: color intensity range',
+          'SpotLight: direction color intensity range innerConeDeg outerConeDeg castShadow',
+          'Skylight: color groundColor intensity',
+          'Fog: color mode near far skyOpacity',
+          'Atmosphere: *',
+          'ShadowParticipation: cast receive',
+          'Visibility: state',
+          'MeshFilter',
+          'MeshRenderer: materials',
+          'Materials.standard(options): baseColor metallic roughness emissive emissiveIntensity baseColorTexture alphaCutoff renderState queue surfaceModule parameters values',
+          'Materials.unlit(opts): baseColorTexture alphaTexture alphaCutoff alphaMode blendMode renderState queue',
+          '+setActiveCamera SkyboxBackground CAMERA_EXPOSURE_MODE_AUTO CAMERA_EXPOSURE_MODE_MANUAL TONEMAP_ACES_FILMIC ANTIALIAS_FXAA BLOOM_ENABLED FogModeValue VisibilityStateValue VolumetricFog Lines Points Instances CanvasTexture PlanarReflection',
+        ],
+      ],
     ],
-  ],
-  ['picking', ['viewportToWorld', 'pick', 'PickHit: *', '+pickTriangle pickVertex pickTile']],
-  ['input', ['INPUT_SNAPSHOT_RESOURCE_KEY', 'InputSnapshot: keyboard mouse', '+getAxis getVector']],
-  [
-    'render',
-    [
-      'perspective(opts): fov aspect near far autoAspect',
-      'orthographic(opts): left right bottom top near far',
-      'Camera: clearColor tonemap exposure antialias bloom bloomThreshold bloomIntensity',
-      'DirectionalLight: direction color intensity castShadow',
-      'PointLight: color intensity range',
-      'SpotLight: direction color intensity range innerConeDeg outerConeDeg castShadow',
-      'Skylight: color groundColor intensity',
-      'Fog: color mode near far',
-      'ShadowParticipation: cast receive',
-      'MeshFilter',
-      'MeshRenderer: materials',
-      'Materials.standard(options): baseColor metallic roughness emissive emissiveIntensity baseColorTexture alphaCutoff renderState queue surfaceModule parameters values',
-      'Materials: unlit',
-      '+setActiveCamera SkyboxBackground Atmosphere TONEMAP_ACES_FILMIC ANTIALIAS_FXAA BLOOM_ENABLED FogModeValue VolumetricFog Lines Points Instances CanvasTexture PlanarReflection',
+    gotchas: [
+      'Camera data: `{ ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), tonemap: TONEMAP_ACES_FILMIC }`; `fov` is radians. Sky: bind a generated HDR equirect asset to `SkyboxBackground` and `Skylight`; an opaque `clearColor` is tone-mapped. `DirectionalLight.direction` points from the light (opposite of Three.js).',
+      'Exposure is manual (keep it for a fixed sun). Auto (`CAMERA_EXPOSURE_MODE_AUTO`) meters within `rangeEv` (`[min, max]` EV) at `rates` (`[up, down]` EV/s), offset by `compensationEv`; `exposure` is then the fallback multiplier until the meter commits. It restarts on camera changes; judge a settled frame.',
+      'Light units: `PointLight` / `SpotLight` `intensity` is candela, `DirectionalLight` `intensity` is illuminance (lux-like). A point light of I cd lights a surface d m away with I/d^2. Bloom starts at `bloomThreshold` (after exposure); the default -1 blooms the whole frame, 1 keeps only above-white highlights.',
+      '`Atmosphere` draws the sky and a sun disc opposite `DirectionalLight.direction` and reddens a low sun itself. The first shadow-casting `DirectionalLight` (else the first) is both sky sun and key light. Under `Atmosphere`, `Fog` already scatters sky and sun light and adds `color` on top: leave its black default (as Unreal), or haze turns the horizon white.',
+      'Under `Atmosphere` a `Skylight` without `equirect` is the sky radiance times `intensity`, so the ambient follows the sun.',
+      "No `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`; per entity: bind an `assets.copy`, `assets.update` its `baseColor`. Additive: `color: { srcFactor: 'src-alpha', dstFactor: 'one' }`.",
+      '`SpotLight` takes its position from `Transform` but aims by its world `direction` field (not Transform rotation); cone angles are half-angles in degrees. Beam: `createConeGeometry(r, h, 48, 1, true)` (open-ended). Blended-only meshes cast no shadow unless `ShadowParticipation { cast: true }`.',
+      'Particles (rain, snow, sparks, fire, dust): `point-list` mesh + `color`/`uv1` streams + `Points { size, sizeUnits: world, shape: soft }` + blended unlit material; `writeRange` per frame (see cookbook index). 10k+: VFX.',
+      'Custom lit shader: `Materials.standard({ surfaceModule, parameters, values })` names an `assets/` `.wgsl` module (`#define_import_path`) exporting `evaluate_surface(input: SurfaceInput) -> SurfaceData` from `forgeax_material::surface_v1`; read parameters as `material.<name>` and seconds as `input.frameTime`. Feed a uniform per frame with `assets.update(handle, { values: { name } })`.',
     ],
-  ],
-  [
-    'geometry',
-    [
-      'createBoxGeometry',
-      '+createSphereGeometry createPlaneGeometry createCylinderGeometry createCapsuleGeometry createConeGeometry createTorusGeometry createIcosahedronGeometry createDodecahedronGeometry createOctahedronGeometry createTetrahedronGeometry',
-      '+create2dGeometry create2dRingGeometry createEdgesGeometry',
-      'createRevolutionGeometry',
-      'createExtrusionGeometry',
-      'ExtrusionOptions: *',
-      'createProfileSweepGeometry',
-      'ProfileSweepOptions: *',
-      'createSweepGeometry',
-      'PolygonShape: *',
-      'Vec2Point: *',
-      'Vec3Point',
-      'createMeshBuilder',
-      'MeshBuilderOptions: *',
-      'MeshBuilder: *',
-      'meshFromInterleaved',
-      'PROCEDURAL_FLOATS_PER_VERTEX',
+  },
+  {
+    id: 'geometry',
+    title: 'Geometry and runtime assets',
+    covers:
+      'procedural mesh factories, MeshBuilder, extrusion and sweeps, AssetRegistry create/update/writeRange',
+    sections: [
+      [
+        'geometry',
+        [
+          'createBoxGeometry',
+          'createSphereGeometry',
+          'createPlaneGeometry',
+          'createCylinderGeometry',
+          'createCapsuleGeometry',
+          'createConeGeometry',
+          'createTorusGeometry',
+          'createIcosahedronGeometry',
+          'createDodecahedronGeometry',
+          'createOctahedronGeometry',
+          'createTetrahedronGeometry',
+          'create2dGeometry',
+          'create2dRingGeometry',
+          'createEdgesGeometry',
+          'createRevolutionGeometry',
+          'createExtrusionGeometry',
+          'ExtrusionOptions: *',
+          'createProfileSweepGeometry',
+          'ProfileSweepOptions: *',
+          'createSweepGeometry',
+          'PolygonShape: *',
+          'Vec2Point: *',
+          'Vec3Point',
+          'createMeshBuilder',
+          'MeshBuilderOptions: *',
+          'MeshBuilder: *',
+          'meshFromInterleaved',
+          'PROCEDURAL_FLOATS_PER_VERTEX',
+        ],
+      ],
+      [
+        'assets-runtime',
+        [
+          'AssetRegistry: load create release instantiate read update replace writeRange copy',
+          'MeshRange',
+        ],
+      ],
     ],
-  ],
-  [
-    'physics',
-    [
-      'RigidBody: type mass linearDamping gravityScale lockRotation',
-      'RigidBodyTypeValue',
-      'Collider: shape halfExtents radius halfHeight friction isSensor',
-      'ColliderShapeValue',
-      'CharacterController: snapToGroundDist grounded',
-      'PhysicsWorld: raycast moveAndSlide teleport applyBodyImpulse setBodyMotion',
+    gotchas: [
+      'Pack or runtime: build-time content (meshes, materials) is a `.pack.ts` output: `parameters` for variants, GUID `AssetGuid.derive(packageId, sourceKey)` from `@forgeax/engine/pack/guid`, `assets.load(guid, kind)`. Play-time content is `assets.create(mesh)`: bind the handle, then `release` it (the binding holds a reference). Change vertices with `writeRange` (same vertex count, per frame) or `replace` (new topology); material `values` never move vertices.',
+      'Standard materials read normal, uv and a vec4 `tangent`. Geometry factories, `meshFromInterleaved` and `createMeshBuilder` (triangle lists) derive omitted ones; other topologies author them.',
+      'Procedural variation is a pure function of a seed: a Pack `seed` parameter or math `rng.create(seed)`. Never `Math.random()` or `Date.now()` in a Pack `build`: its output is cached.',
     ],
-  ],
-  ['pack/source', ['definePack', 'definePackageId']],
-  [
-    'assets-runtime',
-    [
-      'AssetRegistry: load create release instantiate read update replace writeRange copy',
-      'MeshRange',
+  },
+  {
+    id: 'gameplay',
+    title: 'Gameplay: input, picking, physics, animation, audio, VFX, UI, state, navigation',
+    covers:
+      'InputSnapshot, viewportToWorld/pick, RigidBody/Collider/PhysicsWorld, AnimationPlayer, AudioSource, mountUi',
+    sections: [
+      [
+        'input',
+        ['INPUT_SNAPSHOT_RESOURCE_KEY', 'InputSnapshot: keyboard mouse', '+getAxis getVector'],
+      ],
+      ['picking', ['viewportToWorld', 'pick', 'PickHit: *', '+pickTriangle pickVertex pickTile']],
+      [
+        'physics',
+        [
+          'RigidBody: type mass linearDamping gravityScale lockRotation',
+          'RigidBodyTypeValue',
+          'Collider: shape halfExtents radius halfHeight friction isSensor',
+          'ColliderShapeValue',
+          'CharacterController: snapToGroundDist grounded',
+          'PhysicsWorld: raycast moveAndSlide teleport applyBodyImpulse setBodyMotion',
+        ],
+      ],
+      [
+        'animation',
+        [
+          'AnimationPlayer: clips times speeds looping',
+          'bindAnimationTargets',
+          'deriveAnimationTargetId',
+        ],
+      ],
+      [
+        'audio',
+        ['AudioSource: clip playing loop volume spatialBlend bus', '+AudioListener audioPlugin'],
+      ],
+      ['vfx', ['ParticleEffectPlayer: effect playing seed timeScale']],
+      ['ui', ['mountUi', 'mountUi(options): root layer onAction', 'UiInstance: host dispose']],
+      ['state', ['defineState', 'setNextState', '+getState addOnEnter addOnExit inState']],
+      [
+        'navigation',
+        [
+          'createNavigationGrid',
+          'NavigationGraph: findPath',
+          '+setNavigationTarget setNavigationPath createNavigationMesh',
+        ],
+      ],
     ],
-  ],
-  [
-    'animation',
-    [
-      'AnimationPlayer: clips times speeds looping',
-      'bindAnimationTargets',
-      'deriveAnimationTargetId',
+    gotchas: [
+      'Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for the ground. `pick` returns the nearest entity AABB hit.',
+      'Input: in a system read `world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.',
     ],
-  ],
-  [
-    'audio',
-    ['AudioSource: clip playing loop volume spatialBlend bus', '+AudioListener audioPlugin'],
-  ],
-  ['vfx', ['ParticleEffectPlayer: effect playing seed timeScale']],
-  ['ui', ['mountUi', 'mountUi(options): root layer onAction', 'UiInstance: host dispose']],
-  ['state', ['defineState', 'setNextState', '+getState addOnEnter addOnExit inState']],
-  [
-    'navigation',
-    [
-      'createNavigationGrid',
-      'NavigationGraph: findPath',
-      '+setNavigationTarget setNavigationPath createNavigationMesh',
+  },
+  {
+    id: 'play',
+    title: 'Playthrough scripts: PlayContext',
+    covers: '`project play` script helper: keyboard, mouse, state reads, game time, screenshots',
+    sections: [
+      [
+        'devkit',
+        [
+          'PlayContext: *',
+          'PlayPoint',
+          'PlayWaitOptions: *',
+          'PlayAdvanceOptions: *',
+          'PlayStepOptions: *',
+          'PlayScreenshot: *',
+        ],
+      ],
     ],
-  ],
+    gotchas: [
+      "A playthrough module default-exports `async (play) => ...`; type it with `/** @param {import('@forgeax/engine/devkit').PlayContext} play */`. Run it with `forgeax project play <script> --json`; `forgeax help project play --json` prints the same helper list. With a `forgeax dev start` owner running, `--session` reloads that owner's page and plays there, skipping the cold browser and dev server start.",
+      'Points are canvas-normalized: `[0, 0]` top-left, `[1, 1]` bottom-right. Under pointer lock the cursor does not move: the game must read mouse `movementDelta`, never `position`; `mouse.look(dx, dy)` sends a `movementDelta` in pixels, and a right-button `mouse.drag` produces one too. A cursor-aimed game calls `gameHost.setPointerLockAllowed(false)`.',
+      '`state(read)` and `waitFor(predicate, { read, timeoutMs })` read a projection the game registers with `gameHost.gameProjection.registerRead({ id, read })`; `read` defaults to the only one. `advance(seconds)` steps game time without waiting real time (timers, cooldowns). `step(name, run, { setup })` labels work: a failure reports the innermost step and `detail.rerun`, a `--from <step>` command that restarts at the failed top-level step, or the whole run plus `detail.setupHint` when that step has no `setup`. `--from` / `--steps a..b` skip the steps before the range without sending their input; the first step of a range runs its `setup(play)` to reach its starting state. `--time-scale <n>` runs the game in lockstep with the script on fixed 1/60 s frames (physics and input on the same frames), at most n game seconds per wall second: game time stands still between helper calls and advances only inside `wait`, `hold`, `waitFor`, `press` and `click`; `waitFor` and predicate holds check the state every 3 frames, and waits, holds and wait timeouts count game time.',
+      '`screenshot(name)` captures canvas and DOM UI; the report `warnings` cover script usage only, never how the frame looks, so open the PNG. `press` and `click` hold until three more Engine frames complete.',
+      '`--release` runs the same script against the built static release (`forgeax project build` first, `--dist <dir>` if elsewhere) in real time; that run is the final acceptance, and a script tuned only under `--time-scale` can fail it. `state`, `waitFor` and hold predicates read the registered read projection on both builds (read-only, so what `registerRead` returns is visible in a shipped build); `advance` needs the development host, so guard it with `play.release`. Requests to other hosts are blocked, listed in `externalRequests` and fail the run.',
+    ],
+  },
 ];
 
 // `{{facade name}}` / `{{facade name.member}}` expands to the generated code span.
 const REFERENCE = /\{\{(\S+) (\S+)\}\}/g;
-const GOTCHAS = [
-  'Import from `@forgeax/engine/<facade>` only, never physical `@forgeax/engine-*` packages.',
-  'Expected failures return `Result` (`r.ok ? r.value : r.error`, `.unwrap()` throws): World methods, asset loads, geometry, pack builds.',
-  'Math values are branded `Float32Array`s from `vec3.create(x, y, z)` / `quat.create()`; functions write into `out` and return it. Component data takes plain arrays (`{ pos: [0, 1, 0] }`).',
-  'Pack output keys (sourceKeys) must match {{pack/guid PACK_SOURCE_KEY_RE}} (lower case).',
-  'Pack or runtime: build-time content (meshes, materials) is a `.pack.ts` output: `parameters` for variants, GUID `AssetGuid.derive(packageId, sourceKey)` from `@forgeax/engine/pack/guid`, `assets.load(guid, kind)`. Play-time content is `assets.create(mesh)`: bind the handle, then `release` it (the binding holds a reference). Change vertices with `writeRange` (same vertex count, per frame) or `replace` (new topology); material `values` never move vertices.',
-  'Standard materials read normal, uv and a vec4 `tangent`. Geometry factories, `meshFromInterleaved` and `createMeshBuilder` (triangle lists) derive omitted ones; other topologies author them.',
-  'Procedural variation is a pure function of a seed: a Pack `seed` parameter or math `rng.create(seed)`. Never `Math.random()` or `Date.now()` in a Pack `build`: its output is cached.',
-  'Screen to ground: `viewportToWorld` (canvas pixels, top-left origin, after transform propagation) returns a world ray; solve `origin.y + t * dir.y = 0` for the ground. `pick` returns the nearest entity AABB hit.',
-  'Input: in a system read `world.getResource<InputSnapshot>(INPUT_SNAPSHOT_RESOURCE_KEY)`; `mouse.position` (canvas pixels, hover) may be `undefined`.',
-  "Declare every service a plugin reads in `inject` (`inject: ['world', 'assets', 'gameHost']`); add systems inside `ctx.effect` and `yield` their removal.",
-  'Camera data: `{ ...perspective({ fov: Math.PI / 4, aspect: 16 / 9 }), tonemap: TONEMAP_ACES_FILMIC }`; `fov` is radians. Sky: bind a generated HDR equirect asset to `SkyboxBackground` and `Skylight`; an opaque `clearColor` is tone-mapped. `DirectionalLight.direction` points from the light (opposite of Three.js).',
-  "No `opacity` field: use `baseColor` alpha plus `renderState: { blend, depthWriteEnabled: false }` and `queue: RenderQueue.Transparent`; per entity: bind an `assets.copy`, `assets.update` its `baseColor`. Additive: `color: { srcFactor: 'src-alpha', dstFactor: 'one' }`.",
-  '`SpotLight` takes its position from `Transform` but aims by its world `direction` field (not Transform rotation); cone angles are half-angles in degrees. Beam: `createConeGeometry(r, h, 48, 1, true)` (open-ended). Blended-only meshes cast no shadow unless `ShadowParticipation { cast: true }`.',
-  'Particles (rain, snow, sparks, fire, dust): `point-list` mesh + `color`/`uv1` streams + `Points { size, sizeUnits: world, shape: soft }` + blended unlit material; `writeRange` per frame (see cookbook index). 10k+: VFX.',
-  'Custom lit shader: `Materials.standard({ surfaceModule, parameters, values })` names an `assets/` `.wgsl` module (`#define_import_path`) exporting `evaluate_surface(input: SurfaceInput) -> SurfaceData` from `forgeax_material::surface_v1`; read parameters as `material.<name>` and seconds as `input.frameTime`. Feed a uniform per frame with `assets.update(handle, { values: { name } })`.',
-];
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const require = createRequire(resolve(root, 'package.json'));
@@ -301,14 +401,31 @@ function defineComponentFields(declaration) {
       .get('default')
       ?.getText()
       .replace(/^new Float32Array\((.*)\)$/s, '$1');
+    // An enum field names the object of its codes: `mode: enum FogModeValue = FogModeValue.exp`.
+    const labels = attributes.get('labels');
+    const codes = labels !== undefined && ts.isIdentifier(labels) ? labels.text : undefined;
     const literal =
-      fallback !== undefined && /^[-\w.'"]{1,12}$|^\[[-\d., ]{1,24}\]$/.test(fallback);
+      fallback !== undefined &&
+      (/^[-\w.'"]{1,12}$|^\[[-\d., ]{1,24}\]$/.test(fallback) ||
+        (codes !== undefined && fallback.startsWith(`${codes}.`)));
+    const kind = type ? type.getText().replace(/^'|'$/g, '') : 'unknown';
     fields.set(
       property.name.getText(),
-      `${type ? type.getText().replace(/^'|'$/g, '') : 'unknown'}${literal ? ` = ${fallback}` : ''}`,
+      `${kind}${codes === undefined ? '' : ` ${codes}`}${literal ? ` = ${fallback}` : ''}`,
     );
   }
   return fields;
+}
+
+/** Longest enum-like object listed with its values. */
+const ENUM_TEXT_MAX = 96;
+
+/** `1`, `'name'` or `true` for a literal type, else undefined. */
+function literalOf(type) {
+  if (type.isNumberLiteral()) return String(type.value);
+  if (type.isStringLiteral()) return `'${type.value}'`;
+  if (type.flags & ts.TypeFlags.BooleanLiteral) return type.intrinsicName;
+  return undefined;
 }
 
 class ApiIndexBuilder {
@@ -325,6 +442,26 @@ class ApiIndexBuilder {
         new Map(this.checker.getExportsOfModule(module).map((symbol) => [symbol.name, symbol])),
       );
     }
+  }
+
+  /**
+   * The value of an exported constant typed as a literal (`= 1`) or as an object of number
+   * literals (`= { exp: 0, exp2: 1 }`), so enum codes appear beside their names.
+   */
+  constantValue(symbol) {
+    if (!(symbol.flags & ts.SymbolFlags.BlockScopedVariable)) return undefined;
+    const type = this.checker.getTypeOfSymbol(symbol);
+    const literal = literalOf(type);
+    if (literal !== undefined) return literal;
+    const properties = type.getProperties();
+    if (properties.length === 0 || type.getCallSignatures().length > 0) return undefined;
+    const entries = properties.map((property) => {
+      const value = this.checker.getTypeOfSymbol(property);
+      return value.isNumberLiteral() ? `${property.name}: ${value.value}` : undefined;
+    });
+    if (entries.some((entry) => entry === undefined)) return undefined;
+    const text = `{ ${entries.join(', ')} }`;
+    return text.length <= ENUM_TEXT_MAX ? text : undefined;
   }
 
   resolve(facade, name) {
@@ -428,8 +565,11 @@ class ApiIndexBuilder {
   renderItem(facade, spec) {
     if (spec.startsWith('+')) {
       const names = spec.slice(1).trim().split(' ');
-      for (const name of names) this.resolve(facade, name);
-      return `Also: ${names.map((name) => `\`${name}\``).join(', ')}`;
+      const listed = names.map((name) => {
+        const value = this.constantValue(this.resolve(facade, name));
+        return `\`${name}${value === undefined ? '' : ` = ${value}`}\``;
+      });
+      return `Also: ${listed.join(', ')}`;
     }
     const [name, memberList] = spec.split(/:\s*/, 2);
     if (memberList === undefined) return this.renderWhole(name, this.resolve(facade, name));
@@ -481,83 +621,144 @@ class ApiIndexBuilder {
   }
 }
 
-export function renderApiIndex({ sections = SECTIONS, gotchas: notes = GOTCHAS } = {}) {
-  const referenced = notes.flatMap((text) =>
-    [...text.matchAll(REFERENCE)].map((match) => match[1]),
+/** Domain file path relative to the directory file. */
+export const apiDomainFile = (id) => `api/${id}.md`;
+
+/**
+ * Renders the API reference as `{ [relativePath]: markdown }`: the directory
+ * `api-index.md` first, then one `api/<domain>.md` per domain.
+ */
+export function renderApiReference({ domains = DOMAINS } = {}) {
+  const referenced = domains.flatMap(({ gotchas }) =>
+    gotchas.flatMap((text) => [...text.matchAll(REFERENCE)].map((match) => match[1])),
   );
   const builder = new ApiIndexBuilder([
-    ...new Set([...sections.map(([facade]) => facade), ...referenced]),
+    ...new Set([
+      ...domains.flatMap(({ sections }) => sections.map(([facade]) => facade)),
+      ...referenced,
+    ]),
   ]);
-  const gotchas = notes.map(
-    (text) =>
-      `- ${text.replace(REFERENCE, (_, facade, path) => builder.renderReference(facade, path))}`,
-  );
-  const body = sections.map(([facade, items]) =>
-    [
-      `## \`@forgeax/engine/${facade}\``,
-      ...items.map((item) => `- ${builder.renderItem(facade, item)}`),
-    ].join('\n'),
-  );
   // The SDK entry owns guide navigation; generation never fetches external manuals.
   const entry = readFileSync(resolve(root, 'skills/forgeax-engine-sdk/SKILL.md'), 'utf8');
   const threeGuide = entry.match(/\]\(([^)\s]*\/three-equivalents\.md)\)/)?.[1];
-  return `${[
-    '# ForgeAX SDK API index',
-    '',
-    '> Source-generated by `node scripts/forgeax/sdk-api-index.mjs`.',
-    ...(threeGuide === undefined
-      ? []
-      : [`> Three.js names map to these APIs in [three-equivalents.md](${threeGuide}).`]),
-    '',
-    '## Gotchas',
-    '',
-    ...gotchas,
-    '',
-    body.join('\n\n'),
-  ].join('\n')}\n`;
+  const generated = '> Source-generated by `node scripts/forgeax/sdk-api-index.mjs`.';
+  const files = {
+    [API_INDEX_FILE]: `${[
+      '# ForgeAX SDK API index',
+      '',
+      generated,
+      ...(threeGuide === undefined
+        ? []
+        : [`> Three.js names map to these APIs in [three-equivalents.md](${threeGuide}).`]),
+      '',
+      'Open only the domain file you need; each lists gotchas first, then signatures.',
+      '',
+      '| File | Facades | Covers |',
+      '| --- | --- | --- |',
+      ...domains.map(
+        ({ id, title, covers, sections }) =>
+          `| [${title}](${apiDomainFile(id)}) | ${sections.map(([facade]) => `\`${facade}\``).join(', ')} | ${covers} |`,
+      ),
+    ].join('\n')}\n`,
+  };
+  for (const { id, title, sections, gotchas } of domains) {
+    const notes = gotchas.map(
+      (text) =>
+        `- ${text.replace(REFERENCE, (_, facade, path) => builder.renderReference(facade, path))}`,
+    );
+    const body = sections.map(([facade, items]) =>
+      [
+        `## \`@forgeax/engine/${facade}\``,
+        ...items.map((item) => `- ${builder.renderItem(facade, item)}`),
+      ].join('\n'),
+    );
+    files[apiDomainFile(id)] = `${[
+      `# ${title}`,
+      '',
+      `${generated} Directory: [api-index.md](../${API_INDEX_FILE}).`,
+      ...(notes.length === 0 ? [] : ['', '## Gotchas', '', ...notes]),
+      '',
+      body.join('\n\n'),
+    ].join('\n')}\n`;
+  }
+  return files;
 }
 
-export function checkApiIndex(file) {
-  const label = file ?? 'api-index.md';
-  let expected;
+/** One domain from explicit sections and gotchas (tests and ad-hoc checks). */
+export function apiDomain(sections, gotchas = [], id = 'api') {
+  return { id, title: 'API', covers: 'selected entries', sections, gotchas };
+}
+
+/** The whole reference as one string, directory first (content searches). */
+export function renderApiIndex(options) {
+  return Object.values(renderApiReference(options)).join('\n');
+}
+
+/**
+ * Validates generation, the size budgets and that the directory links every
+ * domain file; with `directory`, also that each written file is current.
+ */
+export function checkApiIndex(directory) {
+  const label = directory ?? 'api reference';
+  let files;
   try {
-    expected = renderApiIndex();
+    files = renderApiReference();
   } catch (error) {
     return [`${label}: ${error.message}`];
   }
   const failures = [];
-  const bytes = Buffer.byteLength(expected);
-  if (bytes > API_INDEX_MAX_BYTES) {
-    failures.push(`${label}: ${bytes} bytes exceeds ${API_INDEX_MAX_BYTES}; trim SECTIONS`);
+  let total = 0;
+  for (const [path, content] of Object.entries(files)) {
+    const bytes = Buffer.byteLength(content);
+    total += bytes;
+    if (bytes > API_FILE_MAX_BYTES)
+      failures.push(
+        `${path}: ${bytes} bytes exceeds ${API_FILE_MAX_BYTES}; split or trim the domain`,
+      );
+    if (path !== API_INDEX_FILE && !files[API_INDEX_FILE].includes(`](${path})`))
+      failures.push(`${API_INDEX_FILE}: does not link ${path}`);
   }
-  if (file !== undefined) {
-    const actual = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
-    if (actual !== expected)
-      failures.push(`${file}: missing or stale; regenerate with --output ${file}`);
+  if (total > API_INDEX_MAX_BYTES)
+    failures.push(`${label}: ${total} bytes exceeds ${API_INDEX_MAX_BYTES}; trim DOMAINS`);
+  if (directory !== undefined) {
+    for (const [path, expected] of Object.entries(files)) {
+      const file = resolve(directory, path);
+      const actual = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
+      if (actual !== expected)
+        failures.push(`${file}: missing or stale; regenerate with --output ${directory}`);
+    }
   }
   return failures;
 }
 
+/** Writes every reference file under `directory`; returns `[path, bytes]` pairs. */
+export function writeApiReference(directory) {
+  return Object.entries(renderApiReference()).map(([path, content]) => {
+    const file = resolve(directory, path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, content);
+    return [path, Buffer.byteLength(content)];
+  });
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const outputIndex = process.argv.indexOf('--output');
-  const file = outputIndex < 0 ? undefined : process.argv[outputIndex + 1];
-  if (outputIndex >= 0 && (file === undefined || file.startsWith('--')))
-    throw new Error('--output requires a destination path');
+  const directory = outputIndex < 0 ? undefined : process.argv[outputIndex + 1];
+  if (outputIndex >= 0 && (directory === undefined || directory.startsWith('--')))
+    throw new Error('--output requires a destination directory');
   if (process.argv.includes('--check')) {
-    const failures = checkApiIndex(file === undefined ? undefined : resolve(file));
+    const failures = checkApiIndex(directory === undefined ? undefined : resolve(directory));
     if (failures.length > 0) {
       console.error(failures.join('\n'));
       process.exitCode = 1;
     } else {
-      console.log(`api-index-ok: ${file ?? 'source signatures'}`);
+      console.log(`api-index-ok: ${directory ?? 'source signatures'}`);
     }
+  } else if (directory === undefined) {
+    for (const [path, content] of Object.entries(renderApiReference()))
+      process.stdout.write(`<!-- ${path} -->\n${content}\n`);
   } else {
-    const output = renderApiIndex();
-    if (file === undefined) process.stdout.write(output);
-    else {
-      mkdirSync(dirname(resolve(file)), { recursive: true });
-      writeFileSync(resolve(file), output);
-      console.log(`api-index-written: ${file} (${Buffer.byteLength(output)} bytes)`);
-    }
+    for (const [path, bytes] of writeApiReference(resolve(directory)))
+      console.log(`api-index-written: ${resolve(directory, path)} (${bytes} bytes)`);
   }
 }

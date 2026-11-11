@@ -102,9 +102,9 @@ export class BufferPool {
       let nextLocation = 0;
       let buffer: ArrayBuffer;
       if (nextKind < 3) {
-        nextLocation = this.acquireCell(nextKind, maxCommittedBytes);
+        nextLocation = this.acquireCell(nextKind, maxCommittedBytes, length);
         buffer = this.pages.buffer(nextLocation);
-      } else buffer = this.acquireOwned(nextKind, bytes, maxCommittedBytes);
+      } else buffer = this.acquireOwned(nextKind, bytes, maxCommittedBytes, length);
       new Uint8Array(buffer, nextLocation % BUFFER_PAGE_BYTES, length).set(old);
       this.copiedBytes += length;
       if (nextKind < 3) this.owned.delete(id);
@@ -330,26 +330,37 @@ export class BufferPool {
     this.offsets[id] = location % BUFFER_PAGE_BYTES;
     if (buffer !== undefined) this.owned.set(id, buffer);
   }
-  private acquireCell(kind: number, limit: number): number {
+  /**
+   * `overwrittenPrefix` bytes at the start are about to be copied over by the
+   * caller, so only the tail past them is cleared; everything a caller can see
+   * through a view is still zero or copied.
+   */
+  private acquireCell(kind: number, limit: number, overwrittenPrefix = 0): number {
     if (this.committedBytes + this.pages.requiredBytes(kind) > limit) this.trim(0);
     if (this.committedBytes + this.pages.requiredBytes(kind) > limit)
       throw new RangeError('buffer budget exceeded');
     const location = this.pages.alloc(kind);
     if (this.pages.needsClear) {
+      const capacity = SIZE_CLASSES[kind] as number;
       new Uint8Array(
         this.pages.buffer(location),
-        location % BUFFER_PAGE_BYTES,
-        SIZE_CLASSES[kind],
+        (location % BUFFER_PAGE_BYTES) + overwrittenPrefix,
+        capacity - overwrittenPrefix,
       ).fill(0);
-      this.zeroedBytes += SIZE_CLASSES[kind] as number;
+      this.zeroedBytes += capacity - overwrittenPrefix;
     }
     return location;
   }
-  private acquireOwned(kind: number, bytes: number, limit: number): ArrayBuffer {
+  private acquireOwned(
+    kind: number,
+    bytes: number,
+    limit: number,
+    overwrittenPrefix = 0,
+  ): ArrayBuffer {
     const cached = this.freeBuffers[kind]?.at(-1);
     if (cached !== undefined) {
-      new Uint8Array(cached).fill(0);
-      this.zeroedBytes += cached.byteLength;
+      new Uint8Array(cached).fill(0, overwrittenPrefix);
+      this.zeroedBytes += cached.byteLength - overwrittenPrefix;
       this.freeBuffers[kind]?.pop();
       this.cachedBytes -= cached.byteLength;
       return cached;

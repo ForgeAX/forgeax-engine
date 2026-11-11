@@ -8,6 +8,7 @@ import type {
   FramePresentationPendingReason,
 } from '../render-contract';
 import type { RecordAttempt } from '../render-system-record-attempt';
+import type { SettledDirectionalShadow } from './directional-shadow-inspection';
 import { requireViewField } from './view-field';
 
 /** One record attempt, staged by its recording until `render-record-commit`/`-retire` settle it. */
@@ -27,6 +28,7 @@ export interface StagedRecord {
 export interface DirectionalShadowOutcome {
   candidate: DirectionalShadowInspectionSource['candidate'];
   error: DirectionalShadowInspectionSource['error'];
+  settled?: SettledDirectionalShadow;
 }
 
 /**

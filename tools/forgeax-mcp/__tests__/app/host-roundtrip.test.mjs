@@ -3,11 +3,12 @@ import { test } from 'node:test';
 import { once } from 'node:events';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import { createNetworkBroker } from '../../src/app/broker.mjs';
 import { WebSocketServer } from 'ws';
 import { createHostTransport, attachHostWebSocketServer } from '@forgeax/engine-host/transport';
 const compiled = await build({
-  entryPoints: [new URL('../../src/app/tool-queue.ts', import.meta.url).pathname],
+  entryPoints: [fileURLToPath(new URL('../../src/app/tool-queue.ts', import.meta.url))],
   bundle: true,
   write: false,
   platform: 'node',

@@ -96,6 +96,13 @@ export interface PhysicsWorld {
   ) => Result<ManagedJointBinding, ManagedPhysicsFailure>;
   /** Detached world-space body evidence; no Rapier object escapes. */
   getBodyMotion?: (entity: number) => Result<BodyMotion, ManagedPhysicsFailure>;
+  /** Subscribe to motion invalidation, without allocating detached poses for unchanged bodies.
+   * Covers explicit writes, lifecycle/policy changes and completed-step active/final-sleep
+   * bodies. Notifications may repeat and do not certify a readable admission boundary:
+   * enqueue the entity and read after physics writeback. Subscribe before the initial read.
+   * Listeners must only enqueue work; disposal releases the subscription. Optional backends
+   * without this capability require full polling. */
+  onBodyMotionChange?: (listener: (entity: number) => void) => () => void;
   /** Bounded current solid contacts after writeback; optional packed groups match raycast filters. */
   getCurrentContacts?: (
     entity: number,

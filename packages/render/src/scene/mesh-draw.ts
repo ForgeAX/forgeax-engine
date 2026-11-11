@@ -56,11 +56,22 @@ function drawTable(mesh: MeshGeometry): DrawTable {
  * readers avoid rebuilding the complete draw row for every moved instance.
  */
 export function meshDrawMaterials(
-  source: RenderableSnapshot,
+  source: Pick<
+    RenderableSnapshot,
+    | 'terrain'
+    | 'materialOverrides'
+    | 'assetHandle'
+    | 'material'
+    | 'materials'
+    | 'materialBindingSources'
+    | 'skinBinding'
+    | 'spriteInstances'
+  >,
   meshes: MeshFrame,
+  worldId: number,
 ): Pick<RenderableSnapshot, 'material' | 'materials'> {
   if (source.terrain !== undefined || source.materialOverrides === undefined) return source;
-  const mesh = meshes.get(source.worldId, source.assetHandle);
+  const mesh = meshes.get(worldId, source.assetHandle);
   return mesh === undefined
     ? source
     : drawTable(mesh).materials(source, meshMaterialGeometry(source));

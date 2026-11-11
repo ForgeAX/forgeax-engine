@@ -1,7 +1,7 @@
 {
   "runs": [
     41208138238, 41215740814, 41221418340, 41369432555, 41484231132, 41509066300, 41520702722,
-    41526304488, 41539054992, 41548412739, 41579286478, 41661879741
+    41526304488, 41539054992, 41548412739, 41579286478, 41661879741, 42877243264
   ],
   "localRuns": [
     {
@@ -32,6 +32,7 @@
     "packages/modeling/examples/body-panels/__tests__/panels.unit.test.ts": 20.332,
     "packages/modeling/examples/bracket/__tests__/bracket.unit.test.ts": 39.714,
     "packages/modeling/examples/c131/__tests__/c131.unit.test.ts": 54.77119047619047,
+    "packages/modeling/examples/case/__tests__/materials.unit.test.ts": 37.565384615384616,
     "packages/modeling/examples/crate/__tests__/crate.tools.integration.test.ts": 39.892,
     "packages/modeling/examples/crate/__tests__/crate.unit.test.ts": 32.154,
     "packages/modeling/examples/crease-neck/__tests__/crease-neck.unit.test.ts": 17.686750000000004,
@@ -66,7 +67,7 @@
     "packages/modeling/examples/maid-whale/__tests__/g6-apron.unit.test.ts": 29.506,
     "packages/modeling/examples/maid-whale/__tests__/g6-back-hair.unit.test.ts": 25.96,
     "packages/modeling/examples/maid-whale/__tests__/g6-bangs.unit.test.ts": 39.728,
-    "packages/modeling/examples/maid-whale/__tests__/g6-faceted.import.integration.test.ts": 251.059,
+    "packages/modeling/examples/maid-whale/__tests__/g6-faceted.import.integration.test.ts": 275.55245,
     "packages/modeling/examples/maid-whale/__tests__/g6-faceting.unit.test.ts": 262.325,
     "packages/modeling/examples/maid-whale/__tests__/g6-hair-tags.unit.test.ts": 35.2,
     "packages/modeling/examples/maid-whale/__tests__/g6-skirt.unit.test.ts": 35.464,
@@ -101,7 +102,7 @@
     "packages/modeling/examples/mech-gt/__tests__/s6c-car-form.integration.test.ts": 522.601,
     "packages/modeling/examples/mech-gt/__tests__/s6c-hosts.unit.test.ts": 26.345,
     "packages/modeling/examples/mech-gt/__tests__/s6c-ranges.unit.test.ts": 358.347,
-    "packages/modeling/examples/mech-gt/__tests__/s6c.unit.test.ts": 140.1,
+    "packages/modeling/examples/mech-gt/__tests__/s6c.unit.test.ts": 233.60799999999998,
     "packages/modeling/examples/mech-gt/__tests__/s7-motion.engine.integration.test.ts": 174.483,
     "packages/modeling/examples/mech-gt/__tests__/s7-motion.unit.test.ts": 326.755,
     "packages/modeling/examples/mech-gt/__tests__/s7-pack.unit.test.ts": 20.673,
@@ -209,6 +210,7 @@
     "packages/modeling/src/__tests__/lowpoly.unit.test.ts": 45.805,
     "packages/modeling/src/__tests__/mass.unit.test.ts": 17.083,
     "packages/modeling/src/__tests__/material-id-mips.unit.test.ts": 17.749750000000002,
+    "packages/modeling/src/__tests__/material-id-slots.unit.test.ts": 1.1904999999999997,
     "packages/modeling/src/__tests__/mesh-job-workers.integration.test.ts": 46.168,
     "packages/modeling/src/__tests__/mesh-job.unit.test.ts": 22.126,
     "packages/modeling/src/__tests__/mesh-quality.unit.test.ts": 17.778750000000002,

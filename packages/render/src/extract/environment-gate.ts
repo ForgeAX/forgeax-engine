@@ -289,13 +289,15 @@ export class EnvironmentGate<T, M extends object = object> {
           readMutationEpochExcept(world, POSE) > previous.epoch))
     )
       return false;
-    if (!projectionCurrent(previous.source) || !projectionCurrent(previous.globals)) return false;
+    // Pose reads are O(poses); check them before the projections so a moved
+    // camera does not pay a change-journal scan that the re-extraction's own
+    // read (from the same accepted epoch) repeats.
     for (const entity of previous.poses) {
       if (world.hasComponent(entity, TransformInterpolation)) return false;
       for (const component of POSE)
         if (readEntityComponentEpoch(world, entity, component) > previous.epoch) return false;
     }
-    return true;
+    return projectionCurrent(previous.source) && projectionCurrent(previous.globals);
   }
 }
 

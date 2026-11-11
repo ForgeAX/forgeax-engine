@@ -41,11 +41,13 @@ async function fixture() {
   // The Deferred pass is cooked for the deferred pipeline context.
   const programs = base.programs.map((program) => ({
     ...program,
-    selections: program.selections.map((selection) =>
-      selection.pass === 'Deferred'
-        ? { ...selection, context: { ...selection.context, pipeline: 'deferred' as const } }
-        : selection,
-    ),
+    selections: program.selections.map((selection) => {
+      if (selection.pass !== 'Deferred') return selection;
+      const context = selection.context;
+      if (context.pass !== 'forward' && context.pass !== 'depth' && context.pass !== 'shadow')
+        throw new Error('Deferred fixture requires a raster material context');
+      return { ...selection, context: { ...context, pipeline: 'deferred' as const } };
+    }),
   }));
   const artifactDigest = createMaterialProgramSetDigest(programs, base.resolved.passes);
   const record = {

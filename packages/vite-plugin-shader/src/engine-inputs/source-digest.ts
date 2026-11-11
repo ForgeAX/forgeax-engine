@@ -15,7 +15,7 @@ function collectWgsl(directory: string, files: string[]): void {
 // not only on the bytes of individual WGSL files. Bump this revision whenever
 // source-entry selection/composition changes so an older publication cannot
 // pass provenance checks while omitting a newly admitted renderer entry.
-const ENGINE_SHADER_INPUTS_REVISION = 2;
+const ENGINE_SHADER_INPUTS_REVISION = 4;
 
 /**
  * SHA-256 over the engine input recipe, Engine and package-owned WGSL, and

@@ -38,6 +38,7 @@ export type StandardClusterGraphBuffers =
       readonly texture: GraphTextureView;
       readonly clusterUniform: GraphBuffer;
       readonly textureLayout: ReturnType<typeof standardClusterTextureLayout>;
+      readonly resolve: (frame: RenderPipelineFrame) => Extract<HdrpBuffers, { kind: 'texture' }>;
     };
 
 /** Stable graph-time projection; never retain a frame's typed-array payload. */
@@ -127,6 +128,11 @@ export function importStandardClusterBuffers(
       texture: view.value,
       clusterUniform: uniform.value,
       textureLayout,
+      resolve: (frame) => {
+        const buffers = resolveBuffers(frame, descriptor);
+        if (buffers.kind !== 'texture') throw new Error('Standard texture transport changed');
+        return buffers;
+      },
     });
   }
   const storage = (frame: RenderPipelineFrame) => {

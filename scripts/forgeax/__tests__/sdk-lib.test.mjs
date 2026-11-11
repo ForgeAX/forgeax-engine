@@ -28,6 +28,7 @@ import {
   assertNoRetiredPackageFiles,
   detectPnpmStoreFormat,
   fetchWithRetry,
+  ignoresProjectState,
   isPnpmSqliteStoreArtifact,
   mapConcurrent,
   normalizeLicenseReport,
@@ -35,6 +36,7 @@ import {
   normalizePnpmStore,
   normalizeSdkRegistryLockfile,
   prepareWasmPackageForPack,
+  SDK_TEMPLATES,
   stable,
   waitForNpmPublications,
   writePackageArchive,
@@ -401,6 +403,23 @@ it('SDK registry locks retain integrity and resolve owned packages through the c
     'sdk-registry-lockfile-shape',
   );
 });
+describe('ignoresProjectState', () => {
+  it('accepts the directory pattern forms and honours a later negation', () => {
+    for (const text of ['.forgeax/', '/.forgeax', 'dist/\n.forgeax\n', '.forgeax/**'])
+      expect(ignoresProjectState(text), text).toBe(true);
+    for (const text of ['', '# .forgeax/', '.forgeax/cache/', '.forgeax/\n!.forgeax/'])
+      expect(ignoresProjectState(text), text).toBe(false);
+  });
+
+  it('holds for every distributable template', async () => {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+    for (const { id, sourceRoot } of SDK_TEMPLATES) {
+      const text = await readFile(resolve(root, sourceRoot, '.gitignore'), 'utf8');
+      expect(ignoresProjectState(text), id).toBe(true);
+    }
+  });
+});
+
 describe('normalizePnpmStore', () => {
   it('drops pnpm SQLite shared-memory state while preserving the store index and WAL', async () => {
     const root = await mkdtemp(join(tmpdir(), 'forgeax-sdk-sqlite-store-'));
@@ -928,16 +947,16 @@ describe('SDK verifier template contract', () => {
     expect(importers).toContain("import { createUiImporter } from '@forgeax/engine-ui/importer';");
     expect(importers).toContain('  createUiImporter(),');
     const html = await readFile(
-      join(repositoryRoot, 'templates/game-3d/assets/guide.ui.html'),
+      join(repositoryRoot, 'packages/ui/test-fixtures/game-guide/guide.ui.html'),
       'utf8',
     );
     const css = await readFile(
-      join(repositoryRoot, 'templates/game-3d/assets/guide.ui.css'),
+      join(repositoryRoot, 'packages/ui/test-fixtures/game-guide/guide.ui.css'),
       'utf8',
     );
     const meta = JSON.parse(
       await readFile(
-        join(repositoryRoot, 'templates/game-3d/assets/guide.ui.html.meta.json'),
+        join(repositoryRoot, 'packages/ui/test-fixtures/game-guide/guide.ui.html.meta.json'),
         'utf8',
       ),
     );
@@ -1099,7 +1118,13 @@ describe('SDK verifier template contract', () => {
     ).replaceAll(`\${gameProjectionSource}`, gameProjectionSource);
     expect(source).toContain('const gameProjectionDefinitions = new Map();');
     expect(source).toMatch(/globalThis\.__forgeaxGameInspection\s*=/);
-    expect(source).toContain('import.meta.env.DEV ? { gameProjection } : {}');
+    // Release builds keep a read-only projection for `project play --release`;
+    // the clock and time scale stay development-only.
+    expect(source).toMatch(/\n\s+gameProjection,\n/);
+    expect(source).toContain('globalThis.__forgeaxGameInspection = releaseInspection;');
+    expect(source).toContain(
+      "if (!import.meta.env.DEV) return { running: false, error: 'the time scale runs only on a development host' };",
+    );
     expect(source).toMatch(
       /if \(\(import\.meta\.env\.DEV \|\| cpuProfileRequested[^\n]*\) && !workerExecution\) exposeGameInspection\(app as App\);/,
     );

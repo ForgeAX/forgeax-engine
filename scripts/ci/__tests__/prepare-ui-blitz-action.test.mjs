@@ -73,6 +73,23 @@ test('Native GI prepares the current UI payload before its full Engine package b
   assert.match(step, /cache-scope: self-hosted-ubuntu-linux-x64/);
 });
 
+test('WebGPU portable scene producers verify the UI input before their package closure', () => {
+  const workflow = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'));
+  const steps = workflow.jobs.compatibility.steps;
+  const preparation = steps.findIndex((step) => step.name === 'Prepare current Blitz UI');
+  const build = steps.findIndex((step) => step.name === 'Prepare verified portable scene inputs');
+  assert.ok(preparation >= 0 && build > preparation, 'prepare verified UI before scene packages');
+  const step = steps[preparation];
+  assert.equal(step.uses, './.github/actions/prepare-ui-blitz');
+  assert.equal(step.if, steps[build].if, 'every actual portable scene build prepares UI first');
+  assert.equal(
+    step.if,
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.carrier == 'stable' || matrix.carrier == 'webkit')",
+  );
+  assert.equal(step.with['cache-scope'], 'self-hosted-ubuntu-linux-x64');
+  assert.equal(step.env.GH_TOKEN, '${{ secrets.GHA }}');
+});
+
 function shellStep(name) {
   const step = action.split(`    - name: ${name}\n`)[1]?.split('\n    - name: ')[0];
   assert.ok(step, name);

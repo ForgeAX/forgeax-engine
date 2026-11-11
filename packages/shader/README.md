@@ -5,9 +5,12 @@
 `atmosphere-table-kernels.wgsl` owns transmittance, multiple-scattering and Sky
 View texel arithmetic. Compute and fragment entry points wrap those same functions;
 only invocation addressing and storage/render-target I/O differ. The shader plugin
-publishes both bundles. Runtime selects the explicit background-only raster plan
-without compiling or rewriting shader source. Full Atmosphere retains its compute
-AP and distant-light producers. See the [render contract](../render/README.md#atmosphere-and-aerial-perspective).
+publishes both bundles. Full Atmosphere uses native compute volumes or fragment
+producers with half-packed RGB aerial transport in the existing integer Cluster
+texture. Both preserve the same optical integration budget, distant illumination
+and surface transport. The explicit background-only option remains separate;
+runtime selects a published plan without compiling or rewriting shader source.
+See the [render contract](../render/README.md#atmosphere-and-aerial-perspective).
 
 ## Public shader input boundary
 
@@ -17,7 +20,9 @@ compilation. The comparison phase starts only after blocker accumulation and
 preserves the disk order, receiver-plane correction and cascade blend.
 
 Medium retains 8 raw plus 16 comparison taps; high retains 16 plus 32. Read-only
-disk points live in one invocation-owned private array for addressable indexing.
+disk points are one module `const` table indexed at the single tap site; a
+`var<private>` table would be initialized by every Standard fragment, including
+those whose profile never reaches PCSS.
 
 Direct text admission compacts fragments and computes its complete source identity
 once. Equal content reuses the Registry's canonical source; device forks borrow
@@ -155,6 +160,14 @@ schemas retain their own ShaderRegistry admission.
 registered entry or `undefined` for an ordinary optional miss, without constructing
 a failure diagnostic. It observes later registrations directly. Required lookups
 retain `findMaterialArtifact(identifier)` and its structured Result/error.
+
+Manifest publication admission snapshots and recursively freezes each pooled ABI
+receipt once before source verification yields. All variants referring to that
+receipt share its immutable type facts; caller edits and later publications
+remain independent. Material keys do not clone the same reflected type tree.
+Freshly parsed owned reflection tables share identical immutable subtrees at
+admission while each selected row retains its deferred schema validation. The
+short-lived sharing pool does not survive admission or join publications.
 
 Material registration owns a detached, recursively frozen ABI receipt alongside
 the admitted schema and program. `installMaterialArtifactsFrom(sourceRegistry)`
@@ -314,7 +327,7 @@ const rustedIron = Materials.standard({
 ```
 
 For the complete source-to-runtime example, see the
-[`game-3d` rusted-iron fixture](../../templates/game-3d/README.md#import-first-surface-material-example).
+[`game-3d` rusted-iron fixture](../../templates/game-3d/docs/guide.md#import-first-surface-material-example).
 
 > [!CAUTION]
 > Surface is a base-facts function only. Do not add `clearcoat`,
@@ -849,8 +862,8 @@ for attachment formats, packing, resource limits and SSR outputs.
 
 `forgeax_clipping::planes` owns `clippedByPlanes`, `applyLocalClipping`, and
 `applyViewClipping`. World-space negative signed distance is discarded. View
-coefficients occupy the shared View ABI from byte 1024; atmosphere and
-atmosphere lanes complete the 1280-byte View bound range. Local lights use the complete Cluster transport selected from device capabilities.
+coefficients occupy the shared View ABI from byte 1024; fog, atmosphere and
+sky-fog lanes complete the 1296-byte View bound range. Local lights use the complete Cluster transport selected from device capabilities.
 Color, shadow and temporal geometry must use
 the same transformed world position. Material presence is derived from the root
 parameter declaration during cook; runtime does not add feature defines.

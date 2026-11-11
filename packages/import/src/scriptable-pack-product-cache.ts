@@ -24,14 +24,35 @@ import type {
 // Format 9 keeps typed-array backing buffers independent of the serialized Pack.
 // DefaultSerializer restores small views into the whole Pack buffer; per-output
 // structuredClone then copies that entire buffer at every content-read boundary.
-async function contentDependenciesCurrent(
+async function contentDependencyFailure(
   product: ScriptablePackBuildProduct,
   resolve: ScriptablePackDependencyResolver | undefined,
-): Promise<boolean> {
+): Promise<
+  | {
+      reason: 'dependency-unavailable' | 'dependency-changed';
+      dependency: {
+        guid: string;
+        expected: string | undefined;
+        actual?: string;
+        unavailable: boolean;
+      };
+    }
+  | undefined
+> {
   for (const row of product.externalEvidence) {
-    if ((await resolve?.(row.guid)) !== row.digest) return false;
+    const actual = await resolve?.(row.guid);
+    if (actual !== row.digest)
+      return {
+        reason: actual === undefined ? 'dependency-unavailable' : 'dependency-changed',
+        dependency: {
+          guid: row.guid,
+          expected: row.digest,
+          ...(actual === undefined ? {} : { actual }),
+          unavailable: actual === undefined,
+        },
+      };
   }
-  return true;
+  return undefined;
 }
 
 const CACHE_SCHEMA = 'scriptable-pack-product/10';
@@ -524,7 +545,12 @@ export async function createScriptablePackProductCache(options: {
     decode: (bytes: Uint8Array) => Promise<Uint8Array>,
     resolve: ScriptablePackDependencyResolver | undefined,
     dependencies?: CookerDependencies,
-  ): Promise<{ product?: ScriptablePackBuildProduct; reason: string; key: string }> => {
+  ): Promise<{
+    product?: ScriptablePackBuildProduct;
+    reason: string;
+    key: string;
+    dependency?: NonNullable<Awaited<ReturnType<typeof contentDependencyFailure>>>['dependency'];
+  }> => {
     const { key, guid } = identity(subject, schema, dependencies);
     try {
       const entry = await store.read(key);
@@ -551,8 +577,8 @@ export async function createScriptablePackProductCache(options: {
             (JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
               nativeFreeProduct(product) === dependencies.nativeFree))
         ) {
-          if (!(await contentDependenciesCurrent(product, resolve)))
-            return { reason: 'dependency-changed', key };
+          const failure = await contentDependencyFailure(product, resolve);
+          if (failure !== undefined) return { key, ...failure };
           // Only this producer's format was validated before it was stored.
           const rebound = bindGeneration(
             product,
@@ -792,6 +818,7 @@ export async function createScriptablePackProductCache(options: {
       timing('miss', subject.sourcePath, startedAt, {
         key: current.key,
         reason: product === undefined ? current.reason : 'source-changed',
+        ...(current.dependency === undefined ? {} : { dependency: current.dependency }),
       });
       return undefined;
     },

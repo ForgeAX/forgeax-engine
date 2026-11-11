@@ -1,7 +1,7 @@
 import { deriveAnimationTargetId } from '@forgeax/engine/animation';
 import { quat, vec3, type Vec3Like } from '@forgeax/engine/math';
 import type { AnimationClip } from '@forgeax/engine/types';
-import { PLAYER_RIG, PLAYER_WALK_SECONDS, playerTargetPath, playerJointIndex } from './player-rig.ts';
+import { PLAYER_RIG, PLAYER_WALK_SECONDS, playerTargetPath, playerJointIndex } from '../shared/player-rig.ts';
 
 export function playerWalkClip(): AnimationClip {
   const duration = PLAYER_WALK_SECONDS;

@@ -94,7 +94,7 @@ function planarCaptureSnapshot(
 
 /**
  * PlanarReflection admission: a render-target camera needs an explicit view,
- * the mirror needs a positive update interval, the Surface distortion scale is
+ * the mirror needs a positive update interval, the normal distortion radius is
  * finite and non-negative, and the engine-owned target scale is finite and
  * positive. A zero target asks the Renderer to own the capture target.
  */
@@ -581,7 +581,7 @@ function fillCameraLensInputs(
       vignetteRadius: batch.read(LensEffects, 'vignetteRadius'),
       vignetteSoftness: batch.read(LensEffects, 'vignetteSoftness'),
       chromaticAberration: batch.read(LensEffects, 'chromaticAberration'),
-      chromaticAberrationAngle: batch.read(LensEffects, 'chromaticAberrationAngle'),
+      chromaticAberrationStartOffset: batch.read(LensEffects, 'chromaticAberrationStartOffset'),
       grainIntensity: batch.read(LensEffects, 'grainIntensity'),
       grainSize: batch.read(LensEffects, 'grainSize'),
     };
@@ -597,7 +597,9 @@ function fillCameraLensInputs(
         'vignetteColor',
       ) as Float32Array,
       chromaticAberration: numeric.chromaticAberration?.[physicalRow] as number,
-      chromaticAberrationAngle: numeric.chromaticAberrationAngle?.[physicalRow] as number,
+      chromaticAberrationStartOffset: numeric.chromaticAberrationStartOffset?.[
+        physicalRow
+      ] as number,
       grainIntensity: numeric.grainIntensity?.[physicalRow] as number,
       grainSize: numeric.grainSize?.[physicalRow] as number,
     };

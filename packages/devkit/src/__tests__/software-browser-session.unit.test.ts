@@ -254,6 +254,16 @@ describe('software browser session', () => {
         },
       });
       expect(browserMocks.launch).toHaveBeenCalledTimes(2);
+      // The release page keeps the player's flags; only the software fallback adds
+      // the unsafe flag that SwiftShader needs.
+      expect(browserMocks.launch).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ args: expect.not.arrayContaining(['--enable-unsafe-webgpu']) }),
+      );
+      expect(browserMocks.launch).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ args: expect.arrayContaining(['--enable-unsafe-webgpu']) }),
+      );
       expect(browserMocks.browser.close).toHaveBeenCalledTimes(2);
     } finally {
       await browser.close();
@@ -642,7 +652,7 @@ describe('software browser session', () => {
     });
     try {
       await expect(session.capture('ready')).rejects.toMatchObject({
-        code: 'browser-capture-runtime-failed',
+        code: 'browser-capture-ui-missing',
       });
       expect(session.report().captures).toEqual([
         expect.objectContaining({

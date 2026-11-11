@@ -58,33 +58,103 @@ export class MaterialPipelineRequestCache<T> {
     return hash;
   }
 
+  private static find<T>(
+    bucket: readonly { facts: readonly Fact[]; value: T }[] | undefined,
+    facts: readonly Fact[],
+  ): { facts: readonly Fact[]; value: T } | undefined {
+    if (bucket === undefined) return undefined;
+    entries: for (const entry of bucket) {
+      if (entry.facts.length !== facts.length) continue;
+      for (let index = 0; index < facts.length; index++)
+        if (!Object.is(entry.facts[index], facts[index])) continue entries;
+      return entry;
+    }
+    return undefined;
+  }
+
   get(facts: readonly Fact[]): T | undefined {
-    const bucket = this.buckets.get(this.hash(facts));
-    if (bucket !== undefined) {
-      entries: for (const entry of bucket) {
-        if (entry.facts.length !== facts.length) continue;
-        for (let index = 0; index < facts.length; index++)
-          if (!Object.is(entry.facts[index], facts[index])) continue entries;
-        this.hits++;
-        return entry.value;
-      }
+    const entry = MaterialPipelineRequestCache.find(this.buckets.get(this.hash(facts)), facts);
+    if (entry !== undefined) {
+      this.hits++;
+      return entry.value;
     }
     this.misses++;
     return undefined;
   }
 
+  /** Stores the request's value, replacing an earlier value of the same facts. */
   set(facts: readonly Fact[], value: T): void {
+    const hash = this.hash(facts);
+    const known = MaterialPipelineRequestCache.find(this.buckets.get(hash), facts);
+    if (known !== undefined) {
+      known.value = value;
+      return;
+    }
     if (this.size >= this.capacity) {
       this.buckets.clear();
       this.size = 0;
     }
-    const hash = this.hash(facts);
     const entry = { facts, value };
     const bucket = this.buckets.get(hash);
     if (bucket === undefined) this.buckets.set(hash, [entry]);
     else bucket.push(entry);
     this.size++;
   }
+}
+
+/**
+ * A prepared request whose backend compilation was still in flight. Its
+ * build is not repeated every frame: identical facts answer "pending" until
+ * one of the owner's flights settles, then the next lookup rebuilds once and
+ * observes the completed pipeline (or stores a fresh pending answer).
+ */
+export class PendingMaterialPipelineRequest {
+  private readonly settled: number;
+
+  constructor(private readonly owner: { readonly settled: number }) {
+    this.settled = owner.settled;
+  }
+
+  get current(): boolean {
+    return this.owner.settled === this.settled;
+  }
+}
+
+/** The prepared PSO owner facts a pending answer is judged by. */
+export interface PendingPipelineOwner {
+  readonly settled: number;
+  readonly pendingAnswers: number;
+}
+
+/**
+ * Looks up one request, building it on a miss. A build answered by an
+ * in-flight prepared compilation is remembered as pending, so identical
+ * requests skip the build until that owner settles a flight.
+ */
+export function requestMaterialPipeline<T extends object>(
+  requests: MaterialPipelineRequestCache<T | PendingMaterialPipelineRequest>,
+  facts: readonly Fact[],
+  lookupOnly: boolean,
+  build: () => T | null,
+  preparedOwner: () => PendingPipelineOwner | undefined,
+): T | null {
+  const cached = requests.get(facts);
+  if (cached instanceof PendingMaterialPipelineRequest) {
+    if (cached.current || lookupOnly) return null;
+  } else if (cached !== undefined) return cached;
+  else if (lookupOnly) return null;
+  // A build may request another pipeline through the reused lookup storage.
+  const stored = facts.slice();
+  const answered = preparedOwner()?.pendingAnswers ?? 0;
+  const pipeline = build();
+  if (pipeline !== null) {
+    requests.set(stored, pipeline);
+    return pipeline;
+  }
+  const owner = preparedOwner();
+  if (owner !== undefined && owner.pendingAnswers !== answered)
+    requests.set(stored, new PendingMaterialPipelineRequest(owner));
+  return null;
 }
 
 type RequestArgs<T extends unknown[]> = {

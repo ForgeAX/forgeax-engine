@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { collectCodeFileLineFindings } from '../check-code-file-lines.mjs';
 import { ensureGateSubmodules, ensurePnpm } from './prepare-modeling-gate.mjs';
 
-// `pnpm test:modeling [-- --candidate] [-- --dawn] [-- --mech-gt]`: the Engine x forgeax-modeling pair.
+// `pnpm test:modeling [-- --candidate] [-- --modeling-shard=1/4] [-- --dawn] [-- --mech-gt]`: the Engine x forgeax-modeling pair.
 // Formal mode also requires the gitlink on modeling `main`; `--candidate` tests a
 // proposed pair whose modeling commit is not merged yet. `--dawn` adds the real
 // renderer journeys (model.render, the C-001 case and the C-015 LOD chain), which need a Dawn device.
@@ -15,6 +15,16 @@ const root = resolve(import.meta.dirname, '../..');
 const candidate = process.argv.includes('--candidate');
 const dawn = process.argv.includes('--dawn');
 const mechGt = process.argv.includes('--mech-gt');
+const modelingShardOptions = process.argv.filter((arg) => arg.startsWith('--modeling-shard='));
+if (modelingShardOptions.length > 1) throw new Error('modeling shard may be specified only once');
+const modelingShard = modelingShardOptions[0]?.slice('--modeling-shard='.length);
+if (modelingShard !== undefined && !/^[1-9]\d*\/[1-9]\d*$/.test(modelingShard))
+  throw new Error(`invalid modeling shard: ${modelingShard}; expected <index>/<count>`);
+if (modelingShard !== undefined) {
+  const [index, count] = modelingShard.split('/').map(Number);
+  if (index > count)
+    throw new Error(`invalid modeling shard: ${modelingShard}; index exceeds count`);
+}
 const modeling = resolve(root, 'packages/modeling');
 
 if (!existsSync(resolve(modeling, 'package.json'))) {
@@ -125,7 +135,13 @@ run('test-types', process.execPath, [
   '-p',
   'packages/modeling/tsconfig.test.json',
 ]);
-run('modeling', 'pnpm', ['--filter', '@forgeax/engine-modeling', 'test']);
+run(
+  'modeling',
+  'pnpm',
+  modelingShard === undefined
+    ? ['--filter', '@forgeax/engine-modeling', 'test']
+    : ['--dir', 'packages/modeling', 'exec', 'vitest', 'run', '--shard', modelingShard],
+);
 // Engine-side consumers of the modeling seams, each in its owning package project.
 for (const [pkg, file] of [
   ['pack', 'src/__tests__/pack-generation-projection.unit.test.ts'],

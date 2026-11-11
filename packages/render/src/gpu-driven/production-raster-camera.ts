@@ -62,3 +62,37 @@ export function occlusionCamera(camera: CameraSnapshot): GpuDrivenOcclusionCamer
     usingScratch = outer;
   }
 }
+
+/**
+ * Light NDC to world, or undefined when the light matrix has no usable inverse.
+ * `mat4.invert` treats |det| < 1e-8 as singular and returns identity, which a
+ * kilometre-wide orthographic cascade reaches; scaling the world axes first
+ * keeps the determinant near one, and the round trip rejects a truly singular
+ * matrix so the kernel never builds a receiver prism in the wrong space.
+ *
+ * @internal
+ */
+export function invertLightViewProjection(
+  lightViewProjection: Float32Array,
+): Float32Array | undefined {
+  let scale = 0;
+  for (let index = 0; index < 12; index += 1) {
+    if (index % 4 !== 3) scale = Math.max(scale, Math.abs(lightViewProjection[index] as number));
+  }
+  if (!(scale > 0 && Number.isFinite(scale))) return undefined;
+  const scaled = mat4.create();
+  scaled.set(lightViewProjection.subarray(0, 16));
+  for (let index = 0; index < 12; index += 1) scaled[index] = (scaled[index] as number) / scale;
+  const inverse = mat4.invert(mat4.create(), scaled);
+  const product = mat4.multiply(mat4.create(), scaled, inverse);
+  for (let index = 0; index < 16; index += 1) {
+    const expected = index % 5 === 0 ? 1 : 0;
+    if (!(Math.abs((product[index] as number) - expected) <= 1e-4)) return undefined;
+  }
+  for (let row = 0; row < 3; row += 1) {
+    for (let column = 0; column < 4; column += 1) {
+      inverse[column * 4 + row] = (inverse[column * 4 + row] as number) / scale;
+    }
+  }
+  return inverse;
+}

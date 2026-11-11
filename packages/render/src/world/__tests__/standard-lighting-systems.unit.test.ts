@@ -3,6 +3,7 @@ import { RendererOperationError } from '../../errors/render';
 import type { RenderFrameState } from '../../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../../record/render-context';
 import type { ExtractedFrame } from '../../render-system-extract';
+import { VIEW_ENVIRONMENT_ADMIT_SYSTEM } from '../environment-systems';
 import { RENDER_CASCADE_FIT_SYSTEM } from '../light-systems';
 import { createViewRecord, ViewCascadeFit, type ViewLights } from '../render-lights';
 import { RenderViewFrameSource, RenderViewInput, ViewRecorder } from '../render-views';
@@ -60,7 +61,7 @@ function setup(
     world
       .addSystem(RenderPrepare, {
         name: RENDER_STANDARD_LIGHTING_SYSTEM,
-        after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM],
+        after: [RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM, VIEW_ENVIRONMENT_ADMIT_SYSTEM],
         queries: [],
         fn: (world) => {
           order.push(RENDER_STANDARD_LIGHTING_SYSTEM);
@@ -77,6 +78,16 @@ function setup(
       name: RENDER_CASCADE_FIT_SYSTEM,
       queries: [],
       fn: () => void order.push(RENDER_CASCADE_FIT_SYSTEM),
+    })
+    .unwrap();
+  world
+    .addSystem(RenderPrepare, {
+      name: VIEW_ENVIRONMENT_ADMIT_SYSTEM,
+      after: [RENDER_VIEW_FRAME_SYSTEM],
+      queries: [],
+      fn: () => {
+        order.push(VIEW_ENVIRONMENT_ADMIT_SYSTEM);
+      },
     })
     .unwrap();
   for (const entity of [staged, held]) {
@@ -171,6 +182,7 @@ describe('render-standard-lighting system', () => {
     expect(order).toEqual([
       RENDER_VIEW_FRAME_SYSTEM,
       RENDER_CASCADE_FIT_SYSTEM,
+      VIEW_ENVIRONMENT_ADMIT_SYSTEM,
       RENDER_STANDARD_LIGHTING_SYSTEM,
     ]);
     expect(viewStandardLightingOf(world, staged)).toEqual({ kind: 'prepared', lighting, fence });
@@ -248,7 +260,11 @@ describe('render-standard-lighting system', () => {
       .scheduleData()
       .find((data) => data.name === 'RenderPrepare')
       ?.systems.find((data) => data.name === RENDER_STANDARD_LIGHTING_SYSTEM);
-    expect(system?.after).toEqual([RENDER_VIEW_FRAME_SYSTEM, RENDER_CASCADE_FIT_SYSTEM]);
+    expect(system?.after).toEqual([
+      RENDER_VIEW_FRAME_SYSTEM,
+      RENDER_CASCADE_FIT_SYSTEM,
+      VIEW_ENVIRONMENT_ADMIT_SYSTEM,
+    ]);
     expect(system?.queries[0]?.read).toEqual(['ViewRecorder', 'ViewFrame']);
     expect(system?.queries[0]?.optional).toEqual(['ViewStandardLighting']);
   });

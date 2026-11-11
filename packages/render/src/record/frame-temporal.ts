@@ -11,7 +11,12 @@ import {
   DEPTH_OF_FIELD_POST_PROCESS_IDS,
 } from '../features/depth-of-field/depth-of-field-feature';
 import { packDepthOfFieldParams } from '../features/depth-of-field/depth-of-field-params';
-import { LENS_EFFECTS_POST_PROCESS_ID, packLensEffectsParams } from '../features/lens-effects';
+import {
+  CHROMATIC_ABERRATION_POST_PROCESS_ID,
+  LENS_EFFECTS_POST_PROCESS_ID,
+  packChromaticAberrationParams,
+  packLensEffectsParams,
+} from '../features/lens-effects';
 import { LENS_FLARE_PROGRAMS, packLensFlareParams } from '../features/lens-flare';
 import {
   effectiveMotionBlurSampleCount,
@@ -363,6 +368,10 @@ export function buildFramePostProcessParams(
     params.set(
       LENS_EFFECTS_POST_PROCESS_ID,
       packLensEffectsParams(camera.lensEffects, frameState.frameNumber),
+    );
+    params.set(
+      CHROMATIC_ABERRATION_POST_PROCESS_ID,
+      packChromaticAberrationParams(camera.lensEffects),
     );
   }
   if (camera.lensFlare !== undefined) {

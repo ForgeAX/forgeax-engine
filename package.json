@@ -102,6 +102,7 @@
     "check:required-output": "node scripts/ci/check-required-output.mjs",
     "check:no-reports": "node scripts/ci/check-no-reports.mjs",
     "check:ecs-iteration": "node scripts/ci/check-engine-ecs-iteration.mjs",
+    "check:template-feature-deletion": "node scripts/ci/check-template-feature-deletion.mjs",
     "grep:ecs-query-surface": "node scripts/forgeax/check-ecs-query-surface.mjs",
     "grep:asset-registry-instanced-removed": "node scripts/grep/check-asset-registry-instanced-removed.mjs",
     "grep:no-entity-array-literal": "node scripts/grep/check-no-entity-array-literal.mjs",

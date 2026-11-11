@@ -165,3 +165,43 @@ it.each([
     f.dispose();
   }
 });
+
+it('requests a colorless PSO only when the forward pass binds no color target', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 1, submeshes: 1 });
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  const record = (formats: readonly GPUTextureFormat[]) => {
+    f.acceptMaterials();
+    const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+    try {
+      recordGeometryDraws(
+        f.c,
+        pass,
+        null,
+        [[0]],
+        1,
+        f.meshGroup,
+        f.meshGroup,
+        () => f.materialGroup,
+        'forward',
+        undefined,
+        formats,
+      );
+    } finally {
+      pass.end();
+    }
+  };
+  try {
+    // Sprite transparent sub-passes record into the color target and must say so.
+    record(['rgba16float']);
+    expect(lookup.mock.calls.at(-1)?.[9]).not.toBeNull();
+    record([]);
+    expect(lookup.mock.calls.at(-1)?.[9]).toBeNull();
+    expect(f.errors).toEqual([]);
+  } finally {
+    lookup.mockRestore();
+    f.dispose();
+  }
+});

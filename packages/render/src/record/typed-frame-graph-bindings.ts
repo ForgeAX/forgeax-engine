@@ -18,7 +18,7 @@ import {
   atmosphereBindings,
   atmosphereMaterialVisibilityBindings,
 } from '../environment/bindings';
-import type { GraphAtmosphere } from '../environment/luts';
+import { atmosphereVolumeViews, type GraphAtmosphere } from '../environment/luts';
 import type { RenderFeatureResolvedGpuBuffer } from '../features/prepared-gpu-work';
 import type { RenderFeatureBindingsDescriptor } from '../features/prepared-graphics';
 import type {
@@ -212,7 +212,7 @@ export function resolveTargetBindings(
   atmosphere?: GraphAtmosphere,
 ): RenderFeatureGraphBindingsResolution | undefined {
   const frame = input.frame as _InternalRenderPipelineContext;
-  const atmosphereViews = atmosphereViewsOf(input.resources, atmosphere);
+  const atmosphereViews = atmosphereVolumeViews(input.resources, atmosphere);
   const cloudShadow = cloudShadowViewOf(input.resources, atmosphere);
   const directionalShadow = directionalShadowViewOf(frame, input.resources, atmosphere);
   const descriptor = input.binding.descriptor;
@@ -268,20 +268,6 @@ export function resolveTargetBindings(
     return perFrameViewBindings(frame, atmosphereViews, directionalShadow, cloudShadow, viewOffset);
   }
   return resolveSceneDepthBindings(input, frame, pipeline, sceneDepth, descriptor?.values.group);
-}
-
-function atmosphereViewsOf(
-  resources: GraphResourceResolver,
-  atmosphere: GraphAtmosphere | undefined,
-): AtmosphereViews | undefined {
-  if (atmosphere === undefined) return undefined;
-  return {
-    transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
-    distantSkyLight: resources.textureView(atmosphere.distantSkyLight).unwrap(),
-    multipleScattering: resources.textureView(atmosphere.multipleScattering).unwrap(),
-    aerialPerspective: resources.textureView(atmosphere.aerialPerspective).unwrap(),
-    aerialTransmittance: resources.textureView(atmosphere.aerialTransmittance).unwrap(),
-  };
 }
 
 function cloudShadowViewOf(

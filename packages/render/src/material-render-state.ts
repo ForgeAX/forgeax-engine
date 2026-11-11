@@ -200,3 +200,45 @@ export function derivedRenderState<T>(
   states.set(variant, { base: state === undefined ? undefined : { ...state }, value });
   return value;
 }
+
+const seededDepthState = (state: MaterialRenderState | undefined): MaterialRenderState => ({
+  ...state,
+  depthCompare: 'less-equal',
+});
+const seededMaskState = (state: MaterialRenderState | undefined): MaterialRenderState => ({
+  ...state,
+  depthCompare: 'equal',
+  depthWriteEnabled: false,
+});
+
+/**
+ * Forward `main` over a depth seeded by the identical prepass raster (see
+ * forward-depth-seed). The visible fragment meets equal depth, so `less`
+ * accepts it as `less-equal`. An alpha-masked writer already resolved its
+ * coverage in the prepass; it draws with `equal` and no depth write, so its
+ * clipped and hidden fragments never shade (UE
+ * r.EarlyZPassOnlyMaterialMasking). Other comparisons are authored intent.
+ */
+export function seededDepthRenderState(
+  state: MaterialRenderState | undefined,
+  alphaMask: boolean,
+): MaterialRenderState | undefined {
+  if (seededDepthMasked(state, alphaMask))
+    return derivedRenderState(state, 'seeded-depth-mask', seededMaskState);
+  return (state?.depthCompare ?? 'less') === 'less'
+    ? derivedRenderState(state, 'seeded-depth', seededDepthState)
+    : state;
+}
+
+/**
+ * The masked branch of seededDepthRenderState: a default-depth alpha-masked
+ * writer whose coverage the identical prepass already resolved into depth.
+ */
+export function seededDepthMasked(
+  state: MaterialRenderState | undefined,
+  alphaMask: boolean,
+): boolean {
+  return (
+    alphaMask && state?.depthWriteEnabled !== false && (state?.depthCompare ?? 'less') === 'less'
+  );
+}

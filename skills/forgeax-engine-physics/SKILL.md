@@ -29,7 +29,7 @@ at activation; manual world constructors/factories accept the same options.
 Fewer iterations can soften contacts/joints, increase penetration or jitter and
 delay sleep. This changes solver convergence, not fixed cadence, CCD or rendering.
 `RigidBody.additionalSolverIterations` only adds work to its connected island.
-Do not advertise a native-step saving as a whole-game FPS gain; validate the actual
+Report a native-step saving as step-time only, and validate the actual
 workload and settling. Read the [owning contract](../../packages/physics/README.md#solver-precision).
 
 ## Core API and components
@@ -46,7 +46,7 @@ workload and settling. Read the [owning contract](../../packages/physics/README.
 | `RigidBodyTypeValue` / `ColliderShapeValue` | physics | Enum constants and `*FromF32` narrowing helpers | Type-safe component enum values. |
 | `createRapier3DPhysicsWorld` | rapier3d | `async fn` | Construct a 3D PhysicsWorld manually; also used internally by `createApp`. |
 | `createRapier2DPhysicsWorld` | rapier2d | `async fn` | Construct a 2D PhysicsWorld manually. |
-| `PhysicsErrorCode` | physics (types SSOT) | Closed union; read source, do not copy members | Structured failure codes. |
+| `PhysicsErrorCode` | physics (types SSOT) | Closed union; read members from source | Structured failure codes. |
 
 ### Collider transform projection
 
@@ -93,7 +93,7 @@ world.addSystem(FixedUpdate, {
 ```
 
 > [!CAUTION]
-> Common pitfalls: compare boolean `grounded` with `=== true`, never `!== 0` (always true). Spawn capsules at rest height (ground top + radius + halfHeight); embedding them in ground degenerates KCC contact. Check trajectory Y for continuous-slope snapping rather than relying on `computedGrounded()`. Guard asynchronous initialization with `if (!pw.hasBody(entity)) return;`, not by catching `body-not-found`. `physicsSyncBackend` skips kinematic mirroring for CharacterController archetypes to avoid double writes. Demo: `apps/hello/character`.
+> Common pitfalls: compare boolean `grounded` with `=== true` (`!== 0` is always true). Spawn capsules at rest height (ground top + radius + halfHeight); embedding them in ground degenerates KCC contact. Check trajectory Y for continuous-slope snapping rather than relying on `computedGrounded()`. Guard asynchronous initialization with `if (!pw.hasBody(entity)) return;`, not by catching `body-not-found`. `physicsSyncBackend` skips kinematic mirroring for CharacterController archetypes to avoid double writes. Demo: `apps/hello/character`.
 
 ## Moving supports and dynamic pushes
 
@@ -158,7 +158,7 @@ app.start();
 
 - **Components attached but no movement**: check `Transform` (writeback target) and `createApp({ plugins: [the selected physics backend plugin] })` (tick installation). All three components are required.
 - **No physics in initial frames**: asynchronous WASM loading leaves PhysicsWorld temporarily unavailable; systems return early by design.
-- **Large host deltas**: never pass host delta directly into physics. World clamps `Time.delta` to `maxDeltaSeconds`, runs at most `maxStepsPerUpdate` fixed steps, and records dropped whole steps without later catch-up. The `physicsStepSimulation` guard for `dt <= 0` / `> 0.1s` is backend defense, not host-frame recovery.
+- **Large host deltas**: let World feed physics: it clamps `Time.delta` to `maxDeltaSeconds`, runs at most `maxStepsPerUpdate` fixed steps, and records dropped whole steps without later catch-up. The `physicsStepSimulation` guard for `dt <= 0` / `> 0.1s` is backend defense, not host-frame recovery.
 - **2D/3D mismatch**: `'rapier-2d'` uses `PhysicsWorld2D`; `'rapier-3d'` uses `PhysicsWorld`. Schemas are shared but coordinate dimensions differ.
 
 ## Managed joints and skeletal motion
@@ -190,8 +190,8 @@ app.start();
 Register one ready physics participant with the ECS World when deterministic
 source/fresh-target evidence must include portable physics state. Let ECS own
 the record, restore transaction, trace, report, tolerance, and error contract.
-Keep Rapier handles and native values inside the backend; never expose them to
-App, Preview, or Remote. Recover by switching on the error code and following
+Keep Rapier handles and native values inside the backend; keep them hidden from
+App, Preview, and Remote. Recover by switching on the error code and following
 its `expected`, `hint`, and `detail`.
 
 ## Mesh collision

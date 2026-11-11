@@ -104,8 +104,11 @@ export function createPublishedMeshResidencyHost(options: {
     let physicalReleased = false;
     let completion: Promise<void> | undefined;
     let transfer: { resolve(): void; reject(cause: unknown): void } | undefined;
+    let uploadFailed = false;
+    let uploadFailure: unknown;
     const isCurrent = () =>
       !released &&
+      !uploadFailed &&
       signal?.aborted !== true &&
       source.isCurrent() &&
       options.currentGeneration() === generation &&
@@ -180,10 +183,18 @@ export function createPublishedMeshResidencyHost(options: {
       }
       const completed = options.completeUploads();
       lease.track(completed);
-      await completed;
+      // The same queue orders these writes before a future draw. Completion
+      // still owns retirement, but does not gate submission-ready resources.
+      // The Renderer separately reports this original promise to its fault owner.
+      void completed.catch((cause: unknown) => {
+        uploadFailed = true;
+        uploadFailure = cause;
+        pipelineAbort.abort();
+      });
       if (pipelines !== undefined) {
         const result = await pipelines;
         if (result.ok) preparedPipelines = result.value;
+        if (uploadFailed) throw uploadFailure;
         if (!result.ok || !result.value.isCurrent()) {
           signal?.removeEventListener('abort', abortPipelines);
           await release();

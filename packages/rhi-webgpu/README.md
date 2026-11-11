@@ -411,7 +411,8 @@ remain a cold path, and absent optional selection support uses the existing fact
 `findRenderState` can borrow the state already admitted by warmup using a lazy
 field projection and stage/layout dependencies. The material path uses the same
 projection for equality and a true cold miss. The scan runs only on a local selection
-miss; it does not create a parallel device index or hash complete state again.
+miss and visits only the records sharing the request's layout and stage modules (the
+program key prefix the index already groups by); it does not hash complete state again.
 
 ## Compatibility at the native boundary
 

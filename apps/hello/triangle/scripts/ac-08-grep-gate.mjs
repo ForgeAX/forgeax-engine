@@ -326,7 +326,7 @@ const bannedCastRegex = /\bas\s+(?:Rhi|Command|GPU)[A-Z][A-Za-z0-9_]*\b/;
       } catch {
         continue;
       }
-      const rel = fp.slice(REPO_ROOT.length + 1);
+      const rel = fp.slice(REPO_ROOT.length + 1).replaceAll('\\', '/');
       const rawDevice = text.includes('getRawDevice');
       const castSource = /\.tsx?$/.test(fp) && (
         rel.startsWith('packages/runtime/src/') ||
@@ -883,7 +883,7 @@ const bannedCastRegex = /\bas\s+(?:Rhi|Command|GPU)[A-Z][A-Za-z0-9_]*\b/;
       `${lintScript} missing (feat-20260510-ci-metrics-coverage-drift M3 w13 not landed)`,
     );
   } else {
-    const r = spawnSync('node', [lintScript], {
+    const r = spawnSync(process.execPath, [lintScript], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
     });

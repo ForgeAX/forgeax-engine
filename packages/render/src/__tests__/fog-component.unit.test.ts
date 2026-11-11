@@ -13,6 +13,7 @@ const EXP_FOG: FogCandidate = {
   mode: 'exp',
   near: 0,
   far: 100,
+  skyOpacity: 1,
 };
 
 function selectionIssue(candidate: FogCandidate): { field: unknown; expected: string } | undefined {
@@ -29,17 +30,20 @@ describe('Fog component contract', () => {
     expect(Fog.fields.density.default).toBe(0.01);
     expect(Fog.fields.heightFalloff.default).toBe(0);
     expect(Fog.fields.maxOpacity.default).toBe(1);
+    expect(Fog.fields.skyOpacity.type).toBe('f32');
+    expect(Fog.fields.skyOpacity.default).toBe(1);
 
     const world = new World();
     const entity = world.spawn({ component: Fog, data: {} }).unwrap();
     const value = world.get(entity, Fog).unwrap();
-    expect(Array.from(value.color)).toEqual([0.5, 0.5, 0.5]);
+    expect(Array.from(value.color)).toEqual([0, 0, 0]);
     expect(value.density).toBeCloseTo(0.01);
     expect(value.heightFalloff).toBe(0);
     expect(value.maxOpacity).toBe(1);
     expect(value.mode).toBe(FogModeValue.exp);
     expect(value.near).toBe(0);
     expect(value.far).toBe(100);
+    expect(value.skyOpacity).toBe(1);
   });
 
   it('names the Three.js fog laws as closed mode labels', () => {
@@ -98,6 +102,9 @@ describe('Fog component contract', () => {
     ['density', { density: -0.1 }],
     ['heightFalloff', { heightFalloff: Number.NaN }],
     ['maxOpacity', { maxOpacity: 1.1 }],
+    ['skyOpacity', { skyOpacity: -0.1 }],
+    ['skyOpacity', { skyOpacity: 1.5 }],
+    ['skyOpacity', { skyOpacity: Number.NaN }],
   ] as const)('rejects invalid %s at the shared selection owner', (field, override) => {
     const result = selectEnvironment({
       environments: [],
@@ -111,6 +118,7 @@ describe('Fog component contract', () => {
           mode: 'exp',
           near: 0,
           far: 100,
+          skyOpacity: 1,
           ...override,
         },
       ],
@@ -122,6 +130,19 @@ describe('Fog component contract', () => {
     expect(result.error.detail.field).toContain(field);
     expect(result.error.expected).toContain('finite');
     expect(result.error.hint).toContain(field);
+  });
+
+  it('accepts skyOpacity across [0, 1] and names it with its bound when outside', () => {
+    expect(selectionIssue({ ...EXP_FOG, skyOpacity: 0 })).toBeUndefined();
+    expect(selectionIssue({ ...EXP_FOG, skyOpacity: 0.5 })).toBeUndefined();
+    expect(selectionIssue({ ...EXP_FOG, skyOpacity: 1 })).toBeUndefined();
+    expect(selectionIssue({ ...EXP_FOG, skyOpacity: 2 })).toEqual({
+      field: 'skyOpacity',
+      expected: 'a finite number in [0, 1]',
+    });
+    // skyOpacity scales only the sky; it never decides whether fog is active.
+    const unfoggedSky = { ...EXP_FOG, skyOpacity: 0 };
+    expect(fogIsActive(unfoggedSky)).toBe(true);
   });
 
   it('rejects a second Fog owner without choosing a first-hit winner', () => {

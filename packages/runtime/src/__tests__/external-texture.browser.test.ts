@@ -280,7 +280,17 @@ it('imports a caller GPUTexture into texture_external and ordinary slots through
     h.world.despawn(entity).unwrap();
     const ordinary = h.bind(handle, true);
     await h.draw(3);
-    const ordinaryPixels = await h.pixels('ordinary-slot');
+    // A new material is drawn once its pipelines finish compiling, so wait
+    // for the first frame that shows it within the external slot's budget.
+    let ordinaryPixels = await h.pixels('ordinary-slot');
+    for (
+      let frame = 0;
+      frame < 60 && sample(ordinaryPixels, 64, 32).every((c) => c < 40);
+      frame++
+    ) {
+      await h.draw(1);
+      ordinaryPixels = await h.pixels('ordinary-slot');
+    }
     const tops = [sample(ordinaryPixels, 64, 32), sample(ordinaryPixels, 64, 96)];
     expect(tops.some((c) => c[0] > 200 && c[2] < 40)).toBe(true);
     expect(tops.some((c) => c[2] > 200 && c[0] < 40)).toBe(true);

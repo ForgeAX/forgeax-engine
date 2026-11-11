@@ -11,7 +11,6 @@ import {
   verifySubmittedShadows,
 } from '../render-system-presentation';
 import {
-  directionalShadowCandidateError,
   directionalShadowSubmitted,
   type RecordAttempt,
   type RecordOutcome,
@@ -19,8 +18,8 @@ import {
   recordRetirementError,
 } from '../render-system-record-attempt';
 import type { FrameList } from '../scene/frame-list';
+import { settleDirectionalShadow } from './directional-shadow-inspection';
 import {
-  type DirectionalShadowOutcome,
   type RecordHistory,
   recordHistoryOf,
   type StagedRecord,
@@ -139,13 +138,30 @@ export function registerSubmissionSystems(world: World): void {
           for (const staged of history.staged) {
             if (staged.frame !== frame) continue;
             try {
-              publishRecordOutcome(world, entity, owner, history, staged.attempt);
+              publishRecordOutcome(world, entity, owner, staged.attempt);
+              settleDirectionalShadow(
+                world,
+                entity,
+                owner,
+                history.directionalShadow,
+                staged,
+                accepted,
+              );
               // A queue-accepted attempt whose frame was not accepted (a Feature scene input pending) commits nothing.
               if (!accepted || !staged.accepted) continue;
               if (commitRecordOutcome(owner, history, staged, receipt))
                 world.set(entity, ViewSubmission, { temporal: true }).unwrap();
             } catch (cause) {
-              owner.internals.errorRegistry.fire(recordFailureError(cause));
+              const error = recordFailureError(cause);
+              settleDirectionalShadow(
+                world,
+                entity,
+                owner,
+                history.directionalShadow,
+                { ...staged, failure: error },
+                accepted,
+              );
+              owner.internals.errorRegistry.fire(error);
             }
           }
         });
@@ -205,7 +221,6 @@ function publishRecordOutcome(
   world: World,
   entity: EntityHandle,
   owner: ViewSettlementOwner,
-  history: RecordHistory,
   attempt: RecordAttempt,
 ): void {
   const outcome = attempt.outcome;
@@ -221,13 +236,6 @@ function publishRecordOutcome(
   const directionalShadowReady = directionalShadowSubmitted(frameState, internals, outcome.lights);
   if (attempt.submitted && presentation.presentation === 'ready' && outcome.cameraCount > 0)
     verifySubmittedPresentation(owner, attempt, outcome, directionalShadowReady);
-  recordDirectionalShadowOutcome(
-    owner,
-    history.directionalShadow,
-    attempt,
-    outcome,
-    directionalShadowReady,
-  );
   settleViewTransmission(world, entity, owner, attempt.sceneSubmitted);
 }
 
@@ -300,25 +308,6 @@ function captureWritableRows(
   return rows.every(writable) ? rows : rows.filter(writable);
 }
 
-function recordDirectionalShadowOutcome(
-  { frameState, internals }: ViewSettlementOwner,
-  shadow: DirectionalShadowOutcome,
-  attempt: RecordAttempt,
-  { lights }: RecordOutcome,
-  directionalShadowReady: boolean,
-): void {
-  if (attempt.sceneSubmitted && directionalShadowReady) {
-    shadow.candidate = 'accepted';
-    return;
-  }
-  if (
-    lights.cascades?.directionalShadowQuality === undefined ||
-    (attempt.submitted && !attempt.sceneSubmitted)
-  )
-    return;
-  shadow.error = directionalShadowCandidateError(frameState, internals, lights, attempt.submitted);
-}
-
 /**
  * The accepted attempt becomes the view's record history (count, generation,
  * presentation, draws), stages its terrain presentation and commits its
@@ -341,7 +330,9 @@ function commitRecordOutcome(
     presentation === 'pending' && reason !== undefined ? Object.freeze(reason) : undefined;
   history.materialDraws = outcome.draws.drawObservation.commit(presentation === 'ready');
   if (presentation === 'ready') receipt?.stageTerrainPresented(outcome.draws.presentedDraws);
-  if (!attempt.sceneSubmitted) {
+  // Queue acceptance can precede complete material/graph preparation. A
+  // pending picture cannot become color, motion or jitter history.
+  if (!attempt.sceneSubmitted || presentation !== 'ready') {
     scene.discardTemporalFrame();
     return false;
   }

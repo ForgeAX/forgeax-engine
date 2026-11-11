@@ -22,7 +22,7 @@ it('shadows only direct air scattering with geometry and cloud visibility on the
       {
         id: 'atmosphere-visibility-test',
         imports: engine.imports,
-        defines: { ATMOSPHERE_UTILITY_SHADOWS: true },
+        defines: { ATMOSPHERE_UTILITY_SHADOWS: true, STORAGE_BUFFER_AVAILABLE: true },
       },
     )
   ).unwrap();

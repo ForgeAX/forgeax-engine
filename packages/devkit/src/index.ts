@@ -96,6 +96,8 @@ export {
   type OperationHistorySummary,
 } from './operation-history.js';
 export type {
+  PlayAdvanceOptions,
+  PlayClockReport,
   PlayContext,
   PlayErrorCode,
   PlayFailure,
@@ -108,10 +110,12 @@ export type {
   PlayScript,
   PlayScriptInvalidReason,
   PlayStepFailureReason,
+  PlayStepOptions,
+  PlayStepRange,
   PlayWaitOptions,
+  PlayWarning,
 } from './play.js';
 export { playCommand } from './play.js';
-export type { PlayLayoutIssue, PlayLayoutIssueKind } from './play-layout.js';
 export { type PluginMigrationOptions, pluginMigrateCommand } from './plugin/migration.js';
 export {
   type BootstrapRoot,

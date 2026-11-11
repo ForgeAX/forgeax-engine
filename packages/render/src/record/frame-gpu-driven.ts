@@ -209,6 +209,7 @@ export function gpuDrivenPrepareRequest(
   profilePhase: RecordProfileRunner | undefined,
   capsuleShadowDirectional: boolean,
   directionalShadowSimple = false,
+  leanLighting = false,
 ): GpuDrivenPrepareInput {
   const scene = frameGpuDriven.scene;
   return {
@@ -245,6 +246,7 @@ export function gpuDrivenPrepareRequest(
     ...materialPipelineFactories(internals),
     capsuleShadowDirectional,
     ...(directionalShadowSimple ? { directionalShadowSimple } : {}),
+    ...(leanLighting ? { leanLighting } : {}),
     ...(profilePhase === undefined ? {} : { profilePhase }),
   };
 }

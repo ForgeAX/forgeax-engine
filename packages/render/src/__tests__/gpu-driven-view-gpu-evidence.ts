@@ -298,6 +298,591 @@ export async function runGpuDrivenVisibleOrderEvidence(
   return { instanceCount, rows };
 }
 
+/** Real selector rows across shared tiles and partial updates that move later batch bases. */
+export async function runGpuDrivenMultiBatchVisibleOrderEvidence(
+  computePassMode: 'separate' | 'combined',
+) {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('multi-batch order raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const available = GpuScene.create(device, 256).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const topology = new BatchTopology();
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
+  const visibleOrdinals = new Map<number, Set<number>>();
+  const stages = [
+    {
+      name: 'initial',
+      changes: [
+        [0, 37, 0],
+        [1, 91, 0],
+        [2, 29, 0],
+      ],
+    },
+    { name: 'grow-first', changes: [[0, 68, 0]] },
+    { name: 'pose-middle', changes: [[1, 91, 1]] },
+    { name: 'shrink-first', changes: [[0, 13, 0]] },
+    { name: 'quiet', changes: [] },
+  ] as const;
+  const frames: {
+    stage: string;
+    batches: {
+      group: number;
+      firstCandidate: number;
+      expected: { rows: number[]; instances: number[]; count: number; firstInstance: number };
+      actual: { rows: number[]; instances: number[]; count: number; firstInstance: number };
+    }[];
+  }[] = [];
+  try {
+    for (const [stageIndex, stage] of stages.entries()) {
+      const updates = stage.changes.map(([group, count, phase]) => {
+        const transforms = new Float32Array(count * 16),
+          visible = new Set<number>();
+        for (let ordinal = 0; ordinal < count; ordinal++) {
+          const world = mat4.identity(mat4.create());
+          const admitted = (ordinal + phase) % 3 !== 2;
+          world[12] = admitted ? ((ordinal % 7) - 3) * 0.1 : 10;
+          transforms.set(world, ordinal * 16);
+          if (admitted) visible.add(ordinal);
+        }
+        visibleOrdinals.set(group, visible);
+        const value = snapshot(group + 1, 0);
+        const draw = value.gpuDrivenDraws?.[0];
+        if (draw?.geometry === undefined) throw new Error('multi-batch geometry unavailable');
+        const indexCount = 36 + group * 3;
+        return updateSnapshot({
+          ...value,
+          assetHandle: 3 + group,
+          instances: { transforms, instanceCount: count, cacheKey: stageIndex + 1, archVersion: 1 },
+          gpuDrivenDraws: [
+            {
+              ...draw,
+              count: indexCount,
+              geometry: {
+                ...draw.geometry,
+                receipt: { ...draw.geometry.receipt, identity: `multi-batch-${group}` },
+                draw: { ...draw.geometry.draw, count: indexCount },
+              },
+            },
+          ],
+        });
+      });
+      const delta = projection.apply(updates);
+      scene.sync(delta).unwrap();
+      topology.apply(delta);
+      const plan = topology.query(topology.sourcePlan(), undefined);
+      if (plan.batches.length !== 3)
+        throw new Error('Expected three independent material/geometry batches');
+      updateGpuView(view, plan, scene, planes).unwrap();
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      view
+        .addPasses(
+          graph,
+          'gpu-driven',
+          true,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          computePassMode,
+        )
+        .unwrap();
+      const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      view._commitResourceReplacement();
+      const visible = view.visibleBuffer,
+        indirect = view.indirectBuffer;
+      if (visible === undefined || indirect === undefined)
+        throw new Error('multi-batch buffers unavailable');
+      const bytes = plan.batches.reduce((sum, batch) => sum + 20 + batch.visibleCapacity * 16, 0);
+      const readback = device
+        .createBuffer({ size: bytes, usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST })
+        .unwrap();
+      try {
+        const encoder = device.createCommandEncoder().unwrap();
+        compiled.execute({ encoder }).unwrap();
+        let offset = 0;
+        for (const batch of plan.batches) {
+          encoder.copyBufferToBuffer(indirect, batch.indirectOffset, readback, offset, 20);
+          encoder.copyBufferToBuffer(
+            visible,
+            batch.visibleBase * 16,
+            readback,
+            offset + 20,
+            batch.visibleCapacity * 16,
+          );
+          offset += 20 + batch.visibleCapacity * 16;
+        }
+        device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        await device.queue.onSubmittedWorkDone();
+        const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+        const words = new Uint32Array(mapped.getMappedRange().unwrap().slice(0));
+        mapped.unmap();
+        let word = 0,
+          candidateBase = 0;
+        const batches = plan.batches.map((batch) => {
+          const group = (batch.key.count - 36) / 3;
+          const expectedRows: number[] = [],
+            expectedInstances: number[] = [];
+          for (let ordinal = 0; ordinal < batch.candidates.length; ordinal++) {
+            const candidate = batch.candidates.at(ordinal);
+            if (candidate === undefined) throw new Error('Missing CPU candidate');
+            if (!visibleOrdinals.get(group)?.has(candidate.instanceOrdinal)) continue;
+            const instance = scene.instanceIndexForSlot(
+              candidate.primitiveIndex,
+              candidate.instanceOrdinal,
+            );
+            if (instance === undefined) throw new Error('Missing CPU instance row');
+            expectedRows.push(candidateBase + ordinal);
+            expectedInstances.push(instance);
+          }
+          const count = words[word + 1] ?? -1;
+          const actual = {
+            count,
+            firstInstance: words[word + 4] ?? -1,
+            rows: Array.from(
+              { length: Math.min(count, batch.visibleCapacity) },
+              (_, i) => words[word + 5 + i * 4 + 2] ?? -1,
+            ),
+            instances: Array.from(
+              { length: Math.min(count, batch.visibleCapacity) },
+              (_, i) => words[word + 5 + i * 4] ?? -1,
+            ),
+          };
+          const row = {
+            group,
+            firstCandidate: candidateBase,
+            expected: {
+              rows: expectedRows,
+              instances: expectedInstances,
+              count: expectedRows.length,
+              firstInstance: device.caps.firstInstanceIndirect ? batch.visibleBase : 0,
+            },
+            actual,
+          };
+          word += 5 + batch.visibleCapacity * 4;
+          candidateBase += batch.candidates.length;
+          return row;
+        });
+        frames.push({ stage: stage.name, batches });
+      } finally {
+        device.destroyBuffer(readback);
+        await compiled.retire();
+      }
+    }
+    const validation = await rawDevice.popErrorScope();
+    if (validation !== null) throw new Error(`Multi-batch GPU validation: ${validation.message}`);
+    return frames;
+  } finally {
+    view.dispose();
+    scene.dispose();
+    await device.queue.onSubmittedWorkDone();
+  }
+}
+
+/** Real Mesh submeshes execute one shared member list in several candidate domains. */
+export async function runGpuDrivenSharedMemberSubmeshEvidence(
+  computePassMode: 'separate' | 'combined',
+) {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('shared submesh raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const available = GpuScene.create(device, 4).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene;
+  const projection = new RenderScene();
+  const topology = new BatchTopology();
+  const submeshCount = 96;
+  const indices = new Uint32Array(submeshCount * 3);
+  for (let i = 0; i < submeshCount; i++) indices.set([0, 1, 2], i * 3);
+  const meshes = new MeshFrame().with(
+    0,
+    3,
+    {
+      ...BUILTIN_CUBE,
+      indices,
+      aabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
+      submeshes: Array.from({ length: submeshCount }, (_, i) => ({
+        materialSlot: 0,
+        indexOffset: i * 3,
+        indexCount: 3,
+        vertexCount: 3,
+        topology: 'triangle-list' as const,
+      })),
+    },
+    [material],
+  );
+  const transforms = new Float32Array(3 * 16);
+  for (let ordinal = 0; ordinal < 3; ordinal++) {
+    const world = mat4.identity(mat4.create());
+    world[12] = ordinal === 1 ? 10 : ordinal * 0.1;
+    transforms.set(world, ordinal * 16);
+  }
+  const delta = projection.apply([
+    updateSnapshot({
+      ...snapshot(1, 0),
+      instances: { transforms, instanceCount: 3, cacheKey: 1, archVersion: 1 },
+    }),
+  ]);
+  scene.sync({ ...delta, meshes }).unwrap();
+  topology.apply(delta);
+  // This actual query expands Mesh submeshes; the fixture never aliases candidates by hand.
+  const plan = topology.query(topology.sourcePlan(), meshes);
+  const uniqueMemberships = new Set(Array.from(plan.batches, (batch) => batch.candidates)).size;
+  if (
+    plan.batches.length !== submeshCount ||
+    uniqueMemberships !== 1 ||
+    plan.candidateCount !== 288
+  )
+    throw new Error('Expected 96 real submesh executions sharing three scene members');
+  const surfaceRows = Uint32Array.from({ length: plan.candidateCount }, (_, i) => 1000 + i * 7);
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  let readback: Buffer | undefined;
+  let compiled: CompiledRenderGraph<{ readonly encoder: RhiCommandEncoder }> | undefined;
+  try {
+    updateGpuView(
+      view,
+      plan,
+      scene,
+      frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+      undefined,
+      0,
+      undefined,
+      false,
+      undefined,
+      surfaceRows,
+    ).unwrap();
+    const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+    view
+      .addPasses(
+        graph,
+        'gpu-driven',
+        true,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        undefined,
+        computePassMode,
+      )
+      .unwrap();
+    compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+    view._commitResourceReplacement();
+    const visible = view.visibleBuffer,
+      indirect = view.indirectBuffer,
+      surface = view.visibleSurfaceRowsBuffer;
+    if (visible === undefined || indirect === undefined || surface === undefined)
+      throw new Error('Shared submesh output buffers unavailable');
+    const commandBytes = plan.batches.reduce(
+      (sum, batch) => sum + 20 + batch.visibleCapacity * 16,
+      0,
+    );
+    readback = device
+      .createBuffer({
+        size: commandBytes + surfaceRows.byteLength,
+        usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+      })
+      .unwrap();
+    const encoder = device.createCommandEncoder().unwrap();
+    compiled.execute({ encoder }).unwrap();
+    let offset = 0;
+    for (const batch of plan.batches) {
+      encoder.copyBufferToBuffer(indirect, batch.indirectOffset, readback, offset, 20);
+      encoder.copyBufferToBuffer(
+        visible,
+        batch.visibleBase * 16,
+        readback,
+        offset + 20,
+        batch.visibleCapacity * 16,
+      );
+      offset += 20 + batch.visibleCapacity * 16;
+    }
+    encoder.copyBufferToBuffer(surface, 0, readback, commandBytes, surfaceRows.byteLength);
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    await device.queue.onSubmittedWorkDone();
+    const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+    const words = new Uint32Array(mapped.getMappedRange().unwrap().slice(0));
+    mapped.unmap();
+    const actualSurfaces = words.subarray(commandBytes / 4);
+    let word = 0,
+      candidateBase = 0;
+    const batches = Array.from(plan.batches, (batch) => {
+      const expectedItems: { instance: number; candidate: number; surface: number }[] = [];
+      for (let ordinal = 0; ordinal < batch.candidates.length; ordinal++) {
+        const candidate = batch.candidates.at(ordinal);
+        if (candidate === undefined) throw new Error('Missing shared CPU candidate');
+        if (candidate.instanceOrdinal === 1) continue;
+        const instance = scene.instanceIndexForSlot(
+          candidate.primitiveIndex,
+          candidate.instanceOrdinal,
+        );
+        if (instance === undefined) throw new Error('Missing shared CPU instance');
+        expectedItems.push({
+          instance,
+          candidate: candidateBase + ordinal,
+          surface: 1000 + (candidateBase + ordinal) * 7,
+        });
+      }
+      const count = words[word + 1] ?? -1;
+      const items = Array.from({ length: Math.min(count, batch.visibleCapacity) }, (_, i) => {
+        const row = words[word + 5 + i * 4 + 2] ?? -1;
+        return {
+          instance: words[word + 5 + i * 4] ?? -1,
+          candidate: row,
+          surface: actualSurfaces[row] ?? -1,
+        };
+      });
+      // The pre-631 atomic path also satisfies this multiset; order is not the oracle.
+      items.sort((a, b) => a.candidate - b.candidate);
+      expectedItems.sort((a, b) => a.candidate - b.candidate);
+      const result = {
+        expected: {
+          count: expectedItems.length,
+          firstInstance: device.caps.firstInstanceIndirect ? batch.visibleBase : 0,
+          items: expectedItems,
+        },
+        actual: { count, firstInstance: words[word + 4] ?? -1, items },
+      };
+      word += 5 + batch.visibleCapacity * 4;
+      candidateBase += batch.candidates.length;
+      return result;
+    });
+    const validation = await rawDevice.popErrorScope();
+    if (validation !== null)
+      throw new Error(`Shared submesh GPU validation: ${validation.message}`);
+    return {
+      batchCount: plan.batches.length,
+      candidateCount: plan.candidateCount,
+      uniqueMemberships,
+      batches,
+    };
+  } finally {
+    if (compiled !== undefined) await compiled.retire();
+    if (readback !== undefined) device.destroyBuffer(readback);
+    view.dispose();
+    scene.dispose();
+    await device.queue.onSubmittedWorkDone();
+  }
+}
+
+/** One view crosses a tile boundary while shared members and other capacities stay fixed. */
+export async function runGpuDrivenSharedMemberGrowthEvidence(
+  computePassMode: 'separate' | 'combined',
+) {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const rawDevice = _internal_getRawDevice(device);
+  if (rawDevice === undefined) throw new Error('shared growth raw device unavailable');
+  rawDevice.pushErrorScope('validation');
+  const shader = (await rhi.createShaderModule(device, { code: GPU_DRIVEN_VIEW_WGSL })).unwrap();
+  const available = GpuScene.create(device, 4).unwrap();
+  if (available.status !== 'available') throw new Error('GPU Scene unavailable');
+  const scene = available.scene,
+    projection = new RenderScene(),
+    topology = new BatchTopology();
+  const makeMesh = (count: number) => {
+    const indices = new Uint32Array(count * 3);
+    for (let i = 0; i < count; i++) indices.set([0, 1, 2], i * 3);
+    return {
+      ...BUILTIN_CUBE,
+      indices,
+      aabb: new Float32Array([-0.25, -0.25, -0.25, 0.25, 0.25, 0.25]),
+      submeshes: Array.from({ length: count }, (_, i) => ({
+        materialSlot: 0,
+        indexOffset: i * 3,
+        indexCount: 3,
+        vertexCount: 3,
+        topology: 'triangle-list' as const,
+      })),
+    };
+  };
+  const sources = [1, 3].map((instanceCount, source) => {
+    const transforms = new Float32Array(instanceCount * 16);
+    for (let ordinal = 0; ordinal < instanceCount; ordinal++) {
+      const pose = mat4.identity(mat4.create());
+      pose[12] = ordinal === 1 ? 10 : ordinal * 0.1;
+      transforms.set(pose, ordinal * 16);
+    }
+    return updateSnapshot({
+      ...snapshot(source + 1, 0),
+      assetHandle: source + 3,
+      instances: { transforms, instanceCount, cacheKey: 1, archVersion: 1 },
+    });
+  });
+  let meshes = new MeshFrame()
+    .with(0, 3, makeMesh(31), [material])
+    .with(0, 4, makeMesh(1), [material]);
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: { createShaderModule: () => ok(shader) },
+  }).unwrap();
+  const frames = [];
+  try {
+    for (const phase of ['seed', 'grown'] as const) {
+      // Only the Mesh's submesh executions change. The two source member roots stay held.
+      if (phase === 'grown')
+        meshes = meshes.with(0, 3, makeMesh(1), [material]).with(0, 4, makeMesh(31), [material]);
+      const delta = projection.apply(phase === 'seed' ? sources : []);
+      scene.sync({ ...delta, meshes }).unwrap();
+      topology.apply(delta);
+      const plan = topology.query(topology.sourcePlan(), meshes);
+      const members = new Set(Array.from(plan.batches, (batch) => batch.candidates));
+      const uniqueMembers = Array.from(members).reduce((sum, list) => sum + list.length, 0);
+      if (
+        plan.batches.length !== 32 ||
+        uniqueMembers !== 4 ||
+        plan.candidateCount !== (phase === 'seed' ? 34 : 94)
+      )
+        throw new Error('Expected fixed 32 executions and four unique members with N34 to N94');
+      const surfaceRows = Uint32Array.from({ length: plan.candidateCount }, (_, i) => 1000 + i * 7);
+      updateGpuView(
+        view,
+        plan,
+        scene,
+        frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create())),
+        undefined,
+        0,
+        undefined,
+        false,
+        undefined,
+        surfaceRows,
+      ).unwrap();
+      const inspection = view.inspect();
+      const capacities = {
+        candidate: inspection.candidateCapacity,
+        batch: inspection.batchCapacity,
+        visible: inspection.visibleBufferCapacity,
+        indirect: inspection.indirectCapacity,
+      };
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      view
+        .addPasses(
+          graph,
+          'gpu-driven',
+          true,
+          undefined,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          computePassMode,
+        )
+        .unwrap();
+      const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      view._commitResourceReplacement();
+      const visible = view.visibleBuffer,
+        indirect = view.indirectBuffer,
+        surface = view.visibleSurfaceRowsBuffer;
+      if (visible === undefined || indirect === undefined || surface === undefined)
+        throw new Error('Shared growth output buffers unavailable');
+      const commandBytes = plan.batches.reduce(
+        (sum, batch) => sum + 20 + batch.visibleCapacity * 16,
+        0,
+      );
+      const readback = device
+        .createBuffer({
+          size: commandBytes + surfaceRows.byteLength,
+          usage: GPU_BUFFER_USAGE_MAP_READ | GPU_BUFFER_USAGE_COPY_DST,
+        })
+        .unwrap();
+      try {
+        const encoder = device.createCommandEncoder().unwrap();
+        compiled.execute({ encoder }).unwrap();
+        let offset = 0;
+        for (const batch of plan.batches) {
+          encoder.copyBufferToBuffer(indirect, batch.indirectOffset, readback, offset, 20);
+          encoder.copyBufferToBuffer(
+            visible,
+            batch.visibleBase * 16,
+            readback,
+            offset + 20,
+            batch.visibleCapacity * 16,
+          );
+          offset += 20 + batch.visibleCapacity * 16;
+        }
+        encoder.copyBufferToBuffer(surface, 0, readback, commandBytes, surfaceRows.byteLength);
+        device.queue.submit([encoder.finish().unwrap()]).unwrap();
+        await device.queue.onSubmittedWorkDone();
+        const mapped = (await readback.mapAsync(GPU_MAP_MODE_READ)).unwrap();
+        const words = new Uint32Array(mapped.getMappedRange().unwrap().slice(0));
+        mapped.unmap();
+        const actualSurfaces = words.subarray(commandBytes / 4);
+        let word = 0,
+          candidateBase = 0;
+        const batches = Array.from(plan.batches, (batch) => {
+          const expectedItems: { instance: number; candidate: number; surface: number }[] = [];
+          for (let ordinal = 0; ordinal < batch.candidates.length; ordinal++) {
+            const candidate = batch.candidates.at(ordinal);
+            if (candidate === undefined) throw new Error('Missing growth CPU candidate');
+            if (candidate.instanceOrdinal === 1) continue;
+            const instance = scene.instanceIndexForSlot(
+              candidate.primitiveIndex,
+              candidate.instanceOrdinal,
+            );
+            if (instance === undefined) throw new Error('Missing growth CPU instance');
+            expectedItems.push({
+              instance,
+              candidate: candidateBase + ordinal,
+              surface: 1000 + (candidateBase + ordinal) * 7,
+            });
+          }
+          const count = words[word + 1] ?? -1;
+          const items = Array.from({ length: Math.min(count, batch.visibleCapacity) }, (_, i) => {
+            const row = words[word + 5 + i * 4 + 2] ?? -1;
+            return {
+              instance: words[word + 5 + i * 4] ?? -1,
+              candidate: row,
+              surface: actualSurfaces[row] ?? -1,
+            };
+          });
+          items.sort((a, b) => a.candidate - b.candidate);
+          expectedItems.sort((a, b) => a.candidate - b.candidate);
+          const result = {
+            expected: {
+              count: expectedItems.length,
+              firstInstance: device.caps.firstInstanceIndirect ? batch.visibleBase : 0,
+              items: expectedItems,
+            },
+            actual: { count, firstInstance: words[word + 4] ?? -1, items },
+          };
+          word += 5 + batch.visibleCapacity * 4;
+          candidateBase += batch.candidates.length;
+          return result;
+        });
+        frames.push({
+          phase,
+          uniqueMembers,
+          candidateCount: plan.candidateCount,
+          capacities,
+          batches,
+        });
+      } finally {
+        device.destroyBuffer(readback);
+        await compiled.retire();
+      }
+    }
+    const validation = await rawDevice.popErrorScope();
+    if (validation !== null) throw new Error(`Shared growth GPU validation: ${validation.message}`);
+    return frames;
+  } finally {
+    view.dispose();
+    scene.dispose();
+    await device.queue.onSubmittedWorkDone();
+  }
+}
+
 function lodEvidenceCamera(height: number): LodViewCamera {
   const span = (2 * 0.25 * Math.sqrt(3)) / height;
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decodeSnapshot } from '@forgeax/engine/modeling';
-import { createConvoyLayout } from '../convoy-layout.ts';
+import { createConvoyLayout } from '../../shared/convoy-layout.ts';
 import { buildConvoy, convoyPath, CONVOY_TRIANGLE_BUDGET, CONVOY_NORMALS } from '../convoy-model.ts';
 
 describe('Convoy independent dimensional changes', () => {

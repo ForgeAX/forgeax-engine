@@ -1,7 +1,8 @@
 #define_import_path forgeax_atmosphere::table_kernels
 #import forgeax_view::common::{View, AtmosphereMedium}
-#import forgeax_atmosphere::optics::{ATMOSPHERE_PI, atmosphere_medium, atmosphere_interval, atmosphere_sphere, atmosphere_segment, atmosphere_transmittance_ray, atmosphere_solar_transmittance, atmosphere_integrate}
-#import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_sky_direction}
+#import forgeax_atmosphere::optics::{ATMOSPHERE_PI, atmosphere_medium, atmosphere_interval, atmosphere_sphere, atmosphere_segment, atmosphere_transmittance_ray, atmosphere_solar_transmittance, atmosphere_integrate, atmosphere_integrate_phases, AtmosphereTransport}
+#import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_sky_direction, atmosphere_view_ray}
+#import forgeax_atmosphere::sampling::{atmosphere_aerial_integrate}
 
 fn atmosphere_transmittance_texel(m: AtmosphereMedium, uv: vec2<f32>) -> vec4<f32> {
   let ray=atmosphere_transmittance_ray(m,uv);
@@ -56,4 +57,22 @@ fn atmosphere_sky_view_texel(v: View, uv: vec2<f32>, transmittance: texture_2d<f
   let direction=atmosphere_sky_direction(m,origin,sun,uv);
   let ray=atmosphere_integrate(m,origin,direction,1e7,sun,vec3<f32>(1.0),transmittance,multiple,filtering,64u,1.0);
   return vec4<f32>(ray.luminance,dot(ray.transmittance,vec3<f32>(1.0/3.0)));
+}
+
+// One unit-white optical result per quadratic AP slice, independent of storage.
+fn atmosphere_aerial_texel(v:View, id:vec3<u32>, size:vec3<u32>, transmittance:texture_2d<f32>, multiple:texture_2d<f32>, filtering:sampler)->AtmosphereTransport {
+  let uv=(vec2<f32>(id.xy)+0.5)/vec2<f32>(size.xy);
+  let cameraRay=atmosphere_view_ray(v,uv);
+  let origin=atmosphere_observer(v.atmosphere,cameraRay.origin);
+  let w=(f32(id.z)+0.5)/f32(size.z);
+  let distance=v.atmosphere.geometry.z+v.atmosphereControl.z*w*w;
+  var unitLight=v;unitLight.lightColor=vec3<f32>(1.0);
+  return atmosphere_aerial_integrate(unitLight,origin,cameraRay.direction,distance,transmittance,multiple,filtering,64u);
+}
+// Both the cooperative reduction and raster average retain this exact cohort.
+fn atmosphere_distant_sky_sample(v:View, i:u32, transmittance:texture_2d<f32>, multiple:texture_2d<f32>, filtering:sampler)->vec3<f32> {
+  let m=v.atmosphere;let origin=vec3<f32>(0.0,m.originRadius.w+0.001,0.0);
+  let z=1.0-2.0*(f32(i)+0.5)/64.0;let phi=f32(i)*2.39996322973;
+  let r=sqrt(max(1.0-z*z,0.0));let direction=vec3<f32>(r*cos(phi),z,r*sin(phi));
+  return atmosphere_integrate_phases(m,origin,direction,1e7,normalize(-v.lightDir),vec3<f32>(1.0),transmittance,multiple,filtering,64u,1.0,vec2<f32>(1.0/(4.0*3.14159265359))).luminance/64.0;
 }

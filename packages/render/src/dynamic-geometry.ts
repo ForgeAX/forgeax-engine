@@ -34,6 +34,11 @@ export interface DynamicGeometryPrepareInput {
 export type DynamicGeometryContentInput = Omit<DynamicGeometryPrepareInput, 'meshHandle'> & {
   readonly mesh: MeshAsset;
   readonly meshHandle?: AssetHandle<'mesh'>;
+  /**
+   * The mesh is content its World asset owner admitted: every channel is finite
+   * and equals its interleaved rows, so the vertex scan is not repeated here.
+   */
+  readonly admittedMesh?: true;
 };
 
 /** Explicit ECS/fixed-step ordering proof used by Renderer admission. */
@@ -289,7 +294,7 @@ export function sameCandidateCredential(
   );
 }
 
-function validateMesh(mesh: MeshAsset): string | undefined {
+function validateMesh(mesh: MeshAsset, admitted: boolean): string | undefined {
   if (mesh.kind !== 'mesh') return 'MeshAsset.kind must be mesh';
   if (!(mesh.vertices instanceof Float32Array) || mesh.vertices.length === 0) {
     return 'MeshAsset.vertices must be a non-empty Float32Array';
@@ -314,6 +319,7 @@ function validateMesh(mesh: MeshAsset): string | undefined {
   ) {
     return 'MeshAsset.materialSlots must cover every referenced materialSlot';
   }
+  if (admitted) return undefined;
   const vertices = mesh.vertices;
   // Preserve the native typed-array detached-buffer check for borrowed payloads.
   if (vertices.byteLength === 0) {
@@ -954,7 +960,7 @@ export function createDynamicGeometryLifecycle(
         );
       }
     }
-    const invalid = validateMesh(input.mesh);
+    const invalid = validateMesh(input.mesh, input.admittedMesh === true);
     if (invalid !== undefined)
       return failure(
         'dynamic-geometry-invalid',

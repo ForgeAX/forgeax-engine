@@ -30,6 +30,23 @@ describe('Standard output chain integration', () => {
     expect(actual).not.toEqual(rgb);
   });
 
+  it('treats an identity display LUT as identity, darks included', () => {
+    // UE PostProcessCombineLUTs.usf:200-202: sRGB-encoded index at texel centres.
+    const size = 32;
+    const lut = new Float32Array(size ** 3 * 4);
+    for (let z = 0; z < size; z += 1)
+      for (let y = 0; y < size; y += 1)
+        for (let x = 0; x < size; x += 1)
+          lut.set(
+            [x / (size - 1), y / (size - 1), z / (size - 1), 1],
+            ((z * size + y) * size + x) * 4,
+          );
+    for (const value of [0.001, 0.01, 0.18, 0.5, 1]) {
+      const sampled = sampleStandardColorLut({ size, data: lut }, [value, value, value]);
+      expect(sampled[0]).toBeCloseTo(value, 4);
+    }
+  });
+
   it('preserves LUT alpha while applying RGB strength', () => {
     const lut = new Float32Array(2 * 2 * 2 * 4).fill(0);
     for (let index = 0; index < lut.length; index += 4) {
@@ -39,9 +56,10 @@ describe('Standard output chain integration', () => {
       lut[index + 3] = 0.1;
     }
     const sampled = sampleStandardColorLut({ size: 2, data: lut }, [0.2, 0.4, 0.8], 0.5, 0.9);
+    // LUT texels are sRGB-encoded: 1, 0.5, 0.25 decode to 1, 0.2140, 0.0508.
     expect(sampled[0]).toBeCloseTo(0.6);
-    expect(sampled[1]).toBeCloseTo(0.45);
-    expect(sampled[2]).toBeCloseTo(0.525);
+    expect(sampled[1]).toBeCloseTo(0.307, 3);
+    expect(sampled[2]).toBeCloseTo(0.4254, 3);
     expect(sampled[3]).toBe(0.9);
   });
 });

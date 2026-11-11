@@ -124,6 +124,7 @@ export function recordSpritePass(
     splitLdrSprite,
   } = c;
   const clusteredLighting = c.standardLighting?.kind === 'clustered';
+  const packedSprite = clusteredLighting && !runtime.device.caps.storageBuffer;
   const meshGroup2 = clusteredLighting ? hdrpClusterBindGroup : meshBindGroup;
   // The split pass is also used by the no-tone linear-LDR route. That route
   // keeps transparent draws in the graph-owned rgba16float attachment, so
@@ -186,7 +187,9 @@ export function recordSpritePass(
         spritePremulBlend,
         'triangle-list',
         undefined,
-        undefined,
+        packedSprite
+          ? `${standardTopologyVariantSet(c.standardLighting, false, false)}+PER_INSTANCE_REGION=false`
+          : undefined,
         'forward',
         undefined,
         msaaActive ? 4 : 1,
@@ -206,7 +209,9 @@ export function recordSpritePass(
         spritePremulBlend,
         'triangle-list',
         undefined,
-        SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET,
+        packedSprite
+          ? `${standardTopologyVariantSet(c.standardLighting, false, false)}+PER_INSTANCE_REGION=true`
+          : SPRITE_PASS_PER_INSTANCE_REGION_VARIANT_SET,
         'forward',
         undefined,
         msaaActive ? 4 : 1,
@@ -328,12 +333,9 @@ function recordSpriteTransparentPbrDraws(
       }
     }
   }
+  const colorFormat = transparentPassColorFormat(c) as GPUTextureFormat;
   recordGeometryDraws(
-    {
-      ...c,
-      splitLdrSprite: false,
-      transparentColorFormat: transparentPassColorFormat(c) as GPUTextureFormat,
-    },
+    { ...c, splitLdrSprite: false, transparentColorFormat: colorFormat },
     pass,
     matched,
     materialSlotIndices,
@@ -343,6 +345,8 @@ function recordSpriteTransparentPbrDraws(
     resolveMaterialBindGroup,
     'forward',
     passes,
+    // This sub-pass draws into the color target; an empty list is the depth-only prepass.
+    [colorFormat],
   );
 }
 
@@ -359,6 +363,27 @@ function recordSpriteTransparentPbrDraws(
  *
  * @internal
  */
+/** Match the mesh resource to the same topology used by the sprite artifact. */
+function spriteMeshGroup(
+  c: _InternalRenderPipelineContext,
+  meshSlot: number,
+  isSpriteLit: boolean,
+): BindGroup | null {
+  const { runtime, pipelineState, meshBindGroup } = c;
+  return (isSpriteLit || !runtime.device.caps.storageBuffer) &&
+    c.standardLighting?.kind === 'clustered'
+    ? clusteredMeshSlotBindGroup(c, meshSlot * MESH_PER_ENTITY_STRIDE)
+    : pipelineState.meshStorageBuffer.pages === undefined
+      ? meshBindGroup
+      : meshSlotBindGroup(
+          runtime.device,
+          c.frameState,
+          pipelineState,
+          c.bindGroupCounts,
+          meshSlot * MESH_PER_ENTITY_STRIDE,
+        );
+}
+
 function recordSpriteEntityDraws(
   c: _InternalRenderPipelineContext,
   pass: RhiRenderPassEncoder,
@@ -374,15 +399,8 @@ function recordSpriteEntityDraws(
   spriteLitPH: RenderPipeline | null,
   reportSpriteUnavailable: () => void,
 ): void {
-  const {
-    runtime,
-    world,
-    pipelineState,
-    validatedOrdered,
-    meshBindGroup,
-    foldDispatchPlan,
-    materialSlotIndices,
-  } = c;
+  const { runtime, world, pipelineState, validatedOrdered, foldDispatchPlan, materialSlotIndices } =
+    c;
   const recordPresented = createFoldedDrawRecorder(c);
   let lastSpritePipelineHandle: RenderPipeline | null = null;
   let lastSpriteVertexBuffer: GpuBuffer | null = null;
@@ -490,18 +508,7 @@ function recordSpriteEntityDraws(
     // request the pipeline; binding the ordinary mesh group to the clustered
     // sprite-lit pipeline is rejected by WebGPU before the draw is recorded.
     const meshSlot = prepareMeshDraw(c, spriteEntry, foldDispatchPlan?.headBuckets.has(i) === true);
-    const spriteGroup2 =
-      isSpriteLit && c.standardLighting?.kind === 'clustered'
-        ? clusteredMeshSlotBindGroup(c, meshSlot * MESH_PER_ENTITY_STRIDE)
-        : pipelineState.meshStorageBuffer.pages === undefined
-          ? meshBindGroup
-          : meshSlotBindGroup(
-              runtime.device,
-              c.frameState,
-              pipelineState,
-              c.bindGroupCounts,
-              meshSlot * MESH_PER_ENTITY_STRIDE,
-            );
+    const spriteGroup2 = spriteMeshGroup(c, meshSlot, isSpriteLit);
 
     pass.setBindGroup(2, spriteGroup2 as BindGroup, [
       meshSsboBufferBinding(pipelineState.meshStorageBuffer, meshSlot * MESH_PER_ENTITY_STRIDE)

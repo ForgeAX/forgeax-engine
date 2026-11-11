@@ -35,6 +35,7 @@ import {
 } from '../temporal/gpu';
 import { createTemporalView } from '../temporal/view';
 import { addTypedTemporalResolvePass } from '../typed-render-graph-primitives';
+import { adoptViewRecordHistory, viewRecordHistory } from '../world/record-history';
 import { ViewRecorder, ViewSubmission } from '../world/render-views';
 import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
 import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
@@ -1518,7 +1519,7 @@ function settleTemporalFrame(
   accepted: boolean,
 ): void {
   const world = createRenderWorld();
-  world
+  const view = world
     .spawn(
       {
         component: ViewSubmission,
@@ -1538,6 +1539,10 @@ function settleTemporalFrame(
       },
     )
     .unwrap();
+  adoptViewRecordHistory(world, view);
+  const history = viewRecordHistory(world, view);
+  if (history === undefined) throw new Error('missing record history');
+  history.presentation = accepted ? 'ready' : 'pending';
   beginRenderFrame(world, 1);
   endRenderFrame(world);
 }

@@ -1,7 +1,8 @@
 import { mat4, vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
-import { createClusterBinScratch } from '../cluster-binner';
+import { bin, createClusterBinScratch } from '../cluster-binner';
 import {
+  createStandardClusterLayout,
   DEFAULT_CLUSTER_GRID,
   LIGHT_INDEX_LIST_CAPACITY,
 } from '../pipeline/standard-lighting/layout';
@@ -162,5 +163,43 @@ describe('Standard CPU membership allocation', () => {
     expect(result.error.code).toBe('standard-cluster-index-overflow');
     if (result.error.code !== 'standard-cluster-index-overflow') return;
     expect(result.error.detail).toEqual({ actual: 1_081_344, capacity: 1_048_576 });
+  });
+
+  it('materializes the light index list on first read, equal to the eager CPU writer', () => {
+    const frame = makeFrame([
+      coveringLight('point'),
+      { kind: 'point', shadowed: false, position: vec3.create(3, -1, -12), range: 6 },
+      { ...coveringLight('spot'), range: 0 },
+      { kind: 'spot', shadowed: false, position: vec3.create(-5, 2, -30), range: 20 },
+      coveringLight('rect-area'),
+    ]);
+    const scratch = createClusterBinScratch();
+    const prepared = prepareStandardLighting(frame, undefined, scratch).unwrap();
+    // The prepared payload forwards the list without reading it.
+    expect(typeof Object.getOwnPropertyDescriptor(prepared, 'lightIndexList')?.get).toBe(
+      'function',
+    );
+    // Reuse the scratch for a different corpus before the deferred read.
+    prepareStandardLighting(makeFrame([coveringLight('spot')]), undefined, scratch).unwrap();
+
+    const layout = createStandardClusterLayout(frame.lightCount, frame.grid);
+    const eagerGrid = new Uint32Array(layout.clusterGridU32Length);
+    const eagerList = new Uint32Array(layout.lightIndexListCapacity);
+    const count = bin(
+      frame.local,
+      frame.view,
+      frame.projection,
+      layout.grid,
+      frame.near,
+      frame.far,
+      eagerGrid,
+      eagerList,
+      layout.lightIndexListCapacity,
+    ).unwrap();
+    expect(prepared.membershipEntryCount).toBe(count);
+    expect(prepared.clusterGrid).toEqual(eagerGrid);
+    expect(prepared.lightIndexList.length).toBe(count);
+    expect(Array.from(prepared.lightIndexList)).toEqual(Array.from(eagerList.subarray(0, count)));
+    expect(prepared.lightIndexList).toBe(prepared.lightIndexList);
   });
 });

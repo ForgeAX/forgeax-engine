@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 const root = resolve(process.env.FORGEAX_VIEW_ENGINE_SOURCE_ROOT ?? resolve(import.meta.dirname, '../../..'));
@@ -81,22 +81,36 @@ async function assertAuthoredSky(bytes, subject) {
  const {width,height,bytes:pixels}=decoded.value;
  // Keep the independent sample in the fixed outer margin, before both HUD cards.
  // Relative horizontal positions enter the HUD in the compact CI viewport.
- const x=subject === 'independent' ? 2 : Math.floor(width*.01),y=Math.floor(height*.16);
- let blue=0,upperBlue=0,lowerBlue=0;
+ const x=subject === 'independent' ? 2 : Math.floor(width*.01);
+ // Sample the top of the frame: an analytic atmosphere draws its planet ground below
+ // the horizon, so only rows above it are sky for both a skybox and an atmosphere.
+ const y=Math.floor(height*.02),lowerY=Math.floor(height*.10);
+ let blue=0,gradient=0;
+ const upper=[0,0,0],lower=[0,0,0];
  for(let dy=0;dy<4;dy++) for(let dx=0;dx<4;dx++) {
-  const offset=((y+dy)*width+x+dx)*4;
+  const offset=((y+dy)*width+x+dx)*4,lowerOffset=((lowerY+dy)*width+x+dx)*4;
   const [r,g,b]=pixels.slice(offset,offset+3);
-  upperBlue+=b;
-  lowerBlue+=pixels[((Math.floor(height*.20)+dy)*width+x+dx)*4+2];
+  for(let channel=0;channel<3;channel++) {
+   upper[channel]+=pixels[offset+channel]/16;
+   lower[channel]+=pixels[lowerOffset+channel]/16;
+  }
   if(b>r+12 && b>g+4 && b>40)blue++;
  }
- const observation={width,height,x,y,blue,upperBlue:upperBlue/16,lowerBlue:lowerBlue/16,gradient:(upperBlue-lowerBlue)/16};
+ for(let channel=0;channel<3;channel++) gradient+=Math.abs(upper[channel]-lower[channel]);
+ const observation={width,height,x,y,lowerY,blue,upper,lower,gradient};
  await writeFile(resolve(output,`${subject}-sky.json`),JSON.stringify(observation,null,2));
  assert.equal(blue,16,`the authored blue sky must remain visible beyond the finite floor: ${JSON.stringify(observation)}`);
- assert.ok(observation.gradient>12,`the sky horizon gradient must reject a uniform clear-color fallback: ${JSON.stringify(observation)}`);
+ assert.ok(gradient>12,`the sky horizon gradient must reject a uniform clear-color fallback: ${JSON.stringify(observation)}`);
 }
 async function prepareDiagnosticGameProject(template, gameRoot, lightweight) {
  await cp(resolve(template, 'assets'), resolve(gameRoot, 'assets'), { recursive: true });
+ // The runtime vase is an Engine test feature installed into a project copy, not a
+ // starter asset; older Engines still ship it inside the template.
+ const vaseInstaller = resolve(root, 'scripts/template-probes/game-3d/runtime-vase/install.mjs');
+ if (existsSync(vaseInstaller)) {
+  const { installRuntimeVase } = await import(pathToFileURL(vaseInstaller));
+  await installRuntimeVase(gameRoot);
+ }
  if (lightweight) await reduceTestProject(gameRoot, { shadowMapSize: 128 });
  const manifest = JSON.parse(await readFile(resolve(template, 'forge.json')));
  await writeFile(resolve(gameRoot, 'forge.json'), JSON.stringify(manifest));
@@ -405,7 +419,8 @@ try {
   const decoded=decodeTape(await readFile(liveTape));
   assert.equal(decoded.ok,true,JSON.stringify(decoded.ok?{ok:true}:decoded));
   const frame=buildFrameModel(decoded.value);
-  assert.ok(frame.works.some(work=>work.pipeline.shaders.some(shader=>shader.entryPoint==='skybox_fs')),
+  // The template sky is either an authored environment skybox or an analytic atmosphere.
+  assert.ok(frame.works.some(work=>work.pipeline.shaders.some(shader=>['skybox_fs','atmosphere_background_fs'].includes(shader.entryPoint))),
    'the actual captured frame must draw the authored environment, rather than only clear the background');
  }
  const liveBytes=(await stat(liveTape)).size;

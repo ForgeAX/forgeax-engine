@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { pnpmCommand } from '../lib/pnpm-command.mjs';
 import { collectViewBackendDiagnostics } from './view-backend-diagnostics.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -128,14 +129,15 @@ for (const language of ['js', 'ts'])
 steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
 // Keep complete owners and each language's live/cold chain on four processes.
-// Run 42130885413 spent 1294 s in the complete Game 3D owner before Modeling
-// reached the 30-minute job cap. Contracts/plugin/TS completed in 506 s; move
-// Modeling to that lane after its live/cold chain. Diagnostics retain their lane.
+// Run 42955764870 hit the 30-minute cap after Plugin (782 s) and both runtime
+// chains (JS 95 s, TS 187 s) shared a lane with Modeling. Balance the complete
+// owners against the retained 42130885413 replay; keep Modeling last after the
+// diagnostic replay so no later browser journey inherits its GPU work.
 const shards = [
-  ['contracts', 'plugin', 'runtime-ts', 'modeling'],
-  ['lifecycle', 'workspace', 'engine-only', 'runtime-js'],
+  ['contracts', 'plugin', 'runtime-js', 'runtime-ts'],
+  ['lifecycle', 'workspace', 'engine-only'],
   ['game3d'],
-  ['diagnostics'],
+  ['diagnostics', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));
@@ -169,9 +171,11 @@ for (const [owner, file, args, env = {}] of selected) {
   const start = performance.now();
   const startedAt = Date.now();
   const viewProbe = args[0]?.startsWith('tools/view/scripts/verify-');
+  const [command, ...prefix] =
+    file === 'pnpm' ? pnpmCommand() : [file === 'node' ? process.execPath : file];
   const result = spawnSync(
-    file,
-    viewProbe ? [args[0].replace('tools/view/', ''), ...args.slice(1)] : args,
+    command,
+    [...prefix, ...(viewProbe ? [args[0].replace('tools/view/', ''), ...args.slice(1)] : args)],
     {
       cwd: viewProbe ? resolve(root, 'tools/view') : root,
       stdio: 'inherit',
@@ -188,6 +192,7 @@ for (const [owner, file, args, env = {}] of selected) {
       stage: [file, ...args].join(' '),
       seconds: (performance.now() - start) / 1000,
       exitCode: result.status,
+      spawnError: result.error?.message,
       candidate,
       owner,
     }),

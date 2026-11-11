@@ -68,6 +68,7 @@ import {
   type MaterialByteSource,
   readMaterialByteSource,
   retainMaterialByteSource,
+  verifyMaterialByteSource,
 } from './material/byte-source.js';
 import type { MaterialShaderManifestEntry } from './types.js';
 
@@ -268,7 +269,12 @@ export interface MaterialShaderByteEntry
 }
 
 type MaterialRegistration =
-  | { readonly kind: 'ready'; readonly publication: ResultOk<RegisteredMaterialShaderEntry> }
+  | {
+      readonly kind: 'ready';
+      readonly publication: ResultOk<RegisteredMaterialShaderEntry>;
+      /** Content address of the admitted program bytes; absent for a program installed as text. */
+      readonly digest?: string;
+    }
   | {
       readonly kind: 'bytes';
       readonly owner: MaterialByteSource;
@@ -962,6 +968,7 @@ export class ShaderRegistry {
       this.#materialPrograms.set(program.sourceReference.identity, program);
       this.#materialShaders.set(identifier, {
         kind: 'ready',
+        ...(registration.digest === undefined ? {} : { digest: registration.digest }),
         publication: Object.freeze(
           ok(
             Object.freeze({
@@ -979,62 +986,96 @@ export class ShaderRegistry {
     }
   }
 
+  /**
+   * Establish byte digest evidence off the calling thread before admission. Hold
+   * the result until the bytes are validated or installed; those steps then compare
+   * the bytes instead of hashing them. An unverified input is hashed there as usual.
+   */
+  static verifyMaterialArtifactBytes(
+    bytes: Uint8Array,
+    digest: string,
+  ): Promise<object | undefined> {
+    return verifyMaterialByteSource(bytes, digest);
+  }
+
   /** Preflight immutable byte/schema/receipt conflicts without preparing WGSL. */
   validateMaterialArtifactBytes(
     identifier: string,
     entry: MaterialShaderByteEntry,
   ): Result<boolean, MaterialArtifactConflictError> {
+    const admitted = this.#preflightMaterialArtifactBytes(identifier, entry);
+    return admitted.ok ? ok(admitted.value === undefined) : admitted;
+  }
+
+  /**
+   * A program key admitted from bytes is identified by its content digest, as
+   * a shader library resolves code by its hash alone. Only content new to the
+   * key is verified: retention hashes it once, or compares it with live bytes
+   * that already passed that hash. Later admissions of the same key and digest
+   * check metadata only. Returns the verified owner for a new key, or
+   * undefined when the key already holds this program.
+   */
+  #preflightMaterialArtifactBytes(
+    identifier: string,
+    entry: MaterialShaderByteEntry,
+  ): Result<MaterialByteSource | undefined, MaterialArtifactConflictError> {
     validateMaterialByteMetadata(entry);
-    if (retainMaterialByteSource(entry.bytes, entry.digest) === undefined)
+    const registration = this.#materialShaders.get(identifier);
+    const admittedDigest =
+      registration === undefined
+        ? undefined
+        : registration.kind === 'bytes'
+          ? registration.owner.digest
+          : registration.digest;
+    const retained =
+      admittedDigest === undefined
+        ? retainMaterialByteSource(entry.bytes, entry.digest)
+        : undefined;
+    if (admittedDigest === undefined && retained === undefined)
       return err({
         code: 'material-artifact-conflict',
         expected: 'shader bytes matching their published digest',
         hint: 're-cook the conflicting program',
         detail: { key: identifier, dimension: 'bytes' },
       });
-    const registration = this.#materialShaders.get(identifier);
-    const prior = registration?.kind === 'ready' ? registration.publication.value : undefined;
-    const schema =
-      prior?.paramSchema ??
-      (registration?.kind === 'bytes'
-        ? registration.paramSchemaProjection.schema
-        : this.#paramSchemaProjectionOwner.get(identifier, 1)?.schema);
-    const receipt =
-      prior?.receipt ?? (registration?.kind === 'bytes' ? registration.receipt : undefined);
-    const previousBytes =
-      registration?.kind === 'bytes'
-        ? registration.owner.bytes
-        : prior === undefined
-          ? undefined
-          : new TextEncoder().encode(prior.source);
-    const conflictingReads =
-      registration !== undefined &&
-      !sameMaterialShaderEntryPoints(
-        materialRegistrationReads(registration),
-        entry.entryPoints ?? entry.receipt?.entryPoints,
-      );
+    if (registration === undefined) return ok(retained);
     const dimension =
-      previousBytes !== undefined && !equalMaterialArtifactBytes(previousBytes, entry.bytes)
-        ? 'bytes'
-        : schema !== undefined && JSON.stringify(schema) !== JSON.stringify(entry.paramSchema)
-          ? 'param-schema'
-          : registration !== undefined &&
-              (conflictingReads || JSON.stringify(receipt) !== JSON.stringify(entry.receipt))
-            ? 'receipt'
-            : undefined;
+      admittedDigest === undefined
+        ? textProgramDiffers(registration, retained, entry.bytes)
+          ? 'bytes'
+          : materialMetadataConflict(
+              this.#paramSchemaProjectionOwner,
+              identifier,
+              registration,
+              entry,
+            )
+        : admittedDigest !== entry.digest
+          ? 'bytes'
+          : materialMetadataConflict(
+              this.#paramSchemaProjectionOwner,
+              identifier,
+              registration,
+              entry,
+            );
     if (dimension !== undefined)
       return err({
         code: 'material-artifact-conflict',
         expected: 'one immutable source, interface, and ABI receipt per program key',
         hint: 're-cook the conflicting program',
-        detail: { key: identifier, dimension },
+        detail: {
+          key: identifier,
+          dimension,
+          ...(admittedDigest === undefined ? {} : { existingDigest: admittedDigest }),
+          incomingDigest: entry.digest,
+        },
       });
-    return ok(registration !== undefined);
+    return ok(undefined);
   }
 
   /** Admit complete byte evidence now; source-dependent preparation occurs on lookup. */
   installMaterialArtifactBytes(identifier: string, entry: MaterialShaderByteEntry): void {
-    if (this.validateMaterialArtifactBytes(identifier, entry).unwrap()) return;
+    const owner = this.#preflightMaterialArtifactBytes(identifier, entry).unwrap();
+    if (owner === undefined) return;
     if (entry.bytes.length === 0) throw new Error('ShaderRegistry: empty material program');
     const projection = this.#paramSchemaProjectionOwner.admit({
       ownerId: identifier,
@@ -1042,9 +1083,6 @@ export class ShaderRegistry {
       schema: entry.paramSchema,
     });
     const receipt = entry.receipt === undefined ? undefined : ownMaterialReceipt(entry.receipt);
-    const owner = retainMaterialByteSource(entry.bytes, entry.digest);
-    if (owner === undefined)
-      throw new Error('ShaderRegistry: program bytes changed during admission');
     this.#materialShaders.set(identifier, {
       kind: 'bytes',
       owner,
@@ -1078,7 +1116,11 @@ export class ShaderRegistry {
     );
     registration.owner.program = publication.value.program;
     registration.owner.source = publication.value.program.sourceReference;
-    this.#materialShaders.set(identifier, { kind: 'ready', publication });
+    this.#materialShaders.set(identifier, {
+      kind: 'ready',
+      publication,
+      digest: registration.owner.digest,
+    });
     return publication;
   }
 
@@ -1311,6 +1353,51 @@ function validateMaterialByteMetadata(entry: MaterialShaderByteEntry): void {
     !sameMaterialShaderEntryPoints(entry.entryPoints, entry.receipt.entryPoints)
   )
     throw new Error('ShaderRegistry: conflicting shader entry read contract for immutable source');
+}
+
+/**
+ * A program installed as text has no content digest, so incoming bytes (already
+ * verified against their own digest) are compared with its source. A program
+ * decoded from that same retained owner needs no comparison.
+ */
+function textProgramDiffers(
+  registration: MaterialRegistration,
+  retained: MaterialByteSource | undefined,
+  bytes: Uint8Array,
+): boolean {
+  if (registration.kind !== 'ready') return true;
+  const prior = registration.publication.value;
+  if (retained?.source !== undefined && prior.program.sourceReference === retained.source)
+    return false;
+  return !equalMaterialArtifactBytes(new TextEncoder().encode(prior.source), bytes);
+}
+
+/** Schema, ABI receipt, and entry read conflicts for a key that already holds this program. */
+function materialMetadataConflict(
+  schemas: ParamSchemaProjectionOwner,
+  identifier: string,
+  registration: MaterialRegistration,
+  entry: MaterialShaderByteEntry,
+): 'param-schema' | 'receipt' | undefined {
+  const prior = registration.kind === 'ready' ? registration.publication.value : undefined;
+  const schema =
+    prior?.paramSchema ??
+    (registration.kind === 'bytes'
+      ? registration.paramSchemaProjection.schema
+      : schemas.get(identifier, 1)?.schema);
+  if (schema !== undefined && JSON.stringify(schema) !== JSON.stringify(entry.paramSchema))
+    return 'param-schema';
+  const receipt =
+    prior?.receipt ?? (registration.kind === 'bytes' ? registration.receipt : undefined);
+  if (
+    !sameMaterialShaderEntryPoints(
+      materialRegistrationReads(registration),
+      entry.entryPoints ?? entry.receipt?.entryPoints,
+    ) ||
+    JSON.stringify(receipt) !== JSON.stringify(entry.receipt)
+  )
+    return 'receipt';
+  return undefined;
 }
 
 function materialRegistrationReads(

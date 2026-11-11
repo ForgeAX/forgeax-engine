@@ -76,6 +76,7 @@ into Physics or animation. Update propagation runs after the fixed block.
 | `TransformInterpolation` | Transient marker opting local TRS into fixed sampling; RigidBody and AnimationTargetId require it |
 | `GlobalTransform.world` | Exact hierarchy for simulation, physics sync and gameplay queries |
 | `readPresentationWorldMatrix(world, entity)` | Borrowed world matrix for camera following and every render consumer; descendants inherit the sampled parent |
+| `setTransformLookAt(world, entity, eye, target, up?)` | Camera-style write: position at `eye`, -Z toward `target`; writes (and marks changed) only when the stored f32 pose differs |
 | `resetTransformInterpolation(world, entity)` | Reset history after an explicit fixed-tick teleport or discontinuity |
 
 Before Update propagation, the reader samples the same hierarchy prospectively.

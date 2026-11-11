@@ -428,3 +428,18 @@ neighbor requests atomically. Each keeps its own groups, strict normal filter
 and 4096-visit limit; owner liveness checks are shared only within that synchronous
 read. Results are detached; a missing body or invalid request refuses the whole
 batch. No contact evidence is retained across mutation or physics steps.
+
+## Incremental body motion consumers
+
+`PhysicsWorld.onBodyMotionChange` is an optional invalidation subscription. Register
+before taking the initial body projection, enqueue entity IDs, and read their
+current public motion after physics writeback. Explicit writes, body lifecycle,
+derived policy admission and completed-step active/final-sleep motion invalidate
+the projection. Notifications may repeat and carry no native handles or pose copies.
+Kinematic requests invalidate again after their completed step; unchanged kinematics
+do not enter the dynamic active workset. Unchanged sleeping/static bodies need no
+motion reads. Source/geometry owners must also invalidate their own accepted
+bindings when geometry changes. Listeners only enqueue work, never read during
+admission or mutate the world. Release the returned subscription with the consumer;
+backend disposal releases all subscriptions. Backends without this capability
+require polling. This does not change simulation, collision or writeback policy.

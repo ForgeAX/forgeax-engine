@@ -18,14 +18,20 @@ it('localizes the complete dynamic form without replacing edits, focus, validati
     return ((await import(/* @vite-ignore */ url.href)) as { default: string }).default;
   };
   const [html, css, localization, controller, bytes, font] = await Promise.all([
-    authored('../../../../templates/game-3d/assets/guide.ui.html'),
-    authored('../../../../templates/game-3d/assets/guide.ui.css'),
-    fetch(new URL('../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url)).then(
-      (response) => response.json(),
-    ),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.html'),
+    authored('../../../../packages/ui/test-fixtures/game-guide/guide.ui.css'),
+    fetch(
+      new URL(
+        '../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json',
+        import.meta.url,
+      ),
+    ).then((response) => response.json()),
     import(
       /* @vite-ignore */
-      new URL('../../../../templates/game-3d/assets/ui/guide-controller.ts', import.meta.url).href
+      new URL(
+        '../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts',
+        import.meta.url,
+      ).href
     ) as Promise<{
       createGuideUi(
         asset: UiAsset,

@@ -152,6 +152,7 @@ describe('translucent fog composition', () => {
       mode: 'exp' as const,
       near: 0,
       far: 100,
+      skyOpacity: 1,
     };
     writeViewUbo(
       queue,
@@ -222,6 +223,7 @@ describe('translucent fog composition', () => {
       maxOpacity: 0.75,
       near: 2,
       far: 8,
+      skyOpacity: 1,
     };
     expect(lanes({ ...base, mode: 'exp' })).toEqual([0.25, 0.5, 0.75, 0.5, 0, 0.75, 0]);
     expect(lanes({ ...base, mode: 'exp2' })).toEqual([0.25, 0.5, 0.75, -0.5, 0, 0.75, 0]);
@@ -231,5 +233,48 @@ describe('translucent fog composition', () => {
       0.25, 0.5, 0.75, 8, 2, -0.75, 0,
     ]);
     expect(lanes({ ...base, mode: 'linear', maxOpacity: 0 })).toEqual([0, 0, 0, 0, 0, 0, 0]);
+  });
+
+  it('packs Fog.skyOpacity into fogSky.x at float 320 and leaves the fog lanes unchanged', () => {
+    const payload = (fog: Parameters<typeof writeViewUbo>[9]): Float32Array => {
+      const writes: Float32Array[] = [];
+      const queue = {
+        writeBuffer: (_buffer: Buffer, _offset: number, data: Float32Array) => {
+          writes.push(data.slice());
+          return { ok: true, value: undefined } as const;
+        },
+      } as unknown as RhiQueue;
+      const light = {
+        kind: 'directional' as const,
+        direction: vec3.create(0, -1, 0),
+        color: vec3.create(1, 1, 1),
+        intensity: 1,
+        contactShadowLength: 0,
+      } as never;
+      const empty = { point: [], spot: [] } as never;
+      writeViewUbo(queue, {} as Buffer, camera(), light, empty, [], 0, undefined, undefined, fog);
+      return writes[0] ?? new Float32Array();
+    };
+    const fog = {
+      color: [0.25, 0.5, 0.75] as const,
+      density: 0.5,
+      heightFalloff: 0,
+      maxOpacity: 0.75,
+      mode: 'exp' as const,
+      near: 0,
+      far: 100,
+    };
+    const physical = payload({ ...fog, skyOpacity: 1 });
+    const clear = payload({ ...fog, skyOpacity: 0 });
+    const half = payload({ ...fog, skyOpacity: 0.25 });
+    expect(physical.length).toBe(VIEW_UNIFORM_BYTES / 4);
+    expect(Array.from(physical.slice(320, 324))).toEqual([1, 0, 0, 0]);
+    expect(Array.from(clear.slice(320, 324))).toEqual([0, 0, 0, 0]);
+    expect(half[320]).toBe(0.25);
+    // Surface facts (fog lanes, translucent slot) do not depend on skyOpacity.
+    expect(Array.from(clear.slice(284, 292))).toEqual(Array.from(physical.slice(284, 292)));
+    // Inactive fog leaves the sky lane zero like every other fog lane.
+    expect(payload({ ...fog, maxOpacity: 0, skyOpacity: 1 })[320]).toBe(0);
+    expect(payload(undefined)[320]).toBe(0);
   });
 });

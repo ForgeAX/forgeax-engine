@@ -1,6 +1,10 @@
+import {
+  projectPackGenerationModules,
+  readPackAuthoringDeclaration,
+} from '@forgeax/engine-pack/build';
 import { describe, expect, it } from 'vitest';
 import { failureSummary } from '../failure-summary.js';
-import { sessionOpenFailure } from '../play.js';
+import { type PlayReport, playFailureError, sessionOpenFailure } from '../play.js';
 
 // H15: a Surface shader referencing a missing field made `project play` report
 // `message: [object Object]`; only `project build` showed the composer error.
@@ -48,5 +52,39 @@ describe('failure summaries', () => {
     expect(
       failureSummary({ code: 'dev-server-failed', expected: 'x', hint: 'retry', detail: {} }),
     ).toBe('dev-server-failed: retry');
+  });
+
+  it('keeps the rejected live generation import and the allowed list in the compact play error', () => {
+    const path = '/game/project/assets/a-long-feature-folder/scene.pack.ts';
+    const source = `import { definePack, definePackageId } from '@forgeax/engine/pack/source';
+import { Fog, createRenderer } from '@forgeax/engine/render';
+export default definePack({ schemaVersion: '2.0.0', packageId: definePackageId('01900000-0000-7000-8000-000000000078'), build: () => [Fog, createRenderer] });`;
+    const declaration = readPackAuthoringDeclaration(path, source);
+    if (!declaration.ok) throw new Error('fixture declaration must parse');
+    let rejection: unknown;
+    try {
+      projectPackGenerationModules(path, { [path]: source }, declaration.value);
+    } catch (error) {
+      rejection = error;
+    }
+    const failure = sessionOpenFailure({
+      code: 'pack-malformed-meta',
+      expected: 'a valid Pack meta sidecar',
+      hint: 'repair detail.path using detail.ajvErrors',
+      detail: { path },
+      cause: rejection,
+    });
+    const report = {
+      root: '/game/project',
+      report: '/game/project/artifacts/play/scripts/smoke/play.json',
+      errors: { console: [], page: [], inputWarnings: 0 },
+      log: [],
+      failure,
+    } as unknown as PlayReport;
+    const message = (playFailureError(report)?.detail as { message?: string }).message;
+    expect(message).toContain(
+      'createRenderer from @forgeax/engine/render: not on the live generation list; allowed: Materials',
+    );
+    expect(message).not.toContain('Fog from');
   });
 });

@@ -65,3 +65,38 @@ describe('leanLightingFrame', () => {
     expect(leanLightingFrame(empty, undefined, { lowSun: true, range: 512 })).toBe(true);
   });
 });
+
+it('keeps independent receiver and modifier facts through changing frames', () => {
+  const lights = { cascades: undefined, point: [], spot: [], rect: [] } as unknown as Parameters<
+    typeof leanLightingFrame
+  >[0] &
+    Parameters<typeof directionalShadowSimple>[0];
+  expect(directionalShadowSimple(lights)).toBe(true);
+  expect(leanLightingFrame(lights, 'skylight', undefined)).toBe(true);
+  for (const changed of [
+    { ...lights, rect: [{}] },
+    { ...lights, spot: [{ iesProfileSlice: 0 }] },
+    { ...lights, spot: [{ cookieSlice: 0 }] },
+  ]) {
+    expect(directionalShadowSimple(changed as never)).toBe(true);
+    expect(leanLightingFrame(changed as never, 'skylight', undefined)).toBe(false);
+  }
+  expect(leanLightingFrame(lights, 'skylight', undefined)).toBe(true);
+  expect(directionalShadowSimple({ ...lights, cascades: cascades({ cascadeCount: 2 }) })).toBe(
+    false,
+  );
+  expect(directionalShadowSimple({ ...lights, cascades: cascades() })).toBe(true);
+  expect(
+    directionalShadowSimple({
+      ...lights,
+      cascades: cascades({ directionalShadowQuality: { kind: 'pcss' } }),
+    }),
+  ).toBe(false);
+  expect(
+    directionalShadowSimple({
+      ...lights,
+      cascades: cascades(),
+      directionalCsmConfig: { shadowBiasMode: 1 },
+    }),
+  ).toBe(false);
+});

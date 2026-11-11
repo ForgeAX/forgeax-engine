@@ -30,6 +30,9 @@ async function fixture(
           bootstrapData: { ...data, cleanupChannel: witness.name },
           bootstrapPort: channel.port2,
           startupTimeoutMs: 90_000,
+          // These contracts are written for a two-deep pipeline; the default depth is
+          // bounded in render-worker.browser.test.ts.
+          diagnostics: { renderPipelineCapacity: 2 },
         },
       },
       { shaderManifestUrl: new URL('/shaders/manifest.json', location.href).href },

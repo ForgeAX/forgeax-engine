@@ -4,11 +4,13 @@ import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ec
  * Reflection owned by this display Camera. Plane uses dot(normal, worldPosition) + distance = 0.
  *
  * `distortion` warps the reflection lookup by the receiving material's shading
- * normal (normal map, Surface ripples): the screen-UV offset is the normal's tilt
- * away from the plane (sine of the tilt angle) times `distortion`. Zero keeps the
- * undistorted mirror. Three.js reference: `screenUV.add(normal.xy.mul(normalWarp))`
- * in the webgpu_reflection_roughness example; Unreal: PlanarReflection
- * NormalDistortionStrength.
+ * normal (normal map, Surface ripples), as Unreal's PlanarReflection
+ * NormalDistortionStrength (PlanarReflectionShared.ush ComputePlanarReflections):
+ * the view ray reflects off the shading normal and the capture is sampled where
+ * that ray meets a virtual sphere of radius `distortion` (world units) around the
+ * pixel. The warp therefore scales with perspective and the tilt's real reflected
+ * direction; a flat normal, or zero, keeps the undistorted mirror. Unreal's
+ * default radius is 500 cm.
  *
  * Without `target` (0) the Renderer owns the capture: a sampled 2D rgba16float
  * texture sized round(display drawing-buffer size * `resolutionScale`), at least

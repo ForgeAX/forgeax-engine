@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm';
 import { Context } from '@forgeax/engine-plugin';
 import { transformWithOxc } from 'vite';
 import { expect, it } from 'vitest';
+import { gameProjectionSource } from '../host/game-projection-source.js';
 import { createViteConfig } from '../host.js';
 import { readProjectFacts } from '../project.js';
 import { generatedPlayerQueries } from './generated-player-queries.js';
@@ -56,6 +57,7 @@ it('projects the current Host audio consumer and resolves the native factory on 
     // with real native service visibility. App's own replacement/disposal path
     // is covered by worker-execution-stop.test.ts in the App owner.
     const source = `(async () => {
+      ${gameProjectionSource}
       ${generatedPlayerQueries(generated)}
       ${generated.slice(start, end)}
       ${generated.slice(hostStart, hostEnd)}
@@ -178,6 +180,7 @@ it('projects the main-realm audio engine used by the native backend into GameHos
     expect(hostStart).toBeGreaterThan(end);
     expect(hostEnd).toBeGreaterThan(hostStart);
     const source = `(async () => {
+      ${gameProjectionSource}
       ${generatedPlayerQueries(generated)}
       ${generated.slice(start, end)}
       publishHost(${generated.slice(hostStart, hostEnd)});

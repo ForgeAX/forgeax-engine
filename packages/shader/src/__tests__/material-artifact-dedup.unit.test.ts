@@ -42,18 +42,67 @@ describe('material artifact deduplication', () => {
   it.each([
     'tail',
     'length',
-  ])('rejects %s byte conflicts even with an identical advertised digest', (difference) => {
+  ])('rejects %s byte conflicts without a digest or with a different digest', (difference) => {
     const registry = new MaterialArtifactRegistry();
     const bytes = new Uint8Array(4096).fill(7);
-    const first = { key: 'key-byte-boundary', bytes, digest: 'same-advertised-digest' };
+    const first = { key: 'key-byte-boundary', bytes, digest: 'sha256:first' };
+    const plain = { key: 'key-byte-boundary-plain', bytes };
     registry.register(first).unwrap();
+    registry.register(plain).unwrap();
     const incoming = difference === 'length' ? bytes.subarray(0, bytes.length - 1) : bytes.slice();
     if (difference === 'tail') incoming[incoming.length - 1] = 8;
     expect(
-      registry.register({ key: first.key, bytes: incoming, digest: first.digest }),
+      registry.register({ key: first.key, bytes: incoming, digest: 'sha256:second' }),
     ).toMatchObject({
       ok: false,
+      error: {
+        code: 'material-artifact-conflict',
+        detail: {
+          dimension: 'bytes',
+          existingDigest: 'sha256:first',
+          incomingDigest: 'sha256:second',
+        },
+      },
+    });
+    expect(registry.register({ key: plain.key, bytes: incoming })).toMatchObject({
+      ok: false,
       error: { code: 'material-artifact-conflict', detail: { dimension: 'bytes' } },
+    });
+    expect(registry.get(first.key)).toBe(first);
+    expect(registry.get(plain.key)).toBe(plain);
+  });
+
+  it('identifies repeated content by its digest without reading the bytes again', () => {
+    const registry = new MaterialArtifactRegistry();
+    const first = { key: 'key-digest', bytes: new Uint8Array(4096).fill(3), digest: 'sha256:same' };
+    registry.register(first).unwrap();
+    const unread = new Proxy(new Uint8Array(4096), {
+      get(target, property, receiver) {
+        if (typeof property === 'string' && /^\d+$/.test(property))
+          throw new Error('repeated admission read program bytes');
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(
+      registry.register({ key: first.key, bytes: unread, digest: first.digest }).unwrap(),
+    ).toBe(first);
+  });
+
+  it.each([
+    ['param-schema', { paramSchema: [{ name: 'changed' }] }],
+    ['receipt', { paramSchema: [], receipt: { changed: true } }],
+  ] as const)('keeps %s conflicts for an identical digest', (dimension, metadata) => {
+    const registry = new MaterialArtifactRegistry();
+    const first = {
+      key: `key-digest-${dimension}`,
+      bytes: new Uint8Array([1, 2, 3]),
+      digest: 'sha256:same',
+      metadata: { paramSchema: [] },
+    };
+    registry.register(first).unwrap();
+    expect(registry.register({ ...first, metadata })).toMatchObject({
+      ok: false,
+      error: { code: 'material-artifact-conflict', detail: { dimension } },
     });
     expect(registry.get(first.key)).toBe(first);
   });

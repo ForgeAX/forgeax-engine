@@ -576,8 +576,8 @@ or an independent boolean/status, is supported; factories remain explicit
 allocation sites. Preserve precision, aliasing and result lifetime; measure
 internal temporaries too. `?? 0` does not allocate;
 use direct indexed values after proving bounds, and retain meaningful absence
-handling. Do not trade clarity for many callbacks to eliminate a small fixed
-traversal cost without a complete-owner CPU/allocation win.
+handling. Keep clear traversal code unless many callbacks bring a complete-owner CPU/allocation win over a small fixed
+traversal cost.
 
 Engine implementation uses the fast paths enforced by
 `pnpm check:ecs-iteration`, `pnpm check:required-output` and
@@ -839,8 +839,8 @@ result cannot initialize a replacement physical GPU resource.
 | Destruction slows after input stops | Keep one World through warmup, real sustained impacts and the stopped-input tail; trace support, fracture, admission and publication queues | Track oldest age and produced/completed work at every queue; a bounded queue or completed counter alone does not prove convergence |
 
 Keep broad terrain/fragment wake bounds and visual-only changes distinct at their
-actual producer. Avoid whole-queue copying before a budgeted traversal's first
-yield. Disabling collision, damage, effects, shadows or publication is a
+actual producer. Traverse in place up to a budgeted traversal's first
+yield instead of copying the whole queue. Disabling collision, damage, effects, shadows or publication is a
 sensitivity control, not an equivalent-work optimization.
 
 ## Qualify allocation and performance evidence
@@ -1015,12 +1015,12 @@ inputs. These summaries establish their stated analytical boundary only.
 Keep reusable decisions in this Engine entrypoint; add detailed method and
 counterexample evidence to the existing topic, and dated results to one scoped
 case using Contributing. Remove superseded guidance. Preserve raw failures privately and retain useful
-counterexamples; do not promote one run's numbers, host paths, quality settings
-or an unimplemented prototype into a universal rule.
+counterexamples; keep one run's numbers, host paths, quality settings
+and any unimplemented prototype in the scoped case, and write only the reusable decision as a rule.
 
-When animation times are externally sampled, zero playback speed does not permit
-skipping pose evaluation. Retain events, normalization and target updates while
-avoiding unchanged clock writes; verify paused, wrapping and externally edited
+When animation times are externally sampled, zero playback speed still requires
+pose evaluation. Retain events, normalization and target updates while
+skipping unchanged clock writes; verify paused, wrapping and externally edited
 targets through the same animation owner.
 
 For fixed-input material builds, capture WGSL records and their complete path

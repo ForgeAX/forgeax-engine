@@ -35,8 +35,16 @@ export function prepareStandardLighting(
       ? deriveStandardMembership(frame, layout, scratch)
       : owner.derive(frame, layout, scratch);
   if (!membership.ok) return membership;
+  const derived = membership.value;
   return ok({
-    ...membership.value,
+    // Forward the list lazily: a spread would materialize it for GPU producers.
+    clusterGrid: derived.clusterGrid,
+    get lightIndexList() {
+      return derived.lightIndexList;
+    },
+    lightBounds: derived.lightBounds,
+    membershipEntryCount: derived.membershipEntryCount,
+    scratch: derived.scratch,
     directional: frame.directional,
     local: frame.local,
     layout,

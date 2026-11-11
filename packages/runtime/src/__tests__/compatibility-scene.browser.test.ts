@@ -9,6 +9,7 @@ import {
   MeshFilter,
   MeshRenderer,
   perspective,
+  type Renderer,
 } from '@forgeax/engine-render';
 import { EngineEnvironmentError } from '@forgeax/engine-render/internal/construct-renderer';
 import type { PipelineLibraryManifest, RhiAdapter, RhiInstance } from '@forgeax/engine-rhi';
@@ -122,6 +123,226 @@ function minimumBackend(
   };
 }
 
+/** Detached failure facts only; never await another fence or retain a scene inventory. */
+function sceneFailureDiagnostics(renderer: Renderer) {
+  const errorFact = (cause: unknown, depth = 0): unknown => {
+    try {
+      if (cause === null || typeof cause !== 'object') return String(cause).slice(0, 1024);
+      const input = cause as Record<string, unknown>,
+        output: Record<string, unknown> = {};
+      for (const key of [
+        'name',
+        'message',
+        'stack',
+        'code',
+        'expected',
+        'hint',
+        'reason',
+        'operation',
+      ]) {
+        const field = input[key];
+        if (typeof field === 'string') output[key] = field.slice(0, key === 'stack' ? 2048 : 1024);
+      }
+      if (depth < 2)
+        for (const key of ['cause', 'error', 'detail', 'webgpuError']) {
+          if (input[key] !== undefined) output[key] = errorFact(input[key], depth + 1);
+        }
+      return output;
+    } catch {
+      return { diagnosticError: 'Error projection unavailable' };
+    }
+  };
+  type Signal = {
+    state: 'absent' | 'pending' | 'ok' | 'error' | 'rejected';
+    error?: unknown;
+    phase?: string;
+    settledAtMs?: number;
+  };
+  type Receipt = {
+    frameId: number;
+    deviceGeneration: number;
+    presentation: string;
+    submittedAtMs: number;
+    pendingReason: unknown;
+    preparation: Signal;
+    completion: Signal;
+  };
+  const receipts: Receipt[] = [],
+    nativeEvents: { phase: string; kind: string; atMs: number; detail: unknown }[] = [];
+  let phase = 'scene',
+    nativeStatus: unknown = 'not-observed';
+  const safe = (action: () => void) => {
+    try {
+      action();
+    } catch {
+      /* Diagnostics cannot replace the original failure. */
+    }
+  };
+  const nativeEvent = (kind: string, detail: unknown) => {
+    nativeEvents.push({ phase, kind, atMs: performance.now(), detail });
+    if (nativeEvents.length > 4) nativeEvents.shift();
+  };
+  const watch = (
+    signal: import('@forgeax/engine-render').FrameReceipt['completed'] | undefined,
+  ): Signal => {
+    const result: Signal = { state: signal === undefined ? 'absent' : 'pending' };
+    void signal?.then(
+      (value) =>
+        safe(() => {
+          result.state = value.ok ? 'ok' : 'error';
+          result.phase = phase;
+          result.settledAtMs = performance.now();
+          if (!value.ok) result.error = errorFact(value.error);
+        }),
+      (cause) =>
+        safe(() => {
+          result.state = 'rejected';
+          result.phase = phase;
+          result.settledAtMs = performance.now();
+          result.error = errorFact(cause);
+        }),
+    );
+    return result;
+  };
+  let unsubscribe = () => {
+    /* No listener if diagnostic subscription is unavailable. */
+  };
+  safe(() => {
+    unsubscribe = renderer.subscribe((event) =>
+      safe(() => {
+        if (event.kind !== 'frame-submitted') return;
+        const receipt = event.receipt;
+        receipts.push({
+          frameId: receipt.frameId,
+          deviceGeneration: receipt.deviceGeneration,
+          presentation: receipt.presentation,
+          submittedAtMs: performance.now(),
+          pendingReason:
+            receipt.presentationPendingReason === undefined
+              ? null
+              : { ...receipt.presentationPendingReason },
+          preparation: watch(receipt.preparationCompleted),
+          completion: watch(receipt.completed),
+        });
+        if (receipts.length > 4) receipts.shift();
+      }),
+    );
+  });
+  let device: GPUDevice | undefined;
+  const onUncaptured = (event: GPUUncapturedErrorEvent) =>
+    safe(() => nativeEvent('uncapturederror', errorFact(event.error)));
+  safe(() => {
+    const selected = renderer.nativeDevice();
+    if (!selected.ok) {
+      nativeStatus = errorFact(selected.error);
+      return;
+    }
+    nativeStatus = 'observed-initial-device';
+    device = selected.value;
+    device.addEventListener('uncapturederror', onUncaptured);
+    void device.lost.then(
+      (loss) =>
+        safe(() =>
+          nativeEvent('device-lost', { reason: loss.reason, message: loss.message.slice(0, 1024) }),
+        ),
+      (cause) => safe(() => nativeEvent('device-lost-rejected', errorFact(cause))),
+    );
+  });
+  return {
+    errorFact,
+    freeze() {
+      const pod: { renderer: unknown; [key: string]: unknown } = {
+        phase: 'before-dispose',
+        observedAtMs: performance.now(),
+        nativeStatus,
+        nativeEvents,
+        receipts,
+        renderer: null,
+      };
+      try {
+        const inspection = renderer.inspect({
+          fields: ['state', 'recovery', 'pipelineLibrary'],
+          runtimeRequests: true,
+        });
+        const library = inspection.pipelineLibrary,
+          history = library?.runtimeRequests;
+        pod.renderer = {
+          state: inspection.state,
+          recovery: inspection.recovery,
+          pipelineLibrary:
+            library === undefined
+              ? null
+              : {
+                  state: library.state,
+                  renderPipelines: library.renderPipelines,
+                  computePipelines: library.computePipelines,
+                  synchronousCreations: library.synchronousCreations,
+                  asynchronousCreations: library.asynchronousCreations,
+                  compilationCompleted: library.compilationCompleted,
+                  compilationPending: library.compilationPending,
+                  failures: library.failures,
+                  overflow: library.overflow,
+                  runtimeRequests:
+                    history === undefined
+                      ? null
+                      : {
+                          libraryId: history.libraryId,
+                          capacity: history.capacity,
+                          overwritten: history.overwritten,
+                          latestSequence: history.latestSequence,
+                          observedAtMs: history.observedAtMs,
+                          total: history.requests.length,
+                          truncated: Math.max(0, history.requests.length - 32),
+                          requests: history.requests.slice(-32).map((row) => ({
+                            sequence: row.sequence,
+                            mode: row.mode,
+                            kind: row.kind,
+                            label: row.label?.slice(0, 256) ?? null,
+                            origin: row.origin,
+                            preloadAtDemand: row.preloadAtDemand,
+                            requestedAtMs: row.requestedAtMs,
+                            demandedAtMs: row.demandedAtMs,
+                            startedAtMs: row.startedAtMs,
+                            completedAtMs: row.completedAtMs,
+                            outcome: row.outcome,
+                            pipeline:
+                              row.pipeline === null
+                                ? null
+                                : {
+                                    localIdentity: row.pipeline.localIdentity,
+                                    identity: row.pipeline.identity,
+                                    kind: row.pipeline.kind,
+                                    preload: row.pipeline.preload,
+                                  },
+                          })),
+                        },
+                },
+        };
+      } catch (cause) {
+        // An inspection failure must not discard native events or receipt settlements.
+        pod.renderer = { diagnosticError: errorFact(cause) };
+      }
+      try {
+        // Promise observers may settle during disposal; never rewrite the first-failure snapshot.
+        return JSON.parse(JSON.stringify(pod)) as unknown;
+      } catch (cause) {
+        return { diagnosticError: errorFact(cause) };
+      }
+    },
+    beginDispose() {
+      // This label starts at disposal entry, including destroy-induced loss during its await.
+      phase = 'after-dispose';
+      safe(unsubscribe);
+    },
+    stop() {
+      safe(() => device?.removeEventListener('uncapturederror', onUncaptured));
+    },
+    lateNativeEvents() {
+      return nativeEvents.filter((row) => row.phase === 'after-dispose');
+    },
+  };
+}
+
 async function scene(library?: PipelineLibraryManifest, fallback = false) {
   const webkit = import.meta.env.FORGEAX_COMPAT_WEBKIT;
   const backend = minimumBackend(false);
@@ -135,33 +356,27 @@ async function scene(library?: PipelineLibraryManifest, fallback = false) {
   const host = value(await initialization);
   const { renderer, assets } = host;
   const failures: unknown[] = [];
+  const diagnostics = sceneFailureDiagnostics(renderer);
+  let firstFailure: unknown;
   onTestFailed(() => {
-    // biome-ignore lint/suspicious/noConsole: Preserve nested native validation before the browser retires.
-    console.log(
-      JSON.stringify(
-        { kind: 'compatibility-scene-failure', fallback, failures, oracles, completedFrames },
-        [
-          'kind',
-          'fallback',
-          'failures',
-          'oracles',
-          'center',
-          'blueCount',
-          'blueY',
-          'completedFrames',
-          'name',
-          'message',
-          'code',
-          'detail',
-          'expected',
-          'hint',
-          'cause',
-          'operation',
-          'error',
-          'reason',
-        ],
-      ),
-    );
+    try {
+      // biome-ignore lint/suspicious/noConsole: Preserve explicit bounded POD; a key whitelist drops native/receipt facts.
+      console.log(
+        JSON.stringify({
+          kind: 'compatibility-scene-failure',
+          fallback,
+          imported: library !== undefined,
+          failures: failures.slice(0, 8).map((cause) => diagnostics.errorFact(cause)),
+          failuresTotal: failures.length,
+          oracles,
+          completedFrames,
+          firstFailure,
+          afterDisposeNativeEvents: diagnostics.lateNativeEvents(),
+        }),
+      );
+    } catch {
+      /* Reporting must not hide the original test failure. */
+    }
   });
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') failures.push(event.error);
@@ -330,10 +545,16 @@ async function scene(library?: PipelineLibraryManifest, fallback = false) {
     return inspection.pipelineLibraryManifest;
   } catch (cause) {
     failures.push(cause);
+    firstFailure = diagnostics.freeze();
     throw cause;
   } finally {
     unsubscribe();
-    await renderer.dispose();
+    diagnostics.beginDispose();
+    try {
+      await renderer.dispose();
+    } finally {
+      diagnostics.stop();
+    }
     canvas.remove();
   }
 }

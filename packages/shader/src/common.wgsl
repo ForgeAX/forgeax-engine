@@ -86,12 +86,14 @@ fn ditherUnorm8(value : vec3<f32>, pixelPosition : vec2<f32>) -> vec3<f32> {
 // aligned with Bevy's bevy_view::common and matches charter proposition 5
 // (consistent abstraction - one View struct everywhere).
 
-// View UBO: 1296-byte payload, 1296-byte dynamic slot (256-byte alignment).
+// View UBO: 1296-byte payload, 1536-byte dynamic slot (256-byte alignment).
 // view-ubo.ts owns matching host writes. Existing fields retain their offsets:
 // [0..528) camera and directional-shadow facts; [528..784) spot matrices;
 // [784..1024) temporal and cloud-shadow facts; [1024..1120) clipping planes;
 // [1120..1136) clipping control (count, intersection, clipShadows, reserved);
-// [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot).
+// [1136..1168) analytic fog (color+density, heightFalloff/maxOpacity/translucent slot/frame time);
+// [1168..1264) atmosphere medium; [1264..1280) atmosphere control;
+// [1280..1296) sky fog (skyOpacity, reserved).
 struct AtmosphereMedium {
   originRadius: vec4<f32>, // world ground origin in km, ground radius
   rayleigh: vec4<f32>, // scattering RGB, density scale height
@@ -155,6 +157,9 @@ struct View {
   atmosphere : AtmosphereMedium,
   // reference sample count (zero = LUT), sun radius, AP range km, enabled.
   atmosphereControl : vec4<f32>,
+  // x = Fog.skyOpacity: scale of the fog opacity on background pixels under
+  // an Atmosphere (1 = physical distant fog, 0 = sky unfogged); yzw reserved.
+  fogSky : vec4<f32>,
 };
 
 // Mesh contains only independent transform and temporal facts. Direct draws

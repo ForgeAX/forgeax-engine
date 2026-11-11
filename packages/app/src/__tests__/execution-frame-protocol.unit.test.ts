@@ -1,6 +1,6 @@
 import type { InputBackendSample } from '@forgeax/engine-input';
 import { describe, expect, it } from 'vitest';
-import { FrameCreditLedger } from '../execution/protocol';
+import { FrameCreditLedger, renderPipelineCapacityOf } from '../execution/protocol';
 
 const sample: InputBackendSample = {
   downKeys: new Set(),
@@ -98,5 +98,28 @@ describe('frame credit protocol', () => {
       }),
     ).toBe('accepted');
     expect(replacement.inspect()).toMatchObject({ submitted: 1, completed: 1, inFlight: 0 });
+  });
+
+  it('reports split-render pipeline depth and waiting ticks beyond the single simulation credit', () => {
+    const ledger = new FrameCreditLedger('world-pipeline');
+    ledger.issue(0.016, () => sample);
+    ledger.observeDepth(3);
+    ledger.recordThrottledTick();
+    expect(ledger.inspect()).toEqual({
+      submitted: 1,
+      completed: 0,
+      inFlight: 1,
+      highWater: 3,
+      throttledTicks: 1,
+    });
+    ledger.observeDepth(2);
+    expect(ledger.inspect().highWater).toBe(3);
+  });
+
+  it('defaults the split-render pipeline to one publication per stage', () => {
+    expect(renderPipelineCapacityOf(undefined)).toBe(3);
+    expect(renderPipelineCapacityOf(2)).toBe(2);
+    expect(renderPipelineCapacityOf(3)).toBe(3);
+    expect(renderPipelineCapacityOf(4)).toBe(4);
   });
 });

@@ -54,7 +54,12 @@ export type CameraExposure =
 
 /** Numeric encoding of manual exposure in the Camera SoA column. */
 export const CAMERA_EXPOSURE_MODE_MANUAL = 0;
-/** Numeric encoding of GPU-adapted exposure in the Camera SoA column. */
+/**
+ * Numeric encoding of GPU-adapted exposure in the Camera SoA column. `exposure`
+ * becomes the fallback used before the first adaptation, and `compensationEv`
+ * biases the adapted result. Manual exposure keeps one multiplier; auto exposure
+ * re-meters when the sun or sky brightness changes at runtime.
+ */
 export const CAMERA_EXPOSURE_MODE_AUTO = 1;
 
 /** Product-supported white-balance temperature range in Kelvin. */
@@ -241,6 +246,10 @@ export function cameraProjectionFromF32(value: number): CameraProjection {
  *                            HDR target and a fullscreen tonemap pass
  *                            (`packages/shader/src/tonemap.wgsl`).
  *
+ *   `'ue-filmic'`         - Unreal Filmic curve with Unreal's default post-process
+ *                            settings (slope 0.88, toe 0.55, shoulder 0.26, white
+ *                            clip 0.04, blue correction 0.6, expand gamut 1).
+ *
  * The remaining members mirror the Three r184 public names and formulas.
  */
 export type Tonemap =
@@ -251,7 +260,8 @@ export type Tonemap =
   | 'cineon'
   | 'aces-filmic'
   | 'agx'
-  | 'neutral';
+  | 'neutral'
+  | 'ue-filmic';
 
 /** Numeric encoding of the no-op tonemap path (schema value for `tonemap`). */
 export const TONEMAP_NONE = TONEMAP_SHADER_MODE.none;
@@ -272,6 +282,8 @@ export const TONEMAP_ACES_FILMIC = TONEMAP_SHADER_MODE.acesFilmic;
 export const TONEMAP_AGX = TONEMAP_SHADER_MODE.agx;
 /** Numeric encoding of the Khronos PBR neutral tonemap path. */
 export const TONEMAP_NEUTRAL = TONEMAP_SHADER_MODE.neutral;
+/** Numeric encoding of the Unreal Filmic tonemap path (Unreal default settings). */
+export const TONEMAP_UE_FILMIC = TONEMAP_SHADER_MODE.ueFilmic;
 
 /**
  * Map a `camera.tonemap` numeric value to the closed `Tonemap` string-literal
@@ -293,6 +305,8 @@ export function tonemapFromF32(value: number): Tonemap {
       return 'agx';
     case TONEMAP_NEUTRAL:
       return 'neutral';
+    case TONEMAP_UE_FILMIC:
+      return 'ue-filmic';
     default:
       return 'none';
   }
@@ -322,6 +336,8 @@ export function tonemapToU32(mode: Tonemap): number {
       return TONEMAP_AGX;
     case 'neutral':
       return TONEMAP_NEUTRAL;
+    case 'ue-filmic':
+      return TONEMAP_UE_FILMIC;
     case 'none':
       return TONEMAP_NONE;
   }
@@ -452,8 +468,9 @@ export const CAMERA_BLOOM_INTENSITY_MIN = 0;
 export const CAMERA_BLOOM_INTENSITY_MAX = 8;
 /**
  * Bloom threshold is expressed in scene-linear Rec.709 luminance. A negative
- * value disables thresholding entirely (Unreal's `BloomThreshold = -1`
- * default); `-1` is the lowest accepted value, matching Unreal's range.
+ * value (the default `-1`, as in Unreal) disables thresholding entirely so
+ * every pixel scatters in proportion to its energy; `-1` is the lowest
+ * accepted value, matching Unreal's range.
  */
 export const CAMERA_BLOOM_THRESHOLD_MIN = -1;
 export const CAMERA_BLOOM_THRESHOLD_MAX = 65504;
@@ -633,8 +650,8 @@ export const Camera = defineComponent('Camera', {
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },
-  // Only above-white HDR luminance blooms by default; threshold 0 would bloom the whole frame.
-  bloomThreshold: { type: 'f32', default: 1 },
+  // Negative (default, as in Unreal) blooms the whole frame; 1 blooms only above-white HDR luminance.
+  bloomThreshold: { type: 'f32', default: -1 },
   bloomIntensity: { type: 'f32', default: 0.5 },
   bloomSmoothWidth: { type: 'f32', default: 0.01 },
   bloomRadius: { type: 'f32', default: 0 },

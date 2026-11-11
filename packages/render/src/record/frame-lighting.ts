@@ -200,6 +200,299 @@ function stockClusterMembership(
     : undefined;
 }
 
+interface ViewBindGroupTargets {
+  readonly directionalShadow?: TextureView | undefined;
+  readonly spotShadow?: TextureView | undefined;
+  readonly shadowMoments?: TextureView | undefined;
+  readonly cloudShadow?: TextureView | undefined;
+  readonly atmosphere?: AtmosphereViews | undefined;
+  readonly projector?: TextureView | undefined;
+  readonly projectorSampler?: import('@forgeax/engine-rhi').Sampler | undefined;
+}
+
+/** Read the admitted extended View resources once, in the original eager order. */
+function extendedViewLightingResources(
+  pipelineState: PipelineState,
+  extendedLighting: boolean,
+  graphTargets?: ViewBindGroupTargets,
+) {
+  const iesProfileTextureView = pipelineState.iesProfileTextureView;
+  const cookieTextureView = pipelineState.cookieTextureView;
+  const cookieMatrixBuffer = pipelineState.cookieMatrixBuffer;
+  const ltcLambertTextureView = pipelineState.ltcLambertTextureView;
+  const ltcGgxTextureView = pipelineState.ltcGgxTextureView;
+  return extendedLighting &&
+    iesProfileTextureView !== undefined &&
+    cookieTextureView !== undefined &&
+    cookieMatrixBuffer !== undefined &&
+    ltcLambertTextureView !== undefined &&
+    ltcGgxTextureView !== undefined
+    ? {
+        moments: graphTargets?.shadowMoments ?? cookieTextureView,
+        sampler: pipelineState.defaultSampler,
+        iesProfileTextureView,
+        cookieTextureView,
+        ltcLambertTextureView,
+        ltcGgxTextureView,
+        cookieMatrixBuffer,
+      }
+    : undefined;
+}
+
+/** Resolve only the current View resources used by a fullscreen lighting receiver. */
+export function buildViewBindGroup(
+  internals: RenderSystemInternals,
+  frameState: RenderFrameState,
+  pipelineState: PipelineState,
+  bindGroupCounts: BindGroupCounts,
+  graphTargets?: ViewBindGroupTargets,
+): BindGroup | null {
+  const shadowSampler = pipelineState.perPassResources.shadowSampler;
+  if (shadowSampler === null) {
+    return null;
+  }
+  const graphShadowView = graphTargets?.directionalShadow;
+  const b3View =
+    graphShadowView !== undefined ? graphShadowView : pipelineState.shadowArrayFallbackTextureView;
+  // feat-20260612-point-light-shadows-urp-hdrp Round-2 F-1: bind the real
+  // ShadowAtlas cube_array view when point shadows are active in this
+  // frame; otherwise the 1x1x6 fallback (cleared to 1.0 = fully lit).
+  const pointShadowAtlas = frameState.pointShadowAtlas;
+  const atlasViewMaybe = pointShadowAtlas?.isAllocated() ? pointShadowAtlas.getAtlasView() : null;
+  const b5View =
+    atlasViewMaybe !== null ? atlasViewMaybe : pipelineState.shadowAtlasFallbackTextureView;
+  // feat-20260625-spot-light-shadow-mapping M2 / w21 (D-1 fragment side +
+  // D-5): bind the real spot shadow array view (graph-owned) when spot
+  // shadows run this frame; otherwise the depth-array fallback cleared to
+  // 1.0 (fully lit), the same `texture_depth_2d_array` shape as binding 3.
+  const graphSpotShadowView = graphTargets?.spotShadow;
+  const b8View =
+    graphSpotShadowView !== undefined
+      ? graphSpotShadowView
+      : pipelineState.shadowArrayFallbackTextureView;
+  const cloudShadowView = graphTargets?.cloudShadow ?? pipelineState.defaultWhiteTextureView;
+  const extendedLighting = pipelineState.extendedLightingAvailable ?? true;
+  const extendedLightingResources = extendedViewLightingResources(
+    pipelineState,
+    extendedLighting,
+    graphTargets,
+  );
+  if (extendedLighting && extendedLightingResources === undefined) {
+    return null;
+  }
+  const projectorAvailable = pipelineState.projectorAvailable !== false;
+  const lowLimitCloudBindings = !extendedLighting && !projectorAvailable;
+  const b11View = graphTargets?.projector ?? pipelineState.defaultWhiteTextureView;
+  const b12Sampler = graphTargets?.projectorSampler ?? pipelineState.defaultSampler;
+  // The chain key is rebuilt into one retained array on every pass that
+  // binds the View group; entries are built only on a cache miss.
+  const keys = viewChainKeys;
+  keys.length = 0;
+  keys.push(pipelineState.viewUniformBuffer);
+  pushAtmosphereBindingResources(keys, pipelineState, graphTargets?.atmosphere);
+  keys.push(b3View, shadowSampler, b5View, pipelineState.shadowParamsBuffer, b8View);
+  if (extendedLightingResources !== undefined) {
+    keys.push(
+      extendedLightingResources.moments,
+      extendedLightingResources.sampler,
+      extendedLightingResources.iesProfileTextureView,
+      extendedLightingResources.cookieTextureView,
+      extendedLightingResources.ltcLambertTextureView,
+      extendedLightingResources.ltcGgxTextureView,
+      extendedLightingResources.cookieMatrixBuffer,
+    );
+  } else if (projectorAvailable) {
+    keys.push(b11View, b12Sampler);
+  }
+  keys.push(pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer);
+  if (!lowLimitCloudBindings) keys.push(cloudShadowView);
+  keys.push(pipelineState.viewLinearSampler ?? pipelineState.defaultSampler);
+  return getOrCreateFromChain(
+    frameState.viewBindGroupCache,
+    keys,
+    'view-main',
+    () => {
+      const entries: BindGroupEntry[] = [
+        ...atmosphereBindings(pipelineState, graphTargets?.atmosphere),
+        {
+          binding: 0,
+          resource: {
+            kind: 'buffer',
+            value: { buffer: pipelineState.viewUniformBuffer, size: VIEW_UNIFORM_BYTES },
+          },
+        },
+        {
+          binding: 3,
+          resource: {
+            kind: 'textureView',
+            value: b3View,
+          },
+        },
+        {
+          binding: 4,
+          resource: {
+            kind: 'sampler',
+            value: shadowSampler,
+          },
+        },
+        ...(internals.device.caps.storageBuffer
+          ? [
+              {
+                binding: 5,
+                resource: { kind: 'textureView' as const, value: b5View },
+              },
+              {
+                binding: 6,
+                resource: {
+                  kind: 'buffer' as const,
+                  value: { buffer: pipelineState.shadowParamsBuffer },
+                },
+              },
+            ]
+          : []),
+        // feat-20260613-csm-cascaded-shadow-maps M5 / w28 (rebased to
+        // binding 7 on 2026-06-13 to make room for point-shadow 5/6):
+        // forward shaders declare binding 7 in common.wgsl (shared
+        // view BGL) but never reference it; only shadow_caster.wgsl
+        // reads it. Host writes a stable singleton buffer so every
+        // forward bind group entry stays populated.
+        {
+          binding: 7,
+          resource: {
+            kind: 'buffer',
+            value: { buffer: pipelineState.shadowCasterCascadeBuffer },
+          },
+        },
+        // feat-20260625-spot-light-shadow-mapping M3 / w21 (D-5):
+        // spot shadow 2D atlas (real spotShadowDepth view when spot
+        // shadows run this frame, else the 1x1 depth fallback). Always-on.
+        {
+          binding: 8,
+          resource: {
+            kind: 'textureView',
+            value: b8View,
+          },
+        },
+        {
+          binding: 10,
+          resource: {
+            kind: 'buffer',
+            value: {
+              buffer: pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer,
+              size: POINTS_LINES_VIEW_BYTES,
+            },
+          },
+        },
+        ...(extendedLightingResources === undefined && projectorAvailable
+          ? [
+              {
+                binding: 11,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: b11View,
+                },
+              },
+              {
+                binding: 12,
+                resource: {
+                  kind: 'sampler' as const,
+                  value: b12Sampler,
+                },
+              },
+            ]
+          : []),
+        ...(extendedLightingResources !== undefined
+          ? [
+              {
+                binding: 24,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: extendedLightingResources.moments,
+                },
+              },
+              {
+                binding: 9,
+                resource: {
+                  kind: 'sampler' as const,
+                  value: extendedLightingResources.sampler,
+                },
+              },
+              {
+                binding: 11,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: extendedLightingResources.iesProfileTextureView,
+                },
+              },
+              {
+                binding: 12,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: extendedLightingResources.cookieTextureView,
+                },
+              },
+              {
+                binding: 13,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: extendedLightingResources.ltcLambertTextureView,
+                },
+              },
+              {
+                binding: 14,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: extendedLightingResources.ltcGgxTextureView,
+                },
+              },
+              {
+                binding: 15,
+                resource: {
+                  kind: 'buffer' as const,
+                  value: {
+                    buffer: extendedLightingResources.cookieMatrixBuffer,
+                    size: COOKIE_MATRIX_BYTES,
+                  },
+                },
+              },
+            ]
+          : []),
+        ...(lowLimitCloudBindings
+          ? []
+          : [
+              {
+                binding: 16,
+                resource: {
+                  kind: 'textureView' as const,
+                  value: cloudShadowView,
+                },
+              },
+            ]),
+        {
+          binding: 17,
+          resource: {
+            kind: 'sampler' as const,
+            value: pipelineState.viewLinearSampler ?? pipelineState.defaultSampler,
+          },
+        },
+        // feat-20260625-spot-light-shadow-mapping w25: the per-spot
+        // fragment-read lightViewProj matrices fold into the View UBO
+        // (binding 0, `view.spotLightViewProj`) — no standalone binding 9
+        // (WebGL2 fragment uniform-buffer budget). binding 10 is the
+        // dedicated vertex-only Points/Lines viewport UBO.
+      ];
+      const viewBindGroupResult = internals.device.createBindGroup({
+        label: 'pbr-view-bg',
+        layout: pipelineState.viewBindGroupLayout,
+        entries,
+      });
+      if (!viewBindGroupResult.ok) throw viewBindGroupResult.error;
+      return viewBindGroupResult.value;
+    },
+    bindGroupCounts,
+  );
+}
+
 /**
  * feat-20260704 M3/w18: per-frame bind-group cache resolution, extracted
  * verbatim from `recordFrame`. Walks the handle-identity WeakMap caches
@@ -217,15 +510,7 @@ export function buildPerFrameBindGroups(
   pipelineState: PipelineState,
   hasValidated: boolean,
   bindGroupCounts: BindGroupCounts,
-  graphTargets?: {
-    readonly directionalShadow?: TextureView | undefined;
-    readonly spotShadow?: TextureView | undefined;
-    readonly shadowMoments?: TextureView | undefined;
-    readonly cloudShadow?: TextureView | undefined;
-    readonly atmosphere?: AtmosphereViews | undefined;
-    readonly projector?: TextureView | undefined;
-    readonly projectorSampler?: import('@forgeax/engine-rhi').Sampler | undefined;
-  },
+  graphTargets?: ViewBindGroupTargets,
   includeView = true,
   standardLighting?: StandardTopologyInputValue,
 ): {
@@ -281,281 +566,21 @@ export function buildPerFrameBindGroups(
     // `getColorTargetView` returns undefined and we fall through to the
     // 1x1 fallback view that keeps the BGL satisfied.
     if (includeView) {
-      const shadowSampler = pipelineState.perPassResources.shadowSampler;
-      if (shadowSampler === null) {
-        return {
-          viewBindGroup: null,
-          meshBindGroup: null,
-          hdrpClusterBindGroup: null,
-          hdrpClusterMembershipBindGroup,
-        };
-      }
-      const graphShadowView = graphTargets?.directionalShadow;
-      const b3View =
-        graphShadowView !== undefined
-          ? graphShadowView
-          : pipelineState.shadowArrayFallbackTextureView;
-      // feat-20260612-point-light-shadows-urp-hdrp Round-2 F-1: bind the real
-      // ShadowAtlas cube_array view when point shadows are active in this
-      // frame; otherwise the 1x1x6 fallback (cleared to 1.0 = fully lit).
-      const pointShadowAtlas = frameState.pointShadowAtlas;
-      const atlasViewMaybe = pointShadowAtlas?.isAllocated()
-        ? pointShadowAtlas.getAtlasView()
-        : null;
-      const b5View =
-        atlasViewMaybe !== null ? atlasViewMaybe : pipelineState.shadowAtlasFallbackTextureView;
-      // feat-20260625-spot-light-shadow-mapping M2 / w21 (D-1 fragment side +
-      // D-5): bind the real spot shadow array view (graph-owned) when spot
-      // shadows run this frame; otherwise the depth-array fallback cleared to
-      // 1.0 (fully lit), the same `texture_depth_2d_array` shape as binding 3.
-      const graphSpotShadowView = graphTargets?.spotShadow;
-      const b8View =
-        graphSpotShadowView !== undefined
-          ? graphSpotShadowView
-          : pipelineState.shadowArrayFallbackTextureView;
-      const cloudShadowView = graphTargets?.cloudShadow ?? pipelineState.defaultWhiteTextureView;
-      const extendedLighting = pipelineState.extendedLightingAvailable ?? true;
-      const iesProfileTextureView = pipelineState.iesProfileTextureView;
-      const cookieTextureView = pipelineState.cookieTextureView;
-      const cookieMatrixBuffer = pipelineState.cookieMatrixBuffer;
-      const ltcLambertTextureView = pipelineState.ltcLambertTextureView;
-      const ltcGgxTextureView = pipelineState.ltcGgxTextureView;
-      const extendedLightingResources =
-        extendedLighting &&
-        iesProfileTextureView !== undefined &&
-        cookieTextureView !== undefined &&
-        cookieMatrixBuffer !== undefined &&
-        ltcLambertTextureView !== undefined &&
-        ltcGgxTextureView !== undefined
-          ? {
-              moments: graphTargets?.shadowMoments ?? cookieTextureView,
-              sampler: pipelineState.defaultSampler,
-              iesProfileTextureView,
-              cookieTextureView,
-              ltcLambertTextureView,
-              ltcGgxTextureView,
-              cookieMatrixBuffer,
-            }
-          : undefined;
-      if (extendedLighting && extendedLightingResources === undefined) {
-        return {
-          viewBindGroup: null,
-          meshBindGroup: null,
-          hdrpClusterBindGroup: null,
-          hdrpClusterMembershipBindGroup,
-        };
-      }
-      const projectorAvailable = pipelineState.projectorAvailable !== false;
-      const lowLimitCloudBindings = !extendedLighting && !projectorAvailable;
-      const b11View = graphTargets?.projector ?? pipelineState.defaultWhiteTextureView;
-      const b12Sampler = graphTargets?.projectorSampler ?? pipelineState.defaultSampler;
-      // The chain key is rebuilt into one retained array on every pass that
-      // binds the View group; entries are built only on a cache miss.
-      const keys = viewChainKeys;
-      keys.length = 0;
-      keys.push(pipelineState.viewUniformBuffer);
-      pushAtmosphereBindingResources(keys, pipelineState, graphTargets?.atmosphere);
-      keys.push(b3View, shadowSampler, b5View, pipelineState.shadowParamsBuffer, b8View);
-      if (extendedLightingResources !== undefined) {
-        keys.push(
-          extendedLightingResources.moments,
-          extendedLightingResources.sampler,
-          extendedLightingResources.iesProfileTextureView,
-          extendedLightingResources.cookieTextureView,
-          extendedLightingResources.ltcLambertTextureView,
-          extendedLightingResources.ltcGgxTextureView,
-          extendedLightingResources.cookieMatrixBuffer,
-        );
-      } else if (projectorAvailable) {
-        keys.push(b11View, b12Sampler);
-      }
-      keys.push(pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer);
-      if (!lowLimitCloudBindings)
-        keys.push(cloudShadowView, pipelineState.viewLinearSampler ?? pipelineState.defaultSampler);
-      viewBindGroup = getOrCreateFromChain(
-        frameState.viewBindGroupCache,
-        keys,
-        'view-main',
-        () => {
-          const entries: BindGroupEntry[] = [
-            ...atmosphereBindings(pipelineState, graphTargets?.atmosphere),
-            {
-              binding: 0,
-              resource: {
-                kind: 'buffer',
-                value: { buffer: pipelineState.viewUniformBuffer, size: VIEW_UNIFORM_BYTES },
-              },
-            },
-            {
-              binding: 3,
-              resource: {
-                kind: 'textureView',
-                value: b3View,
-              },
-            },
-            {
-              binding: 4,
-              resource: {
-                kind: 'sampler',
-                value: shadowSampler,
-              },
-            },
-            ...(internals.device.caps.storageBuffer
-              ? [
-                  {
-                    binding: 5,
-                    resource: { kind: 'textureView' as const, value: b5View },
-                  },
-                  {
-                    binding: 6,
-                    resource: {
-                      kind: 'buffer' as const,
-                      value: { buffer: pipelineState.shadowParamsBuffer },
-                    },
-                  },
-                ]
-              : []),
-            // feat-20260613-csm-cascaded-shadow-maps M5 / w28 (rebased to
-            // binding 7 on 2026-06-13 to make room for point-shadow 5/6):
-            // forward shaders declare binding 7 in common.wgsl (shared
-            // view BGL) but never reference it; only shadow_caster.wgsl
-            // reads it. Host writes a stable singleton buffer so every
-            // forward bind group entry stays populated.
-            {
-              binding: 7,
-              resource: {
-                kind: 'buffer',
-                value: { buffer: pipelineState.shadowCasterCascadeBuffer },
-              },
-            },
-            // feat-20260625-spot-light-shadow-mapping M3 / w21 (D-5):
-            // spot shadow 2D atlas (real spotShadowDepth view when spot
-            // shadows run this frame, else the 1x1 depth fallback). Always-on.
-            {
-              binding: 8,
-              resource: {
-                kind: 'textureView',
-                value: b8View,
-              },
-            },
-            {
-              binding: 10,
-              resource: {
-                kind: 'buffer',
-                value: {
-                  buffer: pipelineState.pointsLinesViewBuffer ?? pipelineState.viewUniformBuffer,
-                  size: POINTS_LINES_VIEW_BYTES,
-                },
-              },
-            },
-            ...(extendedLightingResources === undefined && projectorAvailable
-              ? [
-                  {
-                    binding: 11,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: b11View,
-                    },
-                  },
-                  {
-                    binding: 12,
-                    resource: {
-                      kind: 'sampler' as const,
-                      value: b12Sampler,
-                    },
-                  },
-                ]
-              : []),
-            ...(extendedLightingResources !== undefined
-              ? [
-                  {
-                    binding: 24,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: extendedLightingResources.moments,
-                    },
-                  },
-                  {
-                    binding: 9,
-                    resource: {
-                      kind: 'sampler' as const,
-                      value: extendedLightingResources.sampler,
-                    },
-                  },
-                  {
-                    binding: 11,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: extendedLightingResources.iesProfileTextureView,
-                    },
-                  },
-                  {
-                    binding: 12,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: extendedLightingResources.cookieTextureView,
-                    },
-                  },
-                  {
-                    binding: 13,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: extendedLightingResources.ltcLambertTextureView,
-                    },
-                  },
-                  {
-                    binding: 14,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: extendedLightingResources.ltcGgxTextureView,
-                    },
-                  },
-                  {
-                    binding: 15,
-                    resource: {
-                      kind: 'buffer' as const,
-                      value: {
-                        buffer: extendedLightingResources.cookieMatrixBuffer,
-                        size: COOKIE_MATRIX_BYTES,
-                      },
-                    },
-                  },
-                ]
-              : []),
-            ...(lowLimitCloudBindings
-              ? []
-              : [
-                  {
-                    binding: 16,
-                    resource: {
-                      kind: 'textureView' as const,
-                      value: cloudShadowView,
-                    },
-                  },
-                  {
-                    binding: 17,
-                    resource: {
-                      kind: 'sampler' as const,
-                      value: pipelineState.viewLinearSampler ?? pipelineState.defaultSampler,
-                    },
-                  },
-                ]),
-            // feat-20260625-spot-light-shadow-mapping w25: the per-spot
-            // fragment-read lightViewProj matrices fold into the View UBO
-            // (binding 0, `view.spotLightViewProj`) — no standalone binding 9
-            // (WebGL2 fragment uniform-buffer budget). binding 10 is the
-            // dedicated vertex-only Points/Lines viewport UBO.
-          ];
-          const viewBindGroupResult = internals.device.createBindGroup({
-            label: 'pbr-view-bg',
-            layout: pipelineState.viewBindGroupLayout,
-            entries,
-          });
-          if (!viewBindGroupResult.ok) throw viewBindGroupResult.error;
-          return viewBindGroupResult.value;
-        },
+      viewBindGroup = buildViewBindGroup(
+        internals,
+        frameState,
+        pipelineState,
         bindGroupCounts,
+        graphTargets,
       );
+      if (viewBindGroup === null) {
+        return {
+          viewBindGroup: null,
+          meshBindGroup: null,
+          hdrpClusterBindGroup: null,
+          hdrpClusterMembershipBindGroup,
+        };
+      }
     }
 
     // M3 / w10 (D-3 hard constraint): use the inner `.buffer` as the
@@ -898,6 +923,13 @@ function standardScreenTransportDemand(
   directionalLight: DirectionalLightSnapshot | undefined,
   renderables?: FrameList<RenderableSnapshot>,
 ): boolean {
+  const environment = frameState.environmentFrame?.source;
+  if (
+    !internals.device.caps.storageBuffer &&
+    environment?.kind === 'atmosphere' &&
+    !environment.atmosphere.backgroundOnly
+  )
+    return true;
   if (frameState.installedPipelineConfig?.ssao?.enabled === true) return true;
   if ((frameState.cameraStandardProfile ?? internals.standardProfile)?.renderPath === 'deferred')
     return false;
@@ -1550,7 +1582,9 @@ export function writeHdrpClusterAndSsaoBuffers(
   const gridY = prepared.layout.grid.y;
   const gridZ = prepared.layout.grid.z;
   const clusterGridBuf = prepared.clusterGrid;
-  const lightIndexListBuf = prepared.lightIndexList;
+  // A GPU producer rebuilds the list on the device; only CPU producers read
+  // (and so materialize) the host copy, before any falsify edit below.
+  const lightIndexListBuf = gpuMembership ? undefined : prepared.lightIndexList;
   const lightIndexCount = prepared.membershipEntryCount;
 
   if (prepared.local.some((local) => local.source === undefined)) {
@@ -1588,7 +1622,7 @@ export function writeHdrpClusterAndSsaoBuffers(
           local: prepared.local,
           projectorSlot: projectorLightSlotIndex,
           clusterGrid: clusterGridBuf,
-          lightIndices: lightIndexListBuf,
+          lightIndices: lightIndexListBuf ?? prepared.lightIndexList,
           lightIndexCount,
           slotLayout: reflectedAbi.directLightSlot,
         });
@@ -1642,7 +1676,7 @@ export function writeHdrpClusterAndSsaoBuffers(
         if (!clusterGridUpload.ok)
           return err(mapClusterUploadFailure('cluster-grid', clusterGridUpload.error));
 
-        if (!gpuMembership && lightIndexCount > 0) {
+        if (lightIndexListBuf !== undefined && lightIndexCount > 0) {
           const lightIndexListUpload = internals.device.queue.writeBuffer(
             hdrpBuffers.lightIndexListBuffer,
             0,

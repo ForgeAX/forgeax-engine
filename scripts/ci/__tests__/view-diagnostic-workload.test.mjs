@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { test } from 'node:test';
-import { runInNewContext } from 'node:vm';
+import { pathToFileURL } from 'node:url';
+import { constants, runInNewContext } from 'node:vm';
+import { installRuntimeVase } from '../../template-probes/game-3d/runtime-vase/install.mjs';
 import { reduceTestProject } from '../../test/reduce-test-project.mjs';
 import quality from '../../test/render-quality.json' with { type: 'json' };
 
@@ -15,14 +18,21 @@ const source = await readFile(
 const start = source.indexOf('async function prepareDiagnosticGameProject(');
 const end = source.indexOf('\ntry {\n for (const directory', start);
 assert.ok(start >= 0 && end > start);
-const prepare = runInNewContext(`${source.slice(start, end)}; prepareDiagnosticGameProject`, {
-  assert,
-  reduceTestProject,
-  cp,
-  readFile,
-  writeFile,
-  resolve,
-});
+const prepare = runInNewContext(
+  `${source.slice(start, end)}; prepareDiagnosticGameProject`,
+  {
+    assert,
+    reduceTestProject,
+    cp,
+    readFile,
+    writeFile,
+    resolve,
+    root: resolve('.'),
+    existsSync,
+    pathToFileURL,
+  },
+  { importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER },
+);
 const template = resolve('templates/game-3d');
 const viewIntegration = resolve('scripts/ci/run-view-integration.mjs');
 const viewPlan = (...args) =>
@@ -32,10 +42,20 @@ const viewPlan = (...args) =>
     }),
   );
 test('complete View owner receipts retain setup headroom inside four original jobs', async () => {
-  const receipt = JSON.parse(
-    await readFile(new URL('./fixtures/view-completed-42130885413.json', import.meta.url), 'utf8'),
-  );
-  assert.equal(Object.hasOwn(receipt.completedOwnerSeconds, 'modeling'), false);
+  const receipts = [
+    JSON.parse(
+      await readFile(
+        new URL('./fixtures/view-completed-42130885413.json', import.meta.url),
+        'utf8',
+      ),
+    ),
+    JSON.parse(
+      await readFile(new URL('./fixtures/view-partial-42955764870.json', import.meta.url), 'utf8'),
+    ),
+  ];
+  const [complete, partial] = receipts;
+  assert.equal(Object.hasOwn(complete.completedOwnerSeconds, 'modeling'), false);
+  assert.deepEqual(partial.uncompletedOwners, ['modeling']);
   const full = viewPlan('--dry-run').filter(([owner]) => owner !== 'prepare');
   const shards = Array.from({ length: 4 }, (_value, index) =>
     viewPlan('--shard', String(index), '--dry-run').filter(([owner]) => owner !== 'prepare'),
@@ -45,23 +65,29 @@ test('complete View owner receipts retain setup headroom inside four original jo
   assert.equal(new Set(owners.flat()).size, owners.flat().length);
   for (const owner of owners.flat())
     assert.ok(
-      Object.hasOwn(receipt.completedOwnerSeconds, owner) ||
-        Object.hasOwn(receipt.retainedOwnerSeconds, owner),
+      receipts.some(
+        (receipt) =>
+          Object.hasOwn(receipt.completedOwnerSeconds, owner) ||
+          Object.hasOwn(receipt.retainedOwnerSeconds, owner),
+      ),
       `complete owner requires a measured or retained forecast: ${owner}`,
     );
-  const finishes = owners.map((groups) =>
-    groups.reduce(
-      (sum, owner) =>
-        sum +
-        Math.max(
-          receipt.completedOwnerSeconds[owner] ?? 0,
-          receipt.retainedOwnerSeconds[owner] ?? 0,
-        ),
-      receipt.prepareSeconds + receipt.setupAndTransferReserveSeconds,
-    ),
+  const ownerSeconds = (owner) =>
+    Math.max(
+      ...receipts.flatMap((receipt) => [
+        receipt.completedOwnerSeconds?.[owner] ?? 0,
+        receipt.retainedOwnerSeconds?.[owner] ?? 0,
+      ]),
+    );
+  const finishes = owners.map(
+    (groups) =>
+      groups.reduce((sum, owner) => sum + ownerSeconds(owner), 0) +
+      Math.max(...receipts.map((receipt) => receipt.prepareSeconds)) +
+      Math.max(...receipts.map((receipt) => receipt.setupAndTransferReserveSeconds)),
   );
+  const jobBudgetSeconds = Math.min(...receipts.map((receipt) => receipt.jobBudgetSeconds));
   assert.ok(
-    Math.max(...finishes) <= receipt.jobBudgetSeconds,
+    Math.max(...finishes) <= jobBudgetSeconds,
     `complete owners must fit the unchanged 30-minute jobs: ${finishes}`,
   );
 });
@@ -78,7 +104,7 @@ test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner'
     { owner: 'diagnostics', shard: 3 },
   ]);
   assert.deepEqual(groupOwner('tools/view-plugins/integration/verify-modeling.mjs'), [
-    { owner: 'modeling', shard: 0 },
+    { owner: 'modeling', shard: 3 },
   ]);
   assert.equal(
     shards[3].filter(([owner]) => owner === 'diagnostics')[0][2][0],
@@ -91,9 +117,18 @@ test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner'
     'the complete Game 3D chain stays contiguous',
   );
   assert.equal(
-    shards[0].at(-1)[0],
+    shards[3].at(-1)[0],
     'modeling',
-    'Modeling runs after the complete live/cold language chain',
+    'Modeling runs after the complete diagnostic replay',
+  );
+  assert.deepEqual(
+    [
+      ...new Set(
+        shards[0].filter(([owner]) => owner.startsWith('runtime-')).map(([owner]) => owner),
+      ),
+    ].sort(),
+    ['runtime-js', 'runtime-ts'],
+    'both complete publication chains share the balanced contract/plugin shard',
   );
   assert.ok(viewPlan('--list-groups').includes('modeling'));
   assert.deepEqual(viewPlan('--list-shards'), [0, 1, 2, 3]);
@@ -230,66 +265,35 @@ async function files(root, prefix = '') {
 for (const lightweight of [false, true])
   test(`View diagnostic copies the complete formal project with lightweight=${lightweight}`, async () => {
     const root = await mkdtemp(resolve(tmpdir(), 'view-diagnostic-ci-test-'));
-    const originals = new Map();
+    const reference = await mkdtemp(resolve(tmpdir(), 'view-diagnostic-ci-reference-'));
+    const sources = new Map();
     for (const path of await files(resolve(template, 'assets')))
-      originals.set(path, await readFile(resolve(template, 'assets', path)));
+      sources.set(path, await readFile(resolve(template, 'assets', path)));
     try {
+      // The diagnostic project is the formal template plus the Engine's runtime vase probe.
+      await cp(resolve(template, 'assets'), resolve(reference, 'assets'), { recursive: true });
+      await installRuntimeVase(reference);
+      const originals = new Map();
+      for (const path of await files(resolve(reference, 'assets')))
+        originals.set(path, await readFile(resolve(reference, 'assets', path)));
       const manifest = await prepare(template, root, lightweight);
       assert.equal(manifest.id, 'template-game-3d');
       assert.deepEqual(await files(resolve(root, 'assets')), [...originals.keys()]);
-      for (const [path, bytes] of originals) {
+      for (const [path, bytes] of sources)
         assert.deepEqual(
           await readFile(resolve(template, 'assets', path)),
           bytes,
           'formal source remains immutable',
         );
+      for (const [path, bytes] of originals) {
         const copied = await readFile(resolve(root, 'assets', path));
-        if (lightweight && path === 'geometry.pack.ts') {
-          const geometry = copied.toString();
-          assert.ok(
-            geometry.includes(
-              `createSphereGeometry(0.9, ${quality.geometry.sphereWidth}, ${quality.geometry.sphereHeight})`,
-            ),
-          );
-          assert.ok(
-            geometry.includes(
-              `createCylinderGeometry(0.75, 0.9, 1, ${quality.geometry.cylinderSegments}, 1)`,
-            ),
-          );
-          assert.ok(
-            geometry.includes(
-              `createTorusGeometry(1, 0.24, ${quality.geometry.torusRadial}, ${quality.geometry.torusTubular})`,
-            ),
-          );
-          assert.deepEqual(
-            geometry.replace(/create(?:Sphere|Cylinder|Torus)Geometry\([^)]*\)/g, 'geometry'),
-            bytes
-              .toString()
-              .replace(/create(?:Sphere|Cylinder|Torus)Geometry\([^)]*\)/g, 'geometry'),
-            'all geometry identities and remaining authored content survive',
-          );
-        } else if (lightweight && path === 'fantasy-meshes.pack.ts') {
-          const geometry = copied.toString();
-          assert.deepEqual(
-            [...geometry.matchAll(/uSegments: (\d+),/g)].map((match) => +match[1]),
-            Array(3).fill(quality.geometry.surfaceU),
-          );
-          assert.deepEqual(
-            [...geometry.matchAll(/vSegments: (\d+),/g)].map((match) => +match[1]),
-            Array(3).fill(quality.geometry.surfaceV),
-          );
-          assert.equal(
-            geometry.replace(/([uv]Segments:) \d+,/g, '$1 reduced,'),
-            bytes.toString().replace(/([uv]Segments:) \d+,/g, '$1 reduced,'),
-            'all three surface kernels, double-sided topology and material slots survive',
-          );
-        } else {
+        {
           const expected =
             lightweight && path === 'scene.pack.ts'
               ? Buffer.from(
                   bytes
                     .toString()
-                    .replace(
+                    .replaceAll(
                       'DirectionalLight: {',
                       `DirectionalLight: {cascadeCount: ${quality.cascadeCount},mapSize: 128,`,
                     ),
@@ -301,6 +305,7 @@ for (const lightweight of [false, true])
       assert.equal(await readFile(resolve(root, 'forge.json'), 'utf8'), JSON.stringify(manifest));
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(reference, { recursive: true, force: true });
     }
   });
 
@@ -314,119 +319,62 @@ test('View diagnostic retains sixty ready frames and the original ninety-second 
   );
 });
 
-// RGB bands from the real 320x180 independent-game screenshot in SDK run
-// 37197385957 (6c8bfe7114): x=249 hits the HUD, x=2 sees authored sky.
+// RGB bands from a real 320x180 independent-game screenshot of the display atmosphere sky
+// (lightweight View integration on 2b4dea7c5) at the sampled rows 3 and 18.
 const capturedSkyBands = [
   {
     x: 2,
     bands: [
       [
         [
-          [126, 157, 188],
-          [126, 156, 188],
-          [126, 156, 188],
-          [126, 156, 187],
+          [167, 184, 192],
+          [166, 184, 191],
+          [167, 184, 192],
+          [166, 184, 192],
         ],
         [
-          [121, 150, 183],
-          [121, 150, 183],
-          [121, 150, 183],
-          [121, 150, 183],
+          [169, 184, 192],
+          [169, 184, 192],
+          [168, 184, 192],
+          [168, 185, 192],
         ],
         [
-          [115, 144, 178],
-          [115, 144, 177],
-          [115, 144, 177],
-          [115, 144, 177],
+          [170, 185, 192],
+          [170, 185, 192],
+          [170, 185, 192],
+          [169, 186, 191],
         ],
         [
-          [109, 138, 171],
-          [108, 138, 170],
-          [108, 138, 170],
-          [108, 137, 170],
-        ],
-      ],
-      [
-        [
-          [76, 100, 127],
-          [75, 100, 127],
-          [75, 100, 126],
-          [74, 100, 125],
-        ],
-        [
-          [69, 94, 117],
-          [69, 93, 117],
-          [70, 92, 117],
-          [69, 92, 116],
-        ],
-        [
-          [64, 85, 107],
-          [63, 85, 105],
-          [64, 84, 106],
-          [63, 83, 105],
-        ],
-        [
-          [58, 78, 95],
-          [58, 77, 95],
-          [58, 76, 95],
-          [57, 76, 94],
-        ],
-      ],
-    ],
-  },
-  {
-    x: 249,
-    bands: [
-      [
-        [
-          [18, 30, 46],
-          [18, 30, 46],
-          [18, 30, 46],
-          [18, 30, 46],
-        ],
-        [
-          [17, 29, 45],
-          [17, 29, 45],
-          [17, 29, 45],
-          [17, 29, 45],
-        ],
-        [
-          [17, 28, 45],
-          [17, 28, 45],
-          [17, 28, 45],
-          [17, 29, 45],
-        ],
-        [
-          [16, 28, 44],
-          [16, 28, 44],
-          [16, 28, 44],
-          [16, 28, 44],
+          [171, 186, 192],
+          [172, 186, 192],
+          [172, 186, 192],
+          [171, 186, 192],
         ],
       ],
       [
         [
-          [136, 126, 78],
-          [255, 223, 118],
-          [138, 127, 79],
-          [14, 24, 38],
+          [184, 178, 170],
+          [184, 178, 171],
+          [184, 178, 170],
+          [184, 178, 170],
         ],
         [
-          [24, 32, 40],
-          [100, 95, 66],
-          [35, 41, 44],
-          [92, 88, 63],
+          [183, 179, 170],
+          [184, 178, 170],
+          [184, 178, 171],
+          [184, 178, 170],
         ],
         [
-          [253, 221, 117],
-          [194, 172, 97],
-          [46, 50, 47],
-          [135, 125, 77],
+          [183, 179, 170],
+          [183, 179, 170],
+          [183, 179, 170],
+          [183, 179, 170],
         ],
         [
-          [137, 125, 78],
-          [244, 214, 114],
-          [196, 174, 97],
-          [131, 120, 76],
+          [184, 178, 170],
+          [184, 178, 170],
+          [183, 179, 170],
+          [184, 178, 170],
         ],
       ],
     ],
@@ -451,10 +399,10 @@ function screenshotPixels() {
     for (const [band, rows] of bands.entries())
       for (const [dy, row] of rows.entries())
         for (const [dx, rgb] of row.entries())
-          pixels.set([...rgb, 255], (([28, 36][band] + dy) * 320 + x + dx) * 4);
+          pixels.set([...rgb, 255], (([3, 18][band] + dy) * 320 + x + dx) * 4);
   return pixels;
 }
-test('real compact screenshot admits authored sky beside the HUD', async () => {
+test('real compact screenshot admits the authored atmosphere sky', async () => {
   await checkSky(screenshotPixels());
 });
 test('compact sky gate still rejects uniform blue clear-color fallback', async () => {

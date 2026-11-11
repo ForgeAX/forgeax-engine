@@ -5,6 +5,7 @@ import { isTemporalAntialias } from '../components/camera';
 import { projectedDecalTopology } from '../decals/graph';
 import { addAtmosphereBackground } from '../environment/background';
 import { recordAtmosphereCaptureBackground } from '../environment/capture';
+import { chromaticAberrationActive, outputLensEffectsActive } from '../features/lens-effects';
 import { isOutlinePostProcess } from '../features/outline/shaders';
 import { renderFeatureViewIdentity } from '../features/view';
 import { pmremExtent } from '../ibl/pmrem';
@@ -641,41 +642,61 @@ export function boundedReflectionProbeFilterWork(
   return state.work.slice(0, Math.max(0, state.maxStepsPerFrame));
 }
 
+/** Import the retained medium generation rather than the live display generation. */
+function importProbeAtmosphereTables(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  work: ReflectionProbeGraphWork,
+  clusters:
+    | import('../pipeline/standard-lighting/graph').StandardClusterGraphBuffers
+    | null
+    | undefined,
+): Result<
+  Record<string, import('@forgeax/engine-render-graph').GraphTextureView>,
+  RenderGraphError
+> {
+  const frozen = work.atmosphere;
+  const frozenViews: Record<string, import('@forgeax/engine-render-graph').GraphTextureView> = {};
+  if (frozen !== undefined) {
+    for (const [name, width, height, layers, mips, usage] of [
+      ['sky', 128, 128, 6, 1, 0x14],
+      ['irradiance', 16, 16, 6, 1, 0x14],
+      ['prefilter', 336, 256, 1, 1, 0x17],
+      ['distantSkyLight', 1, 1, 1, 1, 0x0c],
+      ['transmittance', 256, 64, 1, 1, 0x0c],
+      ['multipleScattering', 32, 32, 1, 1, 0x0c],
+    ] as const) {
+      const texture = builder.importTexture(
+        `reflection-probe.${work.probeIndex}.atmosphere.${name}`,
+        {
+          format: 'rgba16float',
+          size: { width, height, depthOrArrayLayers: layers },
+          mipLevelCount: mips,
+          usage: clusters?.kind === 'texture' ? (usage & ~0x08) | 0x10 : usage,
+        },
+        () => frozen[name],
+      );
+      if (!texture.ok) return texture;
+      const view = builder.view(texture.value, { dimension: layers === 6 ? 'cube' : '2d' });
+      if (!view.ok) return view;
+      frozenViews[name] = view.value;
+    }
+  }
+  return ok(frozenViews);
+}
+
 export function addReflectionProbeGraphPasses(
   builder: RenderGraphBuilder<RenderPipelineFrame>,
   state: ReflectionProbeGraphState,
   environmentCube?: import('../environment/ibl').GraphEnvironment,
   captureShadows?: import('../typed-shadow-passes').TypedShadowTargets,
+  clusters?: import('../pipeline/standard-lighting/graph').StandardClusterGraphBuffers | null,
 ): Result<readonly import('@forgeax/engine-render-graph').GraphAccess[], RenderGraphError> {
   const accesses: import('@forgeax/engine-render-graph').GraphAccess[] = [];
   for (const work of state.work) {
     const frozen = work.atmosphere;
-    const frozenViews: Record<string, import('@forgeax/engine-render-graph').GraphTextureView> = {};
-    if (frozen !== undefined) {
-      for (const [name, width, height, layers, mips, usage] of [
-        ['sky', 128, 128, 6, 1, 0x14],
-        ['irradiance', 16, 16, 6, 1, 0x14],
-        ['prefilter', 336, 256, 1, 1, 0x17],
-        ['distantSkyLight', 1, 1, 1, 1, 0x0c],
-        ['transmittance', 256, 64, 1, 1, 0x0c],
-        ['multipleScattering', 32, 32, 1, 1, 0x0c],
-      ] as const) {
-        const texture = builder.importTexture(
-          `reflection-probe.${work.probeIndex}.atmosphere.${name}`,
-          {
-            format: 'rgba16float',
-            size: { width, height, depthOrArrayLayers: layers },
-            mipLevelCount: mips,
-            usage,
-          },
-          () => frozen[name],
-        );
-        if (!texture.ok) return texture;
-        const view = builder.view(texture.value, { dimension: layers === 6 ? 'cube' : '2d' });
-        if (!view.ok) return view;
-        frozenViews[name] = view.value;
-      }
-    }
+    const tables = importProbeAtmosphereTables(builder, work, clusters);
+    if (!tables.ok) return tables;
+    const frozenViews = tables.value;
     const raw = builder.importTexture(
       `reflection-probe.${work.probeIndex}.raw`,
       {
@@ -758,6 +779,7 @@ export function addReflectionProbeGraphPasses(
           builder,
           { texture: raw.value, view: view.value, format: work.outputFormat, sampleCount: 1 },
           { directional: captureShadows.directional?.view },
+          { mode: 'full', clusters },
         );
         if (!prepared.ok) return prepared;
       }
@@ -825,7 +847,11 @@ export function addReflectionProbeGraphPasses(
             return resources.textureView(view).unwrap();
           };
           const neutralVolume = internal.pipelineState.atmosphereFallbackView;
-          if (frozen !== undefined && neutralVolume === undefined)
+          if (
+            frozen !== undefined &&
+            internal.runtime.device.caps.storageBuffer &&
+            neutralVolume === undefined
+          )
             throw new Error('Atmosphere capture requires the admitted View volume');
           if (frozen !== undefined && captureShadows === undefined) {
             recordAtmosphereCaptureBackground(
@@ -849,7 +875,7 @@ export function addReflectionProbeGraphPasses(
             );
           }
           const captureViews =
-            frozen === undefined
+            frozen === undefined || !internal.runtime.device.caps.storageBuffer
               ? undefined
               : {
                   distantSkyLight: captured('distantSkyLight'),
@@ -1721,7 +1747,8 @@ function cameraTopologyOf(
     bloom: standardBloomAdmitted(camera) ? 'on' : 'off',
     bloomIntensity: camera.bloomIntensity,
     outline: !clearOnly && camera.outline !== undefined,
-    lensEffects: !clearOnly && camera.lensEffects !== undefined,
+    lensEffects: !clearOnly && outputLensEffectsActive(camera.lensEffects),
+    chromaticAberration: !clearOnly && chromaticAberrationActive(camera.lensEffects),
     lensFlare: !clearOnly && camera.lensFlare !== undefined,
     barrelDistortion: !clearOnly && (camera.barrelDistortion?.strength ?? 0) > 0,
     ...(depthOfField === undefined ? {} : { depthOfField }),
@@ -3200,7 +3227,15 @@ export function compileTargetCaptureFrameGraph(
   );
   if (!topology.ok) throw topology.error;
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-  const buffers = importStandardClusterBuffers(graph, lighting);
+  const buffers = importStandardClusterBuffers(
+    graph,
+    lighting,
+    !internals.device.caps.storageBuffer &&
+      topology.value.atmosphere === true &&
+      topology.value.atmosphereBackgroundOnly !== true
+      ? { width: 0, height: 0, atmosphere: true }
+      : undefined,
+  );
   if (!buffers.ok) throw buffers.error;
   if (buffers.value !== null) {
     const membership = addStandardClusterMembershipPass(graph, lighting, buffers.value);
@@ -3215,6 +3250,7 @@ export function compileTargetCaptureFrameGraph(
           state,
           {
             shadows: shadows.value,
+            clusters: buffers.value,
             accesses: buffers.value === null ? [] : standardClusterReadAccesses(buffers.value),
           },
           undefined,
@@ -3225,7 +3261,13 @@ export function compileTargetCaptureFrameGraph(
             if (!encoded.ok) throw encoded.error;
           },
         )
-      : addReflectionProbeGraphPasses(graph, { work: [probe] }, undefined, shadows.value);
+      : addReflectionProbeGraphPasses(
+          graph,
+          { work: [probe] },
+          undefined,
+          shadows.value,
+          buffers.value,
+        );
   if (!targets.ok) throw targets.error;
   const compiled = graph.compile({
     device: internals.device,

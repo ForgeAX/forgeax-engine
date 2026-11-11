@@ -12,14 +12,18 @@ import { FRAME_START_SCAN_SYSTEM_NAME, INPUT_SNAPSHOT_RESOURCE_KEY, type InputSn
 import { quat, vec3 } from '@forgeax/engine/math';
 import { CharacterController, type PhysicsWorld } from '@forgeax/engine/physics';
 import type { Plugin } from '@forgeax/engine/plugin';
-import { Transform } from '@forgeax/engine/scene';
-import { cameraRelativeMove, facingYaw } from '../camera/third-person.ts';
+import { resetTransformInterpolation, Transform } from '@forgeax/engine/scene';
+import { cameraRelativeMove, facingYaw } from '../shared/third-person.ts';
 import { AssetGuid } from '@forgeax/engine/pack/guid';
 import { resolveGameEntity, type GameScene } from '../shared/scene-refs.ts';
-import { PLAYER_JOINT_NAMES, PLAYER_RIG, PLAYER_WALK_SECONDS, PLAYER_TRANSFORM_SECONDS, PLAYER_WHEEL_RADIUS, CONVOY_WHEELS, playerTargetPath } from './player-rig.ts';
-import { createPlayerInput, type PlayerInput } from './player-input.ts';
-
-const CAMERA_TARGET_HEIGHT = 0.5;
+import {
+  CONVOY_WHEELS, PLAYER_JOINT_NAMES, PLAYER_RIG, PLAYER_TRANSFORM_SECONDS, PLAYER_WALK_SECONDS,
+  PLAYER_WHEEL_RADIUS, playerTargetPath,
+} from '../shared/player-rig.ts';
+import {
+  PLAYER_STATE_CHANNEL, type Game3dPlayerService, type PlayerHudState, type PlayerInput,
+} from '../shared/player-protocol.ts';
+import { createPlayerInput } from './player-input.ts';
 
 export const ThirdPersonRig = defineComponent(
   'Game3dThirdPersonRig',
@@ -28,39 +32,11 @@ export const ThirdPersonRig = defineComponent(
     vehicleSpeed: { type: 'f32', default: 0 },
     yaw: { type: 'f32', default: 0 },
     pitch: { type: 'f32', default: (20 * Math.PI) / 180 },
-    focusX: { type: 'f32', default: 0 },
-    focusY: { type: 'f32', default: 0 },
-    focusZ: { type: 'f32', default: 0 },
     facingX: { type: 'f32', default: 0 },
     facingZ: { type: 'f32', default: -1 },
   },
   { transient: true },
 );
-
-export interface Game3dPlayerService {
-  readonly entity: EntityHandle;
-  readonly readInput: () => PlayerInput;
-  readonly readRig: () => {
-    readonly yaw: number;
-    readonly pitch: number;
-    readonly focusX: number;
-    readonly focusY: number;
-    readonly focusZ: number;
-  };
-  readonly updateRig: (patch: {
-    readonly yaw: number;
-    readonly pitch: number;
-    readonly focusX: number;
-    readonly focusY: number;
-    readonly focusZ: number;
-  }) => void;
-}
-
-declare module '@forgeax/engine/plugin' {
-  interface EngineContextServices {
-    game3dPlayer: Game3dPlayerService;
-  }
-}
 
 type SceneHost = NonNullable<import('@forgeax/engine/app').GameHost>;
 
@@ -82,7 +58,6 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
     if (host === undefined) throw new Error('game-3d/player requires the App-owned GameHost');
     const readDrawingBufferSize = host.drawingBufferSize?.bind(host);
     const player = resolveGameEntity(world, ctx.gameScene, 'player');
-    const playerTransform = world.get(player, Transform).unwrap();
     await ctx.effect(async function* () {
       const sampleInput = createPlayerInput();
       let frameInput: PlayerInput = { horizontal: 0, vertical: 0, lookX: 0, lookY: 0, run: false };
@@ -96,31 +71,30 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
       const lease = world.components.register(ThirdPersonRig).unwrap();
       yield () => lease.dispose().unwrap();
       world
-        .addComponent(player, {
-          component: ThirdPersonRig,
-          data: {
-            focusX: playerTransform.pos[0] ?? 0,
-            focusY: (playerTransform.pos[1] ?? 0) + CAMERA_TARGET_HEIGHT,
-            focusZ: playerTransform.pos[2] ?? 0,
-          },
-        })
+        .addComponent(player, { component: ThirdPersonRig, data: {} })
         .unwrap();
       yield () => world.removeComponent(player, ThirdPersonRig).unwrap();
+      const teleportListeners = new Set<() => void>();
       const playerService: Game3dPlayerService = {
         entity: player,
         readInput: () => frameInput,
-        readRig: () => {
+        readLook: () => {
           const rig = world.get(player, ThirdPersonRig).unwrap();
-          return {
-            yaw: rig.yaw,
-            pitch: rig.pitch,
-            focusX: rig.focusX,
-            focusY: rig.focusY,
-            focusZ: rig.focusZ,
-          };
+          return { yaw: rig.yaw, pitch: rig.pitch };
         },
-        updateRig: (patch) => {
-          world.set(player, ThirdPersonRig, patch).unwrap();
+        setLook: (look) => {
+          world.set(player, ThirdPersonRig, { yaw: look.yaw, pitch: look.pitch }).unwrap();
+        },
+        teleport: (position) => {
+          const physics = world.getResource<PhysicsWorld>('PhysicsWorld');
+          physics.teleport(player, vec3.create(position[0], position[1], position[2]));
+          world.set(player, ThirdPersonRig, { verticalVelocity: 0 }).unwrap();
+          resetTransformInterpolation(world, player);
+          for (const listener of teleportListeners) listener();
+        },
+        onTeleport: (listener) => {
+          teleportListeners.add(listener);
+          return () => teleportListeners.delete(listener);
         },
       };
       let vehicle = false, transformProgress = 0, wheelTime = 0;
@@ -154,7 +128,32 @@ const playerPlugin: Plugin.Object<PlayerConfig> = {
         },
       }).unwrap();
       yield () => world.removeSystem(Update, 'game-3d-player-input').unwrap();
-      installMovement(world, player, config, playerService.readInput, sampleInput.takeJump, () => transformProgress);
+      // Engine -> UI: the HUD only receives a small rounded snapshot, and only when it changes.
+      // Speed comes from the displacement physics actually applied in the last fixed step,
+      // so it is stable regardless of render frame rate and fixed-step count per frame.
+      const motion = { planarSpeed: 0 };
+      let lastHud = '';
+      world.addSystem(Update, {
+        name: 'game-3d-player-hud',
+        after: [FixedUpdate, 'game-3d-player-input'],
+        queries: [],
+        fn: () => {
+          const pos = world.get(player, Transform).unwrap().pos;
+          const controller = world.get(player, CharacterController);
+          const state: PlayerHudState = {
+            height: Math.round((pos[1] ?? 0) * 10) / 10,
+            speed: Math.round(motion.planarSpeed * 10) / 10,
+            grounded: controller.ok ? controller.value.grounded : true,
+            running: frameInput.run,
+          };
+          const key = JSON.stringify(state);
+          if (key === lastHud) return;
+          lastHud = key;
+          host.port?.postMessage({ channel: PLAYER_STATE_CHANNEL, state });
+        },
+      }).unwrap();
+      yield () => world.removeSystem(Update, 'game-3d-player-hud').unwrap();
+      installMovement(world, player, config, playerService.readInput, sampleInput.takeJump, () => transformProgress, motion);
       yield () => world.removeSystem(FixedUpdate, 'game-3d-player-movement').unwrap();
       const unregisterRead = host.gameProjection?.registerRead({
         id: 'game-3d.player',
@@ -254,7 +253,15 @@ function vehicleMotion(dt: number, speed: number, horizontal: number, vertical: 
   return { move, vehicleSpeed, distance: vehicleSpeed * dt };
 }
 
-function installMovement(world: World, player: EntityHandle, config: PlayerConfig, readInput: () => PlayerInput, takeJump: () => boolean, readTransform: () => number): void {
+function planarSpeed(applied: ArrayLike<number>, dt: number): number {
+  return Math.hypot(applied[0] ?? 0, applied[2] ?? 0) / dt;
+}
+
+function installMovement(
+  world: World, player: EntityHandle, config: PlayerConfig,
+  readInput: () => PlayerInput, takeJump: () => boolean, readTransform: () => number,
+  motion: { planarSpeed: number },
+): void {
   world
     .addSystem(FixedUpdate, {
       name: 'game-3d-player-movement',
@@ -282,7 +289,7 @@ function installMovement(world: World, player: EntityHandle, config: PlayerConfi
           verticalVelocity = config.jumpSpeed;
         verticalVelocity -= config.gravity * dt;
         if (controller.grounded && verticalVelocity < 0) verticalVelocity = -config.gravity * dt;
-        physics.moveAndSlide(
+        const applied = physics.moveAndSlide(
           player,
           vec3.create(
             move.x * distance,
@@ -290,6 +297,7 @@ function installMovement(world: World, player: EntityHandle, config: PlayerConfi
             move.z * distance,
           ),
         );
+        motion.planarSpeed = planarSpeed(applied, dt);
         if (world.get(player, CharacterController).unwrap().grounded && verticalVelocity < 0)
           verticalVelocity = 0;
         if (move.length > 0.001) {

@@ -10,10 +10,16 @@ const wasmHost: UiWasmHost = {
   instantiate: (imports) => WebAssembly.instantiate(wasm, imports as WebAssembly.Imports),
 };
 const [html, css, localization, font, controller] = await Promise.all([
-  readFile(new URL('../../../../templates/game-3d/assets/guide.ui.html', import.meta.url), 'utf8'),
-  readFile(new URL('../../../../templates/game-3d/assets/guide.ui.css', import.meta.url), 'utf8'),
   readFile(
-    new URL('../../../../templates/game-3d/assets/guide.ui.i18n.json', import.meta.url),
+    new URL('../../../../packages/ui/test-fixtures/game-guide/guide.ui.html', import.meta.url),
+    'utf8',
+  ),
+  readFile(
+    new URL('../../../../packages/ui/test-fixtures/game-guide/guide.ui.css', import.meta.url),
+    'utf8',
+  ),
+  readFile(
+    new URL('../../../../packages/ui/test-fixtures/game-guide/guide.ui.i18n.json', import.meta.url),
     'utf8',
   ),
   readFile(
@@ -23,7 +29,8 @@ const [html, css, localization, font, controller] = await Promise.all([
     ),
   ),
   import(
-    new URL('../../../../templates/game-3d/assets/ui/guide-controller.ts', import.meta.url).href
+    new URL('../../../../packages/ui/test-fixtures/game-guide/guide-controller.ts', import.meta.url)
+      .href
   ),
 ]);
 const cleanup: (() => void)[] = [];

@@ -256,7 +256,25 @@ export interface RenderFeatureHostInspection {
   };
 }
 
+/** Renderer-frame shared work; counters are separate from per-view Standard graph compiles. */
+export interface SharedFeatureGraphInspection {
+  readonly nativeFrames: number;
+  readonly fallbackFrames: number;
+  readonly emptyFrames: number;
+  readonly shellBuilds: number;
+  readonly shellReuses: number;
+  readonly encodeFailures: number;
+  readonly last: {
+    readonly frame: number;
+    readonly generation: number;
+    readonly route: 'none' | 'empty' | 'native-shell' | 'compiled-graph' | 'failed';
+    readonly receipt: 'empty' | 'compiled' | undefined;
+    readonly encoded: boolean;
+  };
+}
+
 export interface RenderFeatureGraphInspection {
+  readonly sharedFrame?: SharedFeatureGraphInspection;
   /** Initial candidate warm lookups only; final currentness rechecks do not inflate these totals. */
   readonly candidatePipelines?: import('./record/candidate-pipeline-preparation').CandidatePipelinePreparationInspection;
   /** Monotonic revision of the last completely validated feature plan set. */
@@ -653,6 +671,16 @@ export interface DirectionalShadowInspectionError {
 
 /** Bounded, detached Directional shadow facts for AI-readable inspection. */
 export interface DirectionalShadowInspection {
+  /** RenderCommit attempt identity, not GPU completion or a successful FrameReceipt. */
+  readonly settlement?: {
+    readonly scope: 'settled-view-record-attempt';
+    readonly renderAttempt: number;
+    /** Renderer-reserved observation identity; a rejected attempt need not issue this receipt. */
+    readonly observationFrameId: number | undefined;
+    readonly submitted: boolean;
+    readonly sceneSubmitted: boolean;
+    readonly accepted: boolean;
+  };
   readonly requested: DirectionalShadowProfile;
   readonly effective: DirectionalShadowEffectiveProfile;
   readonly status: 'accepted' | 'fallback' | 'rejected';

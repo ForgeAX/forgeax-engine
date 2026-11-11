@@ -16,7 +16,10 @@ import {
   BARREL_DISTORTION_POST_PROCESS_ID,
 } from '../features/barrel-distortion';
 import { addDepthOfFieldPasses } from '../features/depth-of-field/depth-of-field-feature';
-import { LENS_EFFECTS_POST_PROCESS_ID } from '../features/lens-effects';
+import {
+  CHROMATIC_ABERRATION_POST_PROCESS_ID,
+  LENS_EFFECTS_POST_PROCESS_ID,
+} from '../features/lens-effects';
 import { isLensFlarePostProcess, LENS_FLARE_POST_PROCESS_ID } from '../features/lens-flare';
 import { addLensFlarePasses } from '../features/lens-flare-graph';
 import { addMotionBlurPass } from '../features/motion-blur/motion-blur-feature';
@@ -491,6 +494,7 @@ function standardOutputFeatures(
     meter: topology.output?.autoExposure === true,
     bloom: !clearOnly && standardBloomAdmitted(topology.camera),
     dof: !clearOnly && camera.depthOfField !== undefined,
+    chromaticAberration: !clearOnly && camera.chromaticAberration === true,
     lensFlare: !clearOnly && camera.lensFlare === true,
     exposure: topology.output?.autoExposure === true,
     whiteBalance: topology.output?.whiteBalance === true,
@@ -513,6 +517,7 @@ function encodedPostEffects(
       !preTemporalEffects.includes(identity) &&
       identity !== BARREL_DISTORTION_POST_PROCESS_ID &&
       identity !== LENS_EFFECTS_POST_PROCESS_ID &&
+      identity !== CHROMATIC_ABERRATION_POST_PROCESS_ID &&
       !isOutlinePostProcess(identity) &&
       !isLensFlarePostProcess(identity) &&
       !isSmaaPostProcess(identity),
@@ -570,14 +575,24 @@ function lensCapabilityFailure(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   features: StandardOutputPlan['features'],
 ): RenderFeatureCapabilityMissingError | undefined {
-  if (!(features.barrelDistortion || features.lensEffects || features.lensFlare)) return undefined;
+  if (
+    !(
+      features.barrelDistortion ||
+      features.lensEffects ||
+      features.chromaticAberration ||
+      features.lensFlare
+    )
+  )
+    return undefined;
   if (context.capabilities?.rgba16floatRenderable === true) return undefined;
   return new RenderFeatureCapabilityMissingError(
     features.barrelDistortion
       ? BARREL_DISTORTION_FEATURE_IDENTITY
       : features.lensEffects
         ? LENS_EFFECTS_POST_PROCESS_ID
-        : LENS_FLARE_POST_PROCESS_ID,
+        : features.chromaticAberration
+          ? CHROMATIC_ABERRATION_POST_PROCESS_ID
+          : LENS_FLARE_POST_PROCESS_ID,
     0,
     'rgba16floatRenderable',
   );
@@ -885,7 +900,10 @@ function addSceneObservation(
   return addTypedFrameObservationPass(context.graph, scene);
 }
 
-/** Depth of field, Bloom and the lens flare filter the linear HDR image in order. */
+/**
+ * Depth of field, the scene color fringe, Bloom and the lens flare filter the
+ * linear HDR image in order.
+ */
 function addHdrLensStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
@@ -912,6 +930,13 @@ function addHdrLensStages(
     if (!dof.ok) return dof;
     postInput = dof.value;
   }
+  // UE fringes the scene color before Bloom is added and before tone mapping
+  // (PostProcessTonemap.usf:318-341, Bloom at :356-399 and :525-526).
+  if (route.features.chromaticAberration) {
+    const fringed = addChromaticAberrationStage(context, postInput);
+    if (!fringed.ok) return fringed;
+    postInput = fringed.value;
+  }
   // Bloom requires linear HDR intermediates independently of the selected output curve.
   if (route.hdr && route.features.bloom) {
     const bloom = addStandardBloom(context, topology, postInput);
@@ -929,6 +954,26 @@ function addHdrLensStages(
     postInput = flare.value;
   }
   return ok(postInput);
+}
+
+function addChromaticAberrationStage(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  postInput: RenderPipelineTarget,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const fringed = target(context, 'standard-chromatic-aberration', {
+    format: 'rgba16float',
+    size: 'surface',
+    domain: postInput.domain ?? 'linear-hdr',
+  });
+  if (!fringed.ok) return fringed;
+  const pass = addTypedFullscreenPass(context.graph, {
+    name: 'chromatic-aberration',
+    shader: CHROMATIC_ABERRATION_POST_PROCESS_ID,
+    input: postInput,
+    outputs: [fringed.value],
+  });
+  if (!pass.ok) return pass;
+  return ok(fringed.value);
 }
 
 function addStandardBloom(

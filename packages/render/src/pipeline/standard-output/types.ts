@@ -4,6 +4,7 @@ const STANDARD_OUTPUT_LOGICAL_STAGES = [
   'temporal',
   'meter',
   'dof',
+  'chromatic-aberration',
   'bloom',
   'lens-flare',
   'exposure-white-balance',
@@ -25,6 +26,8 @@ export interface StandardOutputRequest {
   readonly bloom: boolean;
   /** Built-in spatial DoF stage; false keeps the path exact-zero. */
   readonly dof?: boolean;
+  /** Radial scene color fringe before Bloom and tone mapping, as UE. */
+  readonly chromaticAberration?: boolean;
   /** Image-based ghosts from bright HDR pixels, after Bloom. */
   readonly lensFlare?: boolean;
   readonly exposure: boolean;
@@ -52,6 +55,7 @@ export interface StandardOutputPlan {
       | 'meter'
       | 'bloom'
       | 'dof'
+      | 'chromaticAberration'
       | 'lensFlare'
       | 'exposure'
       | 'whiteBalance'

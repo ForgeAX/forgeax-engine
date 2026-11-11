@@ -1,14 +1,9 @@
 /// <reference types="@webgpu/types" />
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { mat4 } from '@forgeax/engine-math';
 import { expect, it } from 'vitest';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-
-const source = (name: string) =>
-  readFileSync(new URL(`../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8').replace(
-    /^#.*$/gm,
-    '',
-  );
+import { nativeAtmosphereSource as source } from './atmosphere-shader.fixture';
 
 it('bounds production sky and RGB AP against 512-step transport across altitude, sun and the AP boundary', async () => {
   const common = source('common');
@@ -28,6 +23,7 @@ it('bounds production sky and RGB AP against 512-step transport across altitude,
     structs +
     '\n' +
     'fn atmosphere_scene_visibility(m:AtmosphereMedium,p:vec3<f32>)->f32{return 1.0;}' +
+    source('atmosphere-table-access') +
     source('atmosphere-optics') +
     '\n' +
     source('atmosphere-coordinates') +

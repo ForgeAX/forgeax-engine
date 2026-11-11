@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { commands } from 'vitest/browser';
+import { DEFAULT_RENDER_PIPELINE_CAPACITY } from '../src/execution/protocol';
 import { workerPolicyFixture as fixture } from './worker-policy.fixture';
 
 it('honors slow kernel startup with default workers, seals ordered frames, and preserves kernels across render replacement', async () => {
@@ -61,7 +62,7 @@ it('honors slow kernel startup with default workers, seals ordered frames, and p
     expect(report.kernelDispatch.completed).toBeGreaterThan(0);
     expect(
       (report.render?.submittedFrame ?? 0) - (report.render?.completedFrame ?? 0),
-    ).toBeLessThanOrEqual(2);
+    ).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
     phase = 'replacement-epoch';
     f.channel.port1.postMessage('terminate-render');
     await expect

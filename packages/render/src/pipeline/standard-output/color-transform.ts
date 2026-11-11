@@ -67,7 +67,20 @@ function sampleNearest(data: StandardColorLutData, x: number, y: number, z: numb
   ];
 }
 
-/** CPU reference for the fixed clamp-to-edge, texel-center trilinear LUT sample. */
+function linearToSrgb(value: number): number {
+  const v = Math.max(0, value);
+  return v <= 0.0031308 ? v * 12.92 : v ** 0.41666 * 1.055 - 0.055;
+}
+
+function srgbToLinear(value: number): number {
+  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
+/**
+ * CPU reference for the fixed clamp-to-edge trilinear LUT sample: the input is
+ * sRGB-encoded and mapped to texel centres (UE PostProcessCombineLUTs.usf:200-202),
+ * the sample decodes back to linear (:224) and strength blends in linear.
+ */
 export function sampleStandardColorLut(
   data: StandardColorLutData,
   rgb: StandardRgb,
@@ -76,9 +89,11 @@ export function sampleStandardColorLut(
 ): StandardRgba {
   if (!Number.isInteger(data.size) || data.size < 2) return [rgb[0], rgb[1], rgb[2], alpha];
   const size = data.size;
-  const coordinate = rgb.map((value) =>
-    Math.min(size - 1, Math.max(0, Math.min(1, value) * size - 0.5)),
-  ) as [number, number, number];
+  const coordinate = rgb.map((value) => linearToSrgb(Math.min(1, value)) * (size - 1)) as [
+    number,
+    number,
+    number,
+  ];
   const base = coordinate.map(Math.floor) as [number, number, number];
   const fraction: [number, number, number] = [
     coordinate[0] - base[0],
@@ -106,6 +121,8 @@ export function sampleStandardColorLut(
       }
     }
   }
+  for (let channel = 0; channel < 3; channel += 1)
+    sampled[channel] = srgbToLinear(sampled[channel] ?? 0);
   const amount = Math.min(1, Math.max(0, strength));
   return [
     rgb[0] + (sampled[0] - rgb[0]) * amount,

@@ -6,7 +6,7 @@
 // lightViewProj[4], splitPlanes[4], cascadeCount, cascadeBlend.
 //
 // feat-20260827-directional-csm-pcss-quality M1: the View UBO keeps its
-// fixed 1280 B View payload and slot while the directional filter carrier
+// fixed 1296 B View payload (1536 B slot) while the directional filter carrier
 // reuses the tail pad. The directional cascade
 // offsets [0..128] are byte-for-byte UNCHANGED; the per-spot fragment-read
 // `spotLightViewProj` array<mat4x4<f32>,4> (256 B) folded into the tail at
@@ -14,7 +14,7 @@
 // standalone @group(0) binding 9 uniform buffer that overflowed the WebGL2
 // fallback fragment uniform-buffer budget.
 //
-// Layout (1280 B View payload and slot; the directional prefix remains
+// Layout (1296 B View payload, 1536 B slot; the directional prefix remains
 // byte-compatible with the 784 B Spot-matrix boundary):
 //   [  0.. 16) worldViewProj   mat4x4<f32>  (align 16, size 64)
 //   [ 16.. 19) lightDir        vec3<f32>    (align 16, 12 + 4 pad)
@@ -79,19 +79,19 @@ const SPLIT_STRIDE_FLOATS = 4;
 
 describe('View UBO std140 layout (w14)', () => {
   describe('size invariants', () => {
-    it('UBO total size is 1280 B (320 f32)', () => {
-      expect(VIEW_UBO_FLOAT_COUNT).toBe(320);
+    it('UBO total size is 1296 B (324 f32)', () => {
+      expect(VIEW_UBO_FLOAT_COUNT).toBe(324);
       expect(VIEW_UBO_BYTES).toBe(VIEW_UBO_FLOAT_COUNT * F32_BYTES);
-      expect(VIEW_UBO_BYTES).toBe(1280);
+      expect(VIEW_UBO_BYTES).toBe(1296);
     });
 
     it('UBO size is fixed — independent of cascadeCount', () => {
-      // The host always allocates 1280 B regardless of whether cascadeCount
+      // The host always allocates 1296 B regardless of whether cascadeCount
       // is 1, 2, 3, or 4 at runtime. This validates AC-08.
       const sizeForN1 = VIEW_UBO_FLOAT_COUNT * F32_BYTES; // cascadeCount=1
       const sizeForN4 = VIEW_UBO_FLOAT_COUNT * F32_BYTES; // cascadeCount=4
       expect(sizeForN1).toBe(sizeForN4);
-      expect(sizeForN1).toBe(1280);
+      expect(sizeForN1).toBe(1296);
     });
 
     it('spotLightViewProj array lands at byte 528 (float 132), 16 B-aligned, last field', () => {
@@ -238,8 +238,8 @@ describe('directional filter carrier tail-pad wiring (M1-T05)', () => {
     expect(OFFSET_DEPTH_BIAS).toBeGreaterThan(OFFSET_CASCADE_BLEND);
     expect(OFFSET_DIRECTIONAL_FILTER + 4).toBe(OFFSET_SPOT_LIGHT_VIEW_PROJ);
     expect(OFFSET_DIRECTIONAL_FILTER).toBeLessThan(OFFSET_SPOT_LIGHT_VIEW_PROJ);
-    expect(VIEW_UBO_FLOAT_COUNT).toBe(320);
-    expect(VIEW_UBO_BYTES).toBe(1280);
+    expect(VIEW_UBO_FLOAT_COUNT).toBe(324);
+    expect(VIEW_UBO_BYTES).toBe(1296);
   });
 
   it('record writes the merged shadow tail-pad floats [126]/[127]/[128..131]', () => {
@@ -255,7 +255,7 @@ describe('directional filter carrier tail-pad wiring (M1-T05)', () => {
   it('record carries the folded spot matrices in the complete View UBO payload (w25)', () => {
     // feat-20260625 w25: the per-spot fragment-read lightViewProj matrices fold
     // into the View UBO tail. The current View struct also carries temporal and
-    // cloud projection, clipping, fog and atmosphere fields, so the payload is 320 floats.
+    // cloud projection, clipping, fog, atmosphere and sky-fog fields, so the payload is 324 floats.
     expect(recordSrc).toMatch(/VIEW_PAYLOAD_FLOATS\s*=\s*VIEW_UNIFORM_BYTES \/ 4/);
     // The spot matrix array is written at base float 132.
     expect(recordSrc).toMatch(/SPOT_LVP_BASE_FLOAT\s*=\s*132/);

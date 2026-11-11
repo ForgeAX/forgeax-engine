@@ -379,6 +379,7 @@ export interface GpuDrivenPrepareInput {
   readonly capsuleShadowDirectional?: boolean;
   /** One-cascade Vogel receiver: forward colour pipelines take the simple Standard variant. */
   readonly directionalShadowSimple?: boolean;
+  readonly leanLighting?: boolean;
   /** Entity keys admitted by the persistent visibility facet for this view. */
   readonly activeEntityKeys?: ReadonlySet<number>;
   /** Collision-free renderer-owned revision for the active visibility set. */
@@ -1666,9 +1667,8 @@ export class GpuDrivenProduction {
     const discardSignature = frame.viewClippingLive
       ? `|view-clipping${frame.input.camera.clipping?.caps === true ? '-caps' : ''}`
       : '';
-    // The simple-receiver (and bound LEAN_LIGHTING) row is fixed into the
-    // projected pipelines, so a frame that flips it must not reuse the graph.
-    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}`;
+    // Both independent lighting facts are fixed into the projected pipelines.
+    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}${input.directionalShadowSimple === true && input.leanLighting === true ? '|lean' : ''}`;
     const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${variantSignature}`;
     const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${variantSignature}`;
 
@@ -2086,6 +2086,7 @@ export class GpuDrivenProduction {
       preparationFactory: frame.input.materialPipelinePreparationFactory,
       visibleSurface: frame.input.visibleSurface !== undefined,
       directionalShadowSimple: frame.input.directionalShadowSimple === true,
+      leanLighting: frame.input.leanLighting === true,
     };
   }
 
@@ -2107,17 +2108,16 @@ export class GpuDrivenProduction {
               fragmentEntryPoint,
               coverageOnly = false,
               sampleCount = projected.target.sampleCount,
+              seededDepth = false,
             ) =>
-              this.registerPipelinePreparation(
-                projected,
-                preparationJobs,
-                preparationFactory,
+              this.registerPipelinePreparation(projected, preparationJobs, preparationFactory, {
                 formats,
                 filter,
                 fragmentEntryPoint,
                 coverageOnly,
                 sampleCount,
-              ),
+                seededDepth,
+              }),
             preparePipelines: (entries = [], artifacts, onPending, materials) =>
               runPipelinePreparations(preparationJobs, entries, artifacts, onPending, materials),
           }
@@ -2153,6 +2153,7 @@ export class GpuDrivenProduction {
         fragmentEntryPoint,
         coverageOnly = false,
         phase = 'all',
+        seededDepth = false,
       ) =>
         this.encodeProjected(
           projected,
@@ -2164,6 +2165,7 @@ export class GpuDrivenProduction {
           fragmentEntryPoint,
           coverageOnly,
           phase,
+          seededDepth,
         ),
     };
   }
@@ -2173,13 +2175,24 @@ export class GpuDrivenProduction {
     projected: ProjectedRasterGraph,
     jobs: Map<string, PipelinePreparationJob>,
     factory: MaterialPipelineFactory,
-    formats: readonly TextureFormat[],
-    filter: RenderPipelineGpuDrivenFilter | undefined,
-    fragmentEntryPoint: string | undefined,
-    coverageOnly: boolean,
-    sampleCount: 1 | 4,
+    pass: {
+      readonly formats: readonly TextureFormat[];
+      readonly filter: RenderPipelineGpuDrivenFilter | undefined;
+      readonly fragmentEntryPoint: string | undefined;
+      readonly coverageOnly: boolean;
+      readonly sampleCount: 1 | 4;
+      readonly seededDepth: boolean;
+    },
   ): void {
-    const key = JSON.stringify([formats, filter, fragmentEntryPoint, coverageOnly, sampleCount]);
+    const { formats, filter, fragmentEntryPoint, coverageOnly, sampleCount, seededDepth } = pass;
+    const key = JSON.stringify([
+      formats,
+      filter,
+      fragmentEntryPoint,
+      coverageOnly,
+      sampleCount,
+      seededDepth,
+    ]);
     if (jobs.has(key)) return;
     // Classes may join a compiled stock graph; select pipelines from the
     // current live batches whenever that set is replaced.
@@ -2193,7 +2206,7 @@ export class GpuDrivenProduction {
         const batch = this.classFor(projected, live, filter, fragmentEntryPoint);
         if (batch !== undefined)
           selected.set(
-            selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly),
+            selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly, seededDepth),
             batch.artifact,
           );
       }
@@ -2234,6 +2247,7 @@ export class GpuDrivenProduction {
           filter,
           fragmentEntry: fragmentEntryPoint,
           coverageOnly,
+          seededDepth,
           visibleSurface: frame.input.visibleSurface !== undefined,
           viewClipping: frame.viewClippingLive,
           ...(onPending === undefined ? {} : { onPending }),
@@ -2260,6 +2274,7 @@ export class GpuDrivenProduction {
     fragmentEntryPoint: string | undefined,
     coverageOnly: boolean,
     phase: GpuDrivenDrawPhase,
+    seededDepth: boolean,
   ): void {
     const { target } = projected;
     const region = phase === 'late' ? requireLateRegion(projected) : undefined;
@@ -2273,7 +2288,7 @@ export class GpuDrivenProduction {
       descriptor === undefined
         ? undefined
         : this.rasterPasses.prepare(
-            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}`,
+            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}${seededDepth ? '/seeded' : ''}`,
             descriptor,
           );
     const bindings = new IndirectPassBindings(pass, viewBindGroup, descriptor, bundlePass);
@@ -2288,6 +2303,7 @@ export class GpuDrivenProduction {
       filter,
       fragmentEntryPoint,
       coverageOnly,
+      seededDepth,
       phase,
       colorFormats,
       sampleCount,
@@ -2324,7 +2340,14 @@ export class GpuDrivenProduction {
     viewBindGroup: BindGroup,
     bundlePass: PreparedRasterPass | undefined,
   ): RetainedEncode | undefined {
-    const { frameResources, fragmentEntryPoint, coverageOnly, colorFormats, formatKey } = call;
+    const {
+      frameResources,
+      fragmentEntryPoint,
+      coverageOnly,
+      seededDepth,
+      colorFormats,
+      formatKey,
+    } = call;
     if (
       !projected.target.rendererRecording ||
       bindings.direct ||
@@ -2363,7 +2386,12 @@ export class GpuDrivenProduction {
       (slot) => materialOwner(frameResources.prepareMaterialBinding(slot)),
       (cls) => {
         const batch = cls as ProjectedRasterClass;
-        const pipelineFor = selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly);
+        const pipelineFor = selectRasterPipeline(
+          batch,
+          fragmentEntryPoint,
+          coverageOnly,
+          seededDepth,
+        );
         const pipeline = pipelineFor(colorFormats, formatKey, false, call.sampleCount);
         const mesh = this.resolveMeshGroup(projected, call, bindings, batch);
         return classOwner(pipeline, mesh);
@@ -2493,6 +2521,7 @@ export class GpuDrivenProduction {
       batch,
       call.fragmentEntryPoint,
       call.coverageOnly,
+      call.seededDepth,
     )(call.colorFormats, call.formatKey, false, call.sampleCount);
     if (!selectedPipeline.ok) throw selectedPipeline.error;
     bindings.bindPipeline(selectedPipeline.value);
@@ -3162,6 +3191,8 @@ export class GpuDrivenProduction {
   ): boolean {
     if (!sameShadowProjectionLayout(previousSource.plan, plan)) return false;
     if (!this.shadowRowsRetained(pass, previousProjections, previousSource, plan)) return false;
+    // The same rows against the same execution table are each retained.
+    if (previousSource.plan === plan && previousSource.executions === pass.executions) return true;
     return plan.batches.every((batch, index) =>
       sameShadowExecution(batch, index, previousSource, previousProjections, pass.executions),
     );

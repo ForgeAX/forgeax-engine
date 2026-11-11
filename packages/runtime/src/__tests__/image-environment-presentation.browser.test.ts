@@ -427,7 +427,8 @@ it.each([
         renderer.inspect().temporal.epoch,
         'pending draws retain accepted camera history',
       ).toBe(acceptedEpoch);
-      expect(renderer.inspect().directionalShadow.error).toBeUndefined();
+      const shadow = renderer.inspect().directionalShadow;
+      expect(shadow.error, JSON.stringify(shadow)).toBeUndefined();
       if (vfx !== undefined)
         expect(renderer.inspect().featureDiagnostics).toContainEqual(
           expect.objectContaining({

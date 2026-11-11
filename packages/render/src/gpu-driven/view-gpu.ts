@@ -1,4 +1,3 @@
-import { mat4 } from '@forgeax/engine-math';
 import type {
   ComputeGraphPass,
   GraphBuffer,
@@ -78,6 +77,7 @@ import {
   type PreparedRasterCounters,
   PreparedRasterPass,
 } from './prepared-raster-bundle';
+import { invertLightViewProjection } from './production-raster-camera';
 import { admittedRasterBatchCount, SHADOW_LOD_COARSEST } from './production-raster-lod';
 import { suppressionPatchOf } from './production-raster-prepare';
 import {
@@ -87,6 +87,8 @@ import {
 import { SKIN_BOUNDS_WGSL } from './skin-bounds.wgsl';
 import { type SkinDemandLayout, skinDemandLayout, writeSkinDemandConstants } from './skin-demand';
 import { SKIN_DEMAND_WGSL } from './skin-demand.wgsl';
+
+export { invertLightViewProjection } from './production-raster-camera';
 
 const COMPUTE_STAGE = 0x4;
 const WORKGROUP_SIZE = 64;
@@ -103,39 +105,6 @@ const OCCLUSION_STATE_OFFSET = OCCLUSION_CONSTANTS_OFFSET + 64 + 16;
 const OCCLUSION_STATE_BYTES = 32;
 const SHADOW_CAMERA_CULL_OFFSET = OCCLUSION_STATE_OFFSET + OCCLUSION_STATE_BYTES;
 
-/**
- * Light NDC to world, or undefined when the light matrix has no usable inverse.
- * `mat4.invert` treats |det| < 1e-8 as singular and returns identity, which a
- * kilometre-wide orthographic cascade reaches; scaling the world axes first
- * keeps the determinant near one, and the round trip rejects a truly singular
- * matrix so the kernel never builds a receiver prism in the wrong space.
- *
- * @internal
- */
-export function invertLightViewProjection(
-  lightViewProjection: Float32Array,
-): Float32Array | undefined {
-  let scale = 0;
-  for (let index = 0; index < 12; index += 1) {
-    if (index % 4 !== 3) scale = Math.max(scale, Math.abs(lightViewProjection[index] as number));
-  }
-  if (!(scale > 0 && Number.isFinite(scale))) return undefined;
-  const scaled = mat4.create();
-  scaled.set(lightViewProjection.subarray(0, 16));
-  for (let index = 0; index < 12; index += 1) scaled[index] = (scaled[index] as number) / scale;
-  const inverse = mat4.invert(mat4.create(), scaled);
-  const product = mat4.multiply(mat4.create(), scaled, inverse);
-  for (let index = 0; index < 16; index += 1) {
-    const expected = index % 5 === 0 ? 1 : 0;
-    if (!(Math.abs((product[index] as number) - expected) <= 1e-4)) return undefined;
-  }
-  for (let row = 0; row < 3; row += 1) {
-    for (let column = 0; column < 4; column += 1) {
-      inverse[column * 4 + row] = (inverse[column * 4 + row] as number) / scale;
-    }
-  }
-  return inverse;
-}
 // Pyramid camera, light view-projection and inverse, dilation and enable.
 const SHADOW_CAMERA_CULL_BYTES = 80 + 64 + 64 + 16;
 const SKIN_CONSTANTS_OFFSET = SHADOW_CAMERA_CULL_OFFSET + SHADOW_CAMERA_CULL_BYTES;
@@ -1589,12 +1558,36 @@ const ROW_LOOKAHEAD = 8;
 const MEMBER_ADDRESS_OFFSET = 48;
 const encodedTopologies = new WeakMap<GpuScene, WeakMap<SubmissionPlan, EncodedViewTopology>>();
 
+/** A read frame resolves each root once, so views sharing a template share its patched result. */
+const patchedByFrame = new WeakMap<
+  GpuInputReadFrame,
+  WeakMap<EncodedViewTopology, EncodedViewTopology>
+>();
+
 /**
  * Patch the current physical member roots into a topology template. The
  * template stays shared until an address differs; fixed task plans cache
  * their patched copy for the scene.
  */
 function patchMemberAddresses(
+  plan: SubmissionPlan,
+  scene: GpuScene,
+  inputs: GpuInputReadFrame,
+  template: EncodedViewTopology,
+): EncodedViewTopology {
+  let frameResults = patchedByFrame.get(inputs);
+  const shared = frameResults?.get(template);
+  if (shared !== undefined) return shared;
+  if (frameResults === undefined) {
+    frameResults = new WeakMap();
+    patchedByFrame.set(inputs, frameResults);
+  }
+  const patched = patchTemplateAddresses(plan, scene, inputs, template);
+  frameResults.set(template, patched);
+  return patched;
+}
+
+function patchTemplateAddresses(
   plan: SubmissionPlan,
   scene: GpuScene,
   inputs: GpuInputReadFrame,
@@ -1778,6 +1771,8 @@ export class GpuDrivenView {
   private readonly viewData = new DataView(this.viewBytes);
   private readonly viewUpload = new Uint8Array(this.viewBytes);
   private candidateCapacity = 0;
+  /** Stable-order records address flattened executions, not shared member storage. */
+  private orderCandidateCapacity = 0;
   private sceneRef: GpuScene | undefined;
   /** Canonical memberships of the last accepted topology stay encoded for its successor. */
   private memberHolds: { readonly topology: EncodedViewTopology; readonly release: () => void }[] =
@@ -2273,9 +2268,11 @@ export class GpuDrivenView {
     // so the visible address space exceeds the logical candidate count.
     // Never let it inflate candidate/LOD-row storage allocations.
     const capacities = deriveGpuDrivenViewBufferCapacities(plan);
+    const orderCandidateCapacity = nextCapacity(plan.candidateCount);
     if (
       !structureGrows &&
       capacities.candidate <= this.candidateCapacity &&
+      orderCandidateCapacity <= this.orderCandidateCapacity &&
       capacities.visible <= this.visibleBufferCapacity &&
       capacities.batch <= this.batchCapacity &&
       capacities.indirect <= this.indirectCapacity
@@ -2291,6 +2288,7 @@ export class GpuDrivenView {
       skinJointCapacity,
       skinCandidateCapacity,
       lateMirror,
+      orderCandidateCapacity,
     );
     return rebuilt.ok ? ok(true) : rebuilt;
   }
@@ -2346,7 +2344,8 @@ export class GpuDrivenView {
     if (before !== undefined) {
       const next = new Uint32Array(bytes.buffer, bytes.byteOffset, end);
       const old = new Uint32Array(before.buffer, before.byteOffset, before.byteLength / 4);
-      while (start < Math.min(end, old.length) && next[start] === old[start]) start++;
+      const common = Math.min(end, old.length);
+      while (start < common && next[start] === old[start]) start++;
       while (end > start && end <= old.length && next[end - 1] === old[end - 1]) end--;
     }
     const size = (end - start) * 4;
@@ -3624,7 +3623,9 @@ export class GpuDrivenView {
     return this.skinCounterBase() + (this.skinLayout?.counterWords ?? 0);
   }
   private countersBytes(): number {
-    return (this.orderBase() + orderScratchWords(this.batchCapacity, this.candidateCapacity)) * 4;
+    return (
+      (this.orderBase() + orderScratchWords(this.batchCapacity, this.orderCandidateCapacity)) * 4
+    );
   }
   private visibleBytes(): number {
     return (
@@ -3825,8 +3826,12 @@ export class GpuDrivenView {
     skinJointCapacity = this.skinJointCapacity,
     skinCandidateCapacity = this.skinLayout?.candidateCapacity ?? candidateCapacity,
     lateMirror = this.lateMirror,
+    orderCandidateCapacity = this.orderCandidateCapacity,
   ): Result<void, RhiError> {
     const nextCandidate = nextCapacity(candidateCapacity);
+    const nextOrderCandidate = nextCapacity(
+      Math.max(orderCandidateCapacity, this.orderCandidateCapacity),
+    );
     const nextSuppression = Math.max(nextCapacity(suppressionWords), this.suppressionWordCapacity);
     const nextBatch = nextCapacity(batchCapacity);
     const nextIndirect = nextCapacity(indirectCapacity);
@@ -3905,7 +3910,7 @@ export class GpuDrivenView {
           nextBatch * COUNTER_STRIDE +
           nextSuppression * 2 * 4 +
           (skinLayout?.counterWords ?? 0) * 4 +
-          orderScratchWords(nextBatch, nextCandidate) * 4,
+          orderScratchWords(nextBatch, nextOrderCandidate) * 4,
         usage: storage | GPU_BUFFER_USAGE_COPY_DST,
         storage: true,
       },
@@ -3997,6 +4002,7 @@ export class GpuDrivenView {
     this.encodedTopology = undefined;
     this.surfaceRows = undefined;
     this.candidateCapacity = nextCandidate;
+    this.orderCandidateCapacity = nextOrderCandidate;
     this.visibleBufferCapacity = nextVisible;
     this.lateMirror = lateMirror;
     this.batchCapacity = nextBatch;

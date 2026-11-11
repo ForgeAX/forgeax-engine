@@ -12,6 +12,7 @@ import type {
 import {
   deriveStandardLayerPlan,
   MATERIAL_PARALLAX_HINTS,
+  RenderQueue,
   STANDARD_DISPLACEMENT_MODES,
   STANDARD_MATERIAL_PARAM_SCHEMA,
   type StandardDisplacementMode,
@@ -173,6 +174,16 @@ export class MaterialTransmissionContractError extends Error {
 export const SPRITE_PREMULTIPLIED_ALPHA_BLEND: GPUBlendState = {
   color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+};
+
+/**
+ * Additive light: UE `BLEND_Additive` (colour One + One). With premultiplied
+ * output the draw adds `color * opacity` and leaves destination alpha unchanged,
+ * so the result does not depend on draw order.
+ */
+export const ADDITIVE_BLEND: GPUBlendState = {
+  color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+  alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
 };
 
 const UNLIT_MODULE = 'forgeax_material::unlit';
@@ -455,6 +466,12 @@ interface UnlitOpts {
   readonly shadowAlphaMode?: 'material' | 'texture';
   /** Output alpha is independent of the sampled coverage used by depth/shadows. */
   readonly alphaMode?: 'preserve' | 'opaque' | 'premultiplied';
+  /**
+   * `'additive'` (UE `BLEND_Additive`, Three `AdditiveBlending`): `ADDITIVE_BLEND`,
+   * no depth write, Transparent queue and premultiplied output. Explicit
+   * `renderState` fields, `queue` and `alphaMode` override these defaults.
+   */
+  readonly blendMode?: 'additive';
   readonly renderState?: MaterialRenderState;
   readonly queue?: number;
 }
@@ -470,8 +487,9 @@ function unlitMaterial(
   factory: 'unlit' | 'matcap' | 'normal',
   rgba: MaterialColorInput4,
   shading: (typeof UNLIT_SHADING)[keyof typeof UNLIT_SHADING],
-  opts?: UnlitOpts,
+  authored?: UnlitOpts,
 ): MaterialRootAsset {
+  const opts = authored?.blendMode === 'additive' ? additiveUnlitOpts(authored) : authored;
   if (opts?.alphaCutoff !== undefined && (opts.alphaCutoff < 0 || opts.alphaCutoff > 1)) {
     throw new Error(`Materials.${factory}: alphaCutoff must be in [0, 1], got ${opts.alphaCutoff}`);
   }
@@ -497,6 +515,15 @@ function unlitMaterial(
     passes,
     parameters: unlitMaterialParameters('linear'),
     values,
+  };
+}
+
+function additiveUnlitOpts(opts: UnlitOpts): UnlitOpts {
+  return {
+    ...opts,
+    alphaMode: opts.alphaMode ?? 'premultiplied',
+    renderState: { blend: ADDITIVE_BLEND, depthWriteEnabled: false, ...opts.renderState },
+    queue: opts.queue ?? RenderQueue.Transparent,
   };
 }
 
@@ -696,8 +723,9 @@ export interface CustomStandardSurfaceOptions {
    * built-in `planarReflection` does: the material gains the real u32 field and
    * shades forward while a capture is published (deferred, so an SSR receiver,
    * otherwise). The Surface's per-pixel `normalWS` distorts the mirror
-   * lookup by `PlanarReflection.distortion`, and its `roughness` fades the mirror
-   * into the prefiltered environment, or blurs it through the mip chain when the
+   * lookup by `PlanarReflection.distortion` (a world-space sphere radius), and
+   * its `roughness` fades the mirror into the prefiltered environment, or blurs
+   * it through the mip chain when the
    * capture has `generateMipmaps` (wet-ground ripples and puddles).
    */
   readonly planarReflection?: boolean;

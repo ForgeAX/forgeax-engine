@@ -96,10 +96,11 @@ app.start().unwrap();
 
 Import browser construction from `@forgeax/engine/app/browser`; the root `app` entry requires an explicit borrowed `platform`, `renderer`, and `world`. The browser entry creates its World, renderer, default plugins, browser input backend, and frame loop. `app.start()` only arms the browser loop after the factory Result is successful.
 
-CSS-sized drawing buffers use `canvasPixelRatio: 1` by default, matching
-Three.js `setPixelRatio(1)`. Set `canvasPixelRatio: window.devicePixelRatio` to
-request the browser's device scale explicitly. App does not follow device pixel
-ratio or adjust resolution automatically for device performance. Render's
+CSS-sized drawing buffers default to a 720-pixel short side on Android and iOS
+browsers, preserving the canvas aspect ratio without multiplying by DPR. Desktop
+browsers default to one physical pixel per CSS pixel. An explicit
+`canvasPixelRatio` overrides either default; use `1` for CSS resolution or
+`window.devicePixelRatio` for device resolution. Render's
 authored `DynamicResolution` remains a separate opt-in. Device texture limits
 still clamp the resulting physical extent proportionally.
 
@@ -426,6 +427,8 @@ Pointer-lock FPS / mouse look (reference: `templates/game-3d/assets/camera/camer
   gate for about one second after a loss instead of relying on the refusal.
 - A refusal is `app-pointer-lock-failed`, recoverable: the game keeps running unlocked
   and the next click retries. Never route it to a fatal handler.
+- A game crosshair must admit touch gameplay as well as pointer lock; touch mode
+  does not acquire a mouse pointer lock.
 - Desktop touch overlays (look pad, virtual stick) must not cover the canvas under the
   cursor, or they swallow the locking click; hide them unless the last pointer was touch.
 

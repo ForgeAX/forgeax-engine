@@ -67,6 +67,36 @@ describe('device-safe browser drawing buffer', () => {
     expect([canvas.width, canvas.height]).toEqual([1800, 1050]);
   });
 
+  it.each([
+    [390, 844, 720, 1558],
+    [844, 390, 1558, 720],
+    [1080, 2400, 720, 1600],
+  ])('defaults mobile %sx%s to a 720-pixel short side', (width, height, outWidth, outHeight) => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (Linux; Android 15) Mobile' });
+    vi.stubGlobal('devicePixelRatio', 3);
+    const canvas = surface(width, height);
+    setCanvasDeviceLimit(canvas, 8192);
+    expect(measureCanvasDrawingBuffer(canvas)).toEqual({ width: outWidth, height: outHeight });
+    for (let frame = 0; frame < 3; frame++) syncCanvasDrawingBuffer(canvas);
+    expect([canvas.width, canvas.height]).toEqual([outWidth, outHeight]);
+    expect(measureCanvasDrawingBuffer(canvas, 1)).toEqual({ width, height });
+    syncCanvasDrawingBuffer(canvas, undefined, 1);
+    expect([canvas.width, canvas.height]).toEqual([width, height]);
+  });
+
+  it('uses the mobile policy for host display facts across orientation changes', () => {
+    vi.stubGlobal('navigator', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)' });
+    const canvas = surface(390, 844);
+    expect(measureCanvasDrawingBuffer(canvas, undefined, { width: 844, height: 390 })).toEqual({
+      width: 1558,
+      height: 720,
+    });
+    setCanvasDeviceLimit(canvas, 1024);
+    syncCanvasDrawingBuffer(canvas);
+    expect(Math.max(canvas.width, canvas.height)).toBe(1024);
+    expect(Math.abs(canvas.width / canvas.height - 390 / 844)).toBeLessThan(0.002);
+  });
+
   it('honors per-canvas render budgets in landscape and portrait layouts', () => {
     vi.stubGlobal('devicePixelRatio', 2);
     const landscape = budgetedSurface(3840, 2160, 1920, 1080);

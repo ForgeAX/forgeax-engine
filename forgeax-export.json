@@ -3,14 +3,14 @@
   "policy": "engine-public-source/1",
   "producerSha256": "f72b8d6a6bae95f6732acb6db6e72ecc12a6226f7c376666dcbf3b3c7e6ec778",
   "release": {
-    "version": "0.6.0-dev.16819.da838431b202",
+    "version": "0.6.0-dev.16820.3a19bf3506bf",
     "channel": "next",
-    "candidateSha256": "212709eeaff16635e36e90363ad7c1237804f0d8b67227faee94b32614dddd8f"
+    "candidateSha256": "9072c2be716db50367438566d0c68610361e1d548f1343f583b5e7c6e7f39b48"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "da838431b2023d250fc4e1d500cced91b7b349ae"
+      "commit": "3a19bf3506bf85f5cdb6b51d4f056431739fd98d"
     },
     {
       "root": "forgeax-engine-assets",
@@ -293,6 +293,7 @@
       "scripts/ci/__tests__/prepare-assets-checkout.test.mjs",
       "scripts/ci/__tests__/prepare-view-checkout.test.mjs",
       "scripts/forgeax/__tests__/sdk-documentation-ownership.test.mjs",
+      "scripts/forgeax/__tests__/sdk-pr-preflight.test.mjs",
       "scripts/forgeax/build-sdk.mjs",
       "scripts/forgeax/material-witness-fixtures/builtin.pack.json",
       "scripts/forgeax/material-witness-fixtures/consumer.pack.json",
@@ -24892,9 +24893,9 @@
     },
     {
       "path": "config/function-complexity-baseline.json",
-      "bytes": 101859,
+      "bytes": 101788,
       "executable": false,
-      "sha256": "9b819b9f185e15b57553a7f4b0f7287118b3b7e0b3245d9cba5c5e2b3c8ff37a"
+      "sha256": "9db06b2f1d0ac2484b6b9898f721463670597f945f04cefd69238148a4fd8718"
     },
     {
       "path": "config/jscpd.json",
@@ -28972,9 +28973,9 @@
     },
     {
       "path": "packages/app/README.md",
-      "bytes": 112860,
+      "bytes": 112963,
       "executable": false,
-      "sha256": "1ae62af4ecebef9371afae29de9333ebe49a16a4ce5e2cdd8ffe6378e8286c54"
+      "sha256": "ecb5850373b3d3e7f374eeaf46d61a98b61290dbb142bcfc8c1be1b942fa73c4"
     },
     {
       "path": "packages/app/schema/execution-report.schema.json",
@@ -29044,9 +29045,9 @@
     },
     {
       "path": "packages/app/src/__tests__/canvas-sizing.test.ts",
-      "bytes": 16062,
+      "bytes": 17511,
       "executable": false,
-      "sha256": "1cb44f8182f55e4125fc29ec025ea2cebae500e004f0b46e253913c2755fa5b8"
+      "sha256": "593b48d5892ade0a04ac51f7f26d7bd441b6a30e3bc5cb8572b01d72f81a780a"
     },
     {
       "path": "packages/app/src/__tests__/component-introspection.unit.test.ts",
@@ -29848,9 +29849,9 @@
     },
     {
       "path": "packages/app/src/canvas-sizing.ts",
-      "bytes": 8635,
+      "bytes": 8805,
       "executable": false,
-      "sha256": "79c9a09822aee9234a491285d567ed750d278cf154ba2b1e9070ac3f2c4ac6cb"
+      "sha256": "60ea9d26d5ddaf96b0e3df340d28445858c4bbf7d0398d4f1048797e352e6c33"
     },
     {
       "path": "packages/app/src/create-app.ts",
@@ -30286,9 +30287,9 @@
     },
     {
       "path": "packages/app/src/types.ts",
-      "bytes": 25869,
+      "bytes": 25893,
       "executable": false,
-      "sha256": "9b2ec58f67cf68472c81856eef4d6304c46dacec4b477818732a12b21c057123"
+      "sha256": "f67ef583ce56b6cb6423b19a9ccb42bc5a61c2141c41621ee44761530106172b"
     },
     {
       "path": "packages/app/src/workspace-asset-authoring.ts",
@@ -39802,9 +39803,9 @@
     },
     {
       "path": "packages/import/README.md",
-      "bytes": 69568,
+      "bytes": 69962,
       "executable": false,
-      "sha256": "83c56f274280a25678393a9ce71f89de5a1940a57cccbb7050b4100ad1d627e3"
+      "sha256": "e4b084004122fd1e917d343cc0397682e574ea5ceac7e756ce518a221488a8c1"
     },
     {
       "path": "packages/import/src/__tests__/browser-package-build.integration.test.ts",
@@ -40078,9 +40079,9 @@
     },
     {
       "path": "packages/import/src/__tests__/scriptable-pack-product-cache.integration.test.ts",
-      "bytes": 40933,
+      "bytes": 42048,
       "executable": false,
-      "sha256": "c9a5a46dfd0c064c92de971e266bb79c6528d43f7b78b8f9525e7ad7e53a837c"
+      "sha256": "5b5154f8fa3ce08881aa6dab34f7fb078f9be125d1a510a60cb6f4b6fa828fba"
     },
     {
       "path": "packages/import/src/__tests__/scriptable-pack-production-generation.test.ts",
@@ -40366,9 +40367,9 @@
     },
     {
       "path": "packages/import/src/scriptable-pack-product-cache.ts",
-      "bytes": 33222,
+      "bytes": 36120,
       "executable": false,
-      "sha256": "adcffe873005019ea94f982e263b510992c61322bd410f9a7346cf6fc393a844"
+      "sha256": "f168b587bbd0f83fe3464220efecc23618e286a7789757fe3557cc2582617fa2"
     },
     {
       "path": "packages/import/src/scriptable-pack-staged-snapshot.ts",
@@ -75195,6 +75196,12 @@
       "sha256": "38473e1eb01cb16cee3dde9ffb6fc24491261e9a5349e1267c32fda06be1b563"
     },
     {
+      "path": "packages/shader/src/__tests__/artifact-meta-equal.unit.test.ts",
+      "bytes": 5280,
+      "executable": false,
+      "sha256": "cec514f527dafed1624568993b6084aa40bf6100c33384e02262a12c4b30e21d"
+    },
+    {
       "path": "packages/shader/src/__tests__/atmosphere-background.test.ts",
       "bytes": 1791,
       "executable": false,
@@ -76216,9 +76223,9 @@
     },
     {
       "path": "packages/shader/src/material/artifact-registry.ts",
-      "bytes": 8246,
+      "bytes": 11345,
       "executable": false,
-      "sha256": "7b035ca4c68da30e94e957f3f76975711981048a4494f17045a671d9de051b9b"
+      "sha256": "6590d38fb288d34967a9da8c8858c271d4a8a85cb4fb3d248b1af46b633a9b9a"
     },
     {
       "path": "packages/shader/src/material/artifact-types.ts",
@@ -85378,9 +85385,9 @@
     },
     {
       "path": "scripts/ci/__tests__/ci-repair-qualification.test.mjs",
-      "bytes": 34811,
+      "bytes": 37428,
       "executable": false,
-      "sha256": "e7b451cf6400e2023c68c70c62c4136dd685d3988993e7d7b2adf26fab4d86d0"
+      "sha256": "e603b67f74d065c3b7a72de86972504f858124a4bd336891524d0281fcceb857"
     },
     {
       "path": "scripts/ci/__tests__/ci-runtime-bounds.test.mjs",
@@ -86481,10 +86488,16 @@
       "sha256": "5409ed43d52bf9788c2a55e4cdfe9b6051492757033c661bff9ad22416e4712f"
     },
     {
-      "path": "scripts/ci/ci-repair-qualification.mjs",
-      "bytes": 23067,
+      "path": "scripts/ci/ci-repair-artifacts.mjs",
+      "bytes": 6531,
       "executable": false,
-      "sha256": "d172fb7d71ecb745db5c58361daf35923a6469a3d982cb461bc70523a50098b9"
+      "sha256": "e4be1a521065ebcb4699c1881093da1a3247eadd0bf3b94712b0c7c5a9f6e038"
+    },
+    {
+      "path": "scripts/ci/ci-repair-qualification.mjs",
+      "bytes": 23521,
+      "executable": false,
+      "sha256": "6b094d0abd95beb06e913959905cf8f4a9f89b64ae2aa436b9af5afa3bef6fe3"
     },
     {
       "path": "scripts/ci/coverage-completed-child-seconds.json",
@@ -86974,9 +86987,9 @@
     },
     {
       "path": "scripts/ci/webgpu-compatibility-surface.json",
-      "bytes": 224088,
+      "bytes": 224603,
       "executable": false,
-      "sha256": "3f23e1c49e3ecd4ef32b58f17312245e00eaf0690077e9e476a79851663e24ec"
+      "sha256": "58a707d2c62c7fef6a872f5340bbccd5d698a1a65a9c533039a4a3bcf3789044"
     },
     {
       "path": "scripts/ci/with-apt-ubuntu-sources.sh",
@@ -87364,9 +87377,9 @@
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-pr-preflight.test.mjs",
-      "bytes": 32296,
+      "bytes": 38394,
       "executable": false,
-      "sha256": "988eb9c9c8e230a2cdc470910a0258e5172c18bebb73d9d9b036a57dd70dd556"
+      "sha256": "a11d6c715cb7754e4509c0580086d12438f651f0b86778ca9d46e01e3f8dbc97"
     },
     {
       "path": "scripts/forgeax/__tests__/sdk-project-identity.test.mjs",
@@ -87844,9 +87857,9 @@
     },
     {
       "path": "scripts/forgeax/sdk-pr-preflight.mjs",
-      "bytes": 6187,
+      "bytes": 11446,
       "executable": false,
-      "sha256": "9b9b6235f3b4bb0f01d74911da2da95658a9e8f226f703eaaf50b7adb028e62e"
+      "sha256": "ff1a4a982e69ef9250896b82f7c6c6c909d6c13ea7ee0c9826b9a431cdc2d9f2"
     },
     {
       "path": "scripts/forgeax/sdk-process-launch.regression.mjs",
@@ -89110,9 +89123,9 @@
     },
     {
       "path": "skills/forgeax-engine-app/SKILL.md",
-      "bytes": 24557,
+      "bytes": 24731,
       "executable": false,
-      "sha256": "eec0845950aa75de2d99658e8a2930b0ac0e68ca4414324807e40bb93ae0c449"
+      "sha256": "b1a3af520848b0c5083bf93177a55224711f9b64c68fbaeea65114689d4a4955"
     },
     {
       "path": "skills/forgeax-engine-assets/SKILL.md",
@@ -89158,9 +89171,9 @@
     },
     {
       "path": "skills/forgeax-engine-debug/SKILL.md",
-      "bytes": 144757,
+      "bytes": 145596,
       "executable": false,
-      "sha256": "2655f97a3e708adc645b8ffacf905b1af44aa4576b9a5395a79d367763aae5d6"
+      "sha256": "7c7b6210f64c2057bcacb70a4cf8a4337bf61597873eb14ef579446280693bfd"
     },
     {
       "path": "skills/forgeax-engine-ecs/SKILL.md",

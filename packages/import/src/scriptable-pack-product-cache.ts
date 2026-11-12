@@ -20,6 +20,7 @@ import type {
   ScriptablePackDependencyResolver,
 } from './scriptable-pack-build-core.js';
 
+// Format 11 removes allocator-dependent grouping of disjoint Buffer-pool views.
 // Format 10 clears unobserved pooled storage and normalizes V8 string storage.
 // Format 9 keeps typed-array backing buffers independent of the serialized Pack.
 // DefaultSerializer restores small views into the whole Pack buffer; per-output
@@ -55,7 +56,7 @@ async function contentDependencyFailure(
   return undefined;
 }
 
-const CACHE_SCHEMA = 'scriptable-pack-product/10';
+const CACHE_SCHEMA = 'scriptable-pack-product/11';
 const PRODUCT_ARTIFACT = 'product.v8.br';
 const LEGACY_CACHE_SCHEMAS = [] as const;
 const KINDS_SCHEMA = 'scriptable-pack-product-kinds/1';
@@ -95,34 +96,109 @@ function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
   });
 }
 
-/** Retain every reachable view and alias while discarding unobserved storage tails. */
-function productBufferLengths(product: unknown): WeakMap<ArrayBufferLike, number> {
-  const lengths = new WeakMap<ArrayBufferLike, number>();
+interface ProductBufferGroup {
+  readonly start: number;
+  readonly end: number;
+  buffer?: ArrayBuffer;
+}
+
+interface ProductBufferLayout {
+  readonly groupsByView: WeakMap<object, ProductBufferGroup>;
+  readonly groupsByBuffer: WeakMap<ArrayBufferLike, ProductBufferGroup>;
+}
+
+function isArrayBufferLike(value: object): value is ArrayBufferLike {
+  return (
+    value instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)
+  );
+}
+
+function viewAlignment(value: ArrayBufferView): number {
+  if (value instanceof DataView) return 1;
+  return (value.constructor as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+}
+
+/** Keep overlapping aliases while removing incidental Node Buffer-pool grouping. */
+function productBufferLayout(product: unknown): ProductBufferLayout {
+  const viewsByBuffer = new Map<ArrayBufferLike, ArrayBufferView[]>();
+  const explicitBuffers = new Set<ArrayBufferLike>();
   const visited = new WeakSet<object>();
   const visit = (value: unknown): void => {
     if (value === null || typeof value !== 'object' || visited.has(value)) return;
     visited.add(value);
     if (ArrayBuffer.isView(value)) {
-      lengths.set(
-        value.buffer,
-        Math.max(lengths.get(value.buffer) ?? 0, value.byteOffset + value.byteLength),
-      );
-    } else if (value instanceof ArrayBuffer) {
-      lengths.set(value, value.byteLength);
+      const views = viewsByBuffer.get(value.buffer);
+      if (views === undefined) viewsByBuffer.set(value.buffer, [value]);
+      else views.push(value);
+    } else if (isArrayBufferLike(value)) {
+      explicitBuffers.add(value);
     } else if (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype) {
       for (const child of Object.values(value)) visit(child);
     }
   };
   visit(product);
-  return lengths;
+
+  const groupsByView = new WeakMap<object, ProductBufferGroup>();
+  const groupsByBuffer = new WeakMap<ArrayBufferLike, ProductBufferGroup>();
+  const makeGroup = (start: number, end: number): ProductBufferGroup => ({ start, end });
+  for (const [buffer, views] of viewsByBuffer) {
+    if (explicitBuffers.has(buffer) || buffer.byteLength !== Buffer.poolSize) {
+      const end = explicitBuffers.has(buffer)
+        ? buffer.byteLength
+        : views.reduce((maximum, view) => Math.max(maximum, view.byteOffset + view.byteLength), 0);
+      const whole = makeGroup(0, end);
+      groupsByBuffer.set(buffer, whole);
+      for (const view of views) groupsByView.set(view, whole);
+      continue;
+    }
+
+    // Small Buffer allocations may share Node's 8 KiB pool. Disjoint views
+    // have no shared visible bytes, so retain only actual overlaps and rebase
+    // each group to an element-aligned zero offset.
+    const sorted = [...views].sort(
+      (left, right) => left.byteOffset - right.byteOffset || left.byteLength - right.byteLength,
+    );
+    let current: ArrayBufferView[] = [];
+    let currentEnd = -1;
+    const publish = (): void => {
+      if (current.length === 0) return;
+      const first = current[0];
+      if (first === undefined) return;
+      const minimum = first.byteOffset;
+      const alignment = Math.max(...current.map(viewAlignment));
+      const start = Math.floor(minimum / alignment) * alignment;
+      const end = current.reduce(
+        (maximum, view) => Math.max(maximum, view.byteOffset + view.byteLength),
+        start,
+      );
+      const overlap = makeGroup(start, end);
+      for (const view of current) groupsByView.set(view, overlap);
+      current = [];
+      currentEnd = -1;
+    };
+    for (const view of sorted) {
+      if (current.length > 0 && (view.byteLength === 0 || view.byteOffset >= currentEnd)) publish();
+      current.push(view);
+      currentEnd = Math.max(currentEnd, view.byteOffset + view.byteLength);
+    }
+    publish();
+  }
+  for (const buffer of explicitBuffers) {
+    if (!groupsByBuffer.has(buffer)) groupsByBuffer.set(buffer, makeGroup(0, buffer.byteLength));
+  }
+  return { groupsByView, groupsByBuffer };
 }
 
 function productBinaryCopier(
   product: unknown,
 ): (value: ArrayBufferView | ArrayBuffer) => { value: object; digest?: string } {
   const bytesByDigest = new Map<string, Uint8Array[]>();
-  const backingBuffers = new WeakMap<ArrayBufferLike, ArrayBuffer>();
-  const bufferLengths = productBufferLengths(product);
+  const layout = productBufferLayout(product);
+  const outputBuffer = (group: ProductBufferGroup): ArrayBuffer => {
+    if (group.buffer === undefined) group.buffer = new ArrayBuffer(group.end - group.start);
+    return group.buffer;
+  };
   return (value) => {
     if (ArrayBuffer.isView(value)) {
       const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
@@ -130,9 +206,12 @@ function productBinaryCopier(
         value instanceof Uint8Array
           ? `${value.constructor.name}:${createHash('sha256').update(bytes).digest('hex')}`
           : undefined;
-      let buffer = backingBuffers.get(value.buffer);
-      // Intern complete byte bodies only. Partial views retain their offsets
-      // and backing identity with every other view in the product graph.
+      const group = layout.groupsByView.get(value);
+      if (group === undefined) throw new Error('product-buffer-layout-view-missing');
+      let buffer = group.buffer;
+      const offset = value.byteOffset - group.start;
+      // Intern complete byte bodies only. Ordinary ArrayBuffers retain their
+      // aliases; Buffer-pool views retain only overlapping byte aliases.
       const complete = value.byteOffset === 0 && value.byteLength === value.buffer.byteLength;
       const matches = digest === undefined ? undefined : bytesByDigest.get(digest);
       const existing =
@@ -140,27 +219,22 @@ function productBinaryCopier(
           ? matches?.find((candidate) => Buffer.compare(candidate, bytes) === 0)
           : undefined;
       if (existing !== undefined) {
-        backingBuffers.set(value.buffer, existing.buffer as ArrayBuffer);
+        group.buffer = existing.buffer as ArrayBuffer;
         const shared = { value: existing, digest: `bytes:${digest}` };
         return shared;
       }
-      if (buffer === undefined) {
-        // Preserve observable offsets and aliases, but leave storage outside
-        // all reachable views zeroed instead of serializing pooled garbage.
-        buffer = new ArrayBuffer(bufferLengths.get(value.buffer) ?? value.buffer.byteLength);
-        backingBuffers.set(value.buffer, buffer);
-      }
-      new Uint8Array(buffer, value.byteOffset, value.byteLength).set(bytes);
+      buffer ??= outputBuffer(group);
+      new Uint8Array(buffer, offset, value.byteLength).set(bytes);
       const View = value.constructor as new (
         buffer: ArrayBuffer,
         offset: number,
         length: number,
       ) => ArrayBufferView;
       const canonical = Buffer.isBuffer(value)
-        ? Buffer.from(buffer, value.byteOffset, value.byteLength)
+        ? Buffer.from(buffer, offset, value.byteLength)
         : new View(
             buffer,
-            value.byteOffset,
+            offset,
             value instanceof DataView
               ? value.byteLength
               : (value as Exclude<ArrayBufferView, DataView> & { length: number }).length,
@@ -175,16 +249,11 @@ function productBinaryCopier(
       };
       return shared;
     }
-    {
-      let buffer = backingBuffers.get(value);
-      if (buffer === undefined) {
-        buffer = new ArrayBuffer(value.byteLength);
-        backingBuffers.set(value, buffer);
-      }
-      new Uint8Array(buffer).set(new Uint8Array(value));
-      const shared = { value: buffer };
-      return shared;
-    }
+    const group = layout.groupsByBuffer.get(value);
+    if (group === undefined) throw new Error('product-buffer-layout-buffer-missing');
+    const buffer = outputBuffer(group);
+    new Uint8Array(buffer).set(new Uint8Array(value, group.start, group.end - group.start));
+    return { value: buffer };
   };
 }
 

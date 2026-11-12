@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewReason": "Preview smoke installs its runtime-vase test overlay for both full-quality and lightweight copies, while authored quality and deadlines remain unchanged. Regression and full-quality native browser journey passed. Prior main review retained: Frame credit on own GPU completion (PR 5094), reviewed on main e05728dda7: render-worker-runtime only reorders when the frame credit and render-complete message are posted (after the frame's own completion and the previous credit, before the predecessor's held retirement); webgpu-renderer derives the credit promise from the same queue onSubmittedWorkDone completion without the held reflection-fallback fence, with no new GPU call, descriptor, limit or feature use; skin-inputs memoizes the CPU-side bounds box per held immutable root and writes no GPU data. No WGSL, overload, unit/default, enum or recording/replay change.",
+  "reviewReason": "Reviewed mobile 720-pixel default drawing extents and option documentation. Existing authored budgets and proportional active-device limits bound the resulting physical dimensions; explicit scale remains authoritative. No GPU API overload, descriptor shape, feature/limit admission, WGSL, provider conversion or recording/replay changes. Evidence: 31 sizing regressions, native display Focus and Android fixed-layout pixel controls; full PR GPU gates remain required. Retained upstream review from main da838431b2: Preview smoke installs its runtime-vase test overlay for both full-quality and lightweight copies, while authored quality and deadlines remain unchanged. Regression and full-quality native browser journey passed. Prior main review retained: Frame credit on own GPU completion (PR 5094), reviewed on main e05728dda7: render-worker-runtime only reorders when the frame credit and render-complete message are posted (after the frame's own completion and the previous credit, before the predecessor's held retirement); webgpu-renderer derives the credit promise from the same queue onSubmittedWorkDone completion without the held reflection-fallback fence, with no new GPU call, descriptor, limit or feature use; skin-inputs memoizes the CPU-side bounds box per held immutable root and writes no GPU data. No WGSL, overload, unit/default, enum or recording/replay change.",
   "types": {
     "version": "0.1.74",
     "sha256": "bd08a7d5dc63f6b360c471a05f842a9db40acc0ed685171c272842e614de6e19"
@@ -868,7 +868,7 @@
     "apps/showcase/canvas-texture/scripts/smoke-browser.mjs": "0272a15d3facb51cb8512a20445d600ca8029e6905fa8e6a7f6826bf8a8d084d",
     "packages/app/src/browser-frame-signal.ts": "c4b9800e4234c79aae883b4243564b649208ce39f9c471682e84248f5f7cba9b",
     "packages/app/src/browser.ts": "ad698041b2105a712433f5e967fd96c0bae96f268c521924cde29dd11b932660",
-    "packages/app/src/canvas-sizing.ts": "79c9a09822aee9234a491285d567ed750d278cf154ba2b1e9070ac3f2c4ac6cb",
+    "packages/app/src/canvas-sizing.ts": "60ea9d26d5ddaf96b0e3df340d28445858c4bbf7d0398d4f1048797e352e6c33",
     "packages/app/src/execution/capabilities.ts": "1e63159d66ec6b867d2aefc7498ef41a75365dff4509d434208c9f615e3f6c0d",
     "packages/app/src/execution/engine-worker-runtime.ts": "3beb8a1aaf8f46d3c19d47d7a8f32bd2e1888a7c0765f3b3cd6c7090aa99e61d",
     "packages/app/src/execution/gpu-stub.ts": "82f444ea7b0c77bfcb949207281cb30cc09732ab8c7e18d899b9757b463cf9e0",
@@ -886,7 +886,7 @@
     "packages/app/src/observation-pixels.ts": "8d67cf5e8067ac03ce846a27a116f75dd37e0004d71ad090eec6652154d20baf",
     "packages/app/src/tool-preview/bootstrap.ts": "bcec56d0b63424dc4a677618273356cbcfc093fb414a8ac66aa90bff75299d03",
     "packages/app/src/tool-preview/recipe.ts": "6945ea8aadcc8006dc8a9f9310c66d95586b1f035030b473c83a977588eb3f14",
-    "packages/app/src/types.ts": "9b2ec58f67cf68472c81856eef4d6304c46dacec4b477818732a12b21c057123",
+    "packages/app/src/types.ts": "f67ef583ce56b6cb6423b19a9ccb42bc5a61c2141c41621ee44761530106172b",
     "packages/app/tsup.config.ts": "00b52cf82a06941eec844512d57555faa1e0cab1a81262fe428ad3de8a1e81a5",
     "packages/app/vitest.config.ts": "c045434dcc6516b40a4f477b9115e16b27695f3d65198f55920d3ee06f4fa2f5",
     "packages/assets-runtime/src/decode-image-bytes.ts": "78a1b20914e7e07f614982dacbb47fdfe343af5575b68718558b575ed51b2ec3",

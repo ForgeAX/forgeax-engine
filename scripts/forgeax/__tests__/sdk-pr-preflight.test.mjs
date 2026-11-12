@@ -11,6 +11,7 @@ import { verifySdkViewRuntime } from '../sdk-lib.mjs';
 import {
   aggregateSdkConsumers,
   checkSeed,
+  collectSdkRepairReports,
   SDK_NPM_PARTITIONS,
   SDK_PR_CONSUMERS,
   writeSeedChecksums,
@@ -56,6 +57,184 @@ test('the required SDK aggregate rejects missing, duplicate, failed or mismatche
     assert.throws(() =>
       aggregateSdkConsumers([{ ...reports[0], ...mutation }, ...reports.slice(1)], head, version),
     );
+});
+
+test('explicit SDK repair conserves original consumer identities without relabeling them', () => {
+  const target = 'd'.repeat(40);
+  const targetVersion = `0.0.0-pr.${target}`;
+  const sources = reports.map((report, index) => ({
+    checkName: `sdk-consumer-${report.group}${report.partition ? `-${report.partition}` : ''}`,
+    sourceSha: index === 3 ? target : head,
+    sourceRunId: index === 3 ? 99 : 11,
+    sourceJobId: 20 + index,
+    artifactId: 30 + index,
+    artifactDigest: `sha256:${'e'.repeat(64)}`,
+    reused: index !== 3,
+  }));
+  const mixed = reports.map((report, index) =>
+    index === 3
+      ? {
+          ...report,
+          engineCommit: target,
+          sdkVersion: targetVersion,
+          sha256: 'f'.repeat(64),
+        }
+      : report,
+  );
+  assert.throws(() => aggregateSdkConsumers(mixed, target, targetVersion), /identity/);
+  const result = aggregateSdkConsumers(mixed, target, targetVersion, sources);
+  assert.equal(result.ok, true);
+  assert.equal(result.qualification, 'ci-repair');
+  assert.equal(result.executions[0].sourceSha, head);
+  assert.equal(result.executions[3].sourceSha, target);
+  assert.equal(mixed[0].engineCommit, head);
+  for (const invalid of [
+    sources.slice(1),
+    sources.map((source, index) => (index === 0 ? { ...source, sourceSha: target } : source)),
+    sources.map((source, index) =>
+      index === 0 ? { ...source, artifactDigest: 'invalid' } : source,
+    ),
+    [sources[0], sources[0], ...sources.slice(2)],
+  ])
+    assert.throws(() => aggregateSdkConsumers(mixed, target, targetVersion, invalid));
+  assert.throws(
+    () =>
+      aggregateSdkConsumers(
+        [{ ...mixed[0], sha256: '0'.repeat(64) }, ...mixed.slice(1)],
+        target,
+        targetVersion,
+        sources,
+      ),
+    /byte-mismatch/,
+  );
+});
+
+function sdkRepairFixture() {
+  const repository = 'ForgeAX/forgeax-engine';
+  const target = 'd'.repeat(40);
+  const pr = {
+    number: 5102,
+    body: 'CI-Repair-From: 11',
+    created_at: '2026-11-01T00:00:00Z',
+    head: { sha: target, ref: 'fix/mobile', repo: { full_name: repository } },
+  };
+  const anchor = {
+    id: 11,
+    path: '.github/workflows/ci.yml',
+    status: 'completed',
+    conclusion: 'failure',
+    event: 'pull_request',
+    head_sha: head,
+    head_branch: pr.head.ref,
+    head_repository: { full_name: repository },
+    pull_requests: [{ number: pr.number }],
+  };
+  const peer = { ...anchor, id: 12, path: '.github/workflows/sdk-pr-preflight.yml' };
+  const previous = reports.map((report, index) => ({
+    id: 20 + index,
+    run_id: 12,
+    name: `sdk-consumer-${report.group}${report.partition ? `-${report.partition}` : ''}`,
+    status: 'completed',
+    conclusion: index === 2 ? 'failure' : 'success',
+    steps: [],
+  }));
+  const jobs = previous.map((job, index) => ({
+    ...job,
+    id: 40 + index,
+    run_id: 99,
+    conclusion: 'success',
+    steps:
+      index === 2
+        ? []
+        : [{ name: `[ci-repair-reused] run 12 job ${job.id}`, conclusion: 'success' }],
+  }));
+  const artifacts = reports.map((_report, index) => ({
+    id: 60 + index,
+    name: previous[index].name.replace('sdk-consumer-', 'sdk-pr-result-'),
+    expired: false,
+    size_in_bytes: 100,
+    digest: `sha256:${'e'.repeat(64)}`,
+    workflow_run: { id: index === 2 ? 99 : 12, head_sha: index === 2 ? target : head },
+  }));
+  const context = {
+    eventName: 'pull_request',
+    pr,
+    repository,
+    currentRunId: 99,
+    targetSha: target,
+  };
+  const api = async (endpoint) => {
+    if (endpoint.endsWith('/runs/11')) return anchor;
+    if (endpoint.includes('/compare/')) return { status: 'ahead' };
+    if (endpoint.includes('/workflows/sdk-pr-preflight.yml/runs?'))
+      return { workflow_runs: [peer] };
+    if (endpoint.includes('/runs/12/jobs?'))
+      return { total_count: previous.length, jobs: previous };
+    if (endpoint.includes('/runs/99/jobs?')) return { total_count: jobs.length, jobs };
+    for (const run of [12, 99])
+      if (endpoint.includes(`/runs/${run}/artifacts?`)) {
+        const selected = artifacts.filter((x) => x.workflow_run.id === run);
+        return { total_count: selected.length, artifacts: selected };
+      }
+    throw new Error(`unexpected SDK repair endpoint: ${endpoint}`);
+  };
+  const readArtifact = async (artifact) => {
+    const index = artifact.id - 60,
+      report = structuredClone(reports[index]);
+    return index === 2
+      ? {
+          ...report,
+          engineCommit: target,
+          sdkVersion: `0.0.0-pr.${target}`,
+          sha256: 'f'.repeat(64),
+        }
+      : report;
+  };
+  return { context, api, readArtifact, artifacts, jobs, previous };
+}
+
+test('SDK repair reads original artifacts of qualified passed checks and the fresh failed consumer', async () => {
+  const f = sdkRepairFixture();
+  const collected = await collectSdkRepairReports(f.context, f.api, f.readArtifact);
+  const result = aggregateSdkConsumers(
+    collected.reports,
+    f.context.targetSha,
+    `0.0.0-pr.${f.context.targetSha}`,
+    collected.sources,
+  );
+  assert.equal(result.executions.filter((x) => x.reused).length, 3);
+  assert.equal(result.executions.find((x) => !x.reused).checkName, 'sdk-consumer-project');
+  assert.equal(collected.reports.find((x) => x.group === 'source').engineCommit, head);
+});
+
+test('SDK repair fails closed on missing identity, foreign artifacts, failed peers and false reuse markers', async () => {
+  for (const mutate of [
+    (f) => {
+      f.artifacts[0].expired = true;
+    },
+    (f) => {
+      f.artifacts[0].workflow_run.head_sha = '0'.repeat(40);
+    },
+    (f) => {
+      f.artifacts.push({ ...f.artifacts[0] });
+    },
+    (f) => {
+      f.jobs[0].conclusion = 'failure';
+    },
+    (f) => {
+      f.jobs[0].steps[0].name = '[ci-repair-reused] run 12 job 999';
+    },
+    (f) => {
+      f.previous[0].conclusion = 'failure';
+    },
+    (f) => {
+      f.context.targetSha = '0'.repeat(40);
+    },
+  ]) {
+    const f = sdkRepairFixture();
+    mutate(f);
+    await assert.rejects(collectSdkRepairReports(f.context, f.api, f.readArtifact));
+  }
 });
 
 test('the actual aggregate CLI requires all four transported receipts and rejects extra or partial npm results', () => {

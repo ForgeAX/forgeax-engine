@@ -136,11 +136,13 @@ identity. The result is a dynamic `sourceKey -> Asset` map; the bridge derives
 assets through the same registered output producers and Pack v2 finalizer used
 by ordinary imports.
 
-The optional ScriptablePack product DDC preserves typed-array backing buffers
-and shared-view offsets using V8's native ArrayBuffer encoding. Cached geometry
-reads and Worker messages copy the asset's own buffers rather than the complete
-serialized Pack. Earlier cache formats are cold misses; source generation,
-content digests and publication validation remain authoritative.
+The optional ScriptablePack product DDC uses V8's native ArrayBuffer encoding.
+It preserves typed-array bytes and overlapping-view aliases. Disjoint views
+from Node's allocation pool are stored independently so allocator offsets and
+pool membership do not enter the SDK artifact. Cached geometry reads and Worker
+messages copy the asset's own buffers rather than the complete serialized Pack.
+Earlier cache formats are cold misses; source generation, content digests and
+publication validation remain authoritative.
 
 Authored material outputs with passes use the registered `material` NativeCooker,
 including Engine Standard roots. A shipped template is source ownership, not a
@@ -491,11 +493,17 @@ derived data, not Pack or Catalog authority.
 > reuse: serialization, decompression, or cache I/O failure falls back to normal
 > Pack production.
 
-Cache format 10 copies only reachable typed-view bytes into zeroed backing storage and
-normalizes string storage before V8 encoding. Unrelated pooled bytes and V8
-one-byte/two-byte string representations cannot enter SDK publication identity.
-Unobserved backing tails are trimmed. View offsets, shared buffers and explicitly
-reachable ArrayBuffer bytes are preserved.
+Cache format 11 copies only reachable typed-view bytes into zeroed backing storage,
+normalizes Node Buffer-pool groups and keeps the format 10 string normalization.
+Unrelated pooled bytes and V8 one-byte/two-byte string representations cannot
+enter SDK publication identity; unobserved backing tails are trimmed.
+
+| Input backing | Cached layout |
+|:--|:--|
+| Explicitly reachable `ArrayBuffer` | Full backing and view offsets are preserved. |
+| Ordinary nonpooled buffer | Shared backing and view offsets are preserved. |
+| Node Buffer pool | Overlapping views retain aliases; disjoint views use aligned backing groups. |
+
 Before V8 encoding, equal immutable plain-data subtrees and byte bodies are shared
 within the disposable product representation. Caller-owned publications are not
 mutated; sparse arrays, special scalar values and cyclic/non-POD graphs keep their

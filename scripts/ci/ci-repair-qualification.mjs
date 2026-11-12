@@ -45,7 +45,7 @@ export const repairArtifactSuites = Object.freeze({
 const metricProducers = ['webkit-fallback', 'metrics-validate-browser', 'metrics-validate-runtime'];
 const metricMembers = [...metricProducers, 'metrics-validate'];
 
-const coverageMembers = [0, 1, 2, 3].map((shard) => `coverage-pnpm-shard-${shard}`);
+export const coverageMembers = [0, 1, 2, 3].map((shard) => `coverage-pnpm-shard-${shard}`);
 const coveragePlaceholder = `coverage-pnpm-shard-\${{ matrix.shard }}`;
 const coverageUnrunSteps = [
   'Scrub stale global/system git auth header (self-hosted)',
@@ -131,7 +131,7 @@ export function samePullRequest(run, pr, repository) {
   return run?.status === 'completed' && samePullRequestIdentity(run, pr, repository);
 }
 
-function inheritedSource(job) {
+export function inheritedSource(job) {
   const proofs = (job.steps ?? []).filter(
     (step) => step.conclusion === 'success' && step.name.startsWith('[ci-repair-reused]'),
   );
@@ -150,7 +150,7 @@ async function runForWorkflow(api, repository, workflow, anchor, pr) {
     .sort((left, right) => right.id - left.id)[0];
 }
 
-async function runJobs(api, repository, run) {
+export async function runJobs(api, repository, run) {
   const jobs = [];
   for (let page = 1; page <= 10; page++) {
     const response = await api(
@@ -315,7 +315,7 @@ async function originalSuccess(api, input, run, job) {
   return undefined;
 }
 
-async function runArtifacts(api, repository, run) {
+export async function runArtifacts(api, repository, run) {
   const artifacts = [];
   for (let page = 1; page <= 10; page++) {
     const response = await api(
@@ -401,6 +401,11 @@ async function reusableArtifactSuite(api, input, run, jobs) {
   const consumer = repairArtifactSuites[input.workflow]?.[input.jobKey];
   if (!consumer) return true;
   if (declaredFreshExecution(input.pr.body, consumer)) return false;
+  if (
+    (input.workflow === 'ci.yml' && input.jobKey === 'coverage-pnpm-shard') ||
+    (input.workflow === 'sdk-pr-preflight.yml' && input.jobKey === 'consumers')
+  )
+    return true;
   if (input.workflow === 'ci.yml' && consumer === 'metrics-validate')
     return metricMembers.every(
       (name) =>
@@ -504,8 +509,12 @@ export async function requestGitHub(endpoint, token, request = fetch) {
 
 async function main() {
   let result = normal('qualification-unavailable');
+  let declaredRepair = false;
   try {
     const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+    declaredRepair =
+      process.env.GITHUB_EVENT_NAME === 'pull_request' &&
+      Boolean(repairDeclaration(event.pull_request?.body, process.env.GITHUB_REPOSITORY));
     const api = (endpoint) => requestGitHub(endpoint, process.env.GH_TOKEN);
     result = await ciRepairQualification(
       {
@@ -537,6 +546,7 @@ async function main() {
   if (process.env.GITHUB_OUTPUT) {
     const rows = {
       reused: result.reused,
+      declared_repair: declaredRepair,
       source_run_id: result.sourceRunId ?? '',
       source_job_id: result.sourceJobId ?? '',
       source_job_url: result.sourceUrl ?? '',

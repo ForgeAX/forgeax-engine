@@ -18,6 +18,19 @@ provenance; failed, cancelled, missing and new checks and required artifact
 dependencies still execute. Follow
 [CI-repair success reuse](../../scripts/ci/README.md#explicit-pr-ci-repair-success-reuse).
 
+For a partial coverage repair, retain passed shard executions and restore their
+original artifacts through the shared repair artifact owner. Covered source and
+compiler inputs must remain unchanged; the existing merge still requires the
+exact complete group partition and all original thresholds. Do not rewrite an
+old artifact's source SHA or treat an interrupted child as completed evidence.
+
+For SDK CI repair, retain each qualified successful consumer even if another
+consumer failed. The repair aggregate fetches and checks original artifacts with
+their run/job/source identities, alongside the freshly executed failures. Missing
+or inconsistent provenance remains a failure. Normal SDK/publication acceptance
+still requires the complete same-source byte cohort; never rewrite an inherited
+receipt to the current SHA or SDK version.
+
 For `directional-shadow-candidate-failed` during IBL preparation, compare the
 settled attempt's queue acceptance with `sceneSubmitted`. Accepted preparation
 work has no current shadow pixel evidence and must not manufacture a candidate

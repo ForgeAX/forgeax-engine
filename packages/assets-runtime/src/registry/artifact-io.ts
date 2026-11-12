@@ -16,6 +16,7 @@ import {
   type PackageReadFailure,
   readPackage,
 } from '../internal/package-read.js';
+import { findVerifiedArtifactView } from '../internal/shared-immutable.js';
 import { traceAssetLoadPhase } from './load-trace';
 
 export interface ArtifactReadRequest {
@@ -131,6 +132,20 @@ export async function finishArtifactBytes(
       ),
     );
   return verifyArtifactBytes(selected.value, request);
+}
+
+/**
+ * A private copy of a grouped member another loaded asset already retains as
+ * realm-verified bytes. Equal sha256 digest and length denote the content a
+ * Bundle read, group decode, member selection and hash would produce, so a
+ * runtime read skips all four. Publication validation reads through
+ * `readArtifact` and never takes this path.
+ */
+export function liveGroupedArtifact(
+  descriptor: ArtifactDescriptor,
+): Uint8Array<ArrayBuffer> | undefined {
+  if (descriptor.decodedRange === undefined) return undefined;
+  return findVerifiedArtifactView(descriptor)?.slice();
 }
 
 export async function verifyArtifactBytes(
@@ -388,6 +403,8 @@ export class ArtifactReadCache {
         });
         if (!path.ok) return path;
         const url = artifactUrl(request.packageUrl, path.value);
+        const live = liveGroupedArtifact(descriptor);
+        if (live !== undefined) return ok(live);
         const read = await this.bundles.read({
           url,
           range,
@@ -429,6 +446,8 @@ export class ArtifactReadCache {
           ...(integrity === undefined || descriptor.decodedRange !== undefined
             ? {}
             : { digest: integrity.digest }),
+          // A decoded group is read only to select and verify a private member.
+          shared: descriptor.decodedRange !== undefined,
           invalid: (reason) =>
             failure(
               'asset-artifact-integrity-mismatch',

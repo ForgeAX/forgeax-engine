@@ -71,6 +71,25 @@ export function findVerifiedArtifactBytes(digest: string): Uint8Array<ArrayBuffe
 }
 
 /**
+ * The realm's live verified view of the content a descriptor declares, if any
+ * holder retains it. Equal sha256 digests and lengths denote equal content, so
+ * a reader that would verify a fresh copy against the same digest may adopt
+ * this immutable view instead of reading, decoding and hashing the artifact.
+ */
+export function findVerifiedArtifactView(descriptor: {
+  readonly byteLength?: number;
+  readonly integrity?: { readonly algorithm: string; readonly digest: string };
+}): Uint8Array<ArrayBuffer> | undefined {
+  const integrity = descriptor.integrity;
+  if (integrity?.algorithm !== 'sha256') return undefined;
+  const view = findVerifiedArtifactBytes(integrity.digest);
+  if (view === undefined) return undefined;
+  return descriptor.byteLength === undefined || view.byteLength === descriptor.byteLength
+    ? view
+    : undefined;
+}
+
+/**
  * Return the realm's one view for verified artifact bytes. The caller must
  * already have checked that `bytes` hash to `digest`; equal digests and
  * lengths then denote equal content. The first caller's bytes are copied into

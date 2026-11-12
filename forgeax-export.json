@@ -3,14 +3,14 @@
   "policy": "engine-public-source/1",
   "producerSha256": "f72b8d6a6bae95f6732acb6db6e72ecc12a6226f7c376666dcbf3b3c7e6ec778",
   "release": {
-    "version": "0.6.0-dev.16820.3a19bf3506bf",
+    "version": "0.6.0-dev.16821.550760fabf93",
     "channel": "next",
-    "candidateSha256": "9072c2be716db50367438566d0c68610361e1d548f1343f583b5e7c6e7f39b48"
+    "candidateSha256": "4bfe6690d1bfdf027b8e22291a6da7932883c5be4fc0756533ba84fb546a74bb"
   },
   "sources": [
     {
       "root": ".",
-      "commit": "3a19bf3506bf85f5cdb6b51d4f056431739fd98d"
+      "commit": "550760fabf935abfd3d2bc11d264ba306a37340a"
     },
     {
       "root": "forgeax-engine-assets",
@@ -30568,6 +30568,18 @@
       "sha256": "d0fbc3f5769a68acad557c2a9951f0d387bf6ac4ad206a1b59bec7c071e48b2e"
     },
     {
+      "path": "packages/assets-runtime/src/__tests__/bundle-reread-model.unit.test.ts",
+      "bytes": 8383,
+      "executable": false,
+      "sha256": "9da2c7875b5c0d48414d7322fdbb39dbc907c4f49b4971cf86ef5840ccfb866c"
+    },
+    {
+      "path": "packages/assets-runtime/src/__tests__/bundle-shared-window.unit.test.ts",
+      "bytes": 15021,
+      "executable": false,
+      "sha256": "8729382d78ced7f06a57314cd226bf9ec714a83389dbff3ba7e2e5b511f92516"
+    },
+    {
       "path": "packages/assets-runtime/src/__tests__/capture-publication.integration.test.ts",
       "bytes": 40221,
       "executable": false,
@@ -30809,9 +30821,9 @@
     },
     {
       "path": "packages/assets-runtime/src/__tests__/material-artifact-concurrent.integration.test.ts",
-      "bytes": 8014,
+      "bytes": 8372,
       "executable": false,
-      "sha256": "279720cbc4f50dfc3ae3f3a745bc6be181634da529a48ddca8fa7ecf19353400"
+      "sha256": "c1bff36a271be75eb6e9b43637918449d3689aa0df8924bddc28a0462ded6666"
     },
     {
       "path": "packages/assets-runtime/src/__tests__/material-external-transport.integration.test.ts",
@@ -31289,9 +31301,9 @@
     },
     {
       "path": "packages/assets-runtime/src/internal/asset-source.ts",
-      "bytes": 24543,
+      "bytes": 24826,
       "executable": false,
-      "sha256": "20e482d2b88892c5dd2cef8db21b593f4a178f4cf813abbd0e9ada64c12cf92d"
+      "sha256": "3e051debf88ba29cc0bc461553ae8a59483ec03942b4f279541cd6d874a62446"
     },
     {
       "path": "packages/assets-runtime/src/internal/bundle-diagnostics.ts",
@@ -31301,9 +31313,9 @@
     },
     {
       "path": "packages/assets-runtime/src/internal/bundle-store.ts",
-      "bytes": 8355,
+      "bytes": 10628,
       "executable": false,
-      "sha256": "96de58900206c08c42c8bbb8c00c22e1dcc797db8596ddf634d169cf472fb25c"
+      "sha256": "ca80be1e2662048ad7d8a0d3e851abeb2cf2d8454ee39e9b7be020cb9e4a022a"
     },
     {
       "path": "packages/assets-runtime/src/internal/decoder-registry.ts",
@@ -31367,9 +31379,9 @@
     },
     {
       "path": "packages/assets-runtime/src/internal/shared-immutable.ts",
-      "bytes": 3378,
+      "bytes": 4235,
       "executable": false,
-      "sha256": "e9dd0137b70a7b7f9cfb74927c3ee23d10de15d81141fc0bf6a6d5c5742868ff"
+      "sha256": "5dfd5a153a3823228861f2f27416ac7cfe586bbb0b3ca9684782ab8e4f041547"
     },
     {
       "path": "packages/assets-runtime/src/internal/validate-runtime-row.ts",
@@ -31463,9 +31475,9 @@
     },
     {
       "path": "packages/assets-runtime/src/registry/artifact-io.ts",
-      "bytes": 19061,
+      "bytes": 19965,
       "executable": false,
-      "sha256": "bad6f0e49ad2e3089450b2ed1afb390a77f4d341dc0bcabd652db6449c183a4d"
+      "sha256": "be951acb76b30862bf8ed6cbe272399c6e2dd19c0bb1ccb738f700d5b74cee52"
     },
     {
       "path": "packages/assets-runtime/src/registry/asset-evidence.ts",
@@ -52018,6 +52030,12 @@
       "sha256": "7f634a77e3d1e60aa107a268325bae957dc69bf7491b7f8a50f6169297a46a86"
     },
     {
+      "path": "packages/render/bench/feature-frame-admission.bench.ts",
+      "bytes": 9877,
+      "executable": false,
+      "sha256": "7633d400a29f02c97a878f9d7799dd6d6d480c130f9d3a12145dcf614e914787"
+    },
+    {
       "path": "packages/render/bench/feature-rollback-references.bench.ts",
       "bytes": 3804,
       "executable": false,
@@ -58751,9 +58769,9 @@
     },
     {
       "path": "packages/render/src/__tests__/standard-scene-data-admission.unit.test.ts",
-      "bytes": 34082,
+      "bytes": 41644,
       "executable": false,
-      "sha256": "2fc548bb892bddce71ceaea61e78e34807e2ad0d4c816d1a8d59b2627a4726e9"
+      "sha256": "204464920a97e8b82f0f8f9697ba3389d856002983c88c08d50ee2e35e88679a"
     },
     {
       "path": "packages/render/src/__tests__/standard-scene-data-runtime.integration.test.ts",
@@ -64043,9 +64061,9 @@
     },
     {
       "path": "packages/render/src/record/__tests__/typed-frame-graph-scene-data-bindings.unit.test.ts",
-      "bytes": 12130,
+      "bytes": 16452,
       "executable": false,
-      "sha256": "6849325a021d9cfcd47608efc340d0d7175e10634238df66eb0b02c1146958ec"
+      "sha256": "2ab2c9b55905fd5b0bec585a84423d9329a7213dc056600b4ee96147ef141e39"
     },
     {
       "path": "packages/render/src/record/__tests__/uniform-instance-buffer-size.test.ts",
@@ -65645,9 +65663,9 @@
     },
     {
       "path": "packages/render/src/temporal/standard-scene-data-admission.ts",
-      "bytes": 38680,
+      "bytes": 39302,
       "executable": false,
-      "sha256": "5e1dae318582e5e47ed95d082333edad33f2179c715c80036d20fc40dd488c68"
+      "sha256": "36e79112a46c09e15c0365f6c1d026708a2d39feded7e4576129f87531f28381"
     },
     {
       "path": "packages/render/src/temporal/standard-scene-data.ts",
@@ -78287,9 +78305,9 @@
     },
     {
       "path": "packages/types/src/__tests__/frozen-json.unit.test.ts",
-      "bytes": 4486,
+      "bytes": 5975,
       "executable": false,
-      "sha256": "bf2385ef7e93b6b4ac3895ad0fdb4deed7ea3e7a06e9451354e74b7e77e09284"
+      "sha256": "b383004396ae32a79a718bb46c911c0b9f2beaf8c84e1fa2a413861af87b89f5"
     },
     {
       "path": "packages/types/src/__tests__/gen-slot-codec.test.ts",
@@ -78701,9 +78719,9 @@
     },
     {
       "path": "packages/types/src/frozen-json.ts",
-      "bytes": 6694,
+      "bytes": 7070,
       "executable": false,
-      "sha256": "581c286d0aad1e0875a6ceceaea08503ec0804bccffc35170f297906b0e642e4"
+      "sha256": "9ded855dd7adb08e9a5442f888a3002d99ee88f131b37b0183e39617f8677527"
     },
     {
       "path": "packages/types/src/handle.ts",
@@ -86987,9 +87005,9 @@
     },
     {
       "path": "scripts/ci/webgpu-compatibility-surface.json",
-      "bytes": 224603,
+      "bytes": 225286,
       "executable": false,
-      "sha256": "58a707d2c62c7fef6a872f5340bbccd5d698a1a65a9c533039a4a3bcf3789044"
+      "sha256": "1f2fd36601355bdd985f58ff6550ebaa1e07939ee90f872eebcb1daf5716d89a"
     },
     {
       "path": "scripts/ci/with-apt-ubuntu-sources.sh",

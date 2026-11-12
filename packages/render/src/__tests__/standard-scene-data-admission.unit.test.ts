@@ -11,6 +11,7 @@ import { SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA } from '../temporal/scene-
 import { createSceneDataCatalog } from '../temporal/scene-data-catalog';
 import {
   createStandardSceneSurfaceAdmission,
+  ProducedStandardSceneDataAdmissionInput,
   type StandardSceneDataContributor,
   standardAoSceneDataUnavailable,
   standardSceneDataContributorForDispatch,
@@ -990,4 +991,198 @@ it('ignores foreign prior getters and recaptures borrowed and rejected observati
   expect(standardSceneDataContributorForDispatch(undefined, dispatch, 'forward', missing)).not.toBe(
     missing,
   );
+});
+
+/** A frozen published material whose forward pass authors `module`. */
+function frozenSurfaceMaterial(handle: number, module: string): MaterialResource {
+  const programKey = `cooked:${module}:${handle}`;
+  return new MaterialResource(
+    Object.freeze({
+      ...defaultMaterialSnapshot(handle),
+      ...internJson({
+        passes: [
+          {
+            name: 'forward',
+            program: { module },
+            renderState: { tags: { LightMode: 'Forward' } },
+          },
+        ],
+        materialProgramKeys: { forward: programKey },
+        materialEntryPoints: {
+          forward: [{ name: 'fs_ao_input', stage: 'fragment', bindings: [] }],
+        },
+        materialContext: { geometry: 'mesh', vertexColor: false },
+        materialPublication: {
+          identity: {
+            materialGuid: `material/${handle}`,
+            publicationGeneration: 1,
+            specializationKey: `root-${handle}`,
+            artifactHash: `material-artifact-${handle}`,
+          },
+          programs: [
+            {
+              pass: 'forward',
+              context: { pass: 'Forward', geometry: 'mesh', vertexColor: false },
+              address: 'direct',
+              specializationKey: programKey,
+              artifactHash: `shader-artifact-${handle}`,
+            },
+          ],
+        },
+      }),
+    }) as unknown as MaterialSnapshot,
+  );
+}
+
+type VisibleRow = {
+  readonly row: RenderableSnapshot | undefined;
+  readonly handle: number;
+  readonly shaderId: string | undefined;
+};
+
+function visibleRow(entityKey: number, material: MaterialResource): VisibleRow {
+  return {
+    row: {
+      worldId: 0,
+      entityKey,
+      material,
+      materials: [material],
+    } as unknown as RenderableSnapshot,
+    handle: material.snapshot.materialHandle ?? 0,
+    shaderId: material.snapshot.materialProgramKeys?.forward,
+  };
+}
+
+const unavailableHeader = {
+  viewIdentity: 'unavailable-proof',
+  generation: 1,
+  deviceGeneration: 0,
+  standardPipeline: true,
+  cameraAvailable: true,
+  lane: 'clustered' as const,
+  renderPath: 'forward' as const,
+};
+
+/** One view frame of the Feature view producer: produce against the baseline, then admit. */
+function admitVisible(
+  rows: readonly VisibleRow[],
+  previous: ReturnType<typeof createStandardSceneSurfaceAdmission> | undefined,
+  header: Omit<
+    Parameters<typeof createStandardSceneSurfaceAdmission>[0],
+    'contributors'
+  > = unavailableHeader,
+) {
+  const baseline = standardSceneSurfaceContributorBaseline(previous);
+  const input = new ProducedStandardSceneDataAdmissionInput();
+  input.capture(header);
+  const contributors = input.contributors;
+  for (const { row, handle, shaderId } of rows) {
+    const contributor = standardSceneDataContributorForDispatch(
+      row,
+      {
+        materialHandle: handle,
+        materialShaderId: shaderId,
+        tags: { LightMode: 'Forward' },
+        passIndex: 0,
+      },
+      header.renderPath === 'deferred' ? 'deferred' : 'forward',
+      baseline?.[contributors.length],
+    );
+    if (contributor !== undefined) contributors.push(contributor);
+  }
+  return {
+    input,
+    admission: createStandardSceneSurfaceAdmission(input, previous),
+    // The complete route without any prior proof, for result equivalence.
+    fresh: () =>
+      createStandardSceneSurfaceAdmission({ ...header, contributors: [...contributors] }),
+  };
+}
+
+it('reuses an unchanged unavailable admission and its diagnostics without recomputing them', () => {
+  const standard = frozenSurfaceMaterial(41, 'forgeax_material::standard');
+  const custom = frozenSurfaceMaterial(42, 'game::custom_surface');
+  const rows = [visibleRow(1, standard), visibleRow(2, custom), visibleRow(3, standard)];
+  const first = admitVisible(rows, undefined);
+  expect(first.admission).toMatchObject({
+    status: 'unavailable',
+    reason: 'coverage-incomplete',
+    missingContributorIds: ['[0,2,42,0]'],
+  });
+  expect(standardSceneSurfaceContributorBaseline(first.admission)).toEqual(
+    first.input.contributors,
+  );
+
+  const stringify = vi.spyOn(JSON, 'stringify');
+  let second: ReturnType<typeof admitVisible>;
+  try {
+    second = admitVisible(rows, first.admission);
+    expect(second.admission).toBe(first.admission);
+    expect(stringify).not.toHaveBeenCalled();
+  } finally {
+    stringify.mockRestore();
+  }
+  // Producer-owned prior observations are carried forward unchanged.
+  expect(
+    second.input.contributors.every((row, index) => row === first.input.contributors[index]),
+  ).toBe(true);
+  expect(second.fresh()).toEqual(first.admission);
+  expect(second.fresh()).not.toBe(first.admission);
+  expect(admitVisible(rows, second.admission).admission).toBe(first.admission);
+});
+
+it('invalidates an unavailable proof when material, visible set or view header changes', () => {
+  const standard = frozenSurfaceMaterial(41, 'forgeax_material::standard');
+  const custom = frozenSurfaceMaterial(42, 'game::custom_surface');
+  const otherCustom = frozenSurfaceMaterial(42, 'game::other_surface');
+  const rows = [visibleRow(1, standard), visibleRow(2, custom), visibleRow(3, standard)];
+  const previous = admitVisible(rows, undefined).admission;
+  expect(previous.status).toBe('unavailable');
+
+  const changed = (name: string, next: ReturnType<typeof admitVisible>) => {
+    expect(next.admission, `${name} must not reuse the prior proof`).not.toBe(previous);
+    expect(next.admission, `${name} must equal the complete route`).toEqual(next.fresh());
+    return next.admission;
+  };
+  // Material swapped: to a Standard material, then to another non-Standard root.
+  const healed = changed(
+    'Standard swap',
+    admitVisible([rows[0], visibleRow(2, standard), rows[2]] as VisibleRow[], previous),
+  );
+  expect(healed.status).toBe('available');
+  const swapped = changed(
+    'custom swap',
+    admitVisible([rows[0], visibleRow(2, otherCustom), rows[2]] as VisibleRow[], previous),
+  );
+  expect(swapped.status).toBe('unavailable');
+  expect(swapped.identity).not.toBe(previous.identity);
+  if (swapped.status === 'unavailable')
+    expect(swapped.missingContributors[0]?.authoredModule).toBe('game::other_surface');
+
+  // Visible set changed: removed, added, reordered and moved rows.
+  expect(changed('removed row', admitVisible(rows.slice(0, 2), previous)).identity).not.toBe(
+    previous.identity,
+  );
+  expect(
+    changed('added row', admitVisible([...rows, visibleRow(4, custom)], previous)).identity,
+  ).not.toBe(previous.identity);
+  changed('reordered rows', admitVisible([rows[2], rows[1], rows[0]] as VisibleRow[], previous));
+  const moved = changed(
+    'moved rejected row',
+    admitVisible([rows[0], visibleRow(5, custom), rows[2]] as VisibleRow[], previous),
+  );
+  if (moved.status === 'unavailable') expect(moved.missingContributorIds).toEqual(['[0,5,42,0]']);
+
+  // View header changed: every admission input field.
+  for (const [name, header] of [
+    ['view', { ...unavailableHeader, viewIdentity: 'other-view' }],
+    ['generation', { ...unavailableHeader, generation: 2 }],
+    ['device', { ...unavailableHeader, deviceGeneration: 1 }],
+    ['pipeline', { ...unavailableHeader, standardPipeline: false }],
+    ['camera', { ...unavailableHeader, cameraAvailable: false }],
+    ['lane', { ...unavailableHeader, lane: 'direct' as const }],
+    ['render path', { ...unavailableHeader, renderPath: 'deferred' as const }],
+    ['no render path', { ...unavailableHeader, renderPath: undefined }],
+  ] as const)
+    changed(name, admitVisible(rows, previous, header));
 });

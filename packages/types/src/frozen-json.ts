@@ -9,6 +9,13 @@ export function isDeepFrozenJson(value: object): boolean {
   return isDeepFrozenJsonNode(value, new Set());
 }
 
+/**
+ * Trees already proven deep-frozen JSON. A frozen node's properties and their
+ * frozen descendants can never change, so a positive answer is permanent and
+ * later checks of the same tree, or of any subtree it contains, are O(1).
+ */
+const verifiedFrozenJson = new WeakSet<object>();
+
 function isEnumerableDataProperty(
   descriptor: PropertyDescriptor | undefined,
 ): descriptor is PropertyDescriptor & { value: unknown } {
@@ -16,6 +23,7 @@ function isEnumerableDataProperty(
 }
 
 function isDeepFrozenJsonNode(value: object, ancestors: Set<object>): boolean {
+  if (verifiedFrozenJson.has(value)) return true;
   if (!Object.isFrozen(value) || ArrayBuffer.isView(value) || ancestors.has(value)) return false;
   const array = Array.isArray(value);
   const prototype = Object.getPrototypeOf(value);
@@ -35,6 +43,7 @@ function isDeepFrozenJsonNode(value: object, ancestors: Set<object>): boolean {
         if (!isDeepFrozenJsonNode(child as object, ancestors)) return false;
       } else if (type !== 'string' && type !== 'number' && type !== 'boolean') return false;
     }
+    verifiedFrozenJson.add(value);
     return true;
   } finally {
     ancestors.delete(value);

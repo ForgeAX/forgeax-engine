@@ -10,6 +10,45 @@ function deepFreeze<T>(value: T): T {
 }
 
 describe('isDeepFrozenJson', () => {
+  it('walks a proven tree once, however often it or its subtrees are checked', () => {
+    let walked = 0;
+    // A frozen Proxy reports its frozen target exactly; it only counts key walks.
+    const counted = (value: object): object =>
+      new Proxy(value, {
+        ownKeys: (target) => {
+          walked++;
+          return Reflect.ownKeys(target);
+        },
+      });
+    const build = (depth: number): object =>
+      counted(
+        Object.freeze(
+          depth === 0 ? { leaf: 1 } : { a: build(depth - 1), b: Object.freeze([1, 'x']) },
+        ),
+      );
+    const root = build(12);
+    expect(isDeepFrozenJson(root)).toBe(true);
+    const first = walked;
+    // Object.isFrozen and the property walk each list a node's keys once.
+    expect(first).toBe(2 * 13);
+    // Repeated adoption checks, including a caller that recurses node by node.
+    for (let round = 0; round < 5; round++) expect(isDeepFrozenJson(root)).toBe(true);
+    let node: Record<string, unknown> | undefined = root as Record<string, unknown>;
+    while (node !== undefined) {
+      expect(isDeepFrozenJson(node)).toBe(true);
+      node = node.a as Record<string, unknown> | undefined;
+    }
+    expect(walked).toBe(first);
+  });
+
+  it('does not remember a negative answer', () => {
+    const inner: { b: number } = { b: 1 };
+    const outer = Object.freeze({ a: inner });
+    expect(isDeepFrozenJson(outer)).toBe(false);
+    Object.freeze(inner);
+    expect(isDeepFrozenJson(outer)).toBe(true);
+  });
+
   it('accepts deep-frozen plain JSON trees', () => {
     expect(isDeepFrozenJson(deepFreeze({ a: [1, 'x', true, null, { b: undefined }] }))).toBe(true);
     expect(isDeepFrozenJson(deepFreeze(Object.assign(Object.create(null), { a: 1 })))).toBe(true);

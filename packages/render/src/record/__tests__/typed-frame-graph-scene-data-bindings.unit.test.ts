@@ -1,6 +1,6 @@
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { describe, expect, it, vi } from 'vitest';
-import type { RenderFeaturePlannedFrame } from '../../features/plan';
+import { deriveRenderFeaturePassAccess, type RenderFeaturePlannedFrame } from '../../features/plan';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../render-pipeline';
 import type {
   SceneDataSurfaceBinding,
@@ -165,6 +165,62 @@ function semanticTarget(
   return { target, texture, view };
 }
 
+/** A plan whose passes never sample SceneData: string targets and storage only. */
+function plainComputePlan(passes: number, logicalTarget?: string): RenderFeaturePlannedFrame {
+  const resources: RenderFeaturePlannedFrame['plan']['resources'][number][] = [];
+  const declared: RenderFeaturePlannedFrame['plan']['passes'][number][] = [];
+  for (let index = 0; index < passes; index++) {
+    resources.push(
+      {
+        kind: 'compute-program',
+        name: `program-${index}`,
+        program: {
+          wgsl: '@compute @workgroup_size(1) fn simulate() {}',
+          entryPoints: ['simulate'],
+          bindings: [{ entries: [{ binding: 0, visibility: 4, buffer: { type: 'storage' } }] }],
+        },
+      },
+      { kind: 'buffer', name: `particles-${index}`, size: 64, usage: ['storage'] },
+      {
+        kind: 'compute-bindings',
+        name: `bindings-${index}`,
+        program: `program-${index}`,
+        entries: [{ binding: 0, resource: `particles-${index}` }],
+      },
+    );
+    declared.push({
+      kind: 'compute',
+      name: `simulate-${index}`,
+      program: `program-${index}`,
+      bindings: `bindings-${index}`,
+      dispatches: [{ kind: 'direct', entryPoint: 'simulate', workgroups: [1] }],
+    });
+  }
+  if (logicalTarget !== undefined)
+    resources.push({
+      kind: 'prepared-gpu-resource',
+      name: 'history-view',
+      resource: { kind: 'texture-view', value: undefined },
+      logicalTarget,
+    });
+  return {
+    featureIdentity: 'plain-feature',
+    scope: { view: 'camera:4' },
+    generation: 7,
+    signature: 'plain',
+    plan: { resources, passes: declared },
+  } as RenderFeaturePlannedFrame;
+}
+
+/** The SceneData sampled reads of every pass, derived one pass at a time. */
+function sampledSceneDataReads(planned: RenderFeaturePlannedFrame): readonly unknown[] {
+  return planned.plan.passes.flatMap((pass) =>
+    deriveRenderFeaturePassAccess(planned.plan, pass).filter(
+      (access) => access.usage === 'sampled-read' && typeof access.resource !== 'string',
+    ),
+  );
+}
+
 describe('typed frame graph SceneData bindings', () => {
   it.each([
     { bindings: undefined },
@@ -309,5 +365,50 @@ describe('typed frame graph SceneData bindings', () => {
     ] as const) {
       expect(temporalResolve(stale), `foreign temporal ${name} must not resolve`).toBeUndefined();
     }
+  });
+  it('binds nothing from plans that declare no SceneData target, whatever their passes', () => {
+    const { admission, target } = normalCatalog();
+    const plain = [plainComputePlan(0), plainComputePlan(4), plainComputePlan(2, 'history')];
+    for (const planned of plain) expect(sampledSceneDataReads(planned)).toEqual([]);
+    expect(sceneDataSurfaceBindings(plain, admission)).toEqual([]);
+
+    const consumer = sampledSurfacePlan(target);
+    const alone = sceneDataSurfaceBindings([consumer], admission);
+    expect(alone).toHaveLength(1);
+    expect(sceneDataSurfaceBindings([...plain, consumer, ...plain], admission)).toEqual(alone);
+  });
+
+  it('tracks SceneData consumers as passes are added to or removed from a plan', () => {
+    const { admission, target } = normalCatalog();
+    const consumer = sampledSurfacePlan(target);
+    const owner = sceneDataTargetOwner(target);
+    const [consume] = consumer.plan.passes;
+    if (owner === undefined || consume === undefined) throw new Error('consumer fixture changed');
+    const plain = plainComputePlan(3).plan;
+    const withPasses = (
+      passes: RenderFeaturePlannedFrame['plan']['passes'],
+    ): RenderFeaturePlannedFrame => ({
+      ...consumer,
+      plan: { resources: [...plain.resources, ...consumer.plan.resources], passes },
+    });
+
+    // The SceneData declaration stays; only the consuming pass comes and goes.
+    const unconsumed = withPasses(plain.passes);
+    expect(sampledSceneDataReads(unconsumed)).toEqual([]);
+    expect(sceneDataSurfaceBindings([unconsumed], admission)).toEqual([]);
+
+    const consumed = withPasses([...plain.passes, consume]);
+    expect(sampledSceneDataReads(consumed)).toHaveLength(1);
+    expect(sceneDataSurfaceBindings([consumed], admission)).toEqual([
+      { schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA, owners: [owner] },
+    ]);
+
+    const twice = withPasses([consume, ...plain.passes, { ...consume, name: 'consume-again' }]);
+    expect(sampledSceneDataReads(twice)).toHaveLength(2);
+    expect(sceneDataSurfaceBindings([twice], admission)).toEqual([
+      { schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA, owners: [owner] },
+    ]);
+
+    expect(sceneDataSurfaceBindings([withPasses([])], admission)).toEqual([]);
   });
 });

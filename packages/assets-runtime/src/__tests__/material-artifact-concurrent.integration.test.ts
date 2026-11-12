@@ -1,6 +1,6 @@
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { ArtifactDescriptor } from '@forgeax/engine-types';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
 import { runtimeAssets } from '../internal/runtime-assets';
@@ -9,6 +9,13 @@ import {
   materialProductionFixture,
 } from './fixtures/material-production.js';
 import { materialRecordFixture } from './fixtures/material-publication.js';
+
+// Verified program views from earlier cases stay live until a collection, and
+// a live view legitimately replaces a read; each case counts its own reads.
+beforeEach(() => {
+  const realm = globalThis as unknown as Record<symbol, { bytes: Map<string, unknown> }>;
+  realm[Symbol.for('forgeax.assets.shared-immutable-data')]?.bytes.clear();
+});
 
 /** Production pools programs; loose transport (dev server, Runtime Packs) keeps one read each. */
 function loosenPrograms(fixture: Awaited<ReturnType<typeof materialProductionFixture>>) {

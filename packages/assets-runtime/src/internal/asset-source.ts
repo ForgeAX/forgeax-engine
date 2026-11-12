@@ -26,6 +26,7 @@ import {
   type ArtifactReadRequest,
   decodeArtifactTransport,
   finishArtifactBytes,
+  liveGroupedArtifact,
   readArtifact,
   readStoredArtifact,
   verifyArtifactBytes,
@@ -222,6 +223,8 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
       hint: error.hint,
     });
     if (range !== undefined) {
+      const live = liveGroupedArtifact(descriptor);
+      if (live !== undefined) return ok({ stored: live, decoded: live });
       const reading = bundles.read({
         url,
         range,
@@ -262,6 +265,8 @@ export function createAssetSource(options: AssetSourceOptions): AssetSource {
           return verified.ok ? verified : err(decodeError(verified.error));
         },
         invalid: (reason) => artifactError(request.guid, reason),
+        // A decoded group is read only to select and verify a private member.
+        shared: descriptor.decodedRange !== undefined,
         ...(descriptor.integrity === undefined || descriptor.decodedRange !== undefined
           ? {}
           : { digest: descriptor.integrity.digest }),

@@ -25,6 +25,15 @@ export interface BundleWindowRead<Failure> {
    * Range refetch.
    */
   readonly digest?: string;
+  /**
+   * The finished value is an intermediate that consumers only read and copy
+   * from, such as a decoded shader group from which each member is selected and
+   * verified. No consumer keeps it, so nothing would keep its stored entry
+   * alive either: a shared window stays resident after extraction (bounded by
+   * the residency limit and released by `trim()`), and reuse borrows the live
+   * value without copying it.
+   */
+  readonly shared?: boolean;
   invalid(reason: string): Failure;
 }
 
@@ -36,6 +45,8 @@ interface Resident {
 /**
  * Fetched Bundles stay resident as independent entries. Taking an entry moves it
  * out: each byte lives either in its Bundle or in the extracted value, never both.
+ * A shared window is the exception: its extracted value has no owner, so its
+ * stored entry stays resident and each extraction receives a private copy.
  * Once a Bundle has been fetched whole, a later read of a released entry asks for
  * only that window; a host that answers with the whole file repopulates it.
  */
@@ -44,6 +55,8 @@ export class BundleStore<Failure> {
   private readonly resident = new Map<string, Resident>();
   private readonly loading = new Map<string, Promise<Result<void, Failure>>>();
   private readonly fetched = new Set<string>();
+  /** Window keys read as shared; a refetch always restores them. */
+  private readonly sharedWindows = new Set<string>();
   private readonly windows = new Map<
     string,
     Promise<Result<Uint8Array, Failure>> | WeakRef<Uint8Array>
@@ -58,18 +71,21 @@ export class BundleStore<Failure> {
   async read(request: BundleWindowRead<Failure>): Promise<Result<Uint8Array, Failure>> {
     const bundle = `${request.url}\0${request.range.bundleDigest}`;
     const key = `${bundle}\0${request.range.offset}`;
+    if (request.shared === true) this.sharedWindows.add(key);
+    // Owners may mutate or transfer their bytes; a reuse is a verified private
+    // copy. Shared values are only read, so their readers borrow them.
+    const borrow = (value: Uint8Array) => (request.shared === true ? value : value.slice());
     const existing = this.windows.get(key);
     if (existing !== undefined && !('deref' in existing)) {
       this.transfers.count(bundle, 'coalescedReads');
       const shared = await existing;
-      return shared.ok ? request.reuse(shared.value.slice()) : shared;
+      return shared.ok ? request.reuse(borrow(shared.value)) : shared;
     }
     const alive =
       existing?.deref() ??
       (request.digest === undefined ? undefined : findVerifiedArtifactBytes(request.digest));
     if (alive !== undefined) {
-      // Owners may mutate or transfer their bytes; a reuse is a verified private copy.
-      const reused = await request.reuse(alive.slice());
+      const reused = await request.reuse(borrow(alive));
       if (reused.ok) {
         this.transfers.count(bundle, 'verifiedReuse');
         return reused;
@@ -94,11 +110,12 @@ export class BundleStore<Failure> {
     return pending;
   }
 
-  /** Release resident entries; extracted values keep their own owners. */
+  /** Release resident entries, shared windows included; extracted values keep their own owners. */
   trim(): number {
     const released = this.resident.size;
     for (const key of this.resident.keys()) this.transfers.count(key, 'evictions');
     this.resident.clear();
+    this.sharedWindows.clear();
     this.bytes = 0;
     return released;
   }
@@ -118,19 +135,23 @@ export class BundleStore<Failure> {
     bundle: string,
     request: BundleWindowRead<Failure>,
   ): Promise<Result<Uint8Array, Failure>> {
-    let stored = this.take(bundle, request.range);
+    let stored = this.take(bundle, request);
     if (stored === undefined && this.fetched.has(bundle) && !this.loading.has(bundle)) {
       this.transfers.count(bundle, 'rereads');
       const fetched = await request.fetch(true);
       if (!fetched.ok) return fetched;
-      if (fetched.value.byteLength === request.range.length) return request.finish(fetched.value);
+      if (fetched.value.byteLength === request.range.length) {
+        // Consumers of a shared window verify every member they select from it.
+        if (request.shared === true) this.retain(bundle, request.range, fetched.value.slice());
+        return request.finish(fetched.value);
+      }
       const admitted = this.admit(bundle, fetched.value, request);
       if (!admitted.ok) return admitted;
-      stored = this.take(bundle, request.range);
+      stored = this.take(bundle, request);
     } else if (stored === undefined) {
       const loaded = await this.load(bundle, request);
       if (!loaded.ok) return loaded;
-      stored = this.take(bundle, request.range);
+      stored = this.take(bundle, request);
     }
     if (stored === undefined)
       return err(request.invalid(`no Bundle entry at offset ${request.range.offset}`));
@@ -139,12 +160,19 @@ export class BundleStore<Failure> {
     return request.finish(stored);
   }
 
-  private take(bundle: string, range: BundleWindow): Uint8Array | undefined {
+  private take(bundle: string, request: BundleWindowRead<Failure>): Uint8Array | undefined {
+    const { offset } = request.range;
     const resident = this.resident.get(bundle);
-    const stored = resident?.entries.get(range.offset);
+    const stored = resident?.entries.get(offset);
     if (resident === undefined || stored === undefined) return undefined;
     this.transfers.count(bundle, 'residentHits');
-    resident.entries.delete(range.offset);
+    if (request.shared === true) {
+      // Refresh recency and keep the entry; extraction receives a private copy.
+      this.resident.delete(bundle);
+      this.resident.set(bundle, resident);
+      return stored.slice();
+    }
+    resident.entries.delete(offset);
     resident.bytes -= stored.byteLength;
     this.bytes -= stored.byteLength;
     this.resident.delete(bundle);
@@ -186,10 +214,11 @@ export class BundleStore<Failure> {
     }
     const resident: Resident = { entries: new Map(), bytes: 0 };
     for (const window of table.value) {
-      const extracted = this.windows.get(`${bundle}\0${window.offset}`);
+      const key = `${bundle}\0${window.offset}`;
+      const extracted = this.windows.get(key);
       const settled = extracted !== undefined && 'deref' in extracted;
       // Alive extracted values already own their bytes; every other entry is restored.
-      if (settled && extracted.deref() !== undefined) continue;
+      if (settled && extracted.deref() !== undefined && !this.sharedWindows.has(key)) continue;
       resident.entries.set(
         window.offset,
         bytes.slice(window.offset, window.offset + window.length),
@@ -199,13 +228,30 @@ export class BundleStore<Failure> {
     this.fetched.add(bundle);
     this.resident.set(bundle, resident);
     this.bytes += resident.bytes;
+    this.evictBeyondLimit(bundle);
+    return ok(undefined);
+  }
+
+  /** Keep one ranged shared entry resident, as if its Bundle had restored it. */
+  private retain(bundle: string, range: BundleWindow, bytes: Uint8Array): void {
+    const resident = this.resident.get(bundle) ?? { entries: new Map(), bytes: 0 };
+    const previous = resident.entries.get(range.offset)?.byteLength ?? 0;
+    resident.entries.set(range.offset, bytes);
+    resident.bytes += bytes.byteLength - previous;
+    this.bytes += bytes.byteLength - previous;
+    this.resident.delete(bundle);
+    this.resident.set(bundle, resident);
+    this.evictBeyondLimit(bundle);
+  }
+
+  /** Evict least recently used Bundles other than `keep` until within the limit. */
+  private evictBeyondLimit(keep: string): void {
     for (const [key, other] of this.resident) {
       if (this.bytes <= this.maxResidentBytes) break;
-      if (key === bundle) continue;
+      if (key === keep) continue;
       this.transfers.count(key, 'evictions');
       this.resident.delete(key);
       this.bytes -= other.bytes;
     }
-    return ok(undefined);
   }
 }

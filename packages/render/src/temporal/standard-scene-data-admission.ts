@@ -5,6 +5,7 @@ import {
   deriveRenderFeaturePassAccess,
   type RenderFeatureDerivedAccess,
   type RenderFeaturePlannedFrame,
+  type RenderFeatureWorkPlan,
 } from '../features/plan';
 import type { MaterialResource } from '../material-resource';
 import { runtimeMaterialShaderIdForMaterial } from '../material-resource';
@@ -95,12 +96,26 @@ function sceneDataOwnerKey(owner: SceneDataBindingOwner, schema: SceneDataSchema
   ]);
 }
 
+/**
+ * Whether any pass of the plan can derive a SceneData `sampled-read`. Pass
+ * access only yields a non-string resource from a `prepared-gpu-resource`
+ * declaration's `logicalTarget` (raster `sampledTargets` keep strings only),
+ * so a plan without such a SceneData declaration contributes no binding.
+ */
+function declaresSceneDataTarget(plan: RenderFeatureWorkPlan): boolean {
+  return plan.resources.some(
+    (resource) =>
+      resource.kind === 'prepared-gpu-resource' && isSceneDataTarget(resource.logicalTarget),
+  );
+}
+
 export function sceneDataSurfaceBindings(
   plans: readonly RenderFeaturePlannedFrame[],
   admission?: StandardSceneSurfaceAdmission,
 ): readonly SceneDataSurfaceBinding[] {
   const owners = new Map<SceneDataSchemaId, Map<string, SceneDataBindingOwner>>();
   for (const planned of plans) {
+    if (!declaresSceneDataTarget(planned.plan)) continue;
     for (const pass of planned.plan.passes) {
       for (const access of deriveRenderFeaturePassAccess(planned.plan, pass)) {
         const binding = sceneDataOwnerForAccess(planned, access, admission);

@@ -57,6 +57,31 @@ it('encodes only visible typed-array bytes independently of pooled storage', () 
   expect(explicitRestored.values.buffer).toBe(explicitRestored.buffer);
 });
 
+it('normalizes pooled view offsets without losing overlapping aliases', () => {
+  const product = () => {
+    const pooled = Buffer.allocUnsafe(128);
+    pooled.fill(0);
+    const first = new Float32Array(pooled.buffer, pooled.byteOffset + 16, 3);
+    const firstBytes = new Uint8Array(pooled.buffer, pooled.byteOffset + 16, 12);
+    const second = new Float32Array(pooled.buffer, pooled.byteOffset + 64, 3);
+    first.set([1, -0, 3.5]);
+    second.set([4, 5, 6]);
+    return { first, firstBytes, second };
+  };
+  const first = product();
+  const second = product();
+  expect(first.first.byteOffset).not.toBe(second.first.byteOffset);
+  expect(encodeProduct(first)).toEqual(encodeProduct(second));
+
+  const restored = deserialize(encodeProduct(first)) as ReturnType<typeof product>;
+  expect(restored.first.byteOffset).toBe(0);
+  expect(restored.second.byteOffset).toBe(0);
+  expect(restored.first.buffer).toBe(restored.firstBytes.buffer);
+  expect(restored.first.buffer).not.toBe(restored.second.buffer);
+  expect([...restored.first]).toEqual([1, -0, 3.5]);
+  expect([...restored.second]).toEqual([4, 5, 6]);
+});
+
 it('encodes equal strings independently of V8 one-byte or two-byte storage', () => {
   const narrow = 'cache-product'.repeat(100);
   const wide = `\u0100${narrow}`.slice(1);

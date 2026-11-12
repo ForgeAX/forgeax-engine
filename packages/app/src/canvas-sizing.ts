@@ -68,7 +68,7 @@ export function measureCanvasDrawingBuffer(
     Number.isFinite(maxCanvasPixelRatio) &&
     maxCanvasPixelRatio > 0
       ? Math.min(devicePixelRatio(), maxCanvasPixelRatio)
-      : 1;
+      : undefined;
   return measureCanvasDrawingBufferAtRatio(canvas, pixelRatio, display);
 }
 
@@ -192,7 +192,7 @@ function measurement(
     (previous?.intrinsic ?? true) &&
     clientWidth === canvas.width &&
     clientHeight === canvas.height;
-  const ratio = drawingBufferPixelRatio(pixelRatio, intrinsic);
+  const ratio = drawingBufferPixelRatio(pixelRatio, intrinsic, Math.min(cssWidth, cssHeight));
   // Diagnostic render-scale ablation scales the layout-derived buffer only.
   const scale = renderAblation()?.renderScale ?? 1;
   return {
@@ -203,11 +203,17 @@ function measurement(
   };
 }
 
-function drawingBufferPixelRatio(pixelRatio: number | undefined, intrinsic: boolean): number {
+function drawingBufferPixelRatio(
+  pixelRatio: number | undefined,
+  intrinsic: boolean,
+  shortSide: number,
+): number {
   if (intrinsic) return 1;
   return typeof pixelRatio === 'number' && Number.isFinite(pixelRatio) && pixelRatio > 0
     ? pixelRatio
-    : 1;
+    : /Android|iPhone|iPad|iPod/.test(globalThis.navigator?.userAgent ?? '')
+      ? 720 / shortSide
+      : 1;
 }
 
 function boundedSize(canvas: CanvasSurface, width: number, height: number, pixelRatio: number) {

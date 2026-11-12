@@ -7,6 +7,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import {
+  assertCoverageInputsUnchanged,
+  collectRepairArtifactSources,
+} from '../ci-repair-artifacts.mjs';
+import {
   ciRepairQualification,
   repairArtifactSuites,
   repairComparison,
@@ -427,18 +431,15 @@ test('failed, cancelled, skipped, missing and duplicate job outcomes always exec
   }
 });
 
-test('an artifact-producing shard reruns while its complete consumer needs fresh data', async () => {
+test('a passed coverage shard survives failed peers and aggregate', async () => {
   const f = fixture();
   f.input.jobKey = 'coverage-pnpm-shard';
   f.input.checkName = f.job.name = 'coverage-pnpm-shard-0';
   const consumer = { ...f.job, id: 23, name: 'coverage-pnpm', conclusion: 'failure' };
   f.jobs.push(consumer);
-  assert.equal(
-    (await ciRepairQualification(f.input, f.api)).reason,
-    'artifact-consumer-needs-fresh-inputs',
-  );
+  assert.equal((await ciRepairQualification(f.input, f.api)).reused, true);
   consumer.conclusion = 'success';
-  assert.equal((await ciRepairQualification(f.input, f.api)).reused, false);
+  assert.equal((await ciRepairQualification(f.input, f.api)).reused, true);
   for (const shard of [1, 2, 3])
     f.jobs.push({ ...f.job, id: 30 + shard, name: `coverage-pnpm-shard-${shard}` });
   assert.equal((await ciRepairQualification(f.input, f.api)).reused, true);
@@ -590,7 +591,7 @@ test('math bench reuses an exact successful peer and keeps unqualified evidence 
   }
 });
 
-test('SDK reuse preserves the complete successful artifact suite and keeps failed suites fresh', async () => {
+test('SDK repair reuses each successful consumer even when a peer or aggregate failed', async () => {
   const f = fixture();
   f.input.workflow = 'sdk-pr-preflight.yml';
   f.input.jobKey = 'consumers';
@@ -606,10 +607,7 @@ test('SDK reuse preserves the complete successful artifact suite and keeps faile
     total_count: 2,
     jobs: [job, aggregate],
   });
-  assert.equal(
-    (await ciRepairQualification(f.input, f.api)).reason,
-    'artifact-consumer-needs-fresh-inputs',
-  );
+  assert.equal((await ciRepairQualification(f.input, f.api)).sourceRunId, 12);
   aggregate.conclusion = 'success';
   assert.equal((await ciRepairQualification(f.input, f.api)).sourceRunId, 12);
   f.input.jobKey = 'build-sdk';
@@ -910,4 +908,84 @@ test('the built-in API client needs no runner CLI and bounds authenticated reque
       requestGitHub('repos/example/engine', 'test-token', async () => ({ ok: false, status })),
       /GitHub history unavailable/,
     );
+});
+
+test('coverage artifact reuse rejects changed covered source, submodule pins and compiler inputs', () => {
+  const files = ['packages/app/src/browser.ts', 'packages/modeling/src/mesh.ts'];
+  assertCoverageInputsUnchanged(files, [
+    'scripts/ci/ci-repair-artifacts.mjs',
+    'skills/forgeax-engine-debug/SKILL.md',
+  ]);
+  for (const changed of [
+    'packages/app/src/browser.ts',
+    'packages/modeling',
+    'tsconfig.base.json',
+    'pnpm-lock.yaml',
+    'config/vitest-policy.ts',
+  ])
+    assert.throws(
+      () => assertCoverageInputsUnchanged(files, [changed]),
+      /coverage-repair-inputs-changed/,
+    );
+});
+
+test('coverage restoration selects original successful artifacts and the current failed-shard replacement', async () => {
+  const f = fixture();
+  f.jobs.splice(
+    0,
+    f.jobs.length,
+    ...[0, 1, 2, 3].map((i) => ({
+      ...f.job,
+      id: 22 + i,
+      name: `coverage-pnpm-shard-${i}`,
+      conclusion: i === 0 ? 'cancelled' : 'success',
+    })),
+  );
+  const jobs = f.jobs.map((job, i) => ({
+    ...job,
+    id: 50 + i,
+    run_id: 99,
+    conclusion: 'success',
+    steps:
+      i === 0 ? [] : [{ name: `[ci-repair-reused] run 11 job ${job.id}`, conclusion: 'success' }],
+  }));
+  const artifacts = f.jobs.map((_job, i) => ({
+    id: 70 + i,
+    name: `coverage-shard-${i}`,
+    expired: false,
+    size_in_bytes: 100,
+    digest: `sha256:${'d'.repeat(64)}`,
+    workflow_run: { id: i === 0 ? 99 : 11, head_sha: i === 0 ? newSha : oldSha },
+  }));
+  const api = async (endpoint) => {
+    if (endpoint.includes('/runs/99/jobs?')) return { total_count: 4, jobs };
+    for (const id of [11, 99])
+      if (endpoint.includes(`/runs/${id}/artifacts?`)) {
+        const selected = artifacts.filter((x) => x.workflow_run.id === id);
+        return { total_count: selected.length, artifacts: selected };
+      }
+    return f.api(endpoint);
+  };
+  const context = {
+    ...f.input,
+    jobKey: 'coverage-pnpm-shard',
+    checkPrefix: 'coverage-pnpm-shard-',
+  };
+  const rows = await collectRepairArtifactSources(
+    context,
+    [0, 1, 2, 3].map((i) => `coverage-pnpm-shard-${i}`),
+    (name) => name.replace('coverage-pnpm-shard-', 'coverage-shard-'),
+    api,
+  );
+  assert.equal(rows.filter((x) => x.source.reused).length, 3);
+  assert.equal(rows.find((x) => !x.source.reused).checkName, 'coverage-pnpm-shard-0');
+  artifacts[1].workflow_run.head_sha = newSha;
+  await assert.rejects(
+    collectRepairArtifactSources(
+      context,
+      [0, 1, 2, 3].map((i) => `coverage-pnpm-shard-${i}`),
+      (name) => name.replace('coverage-pnpm-shard-', 'coverage-shard-'),
+      api,
+    ),
+  );
 });

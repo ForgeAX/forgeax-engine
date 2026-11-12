@@ -82,7 +82,7 @@ The App releases relay capabilities once across stop, disposal and host cleanup.
 With execution bootstrapping, provide `shaderManifestUrl`; host-side
 `readShaderManifest` callbacks cannot cross that execution boundary.
 
-The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. CSS-sized drawing buffers default to one physical pixel per CSS pixel, matching Three.js `setPixelRatio(1)`. App does not select this scale from device pixel ratio or device performance; set `canvasPixelRatio` explicitly to request a different scale, for example `window.devicePixelRatio`. Render's authored `DynamicResolution` remains a separate opt-in. Dimensions clamp proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
+The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. On Android and iOS browsers, CSS-sized drawing buffers default to a 720-pixel short side; the long side follows the canvas aspect ratio. Desktop browsers default to one physical pixel per CSS pixel. Set `canvasPixelRatio` explicitly to override either default, for example `1` for CSS resolution or `window.devicePixelRatio` for device resolution. The mobile default does not multiply by DPR. Render's authored `DynamicResolution` remains a separate opt-in. Dimensions clamp proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
 
 The browser form installs `canvasAspectPlugin` automatically. Native presentation
 hosts using the assemble form install `canvasAspectPlugin(() => canvas)` in

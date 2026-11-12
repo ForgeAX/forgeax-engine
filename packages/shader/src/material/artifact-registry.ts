@@ -1,4 +1,4 @@
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, isDeepFrozenJson, ok, type Result } from '@forgeax/engine-types';
 
 export interface MaterialRuntimeArtifact {
   readonly key: string;
@@ -95,11 +95,74 @@ export function equalMaterialArtifactBytes(left: Uint8Array, right: Uint8Array):
   return true;
 }
 
-// One value is equal to itself; distinct values keep the canonical JSON comparison.
+/**
+ * `JSON.stringify(left) === JSON.stringify(right)` for deep-frozen JSON, without
+ * building either string. Returns undefined where the serializer's own rules
+ * decide (`undefined` members, non-finite numbers), so the caller keeps the
+ * canonical comparison there. Members compare in key order, as they serialize.
+ */
+function equalFrozenJson(left: unknown, right: unknown): boolean | undefined {
+  if (left === right) return typeof left === 'number' && !Number.isFinite(left) ? undefined : true;
+  if (left === undefined || right === undefined) return undefined;
+  if (typeof left !== typeof right) return undefined;
+  if (typeof left === 'number')
+    return Number.isFinite(left) && Number.isFinite(right) ? false : undefined;
+  if (typeof left === 'string' || typeof left === 'boolean') return false;
+  if (left === null || right === null || typeof left !== 'object') return undefined;
+  return equalFrozenJsonNodes(left as object, right as object);
+}
+
+/** Arrays serialize by index over their length: a hole is `null`, a named property is not emitted. */
+function equalFrozenJsonArrays(
+  left: readonly unknown[],
+  right: readonly unknown[],
+): boolean | undefined {
+  if (left.length !== right.length) return false;
+  let undecided = false;
+  for (let index = 0; index < left.length; index++) {
+    const equal = equalFrozenJson(left[index], right[index]);
+    if (equal === false) return false;
+    if (equal === undefined) undecided = true;
+  }
+  return undecided ? undefined : true;
+}
+
+function equalFrozenJsonNodes(left: object, right: object): boolean | undefined {
+  const leftArray = Array.isArray(left);
+  if (leftArray !== Array.isArray(right)) return false;
+  if (leftArray) return equalFrozenJsonArrays(left, right as readonly unknown[]);
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return undefined;
+  let undecided = false;
+  for (let index = 0; index < leftKeys.length; index++) {
+    const key = leftKeys[index] as string;
+    if (key !== rightKeys[index]) return undefined;
+    const equal = equalFrozenJson(
+      (left as Record<string, unknown>)[key],
+      (right as Record<string, unknown>)[key],
+    );
+    if (equal === false) return false;
+    if (equal === undefined) undecided = true;
+  }
+  return undecided ? undefined : true;
+}
+
+// Structural verdict for distinct deep-frozen values; undefined leaves the
+// decision to the canonical JSON comparison.
+function frozenJsonVerdict(left: unknown, right: unknown): boolean | undefined {
+  if (left === right) return typeof left === 'object' && left !== null ? true : undefined;
+  if (typeof left !== 'object' || typeof right !== 'object' || left === null || right === null)
+    return undefined;
+  if (!isDeepFrozenJson(left) || !isDeepFrozenJson(right)) return undefined;
+  return equalFrozenJson(left, right);
+}
+
 function equalParamSchema(left: MaterialRuntimeArtifact, right: MaterialRuntimeArtifact): boolean {
-  const leftSchema = left.metadata?.paramSchema;
-  const rightSchema = right.metadata?.paramSchema;
-  return leftSchema === rightSchema || JSON.stringify(leftSchema) === JSON.stringify(rightSchema);
+  const a = left.metadata?.paramSchema;
+  const b = right.metadata?.paramSchema;
+  if (a === b) return true;
+  return frozenJsonVerdict(a, b) ?? JSON.stringify(a) === JSON.stringify(b);
 }
 
 function equalReceipt(left: MaterialRuntimeArtifact, right: MaterialRuntimeArtifact): boolean {
@@ -107,10 +170,13 @@ function equalReceipt(left: MaterialRuntimeArtifact, right: MaterialRuntimeArtif
   const leftReceipt = left.metadata?.receipt;
   const rightAbi = right.metadata?.abi;
   const rightReceipt = right.metadata?.receipt;
-  return (
-    (leftAbi === rightAbi && leftReceipt === rightReceipt) ||
-    JSON.stringify([leftAbi, leftReceipt]) === JSON.stringify([rightAbi, rightReceipt])
-  );
+  if (leftAbi === rightAbi && leftReceipt === rightReceipt) return true;
+  const abi = leftAbi === rightAbi ? true : frozenJsonVerdict(leftAbi, rightAbi);
+  const receipt =
+    leftReceipt === rightReceipt ? true : frozenJsonVerdict(leftReceipt, rightReceipt);
+  if (abi === false || receipt === false) return false;
+  if (abi === true && receipt === true) return true;
+  return JSON.stringify([leftAbi, leftReceipt]) === JSON.stringify([rightAbi, rightReceipt]);
 }
 
 /**

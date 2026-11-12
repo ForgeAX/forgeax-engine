@@ -1163,7 +1163,6 @@
     "scripts/forgeax/sdk-candidate.mjs::validateCandidate": 30,
     "scripts/forgeax/sdk-lib.mjs::discoverSdkTemplates": 26,
     "scripts/forgeax/sdk-lib.mjs::verifySdkViewRuntime": 22,
-    "scripts/forgeax/sdk-pr-preflight.mjs::aggregateSdkConsumers": 21,
     "scripts/forgeax/verify-sdk.mjs::verifyDev": 21,
     "scripts/forgeax/verify-sdk.mjs::verifyProjectBrowser": 37,
     "scripts/fx.ts::setup": 24,

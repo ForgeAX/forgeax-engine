@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DIRECT_LIGHT_DAWN_TEST_FILE } from './dawn-gate-roster.mjs';
+import { DAWN_VITEST_CONFIG, DIRECT_LIGHT_DAWN_TEST_FILE } from './dawn-gate-roster.mjs';
 import { runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -208,6 +208,8 @@ async function runPartition({ cliPath, partition, reportPath, env }) {
   const args = [
     cliPath,
     'run',
+    '--config',
+    DAWN_VITEST_CONFIG,
     '--project=dawn',
     '--passWithNoTests=false',
     DIRECT_LIGHT_DAWN_TEST_FILE,

@@ -165,6 +165,7 @@ async function buildDeviceCache(
     magFilter: 'linear',
     minFilter: 'linear',
     mipmapFilter: 'linear',
+    ...(device.caps.backendKind === 'wgpu-webgl2' ? { lodMaxClamp: 0 } : {}),
   });
   if (!samplerRes.ok) return samplerRes;
 
@@ -218,7 +219,7 @@ function encodeMipmapBlit(
   levels: number,
   pipeline: RenderPipeline,
   cache: MipmapPipelineCache,
-): Result<Texture, RhiError> {
+): Result<readonly Texture[], RhiError> {
   const arrayLayerCount = descriptor.arrayLayerCount ?? 1;
   if (!Number.isSafeInteger(arrayLayerCount) || arrayLayerCount < 1)
     return err(
@@ -228,6 +229,8 @@ function encodeMipmapBlit(
         hint: 'provide the number of layers in the target 2D or cube texture',
       }),
     );
+  if (device.caps.backendKind === 'wgpu-webgl2')
+    return encodePhysicalMipmapChain(device, encoder, texture, descriptor, levels, pipeline, cache);
   const scratchRes = device.createTexture({
     label: 'mipmap-scratch',
     size: [mipDimension(descriptor.width, 1), mipDimension(descriptor.height, 1)],
@@ -237,16 +240,39 @@ function encodeMipmapBlit(
   });
   if (!scratchRes.ok) return scratchRes;
   const scratch = scratchRes.value;
+  const transient = [scratch];
   const fail = (error: RhiError): Result<never, RhiError> => {
-    device.destroyTexture(scratch);
+    for (const resource of transient) device.destroyTexture(resource);
     return err(error);
   };
+  // WebGL2 cannot reinterpret an array layer as a sampler2D texture. Keep
+  // the blit shader's 2D input physical: copy one layer/mip into a reusable
+  // 2D staging chain before sampling it. This also serves cube faces.
+  let source = texture;
+  if (arrayLayerCount > 1) {
+    const staging = device.createTexture({
+      label: 'mipmap-array-source',
+      size: [descriptor.width, descriptor.height],
+      mipLevelCount: levels - 1,
+      format: descriptor.format,
+      usage: 0x02 | 0x04,
+    });
+    if (!staging.ok) return fail(staging.error);
+    source = staging.value;
+    transient.push(source);
+  }
   for (let layer = 0; layer < arrayLayerCount; layer++) {
     for (let i = 1; i < levels; i++) {
-      const srcViewRes = device.createTextureView(texture, {
+      if (source !== texture)
+        encoder.copyTextureToTexture(
+          { texture, mipLevel: i - 1, origin: { x: 0, y: 0, z: layer } },
+          { texture: source, mipLevel: i - 1 },
+          [mipDimension(descriptor.width, i - 1), mipDimension(descriptor.height, i - 1), 1],
+        );
+      const srcViewRes = device.createTextureView(source, {
         baseMipLevel: i - 1,
         mipLevelCount: 1,
-        baseArrayLayer: layer,
+        baseArrayLayer: 0,
         arrayLayerCount: 1,
         dimension: '2d',
       });
@@ -292,7 +318,90 @@ function encodeMipmapBlit(
     }
   }
 
-  return ok(scratch);
+  return ok(transient);
+}
+
+/** GLES mip views share mutable base/max levels with the physical texture.
+ * Read the full uploaded view at LOD zero and copy generated levels back
+ * from physical, single-level images. One chain serves every array layer. */
+function encodePhysicalMipmapChain(
+  device: RhiDevice,
+  encoder: RhiCommandEncoder,
+  texture: Texture,
+  descriptor: MipmapTextureDescriptor,
+  levels: number,
+  pipeline: RenderPipeline,
+  cache: MipmapPipelineCache,
+): Result<readonly Texture[], RhiError> {
+  const images: Texture[] = [];
+  const fail = (error: RhiError): Result<never, RhiError> => {
+    for (const image of images) device.destroyTexture(image);
+    return err(error);
+  };
+  for (let mip = 0; mip < levels; mip++) {
+    const image = device.createTexture({
+      label: `mipmap-physical-${mip}`,
+      size: [mipDimension(descriptor.width, mip), mipDimension(descriptor.height, mip)],
+      mipLevelCount: 1,
+      format: descriptor.format,
+      usage: MIPMAP_SCRATCH_USAGE | 0x02 | 0x04,
+    });
+    if (!image.ok) return fail(image.error);
+    images.push(image.value);
+  }
+  const first = images[0];
+  if (first === undefined) return ok(images);
+  const layers = descriptor.arrayLayerCount ?? 1;
+  for (let layer = 0; layer < layers; layer++) {
+    let previous = layers > 1 ? first : texture;
+    // Array layers already require COPY_SRC for physical 2D staging. Ordinary
+    // 2D inputs retain their TEXTURE_BINDING | COPY_DST usage contract.
+    if (layers > 1)
+      encoder.copyTextureToTexture(
+        { texture, origin: { x: 0, y: 0, z: layer } },
+        { texture: first },
+        [descriptor.width, descriptor.height, 1],
+      );
+    for (const [mip, image] of images.entries()) {
+      if (mip === 0 && layers > 1) continue;
+      const source = device.createTextureView(previous, { dimension: '2d' });
+      if (!source.ok) return fail(source.error);
+      const target = device.createTextureView(image, { dimension: '2d' });
+      if (!target.ok) return fail(target.error);
+      const group = device.createBindGroup({
+        label: `mipmap-physical-bg-${mip}`,
+        layout: cache.layout,
+        entries: [
+          { binding: 0, resource: { kind: 'sampler', value: cache.sampler } },
+          { binding: 1, resource: { kind: 'textureView', value: source.value } },
+        ],
+      });
+      if (!group.ok) return fail(group.error);
+      const pass = encoder.beginRenderPass({
+        label: `mipmap-physical-pass-${mip}`,
+        colorAttachments: [
+          {
+            view: target.value,
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, group.value);
+      pass.draw(3, 1, 0, 0);
+      pass.end();
+      if (mip > 0)
+        encoder.copyTextureToTexture(
+          { texture: image },
+          { texture, mipLevel: mip, origin: { x: 0, y: 0, z: layer } },
+          [mipDimension(descriptor.width, mip), mipDimension(descriptor.height, mip), 1],
+        );
+      previous = image;
+    }
+  }
+  return ok(images);
 }
 
 /**
@@ -334,7 +443,7 @@ export function encodeMipmaps(
   return ok(() => {
     if (released) return;
     released = true;
-    device.destroyTexture(encoded.value);
+    for (const texture of encoded.value) device.destroyTexture(texture);
   });
 }
 

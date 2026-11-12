@@ -23,10 +23,6 @@ export function shadowViewContains(
   return frustum.intersectsBox(planes as frustum.Frustum, worldBoundsScratch);
 }
 
-export function shadowPlanes(matrix: Float32Array): Float32Array {
-  return frustum.fromViewProjection(frustum.create(), matrix as never);
-}
-
 /**
  * Culling planes of every shadow view a frame may raster: this view's
  * directional cascades, then the Render World point-face and spot views. Each

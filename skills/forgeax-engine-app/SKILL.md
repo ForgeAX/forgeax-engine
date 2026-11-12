@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-app
 description: >-
-  ForgeaX App assembly, worker policies, and browser frame ownership. Use when
+  ForgeAX App assembly, worker policies, and browser frame ownership. Use when
   bootstrapping a game, selecting time or worker policy, wiring plugins/input/profiling,
   or diagnosing execution and rebuild reports.
 ---
@@ -15,6 +15,12 @@ arbitrary `data-action` attribute. Verify real click acknowledgement and visible
 geometry rather than the presence of HTML text.
 
 ## Render happy path
+
+Supply optional host tools through the App host adapter. Keep environment and
+HMR interpretation in DevKit or the bundler adapter; App, Renderer and animation
+consume explicit capabilities and diagnostic subscriptions. Follow the
+[runtime boundary contracts](../../scripts/ci/README.md#runtime-and-tool-boundary-contracts)
+when adding an adapter or diagnosing a boundary gate failure.
 
 The app host follows `RenderScene -> Standard Pipeline -> DeviceScope -> FrameReceipt`.
 Use `createApp`, then let the host perform `attach -> draw`; use `inspect`, `observe`, and `recover`
@@ -36,6 +42,10 @@ infer GPU release from Worker termination.
 Recheck both together after asynchronous waits: loss clears the old queue before
 the replacement can admit a source frame.
 Read `app.canvas` after replacement and rebind any caller-owned DOM listeners.
+For picture acceptance, count `forgeax:frame-completed` events whose
+`presentation` is `ready` on that canvas and current World. The report
+`render.completedFrame` is a source publication identifier; subtracting
+identifiers does not count completed pictures or exclude preparation.
 `recover()` is single-flight, so concurrent calls share one Promise. A
 `faulted` renderer must be disposed and recreated; `disposed` is terminal.
 
@@ -86,6 +96,14 @@ app.start().unwrap();
 
 Import browser construction from `@forgeax/engine/app/browser`; the root `app` entry requires an explicit borrowed `platform`, `renderer`, and `world`. The browser entry creates its World, renderer, default plugins, browser input backend, and frame loop. `app.start()` only arms the browser loop after the factory Result is successful.
 
+CSS-sized drawing buffers default to a 720-pixel short side on Android and iOS
+browsers, preserving the canvas aspect ratio without multiplying by DPR. Desktop
+browsers default to one physical pixel per CSS pixel. An explicit
+`canvasPixelRatio` overrides either default; use `1` for CSS resolution or
+`window.devicePixelRatio` for device resolution. Render's
+authored `DynamicResolution` remains a separate opt-in. Device texture limits
+still clamp the resulting physical extent proportionally.
+
 Choose `animation: { cadence: 'fixed' }` at App assembly when using skeletal
 motion. Ordinary DevKit projects forward that same option through
 `forgeax dev start --animation '{"cadence":"fixed"}'` and
@@ -115,6 +133,7 @@ const report = result.value.execution.report();
 | Fixed skeletal animation | Set `animation: { cadence: 'fixed' }` and World fixed time; App forwards the Animation-owned POD to Host/Engine Worker, including rebuild. Add the motion plugin without duplicating default animation. |
 | Require a worker | Set its policy to `true`; handle `app-execution-worker-unavailable` |
 | Disable independent rendering | Set `render: false`; configure the co-located Renderer |
+| WebGPU adapter cannot be acquired | Keep `auto`; usable Worker WebGL2 remains eligible. Inspect `report.capabilities.workerWebGpu` for admission and `report.render.capabilities.backendKind` for the actual backend |
 | Shared numeric kernels | Leave `kernels: 'auto'`, serve COOP/COEP and inspect actual `kernelDispatch` |
 | Host-only bootstrap | Set `engine: false`; leave dependent policies auto or false |
 | Partial Kernel write | Call `app.execution.rebuild()` and use the new World identity |
@@ -123,7 +142,10 @@ const report = result.value.execution.report();
 World and Assets stay in the Engine Worker. With `render` enabled, a child owns
 Renderer/WebGPU; source plugins inject World/Assets and use bootstrap
 `configureRenderer` for GPU setup. Declare Feature implementations through the
-bootstrap. Logic N+1 overlaps render N; admission of N+2 waits for N's GPU receipt.
+bootstrap. Native Worker and Host display callbacks serve one frame demand; the
+first callback cancels the other lease. A delayed Worker clock does not hold a
+live Host clock, and frame credit, input sampling and time remain Host-owned.
+Logic N+1 overlaps render N; admission of N+2 waits for N's GPU receipt.
 Kernel workers receive eligible shared numeric spans, independently of render
 placement. Their initialization and module preflight inherit App `startupTimeoutMs`;
 the first source frame uses that same startup policy. Later source admissions retain
@@ -405,6 +427,8 @@ Pointer-lock FPS / mouse look (reference: `templates/game-3d/assets/camera/camer
   gate for about one second after a loss instead of relying on the refusal.
 - A refusal is `app-pointer-lock-failed`, recoverable: the game keeps running unlocked
   and the next click retries. Never route it to a fatal handler.
+- A game crosshair must admit touch gameplay as well as pointer lock; touch mode
+  does not acquire a mouse pointer lock.
 - Desktop touch overlays (look pad, virtual stick) must not cover the canvas under the
   cursor, or they swallow the locking click; hide them unless the last pointer was touch.
 

@@ -59,6 +59,11 @@ export interface RenderSceneApplyResult {
    */
   readonly previous: ReadonlyMap<RenderSceneSlot, RenderSceneSlot>;
   readonly resynced: number;
+  /**
+   * The written rows' change journal; the GPU Scene appends its content
+   * entries to it so shadow caches read one cursor.
+   */
+  readonly journal?: import('./row-change-log').RowChangeLog;
 }
 
 export interface RenderSceneInspection {

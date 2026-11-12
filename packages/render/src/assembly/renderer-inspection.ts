@@ -2,17 +2,39 @@ import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type { RhiCanvasSurfacePresentationProof, TextureFormat } from '@forgeax/engine-rhi';
 import { dofInspection } from '../features/depth-of-field/depth-of-field-assembly';
 import { emptyBloomInspection } from '../inspection-types';
+import type { IblBindingInspection } from '../mesh-material-bindings';
 import type { OutputColorSpaceReport } from '../output-color-space';
 import type { AutoExposureInspection } from '../pipeline/standard-output/auto-exposure/inspection';
 import type { StandardLutState } from '../pipeline/standard-output/lut-state';
 import type { PipelineState } from '../record/render-context';
+import type { CameraSnapshot } from '../render-contract';
 import {
   type RenderInspection,
   type RenderOutputInspection,
   type RenderStandardOutputColorInspection,
   STANDARD_OUTPUT_TRANSFORM_FEATURE_ID,
 } from '../render-contract';
-import type { RenderSystem } from '../render-system';
+import {
+  viewBloom,
+  viewDepthOfField,
+  viewDiffuseGi,
+  viewDirectionalShadow,
+  viewFeatureGraph,
+  viewGraphAllocation,
+  viewGraphInfo,
+  viewInstanceCollections,
+  viewMeshMaterialBindings,
+  viewMotionBlur,
+  viewProbePlacement,
+  viewRenderScene,
+  viewSsr,
+  viewSsrDependencies,
+  viewTemporal,
+  viewTemporalTarget,
+  viewTransmission,
+  viewVolumetricFog,
+} from '../view-inspection';
+import type { ViewSettlementOwner } from '../world/view-settlement';
 
 /** Inputs owned by the renderer assembly for one detached output projection. */
 interface RendererOutputInspectionInput {
@@ -38,6 +60,18 @@ function writesSurface(pass: CompiledRenderGraphInfo['passes'][number]): boolean
       (access.resource === 'surface' || access.resource.startsWith('surface.')) &&
       access.usage === 'color-attachment',
   );
+}
+
+/**
+ * Preparation can record a partial IBL resource baseline for any material
+ * draw. Publish it only after a Standard draw records its final pipeline fact.
+ */
+export function projectIblBindingInspection(
+  receipt: IblBindingInspection | undefined,
+): IblBindingInspection | undefined {
+  if (receipt?.pipeline === undefined || receipt.pipeline.drawFrameId !== receipt.frameId)
+    return undefined;
+  return receipt;
 }
 
 /**
@@ -149,98 +183,153 @@ export function projectRendererOutputInspectionFromSurface(input: {
   });
 }
 
-/** Detached facts from the active render system; no renderer assembly state. */
-export function projectRenderSystemInspection(system: RenderSystem, deviceLost: boolean) {
-  const graph = deviceLost ? undefined : system.perFrameGraphInfo;
+/** Detached facts from the active view owner; no renderer assembly state. */
+export function projectRenderViewInspection(
+  inspected: ViewSettlementOwner,
+  deviceLost: boolean,
+  fields?: readonly (keyof RenderInspection)[],
+) {
+  const graph = deviceLost ? undefined : viewGraphInfo(inspected);
   const graphResourceAllocation = graph?.resourceAllocation;
-  const graphGenerationAllocation = deviceLost ? undefined : system.renderGraphGenerationAllocation;
-  const standardLighting = deviceLost ? undefined : system.standardLightingInspection;
-  const bloom = deviceLost ? emptyBloomInspection() : system.bloom;
-  const volumetricFog = system.volumetricFog;
-  const directionalShadow = system.directionalShadow;
-  const shadowRaster = system.shadowRaster;
+  const graphGenerationAllocation = deviceLost ? undefined : viewGraphAllocation(inspected);
+  const standardLighting = deviceLost
+    ? undefined
+    : inspected.frameState.submittedInspection?.standardLighting;
+  const bloom = deviceLost ? emptyBloomInspection() : viewBloom(inspected);
+  const volumetricFog = viewVolumetricFog(inspected);
+  const directionalShadow = viewDirectionalShadow(inspected);
+  const shadowRaster = inspected.frameState.shadowRaster.inspect();
+  const submitted = inspected.frameState.submittedInspection;
+  const probePlacement = viewProbePlacement(inspected);
+  const diffuseGi = viewDiffuseGi(inspected);
+  const dynamicResolution = inspected.frameState.dynamicResolution?.inspect();
+  const temporalTarget = viewTemporalTarget(inspected);
+  const motionBlur = viewMotionBlur(inspected);
+  const transmission = viewTransmission(inspected);
+  const iblBinding = projectIblBindingInspection(inspected.frameState.iblBindingInspection);
   return {
-    featureGraph: system.featureGraphInspection,
-    materialTextureSources: system.materialTextureSources,
-    frustumStats: Object.freeze({ ...system.frustumStats }),
-    visibilityStats: Object.freeze({ ...system.visibilityStats }),
-    instanceCollections: Object.freeze(
-      system.instanceCollectionsInspection.map((collection) =>
-        Object.freeze({
-          ...collection,
-          uploadRanges: Object.freeze(
-            collection.uploadRanges.map((range) => Object.freeze({ ...range })),
-          ),
-          ...(collection.error === undefined
-            ? {}
-            : {
-                error: Object.freeze({
-                  ...collection.error,
-                  detail: Object.freeze({ ...collection.error.detail }),
-                }),
-              }),
-        }),
-      ),
-    ),
-    renderScene: system.renderScene,
+    featureGraph: viewFeatureGraph(inspected),
+    materialTextureSources: inspected.recorded.materialTextureSources,
+    ...projectViewCounterInspection(inspected, fields),
+    ...projectInstanceCollectionInspection(inspected, fields),
+    ...(fields !== undefined && !fields.includes('renderScene')
+      ? {}
+      : { renderScene: viewRenderScene(inspected) }),
     ...(graphResourceAllocation === undefined
       ? {}
       : { renderGraphResourceAllocation: graphResourceAllocation }),
     ...(graphGenerationAllocation === undefined
       ? {}
       : { renderGraphGenerationAllocation: graphGenerationAllocation }),
-    ...(system.iblBinding === undefined ? {} : { iblBinding: system.iblBinding }),
-    reflectionProbes: system.reflectionProbes,
-    ssrDependencies: system.ssrDependencies,
-    ssr: system.ssr,
-    ...(system.probePlacement === undefined ? {} : { probePlacement: system.probePlacement }),
-    ...(system.diffuseGi === undefined ? {} : { diffuseGi: system.diffuseGi }),
+    ...(iblBinding === undefined ? {} : { iblBinding }),
+    reflectionProbes: inspected.reflectionProbes.inspect(),
+    ssrDependencies: viewSsrDependencies(inspected),
+    ssr: viewSsr(inspected),
+    ...(probePlacement === undefined ? {} : { probePlacement }),
+    ...(diffuseGi === undefined ? {} : { diffuseGi }),
     volumetricFog,
-    environment: system.environment,
-    temporal: system.temporal,
-    ...(system.dynamicResolution === undefined
-      ? {}
-      : { dynamicResolution: system.dynamicResolution }),
+    environment: inspected.frameState.environmentLifecycle.inspect(),
+    temporal: viewTemporal(inspected),
+    ...(dynamicResolution === undefined ? {} : { dynamicResolution }),
     bloom,
     directionalShadow,
     shadowRaster,
-    ...(system.temporalTargetInspection === undefined
-      ? {}
-      : { temporalTarget: Object.freeze(system.temporalTargetInspection) }),
-    ...(system.motionBlurInspection === undefined
-      ? {}
-      : { motionBlur: Object.freeze(system.motionBlurInspection) }),
-    ...dofInspection(system.depthOfFieldInspection),
-    ...(system.lodOcclusion === undefined
-      ? {}
-      : { lodOcclusion: Object.freeze(system.lodOcclusion.value()) }),
-    ...(system.transmission === undefined ? {} : { transmission: system.transmission }),
+    ...(temporalTarget === undefined ? {} : { temporalTarget: Object.freeze(temporalTarget) }),
+    ...(motionBlur === undefined ? {} : { motionBlur: Object.freeze(motionBlur) }),
+    ...dofInspection(viewDepthOfField(inspected)),
+    ...projectLodInspection(inspected, fields),
+    ...(transmission === undefined ? {} : { transmission }),
     ...(standardLighting === undefined
       ? {}
       : { standardLighting: Object.freeze({ ...standardLighting }) }),
-    ...(system.capsuleShadowInspection === undefined
-      ? {}
-      : { capsuleShadow: system.capsuleShadowInspection }),
-    ...(system.transparencyInspection === undefined
-      ? {}
-      : { transparency: system.transparencyInspection }),
+    ...(submitted?.capsuleShadow === undefined ? {} : { capsuleShadow: submitted.capsuleShadow }),
+    ...(submitted?.transparency === undefined ? {} : { transparency: submitted.transparency }),
+    ...projectMaterialBindingInspection(inspected, fields),
     bindGroupCounts: Object.freeze({
-      createBindGroup: system.bindGroupCounts.createBindGroup,
-      keys: Object.freeze([...system.bindGroupCounts.keys]),
+      createBindGroup: inspected.recorded.bindGroups.createBindGroup,
+      keys: Object.freeze([...inspected.recorded.bindGroups.keys]),
     }),
-    meshMaterialBindings: Object.freeze(
-      system.meshMaterialBindings.map((observation) =>
-        Object.freeze({
-          ...observation,
-          bindings: Object.freeze(
-            observation.bindings.map((binding) => Object.freeze({ ...binding })),
-          ),
-          diagnostics: Object.freeze(
-            observation.diagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
+  };
+}
+
+function projectViewCounterInspection(
+  inspected: ViewSettlementOwner,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+) {
+  return {
+    ...(fields?.includes('frustumStats') === false
+      ? {}
+      : { frustumStats: Object.freeze({ ...inspected.recorded.frustum }) }),
+    ...(fields?.includes('visibilityStats') === false
+      ? {}
+      : { visibilityStats: Object.freeze({ ...inspected.recorded.visibility }) }),
+  };
+}
+
+function projectInstanceCollectionInspection(
+  inspected: ViewSettlementOwner,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+) {
+  return {
+    ...(fields !== undefined && !fields.includes('instanceCollections')
+      ? {}
+      : {
+          instanceCollections: Object.freeze(
+            viewInstanceCollections(inspected).map((collection) =>
+              Object.freeze({
+                ...collection,
+                uploadRanges: Object.freeze(
+                  collection.uploadRanges.map((range) => Object.freeze({ ...range })),
+                ),
+                ...(collection.error === undefined
+                  ? {}
+                  : {
+                      error: Object.freeze({
+                        ...collection.error,
+                        detail: Object.freeze({ ...collection.error.detail }),
+                      }),
+                    }),
+              }),
+            ),
           ),
         }),
-      ),
-    ),
+  };
+}
+
+function projectLodInspection(
+  inspected: ViewSettlementOwner,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+) {
+  return {
+    ...(inspected.lod.cell === undefined ||
+    (fields !== undefined && !fields.includes('lodOcclusion'))
+      ? {}
+      : { lodOcclusion: Object.freeze(inspected.lod.cell.value()) }),
+  };
+}
+
+function projectMaterialBindingInspection(
+  inspected: ViewSettlementOwner,
+  fields: readonly (keyof RenderInspection)[] | undefined,
+) {
+  return {
+    ...(fields !== undefined && !fields.includes('meshMaterialBindings')
+      ? {}
+      : {
+          meshMaterialBindings: Object.freeze(
+            viewMeshMaterialBindings(inspected).map((observation) =>
+              Object.freeze({
+                ...observation,
+                bindings: Object.freeze(
+                  observation.bindings.map((binding) => Object.freeze({ ...binding })),
+                ),
+                diagnostics: Object.freeze(
+                  observation.diagnostics.map((diagnostic) => Object.freeze({ ...diagnostic })),
+                ),
+              }),
+            ),
+          ),
+        }),
   };
 }
 
@@ -248,7 +337,7 @@ export function projectRenderSystemInspection(system: RenderSystem, deviceLost: 
 export function projectRendererOutputObservationInspection(input: {
   readonly observationId: string;
   readonly frameId: number;
-  readonly antialias: RenderSystem['lastSuccessfulCameraAntialias'];
+  readonly antialias: CameraSnapshot['antialias'] | undefined;
   readonly outputInspection: RenderOutputInspection;
   readonly rgba16floatRenderable: boolean;
   readonly resourceStats: NonNullable<RenderInspection['observation']['resourceStats']>;

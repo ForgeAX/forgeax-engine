@@ -1,4 +1,3 @@
-import { vec3 } from '@forgeax/engine-math';
 import { selectEnvironment } from '../environment/frame';
 import {
   type AtmosphereLease,
@@ -7,9 +6,9 @@ import {
 } from '../environment/storage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_UNIFORM } from '../gpu-usage';
 import { resetHdrpBuffers } from '../hdrp-buffers';
-import type { LightRoster } from '../render-system-extract';
 import { resetSsaoResources } from '../ssao-buffers';
-import { renderLightsFor, type ViewLights } from '../world/render-lights';
+import type { ViewLights } from '../world/render-lights';
+import { preparedPointsLinesSlots } from '../world/view-points-lines';
 import { prepareFrameLighting, writeHdrpClusterAndSsaoBuffers } from './frame-lighting';
 import type { RenderFrameState } from './frame-snapshot';
 import { createPointsLinesViewBuffer } from './points-lines-view-buffer';
@@ -22,8 +21,6 @@ interface CaptureLightingView {
   state: RenderFrameState;
   generation?: number;
   atmosphere?: AtmosphereLease;
-  /** The roster with its directional pinned to the retained atmosphere Sun. */
-  frozenLights?: LightRoster;
   readonly viewBuffer: import('@forgeax/engine-rhi').Buffer;
   readonly pointsLinesView: ReturnType<typeof createPointsLinesViewBuffer>;
 }
@@ -33,7 +30,6 @@ interface CaptureLightingView {
 const views = new WeakMap<CubeCaptureGraphState, Map<object, Map<number, CaptureLightingView>>>();
 
 function retireView(view: CaptureLightingView): void {
-  renderLightsFor(view.runtime).releaseView(view);
   view.atmosphere?.release();
   resetHdrpBuffers(view.runtime);
   resetSsaoResources(view.runtime);
@@ -56,7 +52,20 @@ export function disposeTargetCaptures(owner: CubeCaptureGraphState): void {
   disposeTargetCaptureLighting(owner);
   owner.planar?.dispose();
   delete owner.planar;
+  owner.planarTarget?.release();
+  delete owner.planarTarget;
   owner.work = [];
+}
+
+/** Capture-local lighting must reserve its own packed atmosphere region. */
+function prepareCaptureClusterExtent(view: CaptureLightingView): void {
+  const selected = view.state.environmentFrame?.source;
+  view.state.standardClusterTextureExtent =
+    !view.runtime.device.caps.storageBuffer &&
+    selected?.kind === 'atmosphere' &&
+    !selected.atmosphere.backgroundOnly
+      ? { width: 0, height: 0, atmosphere: true }
+      : undefined;
 }
 
 /** Cluster bounds, uniforms, membership and bindings belong to the captured camera. */
@@ -73,7 +82,8 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
   runtime: RenderSystemInternals,
   frameState: RenderFrameState,
   pipeline: PipelineState,
-  lights: ViewLights,
+  /** The face's cascades, fitted in RenderPrepare by `render-capture-fit`. */
+  captureLights: ViewLights,
 ) {
   let retained = views.get(owner);
   if (retained === undefined) {
@@ -136,29 +146,7 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
     const environment = work.atmosphere?.environment ?? frameState.environmentFrame;
     if (environment?.source.kind === 'atmosphere' && work.sceneInput !== true) {
       view.atmosphere = work.atmosphere?.retain() ?? retainAtmosphere(runtime, environment);
-      const sun = environment.sun;
-      view.frozenLights =
-        sun === undefined || lights.directional === undefined
-          ? lights
-          : {
-              ...lights,
-              directional: {
-                ...lights.directional,
-                direction: vec3.create(-sun.direction[0], -sun.direction[1], -sun.direction[2]),
-                color: vec3.create(
-                  sun.color[0] * sun.intensity,
-                  sun.color[1] * sun.intensity,
-                  sun.color[2] * sun.intensity,
-                ),
-                intensity: sun.intensity,
-              },
-              directionalCsmDirection: vec3.create(
-                -sun.direction[0],
-                -sun.direction[1],
-                -sun.direction[2],
-              ),
-            };
-    } else delete view.frozenLights;
+    }
   }
   view.state = { ...frameState, hdrpClusterMembership: view.state.hdrpClusterMembership };
   settleAtmospherePublish(view.state, false);
@@ -172,11 +160,9 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
       fogs: current.fog === undefined ? [] : [current.fog],
     }).unwrap();
   }
-  // Each capture writer fits its own cascades against its face camera.
-  const captureLights = renderLightsFor(runtime).viewLights(view, view.frozenLights ?? lights, {
-    camera: work.faceCamera,
-  });
   const cascades = captureLights.cascades;
+  // This frame's capture views grow to the slots `view-points-lines` prepared.
+  view.pointsLinesView.ensureCapacity(preparedPointsLinesSlots(runtime));
   const capturePipeline = {
     ...pipeline,
     perPassResources: {
@@ -187,8 +173,8 @@ export function prepareTargetCaptureLighting<T extends CaptureLightingInput>(
     get pointsLinesViewBuffer() {
       return view.pointsLinesView.buffer;
     },
-    ensurePointsLinesViewCapacity: view.pointsLinesView.ensureCapacity,
   };
+  prepareCaptureClusterExtent(view);
   const prepared = prepareFrameLighting(
     view.runtime,
     view.state,

@@ -16,6 +16,23 @@ export type RenderFeatureStage =
 /** Recovery action attached to a structured feature failure. */
 export type RenderFeatureRecovery = 'next-frame' | 'renderer-recover' | 'registration';
 
+/** Standard splits these named feature passes across target initialization stages. */
+export const STANDARD_FEATURE_PRE_OPAQUE_PASSES = Object.freeze([
+  'cloud-layer-density-cache',
+  'cloud-layer-shadow',
+] as const);
+export const STANDARD_FEATURE_SCENE_COMPOSITE_PASSES = Object.freeze([
+  'cloud-layer-transport',
+  'cloud-layer-resolve',
+] as const);
+
+export function isStandardFeatureStagePass(name: string): boolean {
+  return (
+    STANDARD_FEATURE_PRE_OPAQUE_PASSES.some((candidate) => candidate === name) ||
+    STANDARD_FEATURE_SCENE_COMPOSITE_PASSES.some((candidate) => candidate === name)
+  );
+}
+
 /** Boolean capability names are derived from the RHI capability source. */
 type BooleanCapabilityKey = {
   [Key in keyof RhiCaps]-?: RhiCaps[Key] extends boolean ? Key : never;

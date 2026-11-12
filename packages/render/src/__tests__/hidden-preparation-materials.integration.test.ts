@@ -45,7 +45,7 @@ it.each([
           )
           .unwrap()
       : undefined;
-  world
+  const prepared = world
     .spawn(
       { component: Transform, data: {} },
       { component: MeshFilter, data: { assetHandle: mesh } },
@@ -82,10 +82,12 @@ it.each([
   };
   // record/frame.ts validates every pipelinePreparation row against the fixed
   // frame materials; only GPU mesh residency is outside this CPU test.
-  const validatePreparation = (stage: string) => {
+  const validatePreparation = (stage: string, preparing = true) => {
     const projection = scene.shadowCasterProjection();
     if (projection === undefined) throw new Error('missing scene projection');
-    const rows = [...projection.renderables].filter((row) => row.pipelinePreparation !== undefined);
+    const rows = [...projection.renderables].filter(
+      (row) => !preparing || row.pipelinePreparation !== undefined,
+    );
     expect(rows).toHaveLength(1);
     const accepted = rows.map((row) =>
       projection.content.materials.get(meshDrawSnapshot(row, projection.content.meshes).material),
@@ -93,7 +95,7 @@ it.each([
     expect(
       accepted.map((material) => material?.snapshot.materialHandle),
       stage,
-    ).toEqual([red]);
+    ).toEqual([preparing ? red : undefined]);
     const scope = {
       resolveAsset: () => ({ ok: true, value: BUILTIN_CUBE }),
     } as unknown as RenderResourceScope;
@@ -101,22 +103,31 @@ it.each([
       gpuStore: { getMeshGpuHandles: () => ({ layoutProjection: { attributes: [] } }) },
       errorRegistry: { fire: () => {} },
     } as unknown as RenderSystemInternals;
-    const validated = validateRenderables(
-      internals,
-      scope,
-      [scope],
-      undefined as never,
-      {} as never,
-      rows,
-      [],
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      projection.content.materials,
-      projection.content.meshes,
-    );
-    expect(validated).toHaveLength(1);
+    const validate = (sources = rows) =>
+      validateRenderables(
+        internals,
+        scope,
+        [scope],
+        undefined as never,
+        {} as never,
+        sources,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        projection.content.materials,
+        projection.content.meshes,
+      );
+    expect(validate()).toHaveLength(preparing ? 1 : 0);
+    if (!preparing) {
+      expect(() => validate(rows.map((row) => ({ ...row, authorVisible: true })))).toThrow(
+        /captured MaterialFrame/,
+      );
+      expect(() => validate(rows.map((row) => ({ ...row, pipelinePreparation: [] })))).toThrow(
+        /captured MaterialFrame/,
+      );
+    }
   };
   try {
     draw();
@@ -126,6 +137,11 @@ it.each([
       draw();
       validatePreparation('after holder despawn');
     }
+    world.set(prepared, MeshRenderer, { preparePipelines: false }).unwrap();
+    draw();
+    // CPU shadow preparation reads the complete projection on WebGL2. A
+    // retired hidden preparation row no longer owns accepted material work.
+    validatePreparation('after hidden preparation retires', false);
   } finally {
     publisher.dispose();
     receiver.dispose();

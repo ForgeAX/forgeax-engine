@@ -7,8 +7,9 @@ import type {
   RenderGraphError,
   RenderGraphFrame,
 } from '@forgeax/engine-render-graph';
+import { RenderGraphError as DepthGraphError } from '@forgeax/engine-render-graph';
 import type { BindGroup } from '@forgeax/engine-rhi';
-import { ok, type Result } from '@forgeax/engine-types';
+import { err, ok, type Result } from '@forgeax/engine-types';
 import {
   type ComputeState,
   computePipelineError,
@@ -27,13 +28,14 @@ import {
   type DepthPyramidPlan,
 } from './plan';
 import { createDepthPyramidProgramResolver } from './programs';
+import { addFragmentDepthPyramidPasses } from './raster';
 
 /**
  * Which depth bound each texel keeps. `closest` feeds screen-space tracers
  * (SSR); `furthest` feeds occlusion culling, where a texel may only hide
  * geometry that lies behind every sample it covers.
  */
-type DepthPyramidReduction = 'closest' | 'furthest';
+export type DepthPyramidReduction = 'closest' | 'furthest';
 
 /** Graph resource/pass prefix and shader entry suffix per reduction. */
 const REDUCTION_NAMES: Readonly<
@@ -123,6 +125,8 @@ export interface DepthPyramid {
 interface DepthPyramidGraphInputBase {
   /** Full-resolution scene depth of the view. */
   readonly depth: GraphTextureView;
+  /** Finite physical plan; compute remains the default for existing callers. */
+  readonly execution?: 'compute' | 'fragment';
   /** Shared View UBO; its projection range linearizes depth. */
   readonly view?: GraphBuffer;
   readonly width: number;
@@ -133,7 +137,7 @@ interface DepthPyramidGraphInputBase {
  * Only the furthest reduction seeds from multisampled depth: occlusion needs
  * every sample, while screen-space tracers read the resolved depth.
  */
-type DepthPyramidGraphInputs = DepthPyramidGraphInputBase &
+export type DepthPyramidGraphInputs = DepthPyramidGraphInputBase &
   (
     | { readonly reduction?: 'closest' }
     | { readonly reduction: 'furthest'; readonly multisampled?: boolean }
@@ -271,6 +275,24 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   input: DepthPyramidGraphInputs,
 ): Result<DepthPyramidProjection, RenderGraphError> {
+  if (
+    input.execution === 'fragment' &&
+    input.reduction === 'furthest' &&
+    input.multisampled === true
+  )
+    return err(
+      new DepthGraphError({
+        code: 'resource-descriptor-invalid',
+        expected: 'single-sampled depth for the portable pyramid',
+        hint: 'retain the conservative compute seed for multisampled occlusion depth',
+        detail: {
+          resourceLabel: 'occlusion-depth-pyramid',
+          field: 'multisampled',
+          expected: 'false',
+          actual: 'true',
+        },
+      }),
+    );
   const reduction = input.reduction ?? 'closest';
   const names = REDUCTION_NAMES[reduction];
   const multisampled = input.reduction === 'furthest' && input.multisampled === true;
@@ -283,6 +305,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
   );
   if (!created.ok) return created;
   const pyramid = created.value;
+  if (input.execution === 'fragment') return addFragmentDepthPyramidPasses(graph, input, pyramid);
   const { depth, view } = input;
   const mip0 = pyramid.levels[0] as GraphTextureView;
   const passNames: string[] = [];
@@ -294,7 +317,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
       { resource: mip0, usage: 'storage-write' },
       ...(view === undefined ? [] : [{ resource: view, usage: 'uniform-read' as const }]),
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const source = shaderSource(frame, 'seed');
       // A structural graph may intentionally omit the shared View buffer. A
       // real seed must bind it because depth linearization uses the active
@@ -337,7 +360,7 @@ export function addDepthPyramidPasses<FrameCtx extends RenderGraphFrame>(
               ? 'storage-write'
               : 'sampled-storage-write',
       })),
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         const source = shaderSource(frame, 'reduce');
         if (source === undefined) return;
         const reduceState = program(

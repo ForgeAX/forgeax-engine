@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-math
 description: >-
-  ForgeaX allocation-explicit vector, matrix, quaternion, color, and picking math. Use when
+  ForgeAX allocation-explicit vector, matrix, quaternion, color, and picking math. Use when
   computing transforms, reading world pose, converting color, projecting, or casting rays.
 ---
 

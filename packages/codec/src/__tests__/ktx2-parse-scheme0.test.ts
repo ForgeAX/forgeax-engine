@@ -129,8 +129,8 @@ function buildScheme0Fixture(): Uint8Array {
   writeU32(buf, 124, 4); // bytesPlane0=4
   writeU32(buf, 128, 0); // bytesPlane1..7 = 0
   // sample 0 (16 bytes): R8G8B8A8
-  // word 0: bitOffset(8)=0, bitLength(12)=7 (actual 8 - 1), channelType(8)=0 (RED/RGB), qualifiers(4)=0
-  writeU32(buf, 132, 7 << 12); // bitLength=7, channelType=0 (RED — means RGBA combined sample)
+  // word 0 (KDF 1.3 5.17): bitOffset(16)=0, bitLength-1(8)=31, channelType(4)=0 (RED), qualifiers(4)=0
+  writeU32(buf, 132, 31 << 16);
   // word 1: samplePosition[0..3] = 0
   writeU32(buf, 136, 0);
   // word 2: sampleLower = 0
@@ -215,6 +215,12 @@ describe('KTX2 parse — scheme=0 uncompressed (w21)', () => {
     expect(dfd?.colorPrimaries).toBe(1); // BT709/SRGB
     expect(dfd?.transferFunction).toBe(1); // LINEAR
     expect(dfd?.samples.length).toBe(1);
+    expect(dfd?.samples[0]).toMatchObject({
+      bitOffset: 0,
+      bitLength: 32,
+      channelType: 0,
+      qualifiers: 0,
+    });
   });
 
   it('ktx2LevelsToRGBA returns correct pixel bytes for scheme=0', async () => {

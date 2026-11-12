@@ -75,6 +75,26 @@ function referenceRelations(
   }));
 }
 
+type ProducerSourceOverrides = NonNullable<CatalogProducerMeta['sourceOverrides']>;
+
+/**
+ * Overrides are addressed by source key, and an importer reads only its own
+ * output's entry. Each row carries just that entry, the same way
+ * `sourceOverrideDescriptors` are filtered: copying the producer's whole map
+ * onto every row makes Catalog size grow with outputs × overrides, which for
+ * a source with many sub-assets dominates the index. The rows of one producer
+ * still hold the complete map between them.
+ */
+export function sourceOverridesForOutput(
+  overrides: ProducerSourceOverrides | undefined,
+  sourceKey: string | undefined,
+): Pick<PackIndexEntry, 'sourceOverrides'> {
+  if (overrides === undefined || sourceKey === undefined) return {};
+  if (!Object.hasOwn(overrides, sourceKey)) return {};
+  const entry = overrides[sourceKey];
+  return entry === undefined ? {} : { sourceOverrides: { [sourceKey]: entry } };
+}
+
 function producerFields(
   producer: CatalogProducerMeta,
   output: CatalogOutputDeclaration,
@@ -109,9 +129,7 @@ function producerFields(
     ...(producer.revision === undefined ? {} : { revision: producer.revision }),
     ...(output.sourceKey === undefined ? {} : { sourceKey: output.sourceKey }),
     ...(output.sourceIndex === undefined ? {} : { sourceIndex: output.sourceIndex }),
-    ...(producer.sourceOverrides === undefined
-      ? {}
-      : { sourceOverrides: producer.sourceOverrides }),
+    ...sourceOverridesForOutput(producer.sourceOverrides, output.sourceKey),
     ...(producer.sourceOverrideDescriptors === undefined || output.sourceKey === undefined
       ? {}
       : {

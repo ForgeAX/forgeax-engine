@@ -37,7 +37,13 @@ import {
   ok,
   type Result,
 } from './errors.js';
-import { type GltfImageIr, type GltfImageJson, parseGltfImages } from './extract-image-bytes.js';
+import {
+  extractImageBytes,
+  type GltfImageIr,
+  type GltfImageJson,
+  parseGltfImages,
+} from './extract-image-bytes.js';
+import { deriveTextureColorSpace } from './image-color-space.js';
 
 export type { GltfImageIr } from './extract-image-bytes.js';
 
@@ -61,6 +67,11 @@ import { parseGltfHeader } from './parse-gltf-header.js';
 import { parseSkin } from './parse-skin.js';
 import { type GltfDocItem, type GltfMetaJson, reimportReuseMeta } from './reimport-reuse-meta.js';
 import type { GltfSourceKeyError } from './source-key.js';
+import {
+  gltfTextureContentIdentity,
+  TEXTURE_IDENTITY_CONTENT,
+  usesTextureContentIdentity,
+} from './texture-content.js';
 import { type DecomposedTransform, decomposeNodeTransform } from './transform.js';
 
 export type {
@@ -422,6 +433,9 @@ interface RootGltfJson extends GltfExtensionsJson {
     readonly sampler?: number;
     readonly source?: number;
     readonly name?: string;
+    readonly extensions?: {
+      readonly KHR_texture_basisu?: { readonly source?: number };
+    };
   }>;
   readonly images?: readonly GltfImageJson[];
   readonly samplers?: ReadonlyArray<{
@@ -759,7 +773,8 @@ function decodeMorphAttribute(
         : 'attribute-length-mismatch',
     );
   }
-  if (targetAccessor.type !== 'VEC3' || targetAccessor.componentType !== 5126)
+  // KHR_mesh_quantization admits byte/short (normalized or not) morph deltas.
+  if (targetAccessor.type !== 'VEC3' || targetAccessor.componentType === 5125)
     return err('attribute-length-mismatch');
   if (decoded.value.length !== positions.length) return err('attribute-length-mismatch');
   return ok(decoded.value);
@@ -1004,8 +1019,12 @@ function parseMeshes(geometry: ProjectedGeometry): Result<GltfMeshIr[], GltfErro
 }
 
 function parseTextures(texturesJson: NonNullable<RootGltfJson['textures']>): GltfTextureIr[] {
+  // KHR_texture_basisu: the extension's KTX2 image replaces `source` (which,
+  // when present, is only a PNG / JPEG fallback for loaders without the
+  // extension); sampler and per-binding KHR_texture_transform are untouched.
+  // Matches Three.js GLTFLoader's GLTFTextureBasisUExtension.
   return texturesJson.map((texJson) => ({
-    source: texJson.source ?? -1,
+    source: texJson.extensions?.KHR_texture_basisu?.source ?? texJson.source ?? -1,
     ...(texJson.sampler === undefined ? {} : { sampler: texJson.sampler }),
     ...(texJson.name === undefined ? {} : { name: texJson.name }),
   }));
@@ -1279,6 +1298,74 @@ export interface GltfAssetPack {
 
 export type GltfAssetPackResult = Result<GltfAssetPack, GltfSourceKeyError | GltfError>;
 
+/** Settings carried into the next meta: the document's own plus those a re-import keeps. */
+function nextImportSettings(
+  doc: GltfDoc,
+  previous: GltfMetaJson['importSettings'] | undefined,
+  contentTextures: boolean,
+): GltfMetaJson['importSettings'] {
+  return {
+    defaultSceneIndex: doc.defaultSceneIndex,
+    ...(typeof previous?.standardMaterialGuid === 'string'
+      ? { standardMaterialGuid: previous.standardMaterialGuid }
+      : {}),
+    ...(previous?.downscaleMaxDimension !== undefined
+      ? { downscaleMaxDimension: previous.downscaleMaxDimension }
+      : {}),
+    // Content identity hashes every decode setting, so the ones it reads are kept.
+    ...(contentTextures ? contentIdentitySettings(previous) : {}),
+    diagnostics: {
+      nodeNames: doc.diagnostics.nodeNames,
+      unsupportedExtensions: doc.diagnostics.unsupportedExtensions,
+      matrixTrsCoexistNodes: doc.diagnostics.matrixTrsCoexistNodes,
+    },
+  };
+}
+
+function contentIdentitySettings(
+  previous: GltfMetaJson['importSettings'] | undefined,
+): Partial<GltfMetaJson['importSettings']> {
+  return {
+    textureIdentity: TEXTURE_IDENTITY_CONTENT,
+    ...(previous?.mipmap === undefined ? {} : { mipmap: previous.mipmap }),
+    ...(previous?.compressionMode === undefined
+      ? {}
+      : { compressionMode: previous.compressionMode }),
+  };
+}
+
+/**
+ * Give each image's texture output its content identity. A second image with
+ * the same content in one document keeps its own identity: one package cannot
+ * declare an output twice.
+ */
+function withTextureContentIdentity(
+  doc: GltfDoc,
+  subAssets: readonly ImportSubAsset[],
+  importSettings: Readonly<Record<string, unknown>>,
+): ImportSubAsset[] {
+  const { extracted } = extractImageBytes(doc.images ?? []);
+  const colorSpaces = deriveTextureColorSpace({
+    imageCount: (doc.images ?? []).length,
+    textures: doc.textures,
+    materials: doc.materials,
+  });
+  const claimed = new Set<string>();
+  return subAssets.map((entry) => {
+    const image = entry.kind === 'texture' ? extracted.get(entry.sourceIndex) : undefined;
+    if (image === undefined) return entry;
+    const identity = gltfTextureContentIdentity(
+      image.bytes,
+      image.mimeType,
+      colorSpaces.get(entry.sourceIndex) ?? 'linear',
+      importSettings,
+    );
+    if (claimed.has(identity.guid)) return entry;
+    claimed.add(identity.guid);
+    return { ...entry, ...identity };
+  });
+}
+
 /**
  * Project a parsed `GltfDoc` into the disk-shape `<source>.meta.json` plus
  * the freshly minted `subAssets[]` list (UUIDv7 + reimport-reuse-meta
@@ -1385,8 +1472,13 @@ export function toAssetPack(
 
   const reuse = reimportReuseMeta(items, existingMeta);
   if (!reuse.ok) return reuse;
+  const contentTextures = usesTextureContentIdentity(existingMeta?.importSettings);
+  const importSettings = nextImportSettings(doc, existingMeta?.importSettings, contentTextures);
+  const subAssets = contentTextures
+    ? withTextureContentIdentity(doc, reuse.value.subAssets, importSettings)
+    : reuse.value.subAssets;
   const subAssetByKindIndex = new Map(
-    reuse.value.subAssets.map((entry) => [`${entry.kind}:${entry.sourceIndex}`, entry]),
+    subAssets.map((entry) => [`${entry.kind}:${entry.sourceIndex}`, entry]),
   );
   const sourceOverrides: Record<string, Readonly<Record<string, unknown>>> = {
     ...(existingMeta?.sourceOverrides ?? {}),
@@ -1454,7 +1546,7 @@ export function toAssetPack(
       };
     }
   }
-  const materialOutputs = reuse.value.subAssets.filter((entry) => entry.kind === 'material');
+  const materialOutputs = subAssets.filter((entry) => entry.kind === 'material');
   const materialSources = {
     nameByIndex: new Map(
       doc.materials.flatMap((material, index) =>
@@ -1508,31 +1600,18 @@ export function toAssetPack(
     kind: 'external-asset-package',
     importer: 'gltf',
     source,
-    subAssets: reuse.value.subAssets,
+    subAssets,
     ...(Object.keys(sourceOverrides).length === 0 ? {} : { sourceOverrides }),
-    sourceOverrideDescriptors: reuse.value.subAssets
+    sourceOverrideDescriptors: subAssets
       .filter((entry) => entry.kind === 'mesh' && entry.sourceKey !== undefined)
       .map((entry) => ({
         sourceKey: entry.sourceKey as string,
         semantic: 'mesh-material-slot-defaults' as const,
         payloadSchema: MESH_MATERIAL_SLOT_SOURCE_OVERRIDE_PAYLOAD_SCHEMA,
       })),
-    importSettings: {
-      defaultSceneIndex: doc.defaultSceneIndex,
-      ...(typeof existingMeta?.importSettings.standardMaterialGuid === 'string'
-        ? { standardMaterialGuid: existingMeta.importSettings.standardMaterialGuid }
-        : {}),
-      ...(existingMeta?.importSettings.downscaleMaxDimension !== undefined
-        ? { downscaleMaxDimension: existingMeta.importSettings.downscaleMaxDimension }
-        : {}),
-      diagnostics: {
-        nodeNames: doc.diagnostics.nodeNames,
-        unsupportedExtensions: doc.diagnostics.unsupportedExtensions,
-        matrixTrsCoexistNodes: doc.diagnostics.matrixTrsCoexistNodes,
-      },
-    },
+    importSettings,
   };
-  return ok({ meta, subAssets: reuse.value.subAssets });
+  return ok({ meta, subAssets });
 }
 
 // Keep the component-type table available from this importer module.

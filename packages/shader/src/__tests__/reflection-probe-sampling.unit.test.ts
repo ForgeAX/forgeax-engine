@@ -29,7 +29,7 @@ describe('Standard reflection probe sampling contract', () => {
 
   it('projects only the environment specular lobe for c=1 without removing diffuse light', () => {
     expect(standardSource).toContain(
-      'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * ao;',
+      'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * specularAo;',
     );
     expect(lightingSource).toContain('kD * irradiance * albedo * diffuseScale');
     // The lit tail carries the fallback; every forward entry copies it out.
@@ -63,9 +63,11 @@ describe('Standard reflection probe sampling contract', () => {
     for (const root of [standardSource, skinSource]) {
       expect(root).toContain('evaluateStandardEnvironment(');
       expect(root).toContain(
-        'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * ao;',
+        'var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF) * specularAo;',
       );
-      expect(root).toContain('reflectionFallback *= screenAo;');
+      expect(root).toContain(
+        'standardSpecularOcclusion(max(dot(physicalNormal, v), 0.0), ao * screenAo, iblRoughness)',
+      );
     }
   });
 });

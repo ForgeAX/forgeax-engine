@@ -27,6 +27,7 @@ vi.mock('@forgeax/engine-runtime/internal/renderer-host', async (importOriginal)
 }));
 
 import { createApp } from '../browser';
+import { attachBrowserRhiRecorder } from '../host-adapter';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -35,7 +36,6 @@ afterEach(() => {
 
 it('keeps debug capture private during construction and consumes the startup adapter only once', async () => {
   vi.stubGlobal('navigator', { gpu: {} });
-  vi.stubEnv('FORGEAX_ENGINE_RHI_DEBUG', '1');
   const initial = new RhiNullAdapter();
   const replacement = new RhiNullAdapter();
   const unavailable = new BackendError({
@@ -60,7 +60,9 @@ it('keeps debug capture private during construction and consumes the startup ada
     },
   );
 
-  const result = await createApp(canvas);
+  const result = await createApp(canvas, undefined, {
+    attachRhiRecorder: attachBrowserRhiRecorder,
+  });
 
   expect(result).toEqual(err(stopped));
   expect(captureDuringConstruction).toBeUndefined();

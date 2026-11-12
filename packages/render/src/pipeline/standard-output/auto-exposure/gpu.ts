@@ -6,7 +6,13 @@ import type {
 import type { BindGroupLayout, Buffer, ComputePipeline, RhiDevice } from '@forgeax/engine-rhi';
 import { AUTO_EXPOSURE_METER_WGSL } from '@forgeax/engine-shader';
 import { err, ok, type Result } from '@forgeax/engine-types';
-import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_STORAGE } from '../../../gpu-usage';
+import {
+  GPU_BUFFER_USAGE_COPY_DST,
+  GPU_BUFFER_USAGE_COPY_SRC,
+  GPU_BUFFER_USAGE_STORAGE,
+  GPU_BUFFER_USAGE_UNIFORM,
+} from '../../../gpu-usage';
+import { MAX_RENDER_FRAMES_IN_FLIGHT } from '../../../publication/frame-limits';
 import type { _InternalRenderPipelineContext } from '../../../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../../../render-pipeline';
 import { addStandardColorStagePass } from '../color-transform';
@@ -15,11 +21,12 @@ import {
   AUTO_EXPOSURE_HISTOGRAM_DISPATCH,
   resolveAutoExposureShaderModuleFactory,
 } from './graph';
-import { AutoExposureCapabilityUnavailableError } from './inspection';
+import { autoExposureCapabilityFailure } from './inspection';
+import { addAutoExposureFragmentPasses } from './raster';
 
 export const AUTO_EXPOSURE_HISTOGRAM_BYTES = 1024;
 const AUTO_EXPOSURE_STATE_BYTES = 32;
-const AUTO_EXPOSURE_CANDIDATE_BYTES = 16;
+const AUTO_EXPOSURE_CANDIDATE_BYTES = 32;
 /** Camera/time inputs consumed by adapt; this is not a CPU exposure estimate. */
 const AUTO_EXPOSURE_PARAMETERS_BYTES = 32;
 
@@ -32,25 +39,29 @@ interface AutoExposureGpuParameters {
   readonly deltaTime: number;
   readonly fallback: number;
   readonly generation: number;
+  readonly historyIdentity?: string;
 }
 
 export interface AutoExposureGpuResources {
+  readonly execution?: 'compute' | 'fragment';
+  readonly history?: AutoExposureGpuHistory;
   readonly histogram: Buffer;
-  readonly state: Buffer;
-  readonly candidate: Buffer;
+  state: Buffer;
+  candidate: Buffer;
   readonly parameters: Buffer;
   readonly device: RhiDevice;
   readonly generation: number;
 }
 
-interface AutoExposureGraphResources {
+export interface AutoExposureGraphResources {
+  readonly execution?: 'compute' | 'fragment';
   readonly histogram: GraphBuffer;
   readonly state: GraphBuffer;
   readonly candidate: GraphBuffer;
   readonly parameters: GraphBuffer;
 }
 
-interface AutoExposureGraphProjection {
+export interface AutoExposureGraphProjection {
   readonly source: RenderPipelineTarget;
   readonly resources: AutoExposureGraphResources;
   readonly width: number;
@@ -77,26 +88,25 @@ function createBuffer(
 export function createAutoExposureGpuResources(
   device: RhiDevice,
   generation: number,
+  execution: 'compute' | 'fragment' = device.caps.compute && device.caps.storageBuffer
+    ? 'compute'
+    : 'fragment',
 ): Result<AutoExposureGpuResources, unknown> {
-  if (!device.caps.compute) {
-    return err(new AutoExposureCapabilityUnavailableError({ capability: 'compute', generation }));
-  }
-  if (!device.caps.storageBuffer) {
-    return err(
-      new AutoExposureCapabilityUnavailableError({ capability: 'storage-buffer', generation }),
-    );
-  }
+  const unavailable = autoExposureCapabilityFailure(device.caps, generation);
+  const bufferUsage = execution === 'compute' ? GPU_BUFFER_USAGE_STORAGE : GPU_BUFFER_USAGE_UNIFORM;
+  if (unavailable !== undefined) return err(unavailable);
   const histogram = createBuffer(
     device,
     'standard-auto-exposure-histogram',
     AUTO_EXPOSURE_HISTOGRAM_BYTES,
+    bufferUsage | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
   );
   if (!histogram.ok) return histogram;
   const state = createBuffer(
     device,
     'standard-auto-exposure-state',
     AUTO_EXPOSURE_STATE_BYTES,
-    GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    bufferUsage | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
   );
   if (!state.ok) {
     device.destroyBuffer(histogram.value);
@@ -120,6 +130,7 @@ export function createAutoExposureGpuResources(
     device,
     'standard-auto-exposure-candidate',
     AUTO_EXPOSURE_CANDIDATE_BYTES,
+    bufferUsage | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
   );
   if (!candidate.ok) {
     device.destroyBuffer(histogram.value);
@@ -130,7 +141,7 @@ export function createAutoExposureGpuResources(
     device,
     'standard-auto-exposure-parameters',
     AUTO_EXPOSURE_PARAMETERS_BYTES,
-    GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+    bufferUsage | GPU_BUFFER_USAGE_COPY_SRC | GPU_BUFFER_USAGE_COPY_DST,
   );
   if (!parameters.ok) {
     device.destroyBuffer(histogram.value);
@@ -139,6 +150,17 @@ export function createAutoExposureGpuResources(
     return parameters;
   }
   return ok({
+    execution,
+    history: {
+      slots: new Map([
+        [state.value, 0],
+        [candidate.value, 0],
+      ]),
+      serial: 0,
+      accepted: 0,
+      retired: false,
+      revision: generation - 1,
+    },
     histogram: histogram.value,
     state: state.value,
     candidate: candidate.value,
@@ -153,6 +175,18 @@ export function writeAutoExposureParameters(
   resources: AutoExposureGpuResources,
   parameters: AutoExposureGpuParameters,
 ): Result<void, unknown> {
+  const history = resources.history;
+  if (history !== undefined) {
+    if (
+      history.generation !== parameters.generation ||
+      history.identity !== parameters.historyIdentity
+    ) {
+      history.generation = parameters.generation;
+      history.identity = parameters.historyIdentity;
+      history.revision++;
+    }
+    if (history.active !== undefined) history.active.generation = history.revision;
+  }
   const values = new Float32Array([
     parameters.compensationEv,
     parameters.rangeMinEv,
@@ -161,22 +195,129 @@ export function writeAutoExposureParameters(
     parameters.downRate,
     parameters.deltaTime,
     parameters.fallback,
-    parameters.generation,
+    history?.revision ?? parameters.generation,
   ]);
   return resources.device.queue.writeBuffer(resources.parameters, 0, values);
 }
 
+interface AutoExposureGpuHistory {
+  readonly slots: Map<Buffer, number>;
+  serial: number;
+  revision: number;
+  identity?: string | undefined;
+  generation?: number;
+  accepted: number;
+  retired: boolean;
+  retiring?: boolean;
+  active?:
+    | {
+        readonly previous: Buffer;
+        readonly candidate: Buffer;
+        readonly serial: number;
+        generation?: number;
+      }
+    | undefined;
+}
+
+/** Bound both in-flight previous reads and writes; completed states may differ per frame. */
+export function beginAutoExposureGpuFrame(
+  resources: AutoExposureGpuResources,
+): Result<void, unknown> {
+  const history = resources.history;
+  if (history === undefined || history.active !== undefined) return ok(undefined);
+  if (history.retired)
+    return err(new Error('auto exposure generation retired; recover the renderer'));
+  let candidate = [...history.slots].find(
+    ([buffer, users]) => buffer !== resources.state && users === 0,
+  )?.[0];
+  if (candidate === undefined) {
+    if (history.slots.size >= MAX_RENDER_FRAMES_IN_FLIGHT * 2 + 1)
+      return err(new Error('auto exposure history slots are occupied; await frame completion'));
+    const created = createBuffer(
+      resources.device,
+      'auto-exposure-candidate-slot',
+      AUTO_EXPOSURE_STATE_BYTES,
+      (resources.execution === 'fragment' ? GPU_BUFFER_USAGE_UNIFORM : GPU_BUFFER_USAGE_STORAGE) |
+        GPU_BUFFER_USAGE_COPY_DST,
+    );
+    if (!created.ok) return created;
+    candidate = created.value;
+    history.slots.set(candidate, 0);
+  }
+  resources.candidate = candidate;
+  const previous = resources.state;
+  history.slots.set(previous, (history.slots.get(previous) ?? 0) + 1);
+  history.slots.set(candidate, (history.slots.get(candidate) ?? 0) + 1);
+  history.active = { previous, candidate, serial: ++history.serial, generation: history.revision };
+  return ok(undefined);
+}
+
+export function abortAutoExposureGpuFrame(resources: AutoExposureGpuResources): void {
+  const history = resources.history;
+  const active = history?.active;
+  if (history === undefined || active === undefined) return;
+  history.active = undefined;
+  for (const buffer of [active.previous, active.candidate])
+    history.slots.set(buffer, (history.slots.get(buffer) ?? 1) - 1);
+}
+
+/** Completion promotes the exact candidate; encoding or accepted submit never advances history. */
+export function completeAutoExposureGpuFrame(
+  resources: AutoExposureGpuResources,
+  completed: () => void,
+): void {
+  const history = resources.history;
+  const active = history?.active;
+  if (history === undefined || active === undefined) return;
+  history.active = undefined;
+  void resources.device.queue
+    .onSubmittedWorkDone()
+    .then(
+      () => {
+        if (
+          !history.retired &&
+          active.serial > history.accepted &&
+          active.generation === history.revision
+        ) {
+          resources.state = active.candidate;
+          history.accepted = active.serial;
+          completed();
+        }
+      },
+      () => {
+        history.retired = true;
+      },
+    )
+    .finally(() => {
+      for (const buffer of [active.previous, active.candidate])
+        history.slots.set(buffer, (history.slots.get(buffer) ?? 1) - 1);
+    });
+}
+
 export function retireAutoExposureGpuResources(resources: AutoExposureGpuResources): void {
-  resources.device.destroyBuffer(resources.histogram);
-  resources.device.destroyBuffer(resources.state);
-  resources.device.destroyBuffer(resources.candidate);
-  resources.device.destroyBuffer(resources.parameters);
+  if (resources.history?.retiring) return;
+  if (resources.history !== undefined) {
+    resources.history.retired = true;
+    resources.history.retiring = true;
+  }
+  const release = () => {
+    resources.device.destroyBuffer(resources.histogram);
+    for (const buffer of resources.history?.slots.keys() ?? [resources.state, resources.candidate])
+      resources.device.destroyBuffer(buffer);
+    resources.device.destroyBuffer(resources.parameters);
+  };
+  void resources.device.queue.onSubmittedWorkDone().then(release, release);
 }
 
 /** Import persistent buffers into the current typed graph without exposing handles in topology. */
 export function importAutoExposureGraphResources(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
+  execution: 'compute' | 'fragment' = 'compute',
 ): Result<AutoExposureGraphResources, RenderGraphError> {
+  const usage =
+    (execution === 'compute' ? GPU_BUFFER_USAGE_STORAGE : GPU_BUFFER_USAGE_UNIFORM) |
+    GPU_BUFFER_USAGE_COPY_SRC |
+    GPU_BUFFER_USAGE_COPY_DST;
   const resolve = (frame: RenderPipelineFrame): AutoExposureGpuResources => {
     const state = (frame as _InternalRenderPipelineContext).frameState;
     const resources = state.pendingAutoExposureGpuResources ?? state.autoExposureGpuResources;
@@ -187,7 +328,7 @@ export function importAutoExposureGraphResources(
     'standard-auto-exposure-histogram',
     {
       size: AUTO_EXPOSURE_HISTOGRAM_BYTES,
-      usage: GPU_BUFFER_USAGE_STORAGE,
+      usage,
     },
     (frame) => resolve(frame).histogram,
   );
@@ -196,7 +337,7 @@ export function importAutoExposureGraphResources(
     'standard-auto-exposure-state',
     {
       size: AUTO_EXPOSURE_STATE_BYTES,
-      usage: GPU_BUFFER_USAGE_STORAGE,
+      usage,
     },
     (frame) => resolve(frame).state,
   );
@@ -205,7 +346,7 @@ export function importAutoExposureGraphResources(
     'standard-auto-exposure-candidate',
     {
       size: AUTO_EXPOSURE_CANDIDATE_BYTES,
-      usage: GPU_BUFFER_USAGE_STORAGE,
+      usage,
     },
     (frame) => resolve(frame).candidate,
   );
@@ -214,12 +355,13 @@ export function importAutoExposureGraphResources(
     'standard-auto-exposure-parameters',
     {
       size: AUTO_EXPOSURE_PARAMETERS_BYTES,
-      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+      usage,
     },
     (frame) => resolve(frame).parameters,
   );
   if (!parameters.ok) return parameters;
   return ok({
+    execution,
     histogram: histogram.value,
     state: state.value,
     candidate: candidate.value,
@@ -247,7 +389,7 @@ function createAutoExposureMeterState(frame: RenderPipelineFrame): AutoExposureM
       {
         binding: 0,
         visibility: COMPUTE_VISIBILITY,
-        texture: { sampleType: 'float', viewDimension: '2d' },
+        texture: { sampleType: 'unfilterable-float', viewDimension: '2d' },
       },
       { binding: 1, visibility: COMPUTE_VISIBILITY, buffer: { type: 'storage' } },
       { binding: 2, visibility: COMPUTE_VISIBILITY, buffer: { type: 'storage' } },
@@ -290,6 +432,8 @@ export function addAutoExposureGraphPasses(
   context: import('../../../render-pipeline').RenderPipelineBuildContext<RenderPipelineFrame>,
   projection: AutoExposureGraphProjection,
 ): Result<void, RenderGraphError> {
+  if (projection.resources.execution === 'fragment')
+    return addAutoExposureFragmentPasses(context, projection);
   let meterState: AutoExposureMeterState | undefined;
   const meter = context.graph.addComputePass(AUTO_EXPOSURE_FUSED_GRAPH_PASS, {
     accesses: [
@@ -298,11 +442,11 @@ export function addAutoExposureGraphPasses(
       // dispatch reads/writes it. `storage-write` keeps graph validation from
       // requiring an external initializer while the binding remains read/write.
       { resource: projection.resources.histogram, usage: 'storage-write' },
-      { resource: projection.resources.state, usage: 'storage-write' },
+      { resource: projection.resources.state, usage: 'storage-read' },
       { resource: projection.resources.candidate, usage: 'storage-write' },
       { resource: projection.resources.parameters, usage: 'storage-read' },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       meterState ??= createAutoExposureMeterState(frame);
       const source = resources.textureView(projection.source.view);
       const histogramBuffer = resources.buffer(projection.resources.histogram);
@@ -375,11 +519,18 @@ function wgslFloat(value: number): string {
 export function createAutoExposureApplyWgsl(
   whiteBalance: AutoExposureWhiteBalance = { temperature: 6504, tint: 0 },
   hasCandidate = true,
+  execution: 'compute' | 'fragment' = 'compute',
 ): string {
   const candidateBinding = hasCandidate
-    ? '@group(1) @binding(0) var<storage, read> candidate: array<vec4<f32>>;'
+    ? execution === 'fragment'
+      ? '@group(1) @binding(0) var<uniform> candidate: vec4<f32>;'
+      : '@group(1) @binding(0) var<storage, read> candidate: array<vec4<f32>>;'
     : '';
-  const candidateValue = hasCandidate ? 'max(candidate[0].x, 0.0)' : '1.0';
+  const candidateValue = hasCandidate
+    ? execution === 'fragment'
+      ? 'max(candidate.x, 0.0)'
+      : 'max(candidate[0].x, 0.0)'
+    : '1.0';
   return /* wgsl */ `
 ${candidateBinding}
 
@@ -475,16 +626,29 @@ export function addAutoExposureExposurePass(
     'standard-exposure-white-balance',
     input,
     output,
-    createAutoExposureApplyWgsl(whiteBalance, resources !== undefined),
+    createAutoExposureApplyWgsl(whiteBalance, resources !== undefined, resources?.execution),
     resources === undefined
       ? undefined
       : {
-          accesses: [{ resource: resources.candidate, usage: 'storage-read' }],
+          accesses: [
+            {
+              resource: resources.candidate,
+              usage: resources.execution === 'fragment' ? 'uniform-read' : 'storage-read',
+            },
+          ],
           bind: (device, graphResources) => {
             if (candidateLayout === undefined) {
               const created = device.createBindGroupLayout({
                 label: 'standard-exposure-white-balance.candidate.bgl',
-                entries: [{ binding: 0, visibility: 2, buffer: { type: 'read-only-storage' } }],
+                entries: [
+                  {
+                    binding: 0,
+                    visibility: 2,
+                    buffer: {
+                      type: resources.execution === 'fragment' ? 'uniform' : 'read-only-storage',
+                    },
+                  },
+                ],
               });
               if (!created.ok) throw created.error;
               candidateLayout = created.value;

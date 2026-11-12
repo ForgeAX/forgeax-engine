@@ -7,6 +7,7 @@ import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { LightSnapshot } from '../render-system-extract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import { recordContext } from '../world/view-record-context';
 import { createRayDiffuseComposite } from './diffuse-composite';
 import { prepareSurfaceMaterialTextures } from './material-residency';
 import { packLights } from './path-input';
@@ -125,7 +126,7 @@ export class RendererRayDiffuse {
     if (input === undefined) return '';
     const lights = packLights(input.lights);
     return JSON.stringify([
-      input.runtime.deviceScope.generation,
+      recordContext(input.runtime).deviceScope.generation,
       content ? input.scene.retained?.revision : undefined,
       input.worlds.map((world) => world.identity),
       input.width,
@@ -336,7 +337,7 @@ export class RendererRayDiffuse {
           await createSubmittedRayPathTracer(device, compile, {
             kernel: transportSource,
             ...(transportLutSource === undefined ? {} : { kernelLut: transportLutSource }),
-            deviceScope: runtime.deviceScope,
+            deviceScope: recordContext(runtime).deviceScope,
             scene: projected.scene,
             shaders,
             lights: input.lights,

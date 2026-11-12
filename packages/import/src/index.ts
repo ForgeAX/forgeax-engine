@@ -158,6 +158,7 @@ export {
   type ScriptablePackBuildWorklistOptions,
   type ScriptablePackBuildWorklistProduct,
 } from './scriptable-pack-build.js';
+export type { PackBuildCacheSubject } from './scriptable-pack-build-core.js';
 export {
   createScriptablePackFileAssetSnapshotSource,
   type ScriptablePackFileAssetSnapshotError,
@@ -192,7 +193,10 @@ export {
   meshAssetOutputProducer,
   textureAssetOutputProducer,
 } from './scriptable-pack-output-producers.js';
-export { createScriptablePackProductCache } from './scriptable-pack-product-cache.js';
+export {
+  createPackBuildProductCache,
+  createScriptablePackProductCache,
+} from './scriptable-pack-product-cache.js';
 export {
   createScriptablePackStagedAssetSnapshotSource,
   type ScriptablePackSnapshotError,
@@ -206,6 +210,7 @@ export {
   type ProducerReadinessResult,
   parseProducerReadiness,
   produceSourcePackage,
+  runSourcePackageImport,
   type SourcePackageClosureDetail,
   type SourcePackageClosureError,
   type SourcePackageProducerInput,
@@ -213,6 +218,10 @@ export {
   type SourcePackageProduct,
   sourcePackageAssetsByGuid,
 } from './source-package.js';
+export {
+  createSourcePackageBuildDdc,
+  type SourcePackageBuildDdc,
+} from './source-package-build-product.js';
 export {
   containsSourcePackageError,
   normalizeSourcePackageError,
@@ -230,7 +239,9 @@ export {
   type ImportPublicationError,
   type ImportPublicationInput,
   type ImportPublicationResult,
+  type ImportPublicationSnapshot,
   publishImportPublication,
+  readImportPublication,
   restoreImportPublication,
   type StagedImportPublication,
   type StagedImportPublicationResult,

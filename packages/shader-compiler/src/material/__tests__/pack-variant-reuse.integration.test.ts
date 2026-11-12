@@ -1,3 +1,4 @@
+import { AssetGuid } from '@forgeax/engine-pack/guid';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
 import type { compileShader } from '../../compile.js';
@@ -44,6 +45,28 @@ function fixture() {
 }
 
 describe('Pack variant compilation ownership', () => {
+  it('reuses variants with byte GUID uniforms while observing each current texture value', async () => {
+    const f = fixture();
+    const parsed = AssetGuid.parse('01010101-0101-0101-0101-010101010101');
+    if (!parsed.ok) throw parsed.error;
+    const texture = parsed.value;
+    const asset: MaterialAsset = {
+      ...material,
+      parameters: [
+        ...(material.parameters ?? []),
+        { name: 'textureSlot', type: 'texture', optional: true },
+      ],
+      values: { roughness: 0.5, textureSlot: { texture } },
+    };
+    const first = await f.cook(request('first-byte-guid', asset), 'snapshot');
+    expect(first.ok).toBe(true);
+    texture.fill(2);
+    const nextRequest = request('next-byte-guid', asset);
+    const next = await f.cook(nextRequest, 'snapshot');
+    expect(next).toEqual(await cookMaterialAsset(nextRequest));
+    expect(f.calls()).toBe(1);
+    expect(next.unwrap().resolved.asset.values?.textureSlot).toEqual({ texture });
+  });
   it('reuses native-validated passes across GUIDs while resolving each material values and ancestry', async () => {
     const f = fixture();
     const firstRequest = request('first');

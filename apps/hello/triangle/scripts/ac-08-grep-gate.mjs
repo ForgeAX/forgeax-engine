@@ -72,6 +72,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { walkSourceFiles } from '../../../../scripts/ci/engineering-stance-source.mjs';
 
 // ─── locate the repo root (this script lives under apps/hello/triangle/scripts/)
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -250,42 +251,6 @@ function readSafely(path) {
 // not silently let it slip back into the scan.
 const GATE_SCRIPT_PATH = fileURLToPath(import.meta.url);
 
-function* walkSourceFiles(rootDir, exts) {
-  if (!existsSync(rootDir)) return;
-  const stack = [rootDir];
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    let entries;
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      if (name === 'dist' || name === 'node_modules' || name === '.git') continue;
-      const full = join(dir, name);
-      let st;
-      try {
-        st = statSync(full);
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) {
-        stack.push(full);
-      } else if (st.isFile()) {
-        // skip the gate script itself
-        if (full === GATE_SCRIPT_PATH) continue;
-        for (const ext of exts) {
-          if (full.endsWith(ext)) {
-            yield full;
-            break;
-          }
-        }
-      }
-    }
-  }
-}
-
 // stripLineComment(line): remove `//` line comments and `/* ... */`
 // single-line block comments, preserving string literals approximately.
 // We intentionally keep the heuristic simple - the gate flags only obvious
@@ -343,31 +308,47 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
   // (or the new path:line) here. Entries must be reviewed at gate update.
 ]);
 
+// These source rules share one physical read/lex pass. Retain only findings,
+// not whole source strings, between the original rule and allow-list checks.
+const internalDeviceCalls = [];
+const forbiddenCastSites = [];
+const bannedCastRegex = /\bas\s+(?:Rhi|Command|GPU)[A-Z][A-Za-z0-9_]*\b/;
+
 {
   const exts = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
   const offending = [];
   for (const sub of ['packages', 'apps']) {
     const root = join(REPO_ROOT, sub);
-    for (const fp of walkSourceFiles(root, exts)) {
+    for (const fp of walkSourceFiles(root, exts, GATE_SCRIPT_PATH)) {
       let text;
       try {
         text = readFileSync(fp, 'utf8');
       } catch {
         continue;
       }
-      const rel = fp.slice(REPO_ROOT.length + 1);
+      const rel = fp.slice(REPO_ROOT.length + 1).replaceAll('\\', '/');
+      const rawDevice = text.includes('getRawDevice');
+      const castSource = /\.tsx?$/.test(fp) && (
+        rel.startsWith('packages/runtime/src/') ||
+        rel.startsWith('apps/hello/triangle/src/')
+      );
+      if (!rawDevice && !castSource) continue;
       const lines = text.split('\n');
       for (let idx = 0; idx < lines.length; idx++) {
         const codePart = stripLineComment(lines[idx]);
         // Word-boundary getRawDevice: leading char is start-of-string or
         // non-word; trailing char is end-of-string or non-word. Underscore
         // counts as a word char so `_internal_getRawDevice` is NOT matched.
-        if (/(?:^|\W)getRawDevice(?=\W|$)/.test(codePart)) {
+        if (rawDevice && /(?:^|\W)getRawDevice(?=\W|$)/.test(codePart)) {
           const key = `${rel}:${idx + 1}`;
           if (!G_GET_RAW_DEVICE_WHITELIST.has(key)) {
             offending.push(`${key}: ${lines[idx]}`);
           }
         }
+        if (rawDevice && /_internal_getRawDevice\s*\(/.test(codePart))
+          internalDeviceCalls.push({ rel, line: idx + 1, source: lines[idx] });
+        if (castSource && !/\bas\s+unknown\s+as\b/.test(codePart) && bannedCastRegex.test(codePart))
+          forbiddenCastSites.push(`${rel}:${idx + 1}: ${lines[idx]}`);
       }
     }
   }
@@ -648,32 +629,9 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
   // match the regex `/_internal_getRawDevice\s*\(/` (the regex matches the
   // call form `_internal_getRawDevice(`; renamed-imports use the alias at
   // call sites). M6 will fully migrate the hello-cube smoke harness.
-  const exts = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
-  const offending = [];
-  for (const sub of ['packages', 'apps']) {
-    const root = join(REPO_ROOT, sub);
-    for (const fp of walkSourceFiles(root, exts)) {
-      let text;
-      try {
-        text = readFileSync(fp, 'utf8');
-      } catch {
-        continue;
-      }
-      const rel = fp.slice(REPO_ROOT.length + 1);
-      const lines = text.split('\n');
-      for (let idx = 0; idx < lines.length; idx++) {
-        const codePart = stripLineComment(lines[idx]);
-        // Match the call form `_internal_getRawDevice(` (open paren). Function
-        // definition and import statements also match because they contain the
-        // identifier; whitelist by file path covers all sanctioned sites.
-        if (/_internal_getRawDevice\s*\(/.test(codePart)) {
-          if (!ALLOWED_CALL_SITES.has(rel)) {
-            offending.push(`${rel}:${idx + 1}: ${lines[idx]}`);
-          }
-        }
-      }
-    }
-  }
+  const offending = internalDeviceCalls
+    .filter(({ rel }) => !ALLOWED_CALL_SITES.has(rel))
+    .map(({ rel, line, source }) => `${rel}:${line}: ${source}`);
   if (offending.length === 0) {
     record(
       'h',
@@ -748,38 +706,12 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
 
 // ─── (j) forbidden cast patterns in engine/apps source ─────────────────────
 {
-  const ROOTS = [
-    join(REPO_ROOT, 'packages/runtime/src'),
-    join(REPO_ROOT, 'apps/hello/triangle/src'),
-  ];
-  const exts = ['.ts', '.tsx'];
   // Match `as Rhi<UpperCase>` / `as Command<UpperCase>` / `as GPU<UpperCase>`
   // word-bounded cast patterns; these would leak shim implementation details
   // past the RHI surface (charter proposition 5 red line). Allowed two-step
   // `as unknown as ...` casts are not flagged because they are explicit
   // opt-ins to known-unsafe assertions (different signal).
-  const bannedRegex = /\bas\s+(?:Rhi|Command|GPU)[A-Z][A-Za-z0-9_]*\b/;
-  const offending = [];
-  for (const root of ROOTS) {
-    for (const fp of walkSourceFiles(root, exts)) {
-      let text;
-      try {
-        text = readFileSync(fp, 'utf8');
-      } catch {
-        continue;
-      }
-      const rel = fp.slice(REPO_ROOT.length + 1);
-      const lines = text.split('\n');
-      for (let idx = 0; idx < lines.length; idx++) {
-        const codePart = stripLineComment(lines[idx]);
-        // Skip `as unknown as Xxx` (the canonical two-step explicit cast).
-        if (/\bas\s+unknown\s+as\b/.test(codePart)) continue;
-        if (bannedRegex.test(codePart)) {
-          offending.push(`${rel}:${idx + 1}: ${lines[idx]}`);
-        }
-      }
-    }
-  }
+  const offending = forbiddenCastSites;
   if (offending.length === 0) {
     record(
       'j',
@@ -951,7 +883,7 @@ const G_GET_RAW_DEVICE_WHITELIST = new Set([
       `${lintScript} missing (feat-20260510-ci-metrics-coverage-drift M3 w13 not landed)`,
     );
   } else {
-    const r = spawnSync('node', [lintScript], {
+    const r = spawnSync(process.execPath, [lintScript], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
     });

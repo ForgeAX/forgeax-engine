@@ -27,12 +27,108 @@ export const STANDARD_CLUSTER_MEMBERSHIP_WGSL = /* wgsl */ `
 struct ClusterUniform {
   grid : vec4<u32>,
   near_far_log : vec4<f32>,
+  ao : vec4<u32>,
+  direct_ao : vec4<f32>,
+  texture : vec4<u32>,
+  cluster_layout : vec4<u32>,
 };
 
-@group(0) @binding(0) var<storage, read> cluster_grid : array<u32>;
+// The CPU reserves each cell's run from its conservative cell box; this pass
+// keeps only lights whose sphere (and spot cone) reach the cell's froxel and
+// writes the kept count back, so shading iterates the exact list.
+@group(0) @binding(0) var<storage, read_write> cluster_grid : array<u32>;
 @group(0) @binding(1) var<storage, read_write> light_index_list : array<u32>;
 @group(0) @binding(2) var<uniform> cluster_uniform : ClusterUniform;
+// Producer payload, see encodeProducerBounds (cluster-binner.ts).
 @group(0) @binding(3) var<storage, read> light_bounds : array<i32>;
+
+const HEADER_WORDS : u32 = 8u;
+const STRIDE_WORDS : u32 = 20u;
+const FLAG_UNBOUNDED : u32 = 1u;
+const FLAG_CONE : u32 = 2u;
+
+fn bound_f32(word : u32) -> f32 {
+  return bitcast<f32>(light_bounds[word]);
+}
+
+fn bound_vec3(word : u32) -> vec3<f32> {
+  return vec3<f32>(bound_f32(word), bound_f32(word + 1u), bound_f32(word + 2u));
+}
+
+struct Froxel {
+  lo : vec3<f32>,
+  hi : vec3<f32>,
+  bounded : bool,
+};
+
+// Mirrors froxelViewAabb (cluster-binner.ts).
+fn froxel_aabb(cluster : vec3<u32>) -> Froxel {
+  let grid = vec3<f32>(cluster_uniform.grid.xyz);
+  let near = cluster_uniform.near_far_log.x;
+  let log_ratio = cluster_uniform.near_far_log.z;
+  let cz = f32(cluster.z);
+  var d0 = 0.0;
+  if (cluster.z > 0u) {
+    d0 = near * exp(log_ratio * cz / grid.z);
+  }
+  var froxel : Froxel;
+  if (cluster.z + 1u >= cluster_uniform.grid.z) {
+    froxel.lo = vec3<f32>(0.0);
+    froxel.hi = vec3<f32>(0.0, 0.0, -d0 * (1.0 - 1e-4));
+    froxel.bounded = false;
+    return froxel;
+  }
+  let d1 = near * exp(log_ratio * (cz + 1.0) / grid.z);
+  let pad = d1 * 1e-4;
+  let p00 = bound_f32(0u);
+  let p11 = bound_f32(1u);
+  let p20 = bound_f32(2u);
+  let p21 = bound_f32(3u);
+  let p23 = bound_f32(4u);
+  // FROXEL_TILE_PAD (cluster-binner.ts): 1/32 of a tile on each side.
+  let tile_pad = vec2<f32>(-1.0, 1.0) / 16.0;
+  let nx = vec2<f32>(f32(cluster.x), f32(cluster.x + 1u)) / grid.x * 2.0 - 1.0 + tile_pad / grid.x;
+  let ny = vec2<f32>(f32(cluster.y), f32(cluster.y + 1u)) / grid.y * 2.0 - 1.0 + tile_pad / grid.y;
+  let ax = (vec2<f32>(p20) - p23 * nx) / p00;
+  let ay = (vec2<f32>(p21) - p23 * ny) / p11;
+  let x4 = vec4<f32>(ax.x * d0, ax.x * d1, ax.y * d0, ax.y * d1);
+  let y4 = vec4<f32>(ay.x * d0, ay.x * d1, ay.y * d0, ay.y * d1);
+  froxel.lo = vec3<f32>(min(min(x4.x, x4.y), min(x4.z, x4.w)) - pad, min(min(y4.x, y4.y), min(y4.z, y4.w)) - pad, -d1 - pad);
+  froxel.hi = vec3<f32>(max(max(x4.x, x4.y), max(x4.z, x4.w)) + pad, max(max(y4.x, y4.y), max(y4.z, y4.w)) + pad, -d0 + pad);
+  froxel.bounded = true;
+  return froxel;
+}
+
+// Mirrors producerKeeps (cluster-binner.ts).
+fn froxel_keeps(froxel : Froxel, at : u32) -> bool {
+  let flags = u32(light_bounds[at + 6u]);
+  if ((flags & FLAG_UNBOUNDED) != 0u) {
+    return true;
+  }
+  let centre = bound_vec3(at + 8u);
+  let radius = bound_f32(at + 11u);
+  if (!froxel.bounded) {
+    return centre.z - radius <= froxel.hi.z;
+  }
+  let d = max(max(froxel.lo - centre, vec3<f32>(0.0)), centre - froxel.hi);
+  if (dot(d, d) > radius * radius) {
+    return false;
+  }
+  if ((flags & FLAG_CONE) == 0u) {
+    return true;
+  }
+  let apex = bound_vec3(at + 12u);
+  let range = bound_f32(at + 15u);
+  let axis = bound_vec3(at + 16u);
+  let cos_outer = bound_f32(at + 19u);
+  let mid = (froxel.lo + froxel.hi) * 0.5;
+  let rr = 0.5 * length(froxel.hi - froxel.lo);
+  let v = mid - apex;
+  let along = dot(v, axis);
+  let sin_outer = sqrt(max(0.0, 1.0 - cos_outer * cos_outer));
+  let closest = cos_outer * sqrt(max(0.0, dot(v, v) - along * along)) - along * sin_outer;
+  return !(closest > rr || along > rr + range || along < -rr);
+}
 
 @compute @workgroup_size(64)
 fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
@@ -49,12 +145,15 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
   let cluster_yz = cluster_index / grid_x;
   let cluster_y = cluster_yz % grid_y;
   let cluster_z = cluster_yz / grid_y;
-  let grid_offset = cluster_index * 2u;
+  let grid_offset = cluster_index * cluster_uniform.cluster_layout.x;
+  let count_offset = grid_offset + cluster_uniform.cluster_layout.y;
   let output_offset = cluster_grid[grid_offset];
-  let output_count = cluster_grid[grid_offset + 1u];
+  let output_count = cluster_grid[count_offset];
   let cluster_x_i = i32(cluster_x);
   let cluster_y_i = i32(cluster_y);
   let cluster_z_i = i32(cluster_z);
+  let exact = light_bounds[5u] == 1;
+  let froxel = froxel_aabb(vec3<u32>(cluster_x, cluster_y, cluster_z));
   var output_index = output_offset;
 
   var light_index = 0u;
@@ -62,7 +161,7 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
     if (light_index >= cluster_uniform.grid.w || light_index >= 256u) {
       break;
     }
-    let bounds_offset = light_index * 6u;
+    let bounds_offset = HEADER_WORDS + light_index * STRIDE_WORDS;
     let min_x = light_bounds[bounds_offset];
     if (min_x >= 0) {
       let min_y = light_bounds[bounds_offset + 1u];
@@ -73,7 +172,8 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
       if (
         cluster_x_i >= min_x && cluster_x_i <= max_x &&
         cluster_y_i >= min_y && cluster_y_i <= max_y &&
-        cluster_z_i >= min_z && cluster_z_i <= max_z
+        cluster_z_i >= min_z && cluster_z_i <= max_z &&
+        (!exact || froxel_keeps(froxel, bounds_offset))
       ) {
         if (output_index < output_offset + output_count) {
           light_index_list[output_index] = light_index;
@@ -83,6 +183,7 @@ fn cs_cluster_membership(@builtin(global_invocation_id) global_id : vec3<u32>) {
     }
     light_index += 1u;
   }
+  cluster_grid[count_offset] = output_index - output_offset;
 }
 `;
 export function validateClusterGrid(grid: {
@@ -177,8 +278,8 @@ function standardTopology(
 /**
  * @internal
  * The sole built-in pipeline entry point. All local lights use the same
- * prepared Cluster topology; the profile chooses only Forward or Deferred
- * graph shape and never a second lighting authority.
+ * prepared Cluster topology; the view's planned opaque lane chooses only the
+ * Forward or Deferred graph shape and never a second lighting authority.
  */
 export function buildStandard(
   context: StandardPipelineBuildContext,
@@ -203,27 +304,16 @@ export function buildStandard(
     );
   }
   if (
+    profile.renderPath === 'deferred' &&
     (topology.projectedDecals?.length ?? 0) > 0 &&
-    (profile.renderPath !== 'deferred' || topology.camera.antialias === 'msaa')
+    topology.camera.antialias === 'msaa'
   )
-    throw new ProjectedDecalInvalidError(
-      'renderPath',
-      'Standard Deferred with single-sample depth',
-    );
+    throw new ProjectedDecalInvalidError('renderPath', 'single-sample Standard scene depth');
   const effective = standardTopology(topology, profile);
   const lighting = resolveStandardTopologyInput(context);
   if (!lighting.ok) return lighting;
-  // A missing Camera is an intentional clear-only frame. Keep it on the
-  // forward raster lane so clustered resources cannot introduce work.
-  if (effective.clearOnly === true) {
-    return buildStandardForwardLane(
-      standardContext,
-      effective,
-      lighting.value,
-      reuseAdjacentShadow,
-    );
-  }
-  return profile.renderPath === 'forward'
+  // RenderQueue planned the opaque lane; a clear-only frame plans Forward.
+  return effective.opaque.lane === 'forward'
     ? buildStandardForwardLane(standardContext, effective, lighting.value, reuseAdjacentShadow)
     : buildStandardDeferredLane(standardContext, effective, lighting.value, reuseAdjacentShadow);
 }

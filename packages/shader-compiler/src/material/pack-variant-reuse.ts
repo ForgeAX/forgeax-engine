@@ -20,6 +20,13 @@ function plainJson(value: unknown, visiting = new Set<object>()): boolean {
   if (value === null || value === undefined) return true;
   if (typeof value === 'number') return Number.isFinite(value) && !Object.is(value, -0);
   if (typeof value !== 'object') return typeof value === 'string' || typeof value === 'boolean';
+  // Uniform texture/sampler GUIDs are detached 16-byte identities, not compiler code.
+  if (value instanceof Uint8Array && Object.getPrototypeOf(value) === Uint8Array.prototype)
+    return (
+      value.byteLength === 16 &&
+      value.buffer instanceof ArrayBuffer &&
+      Reflect.ownKeys(value).length === 16
+    );
   if (visiting.has(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null && prototype !== Array.prototype)

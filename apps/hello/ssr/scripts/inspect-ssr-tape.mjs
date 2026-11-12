@@ -215,9 +215,9 @@ async function readTraceOverride() {
 function createTraceShaderModule(backend, tapePath, traceOverride, device, descriptor) {
   const { steps, sourcePath, source } = traceOverride;
   if ((steps === undefined && source === undefined) || !descriptor.code.includes('fn ssr_trace(')) return backend.rhiWebgpu.createShaderModule(device, descriptor);
-  const constant = /(const SSR_TRACE_MAX_COARSE_STEPS[_\d]*\s*:\s*u32\s*=\s*)\d+u?\s*;/;
+  const constant = /(const SSR_TRACE_MAX_(?:COARSE_STEPS|HIZ_ITERATIONS)[_\d]*\s*:\s*u32\s*=\s*)\d+u?\s*;/;
   const baseCode = source ?? descriptor.code;
-  assert.ok(constant.test(baseCode), 'The selected trace must expose its bounded coarse-step constant');
+  assert.ok(constant.test(baseCode), 'The selected trace must expose its bounded coarse-step or Hi-Z iteration constant');
   const code = steps === undefined ? baseCode
     : baseCode.replace(constant, (_, prefix) => `${prefix}${steps}u;`);
   const digest = createHash('sha256').update(code).digest('hex');

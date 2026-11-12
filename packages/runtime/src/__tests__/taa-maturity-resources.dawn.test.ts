@@ -37,7 +37,9 @@ it.skipIf(process.env.TAA_MATURITY !== 'resources')(
       try {
         carrier.mode(undefined);
         for (let f = 0; f < 60; f++) await carrier.draw();
-        expect(carrier.renderer.inspect().temporal.resources.activeBytes).toBe(34 * width * height);
+        expect(carrier.renderer.inspect().temporal.resources.activeBytes).toBe(
+          (34 + 8) * width * height,
+        );
         const submit = async () => {
           current.world.update(1 / 60).unwrap();
           propagateTransforms(current.world).unwrap();
@@ -65,7 +67,9 @@ it.skipIf(process.env.TAA_MATURITY !== 'resources')(
         phase = 'internal-half';
         carrier.mode(0.5);
         await submit();
-        expect(carrier.renderer.inspect().temporal.resources.activeBytes).toBe(34 * width * height);
+        expect(carrier.renderer.inspect().temporal.resources.activeBytes).toBe(
+          (34 + 8) * width * height,
+        );
         const peak = Math.max(
           ...samples.map(
             (s) => s.resources.activeBytes + s.resources.candidateBytes + s.resources.retiringBytes,

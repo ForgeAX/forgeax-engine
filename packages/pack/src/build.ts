@@ -56,6 +56,7 @@ export {
   projectPackageCatalog,
   projectRuntimeCatalogRow,
   type RuntimeCatalogRowInput,
+  sourceOverridesForOutput,
 } from './catalog-projection.js';
 export {
   type AssetCliContext,

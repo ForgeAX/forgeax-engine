@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { isGlobalWorkspaceInstall } from '../workspace-install-scope.mjs';
 
 test('parent-only checkout leaves stale View manifests that the exact Engine pin repairs', (t) => {
   const folder = mkdtempSync(join(tmpdir(), 'forgeax-pinned-view-install-'));
@@ -80,11 +81,18 @@ test('parent-only checkout leaves stale View manifests that the exact Engine pin
 });
 
 test('every full CI workspace install resolves and materializes the Engine View pin first', () => {
-  const action = readFileSync(resolve('.github/actions/prepare-view-checkout/action.yml'), 'utf8');
+  const action = readFileSync(
+    resolve('.github/actions/prepare-source-checkouts/action.yml'),
+    'utf8',
+  );
   assert.match(action, /git rev-parse HEAD:tools\/view/);
-  assert.match(action, /repository: ForgeaX-Games\/forgeax-view/);
+  assert.match(action, /repository: ForgeAX\/forgeax-view/);
   assert.match(action, /ref: \$\{\{ steps\.view-pin\.outputs\.sha \}\}/);
   assert.match(action, /git -C tools\/view rev-parse HEAD/);
+  assert.match(action, /git rev-parse HEAD:packages\/modeling/);
+  assert.match(action, /repository: ForgeAX\/forgeax-modeling/);
+  assert.match(action, /ref: \$\{\{ steps\.modeling-pin\.outputs\.sha \}\}/);
+  assert.match(action, /git -C packages\/modeling rev-parse HEAD/);
   const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
   const sections = workflow.slice(workflow.indexOf('jobs:\n')).split(/\n(?= {2}[\w-]+:\n)/);
   let installs = 0;
@@ -94,8 +102,8 @@ test('every full CI workspace install resolves and materializes the Engine View 
     )) {
       const before = section.slice(0, match.index);
       assert.ok(
-        before.includes('uses: ./.github/actions/prepare-view-checkout') ||
-          (before.includes('repository: ForgeaX-Games/forgeax-view') &&
+        before.includes('uses: ./.github/actions/prepare-source-checkouts') ||
+          (before.includes('repository: ForgeAX/forgeax-view') &&
             /ref: \$\{\{ steps\.view-pin\.outputs\.sha \}\}/.test(before)),
         `${section.trim().split('\n')[0]} must materialize its exact View gitlink before frozen install`,
       );
@@ -103,4 +111,42 @@ test('every full CI workspace install resolves and materializes the Engine View 
     }
   }
   assert.ok(installs > 0, 'full maintained workspace install roster must be inspected');
+});
+
+test('every workflow job that installs the workspace materializes the Modeling gitlink first', () => {
+  const failures = [];
+  for (const file of readdirSync(resolve('.github/workflows')).filter((name) =>
+    /\.ya?ml$/.test(name),
+  )) {
+    const workflow = readFileSync(resolve('.github/workflows', file), 'utf8');
+    const sections = workflow.slice(workflow.indexOf('jobs:\n')).split(/\n(?= {2}[\w-]+:\n)/);
+    for (const section of sections) {
+      for (const match of section.matchAll(
+        /(?:pnpm|bun) install --frozen-lockfile|node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/g,
+      )) {
+        const command = section.slice(match.index).split('\n')[0];
+        if (!isGlobalWorkspaceInstall(command)) continue;
+        const before = section.slice(0, match.index);
+        if (
+          !before.includes('uses: ./.github/actions/prepare-source-checkouts') &&
+          !before.includes('repository: ForgeAX/forgeax-modeling') &&
+          !/submodules: (?:recursive|true)\b/.test(before)
+        )
+          failures.push(`${file}:${section.trim().split('\n')[0]}`);
+      }
+    }
+  }
+  assert.deepEqual([...new Set(failures)], [], 'jobs installing without packages/modeling');
+});
+
+test('primary-pnpm type-checks Modeling tests and examples and lints its internals', () => {
+  const workflow = readFileSync(resolve('.github/workflows/ci.yml'), 'utf8');
+  const job = workflow
+    .slice(workflow.indexOf('jobs:\n'))
+    .split(/\n(?= {2}[\w-]+:\n)/)
+    .find((section) => section.startsWith('  primary-pnpm:'));
+  assert.ok(job, 'primary-pnpm job exists');
+  assert.ok(job.includes('uses: ./.github/actions/prepare-source-checkouts'));
+  assert.match(job, /tsc -p packages\/modeling\/tsconfig\.test\.json/);
+  assert.match(job, /run: pnpm lint:internal/);
 });

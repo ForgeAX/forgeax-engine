@@ -22,6 +22,8 @@ const GATE_PROVED_ROWS = new Set([
   'Managed scene SDF collision',
   'GPU-driven custom Surface ABI',
   'Native wgpu/Ray Query spike',
+  // Build-time Pack LOD production: Import unit tests and its C-015 Dawn case.
+  'Automatic Mesh LOD generation',
   // Worker execution tiers and frame pacing.
   'Engine-worker tier',
   'Shared tier',

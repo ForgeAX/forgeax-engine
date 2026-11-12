@@ -2,14 +2,16 @@ import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ec
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { LensEffectsInvalidParameterError } from '../errors/render';
 
-/** Independent camera effects combined into one output-resolution pass. */
+/** Independent camera effects: a linear-HDR fringe before Bloom/tone, then vignette and grain at output resolution. */
 export const LensEffects = defineComponent('LensEffects', {
   vignetteIntensity: { type: 'f32', default: 0 },
   vignetteRadius: { type: 'f32', default: 0.5 },
   vignetteSoftness: { type: 'f32', default: 0.5 },
   vignetteColor: { type: 'array<f32, 3>', default: new Float32Array([0, 0, 0]) },
+  /** Percent, as UE SceneFringeIntensity: radial red/green fringe growing toward the corners. */
   chromaticAberration: { type: 'f32', default: 0 },
-  chromaticAberrationAngle: { type: 'f32', default: 0 },
+  /** Normalized distance from the centre where the fringe starts (UE ChromaticAberrationStartOffset). */
+  chromaticAberrationStartOffset: { type: 'f32', default: 0 },
   grainIntensity: { type: 'f32', default: 0 },
   grainSize: { type: 'f32', default: 1 },
 });
@@ -27,8 +29,8 @@ export function resolveLensEffects(
     ['vignetteIntensity', 0, 1],
     ['vignetteRadius', 0, 1],
     ['vignetteSoftness', 0.001, 1],
-    ['chromaticAberration', 0, 32],
-    ['chromaticAberrationAngle', -Math.fround(Math.PI), Math.fround(Math.PI)],
+    ['chromaticAberration', 0, 5],
+    ['chromaticAberrationStartOffset', 0, 1],
     ['grainIntensity', 0, 1],
     ['grainSize', 1, 8],
   ] as const) {

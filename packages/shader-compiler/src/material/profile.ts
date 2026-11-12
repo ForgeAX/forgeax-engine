@@ -5,16 +5,16 @@ export const MATERIAL_WGSL_PROFILE = {
   language: 'wgsl' as const,
   profileVersion: '1.0.0',
   adapterVersion: '1.0.0',
-  compilerVersion: '0.22.0',
-  nagaVersion: '29.0.3',
+  compilerVersion: '0.23.0',
+  nagaVersion: '30.0.1',
 } as const;
 
 export const MATERIAL_WGSL_PROFILE_CAPABILITIES = [
-  { feature: 'bool-define', supported: true, evidence: 'naga_oil 0.22 boolean defines' },
+  { feature: 'bool-define', supported: true, evidence: 'naga_oil 0.23 boolean defines' },
   { feature: 'int-define', supported: true, evidence: 'typed material definition projection' },
   { feature: 'uint-define', supported: true, evidence: 'typed material definition projection' },
   { feature: 'undefined-define', supported: true, evidence: 'omitted definition sentinel' },
-  { feature: 'conditional', supported: true, evidence: 'naga_oil 0.22 conditional composition' },
+  { feature: 'conditional', supported: true, evidence: 'naga_oil 0.23 conditional composition' },
   { feature: 'alias-import', supported: true, evidence: 'WGSL import path alias' },
   { feature: 'selective-import', supported: true, evidence: 'WGSL selective import' },
   { feature: 'nested-import', supported: true, evidence: 'transitive catalog closure' },

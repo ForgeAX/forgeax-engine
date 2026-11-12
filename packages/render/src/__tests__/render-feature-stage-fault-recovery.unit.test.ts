@@ -88,18 +88,15 @@ function frame(host: RenderFeatureHost, frameNumber: number) {
 describe('RenderFeature stage fault recovery lifecycle', () => {
   it('retains the original exception when a feature stage throws', () => {
     const cause = new TypeError('feature plan exploded');
-    const host = createRenderFeatureHost(
-      [
-        {
-          identity: 'synthetic.m10.throwing',
-          extract: () => ok({ ready: true }),
-          plan: () => {
-            throw cause;
-          },
+    const host = createRenderFeatureHost([
+      {
+        identity: 'synthetic.m10.throwing',
+        extract: () => ok({ ready: true }),
+        plan: () => {
+          throw cause;
         },
-      ],
-      caps,
-    ).unwrap();
+      },
+    ]).unwrap();
 
     const result = frame(host, 1);
     expect(result.errors[0]).toMatchObject({
@@ -118,7 +115,7 @@ describe('RenderFeature stage fault recovery lifecycle', () => {
     const faultyProbe = { plan: 0 };
     const faulty = faultyFeature(fault, faultyProbe);
     const healthy = healthyFeature(healthyProbe);
-    const host = createRenderFeatureHost([healthy, faulty.feature], caps).unwrap();
+    const host = createRenderFeatureHost([healthy, faulty.feature]).unwrap();
     const first = frame(host, 1);
     const firstError = first.errors.find((error) => {
       switch (error.code) {

@@ -60,3 +60,49 @@ it.each([
   expect(owner.stats.liveByteLength).toBe(0);
   device.destroyTexture(texture).unwrap();
 });
+
+it('uses the observed view extent rather than presentation dimensions for a reduced-resolution HDR source', async () => {
+  const { addObservationCapturePass } = await import('../typed-render-graph-primitives');
+  const { ok } = await import('@forgeax/engine-types');
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const texture = device
+    .createTexture({ size: { width: 16, height: 8 }, format: 'rgba16float', usage: 0x11 })
+    .unwrap();
+  const owner = createRendererObservationCaptureOwner((error) => {
+    throw error;
+  });
+  let encode: ((...args: unknown[]) => void) | undefined;
+  const graph = {
+    addCopyPass: (_name: unknown, pass: { encodeDirect: (...args: unknown[]) => void }) => {
+      encode = pass.encodeDirect;
+      return ok(undefined);
+    },
+  };
+  const frame = {
+    targetW: 64,
+    targetH: 64,
+    runtime: {
+      device,
+      observationCaptureOwner: owner.observationCaptureOwner,
+      observationCaptureDomains: ['linear-hdr'],
+    },
+    frameState: { frameNumber: 17, graphGeneration: 9, frameOutputs: {} },
+  };
+  addObservationCapturePass(
+    graph as never,
+    { texture: {}, view: {}, format: 'rgba16float', sampleCount: 1 } as never,
+    'linear-hdr',
+  );
+  if (!encode) throw new Error('missing observation pass');
+  const encoder = device.createCommandEncoder().unwrap(),
+    copy = vi.spyOn(encoder, 'copyTextureToBuffer');
+  encode(encoder, frame, {
+    texture: () => ok(texture),
+    textureViewExtent: () => ok({ width: 16, height: 8, depthOrArrayLayers: 1 }),
+  });
+  const captures = owner.observationCaptureOwner.consume(17);
+  expect(captures[0]).toMatchObject({ width: 16, height: 8, bytesPerRow: 256 });
+  expect(copy.mock.calls[0]?.[2]).toEqual({ width: 16, height: 8, depthOrArrayLayers: 1 });
+  owner.disposeObservationCaptures(captures);
+  device.destroyTexture(texture).unwrap();
+});

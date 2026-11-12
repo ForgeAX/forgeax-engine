@@ -55,11 +55,13 @@ export interface BasisTexFormatEnum {
 
 /**
  * A KTX2 container opened for inspection + transcoding. Construct with the raw
- * container bytes; `close()` frees the WASM-side copy.
+ * container bytes; `close()` frees the WASM-side copy of the bytes and
+ * `delete()` frees the embind object with its transcoder state. Call both.
  */
 export interface KTX2File {
   isValid(): boolean;
   close(): void;
+  delete(): void;
   getWidth(): number;
   getHeight(): number;
   getLevels(): number;
@@ -111,9 +113,10 @@ export interface KTX2FileConstructor {
   new (data: Uint8Array): KTX2File;
 }
 
-/** A raw `.basis` source opened by the build-time BasisFile arm. */
+/** A raw `.basis` source opened by the build-time BasisFile arm; `close()` then `delete()`. */
 export interface BasisFile {
   close(): void;
+  delete(): void;
   getNumImages(): number;
   getNumLevels(imageIndex: number): number;
   getImageWidth(imageIndex: number, levelIndex: number): number;
@@ -195,6 +198,12 @@ export interface BasisEncoder {
    * `cPackUASTCLevelFastest`(0)..`cPackUASTCLevelVerySlow`(4) (R-9 fast preset).
    */
   setPackUASTCFlags(packFlags: number): void;
+  /** Output channel k reads source channel `rgba[k]` (each 0..3). */
+  setSwizzle(r: number, g: number, b: number, a: number): void;
+  /** Apply the UASTC-LDR rate-distortion post-process. */
+  setRDOUASTC(flag: boolean): void;
+  /** UASTC-LDR RDO lambda, [0.001, 10] (default 1; lower = higher quality). */
+  setRDOUASTCQualityScalar(lambda: number): void;
   /** UASTC-HDR search quality level, range [0,4] (higher = slower). */
   setUASTCHDRQualityLevel(level: number): void;
   /** Enable/disable threading; pass (false, 0) for deterministic single-thread encode. */

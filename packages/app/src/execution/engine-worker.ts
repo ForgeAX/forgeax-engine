@@ -1,3 +1,4 @@
+import { createVideoFrameHost } from '@forgeax/engine-graphics-extras';
 import { addLoadWork, err, loadProgressScope, ok, type Result } from '@forgeax/engine-types';
 import { APP_ERROR_HINTS, APP_EXPECTED, AppError, type AppError as AppErrorType } from '../errors';
 import { validateExecutionBootstrapData } from './bootstrap-entry';
@@ -11,6 +12,7 @@ import type {
   ExecutionRenderErrorMessage,
   HostToEngineMessage,
 } from './protocol';
+import { type FrameNotice, WorkerFrameSource } from './worker-frame-source';
 import { shutdownWorker } from './worker-shutdown';
 
 /** Bind the Worker realm to this page's load progress, when the page has one. */
@@ -24,6 +26,7 @@ export interface EngineWorkerSession {
   readonly ready: ExecutionReadyMessage;
   post(message: HostToEngineMessage, transfer?: Transferable[]): void;
   listen(listener: (message: EngineToHostMessage) => void): () => void;
+  requestFrame?(callback: () => void, unavailable: () => void): (() => void) | undefined;
   dispose(): Promise<Result<void, AppErrorType>>;
 }
 
@@ -75,6 +78,30 @@ function renderStartupFault(message: ExecutionRenderErrorMessage): ExecutionFaul
   };
 }
 
+interface VideoBridge {
+  /** Spread into the init message. */
+  readonly init: { readonly videoPort?: MessagePort };
+  readonly transfer: readonly MessagePort[];
+  dispose(): void;
+}
+
+/**
+ * The page owns `<video>` elements; the DOM-less Engine Worker receives their
+ * frames on a dedicated port. Inert without a document or MessageChannel
+ * (e.g. Node hosts), where the Worker provider is simply not installed.
+ */
+function openVideoBridge(): VideoBridge {
+  if (typeof document === 'undefined' || typeof MessageChannel === 'undefined')
+    return { init: {}, transfer: [], dispose: () => {} };
+  const channel = new MessageChannel();
+  const host = createVideoFrameHost(channel.port1);
+  return {
+    init: { videoPort: channel.port2 },
+    transfer: [channel.port2],
+    dispose: () => host.dispose(),
+  };
+}
+
 export async function startEngineWorker(
   options: StartEngineWorkerOptions,
 ): Promise<Result<EngineWorkerSession, AppErrorType>> {
@@ -90,9 +117,12 @@ export async function startEngineWorker(
   let retired = false;
   const retireKernels = (): void => {
     retired = true;
+    frameSource.connect(undefined);
     for (const cleanup of kernelCleanups.values()) cleanup();
   };
   // Render notices arrive on a per-session port; a replacement session closes the old one.
+  const frameSource = new WorkerFrameSource();
+  frameSource.connect(worker);
   let renderHostPort: MessagePort | undefined;
   const closeRenderHostPort = (): void => {
     if (renderHostPort === undefined) return;
@@ -100,9 +130,11 @@ export async function startEngineWorker(
     renderHostPort.close();
     renderHostPort = undefined;
   };
+  const video = openVideoBridge();
   const terminate = (): void => {
     retireKernels();
     closeRenderHostPort();
+    video.dispose();
     worker.terminate();
   };
   const listeners = new Set<(message: EngineToHostMessage) => void>();
@@ -202,8 +234,12 @@ export async function startEngineWorker(
     if (!firstListenerInstalled && message.kind === 'host-control')
       pendingHostControl = { sequence: nextNoticeSequence++, message };
   };
-  worker.onmessage = (event: MessageEvent<EngineToHostMessage>) => {
+  worker.onmessage = (event: MessageEvent<EngineToHostMessage | FrameNotice>) => {
     const message = event.data;
+    if (message.kind === 'native-frame-ready' || message.kind === 'native-frame') {
+      frameSource.receive(worker, message);
+      return;
+    }
     if (message.kind === 'kernel-worker') {
       adoptKernelWorker(message);
       return;
@@ -269,10 +305,12 @@ export async function startEngineWorker(
   const init: ExecutionInitMessage = {
     kind: 'init',
     startupTimeoutMs: options.timeoutMs,
+    ...(options.frameTimeoutMs === undefined ? {} : { frameTimeoutMs: options.frameTimeoutMs }),
     canvas: offscreen,
     bootstrapUrl: options.bootstrapUrl,
     ...(options.bootstrapData === undefined ? {} : { bootstrapData: options.bootstrapData }),
     ...(options.bootstrapPort === undefined ? {} : { bootstrapPort: options.bootstrapPort }),
+    ...video.init,
     ...(options.assetCatalog === undefined ? {} : { assetCatalog: options.assetCatalog }),
     ...(options.shaderManifestUrl !== undefined
       ? { shaderManifestUrl: options.shaderManifestUrl }
@@ -303,6 +341,7 @@ export async function startEngineWorker(
   worker.postMessage(init, [
     offscreen,
     ...(options.bootstrapPort === undefined ? [] : [options.bootstrapPort]),
+    ...video.transfer,
   ]);
   const ready = await readyPromise;
   if (!ready.ok) return ready;
@@ -310,6 +349,7 @@ export async function startEngineWorker(
   return ok({
     worker,
     ready: ready.value,
+    requestFrame: (callback, unavailable) => frameSource.request(callback, unavailable),
     post(message, transfer = []): void {
       worker.postMessage(message, transfer);
     },
@@ -341,7 +381,11 @@ export async function startEngineWorker(
       pendingRenderError = undefined;
       pendingHostControl = undefined;
       omittedRenderErrors = 0;
-      disposal ??= shutdownWorker(worker, 10_000).finally(retireKernels);
+      disposal ??= shutdownWorker(worker, 10_000).finally(() => {
+        retireKernels();
+        closeRenderHostPort();
+        video.dispose();
+      });
       return disposal;
     },
   });

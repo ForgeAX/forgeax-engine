@@ -1,5 +1,11 @@
 # @forgeax/engine-app
 
+Renderer inspection field selection reaches the Render owner before inventory
+production and structured cloning. Use `execution.inspectRenderer({ fields:
+['state', 'frame'] })` for status; omission preserves the full detached export.
+Scalar capability, canvas-limit and point-shadow consumers request their fields
+without materializing unrelated Scene, instance, material or LOD inventories.
+
 ## Interactive material previews
 
 The optional native `workspaceMaterialPreviewPlugin` owns one preview object's
@@ -67,7 +73,16 @@ app.world.addSystem(Update, {
 app.start().unwrap();
 ```
 
-The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. CSS-sized drawing buffers scale with device pixel ratio and clamp both dimensions proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
+`forgeaxBundlerAdapter()` returns the App host adapter. It carries renderer
+build inputs and, when the configured host provides them, explicit RHI recorder
+and browser relay capabilities. The App consumes those capabilities without
+reading bundler metadata itself. Hosts that assemble a Node App opt into the
+remote server with `remoteServe: true` in the `createApp` arguments.
+The App releases relay capabilities once across stop, disposal and host cleanup.
+With execution bootstrapping, provide `shaderManifestUrl`; host-side
+`readShaderManifest` callbacks cannot cross that execution boundary.
+
+The canvas form creates a World, renderer, default plugins, browser input backend, and rAF loop. Handle the `Result` before calling `start`. On Android and iOS browsers, CSS-sized drawing buffers default to a 720-pixel short side; the long side follows the canvas aspect ratio. Desktop browsers default to one physical pixel per CSS pixel. Set `canvasPixelRatio` explicitly to override either default, for example `1` for CSS resolution or `window.devicePixelRatio` for device resolution. The mobile default does not multiply by DPR. Render's authored `DynamicResolution` remains a separate opt-in. Dimensions clamp proportionally to the active renderer's `maxTextureDimension2D`; camera aspect follows the resulting buffer.
 
 The browser form installs `canvasAspectPlugin` automatically. Native presentation
 hosts using the assemble form install `canvasAspectPlugin(() => canvas)` in
@@ -92,9 +107,10 @@ non-positive extents retain the existing buffer within the device limit.
 
 Worker Hosts with native resize observation consume Platform display notifications
 when sizing each admitted frame. They seed the current dimensions on subscription
-and reseed after canvas replacement. DPR and render budgets remain live; native
-resize/visibility notifications update logical dimensions. Browsers without native
-resize observation and direct sizing calls continue to measure current layout.
+and reseed after canvas replacement. The configured canvas pixel ratio and render
+budgets remain live; native resize/visibility notifications update logical
+dimensions. Browsers without native resize observation and direct sizing calls
+continue to measure current layout.
 
 ### Fixed animation assembly
 
@@ -189,6 +205,15 @@ the source bindings, reuses Geometry wireframe generation and Render line
 carriers, and owns temporary wireframe/collision/bounds resources. It restores
 source bindings on removal. Collision is only the existing cooked attachment,
 not an inferred instance Collider. Missing capabilities fail explicitly.
+`display.set({ overlays })` adds or replaces caller geometry by key (`null`
+removes a key): a JSON vertex-colored `triangle-list` or `line-list` in the
+subject's local space, drawn with an unlit carrier beside the subject. At most
+16 keys and 200000 vertices per overlay; every payload is validated before any
+visible change, and the state lists shown keys. Overlay carriers use the same
+canonical position/normal/uv/tangent layout as the wireframe and bounds carriers,
+plus `color`, so the shared unlit material compiles one vertex state on WebGPU.
+Producers such as the modeling `model.overlay` tool own the geometry meaning; the
+display owns only placement and lifetime.
 `createWorkspaceMeshDisplay` mounts this plugin for the DevKit resource owner
 in a native isolated service scope for each preview. Simultaneous previews
 cannot register or consume another preview's display service, and closing one
@@ -483,7 +508,10 @@ The browser publishes `globalThis.__forgeax.captureFrame` only after App
 assembly has bound that same capture to its frame driver. Initialization never
 exposes a bare recorder; failed assembly leaves no public capture entry.
 
-Recorder assembly consumes its backend-selection adapter only for startup.
+Local browser and Worker recorder assembly probe a usable native adapter before
+selecting WebGPU. API presence alone does not establish availability; a failed
+probe retains the normal wgpu/WebGL2 fallback. Explicit RHI selection remains
+authoritative. Recorder assembly consumes its backend-selection adapter only for startup.
 Renderer recovery requests a fresh adapter from the same backend; the capture
 wrapper never retains a lost generation's adapter for later device acquisition.
 
@@ -514,6 +542,13 @@ Generated hosts enable the default profile with `?forgeax-gpu-stub=1`.
 Every omitted policy is `auto`: supported Engine and Render Workers run alongside
 a lazy shared Kernel pool. The World remains the only simulation authority;
 Kernel Workers operate only on eligible numeric `QuerySpan` shards.
+
+Auto GPU Worker selection probes a WebGPU adapter, then a disposable OffscreenCanvas
+WebGL2 context when the native adapter is unavailable, before transferring the
+presentation canvas. `capabilities.workerWebGpu` is the GPU Worker admission fact
+and includes the wgpu/WebGL2 fallback; `render.capabilities.backendKind` names the
+selected renderer backend. Auto retains Host execution when neither Worker backend
+is usable or the probe exceeds its deadline. The explicit GPU stub preserves its topology.
 
 The Host creates and retires the physical Kernel Workers as siblings of the
 Engine Worker. The Engine's lazy pool sends the existing POD jobs through one
@@ -592,6 +627,8 @@ if (report.world.health === 'poisoned') {
 Render and Kernel Workers require an enabled Engine Worker. With `engine: false`,
 auto children are disabled; explicitly requiring either child is an error.
 Missing isolation disables only auto kernels, preserving independent rendering.
+Worker scripts must share the document origin: an opaque `CSP: sandbox` page
+reports `worker` unavailable and auto runs every realm on the Host.
 Each `report.workers` entry exposes `requested`, `enabled`, `reason`, and
 `missingCapabilities`; schema version 2 replaces the old mutually exclusive tier.
 A pool is enabled by policy but creates lanes only when eligible kernels exist.
@@ -663,14 +700,18 @@ Candidate budgets, World bindings and synchronous FixedUpdate admission stay in
 the source realm. The service exists before plugin startup; preparation before
 child readiness returns `dynamic-geometry-gpu-not-ready`, so startup does not
 wait on a child whose initialization depends on that startup finishing.
-Rigid candidates await both mesh upload and the pipelines required by the
-current view's actual scene passes. This wait does not occupy frame credit or
+Rigid candidates await accepted same-queue mesh writes and the pipelines required by the
+current view's actual scene passes. Their ready response permits later drawing on
+that queue; it does not acknowledge GPU completion. This wait does not occupy frame credit or
 the drawing chain: the accepted scene continues to render. A current view graph
 must exist; a missing graph returns a structured readiness refusal. Standalone
 mesh residency without an entity has no material or pipeline preparation.
 
 Mesh readiness reports the actual device generation. Cancellation and release
 retain source ownership until the receiver acknowledges its GPU release fence.
+That original held fence also retains an early-ready allocation. A later queue
+completion failure invalidates the prepared lease and reaches the existing Renderer
+fault and Worker error owners; it never becomes a successful completion receipt.
 Both endpoints bound unresolved preparations, pending release fences and
 standalone leases to 32. Ready dynamic geometry leases remain governed by the
 source Render candidate and mesh-byte budgets; retaining published geometry
@@ -715,6 +756,12 @@ releases from the failed receiver.
 | `render.submittedFrame` | Full Renderer submitted work for that source frame |
 | `render.completedFrame` | The frame receipt completed on the GPU |
 | `render.epoch` | Current Render Worker generation; stale messages cannot advance it |
+| `render.lastLoss` | Epoch and serialized cause of the most recent recoverable Renderer loss |
+
+`render.completedFrame` identifies the completed source publication; differences
+between identifiers do not count pictures. For visible-frame acceptance, count
+`forgeax:frame-completed` events with `presentation: 'ready'` on the current
+canvas and World. Reattach the listener after canvas replacement.
 
 Two publication slots bound both transferred storage and simulation lead. Logic N+1
 can overlap rendering N, but the Host admits N+2 only after N's GPU receipt completes.
@@ -723,6 +770,13 @@ is still occupied at that tick, it retains one due demand without polling or
 queueing more ticks. The matching completion can consume that demand immediately,
 sampling current input and elapsed time without waiting for another refresh.
 Pause/resume discards the old demand and starts from a new browser tick.
+When rendering runs in its own Worker, the Engine Worker can carry the requested
+native animation tick over its existing Host channel. Its callback and the owning
+Window's callback serve one demand: the first native callback cancels the other
+lease, so a delayed Worker clock cannot stall a live Host clock. No clock Worker,
+timer heartbeat, additional admission or publication slot is created. Host time,
+input, visibility and admission remain authoritative; unsupported or replaced
+Engine providers retain the owning Window callback.
 After submitting N, the Render Worker can prepare and submit N+1 while N remains
 in flight. CPU draws stay serial; GPU completion no longer blocks the next draw.
 The two slots cover the entire source-to-GPU pipeline, including queued and
@@ -828,8 +882,17 @@ share one pool-start deadline, while running kernel dispatch keeps its separate
 5-second deadline. The first source frame uses this startup policy too: deferred
 source preparation must not inherit the shorter steady-frame admission budget.
 After its first accepted source completion, `frameTimeoutMs` bounds subsequent
-admissions (default two seconds). Set `frameTimeoutMs: null` to retain the pending
-admission until completion, an actual execution fault, cancellation or disposal.
+source execution (default two seconds). A split frame waiting for Render Worker
+publication credit uses the existing `startupTimeoutMs` boundary so GPU loss
+detection and replacement can finish before source execution resumes. That wait
+neither advances the World nor qualifies a submitted picture; matching World/frame
+phase facts restore the original steady deadline, and duplicate or stale notices
+cannot extend it. Set `frameTimeoutMs: null` to retain the pending admission,
+including render-credit waits, until completion, an actual execution fault,
+cancellation or disposal.
+The Render Worker's GPU completion watchdog follows the same policy: it waits at
+least `frameTimeoutMs` and at least 30 seconds, and never with `null`, so a slow
+(software) frame inside the budget does not replace the Renderer.
 No successor frame is issued while its credit is outstanding; a late receipt is
 accepted normally. This is useful when a loading workflow already owns progress
 and cancellation deadlines. It does not retry a partially executed World or
@@ -867,6 +930,11 @@ An unavailable `true` policy returns `app-execution-worker-unavailable`; only `a
 transferred. `bootstrapPort` is the realm side of a host-created
 `MessageChannel`; `executionBootstrapHostPlugin` borrows it. The App/Worker
 session closes it on final disposal, so World rebuild preserves the channel. Keep DOM UI on the Host side of that typed channel.
+`startEngineWorker` also opens a second channel for page video: its page end
+runs `createVideoFrameHost` (one `<video>` per Worker consumer) and its Worker
+end installs `installWorkerVideoSourceProvider` on every World, so a
+`VideoPlayer` material renders in the Engine Worker with no game code. The
+channel closes on terminate and on final disposal.
 `ExecutionBootstrapHost.setPointerLockAllowed` is the one built-in
 realm-to-Host control because browser input ownership remains on the Host.
 It is a latest-wins state: a command sent while Engine-realm plugins apply,
@@ -931,6 +999,10 @@ the Render status, closed reason/error `code`, and recovery `hint`. When App
 drives `draw`, a plugin obtains that same receipt from the Render-owned
 `frame-submitted` event. Membership
 timing remains producer-specific and is not generic accepted GPU evidence.
+Under a Render Worker, frame credit returns at GPU completion; the receipt's
+timing follows in its own message once readback resolves, so the latest timing
+can trail the latest completed frame. It carries `skippedFrames`, the frames
+the Worker rendered untimed because every timing slot was in flight.
 
 `CreateAppOptions.outputColorSpace` (`'srgb'` default | `'display-p3'`) is forwarded to
 Render without App policy. Under Worker execution it reaches both the local Renderer and the
@@ -1120,7 +1192,7 @@ const result = await createApp(canvas, {
 
 Systems read time through ECS resources:
 
-- `Time.delta`: validated variable-rate seconds for the current frame.
+- `Time.delta`: validated variable-rate seconds for the current frame. The first frame after `start()` or `resume()` has no measured interval and advances by one nominal frame (1/60 s), so `Time.delta` is always positive on a running loop.
 - `Time.elapsed`: accumulated validated variable-rate seconds.
 - `FixedTime.delta`: fixed simulation interval.
 - `FixedTime.tick`: completed fixed updates.
@@ -1342,8 +1414,7 @@ Quick start in a Node or dawn-node host:
 ```ts
 import { createApp } from '@forgeax/engine-app';
 
-process.env.FORGEAX_ENGINE_REMOTE_SERVE = '1';
-const result = await createApp({ world, renderer });
+const result = await createApp({ world, renderer, remoteServe: true });
 // Use the existing WS client to call the existing introspect method.
 ```
 
@@ -1353,7 +1424,7 @@ remote `introspect` response; app does not define, validate, or own a component.
 
 | Boundary | Contract | Recovery |
 |:--|:--|:--|
-| App -> remote | `startServer({ introspection })` carries data only | If remote is absent, verify dev mode or the explicit headless env flag |
+| App -> remote | `startServer({ introspection })` carries data only | If remote is absent, pass `remoteServe: true` from the host that owns startup policy |
 | Remote -> consumer | Existing `eval` and `introspect` methods remain the full surface | Use the returned `RemoteError` fields, never message parsing |
 | ECS/render | Registry and `Visibility` remain package-owned | Use `_import('@forgeax/engine/render')` in eval, not app-local labels |
 
@@ -1718,3 +1789,15 @@ sampling and real mip residency. The preview closes its entities and
 producer references together; host UI owns no resource or execution state.
 
 ExecutionAudioReport derives observation fields from AudioState and retains an explicit serialized error boundary. The runtime projection still selects only declared report fields.
+
+Native Render publication receive delegates material-value detachment to
+Render's internal publication owner before adoption. App transports the message;
+Render owns the fixed snapshot and its material-resource lifetime facts.
+
+Mesh prepare/release controls in cooperative Render Workers wait only for draws
+already admitted when the control arrived. They start between recordings before
+later draw traffic, preserving the suspended frame's read domain. Their async
+GPU/pipeline completion remains independent of the draw drain, so new frames
+can prepare the candidate's pipelines. Ordinary draws allocate no control wait
+Promise; source credits, device identities and release acknowledgments remain
+with the existing mesh residency owners.

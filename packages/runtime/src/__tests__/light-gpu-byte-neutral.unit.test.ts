@@ -16,7 +16,7 @@ import { vec3 } from '@forgeax/engine-math';
 import type { Buffer, RhiQueue } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
-import { packDirectLightSlot } from '../../../render/src/light-buffer-layout';
+import { packTestDirectLightSlot as packDirectLightSlot } from '../../../render/src/__tests__/cluster-test-abi';
 import { writeViewUbo } from '../../../render/src/record/view-ubo';
 import type { CameraSnapshot } from '../../../render/src/render-contract';
 import type {

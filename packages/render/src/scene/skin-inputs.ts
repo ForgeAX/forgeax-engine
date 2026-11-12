@@ -139,12 +139,21 @@ interface Row {
   holders: number;
 }
 
-type Page = { readonly address: number; holders: number; jointCount: number } & (
+type Page = { address: number; holders: number; jointCount: number } & (
   | { readonly shift: 0; readonly entries: Map<number, Row> }
   | { readonly shift: Exclude<Shift, 0>; readonly entries: Map<number, Page> }
 );
 
 type LeafPage = Extract<Page, { readonly shift: 0 }>;
+
+/** These private native Maps have no caller-owned iteration behavior. */
+function copyEntries<T>(previous: ReadonlyMap<number, T> | undefined): Map<number, T> {
+  const entries = new Map<number, T>();
+  previous?.forEach((value, key) => {
+    entries.set(key, value);
+  });
+  return entries;
+}
 
 function keyByte(space: number, key: number | undefined, shift: Shift): number {
   return shift >= 32 ? (space >>> (shift - 32)) & 255 : ((key as number) >>> shift) & 255;
@@ -687,19 +696,19 @@ export class SkinInputs {
     let page: Page;
     if (shift === 0) {
       if (previous !== undefined && previous.shift !== 0) throw invalid('a terminal Skin page');
-      const entries = new Map(previous?.entries);
+      const entries = copyEntries(previous?.entries);
       if (row === undefined) entries.delete(at);
       else entries.set(at, row);
       if (entries.size === 0) return undefined;
       let jointCount = 0;
-      for (const retained of entries.values()) {
+      entries.forEach((retained) => {
         retained.holders++;
         if (retained.kind === 'binding') jointCount += retained.words - 3;
-      }
+      });
       page = { shift, entries, address: 0, holders: 1, jointCount };
     } else {
       if (previous?.shift === 0) throw invalid('a branch Skin page');
-      const entries = new Map(previous?.entries);
+      const entries = copyEntries(previous?.entries);
       let child: Page | undefined;
       try {
         child =
@@ -718,19 +727,22 @@ export class SkinInputs {
       }
       if (entries.size === 0) return undefined;
       let jointCount = 0;
-      for (const [index, retained] of entries) {
+      entries.forEach((retained, index) => {
         if (index !== at) retained.holders++;
         jointCount += retained.jointCount;
-      }
+      });
       page = { shift, entries, address: 0, holders: 1, jointCount };
     }
     let address: number | undefined;
     try {
       address = this.inputs.allocateDescriptor(PAGE_WORDS);
       this.pageWords.fill(ABSENT);
-      for (const [index, entry] of page.entries) this.pageWords[index] = entry.address;
+      page.entries.forEach((entry, index) => {
+        this.pageWords[index] = entry.address;
+      });
       this.inputs.writeDescriptor(address, this.pageView, PAGE_WORDS);
-      return { ...page, address };
+      page.address = address;
+      return page;
     } catch (cause) {
       const failures = [cause];
       try {
@@ -790,6 +802,11 @@ export class SkinInputFrame {
   #page: Page | undefined;
   #inputs: GpuInputArena | undefined;
   #state: State | undefined;
+  /** Per-slot `bounds` results; valid for the life of this immutable root. */
+  readonly #boundsMemo = new Map<
+    number,
+    { envelopes: Float32Array; radius: number; ok: boolean; box: Float32Array }
+  >();
   constructor(inputs: GpuInputArena, state: State, page: Page | undefined) {
     this.root = page?.address ?? ABSENT;
     this.jointCapacity = page?.jointCount ?? 0;
@@ -899,6 +916,32 @@ export class SkinInputFrame {
     disjoint(out, envelopes);
     disjoint(matrix, envelopes);
     disjoint(inverse, envelopes);
+    // The held root is immutable, so the result is a pure function of the slot,
+    // the shared envelope table and the radius. A cached refusal leaves `out` untouched.
+    let memo = this.#boundsMemo.get(slot);
+    if (memo === undefined || memo.envelopes !== envelopes || memo.radius !== displacementRadius) {
+      const box = new Float32Array(6);
+      memo = {
+        envelopes,
+        radius: displacementRadius,
+        ok: this.#computeBounds(inputs, slot, envelopes, displacementRadius, box, matrix, inverse),
+        box,
+      };
+      this.#boundsMemo.set(slot, memo);
+    }
+    if (!memo.ok) return false;
+    out.set(memo.box);
+    return true;
+  }
+  #computeBounds(
+    inputs: GpuInputArena,
+    slot: number,
+    envelopes: Float32Array,
+    displacementRadius: number,
+    out: Float32Array,
+    matrix: Mat4,
+    inverse: Mat4,
+  ): boolean {
     const count = this.jointCount(slot);
     const minimumSum = envelopes[0] as number,
       maximumSum = envelopes[1] as number,
@@ -1286,6 +1329,7 @@ export class SkinInputFrame {
     this.#inputs = undefined;
     this.#state = undefined;
     this.#page = undefined;
+    this.#boundsMemo.clear();
     state.frames--;
     retirePage(inputs, state, page);
   }

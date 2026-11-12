@@ -19,8 +19,11 @@ describe('browser remote profiler bridge', () => {
   });
 
   it('keeps the bridge opt-in and free of a static remote value dependency', () => {
-    expect(createApp).toContain('VITE_FORGEAX_ENGINE_BRIDGE');
-    expect(createApp).toContain("import('./internal/browser-remote-bridge')");
+    expect(createApp).toContain('bundler?.browserRemoteBridge');
+    expect(createApp).toContain('bridge.registerDispose(release)');
+    expect(createApp).toContain('bridgeAdapter.registerDispose(release)');
+    expect(createApp).not.toMatch(/import\.meta\.(?:env|hot|glob)/);
+    expect(bridge).not.toMatch(/import\.meta\.(?:env|hot|glob)/);
     expect(bridge).not.toMatch(/^import (?!type ).*@forgeax\/engine-remote/m);
   });
 

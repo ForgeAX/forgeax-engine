@@ -46,7 +46,7 @@ function paint() {
   context.scale(display.pixelRatio, display.pixelRatio);
   context.fillStyle = '#7ee2b8';
   context.font = 'bold 22px sans-serif';
-  context.fillText('ForgeaX native host', 22, 65);
+  context.fillText('ForgeAX native host', 22, 65);
   context.fillStyle = '#e4edf3';
   context.font = '15px sans-serif';
   context.fillText('Platform contract probe', 22, 103);

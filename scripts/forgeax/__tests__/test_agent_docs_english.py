@@ -52,7 +52,7 @@ class AgentDocsEnglishTest(unittest.TestCase):
     def test_preserves_allowed_symbols_and_localized_readmes(self):
         self.write("AGENTS.md", "# English \u03b1 \u2192 \U0001f680\n")
         self.write("skills/sample/SKILL.md", "# English\n")
-        self.write("README.zh-CN.md", "\u4e2d\u6587")
+        self.write("README.md", "\u4e2d\u6587")
         self.write("docs/guide.md", "\u4e2d\u6587")
         self.write("local/AGENTS.md", "\u4e2d\u6587", tracked=False)
         result = self.gate()

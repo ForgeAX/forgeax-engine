@@ -117,6 +117,31 @@ export function validateInstanceTransforms(
   return undefined;
 }
 
+/**
+ * `validateInstanceTransforms` fused with the unchanged-column test: one typed
+ * pass returns the same error (first non-finite index) or whether every value
+ * is `Object.is`-equal to `prior` (a same-length column; `undefined` = none).
+ */
+function scanInstanceTransforms(
+  transforms: ArrayLike<number>,
+  prior: Float32Array | undefined,
+): InstanceProjectionError | boolean {
+  const length = transforms.length;
+  if (length % MATRIX_STRIDE !== 0) return new InstanceTransformsStrideMismatchError(length);
+  let same = prior !== undefined && prior.length === length;
+  for (let index = 0; index < length; index++) {
+    const value = transforms[index] as number;
+    if (!Number.isFinite(value))
+      return new InstanceTransformsError({ actualLength: length, nonFiniteIndex: index });
+    if (same) {
+      const old = (prior as Float32Array)[index] as number;
+      // Object.is on finite numbers: equal, and equal sign when zero.
+      if (old !== value || (value === 0 && 1 / old !== 1 / value)) same = false;
+    }
+  }
+  return same;
+}
+
 const uniqueIdentities = new WeakMap<Uint32Array, boolean>();
 
 /**
@@ -317,13 +342,9 @@ export class InstanceProjectionStore {
     }
     this.work.fullProjections += 1;
     this.work.rows += transforms.length / MATRIX_STRIDE;
-    const invalid = validateInstanceTransforms(transforms);
-    if (invalid !== undefined) return invalid;
-    if (
-      previous !== undefined &&
-      previous.transforms.length === transforms.length &&
-      previous.transforms.every((value, index) => Object.is(value, transforms[index]))
-    ) {
+    const scan = scanInstanceTransforms(transforms, previous?.transforms);
+    if (typeof scan !== 'boolean') return scan;
+    if (previous !== undefined && scan) {
       if (rows === undefined || previous.sourceEpoch === rows.epoch) return previous;
       // Same values, newly proven source epoch: re-publish the revision so the
       // next projection can take the dirty-row path.
@@ -335,9 +356,7 @@ export class InstanceProjectionStore {
     // Ordinals are identities within the authored array. Pose edits retain them;
     // resizing seeds topology anew so new instances cannot inherit old motion.
     const generations =
-      previous?.count === count
-        ? previous.generations
-        : Uint32Array.from({ length: count }, () => this.nextGeneration++);
+      previous?.count === count ? previous.generations : this.seedGenerations(count);
     // A same-size whole rewrite reuses the collection's back buffer: `accept`
     // swaps it with the old front, so a collection rewritten every frame
     // ping-pongs two buffers instead of allocating a fresh column per frame
@@ -511,6 +530,16 @@ export class InstanceProjectionStore {
             sourceEpoch: current?.transforms === transforms ? current.sourceEpoch : undefined,
           },
     );
+  }
+
+  /** Fresh store-issued identities: distinct and non-zero by construction. */
+  private seedGenerations(count: number): Uint32Array {
+    const generations = new Uint32Array(count);
+    for (let ordinal = 0; ordinal < count; ordinal += 1) {
+      generations[ordinal] = this.nextGeneration++;
+    }
+    uniqueIdentities.set(generations, true);
+    return generations;
   }
 
   private own(buffer: Float32Array): Float32Array {

@@ -43,14 +43,13 @@ function makeRendererStub(): Renderer {
 
 describe('createApp to remote visibility discovery', () => {
   it('introspects then evaluates a Query and recovers an invalid write', async () => {
-    const previous = process.env.FORGEAX_ENGINE_REMOTE_SERVE;
-    process.env.FORGEAX_ENGINE_REMOTE_SERVE = '1';
     const world = new World();
     world.components.register(Visibility).unwrap();
     const result = await createApp({
       platform: testPlatform(),
       renderer: makeRendererStub(),
       world,
+      remoteServe: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -114,8 +113,6 @@ describe('createApp to remote visibility discovery', () => {
       }
     } finally {
       await result.value.remote?.close();
-      if (previous === undefined) delete process.env.FORGEAX_ENGINE_REMOTE_SERVE;
-      else process.env.FORGEAX_ENGINE_REMOTE_SERVE = previous;
     }
   });
 });

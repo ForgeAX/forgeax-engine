@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const ownerSource = readFileSync(new URL('../render-system.ts', import.meta.url), 'utf8');
+const ownerSource = readFileSync(
+  new URL('../features/prepared-resolver.ts', import.meta.url),
+  'utf8',
+);
 const resolverSource = readFileSync(
   new URL('../record/prepared-material-bindings.ts', import.meta.url),
   'utf8',

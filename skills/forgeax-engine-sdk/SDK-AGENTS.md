@@ -1,4 +1,4 @@
-# ForgeaX SDK: AI entry
+# ForgeAX SDK: AI entry
 
 Read this first. Both SDK transports extend the built Engine with editable source
 and that release's prebuilt module outputs. Rebuild only changed owners and bind
@@ -23,7 +23,7 @@ only when the task needs broader discovery; select the smallest useful capabilit
 > sdk-manifest.json owns archive integrity. packages contains directly readable built packages without tarballs or nested package wrappers. Do not hand-edit SDK staging, offline stores, or manifests.
 
 > [!CAUTION]
-> Game work defaults to direct edits in the current project. Start a ForgeaX closed loop only when the user explicitly selects it; installed skills do not authorize it.
+> Game work defaults to direct edits in the current project. Start a ForgeAX closed loop only when the user explicitly selects it; installed skills do not authorize it.
 
 ## Unattended Linux tests
 

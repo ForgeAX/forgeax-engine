@@ -151,6 +151,8 @@ describe('live command transport', () => {
     try {
       const startedAt = Date.now();
       const result = await startLiveDev(root);
+      const startupMs = Date.now() - startedAt;
+      expect(startupMs).toBeLessThan(5_000);
       // The endpoint can answer after a timeout without making every failure recoverable.
       expect(await runUnifiedCli(['dev', 'status', '--root', root])).toMatchObject({
         ok: true,
@@ -159,6 +161,11 @@ describe('live command transport', () => {
           revision: 'after-status-timeout',
         },
       });
+      process.stderr.write(
+        '[live-client-timing] ' +
+          JSON.stringify({ scenario, startupMs, totalMs: Date.now() - startedAt }) +
+          '\n',
+      );
       expect(Date.now() - startedAt).toBeLessThan(10_000);
       if (scenario === 'ready')
         expect(result).toMatchObject({

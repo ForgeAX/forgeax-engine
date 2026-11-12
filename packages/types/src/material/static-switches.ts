@@ -17,6 +17,10 @@ export const MATERIAL_STATIC_SWITCH_NAMES = [
   'triplanarProjection',
   'objectSpaceNormal',
   'directMultiscattering',
+  // Standard split-sum environment BRDF: absent/false compiles the
+  // preintegrated LUT fetch; true compiles UE EnvBRDFApproxLazarov (ALU only).
+  // Selects code only, never the ABI.
+  'environmentBrdfApprox',
 ] as const;
 
 export type MaterialStaticSwitchName = (typeof MATERIAL_STATIC_SWITCH_NAMES)[number];
@@ -149,6 +153,7 @@ export function selectMaterialStaticContract(
     bumpScale: ['bumpTexture'],
     displacementScale: ['displacementTexture'],
     displacementBias: ['displacementTexture'],
+    displacementMode: ['displacementTexture'],
     normalMapSpace: ['normalTexture'],
     triplanarSpace: [
       'baseColorTexture',

@@ -36,7 +36,7 @@ it('cooks an explicit validated job program and freezes its retained runtime ver
   if (!result.ok) return;
   const { asset, artifact } = result.value,
     job = artifact.program.emitters[0]?.instanceCompute;
-  expect(job).toMatchObject({ format: 'forgeax-vfx-instance-compute-1', jobBytes: 336 });
+  expect(job).toMatchObject({ format: 'forgeax-vfx-instance-compute-1', jobBytes: 352 });
   expect(job?.bindings[0]?.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 11, 12]);
   expect(
     job?.bindings[0]?.entries.filter(

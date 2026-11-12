@@ -1,14 +1,25 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { meshAssetContribution } from '@forgeax/engine-geometry';
 import { textureContribution } from '@forgeax/engine-image';
-import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
+import {
+  createRuntimePackPublication,
+  encodeMaterialProgramWire,
+} from '@forgeax/engine-pack/runtime';
 import { materialContribution } from '@forgeax/engine-render';
-import type { Asset } from '@forgeax/engine-types';
+import type { Asset, AssetRuntimeArtifactDescriptor } from '@forgeax/engine-types';
+import { normaliseForPack } from '../../../../import/src/pack-value.js';
 import { createCatalogSource } from '../../catalog-source';
 
 /** Use the real source/decode/adopt boundary, including its JSON transport. */
 export function prepareRuntimeAssetPublication(
-  entries: readonly { guid: string; asset: Asset; refs?: readonly string[]; sourceKey?: string }[],
+  entries: readonly {
+    guid: string;
+    asset: Asset;
+    refs?: readonly string[];
+    sourceKey?: string;
+    artifacts?: Readonly<Record<string, AssetRuntimeArtifactDescriptor>>;
+  }[],
+  blobs: Readonly<Record<string, Uint8Array>> = {},
 ) {
   const packageUrl = 'https://runtime-assets.invalid/pack.json';
   const sourcePath = 'assets.pack';
@@ -23,17 +34,22 @@ export function prepareRuntimeAssetPublication(
       ),
     ),
     pack: {
-      assets: entries.map(({ guid, asset, refs }) => ({
+      assets: entries.map(({ guid, asset, refs, artifacts }) => ({
         guid,
         kind: asset.kind,
         payload: asset,
         refs: refs ?? [],
-        artifacts: {},
+        artifacts: artifacts ?? {},
       })),
     },
   });
-  const body = JSON.stringify(publication.pack, (_key, value) =>
-    ArrayBuffer.isView(value) ? Array.from(value as Uint8Array) : value,
+  // Project numeric views once; native JSON encoding then avoids a callback per byte.
+  const body = JSON.stringify(normaliseForPack(encodeMaterialProgramWire(publication.pack)));
+  const binary = new Map(
+    Object.entries(blobs).map(([path, bytes]) => [
+      new URL(path, packageUrl).href,
+      new Uint8Array(bytes),
+    ]),
   );
   const catalog = entries.map(({ guid, asset, sourceKey }) => ({
     guid,
@@ -52,7 +68,13 @@ export function prepareRuntimeAssetPublication(
     assets.setCatalogSource(
       createCatalogSource({
         entries: catalog,
-        fetch: async () => new Response(body),
+        fetch: async (url) => {
+          if (url === packageUrl) return new Response(body);
+          const bytes = binary.get(url);
+          return bytes === undefined
+            ? new Response(null, { status: 404 })
+            : new Response(new Uint8Array(bytes));
+        },
       }),
     );
   };

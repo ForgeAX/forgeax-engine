@@ -1,8 +1,8 @@
 // @forgeax/engine-render - AmbientOcclusion authoring component.
 //
-// An opt-in camera companion. Its presence asks the renderer to run the
-// Standard deferred lane with screen-space AO for this camera; parameter
-// validation and graph/resource ownership stay renderer-side.
+// An opt-in camera companion. AO follows the selected Forward or Deferred
+// Standard lane; parameter validation and graph/resource ownership stay
+// renderer-side.
 
 import { defineComponent, type SchemaOf, type ShapeOf } from '@forgeax/engine-ecs';
 import { err, ok, type Result } from '@forgeax/engine-types';
@@ -26,6 +26,9 @@ export const AMBIENT_OCCLUSION_QUALITIES = ['low', 'medium', 'high'] as const;
 
 export const AMBIENT_OCCLUSION_SSAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('ssao');
 export const AMBIENT_OCCLUSION_GTAO = AMBIENT_OCCLUSION_ALGORITHMS.indexOf('gtao');
+export const AMBIENT_OCCLUSION_QUALITY_LOW = AMBIENT_OCCLUSION_QUALITIES.indexOf('low');
+export const AMBIENT_OCCLUSION_QUALITY_MEDIUM = AMBIENT_OCCLUSION_QUALITIES.indexOf('medium');
+export const AMBIENT_OCCLUSION_QUALITY_HIGH = AMBIENT_OCCLUSION_QUALITIES.indexOf('high');
 
 export const AmbientOcclusion = defineComponent('AmbientOcclusion', {
   algorithm: { type: 'f32', default: AMBIENT_OCCLUSION_GTAO },
@@ -37,7 +40,7 @@ export const AmbientOcclusion = defineComponent('AmbientOcclusion', {
   distanceFallOff: { type: 'f32', default: SSAO_DEFAULT_DISTANCE_FALL_OFF },
   resolutionScale: { type: 'f32', default: SSAO_DEFAULT_RESOLUTION_SCALE },
   directLightingStrength: { type: 'f32', default: 0 },
-  quality: { type: 'f32', default: AMBIENT_OCCLUSION_QUALITIES.indexOf('high') },
+  quality: { type: 'f32', default: AMBIENT_OCCLUSION_QUALITY_HIGH },
 });
 
 export type AmbientOcclusionData = ShapeOf<SchemaOf<typeof AmbientOcclusion>>;

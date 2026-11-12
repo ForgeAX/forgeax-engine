@@ -80,15 +80,18 @@ async function journey(includeSource) {
 
 test('a consumer failure cannot remove a source root beneath an active source command', async () => {
   const { snapshot, commands } = await journey(true);
-  assert.deepEqual(snapshot, [0, 0, 0, 0, 0, 0]);
-  assert.deepEqual(commands, [
+  const expectedCommands = [
     ['install', '--frozen-lockfile', '--ignore-scripts'],
     ['source-edit'],
     ['clean-build-outputs'],
     ['build:engine'],
     ['build:tools'],
-    ['build:app', 'preview'],
-  ]);
+  ];
+  assert.deepEqual(commands, expectedCommands);
+  assert.deepEqual(
+    snapshot,
+    expectedCommands.map(() => 0),
+  );
 });
 
 test('a project-only verifier starts no source process', async () => {

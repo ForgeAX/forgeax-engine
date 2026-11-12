@@ -3,7 +3,67 @@ import { setImmediate } from 'node:timers/promises';
 
 // Base64 chunks must end on a complete three-byte group.
 const CHUNK_SIZE = 48 * 1024;
-const NUMERIC_RUN_SIZE = 1024;
+const SCALAR_RUN_SIZE = 1024;
+
+function scalarSize(value: unknown): number | undefined {
+  if (typeof value === 'string') return value.length;
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return 24;
+  return undefined;
+}
+
+/** Only a bounded, callback-free scalar record enters the native encoder. */
+function scalarObjectJson(input: object): string | undefined {
+  const keys = Object.keys(input);
+  if (keys.length > SCALAR_RUN_SIZE) return undefined;
+  // The emission caller already handled author toJSON. This private buffer
+  // must not consult a prototype callback installed during another emission.
+  const record: Record<string, unknown> = Object.create(null);
+  let size = 0;
+  for (const key of keys) {
+    const value = (input as Record<string, unknown>)[key];
+    const length = scalarSize(value);
+    if (length === undefined) return undefined;
+    size += key.length + length;
+    if (size > CHUNK_SIZE) return undefined;
+    record[key] = value;
+  }
+  return JSON.stringify(record);
+}
+
+/** Scalar tables keep bounded native runs; containers retain ordinary recursion. */
+function* arrayChunks(
+  input: readonly unknown[],
+  emit: (value: unknown, key: string) => Generator<string, boolean>,
+): Generator<string> {
+  yield '[';
+  const scalars: unknown[] = [];
+  Object.setPrototypeOf(scalars, null);
+  let runStart = 0;
+  let runSize = 0;
+  function flushScalars(): string {
+    const json = `${runStart > 0 ? ',' : ''}${JSON.stringify(scalars).slice(1, -1)}`;
+    scalars.length = 0;
+    runSize = 0;
+    return json;
+  }
+  for (let index = 0; index < input.length; index++) {
+    const item = input[index];
+    const size = scalarSize(item);
+    if (size !== undefined && size <= CHUNK_SIZE) {
+      if (scalars.length > 0 && runSize + size > CHUNK_SIZE) yield flushScalars();
+      if (scalars.length === 0) runStart = index;
+      scalars[scalars.length] = item;
+      runSize += size;
+      if (scalars.length === SCALAR_RUN_SIZE) yield flushScalars();
+      continue;
+    }
+    if (scalars.length > 0) yield flushScalars();
+    if (index > 0) yield ',';
+    if (!(yield* emit(item, String(index)))) yield 'null';
+  }
+  if (scalars.length > 0) yield flushScalars();
+  yield ']';
+}
 
 interface VerifiedReadbackJson {
   readonly value: object;
@@ -34,11 +94,13 @@ function* canonicalDdcChunks(
   value: unknown,
   readerOwned = false,
   verified?: VerifiedReadbackJson,
+  onNoncanonical?: () => void,
 ): Generator<string> {
   const binary = new Map<object, Buffer>();
   function sortValue(input: unknown): unknown {
     if (input === null || typeof input !== 'object') return input;
     if (input instanceof Uint8Array) {
+      onNoncanonical?.();
       const encoded = { encoding: 'base64', bytes: '' };
       // Author getters require a snapshot. Private readback buffers have no
       // external writer and can stream their existing view instead.
@@ -76,6 +138,7 @@ function* canonicalDdcChunks(
       'toJSON' in input &&
       typeof input.toJSON === 'function'
     ) {
+      onNoncanonical?.();
       // Native JSON owns arbitrary user callbacks, including their property key.
       // Producer POD and binary inputs take the bounded streaming path below.
       // Expose ordinary writable values before any callback can inspect them.
@@ -126,33 +189,12 @@ function* canonicalDdcChunks(
       return true;
     }
     if (Array.isArray(input)) {
-      yield '[';
-      // A callback may later install Array.prototype.toJSON. This internal
-      // buffer must encode only its own numeric values, never author callbacks.
-      const numbers: number[] = [];
-      Object.setPrototypeOf(numbers, null);
-      let runStart = 0;
-      function flushNumbers(): string {
-        const json = `${runStart > 0 ? ',' : ''}${JSON.stringify(numbers).slice(1, -1)}`;
-        numbers.length = 0;
-        return json;
-      }
-      for (let index = 0; index < input.length; index++) {
-        const item = input[index];
-        // Cooked JSON contains large numeric byte arrays. Yield bounded runs,
-        // rather than forwarding each byte through every ancestor generator.
-        if (typeof item === 'number') {
-          if (numbers.length === 0) runStart = index;
-          numbers[numbers.length] = item;
-          if (numbers.length === NUMERIC_RUN_SIZE) yield flushNumbers();
-          continue;
-        }
-        if (numbers.length > 0) yield flushNumbers();
-        if (index > 0) yield ',';
-        if (!(yield* emit(item, String(index)))) yield 'null';
-      }
-      if (numbers.length > 0) yield flushNumbers();
-      yield ']';
+      yield* arrayChunks(input, emit);
+      return true;
+    }
+    const scalarJson = scalarObjectJson(input);
+    if (scalarJson !== undefined) {
+      yield scalarJson;
       return true;
     }
     yield '{';
@@ -176,6 +218,20 @@ function* canonicalDdcChunks(
 
 export function writeCanonicalDdcJson(value: unknown, write: (chunk: string) => void): void {
   for (const chunk of canonicalDdcChunks(value)) write(chunk);
+}
+
+/** Record whether source callbacks/binary wrappers require parsed readback validation. */
+export function captureCanonicalDdcJson(value: unknown): {
+  readonly json: string;
+  readonly canonical: boolean;
+} {
+  let canonical = true;
+  const chunks = [
+    ...canonicalDdcChunks(value, false, undefined, () => {
+      canonical = false;
+    }),
+  ];
+  return { json: chunks.join(''), canonical };
 }
 
 export function canonicalDdcDigest(value: unknown): string {
@@ -216,6 +272,20 @@ export async function canonicalDdcReadbackDigests(
     output: await readbackDigest(values.output, verified),
     entry: await readbackDigest(values.entry, verified),
   };
+}
+
+/** Only JSON captured by this store's canonical serializer, never caller/file text. */
+export async function canonicalDdcCapturedDigest(
+  value: unknown,
+  payload: unknown,
+  payloadJson: Uint8Array,
+): Promise<string> {
+  return readbackDigest(
+    value,
+    payload !== null && typeof payload === 'object'
+      ? { value: payload, json: payloadJson }
+      : undefined,
+  );
 }
 
 async function readbackDigest(value: unknown, verified?: VerifiedReadbackJson): Promise<string> {

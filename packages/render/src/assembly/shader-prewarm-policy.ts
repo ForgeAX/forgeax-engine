@@ -13,7 +13,13 @@ export function isOrdinaryMaterialVariant(
   variant: MaterialShaderManifestEntry['variants'][number],
 ): boolean {
   return (
-    variant.defines.COVERAGE_ONLY !== true && variant.defines.VISIBLE_SURFACE_AVAILABLE !== true
+    variant.defines.COVERAGE_ONLY !== true &&
+    variant.defines.VISIBLE_SURFACE_AVAILABLE !== true &&
+    // Opaque is the default program; alpha-mask variants compile on first
+    // use by an alpha-cutout material, so they add no boot pipelines.
+    variant.defines.ALPHA_MASK !== true &&
+    variant.defines.DIRECTIONAL_SHADOW_SIMPLE !== true &&
+    variant.defines.LEAN_LIGHTING !== true
   );
 }
 
@@ -76,6 +82,7 @@ export function selectSkinPrewarmVariants(
       ({ defines }) =>
         defines.COVERAGE_ONLY !== true &&
         defines.VISIBLE_SURFACE_AVAILABLE !== true &&
+        defines.ALPHA_MASK !== true &&
         (defines.ATMOSPHERE_AVAILABLE ?? false) === atmosphereAvailable &&
         defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
         defines.PROBE_BLEND_AVAILABLE !== true &&

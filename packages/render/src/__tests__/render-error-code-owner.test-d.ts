@@ -38,6 +38,7 @@ const expectedCodes = [
   'frame-receipt-stale',
   'frame-submit-rejected',
   'renderer-contract-failed',
+  'debug-overlay-failed',
   'observation-unavailable',
   'scene-data-unavailable',
   'scene-sdf-unavailable',
@@ -64,6 +65,7 @@ const expectedCodes = [
   'vertex-color-variant-conflict',
   'skin-palette-overflow',
   'skin-material-mismatch',
+  'skin-demand-missing',
   'material-skin-attr-missing',
   'transmission-capability-missing',
   'material-sampled-texture-budget-exceeded',
@@ -74,6 +76,8 @@ const expectedCodes = [
   'render-feature-preparation-failed',
   'render-feature-prepared-state-mismatch',
   'render-feature-draw-recording-failed',
+  'render-feature-input-unavailable',
+  'render-feature-batch-incomplete',
   'environment-source-conflict',
   'fog-cardinality',
   'sun-cardinality',
@@ -119,6 +123,8 @@ const expectedFeatureCodes = [
   'render-feature-preparation-failed',
   'render-feature-prepared-state-mismatch',
   'render-feature-draw-recording-failed',
+  'render-feature-input-unavailable',
+  'render-feature-batch-incomplete',
 ] as const satisfies readonly RenderFeatureErrorCode[];
 type ExpectedFeatureCodeUnion = (typeof expectedFeatureCodes)[number];
 

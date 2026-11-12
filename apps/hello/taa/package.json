@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "smoke": "node scripts/smoke-dawn.mjs",
+    "smoke:tsr": "node scripts/smoke-dawn.mjs --tsr",
     "smoke:browser": "node scripts/smoke-browser.mjs",
     "smoke:webgl2": "node scripts/smoke-webgl2.mjs",
     "smoke:rhinull": "node scripts/smoke-rhinull.mjs",

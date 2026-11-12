@@ -1,0 +1,10 @@
+{
+  "id": "modeling-show",
+  "name": "Modeling Show",
+  "schemaVersion": "3.0.0",
+  "assetRoots": ["assets"],
+  "roots": {
+    "engine": "73a0d361-bd97-563a-a219-d3c1cbc17994",
+    "frontend": "0208c42b-9b56-5699-af2c-bdd4ab33d058"
+  }
+}

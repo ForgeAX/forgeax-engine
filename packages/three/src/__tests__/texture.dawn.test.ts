@@ -4,7 +4,7 @@ import { afterAll, it } from 'vitest';
 import { offscreenCanvas } from '../../../runtime/src/__tests__/hdr-evidence.fixture';
 import { observeNativeDeviceRequests } from '../../../runtime/src/__tests__/native-device-work.fixture';
 import { shaderManifestUrl } from '../../../runtime/src/__tests__/shader-manifest-url.fixture';
-import { verifyFlatShading } from './flat-shading.fixture';
+import { flatShadingMaterialTypes, verifyFlatShading } from './flat-shading.fixture';
 import { SIZE } from './render.fixture';
 import { verifyTextures } from './texture.fixture';
 
@@ -33,17 +33,20 @@ afterAll(async () => {
   }
 });
 
-it.each([
-  ['textures', verifyTextures],
-  ['flat shading', verifyFlatShading],
-] as const)(
-  'runs material inputs and replay after sixty completed Dawn frames: %s',
-  {
-    timeout: 120000,
-  },
-  async (_name, verify) => {
-    sharedRenderer ??= createTextureRenderer();
-    const { renderer } = await sharedRenderer;
-    await verify(renderer);
-  },
-);
+it('runs texture inputs and replay after sixty completed Dawn frames', {
+  timeout: 120000,
+}, async () => {
+  sharedRenderer ??= createTextureRenderer();
+  const { renderer } = await sharedRenderer;
+  await verifyTextures(renderer);
+});
+
+it.each(
+  flatShadingMaterialTypes,
+)('runs flat shading %s inputs and replay after sixty completed Dawn frames', {
+  timeout: 120000,
+}, async (materialType) => {
+  sharedRenderer ??= createTextureRenderer();
+  const { renderer } = await sharedRenderer;
+  await verifyFlatShading(renderer, undefined, undefined, materialType);
+});

@@ -4,9 +4,10 @@ import type { TextureAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RectAreaLight } from '../components/rect-area-light';
 import { SpotLight } from '../components/spot-light';
-import { DIRECT_LIGHT_SLOT_METADATA_SENTINEL, packDirectLightSlot } from '../light-buffer-layout';
+import { DIRECT_LIGHT_SLOT_METADATA_SENTINEL } from '../light-buffer-layout';
 import { COOKIE_SLICE_MIP_CHAIN_BYTES } from '../prepare/extended-lighting/resources';
 import { extractFrames } from '../render-system-extract-tail';
+import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 import { testAssets } from './helpers/runtime-assets';
 
 function texture(

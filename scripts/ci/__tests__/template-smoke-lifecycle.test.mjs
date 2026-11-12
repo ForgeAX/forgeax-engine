@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { serializeBrowserConsoleValue } from '../../../apps/preview/scripts/serialize-browser-console-value.mjs';
+import { selectTemplateAssetRoots } from '../../../apps/preview/src/template-asset-roots.ts';
 import { waitForRuntimeVaseRender } from '../../../templates/game-3d/scripts/runtime-vase-probe.mjs';
 
 const source = readFileSync(
@@ -754,13 +756,13 @@ test('both Preview browser consumers receive the verified shared shader manifest
   }
 });
 
-test('the empty template retains its own complete catalog without foreign resource producers', () => {
+test('each template retains its complete catalog without foreign resource producers', () => {
   const config = readFileSync(
     new URL('../../../apps/preview/vite.config.ts', import.meta.url),
     'utf8',
   );
   const declaration = config.slice(
-    config.indexOf('const packRoots ='),
+    config.indexOf('const templatePackRoots ='),
     config.indexOf('const particleSourceRoots ='),
   );
   const rootsFor = (selectedTemplateSlugs) =>
@@ -768,11 +770,20 @@ test('the empty template retains its own complete catalog without foreign resour
       JSON.stringify(
         runInNewContext(`${declaration}; packRoots`, {
           surfaceOnly: false,
-          game3dOnlySmoke:
-            selectedTemplateSlugs.length === 1 && selectedTemplateSlugs[0] === 'game-3d',
           selectedTemplateSlugs,
-          templatePackRoots: ['scene-owner.pack.ts', 'world.scene.pack.json'],
-          externalAssetRoots: ['foreign-font', 'foreign-model'],
+          selectTemplateAssetRoots,
+          collectAssetDeclarationRoots: (root) => [
+            resolve(root, 'scene-owner.pack.ts'),
+            resolve(root, 'world.scene.pack.json'),
+          ],
+          gameCapabilityPackRoots: ['capability.pack.json'],
+          templatesDir: '/templates',
+          game3dRoot: '/templates/game-3d',
+          brotatoAssetRoot: '/brotato/assets',
+          skyMetaPath: 'sky',
+          templateRoot: (_slug, fallback) => fallback,
+          resolve,
+          externalAssetRoots: ['sky', 'foreign-font', 'foreign-model'],
           surfaceEvidencePackRoot: 'surface',
           previewUiAuthoringMetaPath: 'ui-authoring',
           process: {
@@ -782,21 +793,33 @@ test('the empty template retains its own complete catalog without foreign resour
         }),
       ),
     );
-  assert.deepEqual(rootsFor(['empty']), ['scene-owner.pack.ts', 'world.scene.pack.json']);
-  assert.deepEqual(rootsFor(['game-3d']), ['scene-owner.pack.ts', 'world.scene.pack.json']);
-  assert.deepEqual(rootsFor(['game-capability-lab']), [
-    'scene-owner.pack.ts',
-    'world.scene.pack.json',
-    'foreign-font',
-    'foreign-model',
-  ]);
+  const empty = [
+    '/templates/empty/assets/scene-owner.pack.ts',
+    '/templates/empty/assets/world.scene.pack.json',
+  ].map((file) => resolve(file));
+  const game3d = [
+    '/templates/game-3d/assets/scene-owner.pack.ts',
+    '/templates/game-3d/assets/world.scene.pack.json',
+  ].map((file) => resolve(file));
+  const capability = ['capability.pack.json', 'sky', 'foreign-font', 'foreign-model'];
+  const brotato = [
+    'sky',
+    ...[
+      '/brotato/assets/brotato-3d.pack.ts',
+      '/brotato/assets/game.pack.json',
+      '/brotato/assets/brotato-impact-vfx.pack.json',
+      '/brotato/assets/ui/hud.pack.json',
+    ].map((file) => resolve(file)),
+  ];
+  assert.deepEqual(rootsFor(['empty']), empty);
+  assert.deepEqual(rootsFor(['game-3d']), game3d);
+  assert.deepEqual(rootsFor(['game-capability-lab']), capability);
+  assert.deepEqual(rootsFor(['brotato-3d']), brotato);
+  assert.deepEqual(rootsFor(['empty', 'game-3d']), [...empty, ...game3d]);
   assert.deepEqual(rootsFor([]), [
-    'scene-owner.pack.ts',
-    'world.scene.pack.json',
+    ...new Set([...capability, ...empty, ...game3d, ...brotato]),
     'surface',
     'ui-authoring',
-    'foreign-font',
-    'foreign-model',
   ]);
 });
 

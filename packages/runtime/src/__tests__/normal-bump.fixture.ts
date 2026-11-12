@@ -22,6 +22,7 @@ import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { STANDARD_PIPELINE_PARAM_SCHEMA } from '@forgeax/engine-shader';
 import { derive, type TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
@@ -179,32 +180,30 @@ export async function verifyNormalBump(
         } as StandardOptions);
         const material = testAssets(world).create(authored).unwrap();
         world.set(receiver, MeshRenderer, { materials: [material] }).unwrap();
-        const draw = async () => {
+        const draw = async (observation?: readonly 'linear-hdr'[]) => {
           world.update(1 / 60).unwrap();
           propagateTransforms(world).unwrap();
-          const receipt = renderValue(
-            renderer.draw({
+          const receipt = await drawReadyFrame(
+            renderer,
+            {
               geometryLane: 'direct',
               leases: [lease],
               camera: { lease },
               environment: { lease },
-            }),
+            },
+            observation,
           );
-          renderValue(await receipt.completed);
+          expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe(
+            'ready',
+          );
           return receipt;
         };
         for (let frame = 0; frame < frames - 1; frame++) await draw();
-        renderValue(
-          renderer.requestObservation?.(['linear-hdr']) ?? {
-            ok: false,
-            error: 'observation unavailable',
-          },
-        );
         const capture = ['normal-xy', 'bump'].includes(entry.name)
           ? recorder.captureFrame()
           : undefined;
         if (capture !== undefined) (await recorder.frameBoundary()).unwrap();
-        const receipt = await draw();
+        const receipt = await draw(['linear-hdr']);
         if (capture !== undefined) (await recorder.frameBoundary()).unwrap();
         const observed = renderValue(
           await renderer.observe(receipt, { include: ['linear-hdr'] }),

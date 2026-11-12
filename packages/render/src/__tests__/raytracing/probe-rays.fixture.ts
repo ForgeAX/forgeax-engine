@@ -10,6 +10,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createGlobalSdfComposition } from '../../raytracing/global-sdf';
 import {
   createGlobalSdfQueryRecorder,
@@ -480,10 +481,11 @@ export async function verifyProbeRays(
       alignment,
       count * GLOBAL_SDF_HIT_STRIDE,
     );
-    expect(output.accepted?.subarray(0, 32)).toEqual(entry.old);
-    if (plan.mode !== 0) expect(output.candidate?.subarray(0, 32)).toEqual(entry.old);
+    expect(equalBytes(output.accepted?.subarray(0, 32), entry.old)).toBe(true);
+    if (plan.mode !== 0)
+      expect(equalBytes(output.candidate?.subarray(0, 32), entry.old)).toBe(true);
     else {
-      expect(output.candidate?.subarray(0, 32)).not.toEqual(entry.old);
+      expect(equalBytes(output.candidate?.subarray(0, 32), entry.old)).toBe(false);
       expect(new DataView(output.placement?.buffer ?? new ArrayBuffer(0)).getUint32(8, true)).toBe(
         1,
       );
@@ -596,9 +598,9 @@ export async function verifyProbeRays(
   });
   expect(summaries[0]?.queryStatuses[GlobalSdfQueryStatus.hit]).toBeGreaterThan(0);
   expect(summaries[1]?.queryStatuses[GlobalSdfQueryStatus.hit] ?? 0).toBe(0);
-  expect(outputs[0]?.rays).not.toEqual(outputs[1]?.rays);
-  expect(outputs[0]?.hits).not.toEqual(outputs[1]?.hits);
-  expect(outputs[0]?.rays).toEqual(outputs.at(-1)?.rays);
+  expect(equalBytes(outputs[0]?.rays, outputs[1]?.rays)).toBe(false);
+  expect(equalBytes(outputs[0]?.hits, outputs[1]?.hits)).toBe(false);
+  expect(equalBytes(outputs[0]?.rays, outputs.at(-1)?.rays)).toBe(true);
   const tape = decodeTape(tapeBytes).unwrap(),
     model = buildFrameModel(tape);
   // Attachments are not bootstrap seeds: every read is preceded by the real
@@ -681,9 +683,12 @@ export async function verifyProbeRays(
         emit?.bindings.find((binding) => binding.binding === 3) ??
         queryWork?.bindings.find((binding) => binding.binding === 2);
       assert(rayBinding?.resourceId);
-      expect((await replay.readResource(rayBinding.resourceId)).unwrap().bytes).toEqual(
-        entry.rayBytes,
-      );
+      expect(
+        equalBytes(
+          (await replay.readResource(rayBinding.resourceId)).unwrap().bytes,
+          entry.rayBytes,
+        ),
+      ).toBe(true);
       if (emit) {
         expect(emit.workIndex).toBeGreaterThan(place.workIndex);
         const candidate = emit.bindings.find((binding) => binding.binding === 1);
@@ -693,15 +698,21 @@ export async function verifyProbeRays(
             place.bindings.find((binding) => binding.binding === 7)?.resourceId,
           );
         expect(
-          (await replay.readResourceAtWork(candidate.resourceId, emit.workIndex))
-            .unwrap()
-            .bytes.subarray(candidate.bufferOffset ?? 0, (candidate.bufferOffset ?? 0) + 32),
-        ).toEqual(output.candidate?.subarray(0, 32));
+          equalBytes(
+            (await replay.readResourceAtWork(candidate.resourceId, emit.workIndex))
+              .unwrap()
+              .bytes.subarray(candidate.bufferOffset ?? 0, (candidate.bufferOffset ?? 0) + 32),
+            output.candidate?.subarray(0, 32),
+          ),
+        ).toBe(true);
         const diagnostic = emit.bindings.find((binding) => binding.binding === 4);
         assert(diagnostic?.resourceId);
         expect(
-          (await replay.readResourceAtWork(diagnostic.resourceId, emit.workIndex)).unwrap().bytes,
-        ).toEqual(output.diagnostics);
+          equalBytes(
+            (await replay.readResourceAtWork(diagnostic.resourceId, emit.workIndex)).unwrap().bytes,
+            output.diagnostics,
+          ),
+        ).toBe(true);
       }
       if (queryWork) {
         if (emit) expect(queryWork.workIndex).toBeGreaterThan(emit.workIndex);
@@ -711,19 +722,25 @@ export async function verifyProbeRays(
         const hits = queryWork.bindings.find((binding) => binding.binding === 3);
         assert(hits?.resourceId);
         expect(
-          (await replay.readResourceAtWork(hits.resourceId, queryWork.workIndex)).unwrap().bytes,
-        ).toEqual(output.hits);
+          equalBytes(
+            (await replay.readResourceAtWork(hits.resourceId, queryWork.workIndex)).unwrap().bytes,
+            output.hits,
+          ),
+        ).toBe(true);
       }
       expect(rayBinding.bufferOffset).toBe(alignment);
       expect(rayBinding.bufferSize).toBe(entry.count * RAY_INPUT_STRIDE);
       expect(
-        (
-          await replay.readResourceAtWork(
-            rayBinding.resourceId,
-            queryWork?.workIndex ?? emit?.workIndex ?? -1,
-          )
-        ).unwrap().bytes,
-      ).toEqual(output.rays);
+        equalBytes(
+          (
+            await replay.readResourceAtWork(
+              rayBinding.resourceId,
+              queryWork?.workIndex ?? emit?.workIndex ?? -1,
+            )
+          ).unwrap().bytes,
+          output.rays,
+        ),
+      ).toBe(true);
       const supportWork = find('support');
       assert(supportWork);
       const supportBinding = supportWork.bindings.find((binding) => binding.binding === 6);
@@ -731,9 +748,13 @@ export async function verifyProbeRays(
       expect(supportBinding.bufferOffset).toBe(alignment);
       expect(supportBinding.bufferSize).toBe(96);
       expect(
-        (await replay.readResourceAtWork(supportBinding.resourceId, supportWork.workIndex)).unwrap()
-          .bytes,
-      ).toEqual(output.support);
+        equalBytes(
+          (
+            await replay.readResourceAtWork(supportBinding.resourceId, supportWork.workIndex)
+          ).unwrap().bytes,
+          output.support,
+        ),
+      ).toBe(true);
       selectedWorks.push({
         support: supportWork.workIndex,
         placement: place.workIndex,

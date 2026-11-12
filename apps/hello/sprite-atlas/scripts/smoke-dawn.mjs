@@ -39,9 +39,11 @@
 //   demo's visual surface changed shape (10x10 -> 100x100) and the M4
 //   verify subagent owns the baseline regen + commit.
 
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { emitSmokeReceipt } from '../../../shared/scripts/smoke-receipt.mjs';
+import { observeIndexedDraws } from './native-indexed-draws.mjs';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
@@ -101,22 +103,10 @@ let rhiDrawIndexedCallsThisFrame = 0;
 let rhiLastInstanceCount = 0;
 
 function patchDeviceForRhiStats(dev) {
-  const origCreateCommandEncoder = dev.createCommandEncoder.bind(dev);
-  dev.createCommandEncoder = (desc) => {
-    const enc = origCreateCommandEncoder(desc);
-    const origBeginRenderPass = enc.beginRenderPass.bind(enc);
-    enc.beginRenderPass = (passDesc) => {
-      const pass = origBeginRenderPass(passDesc);
-      const origDrawIndexed = pass.drawIndexed.bind(pass);
-      pass.drawIndexed = (indexCount, instanceCount, firstIndex, baseVertex, firstInstance) => {
-        rhiDrawIndexedCallsThisFrame++;
-        rhiLastInstanceCount = instanceCount;
-        return origDrawIndexed(indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
-      };
-      return pass;
-    };
-    return enc;
-  };
+  observeIndexedDraws(dev, (instanceCount) => {
+    rhiDrawIndexedCallsThisFrame++;
+    rhiLastInstanceCount = instanceCount;
+  });
 }
 
 const originalRequestAdapter = globalThis.navigator.gpu.requestAdapter.bind(
@@ -352,21 +342,21 @@ const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 
 let drawCallCount = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
-  rhiDrawIndexedCallsThisFrame = 0;
-  rhiLastInstanceCount = 0;
-
   world.update().unwrap();
-  const r = renderer.draw({
-    leases: [worldAttachment1.value],
-    camera: { lease: worldAttachment1.value },
-    environment: { lease: worldAttachment1.value },
+  await completeReadyFrame(async () => {
+    // Counters describe one physical submission, including preparation attempts.
+    rhiDrawIndexedCallsThisFrame = 0;
+    rhiLastInstanceCount = 0;
+    const result = renderer.draw({
+      leases: [worldAttachment1.value],
+      camera: { lease: worldAttachment1.value },
+      environment: { lease: worldAttachment1.value },
+    });
+    if (!result.ok) throw result.error;
+    return result.value;
   });
-  if (!r.ok) {
-    console.warn(`[smoke] draw frame ${i}: ${r.error.code}`);
-    continue;
-  }
 
-  // AC-01: every fixture entity folds to exactly 1 drawIndexed per frame.
+  // AC-01: every fixture entity folds to exactly 1 executed drawIndexed per frame.
   if (rhiDrawIndexedCallsThisFrame !== 1) {
     console.error(
       `[smoke] FAIL - frame ${i} drawIndexed count = ${rhiDrawIndexedCallsThisFrame}, expected 1 (fold collapse)`,

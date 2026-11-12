@@ -29,6 +29,12 @@ Plain packages without repeated programs keep their existing envelope.
 Malformed references, non-object table records, unknown envelope fields and
 unused table entries fail closed. There is no process-wide intern pool.
 
+Program interning compares complete artifact byte views through a private byte
+snapshot and preserves ordinary JSON metadata. It never substitutes claimed
+program/artifact identities for actual bytes or creates one JSON object property
+per artifact byte. JSON-only inputs and custom serializers keep their existing
+JSON route. These internal keys do not change the wire records or identities.
+
 `encodeMaterialProgramWire` and `decodeMaterialProgramWire` are available through
 `@forgeax/engine-pack/runtime`. Source authoring remains ordinary Pack; the table
 is a delivery representation. Browser/native resource reads, current publication
@@ -390,7 +396,7 @@ sampler、强度或非默认坐标等附加元数据才使用结构化纹理对�
 > package moves and DDC relocation. Paths and array positions are locators,
 > not identities.
 
-Disk schema, GUID tools (`AssetGuid` brand + UUIDv7/v5), mesh-binary wire facts, and scanner fail-fast chain (13-member `PackErrorCode`) for the ForgeaX asset package system. The unified `asset list`, `asset inspect`, and `asset verify` commands call this owner in filesystem mode; they are offline and require no WS connection.
+Disk schema, GUID tools (`AssetGuid` brand + UUIDv7/v5), mesh-binary wire facts, and scanner fail-fast chain (13-member `PackErrorCode`) for the ForgeAX asset package system. The unified `asset list`, `asset inspect`, and `asset verify` commands call this owner in filesystem mode; they are offline and require no WS connection.
 
 > Package name vs directory: this package is published as `@forgeax/engine-pack` but lives at `packages/pack` on disk. The `@forgeax/engine-` prefix is the IDE-autocomplete entrypoint AI users discover the package family by; the directory drops the prefix to keep tree depth flat (mirrors the `packages/runtime` / `@forgeax/engine-runtime` pair). All other packages in the engine family follow the same convention.
 
@@ -492,7 +498,9 @@ Custom build-only content uses `PackCookSource` in the same output map:
 
 Register the matching `NativeCooker` in the build host. The host supplies the
 derived GUID, source key/path and source data; the cooker returns matching-kind
-metadata, references and artifact bytes. Missing cookers, rewritten GUIDs and
+metadata, references and artifact bytes, or an ordinary Asset payload (for
+example a baked `texture`), which the host publishes through that kind's standard
+producer under the derived GUID. Missing cookers, rewritten GUIDs and
 invalid products fail before publication. Custom sources can coexist with
 ordinary Assets and inherit normal Pack parameters and instance identities.
 They cannot override the closed ordinary Asset kinds. Authoring `readByGuid`
@@ -500,9 +508,20 @@ can explicitly request a `PackCookSource` from the current build generation;
 that is source data, not a decoded runtime asset. Runtime custom kinds still
 need their normal Registry loader/decoder. No cooker enters the player.
 
+A host may construct `new NativeCookerRegistry({ cache })` with a build-only
+store factory. Each cook then receives `context.cache` (an `@forgeax/engine-types`
+`ByteCache`: `get`/`put` of opaque bytes by string key) namespaced to its cooker key. The store is a disposable DDC
+projection, never author truth: the cooker forwards it to a producer that owns
+its content keys and verifies its entries, so a hit must equal a fresh cook.
+DevKit build roots back it with `createNativeCookCache` over the project build
+cache, which sweeps itself to a byte bound least recently used first; registries
+without a factory cook without a store.
+
 `forgeax asset inspect --subject <source.pack.ts> --root <project> --json` executes module initialization, validates the default export, and projects canonical Meta without calling `build`. `@forgeax/engine-pack/source-node` accepts a host executor with `load` and optional `dispose`; `timeoutMs` bounds module initialization and `buildTimeoutMs` bounds one `build(context)` call. A build timeout returns one structured `pack-source-load-failed` Result with `detail.phase: 'build'`, the configured `timeoutMs`, and deterministic cleanup of the isolated worker and compile root.
 
-Trusted production and Workspace authoring share the finite 120-second build bound (`SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`), so a complete geometry recipe does not inherit the low-level loader's 15-second default. Both module initialization and build expiration still retire their isolated execution lease; runtime loading fences are independent of these offline limits.
+Trusted production and Workspace authoring share the finite 120-second build bound (`SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`), so a complete geometry recipe does not inherit the low-level loader's 15-second default. A slow host or a heavy offline recipe (derived distance fields, generated geometry) raises it with `FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS`, an integer number of milliseconds from 120000 to 1800000 (`scriptablePackBuildTimeoutMs`); any other value fails the build instead of removing the bound. Both module initialization and build expiration still retire their isolated execution lease; runtime loading fences are independent of these offline limits.
+
+`STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS` resolves the same host build bound for inventory. Metadata-only loads retain their digest-keyed memo because this build deadline applies only when a retained definition executes `build()`.
 
 Build workers execute the complete relative TypeScript module closure on the supported Node floor, including Node 22 hosts that do not load `.ts` files directly. It transpiles that closure into a disposable ESM directory, resolves bare imports through the source project's nearest `node_modules`, and removes the directory when the worker is disposed. Bulk producers can use the internal `createScriptablePackModuleExecutorPool()` with two recyclable workers; a pooled lease is released after metadata projection or one build.
 
@@ -521,8 +540,10 @@ canonicalization and own `__proto__` keys; delayed imports never reopen author f
 Once module loading settles, the Worker releases its captured source and transpile
 text, including the initial `workerData` payload. Successful loading first returns
 derived text to the host snapshot; builds and delayed literal imports use the
-compiled closure on disk. The executor retains its existing 256 MiB
-old-generation limit.
+compiled closure on disk. Each build-tool executor has a bounded 1024 MiB
+old-generation limit and a 64 MiB young-generation limit. These limits apply to
+isolated Pack production workers, not the game runtime. Module/build deadlines,
+pool concurrency, task recycling and disposal retain their existing policies.
 
 Path-only scans and explicit `metadataOnly` inventories read at most four ScriptablePack modules concurrently, each in its own isolated worker. They settle all started reads before reporting failure and publish declarations in source order. Inventories retaining build closures and scans using a caller-owned executor remain serial; metadata parallelism never shares or recycles those live leases.
 
@@ -537,7 +558,10 @@ The filesystem authoring gateway requests metadata-only inventories: authoring o
 `createLazyScriptablePackDefinition()` reloads from the inventory's captured
 `ScriptablePackSourceSnapshot`, preserving its module bytes, parameters and source
 evidence without keeping an idle worker per declaration. It retains the default
-module/build deadlines, package identity fence and reader context. Later author
+module/build deadlines, package identity fence and reader context. A live host selects
+`executionBudget: 'interactive'` for a replacement of its already accepted source;
+that path retains the loader's original 15-second module/build bounds. First
+publication retains the standard 120-second production bounds. Later author
 edits do not replace the captured body; existing publication source fences still
 own whether the candidate can publish. The lazy path adds no per-build disk
 verification. A direct producer lacking the inventory snapshot captures and
@@ -553,8 +577,13 @@ runtime delivery may inject its bundler resolver for each literal dependency,
 so published JavaScript keeps its actual file and package resolution semantics.
 
 `createScriptablePackSourceSnapshot()` shares file bytes, content digests and
-resolution observations within one build. Its `inputs` and `paths` expose borrowed
-read-only digest and observation projections. `observeFile(path)` records both absence
+resolution observations within one build. `imports(path)` returns the captured
+runtime import list; `imports(path, { includeTypeOnly: true })` preserves the raw
+scanner list, including type-only imports, for conservative compiler analysis.
+Both use the same digest-keyed syntax fact as inventory. The captured file keeps
+that immutable fact for its lifetime even if the existing shared syntax LRU evicts
+it; publication still rereads source bytes and verifies resolution/membership.
+Its `inputs` and `paths` expose borrowed read-only digest and observation projections. `observeFile(path)` records both absence
 and existing bytes and returns whether the candidate is a file. `observePaths(subject,
 enumerate)` captures producer-owned discovery membership and re-enumerates it during
 verification without reevaluating authored code. JSON declarations and
@@ -1077,8 +1106,14 @@ only a completed reusable lease clears the executor's disposal state.
 Directory allocation failures retain the structured module-load error and
 still retire the Worker, including when no temporary output was created.
 
+Captured JSON inputs are staged in that same load lease instead of cloned as
+source text into the Worker. Ordinary imports retain JSON parse/stringify
+canonicalization; `?raw` retains the original text. Artifact integrity is checked
+before use, without returning to a changed author file. Custom executors and
+loads without an explicit source snapshot retain their existing input route.
+
 Author-closure transfer uses the same relative source candidate order as scriptable execution, including `.js` to `.ts`, `.mjs` to `.mts`, `.cjs` to `.cts` and extensionless index resolution.
 
 The module executor pool derives capacity from its retained Worker set. Its cache preparation resolves path and ownership together, and concurrent pool disposals await the same Worker retirements before removing an owned cache.
 
-`NativeCookerRegistry.runTransaction` returns the accepted `{ draft, generation }` snapshot with `status: 'committed' | 'recovered'`; only recovery carries `recoveryHint`. A failed candidate retains the previous snapshot without parallel draft or generation fields. Draft admission is shared by `runDraft`, `run` and transactions; malformed producer output and throwing transaction validation return structured failures. Publication callbacks remain responsible for atomic publication.
+`NativeCookerRegistry.runTransaction` returns the accepted `{ draft, generation }` snapshot with `status: 'committed' | 'recovered'`; only recovery carries `recoveryHint`. A failed candidate retains the previous snapshot without parallel draft or generation fields. Draft admission is shared by `runDraft`, `run` and transactions; malformed producer output and throwing transaction validation return structured failures. Publication callbacks remain responsible for atomic publication. A cooker without `concurrency: 'parallel'` is admitted one cook at a time in call order per cooker key, across every registry and instance in the process, so hosts may call `runDraft` concurrently; parallel cookers run their calls at once.

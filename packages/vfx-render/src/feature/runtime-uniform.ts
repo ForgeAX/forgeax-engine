@@ -8,12 +8,20 @@ import type { ParticleRenderCamera } from './camera.js';
 import { eventInputCapacity } from './event-resources.js';
 
 /** Byte size of the per-dispatch runtime uniform shared by simulation and projection. */
-export const RUNTIME_BYTES = 76 * 4;
+export const RUNTIME_BYTES = 80 * 4;
 
 type ParticleRenderer = ParticleRendererSourceV3;
 type RuntimeIntent = Pick<
   VfxGpuTickIntent,
-  'delta' | 'phaseTick' | 'seed' | 'playCycle' | 'emitter' | 'spawnCount' | 'firstParticleId'
+  | 'delta'
+  | 'elapsed'
+  | 'worldElapsed'
+  | 'phaseTick'
+  | 'seed'
+  | 'playCycle'
+  | 'emitter'
+  | 'spawnCount'
+  | 'firstParticleId'
 >;
 
 function finite(value: unknown, fallback: number): number {
@@ -57,6 +65,27 @@ export function createRuntimeStorage() {
   };
 }
 
+/**
+ * Split an f64 seconds value into an exact whole-second u32 and an f32
+ * fraction in [0, 1). The pair keeps sub-millisecond precision for sessions
+ * far beyond the ~2^24 s horizon where a single f32 stops resolving frames.
+ */
+export function splitTime(seconds: number): { whole: number; fract: number } {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const whole = Math.floor(safe);
+  // u32 wrap keeps the integer exact modulo 2^32 s (~136 years).
+  return { whole: whole >>> 0, fract: Math.fround(safe - whole) };
+}
+
+function writeTime(words: Uint32Array, floats: Float32Array, intent: RuntimeIntent): void {
+  const time = splitTime(intent.elapsed);
+  const world = splitTime(intent.worldElapsed);
+  floats[76] = time.fract;
+  words[77] = time.whole;
+  floats[78] = world.fract;
+  words[79] = world.whole;
+}
+
 export function runtimeData(
   target: ReturnType<typeof createRuntimeStorage> | undefined,
   intent: RuntimeIntent,
@@ -74,6 +103,7 @@ export function runtimeData(
   const { floats, words } = data;
   if (target !== undefined) data.bytes.fill(0);
   floats[0] = projection ? 0 : intent.delta;
+  writeTime(words, floats, intent);
   words[1] = intent.phaseTick;
   words[2] = intent.seed;
   words[3] = intent.playCycle;

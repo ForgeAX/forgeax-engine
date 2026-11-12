@@ -1,6 +1,6 @@
 # forgeax-rhi-wgpu-native
 
-Private Rust native-wgpu owner for ForgeaX desktop hosts. The first consumer is
+Private Rust native-wgpu owner for ForgeAX desktop hosts. The first consumer is
 `apps/native-ray-query-triangle-tauri`, which proves platform-native Ray Query from a
 packaged Tauri application.
 

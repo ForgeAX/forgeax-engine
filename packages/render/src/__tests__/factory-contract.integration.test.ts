@@ -786,7 +786,7 @@ describe('factory contract', () => {
     const renderer = await constructRenderer(
       { width: 64, height: 64, getContext: () => null },
       { rhi },
-      { shaderManifestUrl: manifestUrl() },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
     );
     expect((await renderer.initialization).ok).toBe(true);
     const world = new World();
@@ -826,7 +826,7 @@ describe('factory contract', () => {
       renderer = await constructRenderer(
         { width: 64, height: 64, getContext: () => null },
         { rhi },
-        { shaderManifestUrl: manifestUrl() },
+        { shaderManifestUrl: renderLifecycleManifestUrl() },
       );
       expect((await renderer.initialization).ok).toBe(true);
       queueSpy = vi
@@ -1119,7 +1119,7 @@ describe('factory contract', () => {
     const renderer = await constructRenderer(
       { width: 64, height: 64, getContext: () => null },
       { rhi, features: [feature] },
-      { shaderManifestUrl: manifestUrl() },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
     );
     expect((await renderer.initialization).ok).toBe(true);
     const world = new World();
@@ -1564,7 +1564,7 @@ describe('factory contract', () => {
           instrumentation: { onFrameBoundary: moduleBoundary },
         } as never,
       },
-      { shaderManifestUrl: manifestUrl() },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
     );
     expect((await implicit.initialization).ok).toBe(true);
     drawOneFrame(implicit);
@@ -1581,7 +1581,7 @@ describe('factory contract', () => {
         } as never,
         rhiInstrumentation: { onFrameBoundary: explicitBoundary },
       },
-      { shaderManifestUrl: manifestUrl() },
+      { shaderManifestUrl: renderLifecycleManifestUrl() },
     );
     expect((await explicit.initialization).ok).toBe(true);
     drawOneFrame(explicit);

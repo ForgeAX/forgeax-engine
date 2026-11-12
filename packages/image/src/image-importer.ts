@@ -36,7 +36,9 @@ import {
   type BasisSourceInspection,
   initBasisTranscoder,
   inspectBasisSource,
+  inspectKtx2Native,
   ktx2ColorSpace,
+  ktx2IsNative,
   parseKtx2,
   type TranscodeModel,
 } from '@forgeax/engine-codec';
@@ -51,6 +53,7 @@ import type {
   TextureMipPolicy,
 } from '@forgeax/engine-types';
 import { IMPORT_ERROR_HINTS, ImportError } from '@forgeax/engine-types';
+import { imageError } from './errors.js';
 import type { CompressionMode, EncodedTexture } from './ktx2-encode.js';
 import { basisEncodeParamsFor, encodeTextureToKtx2 } from './ktx2-encode.js';
 import { importCubeSource } from './lut/cube-producer.js';
@@ -125,7 +128,7 @@ function imageOutputTopologyActual(ctx: ImportContext): string {
 type ImageConversionStage = 'decode' | 'inspect' | 'encode';
 
 function imageConversionFailure(
-  ctx: ImportContext,
+  ctx: Pick<ImportContext, 'source'>,
   stage: ImageConversionStage,
   ownerCode: string,
   sourcePath: string,
@@ -200,13 +203,15 @@ function colorSpaceToFormat(colorSpace: ImageColorSpace): GPUTextureFormat {
 }
 
 async function inspectKtx2Source(
-  ctx: ImportContext,
+  ctx: Pick<ImportContext, 'source'>,
   bytes: Uint8Array,
   metaColorSpace: ImageColorSpace | undefined,
 ): Promise<
   | {
       readonly colorSpace: ImageColorSpace;
-      readonly profile: TranscodeModel;
+      /** Absent for non-Basis RG8 / BC5 payloads, whose format is the vkFormat. */
+      readonly profile?: TranscodeModel;
+      readonly format: GPUTextureFormat;
       readonly width: number;
       readonly height: number;
       readonly levelCount: number;
@@ -224,6 +229,36 @@ async function inspectKtx2Source(
       `codec:${parsed.error.code}`,
       'repair the KTX2 container and retry the image import',
     );
+  }
+  if (ktx2IsNative(parsed.value)) {
+    const native = inspectKtx2Native(parsed.value);
+    if (!native.ok) {
+      const reason =
+        native.error.code === 'ktx2-native-unsupported'
+          ? native.error.detail.reason
+          : native.error.code;
+      return imageConversionFailure(
+        ctx,
+        'inspect',
+        'ktx2-native-unsupported',
+        `${ctx.source}#${reason === 'srgb-transfer' || reason === 'transfer-function' ? 'DFD.transferFunction' : 'header'}`,
+        native.error.expected,
+        `vkFormat=${parsed.value.header.vkFormat},reason=${reason}`,
+        native.error.hint,
+      );
+    }
+    if (metaColorSpace === 'srgb') {
+      return imageConversionFailure(
+        ctx,
+        'inspect',
+        'ktx2-color-space-conflict',
+        `${ctx.source}#importSettings.colorSpace`,
+        'Meta.colorSpace to match the linear two-channel KTX2 payload',
+        'meta=srgb,dfd=linear',
+        'set Meta.colorSpace to linear for RG8 / BC5 normal data',
+      );
+    }
+    return { colorSpace: 'linear', ...native.value };
   }
   const dfdColorSpace = ktx2ColorSpace(parsed.value);
   if (dfdColorSpace === undefined) {
@@ -320,6 +355,7 @@ async function inspectKtx2Source(
       return {
         colorSpace: dfdColorSpace,
         profile,
+        format: colorSpaceToFormat(dfdColorSpace),
         width: file.getWidth(),
         height: file.getHeight(),
         levelCount: file.getLevels(),
@@ -337,7 +373,40 @@ async function inspectKtx2Source(
     }
   } finally {
     file.close();
+    file.delete();
   }
+}
+
+type Ktx2Inspection = Exclude<Awaited<ReturnType<typeof inspectKtx2Source>>, ImportError>;
+
+/** Compressed KTX2 stays the texture payload; the renderer transcodes per device. */
+function ktx2TexturePayload(inspection: Ktx2Inspection, bytes: Uint8Array): TextureAsset {
+  return {
+    kind: 'texture',
+    shape: {
+      viewDimension: '2d',
+      extent: { width: inspection.width, height: inspection.height },
+    },
+    format: inspection.format,
+    data: bytes,
+    colorSpace: inspection.colorSpace,
+    mips:
+      inspection.levelCount > 1
+        ? { kind: 'packed', levelCount: inspection.levelCount }
+        : { kind: 'none' },
+  };
+}
+
+/** Basis payloads carry codec facts; native RG8 / BC5 payloads carry none. */
+function ktx2AssetCodec(inspection: Ktx2Inspection) {
+  return inspection.profile === undefined
+    ? undefined
+    : ({ name: 'basis', container: 'ktx2', profile: inspection.profile, version: '1' } as const);
+}
+
+function ktx2ArtifactBody(inspection: Ktx2Inspection, bytes: Uint8Array) {
+  const assetCodec = ktx2AssetCodec(inspection);
+  return { mediaType: 'image/ktx2', ...(assetCodec === undefined ? {} : { assetCodec }), bytes };
 }
 
 async function importKtx2Source(
@@ -359,32 +428,10 @@ async function importKtx2Source(
   const asset: ImportedAsset = {
     guid: sub.guid,
     kind: 'texture',
-    payload: {
-      kind: 'texture',
-      shape: {
-        viewDimension: '2d',
-        extent: { width: inspection.width, height: inspection.height },
-      },
-      format: colorSpaceToFormat(inspection.colorSpace),
-      data: bytes,
-      colorSpace: inspection.colorSpace,
-      mips:
-        inspection.levelCount > 1
-          ? { kind: 'packed', levelCount: inspection.levelCount }
-          : { kind: 'none' },
-    },
+    payload: ktx2TexturePayload(inspection, bytes),
     refs: [],
     artifacts: {
-      body: {
-        mediaType: 'image/ktx2',
-        assetCodec: {
-          name: 'basis',
-          container: 'ktx2',
-          profile: inspection.profile,
-          version: '1',
-        },
-        bytes,
-      },
+      body: ktx2ArtifactBody(inspection, bytes),
     },
   };
   return { ok: true, value: { assets: [asset], sourceDependencies: [] } };
@@ -495,6 +542,7 @@ async function importBasisSource(
     }
   } finally {
     file.close();
+    file.delete();
   }
   if (inspection.imageCount !== 1) {
     return {
@@ -672,8 +720,13 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
     }
     const dec = decoded.value;
     const { halfFloat } = await import('@forgeax/engine-math');
+    // Radiance above the binary16 range (a bright sun disc easily exceeds
+    // 65504) is clamped, as three.js HDRLoader does, instead of encoded as
+    // +Inf: one infinite texel poisons the cube projection, irradiance and
+    // prefilter passes and the whole IBL turns black or white.
     const f16Bytes = halfFloat.f32ToF16Bytes(
       new Uint8Array(dec.data.buffer, dec.data.byteOffset, dec.data.byteLength),
+      { clampFinite: true },
     );
 
     // NO block-compression for equirect (feat-20260707 M5 fix). The .hdr arm
@@ -775,12 +828,53 @@ async function importImage(ctx: ImportContext): Promise<ImportResult> {
   return { ok: true, value: { assets: [asset], sourceDependencies: [] } };
 }
 
+/**
+ * Embedded KTX2 (glTF KHR_texture_basisu) follows the standalone `.ktx2`
+ * source path: validate the container and keep it compressed. The caller's
+ * `colorSpace` (derived from the material slot) must agree with the DFD
+ * transfer function, the same Meta-vs-DFD rule standalone sources obey.
+ * Resize / re-encode settings do not apply to already-compressed bytes.
+ */
+async function decodeEmbeddedKtx2(
+  bytes: Uint8Array,
+  importSettings: Readonly<Record<string, unknown>>,
+): ReturnType<ImportContext['decodeImage']> {
+  const colorSpace = importSettings.colorSpace;
+  const inspection = await inspectKtx2Source(
+    { source: 'embedded.ktx2' },
+    bytes,
+    colorSpace === 'srgb' || colorSpace === 'linear' ? colorSpace : undefined,
+  );
+  if (inspection instanceof ImportError) {
+    const diagnostic =
+      'diagnostics' in inspection.detail ? inspection.detail.diagnostics[0] : undefined;
+    return {
+      ok: false,
+      error: imageError({
+        code: 'image-decode-failed',
+        reason: `${diagnostic?.code ?? inspection.code}: expected ${inspection.expected}; actual ${inspection.actual ?? 'unknown'}`,
+      }),
+    };
+  }
+  const assetCodec = ktx2AssetCodec(inspection);
+  return {
+    ok: true,
+    value: {
+      texture: ktx2TexturePayload(inspection, bytes),
+      bytes,
+      mediaType: 'image/ktx2',
+      ...(assetCodec === undefined ? {} : { assetCodec }),
+    },
+  };
+}
+
 /** Bind the image producer to the generic importer runner's decode seam. */
 export const decodeImageForImport: ImportContext['decodeImage'] = async (
   bytes,
   mimeType,
   importSettings,
 ) => {
+  if (mimeType === 'image/ktx2') return decodeEmbeddedKtx2(bytes, importSettings);
   const cooked = await cookLdrImage(
     bytes,
     mimeType,

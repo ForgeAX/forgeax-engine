@@ -1,0 +1,103 @@
+{
+  "schema": "forgeax.ai-benchmark.protocol/1",
+  "version": "m5-protocol/1.1",
+  "amendments": [
+    {
+      "version": "m5-protocol/1.1",
+      "date": "2026-10-22",
+      "agentInputsChanged": false,
+      "change": "Review renders use a view wrapper that drops zero-area triangles before lifting; validation keeps the strict wrapper and the completion rule is unchanged. measure.mjs also reports zeroAreaTriangles (informational).",
+      "reason": "In the pilot the vented-housing control mesh had 4 collinear triangles; the strict lift rejected it, so it also got no image and would have been scored 1 on every item. That tied the blind review to validation strictness, which the protocol did not intend. Agent prompts, briefs, caps and the completion rule are unchanged, so the runs were not repeated."
+    }
+  ],
+  "frozen": "2026-10-22",
+  "agent": {
+    "cli": "claude -p (Claude Code, non-interactive)",
+    "model": "claude-opus-5-5",
+    "effort": "medium",
+    "maxTurns": 40,
+    "wallClockSeconds": 1200,
+    "maxBudgetUsd": 10,
+    "tools": ["Bash", "Read", "Write", "Edit"],
+    "humanInterventions": 0
+  },
+  "conditions": {
+    "tools": {
+      "label": "modeling tools",
+      "allowedImports": ["@forgeax/engine/modeling", "@forgeax/engine/pack/source"],
+      "instructions": "Use the ForgeaX modeling tools. Read the skill at .claude/skills/forgeax-engine-modeling/SKILL.md first; the full operator contract is reference/modeling-README.md and worked example Packs are under reference/examples/ (their imports use the workspace names @forgeax/engine-modeling and @forgeax/engine-pack/source; in this project import @forgeax/engine/modeling and @forgeax/engine/pack/source). Build the mesh with model() and sel from @forgeax/engine/modeling and return m.finish({ key: 'prop', ... }). Check your work with the `forgeax model` commands (run `forgeax help model`; for example `forgeax model validate --source assets/prop.pack.ts --json` and `forgeax model render --source assets/prop.pack.ts --json`, then Read the PNG files it reports). assets/prop.pack.ts already contains a minimal starting Pack."
+    },
+    "control": {
+      "label": "createMeshBuilder control",
+      "forbiddenPatterns": [
+        "@forgeax/engine/modeling",
+        "@forgeax/engine-modeling",
+        "forgeax model",
+        "forgeax.mjs"
+      ],
+      "instructions": "Hand-write the triangles yourself with createMeshBuilder from @forgeax/engine/geometry: compute positions, normals, uvs and indices in TypeScript (you may write any helper functions you like inside the assets/ directory) and return { 'mesh/prop': mesh }. The builder contract is reference/geometry-README.md (section MeshBuilder) and reference/mesh-builder.ts. Do not use @forgeax/engine/modeling or any `forgeax model` command; this run measures the hand-written path. assets/prop.pack.ts already contains a minimal starting Pack (a single box)."
+    }
+  },
+  "prompt": "You are building one 3D prop for the ForgeaX engine (TypeScript, Y up, meters) in the current project directory. Work autonomously: nobody will answer questions. You have at most {maxTurns} turns and {minutes} minutes.\n\nBrief ({briefId}): {briefText}\n\nMeasurable acceptance checks on the delivered mesh:\n{checks}\n\nDeliverable: assets/prop.pack.ts, whose default export is definePack(...) from @forgeax/engine/pack/source with packageId definePackageId('{packageId}'), producing exactly one output 'mesh/prop' (a closed, consistently outward-oriented triangle mesh; separate parts are separate closed shells inside that one mesh). Keep relative imports with a .ts extension. Run `node check.mjs` at any time: it builds the Pack and prints the measured facts and the pass/fail of every check.\n\nHow to build it: {conditionInstructions}\n\nWhen finished, reply with a short summary of what you built and the final `node check.mjs` result.",
+  "completion": "build ok AND measure.closed AND measure.manifold AND measure.oriented AND every component volume > 0 AND every brief check passes AND the lifted mesh's forgeax model validate status is not fail AND no protocol violation. Judged on the artifact left in assets/ when the run ends, whether or not a cap was hit.",
+  "review": {
+    "judge": "separate claude -p call, same model, no condition labels",
+    "passes": 2,
+    "shuffleSeeds": [20261022, 7151],
+    "image": "forgeax model render sheet (front/right/top/iso, orthographic, --annotate false) of the delivered mesh lifted into one material slot with a box UV projection, so material slots and UV choices do not reveal the condition; zero-area triangles are dropped for the image only (amendment 1.1)",
+    "missingImageScore": 1,
+    "proxyNote": "An LLM judge is a proxy for the human blind review that design section 15 calls for; it can share biases with the agents under test."
+  },
+  "rubric": {
+    "source": "Tiangong docs/reviews/RUBRIC.md at 24330ac8 (blind review sheet, 8 items, 1-5 each); English rendering below",
+    "items": [
+      {
+        "id": "composition",
+        "five": "Clear subject, guided eye, intentional framing",
+        "one": "Subject cut off, frame empty or cluttered"
+      },
+      {
+        "id": "lighting",
+        "five": "Key light plus contrasting fill and local light sources; light has a source and volume",
+        "one": "Flat, gray, blown out or crushed black"
+      },
+      {
+        "id": "material",
+        "five": "One material shows three states (new / worn / scorched); metal, paint and primer clearly distinct",
+        "one": "Looks like plastic or a flat color"
+      },
+      {
+        "id": "effects",
+        "five": "Welding sparks, steam, exhaust, explosions with layering",
+        "one": "None, or cheap"
+      },
+      {
+        "id": "readability",
+        "five": "Instantly clear what it is and what it is doing",
+        "one": "Subject cannot be made out"
+      },
+      {
+        "id": "style",
+        "five": "Fits 'ash and copper, man-made industry vs AI ceramic'",
+        "one": "Chaotic style"
+      },
+      {
+        "id": "richness",
+        "five": "Foreground, midground and background all have content; dynamic elements; local lights; volume; a material story; scale references",
+        "one": "Large flat areas"
+      },
+      {
+        "id": "craft",
+        "five": "Contrast of man-made and native: human armor assembly, weld seams, rivets, handmade feel vs seamless AI geometry",
+        "one": "No contrast"
+      }
+    ],
+    "harnessFixed": ["composition", "lighting", "material", "effects"],
+    "geometrySubset": ["readability", "richness", "craft"],
+    "note": "The sheet's camera, lights and single neutral material are fixed by the harness, so composition, lighting, material and effects measure the harness more than the agent; the report gives the full 8-item mean (the design's metric) and the geometry subset."
+  },
+  "verdict": {
+    "minRunsPerCondition": 20,
+    "rule": "pass when tools completion >= control completion and tools full-rubric mean >= control mean - 0.25; fail when either is worse; below minRunsPerCondition the verdict is inconclusive and only the direction is reported"
+  }
+}

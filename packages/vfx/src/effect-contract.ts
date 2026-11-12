@@ -81,7 +81,8 @@ function zeroValue(type: VfxValueType): VfxValue {
   return length === 1 ? 0 : Array.from({ length }, () => 0);
 }
 
-function valueMatches(type: VfxValueType, value: unknown): boolean {
+/** Whether `value` is a finite, range-checked WGSL value of `type`. */
+export function vfxValueMatches(type: VfxValueType, value: unknown): boolean {
   const length = WGSL_NUMERIC_LAYOUT[type].size / 4;
   if (length === 1)
     return (
@@ -173,7 +174,7 @@ export function validateVfxEffectReflection(
         alignment > struct.alignment
       )
         return invalid(`${name}.${field.name}`);
-      if (field.defaultValue !== undefined && !valueMatches(field.type, field.defaultValue))
+      if (field.defaultValue !== undefined && !vfxValueMatches(field.type, field.defaultValue))
         return invalid(`${name}.${field.name}.defaultValue`);
       names.add(field.name);
       end = field.offset + field.size;
@@ -247,11 +248,28 @@ function validateMap<Values extends VfxValueMap>(
   return validateMapAgainstFields<Values>(fieldList(reflection), values);
 }
 
+// Reflected field lists are immutable contract data; index each once.
+const fieldIndexes = new WeakMap<
+  readonly VfxReflectedField[],
+  ReadonlyMap<string, VfxReflectedField>
+>();
+
+function fieldsByName(
+  reflectedFields: readonly VfxReflectedField[],
+): ReadonlyMap<string, VfxReflectedField> {
+  let index = fieldIndexes.get(reflectedFields);
+  if (index === undefined) {
+    index = new Map(reflectedFields.map((field) => [field.name, field]));
+    fieldIndexes.set(reflectedFields, index);
+  }
+  return index;
+}
+
 function validateMapAgainstFields<Values extends VfxValueMap>(
   reflectedFields: readonly VfxReflectedField[],
   values: VfxValueMap,
 ): Result<Values, VfxEffectContractError> {
-  const fields = new Map(reflectedFields.map((field) => [field.name, field]));
+  const fields = fieldsByName(reflectedFields);
   for (const name of Object.keys(values)) {
     const field = fields.get(name);
     if (field === undefined) {
@@ -263,7 +281,7 @@ function validateMapAgainstFields<Values extends VfxValueMap>(
         values[name],
       );
     }
-    if (!valueMatches(field.type, values[name])) {
+    if (!vfxValueMatches(field.type, values[name])) {
       return fail(
         'vfx-value-type-mismatch',
         name,

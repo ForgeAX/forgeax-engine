@@ -49,9 +49,13 @@ describe('Standard transmission manifest producer', () => {
     const ordinary = standard.variants.find(
       (entry) =>
         entry.defines.COVERAGE_ONLY === false &&
+        entry.defines.ALPHA_MASK === false &&
+        entry.defines.DIRECTIONAL_SHADOW_SIMPLE === false &&
+        entry.defines.LEAN_LIGHTING === false &&
+        entry.defines.LOD_DITHER === false &&
+        entry.defines.CLIPPING_PLANES === false &&
         entry.defines.VISIBLE_SURFACE_AVAILABLE === false &&
         entry.defines.CLUSTER_FORWARD_AVAILABLE === false &&
-        entry.defines.DIRECTIONAL_PCSS_AVAILABLE === true &&
         entry.defines.EXTENDED_LIGHTING_AVAILABLE === true &&
         entry.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true &&
         entry.defines.PROBE_BLEND_AVAILABLE === false &&
@@ -62,6 +66,11 @@ describe('Standard transmission manifest producer', () => {
         entry.defines.VERTEX_COLOR_AVAILABLE === true,
     );
     expect(ordinary).toBeDefined();
-    expect(standard.composedWgsl).toBe(ordinary?.composedWgsl);
+    const direct = manifest.entries.find(
+      (entry) => entry.identifier === 'forgeax::default-standard-pbr',
+    );
+    expect(direct).toBeDefined();
+    expect(direct?.hash).toBe(ordinary?.hash);
+    expect(direct?.wgsl).toBe(ordinary?.composedWgsl);
   }, 180_000);
 });

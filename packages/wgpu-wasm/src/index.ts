@@ -12,14 +12,10 @@
 //    subsequent calls re-attempt _loadWasm() (charter proposition 4 explicit failure:
 //    the original error is surfaced on each attempt, but the caller may retry).
 //
-// Three-scenario wasm asset resolution (research F-4):
-// - Browser / Vite: generated glue is fetched through Vite's ?raw form so its
-//   source bytes remain identical to the provenance manifest.
-// - Node runtime (no Vite): detected via process.versions.node + absent document;
-//   the wasm bytes are read via fs.readFile relative to import.meta.url.
-// - vitest node environment: the ?url import resolves through Vite's bundler to a
-//   file:// URL, but the Node branch above takes precedence so the wasm bytes are
-//   loaded synchronously before init().
+// Browser assets are resolved as URLs relative to this package entry. The raw
+// glue bytes are a build-produced dist asset, so browser verification does not
+// depend on a bundler's module-response format. Node reads the same asset from
+// disk before initializing the statically imported wasm-bindgen module.
 
 import init, * as wasm from '../pkg/wgpu_wasm.js';
 
@@ -151,53 +147,35 @@ async function verifyProvenance(
   return manifest;
 }
 
-function rawGluePath(path: URL): URL {
-  const rawPath = new URL(path.href);
-  rawPath.search = `${rawPath.search}${rawPath.search === '' ? '?' : '&'}raw`;
-  return rawPath;
-}
-
-async function readBrowserGlueBytes(response: Response): Promise<Uint8Array> {
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  const text = new TextDecoder().decode(bytes);
-  const prefix = 'export default ';
-  if (!text.startsWith(prefix)) {
-    return bytes;
+async function readBrowserAsset(path: URL, description: string): Promise<Uint8Array> {
+  if (path.protocol === 'data:') {
+    // Bundlers may inline small assets. Decode them directly instead of asking
+    // the host's connect-src policy to permit a data: fetch.
+    const comma = path.href.indexOf(',');
+    if (comma < 0) throw new Error(`wgpu-wasm ${description} data URL is malformed`);
+    const payload = decodeURIComponent(path.href.slice(comma + 1));
+    return path.href.slice(0, comma).toLowerCase().endsWith(';base64')
+      ? Uint8Array.from(atob(payload), (value) => value.charCodeAt(0))
+      : new TextEncoder().encode(payload);
   }
-
-  // Vite's ?raw module wraps the original source as a JSON string. Decode the
-  // wrapper before hashing; a static server that ignores the query returns the
-  // original glue bytes and takes the branch above.
-  let payload = text.slice(prefix.length).trim();
-  if (payload.endsWith(';')) {
-    payload = payload.slice(0, -1).trim();
-  }
-  try {
-    const decoded = JSON.parse(payload) as unknown;
-    if (typeof decoded === 'string') {
-      return new TextEncoder().encode(decoded);
-    }
-  } catch {
-    // Leave malformed or non-Vite responses untouched so provenance rejects
-    // them instead of allowing an integrity check bypass.
-  }
-  return bytes;
+  const response = await fetch(path);
+  if (!response.ok) throw new Error(`wgpu-wasm ${description} could not be fetched`);
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 async function _loadWasm(): Promise<LoadedWasm> {
-  // Branch: Node when process.versions.node exists. Browser path is the default
-  // wasm-bindgen fetch via URL assets; Vite's raw wrapper is normalized below.
+  // Branch: Node when process.versions.node exists. Both environments verify
+  // the same module-relative WASM, manifest and raw-glue bytes before init().
   const proc = (globalThis as unknown as { process?: NodeProcessLike }).process;
   const isNode = typeof proc?.versions?.node === 'string';
 
   // Reach packages/wgpu-wasm/pkg/wgpu_wasm_bg.wasm relative to this module
   // (src/index.ts during vitest; dist/index.mjs after tsup build — both sit
-  // one directory up from pkg/). This URL form works in both Node and browser
-  // import.meta contexts and avoids a Vite-only top-level `?url` import (which
-  // Node interprets as a wasm module import).
+  // one directory up from pkg/). The verified glue copy is emitted into dist/;
+  // `../dist` resolves there from both source and built package entries.
   const wasmPath = new URL('../pkg/wgpu_wasm_bg.wasm', import.meta.url);
   const manifestPath = new URL('../pkg/provenance.json', import.meta.url);
-  const gluePath = new URL('../pkg/wgpu_wasm.js', import.meta.url);
+  const glueBytesPath = new URL('../dist/wgpu_wasm_glue.bytes', import.meta.url);
 
   let provenance: WasmProvenance;
   if (isNode) {
@@ -209,25 +187,19 @@ async function _loadWasm(): Promise<LoadedWasm> {
     const url = (await import(/* @vite-ignore */ urlModuleId)) as NodeUrlLike;
     const wasmBytes = await fs.readFile(url.fileURLToPath(wasmPath));
     const manifestBytes = await fs.readFile(url.fileURLToPath(manifestPath));
-    const glueBytes = await fs.readFile(url.fileURLToPath(gluePath));
+    const glueBytes = await fs.readFile(url.fileURLToPath(glueBytesPath));
     provenance = await verifyProvenance(manifestBytes, wasmBytes, glueBytes);
     await init({ module_or_path: wasmBytes });
   } else {
-    const [manifestResponse, wasmResponse, glueResponse] = await Promise.all([
-      fetch(manifestPath),
+    const [manifestBytes, wasmResponse, glueBytes] = await Promise.all([
+      readBrowserAsset(manifestPath, 'provenance manifest'),
       fetch(wasmPath),
-      fetch(rawGluePath(gluePath)),
+      readBrowserAsset(glueBytesPath, 'glue bytes'),
     ]);
-    if (!manifestResponse.ok || !wasmResponse.ok || !glueResponse.ok) {
-      throw new Error('wgpu-wasm provenance or generated bytes could not be fetched');
-    }
-    const [manifestBytes, wasmBytes, glueBytes] = await Promise.all([
-      manifestResponse.arrayBuffer(),
-      wasmResponse.arrayBuffer(),
-      readBrowserGlueBytes(glueResponse),
-    ]);
+    if (!wasmResponse.ok) throw new Error('wgpu-wasm artifact bytes could not be fetched');
+    const wasmBytes = await wasmResponse.arrayBuffer();
     provenance = await verifyProvenance(
-      new Uint8Array(manifestBytes),
+      manifestBytes,
       new Uint8Array(wasmBytes),
       new Uint8Array(glueBytes),
     );
@@ -257,14 +229,3 @@ export const ensureReady = (): Promise<WgpuWasm> => currentLoad().ready;
 /** Identity of the successfully initialized native compiler, never a disk-only claim. */
 export const getCompilerFingerprint = async (): Promise<string> =>
   (await currentLoad().loaded).compilerFingerprint;
-
-/**
- * Test-only: reset the cached instance so a subsequent ensureReady() re-runs init().
- *
- * NOT exported from the package root — consumers should NEVER reset; this helper
- * exists only so the per-package vitest suite can exercise the failure-mode case
- * without process restart. Imported via the relative path inside test files.
- */
-export const __resetForTests = (): void => {
-  _instance = null;
-};

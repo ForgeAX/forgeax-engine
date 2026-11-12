@@ -1,15 +1,14 @@
 /// <reference types="@webgpu/types" />
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
+import { nativeAtmosphereSource } from './atmosphere-shader.fixture';
 
 it('evaluates phase normalization, Beer extinction, zero-density limit and spherical endpoints on GPU', async () => {
   const common = readFileSync(new URL('../../../shader/src/common.wgsl', import.meta.url), 'utf8');
   const medium = /struct AtmosphereMedium \{[\s\S]*?\};/.exec(common)?.[0];
   expect(medium).toBeDefined();
-  const optics = readFileSync(
-    new URL('../../../shader/src/atmosphere-optics.wgsl', import.meta.url),
-    'utf8',
-  ).replace(/^#.*$/gm, '');
+  const optics =
+    nativeAtmosphereSource('atmosphere-table-access') + nativeAtmosphereSource('atmosphere-optics');
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error('WebGPU adapter unavailable');
   const device = await adapter.requestDevice();

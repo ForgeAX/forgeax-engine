@@ -1,4 +1,5 @@
 import { ShaderSource, shaderSourceForDescriptor } from '@forgeax/engine-types';
+import { ShadowViewResources } from '../record/shadow-view-resources';
 import type { SeedShaderModule } from './material-shader-policy';
 // WebGPU generation-scoped ready-state builder.
 // This owner performs one complete device-generation promotion; it receives
@@ -20,8 +21,9 @@ import {
   type PipelineGroup2Contract,
   type ShaderCatalog,
 } from '@forgeax/engine-shader';
-import type { ManifestEntry } from '@forgeax/engine-types';
+import { isShaderCompilerProfile, type ManifestEntry } from '@forgeax/engine-types';
 import { prewarmDepthOfField } from '../features/depth-of-field/depth-of-field-assembly';
+import { FORWARD_DEPTH_SEED_WGSL } from '../pipeline/forward-depth-seed';
 import type { RhiBackendPack } from './backend-contract';
 import {
   prewarmSsrWithDepthPyramid,
@@ -34,7 +36,12 @@ export type { MaterialShaderManifestEntry } from '@forgeax/engine-shader';
 import type { GpuResidencyCache } from '../device/gpu-residency';
 import { postProcessShaderModuleLabel } from '../fullscreen-post-process-pass';
 import type { DeviceScope, RhiErrorListenerRegistry } from '../lifecycle';
-import { type PbrPipelineLayoutBundle, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
+import { deriveStandardClusterReflectedAbi } from '../light-buffer-layout';
+import {
+  isCanonicalStandardPbrMaterialShader,
+  type PbrPipelineLayoutBundle,
+  SKIN_MATERIAL_SHADER_ID,
+} from '../pbr-pipeline';
 import {
   buildLinearLdrMaterialSpecTable,
   buildSpecConstTable,
@@ -116,7 +123,7 @@ import {
   prewarmFullscreenPostProcesses,
   prewarmPointsLinesProgram,
   prewarmShadowCasterModules,
-  prewarmStandardDeferredPrograms,
+  prewarmStandardScenePrograms,
   publishIblPrograms,
   type ResolvedEngineManifestEntries,
   resolveEngineManifestEntries,
@@ -134,6 +141,7 @@ export async function prepareDevicePipelineLibrary(
     (descriptor) => shaderSourceForDescriptor(descriptor) ?? new ShaderSource([descriptor.code]),
   );
   const prepared = await device.pipelineLibrary.prepare(manifest, {
+    renderTargetPolicy: 'device-compatible',
     ...(owner === undefined ? {} : { owner }),
     sources,
   });
@@ -202,6 +210,7 @@ export async function prepareBackgroundPipelineLibrary(
   await Promise.all([
     library
       .prepare(manifest, {
+        renderTargetPolicy: 'device-compatible',
         background: true,
         owner,
         sources: manifest.shaders.map(
@@ -427,8 +436,8 @@ export async function buildReadyWebGPU(
   setSsrShaderSources: (sources: SsrShaderSources, pyramid: DepthPyramidShaderSources) => void,
   /** Install manifest-owned atmosphere utility sources only after all modules compile. */
   setAtmosphereShaderSources: (sources: AtmosphereShaderSources) => void,
-  setStandardDeferredShaderSources: (
-    sources: import('../pipeline/standard-deferred-lighting').StandardDeferredShaderSources,
+  setStandardSceneShaderSources: (
+    sources: import('../pipeline/standard-deferred-lighting').StandardSceneShaderSources,
   ) => void,
   /** Which material variant module labels this build compiles eagerly. */
   admitsVariant: VariantPrewarmAdmission,
@@ -472,6 +481,42 @@ export async function buildReadyWebGPU(
   // so the record stage fails explicitly instead of mis-shading.
   const registry = getShader();
   const manifestEntries: ManifestEntry[] = [...registry.entries()];
+  const materialEntries = [...registry.materialShaderManifestEntries()];
+  // Standard PBR owns the light-record ABI. Unlit can consume the same texture
+  // for atmosphere without declaring a storage-backed light record or uniform.
+  const clusterVariants = materialEntries
+    .filter((entry) => isCanonicalStandardPbrMaterialShader(entry.identifier))
+    .flatMap((entry) =>
+      entry.variants.filter(
+        (variant) =>
+          variant.defines.CLUSTER_FORWARD_AVAILABLE === true &&
+          variant.defines.STORAGE_BUFFER_AVAILABLE === true,
+      ),
+    );
+  const clusterVariantsPublished = clusterVariants.every(
+    (variant) =>
+      typeof variant.hash === 'string' &&
+      /^[a-f0-9]{8}$/.test(variant.hash) &&
+      typeof variant.sourceDigest === 'string' &&
+      /^[a-f0-9]{64}$/.test(variant.sourceDigest) &&
+      isShaderCompilerProfile(variant.compilerProfile) &&
+      variant.reflection !== undefined,
+  );
+  const standardClusterAbi = clusterVariantsPublished
+    ? deriveStandardClusterReflectedAbi(clusterVariants.map((variant) => variant.reflection))
+    : undefined;
+  if (
+    manifestEntries.length > 0 &&
+    rhiDevice.caps.backendKind !== 'null' &&
+    standardClusterAbi === undefined
+  ) {
+    throw new RhiError({
+      code: 'shader-compile-failed',
+      expected:
+        'a storage-backed Standard PBR variant publishes source identity, compiler profile, DirectLightSlot, and ClusterUniform reflection',
+      hint: 'rebuild the engine shader publication with per-variant Naga shader-reflection/3 metadata; runtime Cluster packing will not guess shader offsets',
+    });
+  }
   if (rhiDevice.caps.backendKind === 'null' && manifestEntries.length === 0) {
     // Decide after shader preparation: an unloaded registry is not an empty
     // manifest. Structural frames share the same single registration owner.
@@ -500,23 +545,22 @@ export async function buildReadyWebGPU(
       );
       if (sources !== undefined) await setVolumetricFogShaderSources(sources);
     }
-    if (computeStorageTexture) {
+    if (rhiDevice.caps.rgba16floatRenderable) {
       const sources = await prewarmSsrWithDepthPyramid(
         manifestEntries,
         compileUtilityShader,
         seedShaderModule,
+        computeStorageTexture ? 'compute' : 'fragment',
       );
       if (sources !== undefined) setSsrShaderSources(sources.ssr, sources.pyramid);
     }
-    if (caps.storageBuffer) {
-      const deferred = await prewarmStandardDeferredPrograms(
-        registry,
-        compileUtilityShader,
-        seedShaderModule,
-        caps,
-      );
-      if (deferred !== undefined) setStandardDeferredShaderSources(deferred);
-    }
+    const scenePrograms = await prewarmStandardScenePrograms(
+      registry,
+      compileUtilityShader,
+      seedShaderModule,
+      caps,
+    );
+    if (scenePrograms !== undefined) setStandardSceneShaderSources(scenePrograms);
     const atmosphere = await prewarmAtmospherePrograms(
       manifestEntries,
       compileUtilityShader,
@@ -709,6 +753,19 @@ export async function buildReadyWebGPU(
       seedShaderModule,
     );
     await prewarmUtilityPrograms();
+    // Forward seeds `main` from its depth prepass on the first frame; compile
+    // the seed program with the other global shaders so that frame never
+    // meets a pending module (UE compiles global shaders before rendering).
+    seedShaderModule(
+      'forward_depth_seed',
+      await compileModule(
+        FORWARD_DEPTH_SEED_WGSL,
+        'forward_depth_seed',
+        "Forward depth seed shader module 'forward_depth_seed' compiled",
+        'inspect FORWARD_DEPTH_SEED_WGSL and check device.features',
+      ),
+      FORWARD_DEPTH_SEED_WGSL,
+    );
     const standard = await compileStandardPbr(entries);
     seedPbrSourceAliases(registry, entries.pbr.wgsl, standard.pbr, seedShaderModule);
     const unlit = await compileUnlitModules(
@@ -771,9 +828,10 @@ export async function buildReadyWebGPU(
       entries.bloomComposite,
       'bloom-composite',
     );
-    const ssao = caps.webgl2Downlevel
-      ? null
-      : await compileManifestModule(compileModule, entries.ssao, 'hdrp-ssao');
+    const ssao = await compileManifestModule(compileModule, entries.ssao, 'hdrp-ssao');
+    const gtaoCompute = rhiDevice.caps.compute
+      ? await compileManifestModule(compileModule, entries.gtaoCompute, 'hdrp-gtao-compute')
+      : null;
     return {
       pbr: standard.pbr,
       unlit,
@@ -785,6 +843,7 @@ export async function buildReadyWebGPU(
       bloomVertical,
       bloomComposite,
       ssao,
+      gtaoCompute,
       gpuDrivenPbrPrograms: standard.gpuDrivenPbrPrograms,
     };
   };
@@ -954,6 +1013,7 @@ export async function buildReadyWebGPU(
     );
   const pipelineState: PipelineState = {
     device: rhiDevice,
+    ...(standardClusterAbi === undefined ? {} : { standardClusterAbi }),
     // Standard material variants resolve through the material-shader cache;
     // these unlit PSOs are the prewarmed SPEC_CONST built-ins (null for an
     // empty manifest).
@@ -1031,6 +1091,7 @@ export async function buildReadyWebGPU(
       ...bloom,
     }),
   };
+  Object.assign(pipelineState, { shadowViewResources: new ShadowViewResources(pipelineState) });
   // Boot-time fallback resources submit real GPU work before the renderer is
   // published. Keep initialization as the readiness barrier for the first
   // frame: a Worker can otherwise receive `ready`, start its frame deadline,

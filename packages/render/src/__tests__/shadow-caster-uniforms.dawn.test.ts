@@ -7,7 +7,7 @@ import {
 } from '../gpu-usage';
 import {
   SHADOW_CASTER_BUFFER_SIZE,
-  writeShadowCasterMatrices,
+  writeShadowCasterUniforms,
 } from '../record/shadow-caster-uniforms';
 import type { ViewLights } from '../world/render-lights';
 import { nativeDeviceFixture } from './native-device-fixture';
@@ -48,7 +48,7 @@ it('reads fixed caster headers and current spot matrices back from real GPU buff
       );
     for (const value of [7, 19]) {
       matrix[0] = value;
-      writeShadowCasterMatrices(device.queue, buffer, lights);
+      writeShadowCasterUniforms(device.queue, buffer, lights);
       const bytes = await read();
       const words = new Uint32Array(bytes);
       for (let slot = 0; slot < 8; slot++)

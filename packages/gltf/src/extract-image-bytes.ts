@@ -20,9 +20,14 @@ export interface GltfImageIr {
 }
 
 type ImageSourceKind = GltfImageIr['source']['kind'];
+/** Image media types the importer forwards to the decodeImage seam. */
+export type GltfImageMimeType = 'image/png' | 'image/jpeg' | 'image/ktx2';
+const ADMITTED_IMAGE_MIME_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/ktx2'];
+/** KTX2 file identifier: `«KTX 20»\r\n\x1A\n` (KTX 2.0 spec section 3.1). */
+const KTX2_IDENTIFIER = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a];
 interface ExtractedImage {
   readonly bytes: Uint8Array;
-  readonly mimeType: 'image/png' | 'image/jpeg';
+  readonly mimeType: GltfImageMimeType;
   readonly source: ImageSourceKind;
 }
 interface ExtractFailure {
@@ -32,12 +37,18 @@ interface ExtractFailure {
 }
 const DATA_URI_MIME_RE = /^data:([^;,]+)(?:;[^,;]+)*;base64,/;
 
-/** Pick PNG vs JPEG from declared mimeType + magic-byte fallback. */
+/** Pick PNG / JPEG / KTX2 from declared mimeType + magic-byte fallback. */
 function classifyMime(
   declaredMime: string | undefined,
   bytes: Uint8Array,
-): 'image/png' | 'image/jpeg' | undefined {
+): GltfImageMimeType | undefined {
   if (declaredMime === 'image/png' || declaredMime === 'image/jpeg') return declaredMime;
+  // A KTX2 declaration must still carry the container identifier: the decode
+  // seam keeps the bytes compressed, so a mislabelled payload would otherwise
+  // reach the runtime transcoder.
+  if (bytes.length >= KTX2_IDENTIFIER.length && KTX2_IDENTIFIER.every((b, i) => bytes[i] === b))
+    return 'image/ktx2';
+  if (declaredMime === 'image/ktx2') return undefined;
   if (
     bytes.length >= 8 &&
     bytes[0] === 0x89 &&
@@ -82,7 +93,7 @@ export async function parseGltfImages(
   // Preserve the document's MIME admission before any external image read.
   for (const image of images) {
     const mimeType = image.mimeType;
-    if (mimeType !== undefined && mimeType !== 'image/jpeg' && mimeType !== 'image/png')
+    if (mimeType !== undefined && !ADMITTED_IMAGE_MIME_TYPES.includes(mimeType))
       return err(gltfErr('gltf-image-mime-unsupported', { mimeType }));
   }
   const result: GltfImageIr[] = [];
@@ -134,8 +145,13 @@ export function extractImageBytes(images: readonly GltfImageIr[]): {
         continue;
       }
       bytes = source.bytes.value;
-    } else if (source.kind === 'external-uri') bytes = source.bytes;
-    else {
+    } else if (source.kind === 'external-uri') {
+      bytes = source.bytes;
+      // KHR_texture_basisu sources may omit mimeType; the `.ktx2` extension is
+      // the URI-side declaration (query / fragment suffixes ignored).
+      if (declaredMime === undefined && /\.ktx2(?:[?#].*)?$/i.test(source.uri))
+        declaredMime = 'image/ktx2';
+    } else {
       try {
         bytes = decodeBase64(dataUriBase64Payload(source.uri) ?? '');
       } catch (error) {
@@ -154,8 +170,8 @@ export function extractImageBytes(images: readonly GltfImageIr[]): {
         source.kind === 'bufferView'
           ? `unsupported / unrecognised mime (declared "${declaredMime ?? '<absent>'}", magic byte sniff failed)`
           : source.kind === 'data-uri'
-            ? `data: URI mime "${declaredMime ?? '<absent>'}" not png/jpeg`
-            : `external URI "${source.uri}" mime not png/jpeg (declared "${declaredMime ?? '<absent>'}", magic byte sniff failed)`;
+            ? `data: URI mime "${declaredMime ?? '<absent>'}" not png/jpeg/ktx2`
+            : `external URI "${source.uri}" mime not png/jpeg/ktx2 (declared "${declaredMime ?? '<absent>'}", magic byte sniff failed)`;
       failures.push({ imageIndex, source: source.kind, reason });
     } else extracted.set(imageIndex, { bytes, mimeType, source: source.kind });
   }

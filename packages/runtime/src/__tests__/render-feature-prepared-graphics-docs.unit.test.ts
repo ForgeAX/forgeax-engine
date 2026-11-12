@@ -34,6 +34,10 @@ function featureDetail(error: RenderFeatureErrorDescriptor): string {
       return `${error.detail.resourceKind}:${error.detail.reason}`;
     case 'render-feature-draw-recording-failed':
       return `${error.detail.resourceKind}:${error.detail.backendReason}`;
+    case 'render-feature-input-unavailable':
+      return `${error.detail.view}:${error.detail.reason}`;
+    case 'render-feature-batch-incomplete':
+      return error.detail.missing.join(',');
   }
 }
 

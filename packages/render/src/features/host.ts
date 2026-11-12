@@ -1,8 +1,8 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-
-import type { EntityHandle } from '@forgeax/engine-ecs';
+import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import type { Buffer, RhiCaps, Sampler, TextureFormat, TextureView } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { featureRecordsInCapture } from '../capture/feature-policy';
 import {
   type RenderError,
   RenderFeatureCapabilityMissingError,
@@ -21,14 +21,31 @@ import type {
   PreparedGraphicsResourceLease,
 } from '../prepare/prepared-graphics-resolver';
 import type { CameraSnapshot, FramePresentationPendingReason } from '../render-contract';
-import { isSceneDataTarget, type SceneDataTarget } from '../temporal/scene-data';
+import {
+  isSceneDataTarget,
+  type SceneDataTarget,
+  type StandardSceneSurfaceAdmission,
+} from '../temporal/scene-data';
 import { createSceneDataCatalog, type SceneDataCatalog } from '../temporal/scene-data-catalog';
+import {
+  addRenderFeatureSystem,
+  bindRenderFeatureFrame,
+  type FeatureSettlementReporter,
+  removeRenderFeatureSystem,
+} from '../world/feature-systems';
+import { createRenderWorld } from '../world/render-world';
+import {
+  type FeatureGraphConformanceTraceState,
+  isFeatureGraphConformanceEnabled,
+  recordFeatureGraphConformanceEvent,
+} from './feature-graph-conformance-trace';
 import {
   type FeatureWorkResources,
   featureScopeKey,
+  NativeFeatureWorkRouting,
   resolveFeatureWorkResources,
-  resolveNativeFeatureWorkResources,
 } from './frame-plan';
+import { isOwnedHiddenEntityReports, NO_HIDDEN_ENTITY_REPORTS } from './hidden-entity-reports';
 import { sameRenderFeatureNativeExecutionTopology } from './native-execution-topology';
 import { coalesceNativeReadOnlyDepthPasses } from './native-read-only-depth-passes';
 import {
@@ -178,10 +195,16 @@ export interface RenderFeatureFrameInput {
   readonly onFeatureSourceSubmitted?: (identity: string, feedback: unknown) => void;
   readonly identity: string;
   readonly render: boolean;
+  /** Set on capture-face views; Features whose `capture` policy excludes the kind see the view held. */
+  readonly captureKind?: import('../capture/feature-policy').CaptureFaceKind;
   readonly motionBlur?: import('./motion-blur/motion-blur-feature').MotionBlurFeatureInput;
   readonly worlds: readonly import('@forgeax/engine-ecs').World[];
   readonly owner: number;
   readonly frameNumber: number;
+  /** @internal RenderSystem-local frame number for focused conformance traces. */
+  readonly recordFrameNumber?: number;
+  /** @internal Default-off trace state; only target-feature facts are retained. */
+  readonly featureGraphConformanceTrace?: FeatureGraphConformanceTraceState;
   /** Renderer-selected display camera forwarded to feature extraction. */
   readonly selectedCamera?: CameraSnapshot;
   readonly selectedView?: import('./types').RenderFeatureExtractView['selectedView'];
@@ -193,6 +216,9 @@ export interface RenderFeatureFrameInput {
   readonly targets?: readonly RenderFeatureTargetHandle[];
   /** Optional renderer-owned semantic catalog for the current plan generation. */
   readonly sceneData?: SceneDataCatalog;
+  /** Immutable Standard producer admission from the selected record view. */
+  readonly surfaceAdmission?: StandardSceneSurfaceAdmission;
+  readonly deviceGeneration?: number;
   readonly generation?: number;
   readonly caps: Readonly<RhiCaps>;
   /** Default-off Renderer profile experiment; native producer permission is still required. */
@@ -215,6 +241,10 @@ export interface RenderFeatureFrameInput {
           | { readonly view: TextureView; readonly target?: RenderFeatureTargetHandle }
           | { readonly buffer: Buffer; readonly size: number };
         abortFeature(identity: string): void;
+        /** Open the Renderer frame's scene-input transaction before any Feature prepares. */
+        begin(frameNumber: number): void;
+        /** Settle the transaction once the frame's submission was accepted or abandoned. */
+        complete(submitted: boolean, completion?: Promise<unknown>): void;
       }
     | undefined;
   readonly createPreparedGraphicsResolver?: (
@@ -256,10 +286,6 @@ export interface RenderFeatureFrameResult {
    */
   readonly requiresPreparedResourceKey: boolean;
   readonly hiddenEntityReports: readonly RenderFeatureHiddenEntityReport[];
-  /** Invoke producer consumption after the frame reaches queue submission. */
-  readonly onSubmitted: () => void;
-  /** Discard producer frame state after graph admission/submission failure. */
-  readonly onAborted: () => void;
 }
 
 export interface RenderFeatureHost {
@@ -301,8 +327,31 @@ export interface RenderFeatureHost {
   inspection(): RenderFeatureHostInspection;
   /** Host-owned signature entry point so accounting remains per feature. */
   recordPlanSignature(identity: string, plan: RenderFeatureWorkPlan, scope?: string): string;
-  /** Extract, plan and prepare each installed Feature once for the complete Renderer frame. */
-  runFrame(inputs: readonly RenderFeatureFrameInput[]): RenderFeatureFrameBatch;
+  /**
+   * The Render World holding one `render-feature:<id>` RenderPrepare system
+   * per installed Feature, between `render-feature-open` and `render-feature-batch`.
+   */
+  readonly world: World;
+  /** Open one Renderer frame over its complete view roster; Features join it one by one. */
+  beginFrame(inputs: readonly RenderFeatureFrameInput[]): RenderFeatureFrameOpen;
+  /** Extract, plan and prepare one installed Feature into an open frame. */
+  prepareFeature(frame: RenderFeatureFrameOpen, identity: string): void;
+  /** Installed, undisposed Features that have not joined an open frame. */
+  unjoinedFeatures(frame: RenderFeatureFrameOpen): readonly string[];
+  /** Seal an open frame after every participating Feature has joined it. */
+  finishFrame(frame: RenderFeatureFrameOpen): RenderFeatureFrameBatch;
+  /**
+   * Settle a sealed batch whose frame was accepted: seal each Feature's
+   * resources and acknowledge exactly the `recorded` plans; a Feature none of
+   * whose plans was recorded is aborted. A batch settles once (with this or
+   * {@link abortFrame}); every failure is returned, never thrown.
+   */
+  submitFrame(
+    batch: RenderFeatureFrameBatch,
+    recorded: ReadonlySet<RenderFeaturePlannedFrame>,
+  ): readonly unknown[];
+  /** Discard every Feature's resources and producer frame data; returns the failures. */
+  abortFrame(batch: RenderFeatureFrameBatch): readonly unknown[];
   dispose(): Result<void, RenderError>;
 }
 
@@ -362,6 +411,14 @@ interface FeatureSlot {
   signatureInspection: SignatureInspection | undefined;
   /** Scene-data catalog of each view for the current prepared generation. */
   readonly sceneData: Map<string, SceneDataCatalog>;
+  /** Monotonic view cuts so a token cannot become current again after rollback. */
+  readonly sceneDataAdmissionRevisions: Map<
+    string,
+    { readonly identity: string | undefined; readonly revision: number }
+  >;
+  readonly nativeRouting: NativeFeatureWorkRouting;
+  /** Fixed event facts; replacement order never retargets an older frame. */
+  readonly stageEvents: Partial<Record<RenderFeatureStageEvent['stage'], RenderFeatureStageEvent>>;
 }
 
 function now(): number {
@@ -380,6 +437,9 @@ function createFeatureSlot(feature: RenderFeature<unknown>, order: number): Feat
     nativeSignatures: new Map(),
     signatureInspection: undefined,
     sceneData: new Map(),
+    sceneDataAdmissionRevisions: new Map(),
+    nativeRouting: new NativeFeatureWorkRouting(),
+    stageEvents: {},
   };
 }
 
@@ -1494,17 +1554,24 @@ function projectPlanPasses(
   });
 }
 
-function invokeStage<T>(
+function invokeStage<T, Owner, Input>(
   slot: FeatureSlot,
   stage: RenderFeatureStageEvent['stage'],
-  action: () => Result<T, RenderError>,
+  action: (this: Owner, input: Input) => Result<T, RenderError>,
+  owner: Owner,
+  input: Input,
   stageEvents: RenderFeatureStageEvent[],
   errors: RenderError[],
 ): Result<T, RenderError> {
   const identity = slot.feature.identity;
-  stageEvents.push({ featureIdentity: identity, order: slot.order, stage });
+  let event = slot.stageEvents[stage];
+  if (event?.featureIdentity !== identity || event.order !== slot.order) {
+    event = Object.freeze({ featureIdentity: identity, order: slot.order, stage });
+    slot.stageEvents[stage] = event;
+  }
+  stageEvents.push(event);
   try {
-    const result = action();
+    const result = action.call(owner, input);
     if (result.ok) return result;
     recordFailure(slot, stage, result.error, errors);
     return err(result.error);
@@ -1545,7 +1612,14 @@ class FeatureHostImpl implements RenderFeatureHost {
     'unsubmitted' | 'submitted'
   >();
 
-  constructor(private readonly slots: FeatureSlot[]) {}
+  constructor(
+    private readonly slots: FeatureSlot[],
+    readonly world: World,
+    report: FeatureSettlementReporter,
+  ) {
+    bindRenderFeatureFrame(world, this, report);
+    for (const slot of slots) addRenderFeatureSystem(world, slot.feature.identity);
+  }
 
   get size(): number {
     return this.slots.length;
@@ -1559,24 +1633,74 @@ class FeatureHostImpl implements RenderFeatureHost {
     return this.slots.map((slot) => slot.feature);
   }
 
-  runFrame(inputs: readonly RenderFeatureFrameInput[]): RenderFeatureFrameBatch {
+  beginFrame(inputs: readonly RenderFeatureFrameInput[]): RenderFeatureFrameOpen {
     const input = inputs[0];
     if (input === undefined) throw new Error('a Feature frame requires its complete view roster');
     this.beginDepthBatchInspection(
       input.featureReadOnlyDepthBatchDiagnostic === true ? input.frameNumber : undefined,
       input.generation ?? 0,
     );
-    const batch = new FeatureFrameBatchBuilder(this, inputs, input);
-    for (const slot of this.slots) {
-      if (!featureRunsThisFrame(slot, input.caps)) continue;
-      const transaction = this.beginPreparedFrame(
-        slot.feature.identity,
-        input.generation ?? this.generation,
-      );
-      if (transaction === undefined) continue;
-      new FeatureFramePreparation(batch, slot, transaction).run();
-    }
-    return batch.finish();
+    return new FeatureFrameBatchBuilder(this, inputs, input);
+  }
+
+  prepareFeature(frame: RenderFeatureFrameOpen, identity: string): void {
+    const slot = findSlot(this.slots, identity);
+    if (slot !== undefined) this.prepareSlot(frame, slot);
+  }
+
+  unjoinedFeatures(frame: RenderFeatureFrameOpen): readonly string[] {
+    const batch = openBatch(frame, this);
+    // A disposed Feature's system is gone with it; it no longer joins frames.
+    return this.slots
+      .filter((slot) => slot.status !== 'disposed' && !batch.joined.has(slot))
+      .map((slot) => slot.feature.identity);
+  }
+
+  finishFrame(frame: RenderFeatureFrameOpen): RenderFeatureFrameBatch {
+    return openBatch(frame, this).finish();
+  }
+
+  submitFrame(
+    batch: RenderFeatureFrameBatch,
+    recorded: ReadonlySet<RenderFeaturePlannedFrame>,
+  ): readonly unknown[] {
+    const prepared = this.closeBatch(batch);
+    if (!Array.isArray(prepared)) return prepared === undefined ? [] : [prepared];
+    return drainEach(prepared, [commitFeatureResources, (feature) => feature.submit(recorded)]);
+  }
+
+  abortFrame(batch: RenderFeatureFrameBatch): readonly unknown[] {
+    const prepared = this.closeBatch(batch);
+    if (!Array.isArray(prepared)) return prepared === undefined ? [] : [prepared];
+    return drainEach(prepared, ABORT_FEATURES);
+  }
+
+  /**
+   * The batch's prepared Features the first time it settles; undefined once
+   * settled; an error for a batch another host sealed.
+   */
+  private closeBatch(
+    batch: RenderFeatureFrameBatch,
+  ): readonly FeatureFramePreparation[] | Error | undefined {
+    const builder = sealedBatches.get(batch);
+    if (builder === undefined) return undefined;
+    if (builder.host !== this)
+      return new Error('the Feature frame batch was sealed by another host');
+    sealedBatches.delete(batch);
+    return builder.prepared;
+  }
+
+  private prepareSlot(frame: RenderFeatureFrameOpen, slot: FeatureSlot): void {
+    const batch = openBatch(frame, this);
+    if (batch.joined.has(slot)) throw new Error('a Feature joins one Renderer frame at most once');
+    batch.joined.add(slot);
+    if (!featureRunsThisFrame(slot, batch.input.caps)) return;
+    const transaction = this.beginPreparedFrame(
+      slot.feature.identity,
+      batch.input.generation ?? this.generation,
+    );
+    if (transaction === undefined) return;
+    new FeatureFramePreparation(batch, slot, transaction).run();
   }
 
   /** Drop signature evidence of scopes the slot's current frame no longer declares. */
@@ -1722,6 +1846,7 @@ class FeatureHostImpl implements RenderFeatureHost {
       return err(registrationConflict(feature.identity, this.slots.length, existingOrder));
     }
     this.slots.push(createFeatureSlot(feature, this.slots.length));
+    addRenderFeatureSystem(this.world, feature.identity);
     this.publishDiagnosticsChanged();
     return ok(undefined);
   }
@@ -1740,6 +1865,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     }
     slot.status = 'disposed';
     this.slots.splice(index, 1);
+    removeRenderFeatureSystem(this.world, slot.feature.identity);
     for (const [order, remaining] of this.slots.entries()) remaining.order = order;
     this.publishDiagnosticsChanged();
     return firstError === undefined ? ok(undefined) : err(firstError);
@@ -1905,6 +2031,7 @@ class FeatureHostImpl implements RenderFeatureHost {
     const firstError: RenderError | undefined = retired.ok ? undefined : retired.error;
     for (const slot of this.slots) {
       slot.status = 'disposed';
+      removeRenderFeatureSystem(this.world, slot.feature.identity);
     }
     this.publishDiagnosticsChanged();
     this.diagnosticsListeners.clear();
@@ -1917,11 +2044,10 @@ export interface RenderFeatureFrameBatch {
   readonly frame: RenderFeatureFrameResult;
   readonly views: ReadonlyMap<string, RenderFeatureFrameResult>;
   readonly preparedResourceBatches: readonly RenderFeaturePreparedResourceBatch[];
-  /** Seal a detached recovery allocation without acknowledging unrecorded work. */
-  readonly commitPreparedResources: () => void;
-  readonly onSubmitted: () => void;
-  readonly onAborted: () => void;
 }
+
+/** Sealed batches not yet settled, mapped to the frame that sealed them. */
+const sealedBatches = new WeakMap<RenderFeatureFrameBatch, FeatureFrameBatchBuilder>();
 
 function retainScopes(cache: Map<string, unknown>, scopes: readonly string[]): void {
   if (cache.size > 0)
@@ -1946,12 +2072,25 @@ interface FeatureWorkProjection {
   readonly requiresGraphRebuild: boolean;
 }
 
+/** An open Renderer Feature frame; opaque outside its host. */
+export interface RenderFeatureFrameOpen {
+  readonly inputs: readonly RenderFeatureFrameInput[];
+}
+
+function openBatch(frame: RenderFeatureFrameOpen, host: FeatureHostImpl): FeatureFrameBatchBuilder {
+  if (!(frame instanceof FeatureFrameBatchBuilder) || frame.host !== host || frame.sealed)
+    throw new Error('the Feature frame is not open on this host');
+  return frame;
+}
+
 /** Frame-wide accumulation shared by every Feature in one Renderer frame. */
-class FeatureFrameBatchBuilder {
+class FeatureFrameBatchBuilder implements RenderFeatureFrameOpen {
+  /** Slots that already joined this frame; a slot prepares at most once. */
+  readonly joined = new Set<FeatureSlot>();
+  sealed = false;
   readonly stageEvents: RenderFeatureStageEvent[] = [];
   readonly errors: RenderError[] = [];
   readonly preparedResourceBatches: RenderFeaturePreparedResourceBatch[] = [];
-  readonly submittedWorks = new Set<RenderFeaturePlannedFrame>();
   /** Features that reached the submission barrier, in installation order. */
   readonly prepared: FeatureFramePreparation[] = [];
   readonly views = new Map<string, RenderFeatureFrameResult>();
@@ -1975,11 +2114,8 @@ class FeatureFrameBatchBuilder {
     this.shared = this.makeResult();
     for (const view of inputs) {
       if (this.views.has(view.identity)) throw new Error('duplicate render view identity');
-      const result = this.makeResult();
+      const result = this.makeResult(view.hiddenEntityReports);
       this.views.set(view.identity, result);
-      (result.hiddenEntityReports as RenderFeatureHiddenEntityReport[]).push(
-        ...(view.hiddenEntityReports ?? []),
-      );
     }
     this.extractViews = Object.freeze(inputs.map(extractView));
     this.materialContext = renderMaterialContext(input.caps, input.limits);
@@ -2012,22 +2148,19 @@ class FeatureFrameBatchBuilder {
     return this.preparationPendingFeatureIdentity !== undefined;
   }
 
-  private makeResult(): RenderFeatureFrameResult {
+  private makeResult(
+    reports: readonly RenderFeatureHiddenEntityReport[] = NO_HIDDEN_ENTITY_REPORTS,
+  ): RenderFeatureFrameResult {
     const plans: RenderFeaturePlannedFrame[] = [];
-    const submittedWorks = this.submittedWorks;
     const result: RenderFeatureFrameResult = {
       stageEvents: this.stageEvents,
       errors: this.errors,
       plans,
       fullscreenEffects: new Map<string, PostProcessShaderEntry>(),
-      hiddenEntityReports: [],
+      hiddenEntityReports: isOwnedHiddenEntityReports(reports) ? reports : [...reports],
       postProcessIdentities: [],
       preparedResourceBatches: [],
       requiresPreparedResourceKey: false,
-      onSubmitted: () => {
-        for (const plan of plans) submittedWorks.add(plan);
-      },
-      onAborted: () => {},
     };
     return result;
   }
@@ -2064,32 +2197,16 @@ class FeatureFrameBatchBuilder {
   }
 
   finish(): RenderFeatureFrameBatch {
+    this.sealed = true;
     this.shareFrameFullscreenEffects();
     this.publishFrameSummaries();
-    const prepared = this.prepared;
-    let closed = false;
-    return {
+    const batch: RenderFeatureFrameBatch = {
       frame: this.shared,
       views: this.views,
       preparedResourceBatches: this.preparedResourceBatches,
-      commitPreparedResources: () => {
-        if (!closed) drainEach(prepared, (feature) => feature.commitResources());
-      },
-      onSubmitted: () => {
-        if (closed) return;
-        closed = true;
-        drainEach(
-          prepared,
-          (feature) => feature.commitResources(),
-          (feature) => feature.submit(),
-        );
-      },
-      onAborted: () => {
-        if (closed) return;
-        closed = true;
-        drainEach(prepared, (feature) => feature.abort());
-      },
     };
+    sealedBatches.set(batch, this);
+    return batch;
   }
 
   // Immutable frame declarations (for example fullscreen shader registrations)
@@ -2174,7 +2291,9 @@ class FeatureFramePreparation {
     const extracted = invokeStage(
       this.slot,
       'extract',
-      () => this.extract(),
+      this.extract,
+      this,
+      undefined,
       this.batch.stageEvents,
       this.batch.errors,
     );
@@ -2195,6 +2314,24 @@ class FeatureFramePreparation {
     const declared = this.declarePlan(views);
     if (declared.ok) this.consumeNativePlan(declared.value, views);
     const declaredWork = this.nativeWork ?? (declared.ok ? declared.value.work : []);
+    if (isFeatureGraphConformanceEnabled(this.input.featureGraphConformanceTrace, this.identity)) {
+      this.recordConformanceEvent('host-plan-declared', {
+        planFrameNumber: this.input.frameNumber,
+        planSucceeded: declared.ok,
+        workCount: declaredWork.length,
+        workScopes: declaredWork.map((work) => featureScopeKey(work.scope)),
+        passNames: declaredWork.flatMap((work) => work.passes.map((pass) => pass.name)),
+        declaredDispatchCount: declaredWork.reduce(
+          (total, work) =>
+            total +
+            work.passes.reduce(
+              (count, pass) => count + (pass.kind === 'compute' ? pass.dispatches.length : 0),
+              0,
+            ),
+          0,
+        ),
+      });
+    }
     const nativeRequiresPreparation = this.verifyNativeAdmissions(declared, declaredWork);
     this.requiresPreparation =
       sourceRequiresPreparation ||
@@ -2233,7 +2370,7 @@ class FeatureFramePreparation {
       frameNumber: input.frameNumber,
       caps: input.caps,
       ...this.batch.materialContext,
-      views: this.batch.extractViews,
+      views: this.admittedViews(this.batch.extractViews),
       ...(input.visibilitySnapshots === undefined
         ? {}
         : { visibilitySnapshots: input.visibilitySnapshots }),
@@ -2241,45 +2378,96 @@ class FeatureFramePreparation {
     });
   }
 
+  /** Whether this Feature's `capture` policy admits the view; capture-face views it excludes are never shown to it. */
+  private admitsView(view: RenderFeatureFrameInput): boolean {
+    return (
+      view.captureKind === undefined ||
+      featureRecordsInCapture(this.feature.capture, view.captureKind)
+    );
+  }
+
+  private admittedViews<V>(views: readonly V[]): readonly V[] {
+    const inputs = this.batch.inputs;
+    return views.filter((_, index) => this.admitsView(inputs[index] as RenderFeatureFrameInput));
+  }
+
   private planViews(): RenderFeaturePlanContext['views'] {
     const inputs = this.batch.inputs;
     const views = this.batch.planViews;
     const planned: RenderFeaturePlanView[] = [];
     for (let index = 0; index < views.length; index++) {
+      if (!this.admitsView(inputs[index] as RenderFeatureFrameInput)) continue;
       const view = views[index] as (typeof views)[number];
       planned.push({
         ...view,
-        sceneData: (inputs[index] as RenderFeatureFrameInput).sceneData ?? this.sceneData(view),
+        sceneData:
+          (inputs[index] as RenderFeatureFrameInput).sceneData ??
+          this.sceneData(
+            view,
+            (inputs[index] as RenderFeatureFrameInput).surfaceAdmission,
+            (inputs[index] as RenderFeatureFrameInput).deviceGeneration,
+          ),
       });
     }
     return planned;
   }
 
   /** The view's catalog is fixed for one prepared generation; recreate it only after a cut. */
-  private sceneData(view: { readonly identity: string }): SceneDataCatalog {
+  private sceneData(
+    view: { readonly identity: string },
+    surfaceAdmission: StandardSceneSurfaceAdmission | undefined,
+    deviceGeneration: number | undefined,
+  ): SceneDataCatalog {
     const generation = this.transaction.generation;
     const cache = this.slot.sceneData;
     const cached = cache.get(view.identity);
-    if (cached?.generation === generation) return cached;
+    if (
+      cached?.generation === generation &&
+      cached.surfaceAdmissionIdentity === surfaceAdmission?.identity &&
+      cached.deviceGeneration === (deviceGeneration ?? 0)
+    )
+      return cached;
     if (cache.size >= this.batch.inputs.length) cache.clear();
+    const previousAdmission = this.slot.sceneDataAdmissionRevisions.get(view.identity);
+    const admissionIdentity = surfaceAdmission?.identity;
+    const revision =
+      previousAdmission === undefined
+        ? admissionIdentity === undefined
+          ? 0
+          : 1
+        : previousAdmission.identity === admissionIdentity
+          ? previousAdmission.revision
+          : previousAdmission.revision + 1;
+    this.slot.sceneDataAdmissionRevisions.set(view.identity, {
+      identity: admissionIdentity,
+      revision,
+    });
     const created = createSceneDataCatalog({
       featureIdentity: this.identity,
+      viewIdentity: view.identity,
+      deviceGeneration: deviceGeneration ?? 0,
       generation,
       planIdentity: `${this.identity}:${view.identity}:${generation}`,
       rgba16floatRenderable: this.input.caps.rgba16floatRenderable === true,
+      ...(surfaceAdmission === undefined ? {} : { surfaceAdmission }),
+      ...(surfaceAdmission === undefined ? {} : { surfaceAdmissionRevision: revision }),
     });
     cache.set(view.identity, created);
     return created;
   }
 
+  private static readonly abortResourceActions = [
+    (frame: FeatureFramePreparation) => {
+      frame.transaction.abort();
+    },
+    (frame: FeatureFramePreparation) => {
+      const aborted = frame.gpu?.abortFrame();
+      if (aborted !== undefined && !aborted.ok) frame.batch.errors.push(aborted.error);
+    },
+  ];
+
   private abortResources(): void {
-    drainFeatureFinalizers([
-      () => this.transaction.abort(),
-      () => {
-        const aborted = this.gpu?.abortFrame();
-        if (aborted !== undefined && !aborted.ok) this.batch.errors.push(aborted.error);
-      },
-    ]);
+    drainFeatureActions(this, FeatureFramePreparation.abortResourceActions, undefined);
   }
 
   private abortProducerFrame(): void {
@@ -2319,6 +2507,16 @@ class FeatureFramePreparation {
       ? 'resource-preparation'
       : 'plan-projection',
   ): void {
+    const failure =
+      pendingError !== null && typeof pendingError === 'object'
+        ? (pendingError as { readonly code?: unknown; readonly message?: unknown })
+        : undefined;
+    this.recordConformanceEvent('host-plan-failed', {
+      planFrameNumber: this.input.frameNumber,
+      stage,
+      errorCode: typeof failure?.code === 'string' ? failure.code : null,
+      message: typeof failure?.message === 'string' ? failure.message : null,
+    });
     if (this.requiresPreparation)
       this.batch.markPreparationPending(this.identity, stage, pendingError);
     if (error !== undefined) recordFailure(this.slot, 'plan', error, this.batch.errors);
@@ -2346,37 +2544,44 @@ class FeatureFramePreparation {
   private declarePlan(
     views: RenderFeaturePlanContext['views'],
   ): Result<RenderFeaturePlan, RenderError> {
-    const input = this.input;
     const declared = invokeStage(
       this.slot,
       'plan',
-      () =>
-        this.feature.plan(this.source, {
-          getFeatureShaderSource: input.getFeatureShaderSource,
-          resolveAsset:
-            input.resolveAsset ??
-            ((index, handle, revision) => {
-              const world = input.worlds[index];
-              return world === undefined
-                ? err(new Error(`Missing feature asset source ${index}`))
-                : runtimeAssets(world.assets).resolveAsset(handle, revision);
-            }),
-          caps: input.caps,
-          ...(input.limits === undefined ? {} : { limits: input.limits }),
-          ...this.batch.materialContext,
-          frame: { frameNumber: input.frameNumber },
-          generation: this.transaction.generation,
-          createNativePlan: () => this.createNativePlan(views),
-          views,
-          ...(input.materialShaderBindingContract === undefined
-            ? {}
-            : { materialShaderBindingContract: input.materialShaderBindingContract }),
-        }),
+      this.planSource,
+      this,
+      views,
       this.batch.stageEvents,
       this.batch.errors,
     );
     this.nativePlanningOpen = false;
     return declared;
+  }
+
+  private planSource(
+    views: RenderFeaturePlanContext['views'],
+  ): Result<RenderFeaturePlan, RenderError> {
+    const input = this.input;
+    return this.feature.plan(this.source, {
+      getFeatureShaderSource: input.getFeatureShaderSource,
+      resolveAsset:
+        input.resolveAsset ??
+        ((index, handle, revision) => {
+          const world = input.worlds[index];
+          return world === undefined
+            ? err(new Error(`Missing feature asset source ${index}`))
+            : runtimeAssets(world.assets).resolveAsset(handle, revision);
+        }),
+      caps: input.caps,
+      ...(input.limits === undefined ? {} : { limits: input.limits }),
+      ...this.batch.materialContext,
+      frame: { frameNumber: input.frameNumber },
+      generation: this.transaction.generation,
+      createNativePlan: () => this.createNativePlan(views),
+      views,
+      ...(input.materialShaderBindingContract === undefined
+        ? {}
+        : { materialShaderBindingContract: input.materialShaderBindingContract }),
+    });
   }
 
   private createNativePlan(views: RenderFeaturePlanContext['views']) {
@@ -2471,7 +2676,7 @@ class FeatureFramePreparation {
     const workResources =
       this.nativeWork === undefined
         ? resolveFeatureWorkResources(declaredWork)
-        : resolveNativeFeatureWorkResources(this.nativeWork);
+        : this.slot.nativeRouting.resolve(this.nativeWork);
     this.batch.host.retainPlanScopes(
       this.slot,
       workResources.map((row) => featureScopeKey(row.work.scope)),
@@ -2553,6 +2758,12 @@ class FeatureFramePreparation {
       this.slot.order,
       missing,
     );
+    this.recordConformanceEvent('host-plan-failed', {
+      planFrameNumber: this.input.frameNumber,
+      reason: 'missing-capability',
+      errorCode: failure.code,
+      capability: missing,
+    });
     this.batch.errors.push(failure);
     this.cleanupPreparation([() => this.abortResources(), () => this.abortProducerFrame()], 'plan');
     this.batch.host.setStatus(this.identity, 'disabled', errorDescriptor(failure));
@@ -2625,7 +2836,11 @@ class FeatureFramePreparation {
     const planned = this.plannedFrame(row, projectionPlan, projected.value, scopeKey);
     this.projections.push({
       planned,
-      projected: { ...projected.value, scope: scopeKey },
+      projected: {
+        ...projected.value,
+        scope: scopeKey,
+        ...(this.feature.placement === undefined ? {} : { placement: this.feature.placement }),
+      },
       result,
       effects,
       requiresGraphRebuild: this.requiresGraphRebuild(
@@ -2811,6 +3026,22 @@ class FeatureFramePreparation {
       });
       if (isSubmissionSensitive(this.feature, planned)) submissionSensitivePlans.add(planned);
       (result.plans as RenderFeaturePlannedFrame[]).push(planned);
+      if (
+        isFeatureGraphConformanceEnabled(this.input.featureGraphConformanceTrace, this.identity)
+      ) {
+        this.recordConformanceEvent('host-plan-published', {
+          planFrameNumber: this.input.frameNumber,
+          scope: featureScopeKey(planned.scope),
+          generation: planned.generation,
+          placement: planned.placement ?? 'post',
+          signature: planned.signature,
+          passNames: projected.passes.map((pass) => pass.name),
+          resolvedDispatchCount: projected.passes.reduce(
+            (count, pass) => count + (pass.resolvedGpuCompute?.dispatches.length ?? 0),
+            0,
+          ),
+        });
+      }
       for (const [key, entry] of effects)
         (result.fullscreenEffects as Map<string, PostProcessShaderEntry>).set(key, entry);
       if (requiresGraphRebuild) {
@@ -2818,6 +3049,25 @@ class FeatureFramePreparation {
         Object.assign(result, { requiresPreparedResourceKey: true });
       }
     }
+  }
+
+  private recordConformanceEvent(
+    stage: 'host-plan-declared' | 'host-plan-published' | 'host-plan-failed',
+    details: Readonly<
+      Record<
+        string,
+        string | number | boolean | null | readonly (string | number | boolean | null)[]
+      >
+    >,
+  ): void {
+    const trace = this.input.featureGraphConformanceTrace;
+    if (trace === undefined || trace.featureIdentity !== this.identity) return;
+    recordFeatureGraphConformanceEvent(trace, {
+      recordFrameNumber: this.input.recordFrameNumber ?? this.input.frameNumber,
+      featureIdentity: this.identity,
+      stage,
+      details,
+    });
   }
 
   /** Seal this frame's prepared resources once; queue-retired leases wait for completion. */
@@ -2834,17 +3084,28 @@ class FeatureFramePreparation {
     }
   }
 
+  private static readonly abortActions = [
+    (frame: FeatureFramePreparation) => frame.abortResources(),
+    (frame: FeatureFramePreparation) => frame.abortProducerFrame(),
+  ];
+  private static readonly submitActions = [
+    (frame: FeatureFramePreparation, accepted: readonly FeatureWorkProjection[]) =>
+      frame.submitReceipt(accepted),
+    (frame: FeatureFramePreparation) => frame.publishInspection(),
+    (frame: FeatureFramePreparation, accepted: readonly FeatureWorkProjection[]) =>
+      frame.acknowledgeAcceptedSource(accepted),
+  ];
+
   /** Discard this frame's resources and producer frame data. */
   abort(): void {
-    drainFeatureFinalizers([() => this.abortResources(), () => this.abortProducerFrame()]);
+    drainFeatureActions(this, FeatureFramePreparation.abortActions, undefined);
   }
 
-  /** Producer consumption for the works the submitted graph actually recorded. */
-  submit(): void {
-    const plan = this.plan;
+  /** Producer consumption for the works the submitted graphs actually recorded. */
+  submit(recorded: ReadonlySet<RenderFeaturePlannedFrame>): void {
     let accepted: FeatureWorkProjection[] | undefined;
     for (const row of this.projections)
-      if (this.batch.submittedWorks.has(row.planned)) {
+      if (recorded.has(row.planned)) {
         accepted ??= [];
         accepted.push(row);
       }
@@ -2852,20 +3113,24 @@ class FeatureFramePreparation {
       this.abort();
       return;
     }
-    drainFeatureFinalizers([
-      () =>
-        this.feature.onFrameSubmitted?.(this.source, {
-          works: accepted.map((row) => ({
-            scope: row.planned.scope,
-            passes: submittedPasses(row.projected),
-          })),
-        }),
-      () => this.publishInspection(),
-      () => {
-        if (accepted.some((row) => row.planned.scope === 'frame'))
-          this.acknowledgeSourceFrame(plan);
-      },
-    ]);
+    drainFeatureActions(this, FeatureFramePreparation.submitActions, accepted);
+  }
+
+  private submitReceipt(accepted: readonly FeatureWorkProjection[]): void {
+    this.feature.onFrameSubmitted?.(this.source, {
+      works: accepted.map((row) => ({
+        scope: row.planned.scope,
+        passes: submittedPasses(row.projected),
+      })),
+    });
+  }
+
+  private acknowledgeAcceptedSource(accepted: readonly FeatureWorkProjection[]): void {
+    for (const row of accepted)
+      if (row.planned.scope === 'frame') {
+        this.acknowledgeSourceFrame(this.plan);
+        return;
+      }
   }
 
   private acknowledgeSourceFrame(plan: RenderFeaturePlan): void {
@@ -2973,9 +3238,22 @@ function submittedPasses(projected: RenderFeaturePlanExecution) {
     );
 }
 
-/** Producer failures cannot strand sibling transactions or suppress accepted source receipts. */
-/** Run each action on every item (one action at a time), then throw all failures together. */
-function drainEach<T>(items: readonly T[], ...actions: ((item: T) => void)[]): void {
+/**
+ * Producer failures cannot strand sibling transactions or suppress accepted
+ * source receipts: run each action on every item (one action at a time) and
+ * return every failure.
+ */
+const NO_FINALIZER_FAILURES: readonly unknown[] = Object.freeze([]);
+
+const commitFeatureResources = (feature: FeatureFramePreparation): void =>
+  feature.commitResources();
+const ABORT_FEATURES = [(feature: FeatureFramePreparation): void => feature.abort()];
+const INVOKE_FINALIZER = [(action: () => void): void => action()];
+
+function drainEach<T>(
+  items: readonly T[],
+  actions: readonly ((item: T) => void)[],
+): readonly unknown[] {
   let failures: unknown[] | undefined;
   for (const action of actions)
     for (const item of items) {
@@ -2986,12 +3264,32 @@ function drainEach<T>(items: readonly T[], ...actions: ((item: T) => void)[]): v
         failures.push(cause);
       }
     }
+  return failures ?? NO_FINALIZER_FAILURES;
+}
+
+/** Shared runners receive this exact frame; no reusable callback captures mutable authority. */
+function drainFeatureActions<T, Input>(
+  owner: T,
+  actions: readonly ((owner: T, input: Input) => void)[],
+  input: Input,
+): void {
+  let failures: unknown[] | undefined;
+  for (const action of actions) {
+    try {
+      action(owner, input);
+    } catch (cause) {
+      failures ??= [];
+      failures.push(cause);
+    }
+  }
   if (failures !== undefined)
     throw new AggregateError(failures, 'Feature frame finalization failed');
 }
 
+/** One Feature's finalizers: every one runs, then their failures throw together. */
 function drainFeatureFinalizers(actions: readonly (() => void)[]): void {
-  drainEach(actions, (action) => action());
+  const failures = drainEach(actions, INVOKE_FINALIZER);
+  if (failures.length > 0) throw new AggregateError(failures, 'Feature frame finalization failed');
 }
 
 function mergeHiddenEntityReports(
@@ -2999,6 +3297,7 @@ function mergeHiddenEntityReports(
   additional: readonly RenderFeatureHiddenEntityReport[],
 ): readonly RenderFeatureHiddenEntityReport[] {
   if (reports.length === 0 && additional.length === 0) return NO_HIDDEN_ENTITY_REPORTS;
+  if (additional.length === 0 && isOwnedHiddenEntityReports(reports)) return reports;
   const entitiesByWorld = new WeakMap<object, Set<EntityHandle>>();
   const merged: RenderFeatureHiddenEntityReport[] = [];
   for (const report of additional.length === 0 ? reports : [...reports, ...additional]) {
@@ -3014,15 +3313,16 @@ function mergeHiddenEntityReports(
   return Object.freeze(merged);
 }
 
-const NO_HIDDEN_ENTITY_REPORTS: readonly RenderFeatureHiddenEntityReport[] = Object.freeze([]);
-
 /**
  * Validate identities before creating typed slots or accepting resources.
  * Registration order is the input order and is never sorted by feature kind.
+ * `report` receives the failures of the frame settlement systems; a Renderer
+ * forwards them to its error listeners.
  */
 export function createRenderFeatureHost(
   features: readonly RenderFeature<unknown>[],
-  _caps?: Readonly<RhiCaps>,
+  world: World = createRenderWorld(),
+  report: FeatureSettlementReporter = () => {},
 ): Result<RenderFeatureHost, RenderError> {
   const identities = new Map<string, number>();
   for (const [order, feature] of features.entries()) {
@@ -3033,5 +3333,5 @@ export function createRenderFeatureHost(
     identities.set(feature.identity, order);
   }
 
-  return ok(new FeatureHostImpl(features.map(createFeatureSlot)));
+  return ok(new FeatureHostImpl(features.map(createFeatureSlot), world, report));
 }

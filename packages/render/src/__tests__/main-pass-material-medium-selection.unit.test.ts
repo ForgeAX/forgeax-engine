@@ -95,6 +95,33 @@ function mediumSnapshot() {
 }
 
 describe('main-pass Surface material selection', () => {
+  it('shares only immutable empty prepared-resource facts between independent assemblies', () => {
+    const deps = dependencies();
+    for (const materialHandle of [27, 28])
+      buildPerSubmeshMaterialBg(deps, { ...defaultMaterialSnapshot(), materialHandle } as never, 4);
+    const entries = [...deps.materialBgAssemblyCache.values()];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]?.preparedTextures).toEqual([]);
+    expect(entries[0]?.preparedTextures).toBe(entries[1]?.preparedTextures);
+    expect(Object.isFrozen(entries[0]?.preparedTextures)).toBe(true);
+  });
+
+  it('keeps an opaque assembly when the pass supplies unused Surface depth resources', () => {
+    const deps = dependencies({ surfaceResources: true });
+    const material = {
+      ...defaultMaterialSnapshot(),
+      materialHandle: 19,
+      materialShaderId: 'forgeax::default-standard-pbr',
+      materialParamSchema: STANDARD_PIPELINE_PARAM_SCHEMA,
+    };
+    const first = buildPerSubmeshMaterialBg(deps, material as never, 4);
+    const accepted = deps.materialBgAssemblyCache.values().next().value;
+    expect(accepted).toBeDefined();
+    Object.assign(deps, { surfaceRawDepthView: {} });
+    expect(buildPerSubmeshMaterialBg(deps, material as never, 4)).toBe(first);
+    expect(deps.materialBgAssemblyCache.values().next().value).toBe(accepted);
+  });
+
   it('keeps accepted bindings isolated across compound namespace boundaries', () => {
     const deps = dependencies();
     const scope = (identity: string) =>

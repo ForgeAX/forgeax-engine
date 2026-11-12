@@ -1,12 +1,12 @@
 ---
 name: forgeax-engine-sdk
 description: >-
-  ForgeaX SDK onboarding, capability discovery, production, and acceptance. Use when
+  ForgeAX SDK onboarding, capability discovery, production, and acceptance. Use when
   receiving the SDK, choosing Engine features, building a ZIP, publishing a dev, rc
   or stable version, checking reproducibility, or diagnosing bootstrap.
 ---
 
-# ForgeaX Engine SDK
+# ForgeAX Engine SDK
 
 ## Start here for game work
 
@@ -72,7 +72,7 @@ Translate the requested game into a small capability adoption plan before editin
 
 ```text
 Need: <player-visible or production requirement>
-Use: <one ForgeaX capability and its owner>
+Use: <one ForgeAX capability and its owner>
 Entry: <focused skill, CLI operation, or package README>
 Proof: <test, asset verification, browser evidence, or package output>
 Defer: <available capabilities not needed now>
@@ -82,6 +82,7 @@ Defer: <available capabilities not needed now>
 |:--|:--|:--|
 | Frame loop, execution tier, input, plugin assembly | `forgeax-engine-app`, then `forgeax-engine-ecs` or `forgeax-engine-state` | Unit/system test plus real browser interaction |
 | Scene, imported files, code-first packs, GUID loading | `forgeax-engine-assets`; discover operations through `forgeax-engine-cli` | `asset verify`, build catalog, runtime load by GUID |
+| Code-authored props, hard-surface parts and kit meshes | `forgeax-engine-modeling` | `m.validate()` closed/volume facts, exported MeshAsset, browser pixels |
 | PBR, textures, custom WGSL | `forgeax-engine-material`, then `forgeax-engine-shader` | Shader check, material readiness, browser pixels |
 | Lighting, shadows, sky, fog, AA, post effects, custom passes | `forgeax-engine-render-pipeline` | Requested pipeline active and real GPU/browser evidence |
 | Particles: rain, snow, sparks, dust, fire (`Points`, effects/particles-core.md); GPU particles, trails, ribbons, beams | `forgeax-engine-vfx` | Path choice; cooked effect, runtime playback, browser pixels |
@@ -118,17 +119,33 @@ flowchart LR
   H -. "User requests release" .-> I["Game release route"]
 ```
 
-Run `forgeax help --tree --json`, then `forgeax help <command-path> --json`, before guessing authoring-operation inputs. Use the CLI skill for the command boundary. Start the seven-stage ForgeaX closed loop only when the user explicitly authorizes it for the current task.
+Run `forgeax help --tree --json`, then `forgeax help <command-path> --json`, before guessing authoring-operation inputs. Use the CLI skill for the command boundary. Start the seven-stage ForgeAX closed loop only when the user explicitly authorizes it for the current task.
 
 Successful `new` also performs a two-second, best-effort check of the configured npm registry's `@forgeax/engine-sdk` channel tag (`next` for a development SDK, `latest` for stable; an rc SDK compares both `rc` and `latest`, so it is offered the promoted stable). Only a strictly newer semantic version produces a text warning; JSON always records `sdkUpdate` as `available`, `current`, `skipped`, or `unavailable`. Offline mode and `FORGEAX_DISABLE_UPDATE_CHECK=1` skip the query, and registry failure never rolls back a created game. Treat the warning as information, not migration authority: install the newer SDK in another directory, read its release notes, then migrate and test each existing game explicitly. Games remain pinned and are never rewritten by SDK discovery.
 
 ## SDK production and publication
+
+For SDK carrier path failures, compare canonical download and resolver-selected
+Engine roots at the existing containment owner. Qualify aliased parents and
+out-of-download package redirects through the same installer; retain version,
+digest, writable-output and empty-target checks. Follow
+[SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
 
 Both SDK transports include editable `source/engine/` with the same release's
 prebuilt package outputs. For a focused Engine change, install source dependencies,
 rebuild the changed owner and bind through `project engine use-local`; unchanged
 owners reuse their delivered builds. Follow the local-Engine guide
 for binding and the SDK README for the partial rebuild commands.
+
+Archive and post-consumer integrity stages reread byte counts and SHA-256 through
+the existing bounded file-I/O owner. A canceled integrity tail is unverified;
+retain every artifact and the SQLite-only mutable-store exclusion. See
+[SDK consumer diagnostics](../../scripts/ci/README.md#sdk-consumers).
+
+For a source-consumer job cancellation, compare complete stage timings first.
+After the independent cold Engine rebuild, Preview and View use that rebuild's
+shared manifest. Preserve the source-edit proof, full Browser journeys and
+integrity checks; duplicate input production does not justify a longer deadline.
 
 If a source consumer with precompiled Rapier unexpectedly requests Rust, compare
 its `SDK_SOURCE_WASM` closure with the complete producer receipt, including the
@@ -144,8 +161,10 @@ release contract: `main` publishes `next`,
 the weekly `rc` test line publishes `rc`, and `stable` publishes `latest`. GitHub
 and npm publish independently after source qualification of mirrored channels;
 the source mirror retains its formal GitHub Release identity check and advances
-public `main` (development) or `stable` (stable). Delivery requires every enabled
-stage.
+public `main` (development) or `stable` (stable). Stable Promotion then copies the
+original verified Release assets to the public repository through `sdk-release-public.yml`;
+use that workflow with an existing stable version to backfill or retry. Delivery
+requires the public Release and every other enabled stage.
 
 > [!IMPORTANT]
 > Every SDK publication starts with

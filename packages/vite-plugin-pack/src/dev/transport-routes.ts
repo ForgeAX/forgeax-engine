@@ -68,6 +68,7 @@ interface ResolvedScopeRoute {
   readonly handled: boolean;
   readonly url: string;
   readonly scopedBinding?: RuntimeAssetBinding;
+  readonly scopedRoute?: RuntimeScopeRoute;
 }
 
 function sendJsonText(res: DispatcherResponse, text: string | Uint8Array, statusCode = 200): void {
@@ -161,7 +162,7 @@ function gateSession(context: TransportRouteContext, res: DispatcherResponse): b
       res,
       {
         error: 'pack-session-starting',
-        expected: 'an accepted ForgeaX pack snapshot',
+        expected: 'an accepted ForgeAX pack snapshot',
         hint: 'wait for startup, then enumerate and retry',
       },
       503,
@@ -173,7 +174,7 @@ function gateSession(context: TransportRouteContext, res: DispatcherResponse): b
       res,
       {
         error: 'pack-session-closed',
-        expected: 'an open ForgeaX pack session',
+        expected: 'an open ForgeAX pack session',
         hint: 'create a new Vite server session before retrying',
       },
       410,
@@ -186,7 +187,7 @@ function gateSession(context: TransportRouteContext, res: DispatcherResponse): b
       res,
       {
         error: sessionFailure?.code ?? 'scan-failed',
-        expected: sessionFailure?.expected ?? 'an accepted ForgeaX pack snapshot',
+        expected: sessionFailure?.expected ?? 'an accepted ForgeAX pack snapshot',
         hint: sessionFailure?.hint ?? 'repair the producer, rebuild, verify, and retry',
         ...(sessionFailure === undefined
           ? {}
@@ -238,14 +239,27 @@ async function awaitStartupReady(
   }
 }
 
+function recordFreshnessTiming(res: DispatcherResponse, startedAt: number | undefined): void {
+  if (startedAt === undefined) return;
+  const timing = `forgeax-freshness;dur=${(performance.now() - startedAt).toFixed(3)}`;
+  const previous = res.getHeader?.('Server-Timing');
+  res.setHeader(
+    'Server-Timing',
+    previous === undefined ? timing : `${String(previous)}, ${timing}`,
+  );
+}
+
 async function awaitFreshness(
   context: TransportRouteContext,
   res: DispatcherResponse,
 ): Promise<boolean> {
+  const startedAt = process.env.FORGEAX_WORKSPACE_TIMING === '1' ? performance.now() : undefined;
   try {
     await context.freshnessBarrier?.();
+    recordFreshnessTiming(res, startedAt);
     return true;
   } catch (error) {
+    recordFreshnessTiming(res, startedAt);
     sendJson(
       res,
       {
@@ -263,6 +277,54 @@ async function awaitFreshness(
     );
     return false;
   }
+}
+
+function currentScopedBinding(
+  context: TransportRouteContext,
+  parsed: RuntimeScopeRoute,
+  req: DispatcherRequest,
+  res: DispatcherResponse,
+): RuntimeAssetBinding | undefined {
+  if (!gateSession(context, res)) return undefined;
+  const latest = context.devSession?.runtimeScope();
+  if (
+    latest === undefined ||
+    latest.scopeId !== parsed.scopeId ||
+    latest.generation !== parsed.generation
+  ) {
+    sendJson(res, { error: 'runtime-scope-generation-expired' }, 410);
+    return undefined;
+  }
+  if (latest.status === 'transitioning' || latest.status === 'unavailable') {
+    sendJson(res, { error: 'runtime-scope-unavailable', status: latest.status }, 503);
+    return undefined;
+  }
+  if (parsed.suffix === '/catalog.json') return latest;
+  const explicitRebuild =
+    parsed.suffix.startsWith('/import/') &&
+    req.method === 'POST' &&
+    req.headers?.['x-forgeax-import-mode'] === 'rebuild';
+  const assetUrl = parsed.suffix.startsWith('/asset/')
+    ? parsed.suffix.slice('/asset'.length)
+    : undefined;
+  const acceptedAsset =
+    assetUrl !== undefined &&
+    (context.state.metaPackBodies.has(assetUrl) || context.state.devArtifactBodies.has(assetUrl));
+  // Degradation fences new production, not explicit recovery or immutable
+  // bytes already accepted by this generation.
+  if (
+    (latest.status === 'degraded' || latest.authority === 'degraded') &&
+    !explicitRebuild &&
+    !acceptedAsset
+  ) {
+    sendJson(
+      res,
+      { error: 'runtime-scope-catalog-degraded', diagnostics: latest.diagnostics ?? [] },
+      409,
+    );
+    return undefined;
+  }
+  return latest;
 }
 
 async function resolveScopedRoute(
@@ -299,42 +361,10 @@ async function resolveScopedRoute(
 
   if (!(await awaitStartupReady(context, res))) return { handled: true, url };
   if (!(await awaitFreshness(context, res))) return { handled: true, url };
-  if (!gateSession(context, res)) return { handled: true, url };
-  const latest = context.devSession?.runtimeScope();
-  if (latest === undefined || latest.generation !== parsed.generation) {
-    sendJson(res, { error: 'runtime-scope-generation-expired' }, 410);
-    return { handled: true, url };
-  }
-  if (latest.status === 'transitioning' || latest.status === 'unavailable') {
-    sendJson(res, { error: 'runtime-scope-unavailable', status: latest.status }, 503);
-    return { handled: true, url };
-  }
+  const latest = currentScopedBinding(context, parsed, req, res);
+  if (latest === undefined) return { handled: true, url };
   if (parsed.suffix === '/catalog.json') {
     sendJsonText(res, context.scopedCatalogBody(latest));
-    return { handled: true, url };
-  }
-  const explicitRebuild =
-    parsed.suffix.startsWith('/import/') &&
-    req.method === 'POST' &&
-    req.headers?.['x-forgeax-import-mode'] === 'rebuild';
-  const assetUrl = parsed.suffix.startsWith('/asset/')
-    ? parsed.suffix.slice('/asset'.length)
-    : undefined;
-  const acceptedAsset =
-    assetUrl !== undefined &&
-    (context.state.metaPackBodies.has(assetUrl) || context.state.devArtifactBodies.has(assetUrl));
-  // Degradation fences new production, not explicit recovery or immutable
-  // bytes already accepted by this generation.
-  if (
-    (latest.status === 'degraded' || latest.authority === 'degraded') &&
-    !explicitRebuild &&
-    !acceptedAsset
-  ) {
-    sendJson(
-      res,
-      { error: 'runtime-scope-catalog-degraded', diagnostics: latest.diagnostics ?? [] },
-      409,
-    );
     return { handled: true, url };
   }
   if (parsed.suffix.startsWith('/import/')) {
@@ -344,10 +374,15 @@ async function resolveScopedRoute(
       res.end('');
       return { handled: true, url };
     }
-    return { handled: false, url: `/__import/${guid}`, scopedBinding: latest };
+    return { handled: false, url: `/__import/${guid}`, scopedBinding: latest, scopedRoute: parsed };
   }
   if (parsed.suffix.startsWith('/asset/')) {
-    return { handled: false, url: parsed.suffix.slice('/asset'.length), scopedBinding: latest };
+    return {
+      handled: false,
+      url: parsed.suffix.slice('/asset'.length),
+      scopedBinding: latest,
+      scopedRoute: parsed,
+    };
   }
   sendJson(res, { error: 'runtime-scope-route-not-found' }, 404);
   return { handled: true, url };
@@ -600,7 +635,8 @@ async function handleTransportRequest(
   const normalizedUrl = normalizeTransportUrl(req.url ?? '', context.transportBase);
   const resolved = await resolveScopedRoute(context, normalizedUrl, req, res);
   if (resolved.handled) return;
-  const { url, scopedBinding } = resolved;
+  const { url, scopedRoute } = resolved;
+  let { scopedBinding } = resolved;
   const requiresRuntimeScope =
     url === '/__pack/index' ||
     url === '/pack-index.json' ||
@@ -608,18 +644,29 @@ async function handleTransportRequest(
     url.startsWith('/__import/') ||
     url.startsWith(DEV_PACK_PREFIX);
   if (requiresRuntimeScope) {
-    if (scopedBinding === undefined && context.devSession?.runtimeScope() === undefined) {
-      if (!(await awaitStartupReady(context, res))) return;
+    if (scopedRoute !== undefined) {
+      // The source fence belongs to this request and already completed during
+      // scope resolution. Recheck a rebind/close/degradation across that await
+      // without asking the filesystem observer to walk the same roots again.
+      scopedBinding = currentScopedBinding(context, scopedRoute, req, res);
+      if (scopedBinding === undefined) return;
+    } else {
+      if (context.devSession?.runtimeScope() === undefined) {
+        if (!(await awaitStartupReady(context, res))) return;
+      }
+      if (!gateSession(context, res)) return;
+      if (!(await awaitFreshness(context, res))) return;
     }
-    if (!gateSession(context, res)) return;
-    if (!(await awaitFreshness(context, res))) return;
   }
   if (requiresRuntimeScope && scopedBinding === undefined) {
     sendJson(res, { error: 'global-runtime-scope-route-disabled' }, 404);
     return;
   }
   if (handleScopedLookupRoute(context, url, scopedBinding, res)) return;
-  if (await handleImportRoute(context, req, url, scopedBinding, res)) return;
+  if (url.startsWith('/__import/')) {
+    await handleImportRoute(context, req, url, scopedBinding, res);
+    return;
+  }
   if (await handlePackRoute(req, context, url, scopedBinding, res)) return;
   next();
 }

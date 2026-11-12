@@ -4,8 +4,10 @@ import type { World } from '@forgeax/engine-ecs';
 import type { AssetHandle } from '@forgeax/engine-types';
 import {
   STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
+  standardParallaxAdmission,
   standardTransmissionAdmission,
 } from './assembly/device-feature-admission';
+import { materialUsesPlanarReflection } from './capture/planar-material';
 import { materialUsesDirectDfgLut } from './device/direct-dfg-lut';
 import { runtimeMaterialShaderIdForMaterial } from './material-resource';
 import { isCanonicalStandardPbrMaterialShader } from './pbr-pipeline';
@@ -26,6 +28,11 @@ export interface MaterialSampledTextureBudget {
   readonly transmission: 'none' | 'dedicated' | 'shared' | 'exceeded';
   /** Authored split scalar maps that block the shared transmission layout. */
   readonly conflicts: readonly string[];
+  /**
+   * `displacementMode: 'parallax'` at this limit: `normal-mapping` when shared
+   * transmission hosts the parallax height pair; `none` outside parallax mode.
+   */
+  readonly parallax: 'none' | 'parallax' | 'normal-mapping';
 }
 
 /**
@@ -48,15 +55,13 @@ export function materialSampledTextureBudget(
   const { passes, parameters, values } = resolved.value;
   const materialShaderId = runtimeMaterialShaderIdForMaterial(passes, undefined);
   if (!isCanonicalStandardPbrMaterialShader(materialShaderId)) return undefined;
-  const admission = standardTransmissionAdmission(
-    {
-      materialShaderId,
-      paramSnapshot:
-        typeof values.transmission === 'number' ? { transmission: values.transmission } : undefined,
-      standardTextureMask: materialStandardTextureMask(parameters, materialShaderId, values),
-    },
-    limit,
-  );
+  const material = {
+    materialShaderId,
+    paramSnapshot:
+      typeof values.transmission === 'number' ? { transmission: values.transmission } : undefined,
+    standardTextureMask: materialStandardTextureMask(parameters, materialShaderId, values),
+  };
+  const admission = standardTransmissionAdmission(material, limit);
   const transmission = admission?.kind ?? 'none';
   return {
     limit,
@@ -64,8 +69,10 @@ export function materialSampledTextureBudget(
       (transmission === 'dedicated' || transmission === 'exceeded'
         ? STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES
         : WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE) +
-      (materialUsesDirectDfgLut(parameters) ? 1 : 0),
+      (materialUsesDirectDfgLut(parameters) ? 1 : 0) +
+      (materialUsesPlanarReflection(parameters) ? 1 : 0),
     transmission,
     conflicts: admission?.kind === 'exceeded' ? admission.conflicts : [],
+    parallax: standardParallaxAdmission(material, limit) ?? 'none',
   };
 }

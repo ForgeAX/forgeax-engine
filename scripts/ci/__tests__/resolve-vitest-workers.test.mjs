@@ -27,7 +27,7 @@ test('rejects an unsafe worker override', () => {
   assert.match(result.stderr, /must be an integer from 1 to 6/);
 });
 
-test('the real Bun canary entry forwards its admitted worker budget and rejects unsafe admission', {
+test('the real Bun canary isolates full-tree scans from natural-main worker overrides', {
   skip: process.platform === 'win32',
 }, () => {
   const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
@@ -68,19 +68,16 @@ test('the real Bun canary entry forwards its admitted worker budget and rejects 
           FORGEAX_VITEST_MAX_WORKERS: budget,
         },
       });
-    for (const budget of ['2', '3']) {
+    for (const budget of ['2', '3', '7']) {
       const result = execute(budget);
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(JSON.parse(readFileSync(receipt, 'utf8')), [
         'run',
         'test:portability',
-        `--maxWorkers=${budget}`,
+        '--maxWorkers=1',
       ]);
       rmSync(receipt);
     }
-    const rejected = execute('7');
-    assert.notEqual(rejected.status, 0);
-    assert.match(rejected.stderr, /must be an integer from 1 to 6/);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

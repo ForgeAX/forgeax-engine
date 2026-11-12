@@ -70,7 +70,7 @@ export function addProbePlacementPass(
       })),
       ...[view, viewRect].map((resource) => ({ resource, usage: 'uniform-read' as const })),
     ],
-    encode: ({ pass, resources, frame }) =>
+    encodeDirect: (pass, frame, resources) =>
       current(frame)
         .record(
           pass,

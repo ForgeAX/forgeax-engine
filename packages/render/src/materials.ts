@@ -11,7 +11,11 @@ import type {
 } from '@forgeax/engine-types';
 import {
   deriveStandardLayerPlan,
+  MATERIAL_PARALLAX_HINTS,
+  RenderQueue,
+  STANDARD_DISPLACEMENT_MODES,
   STANDARD_MATERIAL_PARAM_SCHEMA,
+  type StandardDisplacementMode,
   standardMaterialStaticSwitches,
   standardSurfaceParameters,
   unlitMaterialParameters,
@@ -29,7 +33,13 @@ export type MaterialAuthoringValidationReason = 'non-finite' | 'range' | 'shape'
 function materialAuthoringHint(
   parameter: MaterialAuthoringContractError['detail']['parameter'],
   reason: MaterialAuthoringValidationReason,
+  actual?: unknown,
 ): string {
+  if (reason === 'conflict' && parameter === 'displacementMode') {
+    return MATERIAL_PARALLAX_HINTS[
+      actual === 'metallicTexture' ? 'metallicTexture' : 'normalTexture'
+    ];
+  }
   if (reason === 'conflict') {
     return parameter === 'triplanar'
       ? `remove triplanar, normalMapSpace 'object', alpha masking (alphaCutoff, alphaHash) or the slots it cannot project (${TRIPLANAR_UNSUPPORTED_SLOTS.join(', ')}); depth, shadow and temporal coverage sample by UV`
@@ -46,6 +56,8 @@ function materialAuthoringHint(
       return "set triplanar to { space: 'world' | 'object', scale > 0, sharpness >= 1 } before publishing the material";
     case 'normalMapSpace':
       return "set normalMapSpace to 'tangent' or 'object' before publishing the material";
+    case 'displacementMode':
+      return "set displacementMode to 'vertex' or 'parallax' before publishing the material";
     case 'directMultiscattering':
       return "set directMultiscattering to 'fit' or 'lut' before publishing the material";
     case 'alphaCutoff':
@@ -94,6 +106,7 @@ export class MaterialAuthoringContractError extends Error {
       | 'bumpScale'
       | 'displacementScale'
       | 'displacementBias'
+      | 'displacementMode'
       | 'triplanar'
       | 'normalMapSpace'
       | 'flatShading'
@@ -111,7 +124,7 @@ export class MaterialAuthoringContractError extends Error {
   ) {
     super(`Materials.standard: ${parameter} violates the authoring contract (${reason})`);
     this.name = 'MaterialAuthoringContractError';
-    this.hint = materialAuthoringHint(parameter, reason);
+    this.hint = materialAuthoringHint(parameter, reason, actual);
     this.detail = {
       code: 'material-authoring-contract-invalid',
       material: 'Standard',
@@ -161,6 +174,16 @@ export class MaterialTransmissionContractError extends Error {
 export const SPRITE_PREMULTIPLIED_ALPHA_BLEND: GPUBlendState = {
   color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
   alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+};
+
+/**
+ * Additive light: UE `BLEND_Additive` (colour One + One). With premultiplied
+ * output the draw adds `color * opacity` and leaves destination alpha unchanged,
+ * so the result does not depend on draw order.
+ */
+export const ADDITIVE_BLEND: GPUBlendState = {
+  color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+  alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
 };
 
 const UNLIT_MODULE = 'forgeax_material::unlit';
@@ -323,6 +346,7 @@ function standardParameters(
     'bumpScale',
     'displacementScale',
     'displacementBias',
+    'displacementMode',
     'specular',
     'specularColor',
     'triplanarSpace',
@@ -337,6 +361,7 @@ function standardParameters(
   if (opts.flatShading !== undefined) baseNames.add('flatShading');
   if (opts.specularTexture !== undefined) baseNames.add('specularTexture');
   if (opts.directMultiscattering === 'lut') baseNames.add('directMultiscatteringLut');
+  if (opts.planarReflection === true) baseNames.add('planarReflection');
   if (opts.specularColorTexture !== undefined) baseNames.add('specularColorTexture');
   if (
     opts.transmission !== undefined ||
@@ -441,6 +466,12 @@ interface UnlitOpts {
   readonly shadowAlphaMode?: 'material' | 'texture';
   /** Output alpha is independent of the sampled coverage used by depth/shadows. */
   readonly alphaMode?: 'preserve' | 'opaque' | 'premultiplied';
+  /**
+   * `'additive'` (UE `BLEND_Additive`, Three `AdditiveBlending`): `ADDITIVE_BLEND`,
+   * no depth write, Transparent queue and premultiplied output. Explicit
+   * `renderState` fields, `queue` and `alphaMode` override these defaults.
+   */
+  readonly blendMode?: 'additive';
   readonly renderState?: MaterialRenderState;
   readonly queue?: number;
 }
@@ -456,8 +487,9 @@ function unlitMaterial(
   factory: 'unlit' | 'matcap' | 'normal',
   rgba: MaterialColorInput4,
   shading: (typeof UNLIT_SHADING)[keyof typeof UNLIT_SHADING],
-  opts?: UnlitOpts,
+  authored?: UnlitOpts,
 ): MaterialRootAsset {
+  const opts = authored?.blendMode === 'additive' ? additiveUnlitOpts(authored) : authored;
   if (opts?.alphaCutoff !== undefined && (opts.alphaCutoff < 0 || opts.alphaCutoff > 1)) {
     throw new Error(`Materials.${factory}: alphaCutoff must be in [0, 1], got ${opts.alphaCutoff}`);
   }
@@ -483,6 +515,15 @@ function unlitMaterial(
     passes,
     parameters: unlitMaterialParameters('linear'),
     values,
+  };
+}
+
+function additiveUnlitOpts(opts: UnlitOpts): UnlitOpts {
+  return {
+    ...opts,
+    alphaMode: opts.alphaMode ?? 'premultiplied',
+    renderState: { blend: ADDITIVE_BLEND, depthWriteEnabled: false, ...opts.renderState },
+    queue: opts.queue ?? RenderQueue.Transparent,
   };
 }
 
@@ -538,6 +579,15 @@ interface StandardOpts {
   readonly roughness?: number;
   /** Direct-light multiscattering: mobile-friendly fit by default; LUT adds one sampled texture. */
   readonly directMultiscattering?: 'fit' | 'lut';
+  /**
+   * Mirror the camera's PlanarReflection where this surface lies on its plane.
+   * Roughness fades the mirror out by 0.5, or, when the capture has
+   * `generateMipmaps`, selects its mip (`roughness × (levels − 1)`). The
+   * material adds one sampled texture and renders forward while a capture is
+   * published; without one it is an ordinary deferred surface (and so an SSR
+   * receiver).
+   */
+  readonly planarReflection?: boolean;
   /** RGB diffusion support radii in presentation pixels, each finite in [0,12]. */
   readonly subsurfaceRadius?: readonly [number, number, number];
   /** Fraction of diffuse replaced by surface diffusion, finite in [0,1]. */
@@ -614,6 +664,19 @@ interface StandardOpts {
   /** Object-space displacement = height * scale + bias. Defaults to 1 and 0. */
   readonly displacementScale?: number;
   readonly displacementBias?: number;
+  /**
+   * How the same height renders. `'vertex'` (default) moves vertices. `'parallax'`
+   * ray-marches it per pixel and shifts every slot on the height slot's UV set;
+   * geometry, depth, shadows, temporal, picking and bounds stay at the base mesh.
+   *
+   * Parallax constraints:
+   * - needs `normalTexture` (it fades to plain normal mapping); `bumpTexture` is ignored;
+   * - not with an independent `metallicTexture` (its pair hosts the fragment height);
+   *   use `metallicRoughnessTexture`;
+   * - with transmission below the dedicated sampled-texture budget it falls back
+   *   to plain normal mapping, reported as a material readiness warning.
+   */
+  readonly displacementMode?: StandardDisplacementMode;
   readonly occlusionTexture?: MaterialValue;
   readonly occlusionStrength?: number;
   readonly alphaCutoff?: number;
@@ -655,6 +718,17 @@ export interface CustomStandardSurfaceOptions {
   readonly metallic?: never;
   readonly roughness?: never;
   readonly directMultiscattering?: never;
+  /**
+   * Opt this Surface into the display Camera's `PlanarReflection` capture, as the
+   * built-in `planarReflection` does: the material gains the real u32 field and
+   * shades forward while a capture is published (deferred, so an SSR receiver,
+   * otherwise). The Surface's per-pixel `normalWS` distorts the mirror
+   * lookup by `PlanarReflection.distortion` (a world-space sphere radius), and
+   * its `roughness` fades the mirror into the prefiltered environment, or blurs
+   * it through the mip chain when the
+   * capture has `generateMipmaps` (wet-ground ripples and puddles).
+   */
+  readonly planarReflection?: boolean;
   readonly subsurfaceRadius?: never;
   readonly subsurfaceWeight?: never;
   readonly metallicChannel?: never;
@@ -704,6 +778,7 @@ export interface CustomStandardSurfaceOptions {
   readonly displacementTexture?: never;
   readonly displacementScale?: never;
   readonly displacementBias?: never;
+  readonly displacementMode?: never;
   readonly occlusionTexture?: never;
   readonly occlusionStrength?: never;
   readonly alphaCutoff?: never;
@@ -1000,6 +1075,7 @@ function writeAlphaModeValues(values: Record<string, MaterialValue>, opts: Defau
   values.alphaMode = opts.alphaMode === 'opaque' ? 1 : opts.alphaMode === 'premultiplied' ? 2 : 0;
   values.alphaToCoverage = Number(opts.renderState?.alphaToCoverageEnabled ?? false);
   if (opts.directMultiscattering === 'lut') values.directMultiscatteringLut = 1;
+  if (opts.planarReflection === true) values.planarReflection = 1;
 }
 
 function writeTransmissionTextureValues(
@@ -1025,6 +1101,7 @@ function standardDefaultValues(
     occlusionStrength: resolved.occlusionStrength,
     displacementScale: opts.displacementScale ?? 1,
     displacementBias: opts.displacementBias ?? 0,
+    displacementMode: STANDARD_DISPLACEMENT_MODES[opts.displacementMode ?? 'vertex'],
     specular: opts.specular ?? 1,
     specularColor:
       opts.specularColor === undefined ? [1, 1, 1] : linearColorFromInput(opts.specularColor, 3),
@@ -1053,6 +1130,15 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
   const resolved = resolveStandardDefaults(opts);
   validateSubsurface(resolved.subsurfaceRadius, resolved.subsurfaceWeight);
   validateSurfaceScalars(opts, resolved.occlusionStrength);
+  if (
+    opts.displacementMode !== undefined &&
+    !Object.hasOwn(STANDARD_DISPLACEMENT_MODES, opts.displacementMode)
+  )
+    throw new MaterialAuthoringContractError('displacementMode', 'range', opts.displacementMode);
+  if (opts.displacementMode === 'parallax' && opts.normalTexture === undefined)
+    throw new MaterialAuthoringContractError('displacementMode', 'conflict', 'normalTexture');
+  if (opts.displacementMode === 'parallax' && opts.metallicTexture !== undefined)
+    throw new MaterialAuthoringContractError('displacementMode', 'conflict', 'metallicTexture');
   validateProjection(opts);
   validateChannel('metallicChannel', opts.metallicChannel);
   validateChannel('roughnessChannel', opts.roughnessChannel);
@@ -1079,6 +1165,10 @@ function standardDefault(opts: DefaultStandardOptions): MaterialRootAsset {
     ...(opts.queue === undefined ? {} : { queue: opts.queue }),
     layerPlan,
   });
+  // Transmission reads the opaque backdrop, so it shades forward. A planar
+  // mirror keeps its Deferred pass: extraction routes it forward only while
+  // its world publishes a PlanarReflection capture, and otherwise it is an
+  // ordinary G-buffer surface that receives screen-space reflections.
   const passes = (
     transmission > 0 ? projected.filter((entry) => entry.name !== 'deferred') : projected
   ) as [MaterialPass, ...MaterialPass[]];
@@ -1098,22 +1188,38 @@ function standardCustom(opts: CustomStandardSurfaceOptions): MaterialRootAsset {
     undefined,
     standardMaterialStaticSwitches(opts.staticSwitches),
   );
+  const planar = opts.planarReflection === true;
+  if (planar && opts.parameters.some((parameter) => parameter.name === 'planarReflection'))
+    throw new Error(
+      "Materials.standard: 'planarReflection' is engine-owned; pass planarReflection: true instead of declaring it",
+    );
+  const projected = projectStandardSurfacePasses({
+    surfaceModule: opts.surfaceModule,
+    values: opts.values,
+    ...(opts.alphaClip === undefined ? {} : { alphaClip: opts.alphaClip }),
+    ...(opts.renderState === undefined ? {} : { renderState: opts.renderState }),
+    ...(opts.queue === undefined ? {} : { queue: opts.queue }),
+    layerPlan,
+  });
+  // A planar Surface keeps its Deferred pass; extraction routes it forward
+  // only while a PlanarReflection capture is published (see planarRoutedPasses).
+  const passes = projected as [MaterialPass, ...MaterialPass[]];
   return {
     kind: 'material',
     ...(opts.staticSwitches === undefined ? {} : { staticSwitches: opts.staticSwitches }),
     ...(opts.colorSpace === undefined || opts.colorSpace === 'srgb'
       ? {}
       : { colorSpace: opts.colorSpace }),
-    passes: projectStandardSurfacePasses({
-      surfaceModule: opts.surfaceModule,
-      values: opts.values,
-      ...(opts.alphaClip === undefined ? {} : { alphaClip: opts.alphaClip }),
-      ...(opts.renderState === undefined ? {} : { renderState: opts.renderState }),
-      ...(opts.queue === undefined ? {} : { queue: opts.queue }),
-      layerPlan,
-    }),
-    parameters: standardSurfaceParameters(opts.parameters),
-    values: opts.values,
+    passes,
+    parameters: standardSurfaceParameters(
+      planar
+        ? [
+            ...opts.parameters,
+            { name: 'planarReflection', type: 'u32', default: 1, optional: true },
+          ]
+        : opts.parameters,
+    ),
+    values: planar ? { ...opts.values, planarReflection: 1 } : opts.values,
   };
 }
 

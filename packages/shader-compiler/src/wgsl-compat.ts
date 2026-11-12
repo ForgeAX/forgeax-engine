@@ -2,7 +2,7 @@
  * Canonicalize post-Naga WGSL for the portable browser path.
  *
  * The compiler owns one compatibility boundary between Naga composition and
- * ForgeaX validation. Keeping that boundary behind one facade prevents
+ * ForgeAX validation. Keeping that boundary behind one facade prevents
  * compileShader from accumulating normalizeX(normalizeY(...)) calls as rules
  * evolve, while keeping the current rule small and directly testable.
  *

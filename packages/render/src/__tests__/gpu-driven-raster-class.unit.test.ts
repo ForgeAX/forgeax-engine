@@ -6,11 +6,16 @@ import { type RhiNullDevice, RhiNullRenderPassEncoder, rhi } from '@forgeax/engi
 import { createMaterialShaderProgram, type MaterialShaderArtifact } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
+import { DeviceScope } from '../device/device-scope';
 import { GpuResidencyCache, type MeshGpuHandles } from '../device/gpu-residency';
 import { gpuDrivenMaterialResourceClass } from '../extract/gpu-driven';
 import { prepareBatchExecution } from '../gpu-driven/batch-execution';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
+import {
+  type ProjectedRasterClass,
+  selectRasterPipeline,
+} from '../gpu-driven/production-raster-classes';
 import { prepareBatchRows } from '../gpu-driven/production-raster-prepare';
 import { GpuBuffer } from '../gpu-resource';
 import { GpuScene } from '../gpu-scene';
@@ -21,10 +26,12 @@ import {
 } from '../gpu-usage';
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { MaterialResource } from '../material-resource';
+import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import { worldRenderResources } from '../publication/resource-scope';
+import { clusteredLightingActive } from '../record/frame-gpu-driven';
 import { makeZeroCameraFallbackSnapshot, type RenderFrameState } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
-import { ensureCompiledFrameGraph } from '../record/typed-frame-graph';
+import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { RenderScene } from '../scene/render-scene';
@@ -36,6 +43,7 @@ import {
   snapshot,
   standardPbrInputs,
 } from './gpu-driven-production-fixture';
+import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 
 function updateSnapshot(value: RenderableSnapshot) {
   return {
@@ -45,6 +53,30 @@ function updateSnapshot(value: RenderableSnapshot) {
     snapshot: value,
   };
 }
+
+it('selects the typed AO input pipeline for material-normal rasterization', () => {
+  const pipelineFor = vi.fn();
+  const aoInputPipelineFor = vi.fn();
+  const batch = {
+    pipelines: { pipelineFor, aoInputPipelineFor },
+  } as unknown as ProjectedRasterClass;
+
+  expect(selectRasterPipeline(batch, 'fs_ao_input', false)).toBe(aoInputPipelineFor);
+});
+
+it('preserves the explicit Forward screen entry and the prepared Cluster authority', () => {
+  const screenPipelineFor = vi.fn();
+  const batch = {
+    pipelines: { pipelineFor: vi.fn(), screenPipelineFor },
+  } as unknown as ProjectedRasterClass;
+  expect(selectRasterPipeline(batch, 'fs_forward_screen', false)).toBe(screenPipelineFor);
+  expect(
+    clusteredLightingActive({
+      kind: 'clustered',
+      prepared: { local: [] },
+    } as unknown as StandardTopologyInputValue),
+  ).toBe(true);
+});
 
 function mesh(device: RhiNullDevice, indexed = true, withLod = false): MeshGpuHandles {
   const vertex = device
@@ -423,7 +455,11 @@ it.each([
   const errors: unknown[] = [];
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
-  const internals = { device, errorRegistry } as unknown as RenderSystemInternals;
+  const internals = {
+    device,
+    errorRegistry,
+    deviceScope: DeviceScope.create(0, 'view-graph-test'),
+  } as unknown as RenderSystemInternals;
   const pipelineState = {
     format: 'rgba8unorm',
     colorAttachmentFormat: 'rgba8unorm',
@@ -435,17 +471,16 @@ it.each([
     shadowViews: [],
   } as unknown as ViewLights;
   const compile = () =>
-    ensureCompiledFrameGraph(
+    compileAndAdoptViewGraph({
       internals,
-      state,
+      frameState: state,
       pipelineState,
-      makeZeroCameraFallbackSnapshot(),
+      camera: makeZeroCameraFallbackSnapshot(),
       lights,
-      1,
-      1,
-      undefined,
-      current,
-    );
+      surface: { width: 1, height: 1 },
+      shadowDepthLayers: ensureShadowDepthLayers(state, internals.device),
+      gpuDriven: current,
+    });
   const encode = (graph: NonNullable<ReturnType<typeof compile>>) => {
     bound.mockClear();
     const encoder = device.createCommandEncoder().unwrap();
@@ -787,17 +822,25 @@ it.each([
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
   const compile = () => {
-    const graph = ensureCompiledFrameGraph(
-      { device, errorRegistry } as unknown as RenderSystemInternals,
-      state,
-      { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
-      makeZeroCameraFallbackSnapshot(),
-      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
-      1,
-      1,
-      undefined,
-      current,
-    );
+    const graph = compileAndAdoptViewGraph({
+      internals: {
+        device,
+        errorRegistry,
+        deviceScope: DeviceScope.create(0, 'view-graph-test'),
+      } as unknown as RenderSystemInternals,
+      frameState: state,
+      pipelineState: { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as PipelineState,
+      camera: makeZeroCameraFallbackSnapshot(),
+      lights: {
+        cascades: undefined,
+        pointShadow: [],
+        spot: [],
+        shadowViews: [],
+      } as unknown as ViewLights,
+      surface: { width: 1, height: 1 },
+      shadowDepthLayers: ensureShadowDepthLayers(state, device),
+      gpuDriven: current,
+    });
     if (graph === null) throw Error(`graph failed: ${String(errors[0])}`);
     return graph;
   };
@@ -982,19 +1025,30 @@ it('retains shared mesh residency when replacement grows the shared GPU input bu
   const errors: unknown[] = [];
   const errorRegistry = new RhiErrorListenerRegistry();
   errorRegistry.add((error) => errors.push(error));
-  const internals = { device, errorRegistry } as unknown as RenderSystemInternals;
+  const internals = {
+    device,
+    errorRegistry,
+    deviceScope: DeviceScope.create(0, 'view-graph-test'),
+  } as unknown as RenderSystemInternals;
   const compile = () =>
-    ensureCompiledFrameGraph(
+    compileAndAdoptViewGraph({
       internals,
-      state,
-      { format: 'rgba8unorm', colorAttachmentFormat: 'rgba8unorm' } as unknown as PipelineState,
-      makeZeroCameraFallbackSnapshot(),
-      { cascades: undefined, pointShadow: [], spot: [], shadowViews: [] } as unknown as ViewLights,
-      1,
-      1,
-      undefined,
-      current,
-    );
+      frameState: state,
+      pipelineState: {
+        format: 'rgba8unorm',
+        colorAttachmentFormat: 'rgba8unorm',
+      } as unknown as PipelineState,
+      camera: makeZeroCameraFallbackSnapshot(),
+      lights: {
+        cascades: undefined,
+        pointShadow: [],
+        spot: [],
+        shadowViews: [],
+      } as unknown as ViewLights,
+      surface: { width: 1, height: 1 },
+      shadowDepthLayers: ensureShadowDepthLayers(state, internals.device),
+      gpuDriven: current,
+    });
   const vertices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setVertexBuffer');
   const indices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setIndexBuffer');
   const draws = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'drawIndexedIndirect');

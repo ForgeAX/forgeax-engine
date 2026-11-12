@@ -133,7 +133,21 @@ function summarizeNativeGcTrace(trace, markers) {
   };
 }
 
-/** Terminal heap-profile reads can force GC; only the CPU interval qualifies. */
+function assertNoObjectStatistics(trace, markers, window) {
+  const names = new Set(markers.map((marker) => marker.name));
+  const owned = new Set(
+    trace.traceEvents.filter((event) => names.has(event.name)).map((event) => `${event.pid}:${event.tid}`),
+  );
+  for (const event of trace.traceEvents) {
+    if (!owned.has(`${event.pid}:${event.tid}`)) continue;
+    if (event.name !== 'V8.GC_OBJECT_DUMP_STATISTICS' && event.name !== 'V8.GC_Objects_Stats') continue;
+    const overlaps = event.ts < window.endTime &&
+      (event.ph === 'X' ? event.ts + event.dur > window.startTime : event.ts >= window.startTime);
+    assert(!overlaps, 'Heap object statistics contaminate natural GC; retain this trace as diagnostic evidence');
+  }
+}
+
+/** Terminal heap-profile reads can force GC; only the selected interval qualifies. */
 export function summarizeNativeGc(trace, markers, window) {
   const wholeTrace = summarizeNativeGcTrace(trace, markers);
   if (window === undefined) return wholeTrace;
@@ -143,6 +157,7 @@ export function summarizeNativeGc(trace, markers, window) {
       window.endTime > window.startTime,
     'Invalid native GC observation window',
   );
+  assertNoObjectStatistics(trace, markers, window);
   const names = new Set(markers.map((marker) => marker.name));
   for (const event of trace.traceEvents)
     if (names.has(event.name))

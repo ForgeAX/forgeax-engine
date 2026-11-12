@@ -2,6 +2,7 @@ import type { RenderFeature } from '@forgeax/engine-render';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { prepareFeatureFrame } from '../../../render/src/__tests__/feature-frame-driver';
 import { RenderFeatureStageFailedError } from '../../../render/src/errors/render';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 
@@ -25,9 +26,9 @@ function recoverableFeature(calls: string[]): RenderFeature<{ readonly frame: nu
 describe('render feature recovery lifecycle', () => {
   it('retries failed slots, gates missing capabilities, and re-evaluates on recover', () => {
     const calls: string[] = [];
-    const host = createRenderFeatureHost([recoverableFeature(calls)], caps(true)).unwrap();
+    const host = createRenderFeatureHost([recoverableFeature(calls)]).unwrap();
 
-    const first = host.runFrame([
+    const first = prepareFeatureFrame(host, [
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 1, caps: caps(true) },
     ]).frame;
     expect(first.stageEvents.map((event) => event.stage)).toEqual(['extract', 'plan']);
@@ -37,14 +38,14 @@ describe('render feature recovery lifecycle', () => {
       'failed',
       new RenderFeatureStageFailedError('synthetic.recoverable', 0, 'prepare', 'next-frame'),
     );
-    const retry = host.runFrame([
+    const retry = prepareFeatureFrame(host, [
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 2, caps: caps(true) },
     ]).frame;
     expect(retry.errors).toEqual([]);
     expect(calls.slice(-2)).toEqual(['extract:2', 'plan:2']);
 
     host.setStatus('synthetic.recoverable', 'disabled');
-    const skipped = host.runFrame([
+    const skipped = prepareFeatureFrame(host, [
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 3, caps: caps(true) },
     ]).frame;
     expect(skipped.stageEvents).toEqual([]);
@@ -53,7 +54,7 @@ describe('render feature recovery lifecycle', () => {
     expect(recovered).toEqual(ok(undefined));
     expect(calls.at(-1)).toBe('plan:2');
 
-    const resumed = host.runFrame([
+    const resumed = prepareFeatureFrame(host, [
       { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 4, caps: caps(true) },
     ]).frame;
     expect(resumed.errors).toEqual([]);
@@ -62,7 +63,7 @@ describe('render feature recovery lifecycle', () => {
 
   it('keeps registration through a pipeline switch and makes dispose terminal', () => {
     const calls: string[] = [];
-    const host = createRenderFeatureHost([recoverableFeature(calls)], caps(true)).unwrap();
+    const host = createRenderFeatureHost([recoverableFeature(calls)]).unwrap();
 
     const beforeSwitch = host.features;
     const afterSwitch = host.features;
@@ -78,7 +79,7 @@ describe('render feature recovery lifecycle', () => {
       expect(afterDispose.error.detail.stage).toBe('recover');
     }
     expect(
-      host.runFrame([
+      prepareFeatureFrame(host, [
         { identity: 'main', render: true, worlds: [], owner: 0, frameNumber: 2, caps: caps(true) },
       ]).frame.stageEvents,
     ).toEqual([]);

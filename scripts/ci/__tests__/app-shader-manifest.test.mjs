@@ -39,6 +39,19 @@ function compactV4Digest(fragments) {
   return hash.digest('hex');
 }
 
+// Decoded publications retain their verified source identity beside lazy bytes.
+function expectedPublication({ entries, materialShaders }) {
+  const material = (row) => ({
+    ...row,
+    sourceDigest: compactV4Digest([row.composedWgsl]),
+    ...(row.variants === undefined ? {} : { variants: row.variants.map(material) }),
+  });
+  return {
+    entries: entries.map((row) => ({ ...row, sourceDigest: compactV4Digest([row.wgsl]) })),
+    materialShaders: materialShaders.map(material),
+  };
+}
+
 test('projects only app-owned shader rows for shard transport', () => {
   const delta = projectAppShaderManifest(
     {
@@ -161,16 +174,22 @@ test('compact app deltas preserve source bytes, receipts and exact entry reads t
   assert.deepEqual(delta.receipts, [customReceipt, variantReceipt]);
   assert.deepEqual(delta.entryPoints, [customReads, variantReads]);
   assert.deepEqual(projectAppShaderManifest(delta, engine), delta);
-  assert.deepEqual(await readShaderManifestPublication(delta), {
-    entries: [customEntry],
-    materialShaders: [compactCustomMaterial],
-  });
+  assert.deepEqual(
+    await readShaderManifestPublication(delta),
+    expectedPublication({
+      entries: [customEntry],
+      materialShaders: [compactCustomMaterial],
+    }),
+  );
   const merged = mergeAppShaderManifest(engine, delta);
   assert.equal(merged.schemaVersion, app.schemaVersion);
-  assert.deepEqual(await readShaderManifestPublication(merged), {
-    entries: [sharedEntry, customEntry],
-    materialShaders: [compactSharedMaterial, compactCustomMaterial],
-  });
+  assert.deepEqual(
+    await readShaderManifestPublication(merged),
+    expectedPublication({
+      entries: [sharedEntry, customEntry],
+      materialShaders: [compactSharedMaterial, compactCustomMaterial],
+    }),
+  );
 });
 
 test('replacing a compact material prunes unused sources, receipts and entry reads', async () => {
@@ -184,10 +203,13 @@ test('replacing a compact material prunes unused sources, receipts and entry rea
   const merged = mergeAppShaderManifest(engine, projectAppShaderManifest(app, engine));
   assert.deepEqual(merged.receipts, [customReceipt, variantReceipt]);
   assert.deepEqual(merged.entryPoints, [customReads, variantReads]);
-  assert.deepEqual(await readShaderManifestPublication(merged), {
-    entries: [],
-    materialShaders: [replacement],
-  });
+  assert.deepEqual(
+    await readShaderManifestPublication(merged),
+    expectedPublication({
+      entries: [],
+      materialShaders: [replacement],
+    }),
+  );
 });
 
 test('compact transport rejects missing receipt references and unsupported versions', () => {
@@ -543,10 +565,13 @@ test('entry-read pool order does not change shared rows or producer-owned public
     delta.materialShaders[0].variants[0].entryPointsIndex,
   );
   const merged = mergeAppShaderManifest(shared, delta);
-  assert.deepEqual(await readShaderManifestPublication(merged), {
-    entries: [utility, customUtility],
-    materialShaders: [compactSharedMaterial, compactCustomMaterial],
-  });
+  assert.deepEqual(
+    await readShaderManifestPublication(merged),
+    expectedPublication({
+      entries: [utility, customUtility],
+      materialShaders: [compactSharedMaterial, compactCustomMaterial],
+    }),
+  );
   assert.equal(JSON.stringify({ app, shared }), original);
 });
 
@@ -598,16 +623,22 @@ test('transport preserves unknown reflection, known empty entries and complete-r
     delta.materialShaders[0].entryPointsIndex,
   );
   const merged = mergeAppShaderManifest(shared, delta);
-  assert.deepEqual(await readShaderManifestPublication(merged), {
-    entries: [],
-    materialShaders: [material],
-  });
+  assert.deepEqual(
+    await readShaderManifestPublication(merged),
+    expectedPublication({
+      entries: [],
+      materialShaders: [material],
+    }),
+  );
   const removed = mergeAppShaderManifest(app, projectAppShaderManifest(shared, app));
   assert.deepEqual(removed.entryPoints, []);
-  assert.deepEqual(await readShaderManifestPublication(removed), {
-    entries: [],
-    materialShaders: [customMaterial],
-  });
+  assert.deepEqual(
+    await readShaderManifestPublication(removed),
+    expectedPublication({
+      entries: [],
+      materialShaders: [customMaterial],
+    }),
+  );
 });
 
 const reflectedPublication = () =>

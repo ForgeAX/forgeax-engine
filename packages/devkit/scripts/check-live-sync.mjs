@@ -149,17 +149,18 @@ try {
   );
   await writeFile(messages, original.replace('3C starter', 'SYNC FINAL'));
   const third = await ready(second.revision);
-  const capture = await command(
-    'capture',
+  const verification = await command(
+    'verify',
     '--revision',
     third.revision,
     '--output',
     join(evidence, 'final.png'),
   );
-  assert.equal(capture.ok, true);
-  const report = JSON.parse(await readFile(capture.value.report.uri, 'utf8'));
+  assert.equal(verification.ok, true, JSON.stringify(verification));
+  assert.equal(verification.value.verified, 'runtime');
+  const report = JSON.parse(await readFile(verification.value.report.uri, 'utf8'));
   assert.match(report.record.runtime.domUi.textWitness, /SYNC FINAL/);
-  assert.equal(capture.value.pixels.rendered, true);
+  assert.equal(verification.value.pixels.rendered, true);
 
   // Asset membership is an authored input even when its bytes are not imported
   // by a program. Unrelated root files are outside the accepted compiler scope.

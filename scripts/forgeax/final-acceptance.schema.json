@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schema/final-acceptance.schema.json",
-  "title": "ForgeaX 最终验收矩阵",
+  "title": "ForgeAX 最终验收矩阵",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   classifyBrowserWebGpuAlignment,
   closeBrowserBounded,
   resolveBrowserWebGpuLaunch,
   resolveDawnReplaySelection,
+  waitForReadyAppFrame,
 } from '../rhi-debug-verify.mjs';
 
 describe('RHI-debug owned browser cleanup', () => {
@@ -45,6 +46,15 @@ describe('RHI-debug owned browser cleanup', () => {
 });
 
 describe('RHI-debug browser backend selection', () => {
+  it('keeps software CI compilation inside the gate deadline without the native GPU watchdog', () => {
+    const software = resolveBrowserWebGpuLaunch({ platform: 'linux', backend: 'auto', ci: true });
+    const local = resolveBrowserWebGpuLaunch({ platform: 'linux', backend: 'auto', ci: false });
+    const metal = resolveBrowserWebGpuLaunch({ platform: 'darwin', backend: 'auto', ci: true });
+    expect(software.args).toContain('--disable-gpu-watchdog');
+    expect(local.args).not.toContain('--disable-gpu-watchdog');
+    expect(metal.args).not.toContain('--disable-gpu-watchdog');
+  });
+
   it('aligns the macOS default with the explicit Dawn Metal replay', () => {
     const launch = resolveBrowserWebGpuLaunch({ platform: 'darwin', backend: 'auto' });
 
@@ -149,5 +159,68 @@ describe('RHI-debug browser backend selection', () => {
     expect(() =>
       resolveDawnReplaySelection({ platform: 'linux', requestedBackend: 'metal' }),
     ).toThrow('refusing an implicit backend fallback');
+  });
+});
+
+
+describe('RHI-debug App scene admission', () => {
+  const frame = (frameId, deviceGeneration = 1, worldIdentity = 'world') =>
+    ({ frameId, deviceGeneration, worldIdentity });
+  const publish = (canvas, progress) => {
+    canvas.forgeaxFrameProgress = progress;
+    canvas.dispatchEvent(new Event('forgeax:frame-completed'));
+  };
+
+  it('waits for a completed ready picture rather than a pending GPU completion', async () => {
+    const canvas = new EventTarget();
+    publish(canvas, { submitted: frame(1), completed: { ...frame(1), presentation: 'pending' } });
+    let settled = false;
+    const pending = waitForReadyAppFrame({ canvas, timeoutMs: 90_000 });
+    void pending.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    publish(canvas, { submitted: frame(2), completed: { ...frame(2), presentation: 'ready' } });
+    expect((await pending).frameId).toBe(2);
+  });
+
+  it('accepts the current completed baseline without waiting for another frame', async () => {
+    const canvas = new EventTarget();
+    const completed = { ...frame(7), presentation: 'ready' };
+    publish(canvas, { submitted: frame(7), completed });
+    expect(await waitForReadyAppFrame({ canvas, timeoutMs: 90_000 })).toBe(completed);
+  });
+
+  it('admits a ready in-flight successor without requiring the two-credit loop to idle', async () => {
+    const canvas = new EventTarget();
+    publish(canvas, {
+      submitted: { ...frame(8), receipt: { presentation: 'ready' } },
+      completed: { ...frame(7), presentation: 'ready' },
+    });
+    expect((await waitForReadyAppFrame({ canvas, timeoutMs: 90_000 })).frameId).toBe(7);
+  });
+
+  it('rejects a stale ready frame across frame, device and World replacement', async () => {
+    const canvas = new EventTarget();
+    publish(canvas, { submitted: frame(2, 2, 'new'), completed: { ...frame(1), presentation: 'ready' } });
+    let settled = false;
+    const pending = waitForReadyAppFrame({ canvas, timeoutMs: 90_000 });
+    void pending.then(() => { settled = true; });
+    for (const stale of [frame(1, 2, 'new'), frame(2, 1, 'new'), frame(2, 2, 'old')]) {
+      publish(canvas, { submitted: frame(2, 2, 'new'), completed: { ...stale, presentation: 'ready' } });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+    }
+    publish(canvas, { submitted: frame(2, 2, 'new'), completed: { ...frame(2, 2, 'new'), presentation: 'ready' } });
+    expect((await pending).worldIdentity).toBe('new');
+  });
+
+  it('bounds a missing Engine picture with the owner startup deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = waitForReadyAppFrame({ canvas: new EventTarget(), timeoutMs: 90_000 });
+      const rejected = expect(pending).rejects.toThrow('app-scene-preparation timed out after 90000ms');
+      await vi.advanceTimersByTimeAsync(90_000);
+      await rejected;
+    } finally { vi.useRealTimers(); }
   });
 });

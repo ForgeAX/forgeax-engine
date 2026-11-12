@@ -17,13 +17,13 @@ function aoPasses(names: readonly string[]): string[] {
 }
 
 export default defineFeature<FeatureDefinition>({
-  title: 'HDRP SSAO',
-  catalog: 'HDRP SSAO',
+  title: 'AO forward/deferred path probe',
+  catalog: 'AO forward/deferred path probe',
   kind: 'probe',
   summary:
-    'The half-resolution AO raw + blur passes exist only on the deferred (HDRP-style) configuration. The probe switches the live profile between deferred+AO, deferred without AO and forward+AO.',
+    'The probe switches live AO through deferred and forward Standard profiles, then disables and restores it to verify each route owns the expected raw + blur work.',
   expect:
-    'All checks pass: deferred+AO schedules the raw and blur AO passes, disabling AO removes them, and requesting AO on the forward path is refused with a structured error.',
+    'All checks pass: deferred and forward AO schedule the raw and blur passes, disabling AO removes them, and restoring the deferred profile restores its AO work.',
   appOptions: {
     standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', ssao: AO },
   },
@@ -59,10 +59,19 @@ export default defineFeature<FeatureDefinition>({
         checks.equal('AO disabled removes every AO pass', disabled, []);
         const forward = renderer.setProfile({ ...base, renderPath: 'forward', ssao: AO });
         checks.ok(
-          'forward + AO is refused with a structured error',
-          !forward.ok && typeof forward.error.code === 'string',
-          forward.ok ? 'accepted' : `${forward.error.code}: ${forward.error.hint}`,
+          'forward + AO accepted',
+          forward.ok,
+          forward.ok ? undefined : `${forward.error.code}: ${forward.error.hint}`,
         );
+        if (forward.ok) {
+          await frames(3);
+          const forwardPasses = aoPasses(renderer.inspect().perFramePassNames);
+          checks.ok(
+            'forward + AO schedules at least two AO passes (raw + blur)',
+            forwardPasses.length >= 2,
+            forwardPasses.join(','),
+          );
+        }
         const restore = renderer.setProfile(base);
         checks.ok(
           'restore deferred + AO accepted',

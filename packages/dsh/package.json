@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Lifecycle-safe federation bridge between ForgeaX Engine and DeepSeek Harness.",
+  "description": "Lifecycle-safe federation bridge between ForgeAX Engine and DeepSeek Harness.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

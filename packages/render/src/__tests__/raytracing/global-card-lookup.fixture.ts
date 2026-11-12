@@ -2,6 +2,7 @@ import type { Buffer } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   CARD_LOOKUP_STRIDE,
   CardLookupStatus,
@@ -257,11 +258,17 @@ export async function verifyGlobalCards(fixture: SdfCardsFixture) {
           borrowedOffset + inputs.output.size + 256,
         );
         expect(
-          borrowedCandidates.subarray(borrowedOffset, borrowedOffset + candidates.byteLength),
-        ).toEqual(candidates);
+          equalBytes(
+            borrowedCandidates.subarray(borrowedOffset, borrowedOffset + candidates.byteLength),
+            candidates,
+          ),
+        ).toBe(true);
         expect(
-          borrowedSamples.subarray(borrowedOffset, borrowedOffset + samples.byteLength),
-        ).toEqual(samples);
+          equalBytes(
+            borrowedSamples.subarray(borrowedOffset, borrowedOffset + samples.byteLength),
+            samples,
+          ),
+        ).toBe(true);
         for (const [bytes, size] of [
           [borrowedCandidates, candidates.byteLength],
           [borrowedSamples, samples.byteLength],
@@ -373,21 +380,30 @@ export async function verifyGlobalCards(fixture: SdfCardsFixture) {
           expect(before.subarray(0, offset).every((b) => b === 0xcd)).toBe(true);
           expect(before.subarray(offset + size).every((b) => b === 0xcd)).toBe(true);
         }
-        expect((await replay.readResourceAtWork(id, work.workIndex)).unwrap().bytes).toEqual(
-          expected,
-        );
+        expect(
+          equalBytes(
+            (await replay.readResourceAtWork(id, work.workIndex)).unwrap().bytes,
+            expected,
+          ),
+        ).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();
       native.destroy();
     }
   }
-  expect(evidence.find((e) => e.mode === 'ordered')?.candidates).toEqual(
-    evidence.find((e) => e.mode === 'permuted')?.candidates,
-  );
-  expect(evidence.find((e) => e.mode === 'ordered')?.samples).toEqual(
-    evidence.find((e) => e.mode === 'permuted')?.samples,
-  );
+  expect(
+    equalBytes(
+      evidence.find((e) => e.mode === 'ordered')?.candidates,
+      evidence.find((e) => e.mode === 'permuted')?.candidates,
+    ),
+  ).toBe(true);
+  expect(
+    equalBytes(
+      evidence.find((e) => e.mode === 'ordered')?.samples,
+      evidence.find((e) => e.mode === 'permuted')?.samples,
+    ),
+  ).toBe(true);
   expect(errors).toEqual([]);
   return evidence;
 }

@@ -21,6 +21,7 @@ import {
 } from './pack-authoring-literals.js';
 import { projectPackGenerationModules } from './pack-generation-projection.js';
 import type { AssetReader, ScriptablePackSourceClosureEntry } from './scriptable-pack.js';
+import { type CapturedJsonInputs, stageCapturedJsonInputs } from './scriptable-pack-json-input.js';
 import {
   createScriptablePackSourceSnapshot,
   type ScriptablePackSourceSnapshot,
@@ -176,7 +177,13 @@ class WorkerScriptablePackExecutor
   private readonly compileRootReady = mkdtemp(
     resolve(tmpdir(), 'forgeax-scriptable-pack-pool-'),
   ).then(ok, (error: unknown) => err(error));
-  private preparation: Promise<string> | undefined;
+  private preparation:
+    | Promise<{
+        compileRoot: string;
+        sources: Readonly<Record<string, string>> | undefined;
+        jsonInputs: CapturedJsonInputs | undefined;
+      }>
+    | undefined;
   private nextLoadId = 0;
   private nextBuildId = 0;
   private pendingLoad:
@@ -210,7 +217,7 @@ class WorkerScriptablePackExecutor
       ...(bytecodeCacheRoot === undefined
         ? {}
         : { env: { ...process.env, NODE_COMPILE_CACHE: bytecodeCacheRoot } }),
-      resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 64 },
+      resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64 },
     });
     this.worker.on('message', (message: unknown) => this.onMessage(message));
     this.worker.on('error', (error: Error) => {
@@ -234,7 +241,7 @@ class WorkerScriptablePackExecutor
     sourcePath: string,
     sources?: Readonly<Record<string, string>>,
     transpiles?: readonly SnapshotTranspileText[],
-    options: { readonly staticOnly?: boolean } = {},
+    options: { readonly staticOnly?: boolean; readonly stageJson?: boolean } = {},
   ): Promise<unknown> {
     const activeDisposal = this.disposal;
     if (activeDisposal !== undefined) {
@@ -251,17 +258,22 @@ class WorkerScriptablePackExecutor
     ) {
       return Promise.reject(new Error('ScriptablePack executor already has an active task'));
     }
+    const loadId = this.nextLoadId;
     this.preparation = this.compileRootReady.then(async (allocated) => {
       if (!allocated.ok) throw allocated.error;
       const compileRoot = allocated.value;
       // A temp cleaner may remove idle output. Disposal waits for any active
       // recreation before retiring the directory and its Worker together.
       if (this.disposal === undefined) await mkdir(compileRoot, { recursive: true });
-      return compileRoot;
+      const staged =
+        sources !== undefined && options.stageJson === true
+          ? await stageCapturedJsonInputs(sources, compileRoot, loadId)
+          : { sources, jsonInputs: undefined };
+      return { compileRoot, ...staged };
     });
-    let compileRoot: string;
+    let prepared: Awaited<NonNullable<typeof this.preparation>>;
     try {
-      compileRoot = await this.preparation;
+      prepared = await this.preparation;
     } finally {
       this.preparation = undefined;
     }
@@ -269,7 +281,7 @@ class WorkerScriptablePackExecutor
       await this.disposal;
       return Promise.reject(new Error('ScriptablePack executor is not leased'));
     }
-    const loadId = this.nextLoadId++;
+    this.nextLoadId++;
     this.taskCount += 1;
     return new Promise((resolveLoad, rejectLoad) => {
       this.pendingLoad = { id: loadId, resolve: resolveLoad, reject: rejectLoad };
@@ -278,8 +290,9 @@ class WorkerScriptablePackExecutor
           kind: 'load',
           loadId,
           sourcePath: resolve(sourcePath),
-          compileRoot,
-          sources,
+          compileRoot: prepared.compileRoot,
+          sources: prepared.sources,
+          jsonInputs: prepared.jsonInputs,
           transpiles,
           ...(options.staticOnly === true ? { staticOnly: true } : {}),
         });
@@ -538,6 +551,32 @@ export const SCRIPTABLE_PACK_MODULE_TIMEOUT_MS = 120_000;
 /** Trusted production and Workspace authoring may prepare complete geometry.
  * Keep the same finite build bound instead of the low-level loader default. */
 export const SCRIPTABLE_PACK_BUILD_TIMEOUT_MS = 120_000;
+/** Upper bound for a host-raised build budget; a build stays finite. */
+export const SCRIPTABLE_PACK_MAX_BUILD_TIMEOUT_MS = 1_800_000;
+export const SCRIPTABLE_PACK_BUILD_TIMEOUT_ENV = 'FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS';
+
+/**
+ * The trusted build bound for this host. A slow host or a heavy offline recipe
+ * (derived distance fields, generated geometry) raises it through
+ * FORGEAX_SCRIPTABLE_PACK_BUILD_TIMEOUT_MS, an integer in
+ * [SCRIPTABLE_PACK_BUILD_TIMEOUT_MS, SCRIPTABLE_PACK_MAX_BUILD_TIMEOUT_MS].
+ */
+export function scriptablePackBuildTimeoutMs(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env[SCRIPTABLE_PACK_BUILD_TIMEOUT_ENV];
+  if (raw === undefined || raw === '') return SCRIPTABLE_PACK_BUILD_TIMEOUT_MS;
+  const value = Number(raw);
+  if (
+    !Number.isInteger(value) ||
+    value < SCRIPTABLE_PACK_BUILD_TIMEOUT_MS ||
+    value > SCRIPTABLE_PACK_MAX_BUILD_TIMEOUT_MS
+  )
+    throw new TypeError(
+      `${SCRIPTABLE_PACK_BUILD_TIMEOUT_ENV} must be an integer number of milliseconds in ${SCRIPTABLE_PACK_BUILD_TIMEOUT_MS}..${SCRIPTABLE_PACK_MAX_BUILD_TIMEOUT_MS}; received ${raw}`,
+    );
+  return value;
+}
 
 /** Metadata owns no worker; each execution owns one bounded, recyclable lease. */
 export function createLazyScriptablePackDefinition(input: {
@@ -546,6 +585,8 @@ export function createLazyScriptablePackDefinition(input: {
   readonly sourceClosure: readonly ScriptablePackSourceClosureEntry[];
   readonly executors: ScriptablePackModuleExecutorPool;
   readonly sourceSnapshot: ScriptablePackSourceSnapshot;
+  /** Initial publication uses production bounds; live replacements retain loader bounds. */
+  readonly executionBudget?: 'production' | 'interactive';
 }): AnyScriptablePackDefinition {
   const expected = new Map(input.sourceClosure.map((entry) => [entry.path, entry.digest]));
   return {
@@ -586,8 +627,12 @@ export function createLazyScriptablePackDefinition(input: {
       const loaded = await loadScriptablePack(input.sourcePath, {
         executor,
         sourceSnapshot: input.sourceSnapshot,
-        timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
-        buildTimeoutMs: SCRIPTABLE_PACK_BUILD_TIMEOUT_MS,
+        ...(input.executionBudget === 'interactive'
+          ? {}
+          : {
+              timeoutMs: SCRIPTABLE_PACK_MODULE_TIMEOUT_MS,
+              buildTimeoutMs: scriptablePackBuildTimeoutMs(),
+            }),
       });
       if (!loaded.ok) return loaded;
       if (
@@ -641,12 +686,12 @@ export function loadScriptablePack(
     options.metadataOnly !== true ||
     snapshot === undefined ||
     options.executor !== undefined ||
-    options.buildTimeoutMs !== undefined ||
     options.signal !== undefined
   )
     return loadScriptablePackFresh(sourcePath, options);
-  // DevKit and Pack inventory share this snapshot during Play. Its metadata
-  // belongs to the captured closure, including across separately built entries.
+  // The build deadline governs a later build() call, not metadata. DevKit and
+  // Pack inventory share this snapshot during Play; metadata belongs to the
+  // captured closure, including across separately built entries.
   return snapshot.metadata(sourcePath, () => loadScriptablePackFresh(sourcePath, options));
 }
 
@@ -717,6 +762,7 @@ async function loadScriptablePackFresh(
         // modules imported only on demand stay uncompiled.
         return executor.load(captured.entry, sources, entries, {
           staticOnly: options.metadataOnly === true && options.executor === undefined,
+          stageJson: true,
         });
       })(),
       new Promise<typeof timeoutSignal>((resolve) => {

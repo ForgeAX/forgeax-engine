@@ -27,6 +27,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { compactTape } from './compact-tape.fixture';
@@ -168,7 +169,7 @@ async function verifyRevealedSurfaceReplay(bytes: Uint8Array, expected: Uint8Arr
       const before = early.bytes;
       const after = late.bytes;
       expect(before.every((value) => value === 0)).toBe(true);
-      if (name === 'occlusion-reveal') expect(after).toEqual(expected);
+      if (name === 'occlusion-reveal') expect(equalBytes(after, expected)).toBe(true);
       else expect(after.every((value) => value === 0)).toBe(true);
       expect(gpuErrors).toEqual([]);
       await save(`${name}-early.rgba32uint`, before);
@@ -210,7 +211,7 @@ async function verifyTemporalReplay(
   ).unwrap();
   try {
     const read = (await replay.readResourceAtWork(resource.resourceId, work.workIndex)).unwrap();
-    expect(read.bytes).toEqual(expected);
+    expect(equalBytes(read.bytes, expected)).toBe(true);
     expect(gpuErrors).toEqual([]);
     await save(`${name}-replay.rgba16float`, read.bytes);
   } finally {
@@ -532,7 +533,7 @@ export async function verifyVisibleSurfaceReplay(
         );
         if (observed?.domain !== 'visible-surface')
           throw new Error('missing receipt surface observation');
-        expect(observed.bytes).toEqual(live);
+        expect(equalBytes(observed.bytes, live)).toBe(true);
         expect(observed.records).toHaveLength(128);
         expect(observed.metadata.frameId).toBe(capturedReceipt.frameId);
         await save(`${lane}-surface-records.u32`, new Uint8Array(observed.records.buffer));
@@ -545,7 +546,7 @@ export async function verifyVisibleSurfaceReplay(
         expect([...new Set(covered.map((i) => words[i * 4]))].sort()).toEqual([3, 4, 5, 6]);
         expect(covered.every((i) => words[i * 4 + 1] === 0)).toBe(true);
         if (direct === undefined) direct = live;
-        else expect(live).toEqual(direct);
+        else expect(equalBytes(live, direct)).toBe(true);
         const tape = decodeTape(captured.bytes).unwrap();
         const model = buildFrameModel(tape);
         const surfaces = visibleSurfaceViewIds(model);
@@ -568,7 +569,7 @@ export async function verifyVisibleSurfaceReplay(
         try {
           const { read, contextRead, shadingRead, temporalRead, addressRead, binding } =
             await visibleSurfaceReadbacks(replay, model, geometry, lane);
-          expect(read.bytes).toEqual(live);
+          expect(equalBytes(read.bytes, live)).toBe(true);
           await save(`${lane}-replay.rgba32uint`, read.bytes);
           const contexts = new Uint32Array(
             contextRead.bytes.buffer,
@@ -622,7 +623,7 @@ export async function verifyVisibleSurfaceReplay(
             expect(actual[2]).toBeCloseTo(Math.SQRT1_2, 3);
           }
 
-          expect(temporalRead.bytes).toEqual(temporalLive);
+          expect(equalBytes(temporalRead.bytes, temporalLive)).toBe(true);
           results.push({
             lane,
             covered: covered.length,
@@ -951,7 +952,7 @@ export async function verifyVisibleSurfaceReplay(
     errors.length = 0;
     renderValue(await renderer.recover());
     lostNative?.destroy();
-    expect(native).not.toBe(lostNative);
+    expect(Object.is(native, lostNative)).toBe(false);
     const recoveryCapture = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
     const cold = await snapshot('recovery-cold');

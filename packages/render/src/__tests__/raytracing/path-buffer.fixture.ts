@@ -6,6 +6,7 @@ import {
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createRayPathTracer } from '../../raytracing/path-tracer';
 import type { RayPathFixture } from './path-tracer.commands';
 import { readBuffer } from './path-tracer.fixture';
@@ -248,8 +249,11 @@ export async function verifyGpuPathSource(fixture: RayPathFixture, graphOwned = 
         const output = work.bindings.find((binding) => binding.binding === 6);
         assert(output?.resourceId);
         expect(
-          (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
-        ).toEqual(index === 0 ? lit : dark);
+          equalBytes(
+            (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
+            index === 0 ? lit : dark,
+          ),
+        ).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();

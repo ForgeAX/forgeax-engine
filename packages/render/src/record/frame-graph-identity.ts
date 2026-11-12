@@ -1,4 +1,6 @@
+import { STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import type { RenderPipelineTopology } from '../render-pipeline';
+import { ssaoStructuralIdentity } from '../ssao-config';
 
 /** Stock recorders read these parameters from the current frame, not the build closure. */
 export function frameGraphTopologyIdentity(
@@ -7,9 +9,29 @@ export function frameGraphTopologyIdentity(
 ) {
   const camera = { ...topology.camera, bloomIntensity: undefined };
   if (!stockRecorder) return { ...topology, camera };
+  const stockStandard = topology.pipelineId === STANDARD_PIPELINE_ID;
   return {
     ...topology,
     camera,
+    ...(stockStandard && topology.config !== undefined
+      ? {
+          config: {
+            ...topology.config,
+            ssao: ssaoStructuralIdentity(topology.config.ssao, true),
+          },
+        }
+      : {}),
+    ...(stockStandard && topology.standardProfile !== undefined
+      ? {
+          standardProfile: {
+            ...topology.standardProfile,
+            ssao:
+              typeof topology.standardProfile.ssao === 'object'
+                ? ssaoStructuralIdentity(topology.standardProfile.ssao, true)
+                : topology.standardProfile.ssao,
+          },
+        }
+      : {}),
     ...(topology.transmissionDemand === undefined
       ? {}
       : {

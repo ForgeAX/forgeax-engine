@@ -9,6 +9,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { type MaterialAsset, ok, type TextureAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { publishRuntimeAssets } from '../../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { samplerContribution } from '../../assets/asset-decoders';
 import { MeshFilter, MeshRenderer } from '../../components';
@@ -150,7 +151,7 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
       const textures = prepared.textures;
       const binding = textures.get('baseColorTexture');
       assert(binding);
-      expect(binding.sampler).not.toBe(defaultSampler);
+      expect(Object.is(binding.sampler, defaultSampler)).toBe(false);
       const duplicate = prepareSurfaceMaterialTextures(
         store,
         defaultSampler,
@@ -198,9 +199,9 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
                   accepted.resources,
                 )
               ).unwrap();
-              expect(store.getTextureGpuView(textureHandle, accepted.resources)).not.toBe(
-                binding.view,
-              );
+              expect(
+                Object.is(store.getTextureGpuView(textureHandle, accepted.resources), binding.view),
+              ).toBe(false);
               expect(retainedTexture.isDestroyed).toBe(false);
             }
             return recorder.backend.createShaderModule(device, descriptor);
@@ -301,8 +302,11 @@ export async function verifySubmittedTextures(fixture: RayPublicationFixture) {
         );
         assert(output?.resourceId);
         expect(
-          (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
-        ).toEqual(outputs[i]);
+          equalBytes(
+            (await replay.readResourceAtWork(output.resourceId, work.workIndex)).unwrap().bytes,
+            outputs[i],
+          ),
+        ).toBe(true);
       }
     } finally {
       (await replay.dispose()).unwrap();

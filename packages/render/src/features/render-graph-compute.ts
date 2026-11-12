@@ -216,7 +216,7 @@ export class RenderFeatureComputeGraphProjection<FrameCtx extends RenderGraphFra
     return this.builder.addComputePass(name, {
       accesses,
       executeIf: (frame) => logicalPasses.some((logical) => enabled(frame, logical)),
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         for (const logical of logicalPasses) {
           if (!enabled(frame, logical)) continue;
           const { featureIdentity, order, name } = logical;

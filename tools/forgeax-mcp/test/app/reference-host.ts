@@ -4,7 +4,7 @@ import { OPEN_TOOL } from '../../src/contract';
 const frame = document.querySelector<HTMLIFrameElement>('#app')!;
 const bridge = new AppBridge(
   null,
-  { name: 'ForgeaX browser acceptance host', version: '1' },
+  { name: 'ForgeAX browser acceptance host', version: '1' },
   { serverTools: {}, experimental: { 'openai/message': {} } },
   { hostContext: { theme: 'light', displayMode: 'fullscreen' } },
 );

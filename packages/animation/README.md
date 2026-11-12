@@ -126,7 +126,7 @@ clips and inline JSON arrays still decode unchanged.
 ## TypeScript-first animation control
 
 > [!IMPORTANT]
-> TypeScript is the primary animation-control language. ForgeaX does not require
+> TypeScript is the primary animation-control language. ForgeAX does not require
 > or provide a native animation FSM, transition-condition language, or controller
 > asset. An FSM used by a game is a specialization of ordinary TypeScript control
 > code; it must not become the mandatory execution or authoring boundary.
@@ -224,14 +224,14 @@ events, and pose sampling still advance normally. Comparing the current columns
 also restores external author edits without a second pose cache. Normal scene
 propagation then computes world transforms.
 
-Development diagnostics are structured objects with `code`, `hint`, and
-`detail`. They skip only the malformed channel or target and let valid sibling
-players continue. `console.warn` aggregates repeated channel failures by player,
-target, and reason. `subscribeAnimationDiagnostics(listener)` separately emits
-each unique player/clip/channel/target/reason fact so editor diagnostics can
-group and locate failures without parsing console text. The subscription is a
-read-only observation seam, not a queue or ECS resource. Production builds
-silently skip malformed entries without emitting these diagnostics.
+Animation diagnostics are structured objects with `code`, `hint`, and `detail`.
+They skip only the malformed channel or target and let valid sibling players
+continue. `subscribeAnimationDiagnostics(listener)` observes each unique
+player/clip/channel/target/reason fact, independent of host or build mode. The
+subscription is a read-only observation seam, not a queue or ECS resource; the
+listener owns presentation or logging. Without a listener, diagnostic-only
+slot-coverage work is skipped. Playback clocks, events, and valid channel
+sampling continue unchanged in every host environment.
 
 ## Error recovery
 
@@ -681,3 +681,19 @@ The [ordinary Pack example and frozen acceptance](../../scripts/dev-verify/roi-2
 exercise public subpaths, Scene JSON, independent double-precision curve/frame
 references and actual Skin qualification. This link is a reproduction entry,
 not a claim that every qualification gate has passed.
+
+Externally timed or paused players still evaluate targets and timeline/root-motion
+contracts. Playback only writes `AnimationPlayer.times` when normalization or
+advancement changes an element (including signed zero); an unchanged time array
+does not allocate managed World storage or publish a component change.
+
+### Synchronous numeric workspace
+
+Graph effective weights, node clocks and derived slots, direct playback clocks,
+and morph accumulation use `world.frameArena`. All read lanes are initialized;
+`world.set` copies final clocks/weights into managed component storage before
+the scope closes. Morph normalization reuses its completed accumulator.
+Scheduled evaluation joins the running World scope. Direct evaluation opens a
+synchronous scope and preserves ordinary animation validation errors without
+poisoning an otherwise healthy World. Arena budgets still apply; retained
+timeline/event records and semantic target maps keep their existing owners.

@@ -7,7 +7,7 @@ import { projectDirectionalShadowInspection } from '../../../render/src/assembly
 import { resolveDirectionalShadowBackendAdmission } from '../../../render/src/render-pipeline';
 
 describe('M3 Browser backend admission', () => {
-  it('declares WebGL2 PCSS fallback without changing the cascade layer contract', () => {
+  it('admits WebGL2 PCSS without changing the cascade layer contract', () => {
     const inspection = projectDirectionalShadowInspection({
       admission: resolveDirectionalShadowBackendAdmission({
         backendKind: 'wgpu-webgl2',
@@ -18,15 +18,15 @@ describe('M3 Browser backend admission', () => {
       mapSize: 2048,
       shadowMapBytes: 67_108_864,
       writerPasses: 4,
-      blockerTaps: 0,
-      filterTapUpperBound: 25,
-      seamTapUpperBound: 25,
+      blockerTaps: 16,
+      filterTapUpperBound: 32,
+      seamTapUpperBound: 96,
       deviceGeneration: 1,
       graphGeneration: 1,
     });
     expect(inspection).toMatchObject({
-      effective: 'pcf5',
-      fallbackReason: 'webgl2-unsupported',
+      effective: 'pcssHigh',
+      status: 'accepted',
       cascadeCount: 4,
       mapSize: 2048,
     });

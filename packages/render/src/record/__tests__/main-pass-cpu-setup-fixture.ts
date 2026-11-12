@@ -6,7 +6,7 @@ import { receiptRow } from '../../__tests__/gpu-draw-selection-fixture';
 import { BatchTopology, type GpuDrivenBatchBinding } from '../../gpu-driven/batch-topology';
 import { GpuDrawSelection } from '../../gpu-driven/draw-selection';
 import { GpuBuffer } from '../../gpu-resource';
-import { disposeInstanceBuffers } from '../../instance-buffer-cache';
+import { disposeInstanceBufferChunks, disposeInstanceBuffers } from '../../instance-buffer-cache';
 import { MaterialResource } from '../../material-resource';
 import { MaterialFrame } from '../../scene/material-dispatch';
 import { RenderScene } from '../../scene/render-scene';
@@ -44,7 +44,13 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
     .unwrap();
   const instancesLayout = device
     .createBindGroupLayout({
-      entries: [{ binding: 0, visibility: 1, buffer: { type: 'read-only-storage' } }],
+      entries: [
+        {
+          binding: 0,
+          visibility: 1,
+          buffer: { type: device.caps.storageBuffer ? 'read-only-storage' : 'uniform' },
+        },
+      ],
     })
     .unwrap();
   const createPipeline = (
@@ -89,7 +95,10 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
       })
       .unwrap();
   const pipeline = createPipeline(module);
-  const identity = buffer(Float32Array.from([...matrix(), ...matrix()]), 128);
+  const identityData = new Float32Array(device.caps.storageBuffer ? 32 : 128 * 16);
+  identityData.set(matrix());
+  if (device.caps.storageBuffer) identityData.set(matrix(), 16);
+  const identity = buffer(identityData, device.caps.storageBuffer ? 128 : 64);
   const materialData = new Float32Array(4096);
   for (let i = 0; i < 64; i++) materialData.set([1, 0.2, 0, 1], i * 64);
   const material = buffer(materialData, 64);
@@ -173,7 +182,12 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
       materialUniformBuffer: { buffer: material, sizeInBytes: materialData.byteLength },
       meshStorageBuffer: { buffer: mesh, sizeInBytes: meshData.byteLength },
     },
-    frameState: { instanceBuffers: new Map(), instancesBgShared: new WeakMap() },
+    camera: { clipping: undefined },
+    frameState: {
+      instanceBuffers: new Map(),
+      instanceBufferChunks: new Map(),
+      instancesBgShared: new WeakMap(),
+    },
     bindGroupCounts: { createBindGroup: 0, keys: [] },
     dispatchCounts: { unlit: 0, standard: 0 },
     tonemapActive: false,
@@ -351,6 +365,8 @@ export function cpuSetupFixture(device: RhiDevice, module: ShaderModule) {
     },
     dispose() {
       disposeInstanceBuffers(c.frameState.instanceBuffers);
+      if (c.frameState.instanceBufferChunks !== undefined)
+        disposeInstanceBufferChunks(c.frameState.instanceBufferChunks);
       for (const value of buffers) device.destroyBuffer(value).unwrap();
     },
   };

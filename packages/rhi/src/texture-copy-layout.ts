@@ -1,10 +1,15 @@
 import type { TextureFormatBlock } from '@forgeax/engine-types';
 
+/** WebGPU buffer-to-texture row pitch alignment shared by upload and readback owners. */
+export const TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT = 256;
+
 /** Buffer layout for one admitted texture slice copied by a command encoder. */
 export function textureReadbackLayout(width: number, height: number, block: TextureFormatBlock) {
   const rowBytes = Math.ceil(width / block.blockWidth) * block.bytesPerBlock;
   const rowsPerImage = Math.ceil(height / block.blockHeight);
-  const bytesPerRow = Math.ceil(rowBytes / 256) * 256;
+  const bytesPerRow =
+    Math.ceil(rowBytes / TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT) *
+    TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT;
   return { rowBytes, rowsPerImage, bytesPerRow, byteLength: bytesPerRow * rowsPerImage };
 }
 

@@ -1,6 +1,6 @@
 # ROI22 acoustic regions delivery evidence
 
-Current delivery status, exact-head gate receipts, and the merge boundary are tracked in [Engine PR #3702](https://github.com/ForgeaX-Games/forgeax-engine/pull/3702). The preparation tables below retain the results and open gates at their recorded epochs; they are historical evidence, not a live status projection.
+Current delivery status, exact-head gate receipts, and the merge boundary are tracked in [Engine PR #3702](https://github.com/ForgeAX/forgeax-engine/pull/3702). The preparation tables below retain the results and open gates at their recorded epochs; they are historical evidence, not a live status projection.
 
 > [!IMPORTANT]
 > This file freezes preparation evidence before the regional feature commit.

@@ -10,13 +10,18 @@ const imports = new Set([
   '@forgeax/engine/types',
   '@forgeax/engine/math',
   '@forgeax/engine/geometry',
+  '@forgeax/engine/modeling',
   '@forgeax/engine/pack/source',
   '@forgeax/engine-types',
   '@forgeax/engine-math',
   '@forgeax/engine-geometry',
+  '@forgeax/engine-modeling',
   '@forgeax/engine-pack/source',
   '@forgeax/engine/pack/guid',
   '@forgeax/engine-pack/guid',
+  // Pure WASM simplification over build outputs; Mesh LOD requests (design X4).
+  '@forgeax/engine/import/mesh-lod-generator',
+  '@forgeax/engine-import/mesh-lod-generator',
 ]);
 const namedImports: Readonly<Record<string, ReadonlySet<string>>> = {
   render: new Set([
@@ -33,10 +38,17 @@ const namedImports: Readonly<Record<string, ReadonlySet<string>>> = {
     'orthographic',
     'ANTIALIAS_FXAA',
     'ANTIALIAS_TAA',
+    'Atmosphere',
+    'Fog',
+    'FogModeValue',
     'SKYBOX_MODE_CUBEMAP',
     'SkyboxBackground',
     'Skylight',
     'TONEMAP_ACES_FILMIC',
+    'BLOOM_DISABLED',
+    'BLOOM_ENABLED',
+    'CAMERA_EXPOSURE_MODE_AUTO',
+    'CAMERA_EXPOSURE_MODE_MANUAL',
   ]),
   scene: new Set(['Name', 'Transform', 'ChildOf', 'Children', 'Mobility']),
   physics: new Set([
@@ -81,6 +93,25 @@ const reflection = new Set([
 ]);
 const indexGuard = '__forgeaxGenerationIndex';
 
+// Undefined when every binding is a named import on the allowed list.
+function namedImportRejection(
+  node: ts.ImportDeclaration | ts.ExportDeclaration,
+  specifier: string,
+  allowed: ReadonlySet<string>,
+): string | undefined {
+  const clause = ts.isImportDeclaration(node) ? node.importClause : undefined;
+  const bindings = clause?.namedBindings;
+  const list = `allowed: ${[...allowed].join(', ')}`;
+  if (!bindings || !ts.isNamedImports(bindings) || clause?.name)
+    return `import named bindings from ${specifier}; ${list}`;
+  const rejected = bindings.elements
+    .map((item) => item.propertyName?.text ?? item.name.text)
+    .filter((name) => !allowed.has(name));
+  return rejected.length > 0
+    ? `${rejected.join(', ')} from ${specifier}: not on the live generation list; ${list}`
+    : undefined;
+}
+
 /** Opt-in source closure contract; old Packs retain their existing executable module surface. */
 export function projectPackGenerationModules(
   entry: string,
@@ -93,8 +124,13 @@ export function projectPackGenerationModules(
     const metadata = path === entry ? declaration : parsed.ok ? parsed.value : undefined;
     const executable = metadata?.generationSource ?? source;
     const file = ts.createSourceFile(path, executable, ts.ScriptTarget.Latest, true);
+    // The reason leads the hint, so a clipped one-line summary still names it.
     const reject = (reason: string): never => {
-      throw packSourceFailure(path, `live generation isolation: ${reason}`);
+      throw {
+        ...packSourceFailure(path, `live generation isolation: ${reason}`),
+        expected: 'live generation imports',
+        hint: reason,
+      };
     };
     const visit = (node: ts.Node): void => {
       if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
@@ -103,17 +139,8 @@ export function projectPackGenerationModules(
           const packageName = /^@forgeax\/engine(?:\/|-)([^/]+)$/.exec(specifier.text)?.[1];
           const allowed = packageName ? namedImports[packageName] : undefined;
           if (allowed) {
-            const clause = ts.isImportDeclaration(node) ? node.importClause : undefined;
-            const bindings = clause?.namedBindings;
-            if (
-              !bindings ||
-              !ts.isNamedImports(bindings) ||
-              clause?.name ||
-              bindings.elements.some(
-                (item) => !allowed.has(item.propertyName?.text ?? item.name.text),
-              )
-            )
-              reject(`use supported named factories or schemas from ${specifier.text}`);
+            const reason = namedImportRejection(node, specifier.text, allowed);
+            if (reason) reject(reason);
           } else if (
             specifier.text.includes('?') ||
             (!specifier.text.startsWith('.') && !imports.has(specifier.text))

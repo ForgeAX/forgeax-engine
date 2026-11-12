@@ -61,3 +61,37 @@ describe('empty retained input', () => {
     expect(destroy).toHaveBeenCalledOnce();
   });
 });
+
+it('does not enumerate retained rows without resource owners, while disposing transient buffers', () => {
+  let rowReads = 0;
+  const rows = Array.from({ length: 2048 }, (_, entityKey) => ({
+    get source() {
+      rowReads += 1;
+      return { worldId: 0, entityKey };
+    },
+  }));
+  const iterateRows = vi.spyOn(rows, Symbol.iterator);
+  const retained = new Set([4096]);
+  const iterateRetained = vi.spyOn(retained, Symbol.iterator);
+  const destroy = vi.fn(() => ({ ok: true, value: undefined }));
+  const fire = vi.fn();
+  const state = {
+    materialBgPerEntity: new Map(),
+    instancesBgPerEntity: new Map(),
+    instanceBuffers: new Map(),
+    instanceBufferChunks: new Map(),
+    transientInstanceBuffers: [{ buffer: { isDestroyed: false, destroy } }],
+  };
+  cleanPerFrameCaches(
+    { errorRegistry: { fire } } as never,
+    state as never,
+    rows as never,
+    retained,
+  );
+  expect(destroy).toHaveBeenCalledOnce();
+  expect(state.transientInstanceBuffers).toHaveLength(0);
+  expect(fire).not.toHaveBeenCalled();
+  expect(rowReads).toBe(0);
+  expect(iterateRows).not.toHaveBeenCalled();
+  expect(iterateRetained).not.toHaveBeenCalled();
+});

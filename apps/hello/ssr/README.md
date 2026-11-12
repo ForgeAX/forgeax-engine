@@ -54,7 +54,9 @@ receipts and reports one of the following states:
 The recovery route is always `inspect -> read the closed error/action -> repair
 the owning producer -> submit -> reinspect`. A failed submit keeps the previous
 owner receipt and hides the candidate; device recovery requires a new device
-generation before another frame is accepted.
+generation before another frame is accepted. The replacement temporal receipt
+is absent until that submit; recovery evidence remains pending until a successful
+submission names the replacement generation.
 
 ## Reproduce the carrier
 

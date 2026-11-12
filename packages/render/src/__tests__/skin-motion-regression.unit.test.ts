@@ -84,11 +84,7 @@ describe('custom skinned mesh motion consumer contract', () => {
   });
 
   it('warms only device-reachable skin variants while retaining all draw and reflection lanes', () => {
-    const deviceAxes = [
-      'EXTENDED_LIGHTING_AVAILABLE',
-      'DIRECTIONAL_PCSS_AVAILABLE',
-      'PROJECTOR_AVAILABLE',
-    ] as const;
+    const deviceAxes = ['EXTENDED_LIGHTING_AVAILABLE', 'PROJECTOR_AVAILABLE'] as const;
     const drawAxes = [
       'CLUSTER_FORWARD_AVAILABLE',
       'VERTEX_COLOR_AVAILABLE',
@@ -119,7 +115,6 @@ describe('custom skinned mesh motion consumer contract', () => {
     for (const variant of selected) {
       expect(variant.defines).toMatchObject({
         EXTENDED_LIGHTING_AVAILABLE: false,
-        DIRECTIONAL_PCSS_AVAILABLE: true,
         PROJECTOR_AVAILABLE: false,
       });
     }

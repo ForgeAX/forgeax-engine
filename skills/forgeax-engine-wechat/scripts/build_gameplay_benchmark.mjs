@@ -309,8 +309,8 @@ export async function buildGameplayBenchmark({
   );
   host = edit(
     host,
-    `${nativeNamespace}.n(wx,v,{ui:f.input,keyboard:wx,onError:e=>console.warn(\`ForgeaX native input failed\`,e)}).unwrap()`,
-    '__browserHost.createBrowserInput(y,f.input,e=>console.warn(`ForgeaX native input failed`,e))',
+    `${nativeNamespace}.n(wx,v,{ui:f.input,keyboard:wx,onError:e=>console.warn(\`ForgeAX native input failed\`,e)}).unwrap()`,
+    '__browserHost.createBrowserInput(y,f.input,e=>console.warn(`ForgeAX native input failed`,e))',
     'Real DOM contacts into Blitz',
   );
   host = edit(

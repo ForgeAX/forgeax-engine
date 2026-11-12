@@ -1,6 +1,7 @@
 import type { AtmosphereParameters } from '../extract/environment';
 
 export const earthAtmosphere: AtmosphereParameters = {
+  backgroundOnly: false,
   planetRadius: 6_360_000,
   atmosphereHeight: 60_000,
   groundOrigin: [0, 0, 0],

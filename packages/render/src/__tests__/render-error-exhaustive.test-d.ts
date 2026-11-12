@@ -1,8 +1,10 @@
 import type {
   RenderError,
   RenderErrorCode,
+  RenderFeatureBatchIncompleteError,
   RenderFeatureCapabilityMissingError,
   RenderFeatureDrawRecordingFailedError,
+  RenderFeatureInputUnavailableError,
   RenderFeaturePassOrderConflictError,
   RenderFeaturePreparationFailedError,
   RenderFeaturePreparedStateMismatchError,
@@ -41,6 +43,10 @@ function renderFeatureCodeLabel(code: RenderFeatureErrorCode): string {
     case 'render-feature-prepared-state-mismatch':
       return code;
     case 'render-feature-draw-recording-failed':
+      return code;
+    case 'render-feature-input-unavailable':
+      return code;
+    case 'render-feature-batch-incomplete':
       return code;
   }
 }
@@ -88,6 +94,14 @@ function renderFeatureErrorLabel(error: RenderError): string {
     case 'render-feature-draw-recording-failed': {
       const typed: RenderFeatureDrawRecordingFailedError = error;
       return `${typed.detail.featureIdentity}:${typed.detail.backendReason}`;
+    }
+    case 'render-feature-input-unavailable': {
+      const typed: RenderFeatureInputUnavailableError = error;
+      return `${typed.detail.view}:${typed.detail.reason}`;
+    }
+    case 'render-feature-batch-incomplete': {
+      const typed: RenderFeatureBatchIncompleteError = error;
+      return typed.detail.missing.join(',');
     }
     case 'render-feature-registration-conflict': {
       const typed: RenderFeatureRegistrationConflictError = error;

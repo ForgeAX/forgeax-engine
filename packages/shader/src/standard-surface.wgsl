@@ -3,7 +3,8 @@
 #import forgeax_view::common::{view, sampleMaterialTexture}
 #import forgeax_view::fog::{translucent_fog_transmission}
 #import forgeax_pbr::brdf::{f_schlick}
-#import forgeax_pbr::specular_aa::{geometricNormalSpread, specularAntiAliasedRoughness}
+#import forgeax_pbr::ibl_shared::{standardSpecularOcclusion}
+#import forgeax_pbr::specular_aa::{geometricNormalSpread, shadingNormalSpread, specularAntiAliasedRoughness}
 #import forgeax_pbr::ibl_sampling::{decodeSpecularEnvironmentScale, sampleIblDiffuse, sampleIblSpecular, sampleReflectionProbeSpecular}
 #import forgeax_pbr::standard_lighting::{SkylightUniforms, evaluateStandardEnvironment}
 #import forgeax_pbr::tbn::{decodeTangentSpaceNormalRg, scaleTangentSpaceNormal, applyTBN}
@@ -107,6 +108,10 @@ fn materialTextureFilteringWitness() {
   // The same filtering sampler also serves these shared IBL textures.
   let irradianceWitness = textureSample(irradianceMap, irradianceSampler, vec3<f32>(0.0, 0.0, 1.0));
   let brdfWitness = textureSample(brdfLut, irradianceSampler, vec2<f32>(0.0));
+#endif
+#ifdef ENV_BRDF_FIT
+  // The analytic environment BRDF never samples brdfLut; keep its filtering contract.
+  let envBrdfWitness = textureSample(brdfLut, irradianceSampler, vec2<f32>(0.0));
 #endif
   let base = baseColorTexture;
   let metallicRoughness = metallicRoughnessTexture;
@@ -343,7 +348,18 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
 #ifdef DIRECT_DFG_LUT_AVAILABLE
   useDirectDfgLut = material.directMultiscatteringLut != 0u;
 #endif
-  let normalSpread = geometricNormalSpread(in.worldNormal);
+  // TBN basis composed via forgeax_pbr::tbn helpers; default fallback
+  // (defaultNormalTextureView) RG=(128,128) -> tangent (0,0,1) -> world n
+  // unchanged.
+  let normalUv = transformedMaterialUv(material.normalTextureCoordinatesTransform, material.normalTextureCoordinatesMetadata, material.normalTextureCoordinatesRotation, in);
+  let normSampleRg = sampleMaterialTexture(normalTexture, normalTexture_sampler, normalUv, material.normalTextureCoordinatesMetadata.zw).rg;
+  let normTangent = scaleTangentSpaceNormal(
+    decodeTangentSpaceNormalRg(normSampleRg), material.normalScale,
+  );
+  let n = applyTBN(in.worldNormal, in.worldTangent, normTangent);
+
+  // Both spreads are taken before alpha test, while control flow is uniform.
+  let normalSpread = max(geometricNormalSpread(in.worldNormal), shadingNormalSpread(n));
   let baseUv = transformedMaterialUv(material.baseColorTextureCoordinatesTransform, material.baseColorTextureCoordinatesMetadata, material.baseColorTextureCoordinatesRotation, in);
   let baseSample = sampleMaterialTexture(baseColorTexture, baseColorTexture_sampler, baseUv, material.baseColorTextureCoordinatesMetadata.zw);
   let vertexColor = materialVertexColor(in);
@@ -377,16 +393,6 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   let iblRoughness = specularAntiAliasedRoughness(
     clamp(max(finiteScalar(factors.roughness, 0.5), 0.04) * roughnessTex, 0.04, 1.0), normalSpread);
   let a = iblRoughness * iblRoughness;
-
-  // TBN basis composed via forgeax_pbr::tbn helpers; default fallback
-  // (defaultNormalTextureView) RG=(128,128) -> tangent (0,0,1) -> world n
-  // unchanged.
-  let normalUv = transformedMaterialUv(material.normalTextureCoordinatesTransform, material.normalTextureCoordinatesMetadata, material.normalTextureCoordinatesRotation, in);
-  let normSampleRg = sampleMaterialTexture(normalTexture, normalTexture_sampler, normalUv, material.normalTextureCoordinatesMetadata.zw).rg;
-  let normTangent = scaleTangentSpaceNormal(
-    decodeTangentSpaceNormalRg(normSampleRg), material.normalScale,
-  );
-  let n = applyTBN(in.worldNormal, in.worldTangent, normTangent);
 
   let v = normalize(view.cameraPos - in.worldPos);
   let specularUv = transformedMaterialUv(material.specularTintTextureCoordinatesTransform, material.specularTintTextureCoordinatesMetadata, material.specularTintTextureCoordinatesRotation, in);
@@ -492,7 +498,7 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
   let ao = mix(1.0, aoSample.r, material.occlusionStrength);
   let specularEnvironmentScale = decodeSpecularEnvironmentScale(vec3<f32>(skylight.colorR, skylight.colorG, skylight.colorB), skylight.intensity);
   var reflectionFallback = environment.specular * (vec3<f32>(1.0) - coatF);
-  var ambient = (environment.diffuse + environment.specular) * (vec3<f32>(1.0) - coatF);
+  let ambientDiffuse = environment.diffuse * (vec3<f32>(1.0) - coatF);
   if (factors.clearcoat != 0.0) {
     // Keep the clearcoat lobe on the same selected environment as the base
     // specular lobe. Probe mode reuses the packed center/extents lanes in the
@@ -516,19 +522,20 @@ fn evaluateStandardSurface(in : VsOut, factors : StandardSurfaceFactors) -> Stan
       );
     }
     let clearcoatContribution = clearcoatIbl * factors.clearcoat * specularEnvironmentScale;
-    ambient = ambient + clearcoatContribution;
     reflectionFallback = reflectionFallback + clearcoatContribution;
   }
-  ambient = ambient * ao;
-  reflectionFallback = reflectionFallback * ao;
 #ifdef CLUSTER_FORWARD_AVAILABLE
 #if STORAGE_BUFFER_AVAILABLE == true
   let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj,
     ssaoBlurredTexture, ssaoBlurredSampler);
-  ambient *= screenAo;
-  reflectionFallback *= screenAo;
+#else
+  let screenAo = sampleStandardAmbientOcclusion(in.worldPos, view.worldViewProj);
 #endif
+#else
+  let screenAo = 1.0;
 #endif
+  reflectionFallback = reflectionFallback * standardSpecularOcclusion(max(dot(n, v), 0.0), ao * screenAo, iblRoughness);
+  var ambient = ambientDiffuse * ao * screenAo + reflectionFallback;
   var color = ambient;
   var transmittedContribution=vec3<f32>(0.0);
   var transmittedCoefficient=vec3<f32>(0.0);

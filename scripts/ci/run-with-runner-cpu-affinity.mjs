@@ -10,6 +10,33 @@ import { runnerResources } from '../lib/runner-resources.mjs';
 
 const PROC_STATUS = '/proc/self/status';
 
+/** Raw kernel counters distinguish cgroup limits from shared-host CPU and memory pressure. */
+export function readCpuPressureDiagnostics({ read = (path) => readFileSync(path, 'utf8') } = {}) {
+  const diagnostics = {};
+  for (const [key, path] of [
+    ['cgroupV2Stat', '/sys/fs/cgroup/cpu.stat'],
+    ['cgroupV1Stat', '/sys/fs/cgroup/cpu/cpu.stat'],
+    ['cgroupPressure', '/sys/fs/cgroup/cpu.pressure'],
+    ['hostPressure', '/proc/pressure/cpu'],
+    ['hostMemoryPressure', '/proc/pressure/memory'],
+    ['cgroupMemoryPressure', '/sys/fs/cgroup/memory.pressure'],
+    ['cgroupV2MemoryCurrent', '/sys/fs/cgroup/memory.current'],
+    ['cgroupV2MemoryPeak', '/sys/fs/cgroup/memory.peak'],
+    ['cgroupV2MemoryEvents', '/sys/fs/cgroup/memory.events'],
+    ['cgroupV1MemoryUsage', '/sys/fs/cgroup/memory/memory.usage_in_bytes'],
+    ['cgroupV1MemoryPeak', '/sys/fs/cgroup/memory/memory.max_usage_in_bytes'],
+    ['cgroupV1MemoryOom', '/sys/fs/cgroup/memory/memory.oom_control'],
+  ]) {
+    try {
+      const value = read(path)?.trim();
+      if (value) diagnostics[key] = value;
+    } catch {
+      // These optional kernel interfaces may be absent or unreadable on a runner.
+    }
+  }
+  return Object.keys(diagnostics).length === 0 ? null : diagnostics;
+}
+
 /**
  * Expand Linux's Cpus_allowed_list representation without trusting the
  * machine label. The benchmark only binds to CPUs that the runner process is
@@ -65,7 +92,6 @@ export function resolveRunnerCpuAffinity({
   platform = process.platform,
   resources = runnerResources(),
   allowedCpus = readAllowedCpuList(),
-  runnerName = process.env.RUNNER_NAME ?? '',
   read = (path) => readFileSync(path, 'utf8'),
 } = {}) {
   const common = {
@@ -91,17 +117,13 @@ export function resolveRunnerCpuAffinity({
       ...common,
     };
   }
-  // Shared containers can expose the entire host mask with a smaller quota.
-  // Always taking its first CPUs crowds unrelated runners onto one window.
-  // Existing runner identity spreads stable, quota-sized windows; it is not
-  // an exclusive CPU lease, and never changes the allowed set or CPU budget.
   // Containers can see every logical CPU on a host while cgroups cap the
   // process to a much smaller CPU budget. A logical window of eight adjacent
   // IDs can be only four physical cores when SMT siblings are adjacent. Dawn
   // and SwiftShader are CPU-heavy, so prefer one allowed thread per physical
   // core when topology is available and enough distinct cores fit the quota.
   // If topology is missing or the cpuset exposes fewer physical cores than
-  // the cgroup budget, retain the bounded logical-CPU selection below.
+  // the cgroup budget, assess the allowed logical CPU pool instead.
   const topology = runnerCpuSiblings({
     platform,
     selectedCpuList: formatCpuList(allowedCpus),
@@ -116,14 +138,14 @@ export function resolveRunnerCpuAffinity({
   }
   const usePhysicalCores = physicalCoreCpus.length >= resources.cpus;
   const cpuPool = usePhysicalCores ? physicalCoreCpus : allowedCpus;
-  const windows = Math.floor(cpuPool.length / resources.cpus);
-  const identity = typeof runnerName === 'string' ? runnerName.trim() : '';
-  const window =
-    identity !== '' && windows > 1
-      ? createHash('sha256').update(identity).digest().readUInt32BE(0) % windows
-      : 0;
-  const offset = window * resources.cpus;
-  const selectedCpus = cpuPool.slice(offset, offset + resources.cpus);
+  // A quota is a time budget, not a reservation of particular host cores.
+  // Hash-selected windows can collide across concurrent containers on the
+  // same kernel. Leave placement to the scheduler when the available pool
+  // exceeds our budget; worker admission still uses the cgroup quota.
+  if (cpuPool.length > resources.cpus) {
+    return { ok: true, mode: 'none', reason: 'shared-cpu-set-with-quota', ...common };
+  }
+  const selectedCpus = cpuPool.slice(0, resources.cpus);
   return {
     ok: true,
     mode: 'taskset',
@@ -359,6 +381,23 @@ function run(command, affinity) {
       ? ['--cpu-list', affinity.selectedCpuList, ...command]
       : command.slice(1);
   const child = spawn(childCommand, childArgs, { env, stdio: 'inherit' });
+  const started = performance.now();
+  const sampleCpuPressure = (state) => {
+    const counters = readCpuPressureDiagnostics();
+    if (counters === null) return;
+    process.stdout.write(
+      `[runner-cpu-pressure] ${JSON.stringify({
+        state,
+        elapsedMs: Math.round(performance.now() - started),
+        kernelFingerprint: affinity.kernelFingerprint,
+        ...counters,
+      })}\n`,
+    );
+  };
+  sampleCpuPressure('start');
+  const cpuObserver =
+    process.platform === 'linux' ? setInterval(() => sampleCpuPressure('periodic'), 30_000) : null;
+  cpuObserver?.unref();
   const recorded = new Map();
   let scopeStatus;
   let affinityFailed = false;
@@ -404,11 +443,14 @@ function run(command, affinity) {
       : null;
   observer?.unref();
   child.once('error', (error) => {
+    clearInterval(cpuObserver);
     clearInterval(observer);
     process.stderr.write(`[runner-affinity] failed to start ${childCommand}: ${error.message}\n`);
     process.exitCode = 1;
   });
   child.once('close', (status, signal) => {
+    clearInterval(cpuObserver);
+    sampleCpuPressure('complete');
     clearInterval(observer);
     if (status !== null) process.exitCode = status === 0 && affinityFailed ? 1 : status;
     else process.exitCode = 1;

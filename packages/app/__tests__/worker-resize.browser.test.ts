@@ -3,6 +3,7 @@ import { createApp, measureCanvasDrawingBuffer } from '@forgeax/engine-app/brows
 import { workerSelection } from '../src/__tests__/execution-fixtures';
 import type { InputBackendSample } from '@forgeax/engine-input';
 import { startEngineWorker, type EngineWorkerSession } from '../src/execution/engine-worker';
+import { DEFAULT_RENDER_PIPELINE_CAPACITY } from '../src/execution/protocol';
 import type {
   EngineToHostMessage,
   ExecutionFrameCompletion,
@@ -109,7 +110,13 @@ describe('Engine Worker canvas resize', () => {
       window.dispatchEvent(new PageTransitionEvent('pageshow'));
       await expect.poll(() => deltas.length, { timeout: 10_000 }).toBeGreaterThan(hiddenCount + 1);
       expect(deltas[hiddenCount]).toBe(0);
-      expect(app.execution.report().frame.highWater).toBe(1);
+      // Without a Render Worker one frame is in flight. With one, highWater is the
+      // observed admitted-unfinished depth, bounded by the default pipeline capacity.
+      const highWater = app.execution.report().frame.highWater;
+      if (render) {
+        expect(highWater).toBeGreaterThanOrEqual(1);
+        expect(highWater).toBeLessThanOrEqual(DEFAULT_RENDER_PIPELINE_CAPACITY);
+      } else expect(highWater).toBe(1);
       app.pause().unwrap();
       window.dispatchEvent(new PageTransitionEvent('pagehide'));
       window.dispatchEvent(new PageTransitionEvent('pageshow'));

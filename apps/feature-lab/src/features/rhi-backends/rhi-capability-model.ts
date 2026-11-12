@@ -8,6 +8,7 @@ const BOOLEAN_CAPS = [
   'indirectDrawing',
   'storageBuffer',
   'storageTexture',
+  'depthTextureLoad',
   'firstInstanceIndirect',
   'textureCompressionBc',
   'rgba16floatRenderable',

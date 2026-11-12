@@ -43,6 +43,11 @@ export interface PreparedPublishedMeshResidency {
   isCurrent(): boolean;
   /** False transfers residency after source publication; true also cancels a pending transfer. */
   release(evict?: boolean): Promise<void> | undefined;
+  /** Transfer preparation proof to an actual current draw; stale or absent lanes do nothing. */
+  consumeRecordStage(
+    frame: FrameReceipt,
+    entity: number,
+  ): DynamicGeometryRecordStageLane | undefined;
   /** Only the exact latest submitted frame can read its record-stage evidence. */
   recordStageLane(
     frame: FrameReceipt,

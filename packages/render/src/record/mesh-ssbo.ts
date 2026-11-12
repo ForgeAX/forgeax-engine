@@ -1,4 +1,4 @@
-import { type BindGroup, RhiError, type RhiQueue } from '@forgeax/engine-rhi';
+import type { BindGroup, RhiQueue } from '@forgeax/engine-rhi';
 import { ok, type Result } from '@forgeax/engine-types';
 import {
   type MeshSsboBufferWrapper,
@@ -8,13 +8,20 @@ import {
   writeMeshSsboBuffer,
 } from '../assembly/mesh-ssbo-grow';
 import { LIGHTING_CHANNELS_DEFAULT } from '../components/lighting-channels';
+import { uniqueInstanceIdentities } from '../instances';
 import { type MaterialResource, materialUsesSpriteGeometry } from '../material-resource';
-import type { DispatchEntry, DispatchList } from '../render-system-extract';
+import type {
+  DispatchEntry,
+  DispatchList,
+  MaterialSnapshot,
+  RenderableSnapshot,
+} from '../render-system-extract';
 import {
   TRANSPARENT_SORT_MODE_LAYER_Y,
   TRANSPARENT_SORT_MODE_LAYER_Z,
   type TransparentSortConfig,
 } from '../systems/transparent-sort-config';
+import { recordContext } from '../world/view-record-context';
 import { type ValidatedRenderable, worldEntityKey } from './frame-snapshot';
 import type { _InternalRenderPipelineContext } from './render-context';
 
@@ -54,13 +61,11 @@ export const MAX_UNIFORM_INSTANCES = 128;
 export const INSTANCE_STORAGE_STRIDE_FLOATS = 32;
 
 function hasStableGenerationColumn(generations: Uint32Array | undefined, count: number): boolean {
-  if (generations === undefined || generations.length !== count) return false;
-  const seen = new Set<number>();
-  for (const generation of generations) {
-    if (generation === 0 || seen.has(generation)) return false;
-    seen.add(generation);
-  }
-  return true;
+  return (
+    generations !== undefined &&
+    generations.length === count &&
+    uniqueInstanceIdentities(generations)
+  );
 }
 
 /**
@@ -72,31 +77,41 @@ function hasStableGenerationColumn(generations: Uint32Array | undefined, count: 
  * compact 16-float payload and do not use this projection.
  */
 export function packInstanceStorageBuffer(
+  out: Float32Array,
   transforms: Float32Array,
   previousTransforms: Float32Array = transforms,
   generations?: Uint32Array,
   previousGenerations?: Uint32Array,
 ): Float32Array {
   const count = Math.floor(transforms.length / 16);
-  const out = new Float32Array(count * INSTANCE_STORAGE_STRIDE_FLOATS);
+  if (out.length !== count * INSTANCE_STORAGE_STRIDE_FLOATS)
+    throw new RangeError('Instance storage output must match the packed instance count');
   const previousCount = Math.floor(previousTransforms.length / 16);
   const generationInput = generations !== undefined || previousGenerations !== undefined;
   const identityProof =
     hasStableGenerationColumn(generations, count) &&
     hasStableGenerationColumn(previousGenerations, previousCount);
-  const previousIndexByGeneration = identityProof
-    ? new Map(
-        Array.from(previousGenerations ?? [], (generation, index) => [generation, index] as const),
-      )
-    : undefined;
+  // An unchanged identity column pairs every ordinal with itself.
+  const sameColumn = identityProof && generations === previousGenerations;
+  const previousIndexByGeneration =
+    identityProof && !sameColumn
+      ? new Map(
+          Array.from(
+            previousGenerations ?? [],
+            (generation, index) => [generation, index] as const,
+          ),
+        )
+      : undefined;
   for (let i = 0; i < count; i++) {
     const sourceBase = i * 16;
     const targetBase = i * INSTANCE_STORAGE_STRIDE_FLOATS;
-    const previousIndex = identityProof
-      ? previousIndexByGeneration?.get(generations?.[i] ?? 0)
-      : !generationInput && previousCount === count
-        ? i
-        : undefined;
+    const previousIndex = sameColumn
+      ? i
+      : identityProof
+        ? previousIndexByGeneration?.get(generations?.[i] ?? 0)
+        : !generationInput && previousCount === count
+          ? i
+          : undefined;
     const sameIdentity = previousIndex !== undefined && previousIndex < previousCount;
     const previousBase = (previousIndex ?? i) * 16;
     for (let k = 0; k < 16; k++) {
@@ -408,82 +423,12 @@ export function ensureMeshSsboCapacity(
   neededMeshSlots: number,
   neededMaterialSlots: number,
 ): MeshSsboGrowResult {
-  const grow = internals.growMeshSsbo;
+  const grow = recordContext(internals).growMeshSsbo;
   if (grow === undefined || (neededMeshSlots <= 0 && neededMaterialSlots <= 0)) return { ok: true };
-  const beforeMesh = internals.meshSsboState?.meshSlotCount ?? 0;
-  const beforeMaterial = internals.meshSsboState?.materialSlotCount ?? 0;
+  const beforeMesh = recordContext(internals).meshSsboState?.meshSlotCount ?? 0;
+  const beforeMaterial = recordContext(internals).meshSsboState?.materialSlotCount ?? 0;
   if (beforeMesh >= neededMeshSlots && beforeMaterial >= neededMaterialSlots) return { ok: true };
-  const result = grow(neededMeshSlots, neededMaterialSlots);
-  if (!result.ok) return result;
-  const after = internals.meshSsboState;
-  if (
-    after !== undefined &&
-    (after.meshSlotCount !== beforeMesh || after.materialSlotCount !== beforeMaterial) &&
-    meshSsboDevModeProbe()
-  ) {
-    // biome-ignore lint/suspicious/noConsole: bounded dev-only capacity transition evidence
-    console.info(
-      '[mesh-ssbo] grew mesh slots: %d -> %d (requested=%d); material slots: %d -> %d (requested=%d)',
-      beforeMesh,
-      after.meshSlotCount,
-      neededMeshSlots,
-      beforeMaterial,
-      after.materialSlotCount,
-      neededMaterialSlots,
-    );
-  }
-  return result;
-}
-
-/**
- * Test seam: a closure-local function pointer ensureMeshSsboCapacity reads
- * for the dev-mode gate. Defaults to `isMeshSsboDevMode`; tests swap it out
- * via `setMeshSsboDevModeProbeForTests` because vitest 4.x export bindings
- * are non-writable (ESM spec) and `import.meta.env.DEV` is build-time-frozen
- * by the vite transform — neither `vi.spyOn(recordModule, 'isMeshSsboDevMode')`
- * nor `vi.stubEnv('DEV', false)` toggles it at runtime.
- */
-let meshSsboDevModeProbe: () => boolean = isMeshSsboDevMode;
-
-/**
- * @internal — test-only injection seam for `ensureMeshSsboCapacity`'s
- * dev-mode gate. Pass `undefined` to restore the production probe
- * (`isMeshSsboDevMode`). Production code paths NEVER call this.
- */
-export function setMeshSsboDevModeProbeForTests(probe: (() => boolean) | undefined): void {
-  meshSsboDevModeProbe = probe ?? isMeshSsboDevMode;
-}
-
-/**
- * Dev-mode probe for `ensureMeshSsboCapacity`'s console.info gate
- * (plan-strategy §2.D-3 + AC-11). True when the build is in dev mode:
- *   - `import.meta.env?.DEV` is truthy (vite dev / vitest), OR
- *   - `process.env.NODE_ENV !== 'production'` (esbuild / tsup / dawn-node).
- * Optional-chain keeps it safe in non-vite ESM envs that never inject
- * `import.meta.env` (the chain short-circuits to undefined → falsy).
- *
- * Vite's `import.meta.env.DEV` is constant-folded at build time, so the
- * production bundle dead-code-strips the entire branch even though the
- * test fall-through reads `process.env.NODE_ENV`.
- *
- * @internal — exported as a function (not a const) so unit tests can
- * `vi.spyOn(...).mockReturnValue(false)` to exercise the dev=false path
- * (vitest 4.x cannot toggle `import.meta.env.DEV` at runtime — it is
- * compile-time-frozen by the vite transform).
- */
-export function isMeshSsboDevMode(): boolean {
-  const importMetaDev = (import.meta as { env?: { DEV?: unknown } }).env?.DEV;
-  if (importMetaDev) return true;
-  // Fallback for tsup / esbuild / dawn-node where import.meta.env is absent:
-  // NODE_ENV !== 'production' counts as dev. NODE_ENV unset (undefined)
-  // also counts as dev so test envs without explicit NODE_ENV log too —
-  // production builds always set NODE_ENV='production'. We read process via
-  // globalThis to keep this file @types/node-free (rest of the package is
-  // browser-typed; engine-runtime ships ESM into both browser + dawn-node).
-  const proc = (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
-  if (proc !== undefined && proc.env?.NODE_ENV === 'production') return false;
-  if (proc === undefined) return false;
-  return true;
+  return grow(neededMeshSlots, neededMaterialSlots);
 }
 
 // Transform, temporal, surface and Sprite region fit the aligned direct slot.
@@ -654,18 +599,7 @@ function stageMeshDraw(
   )
     return;
   writeMeshSlotCandidate(entry, folded);
-  const surface = storageBuffer ? 36 : 16;
-  candidateBits[surface] = visibleSurfaceBases === undefined ? 0 : (surfaceBase ?? 0);
-  candidateBits[surface + 1] =
-    visibleSurfaceBases === undefined ? 0 : (entry.source.instances?.instanceCount ?? 1);
-  candidateBits[surface + 2] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
-  candidateBits[surface + 3] = 0;
-  const region = entry.source.spriteRegion;
-  if (region !== undefined) {
-    candidateBits[storageBuffer ? 39 : 19] = 1;
-    for (let index = 0; index < 4; index++)
-      candidate[(storageBuffer ? 40 : 20) + index] = region[index] ?? 0;
-  }
+  writeMeshSurfaceCandidate(entry, visibleSurfaceBases, surfaceBase, storageBuffer);
   if (stageMeshSlot(mirror, slot)) mirror.dirty.add(slot);
   mirror.sources.set(slot, {
     source: entry.source,
@@ -674,6 +608,27 @@ function stageMeshDraw(
     folded,
     hasSurface: visibleSurfaceBases !== undefined,
   });
+}
+
+/** Encode the shared surface tail without changing the Mesh binding layout. */
+function writeMeshSurfaceCandidate(
+  entry: MeshUpload,
+  visibleSurfaceBases: ReadonlyMap<number, number> | undefined,
+  surfaceBase: number | undefined,
+  storageBuffer: boolean,
+): void {
+  const surface = storageBuffer ? 36 : 16;
+  candidateBits[surface] = visibleSurfaceBases === undefined ? 0 : (surfaceBase ?? 0);
+  candidateBits[surface + 1] =
+    visibleSurfaceBases === undefined ? 0 : (entry.source.instances?.instanceCount ?? 1);
+  candidateBits[surface + 2] = entry.source.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  candidateBits[surface + 3] = storageBuffer ? 0 : meshSurfaceFlags(entry.source) & 2;
+  const region = entry.source.spriteRegion;
+  if (region !== undefined) {
+    candidateBits[surface + 3] = (candidateBits[surface + 3] ?? 0) | 1;
+    for (let index = 0; index < 4; index++)
+      candidate[(storageBuffer ? 40 : 20) + index] = region[index] ?? 0;
+  }
 }
 
 /** Stage only the row selected by a real draw. Recording never sweeps rows for updates. */
@@ -749,9 +704,8 @@ export function uploadMeshSsboBatch(
  * Per-bucket descriptor produced by {@link foldDispatchBuckets}.
  *
  * One bucket = one fold-eligible run of consecutive DispatchEntry whose
- * `(layer, sortKey, materialHandle)` triple is equal. Singleton buckets
- * (bucketSize=1) appear when the mode bypasses fold (D-5 mode 2/3) or
- * when consecutive entries differ in one of the three keys.
+ * `(layer, sortKey, materialHandle)` triple is equal. Only runs with at
+ * least two entries produce buckets; other draws remain direct.
  *
  * Fields:
  *   - `entries` — original DispatchEntry slice for this bucket (preserves
@@ -784,7 +738,7 @@ export interface FoldBucket {
  * `transform.world` (a Float32Array of 16 column-major floats) and
  * `material.transparent` (the LDR-split-sub-pass fold gate, see PR #502
  * fix + feat-20260625 R2 fix-up: geometry-pass entities — non-transparent
- * materials — MUST stay singleton because the sprite-pass dispatch path
+ * materials — MUST stay direct because the sprite-pass dispatch path
  * that consumes `headBuckets` does not run for them; folding them would
  * overwrite their mesh-SSBO slot with identity and collapse 3D geometry
  * to origin).
@@ -795,17 +749,33 @@ export interface FoldBucket {
  * undefined`, the post-feat-20260626-collapse SSOT; see
  * `MaterialSnapshot.transparent`), structurally compatible with this
  * minimal shape. The gate read inside the helper uses `=== true` /
- * `!== true` so both `false` and `undefined` enter the singleton branch.
+ * `!== true` so both `false` and `undefined` stay direct.
  *
  * feat-20260625-refactor-sprite-as-transparent-mesh R2 fix-up: the
  * transparent flag identifies the LDR split sub-pass, while the shader id
  * identifies the sprite owner that is safe to fold. Standard PBR Alpha Blend
- * remains singleton so its geometry pass keeps one projection row per draw.
+ * remains direct so its geometry pass keeps one projection row per draw.
  */
 export interface FoldRenderableLike {
+  readonly instances?: unknown;
+  readonly spriteInstances?: unknown;
   readonly transform: { readonly world: Float32Array };
   readonly material: import('../render-system-extract').MaterialSnapshot;
   readonly spriteRegion?: import('../sprite-region').SpriteRegion | undefined;
+}
+
+/** Capture every fact used by folding at both retained and borrowed frame seams. */
+export function foldRenderableSnapshot(
+  source: Pick<RenderableSnapshot, 'transform' | 'spriteRegion' | 'instances' | 'spriteInstances'>,
+  material: MaterialSnapshot,
+): FoldRenderableLike {
+  return {
+    transform: source.transform,
+    material,
+    spriteRegion: source.spriteRegion,
+    instances: source.instances,
+    spriteInstances: source.spriteInstances,
+  };
 }
 
 type ParamSnapshot = MaterialResource['snapshot']['paramSnapshot'];
@@ -826,94 +796,25 @@ function sameParamSnapshot(a: ParamSnapshot, b: ParamSnapshot): boolean {
 }
 
 function isFoldEligible(entry: DispatchEntry, renderables: readonly FoldRenderableLike[]): boolean {
-  const material = renderables[entry.renderableIndex]?.material;
+  const source = renderables[entry.renderableIndex];
+  if (source?.instances !== undefined || source?.spriteInstances !== undefined) return false;
+  const material = source?.material;
   return material?.transparent === true && materialUsesSpriteGeometry(material);
 }
 
 /**
- * Linear-scan fold operator (plan-strategy D-1).
- *
- * Walks `orderedEntries` (must be transparent-sort-ordered when mode=0;
- * the helper trusts the input ordering and only checks adjacent equality
- * — non-consecutive entries with equal keys are NOT merged, preserving
- * stable-sort semantics).
- *
- * @param orderedEntries — DispatchEntry[] in transparent-sort order. Empty
- *   array yields zero buckets (defensive empty-bucket suppression).
- * @param mode — current `TransparentSortConfig.mode`. Modes 0 (LAYER_Z)
- *   and 1 (LAYER_Y) enable fold using the appropriate sort-axis coordinate
- *   (posZ / posY respectively). Modes 2 and 3 produce singleton buckets
- *   per entry (D-5 bypass).
- * @param renderables — parallel snapshot array indexed by
- *   `DispatchEntry.renderableIndex`. The helper reads `transform.world`
- *   to (a) extract the sort-axis coordinate for the bucket key (posZ
- *   world[14] for mode 0, posY world[13] for mode 1), and (b) copy 16
- *   floats per entry into the assembled transforms buffer. Out-of-range /
- *   missing renderables defensively contribute a zero mat4 slot.
- * @returns Array of FoldBucket descriptors in input order.
+ * Materialize only consecutive transparent Sprite runs that reduce draw count.
+ * Non-Sprite work and isolated entries keep their original per-entity commands;
+ * no bucket, entry slice or transform payload is needed for those draws.
+ * Layer-Z and layer-Y compare their exact world coordinate. Other sort modes
+ * cannot qualify folding and read no dispatch or source rows.
  */
 export function foldDispatchBuckets(
   orderedEntries: DispatchList,
   mode: TransparentSortConfig['mode'],
   renderables: readonly FoldRenderableLike[],
 ): readonly FoldBucket[] {
-  if (orderedEntries.length === 0) return [];
-
-  // Bypass branch (D-5): modes 2 (LAYER_YZ) and 3 (DISTANCE) cannot fold
-  // — their sort keys are composite foot-Y formulas or per-entity camera
-  // distances, not reducible to a single world-mat4 coordinate read.
-  // Each entry produces its own singleton bucket; the dispatch consumer
-  // treats bucketSize=1 identically to per-entity drawIndexed (charter P3
-  // silent fallback — no error fired).
-  //
-  // Mode 1 (LAYER_Y) falls through to the fold branch below and uses posY
-  // (world[13]) as the sort-axis bucket key.
-  if (mode !== TRANSPARENT_SORT_MODE_LAYER_Z && mode !== TRANSPARENT_SORT_MODE_LAYER_Y) {
-    const out: FoldBucket[] = [];
-    for (let i = 0; i < orderedEntries.length; i++) {
-      const e = orderedEntries.at(i);
-      if (e === undefined) continue;
-      out.push(makeSingletonBucket(e, renderables, mode));
-    }
-    return out;
-  }
-
-  // Fold branch (mode 0 = LAYER_Z, mode 1 = LAYER_Y): linear scan, collect
-  // runs with equal (layer, sortKey, materialHandle). sortKey is posZ for
-  // mode 0, posY for mode 1 — see readSortKey().
-  //
-  // Transparent-pass-only gate (PR #502 fix + feat-20260625 R2 fix-up):
-  // the only dispatch site that consumes `headBuckets` to emit one
-  // instanced drawIndexed per bucket is the transparent-pass loop in
-  // `render-system-record.ts` (~line 5500; routed via `splitLdrSprite`
-  // filter on `material.transparent === true`). The geometry-pass loop
-  // (~line 4660) iterates `validatedOrdered` and emits per-entity
-  // drawIndexed unchanged; it does NOT branch on `headBuckets`. So when
-  // a non-transparent entry (geometry-pass: unlit / standard-PBR / skin)
-  // is folded into a multi-entry bucket, the mesh-SSBO upload loop
-  // (~line 2710) still overwrites its mesh slot with identity (because
-  // `headBuckets.has(i)` is true), but the geometry-pass then reads
-  // identity and renders the 3D geometry at the origin — collapsing the
-  // frame to black (hello-room CI regression).
-  //
-  // Concept-count fix: encode "fold is transparent-sprite-sub-pass-only" at the
-  // head selection point — the gate is the single bucket-key invariant
-  // that makes both dispatch sites correct without coupling identity-
-  // overwrite logic to a separate check (avoiding the D-9 shared-exit
-  // violation that selecting fix-location B would produce).
-  //
-  // Non-transparent entries (`transparent !== true`) always produce
-  // singleton buckets (bucketSize=1), which `buildFoldDispatchPlan`
-  // filters out (`if (bucket.bucketSize <= 1) continue`), so they never
-  // enter `headBuckets` / `skipIndices` — the mesh-SSBO upload,
-  // transparent-pass, and geometry-pass loops all see them as byte-
-  // identical to the pre-fold per-entity path.
-  //
-  // feat-20260625 R2 fix-up: pre-feat the gate was `shadingModel ===
-  // 'sprite'`; M3 / w15 narrowed the shadingModel union to
-  // `'unlit' | undefined`. The current gate retains the transparent SSOT
-  // and adds the explicit sprite shader identity so Standard PBR Alpha Blend
-  // cannot enter this fold path.
+  if (mode !== TRANSPARENT_SORT_MODE_LAYER_Z && mode !== TRANSPARENT_SORT_MODE_LAYER_Y) return [];
   const buckets: FoldBucket[] = [];
   let runStart = 0;
   while (runStart < orderedEntries.length) {
@@ -922,14 +823,7 @@ export function foldDispatchBuckets(
       runStart += 1;
       continue;
     }
-    // Transparent-pass-only gate (feat-20260625 R2 fix-up): non-transparent
-    // heads emit a singleton bucket and advance the cursor by 1 — no run
-    // extension. `RenderableSnapshot.material.transparent` is the SSOT
-    // carrier (extract stage derives it from the first pass's
-    // `renderState.blend !== undefined`, post-feat-20260626-collapse;
-    // see `MaterialSnapshot.transparent`).
     if (!isFoldEligible(head, renderables)) {
-      buckets.push(makeSingletonBucket(head, renderables, mode));
       runStart += 1;
       continue;
     }
@@ -969,6 +863,10 @@ export function foldDispatchBuckets(
       runEnd += 1;
     }
 
+    if (runEnd === runStart + 1) {
+      runStart = runEnd;
+      continue;
+    }
     const run = orderedEntries.slice(runStart, runEnd);
     const transforms = assembleTransforms(run, renderables);
     buckets.push({
@@ -982,25 +880,6 @@ export function foldDispatchBuckets(
     runStart = runEnd;
   }
   return buckets;
-}
-
-function makeSingletonBucket(
-  entry: DispatchEntry,
-  renderables: readonly FoldRenderableLike[],
-  mode: TransparentSortConfig['mode'],
-): FoldBucket {
-  const transforms = new Float32Array(16);
-  const w = renderables[entry.renderableIndex]?.transform.world;
-  if (w !== undefined) transforms.set(w);
-  const sortKey = readSortKey(mode, entry.renderableIndex, renderables);
-  return {
-    entries: [entry],
-    bucketSize: 1,
-    transforms,
-    materialHandle: entry.materialHandle,
-    layer: entry.layer,
-    sortKey,
-  };
 }
 
 function assembleTransforms(
@@ -1074,11 +953,14 @@ export interface FoldDispatchPlan {
 export function buildFoldDispatchPlan(
   buckets: readonly FoldBucket[],
   renderableIndexToValidatedIndex: ReadonlyMap<number, number>,
+  maxBucketSize = Number.POSITIVE_INFINITY,
 ): FoldDispatchPlan {
+  if (maxBucketSize < 2 || Math.trunc(maxBucketSize) !== maxBucketSize)
+    throw new RangeError('Fold page capacity must be an integer of at least two');
   const headBuckets = new Map<number, FoldBucket>();
   const skipIndices = new Set<number>();
   let foldedBucketCount = 0;
-  for (const bucket of buckets) {
+  for (const bucket of foldPages(buckets, maxBucketSize)) {
     if (bucket.bucketSize <= 1) continue;
     const headEntry = bucket.entries.at(0);
     if (headEntry === undefined) continue;
@@ -1097,6 +979,25 @@ export function buildFoldDispatchPlan(
   return { headBuckets, skipIndices, foldedBucketCount };
 }
 
+/** Keep contiguous sort order and detached transform ownership across physical pages. */
+function* foldPages(buckets: readonly FoldBucket[], capacity: number): Generator<FoldBucket> {
+  for (const bucket of buckets) {
+    if (bucket.bucketSize <= capacity) {
+      yield bucket;
+      continue;
+    }
+    for (let start = 0; start < bucket.bucketSize; start += capacity) {
+      const end = Math.min(start + capacity, bucket.bucketSize);
+      yield {
+        ...bucket,
+        entries: bucket.entries.slice(start, end),
+        bucketSize: end - start,
+        transforms: bucket.transforms.subarray(start * 16, end * 16),
+      };
+    }
+  }
+}
+
 /**
  * WebGL2 uniform-fallback per-bucket instance-count ceiling
  * (feat-20260622-chunk-gpu-instancing-sprite-tilemap M2 / D-2 +
@@ -1110,111 +1011,7 @@ export function buildFoldDispatchPlan(
  */
 export const FOLD_UNIFORM_INSTANCE_CAP = 128;
 
-/**
- * Minimal `RhiCapabilities` shape consumed by the cap-fallback helper.
- *
- * The real `RhiDevice.caps` carries many feature flags; the helper only
- * reads `storageBuffer` (the WebGL2 / WebGPU split signal — true on
- * WebGPU + dawn / wgpu native paths, false on the WebGL2 uniform-only
- * fallback path). Mirrors the field name on the production `RhiCaps`
- * type so the dispatch site can pass `runtime.device.caps` straight in.
- */
-export interface FoldCapsLike {
-  readonly storageBuffer: boolean;
-}
-
-/**
- * Decision POD returned by {@link evaluateFoldBucketUniformCap}.
- *
- * Fields:
- *   - `fallback` — `true` when the bucket must NOT fold and the dispatch
- *     site must route it through the per-entity drawIndexed exit (the
- *     same exit the mode-gate bypass uses, plan-strategy D-9 "shared
- *     fallback exit"). `false` when the bucket can fold normally.
- *   - `error` — the structured RhiError to fire alongside the fallback.
- *     Always populated when `fallback === true`; always `undefined` when
- *     `fallback === false` (charter proposition 4: explicit failure on
- *     the failure path; silent success on the success path).
- *
- * Caller contract: when `fallback === true`, fire the error via the
- * runtime error registry AND draw the bucket's entries individually
- * (each as a 1-instance drawIndexed). Skipping the fallback while still
- * firing the error would leave the frame visually wrong (uniform buffer
- * write would clip at 128 entries).
- */
-export interface FoldBucketCapDecision {
-  readonly fallback: boolean;
-  readonly error: RhiError | undefined;
-}
-
-/**
- * Decide whether a fold bucket fits the WebGL2 uniform-fallback per-bucket
- * instance-count ceiling, returning the structured RhiError + fallback
- * intent the dispatch site needs to act on
- * (feat-20260622-chunk-gpu-instancing-sprite-tilemap M2 / w11 +
- * plan-strategy D-2 + D-9 + AC-05).
- *
- * Decision matrix:
- *
- * | caps.storageBuffer | bucketSize  | fallback | error |
- * |:--|:--|:--|:--|
- * | `true`             | every       | `false`  | `undefined` (WebGPU has no per-binding instance cap inside the storage buffer's `maxStorageBufferBindingSize`; the byte-cap path emits `'limit-exceeded'` separately) |
- * | `false`            | `<= 128`    | `false`  | `undefined` (fits inside the WebGL2 minimum 16384 B UBO with headroom) |
- * | `false`            | `> 128`     | `true`   | `RhiError({ code: 'instancing-exceeds-uniform-cap', detail: { requested, limit: 128, scope } })` |
- *
- * Singleton buckets (`bucketSize === 1`) always pass — they are the
- * mode-gate bypass output and never need the cap check (the cap is
- * about *folded* bucket arity, not about per-entity per-frame work).
- *
- * @param bucket — the FoldBucket whose `bucketSize` is the sole input
- *   (instance count = bucketSize); other fields are not consulted.
- * @param caps — the runtime's RHI capability flags
- *   (`runtime.device.caps`); only `storageBuffer` is read.
- * @param scope — closed `'sprite' | 'tilemap-chunk'` discriminator the
- *   dispatch site picks based on the call site (sprite-pass primary
- *   sprite entry vs tilemap-chunk-derived entry). Surfaced verbatim on
- *   the error's `.detail.scope` so AI users can branch their recovery
- *   on which dispatch site overflowed.
- * @returns a {@link FoldBucketCapDecision} POD; never throws.
- */
-export function evaluateFoldBucketUniformCap(
-  bucket: FoldBucket,
-  caps: FoldCapsLike,
-  scope: 'sprite' | 'tilemap-chunk',
-): FoldBucketCapDecision {
-  if (caps.storageBuffer) return { fallback: false, error: undefined };
-  if (bucket.bucketSize <= FOLD_UNIFORM_INSTANCE_CAP) {
-    return { fallback: false, error: undefined };
-  }
-  const error = new RhiError({
-    code: 'instancing-exceeds-uniform-cap',
-    expected: `bucket instance count <= ${FOLD_UNIFORM_INSTANCE_CAP} (uniform fallback cap)`,
-    hint: `reduce the bucket size (smaller layer/material groupings), switch to a WebGPU-capable backend (storage buffers lift the cap), or accept the per-cell drawIndexed fallback for ${scope}`,
-    detail: {
-      requested: bucket.bucketSize,
-      limit: FOLD_UNIFORM_INSTANCE_CAP,
-      scope,
-    },
-  });
-  return { fallback: true, error };
-}
-
-/**
- * Closed metric key for the AC-06 fold counter
- * (feat-20260622-chunk-gpu-instancing-sprite-tilemap M3 / D-3).
- *
- * Semantics — count of instanced `drawIndexed` calls the fold operator
- * emits this frame; one increment per non-singleton head bucket retained
- * after the M2 / w11 cap-fallback filter. NOT entity count, NOT pre-
- * filter bucket count — cap-overrun buckets that the dispatch site
- * routed through the per-entity fallback exit do not count.
- *
- * Naming follows the EngineMetrics dot-namespace convention
- * (`<feature>.<event>`); `render.instancing.*` covers both sprite and
- * tilemap-chunk dispatch sites without scope ambiguity (research F-5,
- * plan-strategy §8.2). The owning host evidence reads
- * `ownerMetrics.snapshot()['render.instancing.foldedDraws']`.
- */
+/** Number of actual non-singleton folded page draws, excluding direct singleton tails. */
 export const FOLDED_DRAWS_METRIC_KEY = 'render.instancing.foldedDraws';
 
 /**

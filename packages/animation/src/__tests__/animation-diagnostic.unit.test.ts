@@ -14,7 +14,6 @@ import { subscribeAnimationDiagnostics } from '../animation-diagnostic';
 import { AnimationPlayer } from '../animation-player';
 import { AnimatedBy, AnimationTargetId, AnimationTargets } from '../animation-target';
 import { animationPlugin } from '../plugin';
-import { _resetAnimationWarnsForTests } from '../systems/advance-animation-player';
 
 const TARGET_ID = 'a95da0ec669189f98273e8f86d8ad9f2' as AnimationTargetIdValue;
 
@@ -47,16 +46,27 @@ async function playerWithClip(world: World, animationClip = clip()): Promise<Ent
     .unwrap() as EntityHandle;
 }
 
-function diagnostics(spy: ReturnType<typeof vi.spyOn>) {
-  return spy.mock.calls.map((call: unknown[]) => call[0]);
+const diagnosticSubscriptions = new Set<() => void>();
+
+function diagnosticsFor(world: World): unknown[] {
+  const observed: unknown[] = [];
+  diagnosticSubscriptions.add(
+    subscribeAnimationDiagnostics((source, diagnostic) => {
+      if (source === world) observed.push(diagnostic);
+    }),
+  );
+  return observed;
 }
 
 afterEach(() => {
+  for (const unsubscribe of diagnosticSubscriptions) unsubscribe();
+  diagnosticSubscriptions.clear();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('animation runtime diagnostics', () => {
-  it('projects unique channels to subscribers while preserving per-channel console facts', async () => {
+  it('projects unique channel facts to subscribers independent of host mode', async () => {
     const world = new World({ assets: new AssetRegistry() });
     const singleChannel = clip();
     const firstChannel = singleChannel.channels[0];
@@ -69,17 +79,14 @@ describe('animation runtime diagnostics', () => {
       ],
     };
     const player = await playerWithClip(world, twoChannels);
-    const observed: unknown[] = [];
-    const unsubscribe = subscribeAnimationDiagnostics((source, diagnostic) => {
-      if (source === world) observed.push(diagnostic);
-    });
+    const observed = diagnosticsFor(world);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubEnv('NODE_ENV', 'production');
 
     world.update(0.25);
     world.update(0.25);
-    unsubscribe();
 
-    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).not.toHaveBeenCalled();
     expect(observed).toHaveLength(2);
     expect(observed).toEqual([
       expect.objectContaining({
@@ -104,14 +111,16 @@ describe('animation runtime diagnostics', () => {
     const second = new World({ assets: new AssetRegistry() });
     const firstPlayer = await playerWithClip(first);
     await playerWithClip(second);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const firstDiagnostics = diagnosticsFor(first);
+    const secondDiagnostics = diagnosticsFor(second);
 
     first.update(0.25);
     first.update(0.25);
     second.update(0.25);
 
-    expect(diagnostics(warn)).toHaveLength(2);
-    expect(diagnostics(warn)[0]).toEqual({
+    expect(firstDiagnostics).toHaveLength(1);
+    expect(secondDiagnostics).toHaveLength(1);
+    expect(firstDiagnostics[0]).toEqual({
       code: 'animation-target-missing',
       hint: expect.any(String),
       detail: {
@@ -122,11 +131,7 @@ describe('animation runtime diagnostics', () => {
         reason: 'target-missing',
       },
     });
-    expect(Object.isFrozen(diagnostics(warn)[0])).toBe(true);
-
-    _resetAnimationWarnsForTests(first);
-    first.update(0.25);
-    expect(diagnostics(warn)).toHaveLength(3);
+    expect(Object.isFrozen(firstDiagnostics[0])).toBe(true);
   });
 
   it('reuses stable target bindings until relationship inputs change', async () => {
@@ -176,11 +181,11 @@ describe('animation runtime diagnostics', () => {
       .unwrap();
     world.addComponent(target, { component: AnimatedBy, data: { player } }).unwrap();
     world.removeComponent(target, Transform).unwrap();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const diagnostics = diagnosticsFor(world);
 
     world.update(0.25);
 
-    expect(diagnostics(warn)).toContainEqual(
+    expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'animation-target-transform-missing',
         detail: expect.objectContaining({ reason: 'transform-missing', targetId: TARGET_ID }),
@@ -194,7 +199,7 @@ describe('animation runtime diagnostics', () => {
       .unwrap();
     world.addComponent(duplicate, { component: AnimatedBy, data: { player } }).unwrap();
     world.update(0.25);
-    expect(diagnostics(warn)).toContainEqual(
+    expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'animation-target-id-duplicate',
         detail: expect.objectContaining({ reason: 'target-id-duplicate', targetId: TARGET_ID }),
@@ -217,7 +222,7 @@ describe('animation runtime diagnostics', () => {
       speeds: [1, 1],
     });
     world.update(0.25);
-    expect(diagnostics(warn)).toContainEqual(
+    expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'animation-channel-missing',
         detail: expect.objectContaining({ reason: 'channel-missing', targetId: TARGET_ID }),
@@ -269,12 +274,12 @@ describe('animation runtime diagnostics', () => {
       .addComponent(target, { component: AnimationTargetId, data: { value: TARGET_ID } })
       .unwrap();
     world.addComponent(target, { component: AnimatedBy, data: { player } }).unwrap();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const diagnostics = diagnosticsFor(world);
 
     world.update(0.25);
     world.update(0.25);
 
-    expect(diagnostics(warn)).toEqual([
+    expect(diagnostics).toEqual([
       expect.objectContaining({
         detail: expect.objectContaining({
           reason: 'channel-missing',
@@ -293,21 +298,12 @@ describe('animation runtime diagnostics', () => {
     ]);
   });
 
-  it('emits no diagnostic in production', async () => {
-    const proc = globalThis as { process?: { env: { NODE_ENV?: string } } };
-    const saved = proc.process?.env.NODE_ENV;
-    if (proc.process !== undefined) proc.process.env.NODE_ENV = 'production';
-    try {
-      const world = new World({ assets: new AssetRegistry() });
-      await playerWithClip(world);
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      world.update(0.25);
-      expect(warn).not.toHaveBeenCalled();
-    } finally {
-      if (proc.process !== undefined) {
-        if (saved === undefined) delete proc.process.env.NODE_ENV;
-        else proc.process.env.NODE_ENV = saved;
-      }
-    }
+  it('keeps diagnostic facts opt-in and silent without subscribers', async () => {
+    const world = new World({ assets: new AssetRegistry() });
+    await playerWithClip(world);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubEnv('NODE_ENV', 'development');
+    world.update(0.25);
+    expect(warn).not.toHaveBeenCalled();
   });
 });

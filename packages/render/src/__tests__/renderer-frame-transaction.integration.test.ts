@@ -2,7 +2,6 @@ import { World } from '@forgeax/engine-ecs';
 import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { type Buffer, type RhiCommandEncoder, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { RhiNullAdapter, rhi } from '@forgeax/engine-rhi-null';
-import { SHADER_MANIFEST_PUBLICATION_VERSION } from '@forgeax/engine-shader';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -26,7 +25,6 @@ import type {
   InstalledFrameGraph,
   RenderFrameState,
 } from '../record/frame-snapshot';
-import { executeCompiledFrameGraph } from '../record/typed-frame-graph';
 import { createRenderPipelineTarget, type RenderPipelineFrame } from '../render-pipeline';
 import {
   commitTemporalGpuSubmit,
@@ -37,6 +35,23 @@ import {
 } from '../temporal/gpu';
 import { createTemporalView } from '../temporal/view';
 import { addTypedTemporalResolvePass } from '../typed-render-graph-primitives';
+import { adoptViewRecordHistory, viewRecordHistory } from '../world/record-history';
+import { ViewRecorder, ViewSubmission } from '../world/render-views';
+import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
+import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
+import { executeCompiledFrameGraph } from './frame-recording-driver';
+import { standardPbrManifestRow } from './shader-manifest-fixture';
+
+const transactionClusterReflection = {
+  ...STANDARD_CLUSTER_TEST_REFLECTION,
+  boundGlobals: STANDARD_CLUSTER_TEST_REFLECTION.boundGlobals.map((global) => ({
+    ...global,
+    ...(global.resourceKind === 'storage-buffer'
+      ? { span: global.elementStride ?? global.span }
+      : {}),
+    elementType: global.resourceKind === 'storage-buffer' ? 'LightData' : 'struct',
+  })),
+};
 
 function installedGraph(graph: unknown, topologyKey: string): InstalledFrameGraph {
   const noTarget = (): undefined => undefined;
@@ -63,6 +78,39 @@ function selectedEnvironment(sourceKey?: string) {
     fogs: [],
     suns: [],
   }).unwrap();
+}
+
+function transactionShaderManifestUrl(): string {
+  const standard = standardPbrManifestRow('// renderer transaction fixture');
+  const variants = standard.variants.map((variant) =>
+    variant.defines.CLUSTER_FORWARD_AVAILABLE && variant.defines.STORAGE_BUFFER_AVAILABLE
+      ? {
+          ...variant,
+          hash: 'cafe1234',
+          sourceDigest: 'a'.repeat(64),
+          compilerProfile: {
+            id: 'forgeax-material-wgsl-v1',
+            language: 'wgsl',
+            profileVersion: '1',
+            adapterVersion: '1',
+            compilerVersion: '1',
+            nagaVersion: '30.0.1',
+          },
+          reflection: transactionClusterReflection,
+        }
+      : variant,
+  );
+  return `data:application/json,${encodeURIComponent(
+    JSON.stringify({
+      entries: [],
+      materialShaders: [{ ...standard, variants }],
+    }),
+  )}`;
+}
+
+/** RenderRecord opens `encoder`, the one the frame's graph passes record into. */
+function recordInto(device: RhiDevice, encoder: RhiCommandEncoder): void {
+  vi.spyOn(device, 'createCommandEncoder').mockReturnValueOnce(ok(encoder));
 }
 
 function temporalResolveFrame(
@@ -131,6 +179,16 @@ async function buildTemporalResolveGraph(device: RhiDevice) {
       'taa-write-stability',
       descriptor('r8unorm'),
     ).unwrap(),
+    historyFlicker: createRenderPipelineTarget(
+      graph,
+      'taa-history-flicker',
+      descriptor('rgba8unorm'),
+    ).unwrap(),
+    writeFlicker: createRenderPipelineTarget(
+      graph,
+      'taa-write-flicker',
+      descriptor('rgba8unorm'),
+    ).unwrap(),
     scene: createRenderPipelineTarget(graph, 'taa-scene', descriptor('rgba16float')).unwrap(),
     currentTemporal: createRenderPipelineTarget(
       graph,
@@ -180,15 +238,18 @@ async function buildTemporalResolveGraph(device: RhiDevice) {
   // Four rgba16float attachments already consume the default 32-byte budget.
   expect(
     graph.addRasterPass('taa-seed-stability', {
-      accesses: [{ resource: targets.historyStability.view, usage: 'color-attachment' }],
-      colorAttachments: [
-        {
-          view: targets.historyStability.view,
-          loadOp: 'clear',
-          storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        },
+      accesses: [
+        { resource: targets.historyStability.view, usage: 'color-attachment' },
+        { resource: targets.historyFlicker.view, usage: 'color-attachment' },
       ],
+      colorAttachments: [targets.historyStability.view, targets.historyFlicker.view].map(
+        (view) => ({
+          view,
+          loadOp: 'clear' as const,
+          storeOp: 'store' as const,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        }),
+      ),
       encode: () => {},
     }).ok,
   ).toBe(true);
@@ -352,7 +413,10 @@ function executeReplayCapture(
   const internals = {
     errorRegistry: { fire: (error: unknown) => errors.push(error) },
     device: {
+      // RenderRecord opens the submission's one encoder.
+      createCommandEncoder: () => ok(encoder),
       queue: {
+        onSubmittedWorkDone: () => Promise.resolve(),
         submit: () => {
           submits += 1;
           return failureStage === 'submit'
@@ -375,10 +439,11 @@ function executeReplayCapture(
         internals,
         frameState,
         { pipelineState: {} } as never,
-        encoder,
         undefined,
-        () => {
-          commits += 1;
+        {
+          onSubmitted: () => {
+            commits += 1;
+          },
         },
       );
     } catch (error) {
@@ -408,20 +473,11 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({
-            schemaVersion: SHADER_MANIFEST_PUBLICATION_VERSION,
-            entries: [],
-            materialShaders: [],
-            fragments: [],
-            sources: {},
-            receipts: [],
-            entryPoints: [],
-          }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
-    expect((await host.initialization).ok).toBe(true);
+    const initialized = await host.initialization;
+    expect(initialized.ok, initialized.ok ? '' : JSON.stringify(initialized.error)).toBe(true);
     const renderer = exposeRenderer(host);
     const world = new World();
     const first = renderer.attach(world);
@@ -463,9 +519,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await rendererHost.initialization).ok).toBe(true);
@@ -522,9 +576,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await host.initialization).ok).toBe(true);
@@ -560,9 +612,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await renderer.initialization).ok).toBe(true);
@@ -615,9 +665,7 @@ describe('renderer successful-submit transaction', () => {
 
   it('rejects a receipt issued by another Renderer owner', async () => {
     const options = {
-      shaderManifestUrl: `data:application/json,${encodeURIComponent(
-        JSON.stringify({ entries: [] }),
-      )}`,
+      shaderManifestUrl: transactionShaderManifestUrl(),
     };
     const firstRenderer = await constructRenderer(
       { width: 64, height: 64, getContext: () => null },
@@ -728,9 +776,7 @@ describe('renderer successful-submit transaction', () => {
       { width: 64, height: 64, getContext: () => null },
       { rhi },
       {
-        shaderManifestUrl: `data:application/json,${encodeURIComponent(
-          JSON.stringify({ entries: [] }),
-        )}`,
+        shaderManifestUrl: transactionShaderManifestUrl(),
       },
     );
     expect((await renderer.initialization).ok).toBe(true);
@@ -1274,10 +1320,10 @@ describe('renderer successful-submit transaction', () => {
         encoder: device.createCommandEncoder({ label: 'temporal-readiness-probe' }).unwrap(),
         pipelineState: {},
       } as unknown as RenderPipelineFrame,
-      device.createCommandEncoder({ label: 'temporal-readiness-probe-submit' }).unwrap(),
     );
     expect(result).toBe(false);
     expect(submits).not.toHaveBeenCalled();
+    settleTemporalFrame(frameState, { device, errorRegistry: errors }, false);
     expect(frameState.activeTemporalGpuState).toBeUndefined();
     expect(frameState.temporalGpuState).toBeUndefined();
     expect(candidate.childScope.resourceDelta()).toBe(0);
@@ -1364,18 +1410,23 @@ describe('renderer successful-submit transaction', () => {
       frameState,
       failureAt === 'pipeline' ? null : {},
     );
+    recordInto(device, failedFrame.encoder);
     const failed = executeCompiledFrameGraph(
       { device, errorRegistry: errors } as never,
       frameState,
       failedFrame,
-      failedFrame.encoder,
       undefined,
-      () => gpuCommitAfterSubmit.push(submits.mock.calls.length),
+      {
+        onSubmitted: () => {
+          gpuCommitAfterSubmit.push(submits.mock.calls.length);
+        },
+      },
     );
     expect(failed).toBe(false);
     expect(submits).not.toHaveBeenCalled();
     expect(gpuCommitAfterSubmit).toEqual([]);
     expect(observed[0]).toMatchObject({ code: 'pass-encode-failed' });
+    settleTemporalFrame(frameState, { device, errorRegistry: errors }, false);
     const cause = (observed[0] as { detail?: { cause?: unknown } }).detail?.cause;
     expect(cause).toBeInstanceOf(RhiError);
     expect(cause).toMatchObject({
@@ -1417,17 +1468,24 @@ describe('renderer successful-submit transaction', () => {
       }),
     });
     const retryFrame = temporalResolveFrame(device, scope, frameState, {});
+    recordInto(device, retryFrame.encoder);
     const retried = executeCompiledFrameGraph(
       { device, errorRegistry: errors } as never,
       frameState,
       retryFrame,
-      retryFrame.encoder,
       undefined,
-      () => gpuCommitAfterSubmit.push(submits.mock.calls.length),
+      {
+        onSubmitted: () => {
+          gpuCommitAfterSubmit.push(submits.mock.calls.length);
+        },
+      },
     );
     expect(retried).toBe(true);
     expect(submits).toHaveBeenCalledTimes(1);
     expect(gpuCommitAfterSubmit).toEqual([1]);
+    // History advances in RenderCommit, never before the accepted attempt settles.
+    expect(frameState.activeTemporalGpuState).toBe(active);
+    settleTemporalFrame(frameState, { device, errorRegistry: errors }, true);
     expect(frameState.activeTemporalGpuState).not.toBe(active);
     expect(frameState.temporalView.frameIndex).toBe(8);
     expect(frameState.temporalView.accepted?.sampleTimeSeconds).toBe(1.016);
@@ -1449,6 +1507,45 @@ import {
   TemporalViewHistory,
 } from '../temporal/frame';
 import type { TemporalView } from '../temporal/view';
+
+/**
+ * Settle one view's recorded attempt in a Render World frame: RenderCommit
+ * advances temporal history only for an accepted attempt of this frame, and
+ * RenderCleanup discards whatever it left staged.
+ */
+function settleTemporalFrame(
+  frameState: RenderFrameState,
+  internals: object,
+  accepted: boolean,
+): void {
+  const world = createRenderWorld();
+  const view = world
+    .spawn(
+      {
+        component: ViewSubmission,
+        data: { accepted, attempt: 1, scene: true, temporal: false },
+      },
+      {
+        component: ViewRecorder,
+        data: {
+          state: world.allocUniqueRef('ViewRecorder', {
+            owner: {
+              frameState,
+              internals,
+              skin: { trackSubmittedWork: () => undefined, complete: () => [] },
+            },
+          }),
+        },
+      },
+    )
+    .unwrap();
+  adoptViewRecordHistory(world, view);
+  const history = viewRecordHistory(world, view);
+  if (history === undefined) throw new Error('missing record history');
+  history.presentation = accepted ? 'ready' : 'pending';
+  beginRenderFrame(world, 1);
+  endRenderFrame(world);
+}
 
 /** A history whose accepted TAA view is `accepted`, with `pending` staged. */
 function acceptedTemporalView(

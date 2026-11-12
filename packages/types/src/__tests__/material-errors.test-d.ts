@@ -33,6 +33,7 @@ const expectedCodes = [
   'material-surface-slot-missing',
   'material-surface-abi-mismatch',
   'material-surface-forbidden-interface',
+  'material-parallax-contract-invalid',
 ] as const;
 
 declare const error: MaterialError;
@@ -91,6 +92,8 @@ function renderDiagnostic(error: MaterialError): string {
       return `${error.detail.material}:${error.detail.pass}:${error.detail.action}`;
     case 'material-surface-forbidden-interface':
       return `${error.detail.material}:${error.detail.pass}:${error.detail.interface}`;
+    case 'material-parallax-contract-invalid':
+      return `${error.detail.material}:${error.detail.parameter}:${error.detail.field}`;
   }
 }
 

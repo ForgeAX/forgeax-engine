@@ -53,7 +53,7 @@ it('names the innermost structured cause instead of only the wrapper code', asyn
 it('keeps the code and hint form when there is no structured cause', async () => {
   const line = await terminalLine({
     code: 'dev-server-failed',
-    expected: 'the ForgeaX command to complete',
+    expected: 'the ForgeAX command to complete',
     hint: 'Inspect the underlying diagnostic and repair the owning input.',
     detail: { reason: 'boom' },
   });

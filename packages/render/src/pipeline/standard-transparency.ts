@@ -219,7 +219,7 @@ function addOitCompositePass(
         storeOp: 'store',
       },
     ],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const device = frame.runtime.device;
       if (state === undefined) {
         // Same-frame built-in producer: the handle-first factory never reports

@@ -89,6 +89,10 @@ describe('native build root process', () => {
       volumetricFog: { quality: 'low', depth: 48, tileSize: 16 },
     };
     const time = { fixedDeltaSeconds: 0.05, maxStepsPerUpdate: 2, maxDeltaSeconds: 0.15 };
+    const startupUi = {
+      loading: 'none',
+      failure: { html: '<h1>Retry</h1>', script: 'return () => {};' },
+    };
     const facts = await fixture(
       `export default { provide: ['devkitAppOptions'], apply(ctx, config) {
       ctx.provide('devkitAppOptions', config);
@@ -98,6 +102,7 @@ describe('native build root process', () => {
         dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
         standardProfile,
         time,
+        startupUi,
         wechat: { maxRenderShortSide: 0 },
       },
     );
@@ -107,6 +112,7 @@ describe('native build root process', () => {
       dynamicGeometryMeshBudgetBytes: 256 * 1024 * 1024,
       standardProfile,
       time,
+      startupUi,
       wechat: { maxRenderShortSide: 0 },
     });
     const absent = await loadProjectCookers({ ...facts, roots: {} }, []);
@@ -128,6 +134,8 @@ describe('native build root process', () => {
     '{ standardProfile: null }',
     '{ time: null }',
     '{ wechat: null }',
+    '{ startupUi: { loading: false } }',
+    '{ startupUi: { failure: { html: 1 } } }',
     '{ wechat: [] }',
     '{ wechat: { unknown: 720 } }',
     '{ wechat: { maxRenderShortSide: -1 } }',
@@ -157,6 +165,29 @@ describe('native build root process', () => {
     expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
   }, 30_000);
 
+  it('preserves declared cache identity and its live closure across the build process', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      let revision = 1;
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'versioned', concurrency: 'parallel',
+        cacheIdentity() { return 'fixture/' + revision; },
+        cook(input) { revision++; return { guid: input.guid, payload: input.source, refs: [], artifacts: {}, inputFingerprint: 'fixture' }; }
+      }));
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'unversioned',
+        cook(input) { return { guid: input.guid, payload: input.source, refs: [], artifacts: {}, inputFingerprint: 'fixture' }; }
+      }));
+    } };`);
+    const session = await loadProjectCookers(facts, []);
+    sessions.push(session);
+    const cooker = session.cookers.find((cooker) => cooker.key === 'versioned');
+    expect(cooker?.concurrency).toBe('parallel');
+    expect(await cooker?.cacheIdentity?.()).toBe('fixture/1');
+    await cooker?.cook({ guid, source: { kind: 'fixture' } });
+    expect(await cooker?.cacheIdentity?.()).toBe('fixture/2');
+    expect(
+      session.cookers.find((cooker) => cooker.key === 'unversioned')?.cacheIdentity,
+    ).toBeUndefined();
+  }, 30_000);
+
   it('cold-starts an original Cooker in one process and preserves its closure across calls', async () => {
     const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
       let sequence = 0;
@@ -184,6 +215,62 @@ describe('native build root process', () => {
     await session.dispose();
     expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
     await expect(session.cookers[0].cook({ guid })).rejects.toThrow('unavailable');
+  }, 30_000);
+
+  it('backs each cooker context with a namespaced build DDC store that outlives the session', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      for (const key of ['fixture-a', 'fixture-b'])
+        ctx.effect(() => ctx.nativeCookers.register({ key,
+          cook(input, context) {
+            const seen = context.cache?.get('job');
+            if (seen === undefined) context.cache?.put('job', new Uint8Array([key.length, 7]));
+            return { guid: input.guid, payload: { seen: seen === undefined ? null : [...seen], cache: context.cache !== undefined },
+              refs: [], artifacts: {}, inputFingerprint: key };
+          }
+        }));
+    } };`);
+    const buildCacheRoot = resolve(facts.root, '.forgeax/ddc/build-cache');
+    const cook = async (session: ProjectCookers, key: string) => {
+      const cooker = session.cookers.find((candidate) => candidate.key === key);
+      if (!cooker) throw new Error(`required fixture cooker ${key} missing`);
+      return (await cooker.cook({ guid })).payload;
+    };
+    const first = await loadProjectCookers(facts, [], {}, { buildCacheRoot });
+    sessions.push(first);
+    expect(await cook(first, 'fixture-a')).toEqual({ seen: null, cache: true });
+    expect(await cook(first, 'fixture-b')).toEqual({ seen: null, cache: true });
+    await first.dispose();
+    const second = await loadProjectCookers(facts, [], {}, { buildCacheRoot });
+    sessions.push(second);
+    expect(first.producerIdentity).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(second.producerIdentity).toBe(first.producerIdentity);
+    expect(await cook(second, 'fixture-a')).toEqual({ seen: [9, 7], cache: true });
+    const storeless = await loadProjectCookers(facts, []);
+    sessions.push(storeless);
+    expect(await cook(storeless, 'fixture-a')).toEqual({ seen: null, cache: false });
+  }, 30_000);
+
+  it('invalidates the sealed producer identity for plugin configuration and code changes', async () => {
+    const facts = await fixture('export default { apply() {} };');
+    const identity = async () => {
+      const session = await loadProjectCookers(facts, []);
+      sessions.push(session);
+      const value = session.producerIdentity;
+      await session.dispose();
+      return value;
+    };
+    const first = await identity();
+    const declaration = resolve(facts.root, 'assets/build.pack.json');
+    const pack = JSON.parse(await readFile(declaration, 'utf8'));
+    pack.assets['plugin/build'].payload.config = { importVariant: 2 };
+    await writeFile(declaration, JSON.stringify(pack));
+    const configured = await identity();
+    expect(configured).not.toBe(first);
+    await writeFile(
+      resolve(facts.root, 'assets/build.ts'),
+      'export default { apply() { globalThis.fixtureProducerVersion = 2; } };',
+    );
+    expect(await identity()).not.toBe(configured);
   }, 30_000);
 
   it('rejects a builtin key collision and leaves no build process artifacts', async () => {
@@ -323,6 +410,68 @@ describe('build environment deadlines', () => {
       else await expect(session.dispose()).rejects.toThrow('process terminated');
       await session.dispose();
     }
+    expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
+  }, 30_000);
+
+  it('gives a cooker its declared cook bound instead of the session default', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'slow', timeoutMs: 5000,
+        cook: (input) => new Promise((done) => setTimeout(() => done({ guid: input.guid, payload: {},
+          refs: [], artifacts: {}, inputFingerprint: 'slow' }), 400)) }));
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'hung', timeoutMs: 300,
+        cook: () => new Promise(() => {}) }));
+    } };`);
+    const session = await loadProjectCookers(facts, [], {}, { operationTimeoutMs: 100 });
+    sessions.push(session);
+    const [slow, hung] = session.cookers;
+    if (!slow || !hung) throw new Error('required fixture cookers missing');
+    expect([slow.key, slow.timeoutMs, hung.timeoutMs]).toEqual(['slow', 5000, 300]);
+    // 400 ms is past the 100 ms session default but inside the declared 5 s.
+    await expect(slow.cook({ guid })).resolves.toMatchObject({ guid });
+    const started = performance.now();
+    await expect(hung.cook({ guid })).rejects.toThrow('exceeded 300ms; process terminated');
+    expect(performance.now() - started).toBeGreaterThanOrEqual(250);
+    await session.dispose();
+    expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
+  }, 30_000);
+
+  it('forwards a parallel declaration and overlaps its cooks in the build process', async () => {
+    // Each cook records how many cooks of its cooker were running when it started.
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      const make = (key, concurrency) => {
+        let active = 0;
+        return { key, ...(concurrency ? { concurrency } : {}), async cook(input) {
+          const peak = ++active;
+          await new Promise((done) => setTimeout(done, 150));
+          active--;
+          return { guid: input.guid, payload: { peak }, refs: [], artifacts: {}, inputFingerprint: key };
+        } };
+      };
+      ctx.effect(() => ctx.nativeCookers.register(make('overlap', 'parallel')));
+      ctx.effect(() => ctx.nativeCookers.register(make('serial')));
+    } };`);
+    const session = await loadProjectCookers(facts, [], {}, { operationTimeoutMs: 5000 });
+    sessions.push(session);
+    const [overlap, serial] = session.cookers;
+    if (!overlap || !serial) throw new Error('required fixture cookers missing');
+    expect([overlap.concurrency, serial.concurrency]).toEqual(['parallel', undefined]);
+    const peaks = async (cooker: typeof overlap) =>
+      (await Promise.all([1, 2, 3].map(() => cooker.cook({ guid })))).map(
+        (draft) => (draft.payload as { peak: number }).peak,
+      );
+    expect(Math.max(...(await peaks(overlap)))).toBe(3);
+    expect(Math.max(...(await peaks(serial)))).toBe(1);
+    await session.dispose();
+  }, 30_000);
+
+  it('rejects a cooker whose declared bound is not positive finite milliseconds', async () => {
+    const facts = await fixture(`export default { inject: ['nativeCookers'], apply(ctx) {
+      ctx.effect(() => ctx.nativeCookers.register({ key: 'bad', timeoutMs: 0, cook() {} }));
+    } };`);
+    await expect(loadProjectCookers(facts, [])).rejects.toMatchObject({
+      code: 'plugin-startup-failed',
+      detail: { cause: { name: 'RangeError', message: expect.stringContaining('timeoutMs') } },
+    });
     expect(await readdir(resolve(facts.root, '.forgeax/build'))).toEqual([]);
   }, 30_000);
 });

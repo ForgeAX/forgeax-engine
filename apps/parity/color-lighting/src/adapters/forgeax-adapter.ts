@@ -197,12 +197,12 @@ export function createVertexColorForgeaxProducer(
     identity,
     async capture(fixture, backend) {
       const output = await run(fixture, backend);
-      if (output.backend !== backend) throw new Error('ForgeaX vertex-color backend provenance mismatch');
-      if (output.frameCount !== 60) throw new Error('ForgeaX vertex-color capture requires 60 frames');
-      if (output.sourceSha !== sourceSha) throw new Error('ForgeaX vertex-color source SHA mismatch');
+      if (output.backend !== backend) throw new Error('ForgeAX vertex-color backend provenance mismatch');
+      if (output.frameCount !== 60) throw new Error('ForgeAX vertex-color capture requires 60 frames');
+      if (output.sourceSha !== sourceSha) throw new Error('ForgeAX vertex-color source SHA mismatch');
       const expectedHash = VERTEX_COLOR_REQUIRED_CASES.find((entry) => entry.caseId === fixture.caseId)?.sourceFixtureHash;
-      if (expectedHash === undefined || output.sourceFixtureHash !== expectedHash) throw new Error('ForgeaX vertex-color fixture hash mismatch');
-      if (output.colorDomain !== fixture.colorDomain) throw new Error('ForgeaX vertex-color domain mismatch');
+      if (expectedHash === undefined || output.sourceFixtureHash !== expectedHash) throw new Error('ForgeAX vertex-color fixture hash mismatch');
+      if (output.colorDomain !== fixture.colorDomain) throw new Error('ForgeAX vertex-color domain mismatch');
       validateVertexColorSamples(fixture, output);
       return output;
     },

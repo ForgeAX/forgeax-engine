@@ -3,6 +3,7 @@
     "version": "2.0",
     "generator": "forgeax hello-gltf BoxTextured Tier-B fork (POSITION + INDICES only)"
   },
+  "extensionsUsed": ["KHR_materials_unlit"],
   "scene": 0,
   "scenes": [
     { "name": "BoxScene", "nodes": [0, 1] }
@@ -46,6 +47,7 @@
   "materials": [
     {
       "name": "BoxMaterial",
+      "extensions": { "KHR_materials_unlit": {} },
       "pbrMetallicRoughness": {
         "baseColorFactor": [0.7, 0.45, 0.2, 1.0]
       }

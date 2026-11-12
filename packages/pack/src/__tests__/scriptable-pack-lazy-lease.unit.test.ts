@@ -43,6 +43,7 @@ function fixture(
     observePaths: vi.fn(async () => []),
     observeFile: vi.fn(async () => false),
     inventory: vi.fn(async () => sourceClosure),
+    imports: vi.fn(async () => []),
     readText: vi.fn(async () => 'captured source'),
     digest: vi.fn(async () => 'sha256:original'),
     moduleSources: vi.fn(async () => ({
@@ -72,13 +73,14 @@ function fixture(
     }),
     dispose: vi.fn(async () => {}),
   };
-  const lazy = () =>
+  const lazy = (executionBudget?: 'production' | 'interactive') =>
     createLazyScriptablePackDefinition({
       sourcePath,
       definition,
       sourceClosure,
       executors,
       sourceSnapshot: snapshot,
+      ...(executionBudget === undefined ? {} : { executionBudget }),
     });
   return {
     snapshot,
@@ -118,6 +120,35 @@ it('lets trusted production finish a build beyond the low-level fifteen-second d
   finish(ok({}));
   expect(await pending).toEqual(ok({}));
   expect(f.releases).toEqual(['complete']);
+  expect(f.active()).toBe(0);
+});
+
+it('keeps interactive replacement on the original fifteen-second loader bound', async () => {
+  vi.useFakeTimers();
+  const f = fixture(
+    definePack({
+      schemaVersion: '2.0.0',
+      packageId,
+      build: () => new Promise(() => undefined),
+    }),
+  );
+  let result: unknown;
+  const pending = f
+    .lazy('interactive')
+    .build(context as never)
+    .then((value) => {
+      result = value;
+    });
+  await vi.advanceTimersByTimeAsync(15_001);
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      code: 'pack-parameter-invalid',
+      detail: { reason: 'timeout', phase: 'build', timeoutMs: 15_000 },
+    },
+  });
+  await pending;
+  expect(f.releases).toEqual(['timeout']);
   expect(f.active()).toBe(0);
 });
 

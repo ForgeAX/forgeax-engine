@@ -88,7 +88,7 @@ export function addAtmosphereIbl(
   const upload = graph.addCopyPass('atmosphere-ibl-prepare', {
     accesses: [{ resource: parameters.value, usage: 'copy-dst' }],
     executeIf: dirty,
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       writeAllPrefilterUniforms(
         frame.runtime.device,
         resources.buffer(parameters.value).unwrap(),
@@ -179,7 +179,7 @@ export function addAtmosphereIbl(
       ],
       colorAttachments: [{ view: target.value, loadOp: 'clear', storeOp: 'store' }],
       executeIf: dirty,
-      encode: ({ frame, resources, pass }) => {
+      encodeDirect: (pass, frame, resources) => {
         const current = ensureState(frame);
         const group = frame.runtime.device
           .createBindGroup({
@@ -213,7 +213,7 @@ export function addAtmosphereIbl(
         { view: prefilterView.value, loadOp: level === 0 ? 'clear' : 'load', storeOp: 'store' },
       ],
       executeIf: dirty,
-      encode: ({ frame, resources, pass }) => {
+      encodeDirect: (pass, frame, resources) => {
         const current = ensureState(frame);
         const inputs = frame.runtime.device
           .createBindGroup({
@@ -264,7 +264,7 @@ export function addAtmosphereIbl(
         { resource: scratchView.value, usage: 'copy-dst' },
       ],
       executeIf: dirty,
-      encode: ({ frame, encoder, resources }) => {
+      encodeDirect: (encoder, frame, resources) => {
         for (let face = 0; face < 6; face++) {
           const viewport = pmremViewport(size, level, face);
           encoder.copyTextureToTexture(

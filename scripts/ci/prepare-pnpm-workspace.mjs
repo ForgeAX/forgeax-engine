@@ -155,9 +155,11 @@ export function preparePnpmWorkspace(root = process.cwd()) {
   };
 }
 
-export function installPnpmWorkspace(root = process.cwd()) {
+export function installPnpmWorkspace(root = process.cwd(), filter) {
   const [command, ...prefix] = pnpmCommand();
-  return spawnSync(command, [...prefix, 'install', '--frozen-lockfile', '--ignore-scripts'], {
+  const args = [...prefix, 'install', '--frozen-lockfile', '--ignore-scripts'];
+  if (filter) args.push('--filter', filter);
+  return spawnSync(command, args, {
     cwd: root,
     stdio: 'inherit',
   });
@@ -165,11 +167,24 @@ export function installPnpmWorkspace(root = process.cwd()) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    if (process.argv.slice(2).some((arg) => arg !== '--install'))
-      throw new Error('expected --install or no arguments');
+    const args = process.argv.slice(2);
+    let install = false;
+    let filter;
+    for (let index = 0; index < args.length; index++) {
+      if (args[index] === '--install') {
+        install = true;
+        continue;
+      }
+      if (args[index] !== '--filter' || filter !== undefined)
+        throw new Error('expected --install, --filter <package>, or no arguments');
+      filter = args[++index];
+      if (!filter || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(filter))
+        throw new Error('expected a package name after --filter');
+    }
+    if (filter !== undefined && !install) throw new Error('--filter requires --install');
     console.log(JSON.stringify(preparePnpmWorkspace()));
-    if (process.argv.includes('--install')) {
-      const result = installPnpmWorkspace();
+    if (install) {
+      const result = installPnpmWorkspace(process.cwd(), filter);
       if (result.error) throw result.error;
       process.exitCode = result.status ?? 1;
     }

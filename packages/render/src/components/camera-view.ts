@@ -32,7 +32,9 @@ export function assertRenderShortSide(value: number): void {
     );
 }
 
-export function cameraViewExtent(view: CameraViewData, width: number, height: number) {
+/** Throws the structured CameraView failure for an invalid rectangle, scale or cadence. */
+export function assertCameraViewData(view: CameraViewData): void {
+  assertRenderShortSide(view.maxRenderShortSide);
   const [x = Number.NaN, y = Number.NaN, w = Number.NaN, h = Number.NaN] = view.viewport;
   if (
     ![x, y, w, h].every(Number.isFinite) ||
@@ -63,7 +65,11 @@ export function cameraViewExtent(view: CameraViewData, width: number, height: nu
   if (!Number.isInteger(view.updateInterval) || view.updateInterval < 1) {
     throw new CameraViewInvalidError('updateInterval', view.updateInterval, 'an integer >= 1');
   }
-  assertRenderShortSide(view.maxRenderShortSide);
+}
+
+export function cameraViewExtent(view: CameraViewData, width: number, height: number) {
+  assertCameraViewData(view);
+  const [x = 0, y = 0, w = 1, h = 1] = view.viewport;
   const left = Math.min(width - 1, Math.round(x * width)),
     top = Math.min(height - 1, Math.round(y * height));
   const viewportWidth = Math.min(width - left, Math.max(1, Math.round((x + w) * width) - left));

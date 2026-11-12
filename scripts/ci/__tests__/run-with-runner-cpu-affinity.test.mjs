@@ -1,19 +1,149 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { parse } from 'yaml';
 
 import {
   constrainRunnerGpuThreads,
   formatCpuList,
   parseCpuList,
   readAllowedCpuList,
+  readCpuPressureDiagnostics,
   resolveRunnerCpuAffinity,
   runnerCpuSiblings,
   runnerGpuThreadAffinity,
   runnerKernelFingerprint,
 } from '../run-with-runner-cpu-affinity.mjs';
+
+test('directional CSM uses the existing quota-bound GPU process owner without changing its oracle', () => {
+  const workflow = parse(
+    readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+  );
+  const job = workflow.jobs['vitest-browser-shard'];
+  const step = job.steps.find(
+    (candidate) => candidate.name === 'Directional CSM Browser WebGPU smoke (M5 MVD)',
+  );
+  assert.match(
+    step.run,
+    /node scripts\/ci\/run-with-runner-cpu-affinity\.mjs --\s+node scripts\/ci\/run-browser-gate-with-retry\.mjs/,
+  );
+  assert.match(step.run, /--mode=rhi-debug/);
+  assert.match(step.run, /xvfb-run -a env FORGEAX_BROWSER_HEADLESS=0/);
+  assert.match(step.run, /smoke:browser/);
+  assert.equal(step.if, "steps.ci-repair.outputs.reused != 'true' && (matrix.shard == 1)");
+  assert.equal(step['timeout-minutes'], 30);
+  assert.equal(workflow.jobs['directional-csm-browser'], undefined);
+  const artifacts = readFileSync(
+    new URL('../build-artifact-contract.json', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(artifacts, /directional-csm-browser/);
+
+  assert.deepEqual(job.strategy.matrix.shard, [0, 1, 2, 3]);
+});
+
+test('CPU pressure keeps cgroup v2 counters separate from host contention', () => {
+  const files = {
+    '/sys/fs/cgroup/cpu.stat':
+      'usage_usec 12000\nnr_periods 8\nnr_throttled 3\nthrottled_usec 9000\n',
+    '/sys/fs/cgroup/cpu.pressure': 'some avg10=25.00 avg60=10.00 avg300=2.00 total=4000\n',
+    '/proc/pressure/cpu': 'some avg10=80.00 avg60=50.00 avg300=20.00 total=90000\n',
+  };
+  assert.deepEqual(readCpuPressureDiagnostics({ read: (path) => files[path] }), {
+    cgroupV2Stat: files['/sys/fs/cgroup/cpu.stat'].trim(),
+    cgroupPressure: files['/sys/fs/cgroup/cpu.pressure'].trim(),
+    hostPressure: files['/proc/pressure/cpu'].trim(),
+  });
+});
+
+test('CPU pressure preserves cgroup v1 nanosecond counters without mixing units', () => {
+  assert.deepEqual(
+    readCpuPressureDiagnostics({
+      read: (path) =>
+        path === '/sys/fs/cgroup/cpu/cpu.stat'
+          ? 'nr_periods 8\nnr_throttled 3\nthrottled_time 9000000\n'
+          : undefined,
+    }),
+    { cgroupV1Stat: 'nr_periods 8\nnr_throttled 3\nthrottled_time 9000000' },
+  );
+});
+
+test('memory pressure keeps shared-host stalls separate from raw cgroup v2 events', () => {
+  const files = {
+    '/proc/pressure/memory': 'some avg10=75.75 total=90000\nfull avg10=67.42 total=40000\n',
+    '/sys/fs/cgroup/memory.pressure': 'some avg10=0.00 total=100\nfull avg10=0.00 total=0\n',
+    '/sys/fs/cgroup/memory.current': '499355648\n',
+    '/sys/fs/cgroup/memory.peak': '15919607808\n',
+    '/sys/fs/cgroup/memory.events': 'low 0\nhigh 0\nmax 8\noom 3\noom_kill 2\n',
+  };
+  assert.deepEqual(readCpuPressureDiagnostics({ read: (path) => files[path] }), {
+    hostMemoryPressure: files['/proc/pressure/memory'].trim(),
+    cgroupMemoryPressure: files['/sys/fs/cgroup/memory.pressure'].trim(),
+    cgroupV2MemoryCurrent: '499355648',
+    cgroupV2MemoryPeak: '15919607808',
+    cgroupV2MemoryEvents: files['/sys/fs/cgroup/memory.events'].trim(),
+  });
+});
+
+test('memory pressure preserves cgroup v1 usage and historical OOM counts without inference', () => {
+  const files = {
+    '/sys/fs/cgroup/memory/memory.usage_in_bytes': '363806720\n',
+    '/sys/fs/cgroup/memory/memory.max_usage_in_bytes': '15919607808\n',
+    '/sys/fs/cgroup/memory/memory.oom_control': 'oom_kill_disable 0\nunder_oom 0\noom_kill 12\n',
+  };
+  assert.deepEqual(readCpuPressureDiagnostics({ read: (path) => files[path] }), {
+    cgroupV1MemoryUsage: '363806720',
+    cgroupV1MemoryPeak: '15919607808',
+    cgroupV1MemoryOom: files['/sys/fs/cgroup/memory/memory.oom_control'].trim(),
+  });
+});
+
+test('missing or unreadable CPU counters remain unavailable rather than zero', () => {
+  for (const read of [
+    () => undefined,
+    () => '',
+    () => {
+      throw new Error('not readable');
+    },
+  ]) {
+    assert.equal(readCpuPressureDiagnostics({ read }), null);
+  }
+});
+
+for (const status of [0, 7]) {
+  test(`CPU observation preserves a real child's exit status ${status}`, async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL('../run-with-runner-cpu-affinity.mjs', import.meta.url)),
+        '--',
+        process.execPath,
+        '-e',
+        `process.exitCode = ${status}`,
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 },
+    );
+    let output = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    const [code, signal] = await once(child, 'close');
+    assert.equal(code, status);
+    assert.equal(signal, null);
+    const samples = output
+      .split('\n')
+      .filter((line) => line.startsWith('[runner-cpu-pressure] '))
+      .map((line) => JSON.parse(line.slice('[runner-cpu-pressure] '.length)));
+    assert.deepEqual(
+      samples.map((sample) => sample.state),
+      readCpuPressureDiagnostics() === null ? [] : ['start', 'complete'],
+    );
+  });
+}
 
 test('GPU discovery follows children of every owned thread without requiring host ps', () => {
   const reads = [];
@@ -221,7 +351,7 @@ test('selects the cgroup CPU budget from the process allowed set', () => {
   const result = resolveRunnerCpuAffinity({
     platform: 'linux',
     resources: { cpus: 8, containerized: true },
-    allowedCpus: parseCpuList('4-7,12-19'),
+    allowedCpus: parseCpuList('4-7,12-15'),
     read: () => {
       throw new Error('topology unavailable for logical-window test');
     },
@@ -232,7 +362,7 @@ test('selects the cgroup CPU budget from the process allowed set', () => {
 });
 
 test('uses distinct physical cores when the allowed mask contains SMT siblings', () => {
-  const allowedCpus = parseCpuList('0-15');
+  const allowedCpus = parseCpuList('0-7');
   const read = (path) => {
     const match = /cpu(\d+)\/topology\/thread_siblings_list$/.exec(path);
     if (!match) throw new Error(`unexpected topology read: ${path}`);
@@ -306,58 +436,36 @@ test('does not alter a direct host runner', () => {
   });
 });
 
-test('named shared runners spread bounded CPU windows and keep each binding stable', () => {
-  const allowedCpus = parseCpuList('0-95');
-  const selections = new Set();
-  for (let index = 1; index <= 32; index += 1) {
-    const options = {
+test('quota-only shared runners retain kernel placement instead of colliding on a hash window', () => {
+  for (const runnerName of ['quota-runner-a', 'quota-runner-b']) {
+    const result = resolveRunnerCpuAffinity({
       platform: 'linux',
       resources: { cpus: 8, containerized: true },
-      allowedCpus,
-      runnerName: `shared-runner-${index}`,
-      read: () => {
-        throw new Error('topology unavailable for logical-window test');
-      },
-    };
-    const first = resolveRunnerCpuAffinity(options);
-    assert.deepEqual(resolveRunnerCpuAffinity(options), first, 'the same runner remains stable');
-    const selected = parseCpuList(first.selectedCpuList);
-    assert.equal(first.selectedCpuCount, 8);
-    assert.equal(selected.length, 8);
-    assert.ok(
-      selected.every((cpu) => allowedCpus.includes(cpu)),
-      'never escapes the allowed set',
-    );
-    selections.add(first.selectedCpuList);
+      allowedCpus: parseCpuList('0-95'),
+      runnerName,
+      read: (path) => /cpu(\d+)\/topology/.exec(path)?.[1] ?? '',
+    });
+    assert.equal(result.mode, 'none');
+    assert.equal(result.reason, 'shared-cpu-set-with-quota');
+    assert.equal(result.runnerCpus, 8, 'the cgroup budget remains authoritative');
+    assert.equal(result.allowedCpuList, '0-95');
+    assert.equal(result.selectedCpuList, undefined);
   }
-  assert.ok(selections.size > 1, 'different runners must not all crowd the first CPU window');
 });
 
-test('identity spreading respects a sparse allowed CPU mask and an unnamed local process', () => {
+test('sparse shared masks retain scheduler placement when topology is unavailable', () => {
   const allowedCpus = parseCpuList('4-7,12-15,32-35,48-51');
-  const options = {
+  const result = resolveRunnerCpuAffinity({
     platform: 'linux',
     resources: { cpus: 4, containerized: true },
     allowedCpus,
-    read: (path) => {
-      const match = /cpu(\d+)\/topology\/thread_siblings_list$/.exec(path);
-      if (!match) throw new Error(`unexpected topology read: ${path}`);
-      const cpu = Number(match[1]);
-      const firstSibling = Math.floor(cpu / 2) * 2;
-      return `${firstSibling}-${firstSibling + 1}\n`;
+    read: () => {
+      throw new Error('topology unavailable');
     },
-  };
-  assert.equal(
-    resolveRunnerCpuAffinity({ ...options, runnerName: '' }).selectedCpuList,
-    '4,6,12,14',
-  );
-  for (const runnerName of ['runner-a', 'runner-b', 'runner-c']) {
-    const result = resolveRunnerCpuAffinity({ ...options, runnerName });
-    const selected = parseCpuList(result.selectedCpuList);
-    assert.equal(selected.length, 4);
-    assert.ok(selected.every((cpu) => allowedCpus.includes(cpu)));
-    assert.equal(result.selectedCpuTopology, 'distinct-physical-cores');
-  }
+  });
+  assert.equal(result.mode, 'none');
+  assert.equal(result.allowedCpuList, '4-7,12-15,32-35,48-51');
+  assert.equal(result.selectedCpuList, undefined);
 });
 
 test('kernel correlation is opaque, stable, and optional without changing admission', () => {

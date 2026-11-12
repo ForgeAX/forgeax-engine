@@ -44,10 +44,11 @@ function variantAxes(src: string): readonly string[] {
 }
 
 describe('w6 (a) -- sprite.wgsl declares the PER_INSTANCE_REGION + STORAGE_BUFFER_AVAILABLE pair (AC-04)', () => {
-  it('sprite.wgsl carries storage, atmosphere and instance-region axes', () => {
+  it('sprite.wgsl carries storage, atmosphere, cluster and instance-region axes', () => {
     const axes = variantAxes(readWgsl('sprite.wgsl'));
-    expect(axes).toHaveLength(3);
+    expect(axes).toHaveLength(4);
     expect(axes).toContain('#pragma variant_axis ATMOSPHERE_AVAILABLE');
+    expect(axes).toContain('#pragma variant_axis CLUSTER_FORWARD_AVAILABLE');
     expect(axes).toContain('#pragma variant_axis STORAGE_BUFFER_AVAILABLE');
     expect(axes).toContain('#pragma variant_axis PER_INSTANCE_REGION');
   });
@@ -84,12 +85,16 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
       '#pragma variant_axis PROBE_BLEND_AVAILABLE',
       '#pragma variant_axis EXTENDED_LIGHTING_AVAILABLE',
       '#pragma variant_axis TRANSMISSION_AVAILABLE',
-      '#pragma variant_axis DIRECTIONAL_PCSS_AVAILABLE',
       '#pragma variant_axis PROJECTOR_AVAILABLE',
       '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
       '#pragma variant_axis REFLECTION_FALLBACK_AVAILABLE',
       '#pragma variant_axis COVERAGE_ONLY',
       '#pragma variant_axis VISIBLE_SURFACE_AVAILABLE',
+      '#pragma variant_axis ALPHA_MASK',
+      '#pragma variant_axis DIRECTIONAL_SHADOW_SIMPLE',
+      '#pragma variant_axis LEAN_LIGHTING',
+      '#pragma variant_axis LOD_DITHER',
+      '#pragma variant_axis CLIPPING_PLANES',
     ]);
   });
 
@@ -98,10 +103,12 @@ describe('w6 (b) -- pbr / unlit / sprite-adjacent shaders DO NOT pick up PER_INS
     expect(axes).toEqual([
       '#pragma variant_axis STORAGE_BUFFER_AVAILABLE',
       '#pragma variant_axis ATMOSPHERE_AVAILABLE',
+      '#pragma variant_axis CLUSTER_FORWARD_AVAILABLE',
       '#pragma variant_axis VERTEX_COLOR_AVAILABLE',
       '#pragma variant_axis COVERAGE_ONLY',
       '#pragma variant_axis SKINNING_DISABLED',
       '#pragma variant_axis GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
+      '#pragma variant_axis LOD_DITHER',
     ]);
   });
 });

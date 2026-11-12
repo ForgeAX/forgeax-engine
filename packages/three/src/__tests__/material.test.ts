@@ -1,12 +1,16 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import {
   AdditiveBlending,
+  BackSide,
   DataTexture,
+  DoubleSide,
+  FrontSide,
   MeshBasicMaterial,
   MeshLambertMaterial,
   MeshMatcapMaterial,
   MeshNormalMaterial,
   MeshPhysicalMaterial,
+  MeshStandardMaterial,
   Texture,
 } from 'three/src/Three.Core.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -147,6 +151,28 @@ describe('Three material projection', () => {
       depthBiasSlopeScale: 3,
       blend: { color: { srcFactor: 'src-alpha', dstFactor: 'one' } },
     });
+  });
+
+  it.each([
+    [FrontSide, null, false, 'front'],
+    [BackSide, null, false, 'back'],
+    [DoubleSide, null, false, 'none'],
+    [FrontSide, null, true, 'back'],
+    [BackSide, null, true, 'front'],
+    [DoubleSide, null, true, 'none'],
+    [FrontSide, FrontSide, false, 'back'],
+    [FrontSide, BackSide, false, 'front'],
+    [BackSide, DoubleSide, false, 'none'],
+    [BackSide, FrontSide, true, 'back'],
+  ] as const)('owns Three shadow sidedness: side=%s override=%s VSM=%s', (side, shadowSide, variance, expected) => {
+    for (const Material of [MeshBasicMaterial, MeshStandardMaterial]) {
+      const material = new Material({ side });
+      material.shadowSide = shadowSide;
+      const asset = projectMaterial(material, {}, undefined, variance).unwrap();
+      expect(
+        asset.passes?.find((pass) => pass.name === 'shadow-caster')?.renderState?.cullMode,
+      ).toBe(expected);
+    }
   });
 
   it('distinguishes migration exceptions from pending ordinary features', () => {

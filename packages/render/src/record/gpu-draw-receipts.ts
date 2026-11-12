@@ -1,9 +1,10 @@
 import { gpuDrivenSourceDrawItemIndex } from '../extract/gpu-driven';
 import type { GpuDrawSelection } from '../gpu-driven/draw-selection';
 import type { MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
-import type { FrameList } from '../scene/frame-list';
+import { type FrameList, rasterRowsOf } from '../scene/frame-list';
+import { hasRasterDemand } from '../scene/raster-demand';
 
-/** Internal receipt for one concrete CPU/GPU presentation draw unit. */
+/** Immutable execution facts; each presentation callback supplies its own draw identity. */
 export interface RenderableDrawReceipt {
   readonly pipeline?: import('@forgeax/engine-rhi').RenderPipeline;
   readonly programKey?: string;
@@ -40,6 +41,7 @@ export function emitGpuDrivenDrawReceipts(
   ) => void,
 ): void {
   for (const source of rows) {
+    if (!hasRasterDemand(source)) continue;
     const draws = source.gpuDrivenDraws;
     if (draws === undefined) continue;
     for (let index = 0; index < draws.length; index++) {
@@ -73,7 +75,8 @@ export function summarizeGpuDrivenDraws(
     blockedDraws: 0,
     deformationReasons,
   };
-  for (const source of renderables) {
+  for (const source of rasterRowsOf(renderables)) {
+    if (!hasRasterDemand(source)) continue;
     const draws = source.gpuDrivenDraws;
     let gpuDraws = 0;
     let cpuDraws = 0;

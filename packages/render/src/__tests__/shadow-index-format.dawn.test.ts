@@ -1,6 +1,7 @@
 import type { Buffer, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModuleImmediate } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
   type GpuDrivenShadowSubmission,
   recordGpuDrivenShadowIndirect,
@@ -125,7 +126,7 @@ it('matches explicit index-format bindings for one shared buffer on the actual G
     }
     const expected = await render(false);
     const actual = await render(true);
-    expect(actual).toEqual(expected);
+    expect(equalBytes(actual, expected)).toBe(true);
     let left = 0,
       right = 0;
     for (let y = 0; y < 16; y += 1)

@@ -9,6 +9,7 @@ import {
   readFile,
   readlink,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -61,7 +62,7 @@ async function sdkFixture(failFirstInstall = true, withStore = true): Promise<Sd
   await mkdir(fullTemplate, { recursive: true });
   if (withStore) await mkdir(resolve(root, 'store', 'pnpm'), { recursive: true });
   await mkdir(bin, { recursive: true });
-  const skillText = '# Test skill\n\nUse the ForgeaX test skill.\n';
+  const skillText = '# Test skill\n\nUse the ForgeAX test skill.\n';
   await mkdir(resolve(root, 'skills', 'forgeax-engine-test'), { recursive: true });
   await writeFile(resolve(root, 'skills', 'forgeax-engine-test', 'SKILL.md'), skillText);
   await writeFile(
@@ -656,7 +657,7 @@ describe('newCommand', () => {
       'public-hoist-pattern[]=@forgeax/engine-*\n',
     );
     expect(await readFile(resolve(targetRoot, 'skills/forgeax-engine-test/SKILL.md'), 'utf8')).toBe(
-      '# Test skill\n\nUse the ForgeaX test skill.\n',
+      '# Test skill\n\nUse the ForgeAX test skill.\n',
     );
     const mounted = resolve(targetRoot, '.agents/skills/forgeax-engine-test');
     expect((await lstat(mounted)).isSymbolicLink()).toBe(true);
@@ -881,6 +882,34 @@ describe('doctorCommand', () => {
     expect(result).toMatchObject({
       ok: true,
       value: { workspaceDependencies: [], uiAuthoringProfile: UI_AUTHORING_PROFILE },
+    });
+  });
+
+  it('fails project check with the offending asset when a material pack cannot cook', async () => {
+    const sdk = await sdkFixture(false);
+    const assets = resolve(sdk.template, 'assets');
+    await cp(resolve(import.meta.dirname, 'fixtures/asset-check'), assets, { recursive: true });
+    await rename(
+      resolve(assets, 'punk-smoke.wgsl.meta.fixture'),
+      resolve(assets, 'punk-smoke.wgsl.meta.json'),
+    );
+    const pack = resolve(assets, 'punk-smoke.pack.json');
+    await writeFile(
+      pack,
+      (await readFile(pack, 'utf8')).replace(
+        '"name": "smokeTexture", "type": "texture"',
+        '"name": "smokeTexture", "type": "texture2d"',
+      ),
+    );
+
+    const result = await doctorCommand({ root: sdk.template });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'project-assets-invalid',
+        detail: { failures: [{ key: 'material/punk-smoke', kind: 'material' }] },
+      },
     });
   });
 

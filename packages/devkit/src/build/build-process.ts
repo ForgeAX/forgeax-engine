@@ -1,5 +1,6 @@
 import { pathToFileURL } from 'node:url';
 import { validateAssetBudgetBytes } from '@forgeax/engine-assets-runtime';
+import { createNativeCookCache } from '@forgeax/engine-ddc';
 import { ImporterRegistry } from '@forgeax/engine-import';
 import { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import { copyPackData } from '@forgeax/engine-pack/runtime';
@@ -15,6 +16,7 @@ import { validateDynamicGeometryMeshBudget, validateRenderProfile } from '@forge
 import type { ToolRun, ToolRunOptions } from '@forgeax/engine-tool-runtime';
 import type { ImportContext, ImportProduct } from '@forgeax/engine-types';
 import { err, ok, type PluginAssetDefinition } from '@forgeax/engine-types';
+import { validateStartupUi } from '../host/startup-ui.js';
 import type { DevKitAppOptions, DevKitDeliveryOptions } from '../plugin-build.js';
 
 /** Only serializable requests and producer outputs cross this process boundary. */
@@ -26,6 +28,8 @@ export type BuildProcessRequest =
       readonly root: string;
       readonly definitions: readonly PluginAssetDefinition[];
       readonly sessionId: string;
+      /** Project build DDC root backing each cooker's `context.cache`. */
+      readonly buildCacheRoot?: string;
     }
   | {
       readonly id: number;
@@ -72,8 +76,17 @@ export type BuildProcessRequest =
       readonly options: Omit<ToolRunOptions, 'signal' | 'capabilityResolver' | 'owner' | 'caller'>;
     }
   | { readonly id: number; readonly operation: 'cancelTool'; readonly run: number }
+  | { readonly id: number; readonly operation: 'cacheIdentity'; readonly key: string }
   | { readonly id: number; readonly operation: 'dispose' };
 
+export interface BuildCookerDescriptor {
+  readonly key: string;
+  readonly timeoutMs?: number;
+  /** The project cooker's own declaration: reentrant, input-isolated cooking. */
+  readonly concurrency?: 'parallel';
+  /** Invoke the original callback in its owning process; never invent an identity. */
+  readonly cacheIdentity?: true;
+}
 export interface BuildImporterDescriptor {
   readonly key: string;
   readonly decodeImage: boolean;
@@ -110,7 +123,11 @@ function callParent(
 }
 
 const context = new Context();
-const cookers = new NativeCookerRegistry();
+let buildCacheRoot: string | undefined;
+const cookers = new NativeCookerRegistry({
+  cache: (key) =>
+    buildCacheRoot === undefined ? undefined : createNativeCookCache(buildCacheRoot, key),
+});
 const importers = new ImporterRegistry();
 let root: Fiber | undefined;
 let tail = Promise.resolve();
@@ -128,6 +145,7 @@ const APP_OPTION_KEYS: ReadonlySet<string> = new Set([
   'renderPipelineCapacity',
   'renderTaskYield',
   'loadingLabels',
+  'startupUi',
   'wechat',
 ]);
 
@@ -210,6 +228,7 @@ function projectAppOptions(value: unknown): DevKitAppOptions {
       throw new TypeError('devkitAppOptions.time must contain positive finite World time options');
   }
   validateLoadingLabels(options.loadingLabels);
+  validateStartupUi(options.startupUi);
   if (options.dynamicGeometryMeshBudgetBytes !== undefined)
     validateDynamicGeometryMeshBudget(options.dynamicGeometryMeshBudgetBytes);
   if (options.assetBudgetBytes !== undefined) validateAssetBudgetBytes(options.assetBudgetBytes);
@@ -258,11 +277,16 @@ function projectDelivery(value: unknown): DevKitDeliveryOptions {
   return { bundles: bundles as NonNullable<DevKitDeliveryOptions['bundles']> };
 }
 
+function requireActiveBuildRoot(): void {
+  if (!root || root.state !== 2) throw new Error('build root is not active');
+}
+
 async function execute(request: BuildProcessRequest): Promise<unknown> {
   switch (request.operation) {
     case 'start': {
       if (started) throw new Error('build process already started');
       started = true;
+      buildCacheRoot = request.buildCacheRoot;
       const source = new Map(
         request.definitions.map((definition) => [definition.guid, definition]),
       );
@@ -305,7 +329,15 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
       return {
         appOptions: projectAppOptions(context.get('devkitAppOptions')),
         delivery: projectDelivery(context.get('devkitDelivery')),
-        cookers: cookers.registeredCookers(),
+        cookers: cookers.registeredCookers().map((key): BuildCookerDescriptor => {
+          const cooker = cookers.get(key);
+          return {
+            key,
+            ...(cooker?.timeoutMs === undefined ? {} : { timeoutMs: cooker.timeoutMs }),
+            ...(cooker?.concurrency === 'parallel' ? { concurrency: 'parallel' as const } : {}),
+            ...(cooker?.cacheIdentity === undefined ? {} : { cacheIdentity: true as const }),
+          };
+        }),
         importers: importers.registeredImporters().map((key): BuildImporterDescriptor => {
           const value = importers.get(key);
           if (!value) throw new Error(`importer disappeared during startup: ${key}`);
@@ -318,8 +350,15 @@ async function execute(request: BuildProcessRequest): Promise<unknown> {
         }),
       };
     }
+    case 'cacheIdentity': {
+      requireActiveBuildRoot();
+      const cooker = cookers.get(request.key);
+      if (cooker?.cacheIdentity === undefined)
+        throw new Error(`cooker has no cache identity: ${request.key}`);
+      return cooker.cacheIdentity();
+    }
     case 'cook': {
-      if (!root || root.state !== 2) throw new Error('build root is not active');
+      requireActiveBuildRoot();
       const result = await cookers.runDraft(request.key, request.input);
       if (!result.ok) throw result.error;
       return result.value;
@@ -418,10 +457,13 @@ process.on('message', (request: BuildProcessRequest | BuildCallbackResponse) => 
   };
   // An importer may invoke the registry's own decoder through its injected context.
   // Reentrant capability calls must not wait behind that importer.
+  // A parallel cooker declared reentrant, input-isolated cooking: its cooks overlap
+  // instead of queueing behind one another.
   if (
     request.operation === 'decodeImage' ||
     request.operation === 'tool' ||
-    request.operation === 'cancelTool'
+    request.operation === 'cancelTool' ||
+    (request.operation === 'cook' && cookers.get(request.key)?.concurrency === 'parallel')
   )
     void respond();
   else tail = tail.then(respond);

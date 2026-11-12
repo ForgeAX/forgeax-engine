@@ -1,6 +1,5 @@
 import { World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import { validateCookedMaterialRecord } from '@forgeax/engine-pack';
 import { RhiNullRenderPassEncoder, rhi } from '@forgeax/engine-rhi-null';
 import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
@@ -32,9 +31,6 @@ it('draws a stock medium Surface without a dynamicInput page', async () => {
   };
   const guid = '019f0000-0000-7000-8000-0000000008c0';
   const cooked = await createMaterialPackCooker().cook({ guid, source: authored });
-  const record = validateCookedMaterialRecord(
-    (cooked.payload as { cooked: unknown }).cooked,
-  ).unwrap();
   const renderer = await createRenderer(
     { width: 32, height: 32, getContext: () => null },
     undefined,
@@ -51,9 +47,9 @@ it('draws a stock medium Surface without a dynamicInput page', async () => {
   renderer.onError((error) => errors.push(error));
   try {
     expect((await renderer.initialization).ok).toBe(true);
-    const attachment = renderer.attach(world);
-    if (!attachment.ok) throw attachment.error;
-    const lease = attachment.value;
+    const attached = renderer.attach(world);
+    if (!attached.ok) throw attached.error;
+    const lease = attached.value;
     registerPropagateTransforms(world);
     world
       .spawn(
@@ -62,7 +58,7 @@ it('draws a stock medium Surface without a dynamicInput page', async () => {
       )
       .unwrap();
     publishRuntimeAssets(renderer.assetRegistry, [
-      { guid, asset: { ...authored, cooked: record } as MaterialAsset },
+      { guid, asset: cooked.payload as MaterialAsset },
     ]);
     const material = (
       await renderer.assetRegistry.load(renderer.assetRegistry.parseGuid(guid), 'material')

@@ -42,6 +42,88 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use wgpu::Backends;
 
+mod descriptors;
+use self::descriptors::*;
+
+fn leak_str(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+/// bug-20260610 Gap 14 helper: read the `__wbg_ptr` field off a JS-side
+/// wasm-bindgen handle WITHOUT consuming it. wasm-bindgen exposes the raw
+/// u32 as an own property; we cast it back to `*const T` to access the
+/// underlying Rust struct, then borrow its inner field.
+///
+/// SAFETY contract: the caller must ensure the JS handle still owns a live
+/// pointer (i.e. has not been `__destroy_into_raw`'d). The returned
+/// reference's lifetime is bounded by the caller-chosen lifetime; in this
+/// crate we use `'static` because the underlying `RhiWgpu*` instance is
+/// kept alive by the JS side for at least the duration of the
+/// `createRenderPipeline` call.
+#[allow(dead_code)]
+unsafe fn read_wbg_ptr<T>(js: &JsValue) -> Option<&'static T> {
+    let n = js_sys::Reflect::get(js, &JsValue::from_str("__wbg_ptr"))
+        .ok()?
+        .as_f64()? as u32;
+    if n == 0 {
+        return None;
+    }
+    Some(unsafe { &*(n as usize as *const T) })
+}
+
+#[allow(dead_code)]
+unsafe fn shader_module_borrow(js: &JsValue) -> Option<&'static wgpu::ShaderModule> {
+    unsafe { read_wbg_ptr::<RhiWgpuShaderModule>(js) }.map(|h| &h.inner)
+}
+
+#[allow(dead_code)]
+unsafe fn pipeline_layout_borrow(js: &JsValue) -> Option<&'static wgpu::PipelineLayout> {
+    unsafe { read_wbg_ptr::<RhiWgpuPipelineLayout>(js) }.map(|h| &h.inner)
+}
+
+fn query_set_borrow(js: &JsValue, what: &str) -> Result<&'static wgpu::QuerySet, JsValue> {
+    unsafe { read_wbg_ptr::<RhiWgpuQuerySet>(js) }
+        .map(|h| &h.inner)
+        .ok_or_else(|| JsValue::from_str(&format!("{what} is not a live RhiWgpuQuerySet handle")))
+}
+
+/// bug-20260610 v9 side-channel: read the `forgeaxToken` getter off a
+/// wasm-bindgen handle. Returns the u32 token previously assigned in
+/// create_shader_module / create_pipeline_layout. The wasm-bindgen-generated
+/// getter calls back into wasm to read the field — that round-trip is fine
+/// for a one-shot read at pipeline-build time.
+fn read_token(js: &JsValue, what: &str) -> Result<u32, JsValue> {
+    js_sys::Reflect::get(js, &JsValue::from_str("forgeaxToken"))
+        .map_err(|_| JsValue::from_str(&format!("{what} missing forgeaxToken")))
+        .and_then(|v| {
+            v.as_f64()
+                .ok_or_else(|| JsValue::from_str(&format!("{what} forgeaxToken not a number")))
+        })
+        .map(|n| n as u32)
+}
+
+/// Resolve a shader-module token to a `'static` reference into a leaked
+/// Box<wgpu::ShaderModule>. The leaked clone holds an Arc to the same
+/// underlying CoreShaderModule kept alive in SHADER_REGISTRY, so the wgpu_core
+/// storage entry stays valid for the wasm module's lifetime.
+fn resolve_shader_token(token: u32) -> Result<&'static wgpu::ShaderModule, JsValue> {
+    let module = lookup_shader(token).ok_or_else(|| {
+        JsValue::from_str(&format!(
+            "[wgpu-wasm v9] shader module token {token} not in registry"
+        ))
+    })?;
+    Ok(Box::leak(Box::new(module)))
+}
+
+fn resolve_layout_token(token: u32) -> Result<&'static wgpu::PipelineLayout, JsValue> {
+    let layout = lookup_layout(token).ok_or_else(|| {
+        JsValue::from_str(&format!(
+            "[wgpu-wasm v9] pipeline layout token {token} not in registry"
+        ))
+    })?;
+    Ok(Box::leak(Box::new(layout)))
+}
+
 // bug-20260610 v9 side-channel registries: WebGL2 fallback was crashing in
 // `wgpu_core::storage::Storage::get` with `ShaderModule[Id(0,0)] is no longer
 // alive`. The earlier `read_wbg_ptr<RhiWgpuShaderModule>(js).inner` pointer-
@@ -70,7 +152,7 @@ thread_local! {
     // the pointer-cast path either read uninitialized memory or wgpu-bindgen
     // had moved the box mid-call. Cloning out of a thread-local registry
     // sidesteps both failure modes.
-    static DEVICE_REGISTRY: RefCell<HashMap<u32, (wgpu::Device, wgpu::Queue)>> = RefCell::new(HashMap::new());
+    static DEVICE_REGISTRY: RefCell<HashMap<u32, DeviceRegistration>> = RefCell::new(HashMap::new());
     static DEVICE_ADAPTER_REGISTRY: RefCell<HashMap<u32, wgpu::Adapter>> = RefCell::new(HashMap::new());
     // bug-20260610 v18: TextureView / Sampler / Buffer registries.
     // createBindGroup re-acquires resource handles every frame; the
@@ -167,14 +249,111 @@ fn lookup_bgl(token: u32) -> Option<wgpu::BindGroupLayout> {
     BGL_REGISTRY.with(|r| r.borrow().get(&token).cloned())
 }
 
-fn register_device(token: u32, device: wgpu::Device, queue: wgpu::Queue) {
+struct DeviceRegistration {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    loss: std::rc::Weak<RefCell<DeviceLossState>>,
+}
+
+#[derive(Default)]
+struct DeviceLossState {
+    callback: Option<js_sys::Function>,
+    lost: Option<(String, String)>,
+}
+
+fn notify_device_loss(state: &std::rc::Rc<RefCell<DeviceLossState>>, reason: &str, message: &str) {
+    let callback = {
+        let mut state = state.borrow_mut();
+        if state.lost.is_some() {
+            return;
+        }
+        state.lost = Some((reason.to_owned(), message.to_owned()));
+        state.callback.take()
+    };
+    if let Some(callback) = callback {
+        let _ = callback.call2(
+            &JsValue::UNDEFINED,
+            &JsValue::from_str(reason),
+            &JsValue::from_str(message),
+        );
+    }
+}
+
+fn register_device(
+    token: u32,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    loss: &std::rc::Rc<RefCell<DeviceLossState>>,
+) {
     DEVICE_REGISTRY.with(|r| {
-        r.borrow_mut().insert(token, (device, queue));
+        r.borrow_mut().insert(
+            token,
+            DeviceRegistration {
+                device,
+                queue,
+                loss: std::rc::Rc::downgrade(loss),
+            },
+        );
     });
 }
 
 fn lookup_device(token: u32) -> Option<(wgpu::Device, wgpu::Queue)> {
-    DEVICE_REGISTRY.with(|r| r.borrow().get(&token).cloned())
+    DEVICE_REGISTRY.with(|r| {
+        r.borrow()
+            .get(&token)
+            .map(|entry| (entry.device.clone(), entry.queue.clone()))
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+struct ContextLossListener {
+    target: web_sys::EventTarget,
+    callback: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for ContextLossListener {
+    fn drop(&mut self) {
+        let _ = self.target.remove_event_listener_with_callback(
+            "webglcontextlost",
+            self.callback.as_ref().unchecked_ref(),
+        );
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn listen_context_loss(
+    device: &wgpu::Device,
+    loss: &std::rc::Rc<RefCell<DeviceLossState>>,
+) -> Result<Option<ContextLossListener>, JsValue> {
+    let Some(hal) = (unsafe { device.as_hal::<wgpu::hal::api::Gles>() }) else {
+        return Ok(None);
+    };
+    let gl = &hal.context().webgl2_context;
+    let Some(canvas) = gl.canvas() else {
+        return Ok(None);
+    };
+    // Borrowed native canvases need not implement DOM events. Their active
+    // queue still observes is_context_lost below; never invent host support.
+    if !js_sys::Reflect::get(&canvas, &JsValue::from_str("addEventListener"))?.is_function()
+        || !js_sys::Reflect::get(&canvas, &JsValue::from_str("removeEventListener"))?.is_function()
+    {
+        return Ok(None);
+    }
+    let target: web_sys::EventTarget = canvas.unchecked_into();
+    let state = loss.clone();
+    let callback = Closure::wrap(Box::new(move |event: web_sys::Event| {
+        // Permit browser restoration. The old wgpu device remains lost; Renderer
+        // must build a new generation rather than reusing invalid GL resources.
+        event.prevent_default();
+        notify_device_loss(&state, "unknown", "WebGL context lost");
+    }) as Box<dyn FnMut(web_sys::Event)>);
+    target
+        .add_event_listener_with_callback("webglcontextlost", callback.as_ref().unchecked_ref())?;
+    if gl.is_context_lost() {
+        notify_device_loss(loss, "unknown", "WebGL context lost");
+    }
+    Ok(Some(ContextLossListener { target, callback }))
 }
 
 fn register_device_adapter(token: u32, adapter: wgpu::Adapter) {
@@ -257,6 +436,9 @@ pub struct RhiWgpuAdapter {
 
 #[wasm_bindgen]
 pub struct RhiWgpuDevice {
+    loss: std::rc::Rc<RefCell<DeviceLossState>>,
+    #[cfg(target_arch = "wasm32")]
+    context_loss_listener: RefCell<Option<ContextLossListener>>,
     inner: wgpu::Device,
     queue: wgpu::Queue,
     queue_completion: std::rc::Rc<RefCell<js_sys::Promise>>,
@@ -266,6 +448,7 @@ pub struct RhiWgpuDevice {
 
 #[wasm_bindgen]
 pub struct RhiWgpuQueue {
+    loss: std::rc::Rc<RefCell<DeviceLossState>>,
     inner: wgpu::Queue,
     device: wgpu::Device,
     completion: std::rc::Rc<RefCell<js_sys::Promise>>,
@@ -310,7 +493,9 @@ pub struct RhiWgpuTextureView {
 
 impl Drop for RhiWgpuTextureView {
     fn drop(&mut self) {
-        TEXTURE_VIEW_REGISTRY.with(|registry| { registry.borrow_mut().remove(&self.token); });
+        TEXTURE_VIEW_REGISTRY.with(|registry| {
+            registry.borrow_mut().remove(&self.token);
+        });
     }
 }
 
@@ -341,7 +526,9 @@ pub struct RhiWgpuSampler {
 
 impl Drop for RhiWgpuSampler {
     fn drop(&mut self) {
-        SAMPLER_REGISTRY.with(|registry| { registry.borrow_mut().remove(&self.token); });
+        SAMPLER_REGISTRY.with(|registry| {
+            registry.borrow_mut().remove(&self.token);
+        });
     }
 }
 
@@ -372,7 +559,9 @@ pub struct RhiWgpuBindGroupLayout {
 
 impl Drop for RhiWgpuBindGroupLayout {
     fn drop(&mut self) {
-        BGL_REGISTRY.with(|registry| { registry.borrow_mut().remove(&self.token); });
+        BGL_REGISTRY.with(|registry| {
+            registry.borrow_mut().remove(&self.token);
+        });
     }
 }
 
@@ -469,431 +658,6 @@ pub struct RhiWgpuSurfaceTexture {
 }
 
 // ============================================================================
-// Mirror descriptor structs (w3) — serde-wasm-bindgen bridge.
-// ============================================================================
-// Each mirror struct maps JS camelCase fields to Rust snake_case via serde.
-// wgpu types with serde support (TextureFormat, AddressMode, etc.) are used
-// directly since the "serde" feature is enabled on the wgpu dependency.
-// Labels: String -> Option<&'static str> via Box::leak.
-
-fn leak_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
-
-/// bug-20260610 Gap 14 helper: read the `__wbg_ptr` field off a JS-side
-/// wasm-bindgen handle WITHOUT consuming it. wasm-bindgen exposes the raw
-/// u32 as an own property; we cast it back to `*const T` to access the
-/// underlying Rust struct, then borrow its inner field.
-///
-/// SAFETY contract: the caller must ensure the JS handle still owns a live
-/// pointer (i.e. has not been `__destroy_into_raw`'d). The returned
-/// reference's lifetime is bounded by the caller-chosen lifetime; in this
-/// crate we use `'static` because the underlying `RhiWgpu*` instance is
-/// kept alive by the JS side for at least the duration of the
-/// `createRenderPipeline` call.
-#[allow(dead_code)]
-unsafe fn read_wbg_ptr<T>(js: &JsValue) -> Option<&'static T> {
-    let n = js_sys::Reflect::get(js, &JsValue::from_str("__wbg_ptr")).ok()?
-        .as_f64()? as u32;
-    if n == 0 { return None; }
-    Some(unsafe { &*(n as usize as *const T) })
-}
-
-#[allow(dead_code)]
-unsafe fn shader_module_borrow(js: &JsValue) -> Option<&'static wgpu::ShaderModule> {
-    unsafe { read_wbg_ptr::<RhiWgpuShaderModule>(js) }.map(|h| &h.inner)
-}
-
-#[allow(dead_code)]
-unsafe fn pipeline_layout_borrow(js: &JsValue) -> Option<&'static wgpu::PipelineLayout> {
-    unsafe { read_wbg_ptr::<RhiWgpuPipelineLayout>(js) }.map(|h| &h.inner)
-}
-
-fn query_set_borrow(js: &JsValue, what: &str) -> Result<&'static wgpu::QuerySet, JsValue> {
-    unsafe { read_wbg_ptr::<RhiWgpuQuerySet>(js) }
-        .map(|h| &h.inner)
-        .ok_or_else(|| JsValue::from_str(&format!("{what} is not a live RhiWgpuQuerySet handle")))
-}
-
-/// bug-20260610 v9 side-channel: read the `forgeaxToken` getter off a
-/// wasm-bindgen handle. Returns the u32 token previously assigned in
-/// create_shader_module / create_pipeline_layout. The wasm-bindgen-generated
-/// getter calls back into wasm to read the field — that round-trip is fine
-/// for a one-shot read at pipeline-build time.
-fn read_token(js: &JsValue, what: &str) -> Result<u32, JsValue> {
-    js_sys::Reflect::get(js, &JsValue::from_str("forgeaxToken"))
-        .map_err(|_| JsValue::from_str(&format!("{what} missing forgeaxToken")))
-        .and_then(|v| {
-            v.as_f64()
-                .ok_or_else(|| JsValue::from_str(&format!("{what} forgeaxToken not a number")))
-        })
-        .map(|n| n as u32)
-}
-
-/// Resolve a shader-module token to a `'static` reference into a leaked
-/// Box<wgpu::ShaderModule>. The leaked clone holds an Arc to the same
-/// underlying CoreShaderModule kept alive in SHADER_REGISTRY, so the wgpu_core
-/// storage entry stays valid for the wasm module's lifetime.
-fn resolve_shader_token(token: u32) -> Result<&'static wgpu::ShaderModule, JsValue> {
-    let module = lookup_shader(token).ok_or_else(|| {
-        JsValue::from_str(&format!(
-            "[wgpu-wasm v9] shader module token {token} not in registry"
-        ))
-    })?;
-    Ok(Box::leak(Box::new(module)))
-}
-
-fn resolve_layout_token(token: u32) -> Result<&'static wgpu::PipelineLayout, JsValue> {
-    let layout = lookup_layout(token).ok_or_else(|| {
-        JsValue::from_str(&format!(
-            "[wgpu-wasm v9] pipeline layout token {token} not in registry"
-        ))
-    })?;
-    Ok(Box::leak(Box::new(layout)))
-}
-
-// ============================================================================
-// Mirror enum types — kebab-case serde bridges for wgpu enums
-// ============================================================================
-// These Js-prefixed enums mirror wgpu types that either use PascalCase serde by
-// default or have struct variants incompatible with flat kebab-case strings.
-// They accept WebGPU-spec-compliant kebab-case strings from JS and convert to
-// native wgpu enum values via into_wgpu().
-
-#[derive(Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum BufferBindingTypeJs {
-    Uniform,
-    Storage,
-    ReadOnlyStorage,
-}
-impl BufferBindingTypeJs {
-    fn into_wgpu(&self) -> wgpu::BufferBindingType {
-        match self {
-            BufferBindingTypeJs::Uniform => wgpu::BufferBindingType::Uniform,
-            BufferBindingTypeJs::Storage => wgpu::BufferBindingType::Storage { read_only: false },
-            BufferBindingTypeJs::ReadOnlyStorage => wgpu::BufferBindingType::Storage { read_only: true },
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum TextureSampleTypeJs {
-    Float,
-    UnfilterableFloat,
-    Depth,
-    Sint,
-    Uint,
-}
-impl TextureSampleTypeJs {
-    fn into_wgpu(&self) -> wgpu::TextureSampleType {
-        match self {
-            TextureSampleTypeJs::Float => wgpu::TextureSampleType::Float { filterable: true },
-            TextureSampleTypeJs::UnfilterableFloat => wgpu::TextureSampleType::Float { filterable: false },
-            TextureSampleTypeJs::Depth => wgpu::TextureSampleType::Depth,
-            TextureSampleTypeJs::Sint => wgpu::TextureSampleType::Sint,
-            TextureSampleTypeJs::Uint => wgpu::TextureSampleType::Uint,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum SamplerBorderColorJs {
-    TransparentBlack,
-    OpaqueBlack,
-    OpaqueWhite,
-}
-impl SamplerBorderColorJs {
-    fn into_wgpu(&self) -> wgpu::SamplerBorderColor {
-        match self {
-            SamplerBorderColorJs::TransparentBlack => wgpu::SamplerBorderColor::TransparentBlack,
-            SamplerBorderColorJs::OpaqueBlack => wgpu::SamplerBorderColor::OpaqueBlack,
-            SamplerBorderColorJs::OpaqueWhite => wgpu::SamplerBorderColor::OpaqueWhite,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum PresentModeJs {
-    Fifo,
-    FifoRelaxed,
-    Immediate,
-    Mailbox,
-    AutoVsync,
-    AutoNoVsync,
-}
-impl PresentModeJs {
-    fn into_wgpu(&self) -> wgpu::PresentMode {
-        match self {
-            PresentModeJs::Fifo => wgpu::PresentMode::Fifo,
-            PresentModeJs::FifoRelaxed => wgpu::PresentMode::FifoRelaxed,
-            PresentModeJs::Immediate => wgpu::PresentMode::Immediate,
-            PresentModeJs::Mailbox => wgpu::PresentMode::Mailbox,
-            PresentModeJs::AutoVsync => wgpu::PresentMode::AutoVsync,
-            PresentModeJs::AutoNoVsync => wgpu::PresentMode::AutoNoVsync,
-        }
-    }
-}
-
-#[derive(Deserialize, Debug, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum QueryTypeJs {
-    Occlusion,
-    Timestamp,
-}
-impl QueryTypeJs {
-    fn into_wgpu(&self) -> wgpu::QueryType {
-        match self {
-            QueryTypeJs::Occlusion => wgpu::QueryType::Occlusion,
-            QueryTypeJs::Timestamp => wgpu::QueryType::Timestamp,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ShaderModuleDescriptorJs {
-    code: String,
-    #[serde(default)]
-    label: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Extent3dJs {
-    width: u32,
-    height: u32,
-    #[serde(default = "one")]
-    depth_or_array_layers: u32,
-}
-const fn one() -> u32 { 1 }
-impl Extent3dJs {
-    fn into_wgpu(&self) -> wgpu::Extent3d {
-        wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: self.depth_or_array_layers }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TextureDescriptorJs {
-    #[serde(default)]
-    label: Option<String>,
-    size: Extent3dJs,
-    #[serde(default = "one")]
-    mip_level_count: u32,
-    #[serde(default = "one")]
-    sample_count: u32,
-    dimension: Option<wgpu::TextureDimension>,
-    format: wgpu::TextureFormat,
-    usage: u32,
-    #[serde(default)]
-    view_formats: Vec<wgpu::TextureFormat>,
-    // WebGPU compatibility-mode field. wgpu 30's native TextureDescriptor
-    // has no equivalent, but the standard path carries the actual binding
-    // dimension through TextureViewDescriptor, so parsing this field is
-    // sufficient. Keep it in the JS mirror to reject malformed values rather
-    // than silently accepting an unknown enum member.
-    #[serde(default)]
-    texture_binding_view_dimension: Option<wgpu::TextureViewDimension>,
-}
-impl TextureDescriptorJs {
-    fn into_wgpu(&self) -> wgpu::TextureDescriptor<'static> {
-        let vf: &'static [wgpu::TextureFormat] = if self.view_formats.is_empty() {
-            &[]
-        } else {
-            Box::leak(self.view_formats.clone().into_boxed_slice())
-        };
-        wgpu::TextureDescriptor {
-            label: self.label.as_ref().map(|s| leak_str(s.clone())),
-            size: self.size.into_wgpu(),
-            mip_level_count: self.mip_level_count,
-            sample_count: self.sample_count,
-            dimension: self.dimension.unwrap_or(wgpu::TextureDimension::D2),
-            format: self.format,
-            usage: wgpu::TextureUsages::from_bits_truncate(self.usage),
-            view_formats: vf,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SamplerDescriptorJs {
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default, rename = "addressModeU")]
-    address_mode_u: Option<wgpu::AddressMode>,
-    #[serde(default, rename = "addressModeV")]
-    address_mode_v: Option<wgpu::AddressMode>,
-    #[serde(default, rename = "addressModeW")]
-    address_mode_w: Option<wgpu::AddressMode>,
-    #[serde(default)]
-    mag_filter: Option<wgpu::FilterMode>,
-    #[serde(default)]
-    min_filter: Option<wgpu::FilterMode>,
-    #[serde(default)]
-    mipmap_filter: Option<wgpu::MipmapFilterMode>,
-    #[serde(default)]
-    lod_min_clamp: Option<f32>,
-    #[serde(default)]
-    lod_max_clamp: Option<f32>,
-    #[serde(default)]
-    compare: Option<wgpu::CompareFunction>,
-    #[serde(default)]
-    max_anisotropy: Option<u16>,
-    #[serde(default)]
-    border_color: Option<SamplerBorderColorJs>,
-}
-impl SamplerDescriptorJs {
-    fn into_wgpu(&self) -> wgpu::SamplerDescriptor<'_> {
-        wgpu::SamplerDescriptor {
-            label: self.label.as_deref(),
-            address_mode_u: self.address_mode_u.unwrap_or(wgpu::AddressMode::ClampToEdge),
-            address_mode_v: self.address_mode_v.unwrap_or(wgpu::AddressMode::ClampToEdge),
-            address_mode_w: self.address_mode_w.unwrap_or(wgpu::AddressMode::ClampToEdge),
-            mag_filter: self.mag_filter.unwrap_or(wgpu::FilterMode::Nearest),
-            min_filter: self.min_filter.unwrap_or(wgpu::FilterMode::Nearest),
-            mipmap_filter: self.mipmap_filter.unwrap_or(wgpu::MipmapFilterMode::Nearest),
-            lod_min_clamp: self.lod_min_clamp.unwrap_or(0.0),
-            lod_max_clamp: self.lod_max_clamp.unwrap_or(32.0),
-            compare: self.compare,
-            anisotropy_clamp: self.max_anisotropy.unwrap_or(1),
-            border_color: self.border_color.as_ref().map(|bc| bc.into_wgpu()),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BindGroupLayoutDescriptorJs {
-    #[serde(default)]
-    label: Option<String>,
-    entries: Vec<BindGroupLayoutEntryJs>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BindGroupLayoutEntryJs {
-    binding: u32,
-    visibility: u32,
-    #[serde(default)]
-    buffer: Option<BufferBindingLayoutJs>,
-    #[serde(default)]
-    sampler: Option<SamplerBindingLayoutJs>,
-    #[serde(default)]
-    texture: Option<TextureBindingLayoutJs>,
-    #[serde(default, rename = "storageTexture")]
-    storage_texture: Option<StorageTextureBindingLayoutJs>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BufferBindingLayoutJs {
-    #[serde(default, rename = "type")]
-    ty: Option<BufferBindingTypeJs>,
-    #[serde(default)]
-    has_dynamic_offset: bool,
-    #[serde(default)]
-    min_binding_size: Option<u64>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SamplerBindingLayoutJs {
-    #[serde(default, rename = "type")]
-    ty: Option<wgpu::SamplerBindingType>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TextureBindingLayoutJs {
-    #[serde(default)]
-    sample_type: Option<TextureSampleTypeJs>,
-    #[serde(default, rename = "viewDimension")]
-    view_dimension: Option<wgpu::TextureViewDimension>,
-    #[serde(default)]
-    multisampled: bool,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StorageTextureBindingLayoutJs {
-    #[serde(default)]
-    access: Option<wgpu::StorageTextureAccess>,
-    format: wgpu::TextureFormat,
-    #[serde(default, rename = "viewDimension")]
-    view_dimension: Option<wgpu::TextureViewDimension>,
-}
-impl BindGroupLayoutEntryJs {
-    fn into_wgpu(&self) -> wgpu::BindGroupLayoutEntry {
-        let ty = if let Some(ref buf) = self.buffer {
-            wgpu::BindingType::Buffer {
-                ty: buf.ty.as_ref().map_or(wgpu::BufferBindingType::Uniform, |t| t.into_wgpu()),
-                has_dynamic_offset: buf.has_dynamic_offset,
-                min_binding_size: buf.min_binding_size.and_then(core::num::NonZeroU64::new),
-            }
-        } else if let Some(ref s) = self.sampler {
-            wgpu::BindingType::Sampler(s.ty.unwrap_or(wgpu::SamplerBindingType::Filtering))
-        } else if let Some(ref t) = self.texture {
-            wgpu::BindingType::Texture {
-                sample_type: t.sample_type.as_ref().map_or(wgpu::TextureSampleType::Float { filterable: true }, |st| st.into_wgpu()),
-                view_dimension: t.view_dimension.unwrap_or(wgpu::TextureViewDimension::D2),
-                multisampled: t.multisampled,
-            }
-        } else if let Some(ref st) = self.storage_texture {
-            wgpu::BindingType::StorageTexture {
-                access: st.access.unwrap_or(wgpu::StorageTextureAccess::WriteOnly),
-                format: st.format,
-                view_dimension: st.view_dimension.unwrap_or(wgpu::TextureViewDimension::D2),
-            }
-        } else {
-            wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            }
-        };
-        wgpu::BindGroupLayoutEntry {
-            binding: self.binding,
-            visibility: wgpu::ShaderStages::from_bits_truncate(self.visibility),
-            ty,
-            count: None,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PipelineLayoutDescriptorJs {
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default = "one_u32")]
-    pipeline_push_constant_size: u32,
-    #[serde(default)]
-    immediate_size: u32,
-}
-const fn one_u32() -> u32 { 1 }
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BufferDescriptorJs {
-    #[serde(default)]
-    label: Option<String>,
-    size: u64,
-    usage: u32,
-    #[serde(default)]
-    mapped_at_creation: bool,
-}
-impl BufferDescriptorJs {
-    fn into_wgpu(&self) -> wgpu::BufferDescriptor<'static> {
-        wgpu::BufferDescriptor {
-            label: self.label.as_ref().map(|s| leak_str(s.clone())),
-            size: self.size,
-            usage: wgpu::BufferUsages::from_bits_truncate(self.usage),
-            mapped_at_creation: self.mapped_at_creation,
-        }
-    }
-}
-
-// ============================================================================
 // RhiWgpuInstance — wgpu::Instance bootstrap (R-03 graceful fallback)
 // ============================================================================
 
@@ -956,13 +720,16 @@ impl RhiWgpuInstance {
         // problem)" from "no GL adapter found (wgpu instance configured
         // without GL backend)". Return descriptive strings so the TS layer
         // surfaces the real cause through `RhiError.hint`.
-        let surface = match self.inner.create_surface(
-            wgpu::SurfaceTarget::Canvas(canvas.clone()),
-        ) {
+        let surface = match self
+            .inner
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
+        {
             Ok(s) => s,
-            Err(e) => return JsValue::from_str(&format!(
-                "wgpu Instance::create_surface(SurfaceTarget::Canvas) failed: {e}"
-            )),
+            Err(e) => {
+                return JsValue::from_str(&format!(
+                    "wgpu Instance::create_surface(SurfaceTarget::Canvas) failed: {e}"
+                ))
+            }
         };
         let opts = wgpu::RequestAdapterOptions {
             compatible_surface: Some(&surface),
@@ -978,8 +745,14 @@ impl RhiWgpuInstance {
 
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = createSurface, catch)]
-    pub fn create_surface(&self, canvas: web_sys::HtmlCanvasElement) -> Result<RhiWgpuSurface, JsValue> {
-        match self.inner.create_surface(wgpu::SurfaceTarget::Canvas(canvas)) {
+    pub fn create_surface(
+        &self,
+        canvas: web_sys::HtmlCanvasElement,
+    ) -> Result<RhiWgpuSurface, JsValue> {
+        match self
+            .inner
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+        {
             Ok(s) => Ok(RhiWgpuSurface {
                 inner: s,
                 identity: alloc_token(),
@@ -993,18 +766,22 @@ impl RhiWgpuInstance {
 fn feature_names(features: wgpu::Features) -> js_sys::Set {
     let result = js_sys::Set::new(&JsValue::UNDEFINED);
     for (name, _) in features.iter_names() {
-        result.add(&JsValue::from_str(&name.to_ascii_lowercase().replace('_', "-")));
+        result.add(&JsValue::from_str(
+            &name.to_ascii_lowercase().replace('_', "-"),
+        ));
     }
     result
 }
 
 fn parse_requested_features(names: &[String]) -> Result<wgpu::Features, String> {
-    names.iter().try_fold(wgpu::Features::empty(), |features, name| {
-        let native = name.replace('-', "_").to_ascii_uppercase();
-        wgpu::Features::from_name(&native)
-            .map(|feature| features | feature)
-            .ok_or_else(|| name.clone())
-    })
+    names
+        .iter()
+        .try_fold(wgpu::Features::empty(), |features, name| {
+            let native = name.replace('-', "_").to_ascii_uppercase();
+            wgpu::Features::from_name(&native)
+                .map(|feature| features | feature)
+                .ok_or_else(|| name.clone())
+        })
 }
 
 // ============================================================================
@@ -1055,7 +832,26 @@ impl RhiWgpuAdapter {
         // path (which panicked with "Device[Id(0,0)] is no longer alive" on
         // the WebGL2 fallback path).
         let token = alloc_token();
-        register_device(token, device.clone(), queue.clone());
+        let loss = std::rc::Rc::new(RefCell::new(DeviceLossState::default()));
+        register_device(token, device.clone(), queue.clone(), &loss);
+        device.set_device_lost_callback(move |reason, message| {
+            let state = DEVICE_REGISTRY.with(|registry| {
+                registry
+                    .borrow()
+                    .get(&token)
+                    .and_then(|entry| entry.loss.upgrade())
+            });
+            if let Some(state) = state {
+                let reason = if reason == wgpu::DeviceLostReason::Destroyed {
+                    "destroyed"
+                } else {
+                    "unknown"
+                };
+                notify_device_loss(&state, reason, &message);
+            }
+        });
+        #[cfg(target_arch = "wasm32")]
+        let context_loss_listener = RefCell::new(listen_context_loss(&device, &loss)?);
         register_device_adapter(token, self.inner.clone());
         // bug-20260622 R5 WS2: register the on_uncaptured_error global callback
         // so submit-period wgpu validation errors land in a JS-visible slot
@@ -1076,8 +872,16 @@ impl RhiWgpuAdapter {
             .flags
             .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
         Ok(RhiWgpuDevice {
-            inner: device, queue, token, surface_view_formats,
-            queue_completion: std::rc::Rc::new(RefCell::new(js_sys::Promise::resolve(&JsValue::UNDEFINED))),
+            loss,
+            #[cfg(target_arch = "wasm32")]
+            context_loss_listener,
+            inner: device,
+            queue,
+            token,
+            surface_view_formats,
+            queue_completion: std::rc::Rc::new(RefCell::new(js_sys::Promise::resolve(
+                &JsValue::UNDEFINED,
+            ))),
         })
     }
 }
@@ -1112,16 +916,30 @@ impl RhiWgpuDevice {
 #[wasm_bindgen]
 impl RhiWgpuDevice {
     #[wasm_bindgen(js_name = registerLostCallback)]
-    pub fn register_lost_callback(&self, js_callback: js_sys::Function) {
-        let closure: Closure<dyn FnMut(String, String)> =
-            Closure::wrap(Box::new(move |reason: String, message: String| {
-                let _ = js_callback.call2(
-                    &JsValue::NULL,
-                    &JsValue::from_str(&reason),
-                    &JsValue::from_str(&message),
-                );
-            }));
-        closure.forget();
+    pub fn register_lost_callback(&self, callback: js_sys::Function) {
+        let lost = {
+            let mut state = self.loss.borrow_mut();
+            if state.lost.is_none() {
+                state.callback = Some(callback.clone());
+            }
+            state.lost.clone()
+        };
+        if let Some((reason, message)) = lost {
+            let _ = callback.call2(
+                &JsValue::UNDEFINED,
+                &JsValue::from_str(&reason),
+                &JsValue::from_str(&message),
+            );
+        }
+    }
+
+    pub fn destroy(&self) {
+        #[cfg(target_arch = "wasm32")]
+        self.context_loss_listener.borrow_mut().take();
+        self.inner.destroy();
+        // Native completion owns the destroyed notification. Poll once for an
+        // idle device; in-flight queue observers continue the same device poll.
+        let _ = self.inner.poll(wgpu::PollType::Poll);
     }
 
     #[wasm_bindgen(js_name = createTexture, catch)]
@@ -1139,17 +957,29 @@ impl RhiWgpuDevice {
         let sampler = create_with_uncaptured_error(|| self.inner.create_sampler(&sd))?;
         let token = alloc_token();
         register_sampler(token, sampler.clone());
-        Ok(RhiWgpuSampler { inner: sampler, token })
+        Ok(RhiWgpuSampler {
+            inner: sampler,
+            token,
+        })
     }
 
     #[wasm_bindgen(js_name = createBindGroupLayout, catch)]
-    pub fn create_bind_group_layout(&self, desc_js: JsValue) -> Result<RhiWgpuBindGroupLayout, JsValue> {
+    pub fn create_bind_group_layout(
+        &self,
+        desc_js: JsValue,
+    ) -> Result<RhiWgpuBindGroupLayout, JsValue> {
         let desc: BindGroupLayoutDescriptorJs = serde_wasm_bindgen::from_value(desc_js)?;
-        let entries: Vec<_> = desc.entries.iter().map(BindGroupLayoutEntryJs::into_wgpu).collect();
+        let entries: Vec<_> = desc
+            .entries
+            .iter()
+            .map(BindGroupLayoutEntryJs::into_wgpu)
+            .collect();
         let descriptor = wgpu::BindGroupLayoutDescriptor {
-            label: desc.label.as_deref(), entries: &entries,
+            label: desc.label.as_deref(),
+            entries: &entries,
         };
-        let bgl = create_with_uncaptured_error(|| self.inner.create_bind_group_layout(&descriptor))?;
+        let bgl =
+            create_with_uncaptured_error(|| self.inner.create_bind_group_layout(&descriptor))?;
         // bug-20260610 v16 side-channel: stash a clone keyed by token so
         // create_pipeline_layout can resolve the BGL via the registry rather
         // than `try_from_js_value` which consumes the JS pointer (and breaks
@@ -1178,11 +1008,10 @@ impl RhiWgpuDevice {
         // PipelineLayoutDescriptorJs deserializer keeps the wasm handles raw
         // (serde_wasm_bindgen would try to re-serialize them as plain objects
         // and lose the wasm-bindgen pointer).
-        let bgl_array_val = js_sys::Reflect::get(
-            &desc_js,
-            &JsValue::from_str("bindGroupLayouts"),
-        )
-        .map_err(|_| JsValue::from_str("createPipelineLayout: descriptor missing bindGroupLayouts"))?;
+        let bgl_array_val = js_sys::Reflect::get(&desc_js, &JsValue::from_str("bindGroupLayouts"))
+            .map_err(|_| {
+                JsValue::from_str("createPipelineLayout: descriptor missing bindGroupLayouts")
+            })?;
         let bind_group_layouts = js_sys::Array::from(&bgl_array_val);
         // bug-20260610 v16: resolve each BGL via its `forgeaxToken` getter
         // so the JS handle stays untouched. The previous `try_from_js_value`
@@ -1227,22 +1056,22 @@ impl RhiWgpuDevice {
     /// Descriptor resources are borrowed through their live tokens. Temporary
     /// native clones live only through create_bind_group; wgpu retains its own.
     #[wasm_bindgen(js_name = createBindGroup, catch)]
-    pub fn create_bind_group(
-        &self,
-        desc_js: JsValue,
-    ) -> Result<RhiWgpuBindGroup, JsValue> {
+    pub fn create_bind_group(&self, desc_js: JsValue) -> Result<RhiWgpuBindGroup, JsValue> {
         enum Resource {
             Buffer(wgpu::Buffer, u64, Option<core::num::NonZeroU64>),
             Sampler(wgpu::Sampler),
             TextureView(wgpu::TextureView),
         }
         let label = js_sys::Reflect::get(&desc_js, &JsValue::from_str("label"))
-            .ok().and_then(|v| v.as_string());
+            .ok()
+            .and_then(|v| v.as_string());
         let layout_js = js_sys::Reflect::get(&desc_js, &JsValue::from_str("layout"))
             .map_err(|_| JsValue::from_str("createBindGroup: descriptor missing layout"))?;
         let layout_token = read_token(&layout_js, "createBindGroup.layout")?;
         let layout = lookup_bgl(layout_token).ok_or_else(|| {
-            JsValue::from_str(&format!("createBindGroup: BGL token {layout_token} not in registry"))
+            JsValue::from_str(&format!(
+                "createBindGroup: BGL token {layout_token} not in registry"
+            ))
         })?;
         let entries_js = js_sys::Reflect::get(&desc_js, &JsValue::from_str("entries"))
             .map_err(|_| JsValue::from_str("createBindGroup: descriptor missing entries"))?;
@@ -1251,25 +1080,37 @@ impl RhiWgpuDevice {
         for i in 0..entries_arr.length() {
             let entry_js = entries_arr.get(i);
             let binding = js_sys::Reflect::get(&entry_js, &JsValue::from_str("binding"))
-                .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as u32;
             let resource_js = js_sys::Reflect::get(&entry_js, &JsValue::from_str("resource"))
                 .map_err(|_| JsValue::from_str("entry missing resource"))?;
             let buffer_field = js_sys::Reflect::get(&resource_js, &JsValue::from_str("buffer"))
-                .ok().unwrap_or(JsValue::UNDEFINED);
+                .ok()
+                .unwrap_or(JsValue::UNDEFINED);
             let resource = if !buffer_field.is_undefined() && !buffer_field.is_null() {
                 let token = read_token(&buffer_field, "createBindGroup.entry.buffer")?;
                 let buffer = lookup_buffer(token).ok_or_else(|| {
-                    JsValue::from_str(&format!("createBindGroup: buffer token {token} not in registry"))
+                    JsValue::from_str(&format!(
+                        "createBindGroup: buffer token {token} not in registry"
+                    ))
                 })?;
                 let offset = js_sys::Reflect::get(&resource_js, &JsValue::from_str("offset"))
-                    .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as u64;
                 let size = js_sys::Reflect::get(&resource_js, &JsValue::from_str("size"))
-                    .ok().and_then(|v| v.as_f64()).and_then(|s| core::num::NonZeroU64::new(s as u64));
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .and_then(|s| core::num::NonZeroU64::new(s as u64));
                 Resource::Buffer(buffer, offset, size)
             } else {
                 // Explicit generated brand getters remain stable under minification.
-                let kind = js_sys::Reflect::get(&resource_js, &JsValue::from_str("forgeaxResourceKind"))
-                    .ok().and_then(|v| v.as_string()).unwrap_or_default();
+                let kind =
+                    js_sys::Reflect::get(&resource_js, &JsValue::from_str("forgeaxResourceKind"))
+                        .ok()
+                        .and_then(|v| v.as_string())
+                        .unwrap_or_default();
                 match kind.as_str() {
                     "sampler" => {
                         let token = read_token(&resource_js, "createBindGroup.entry.sampler")?;
@@ -1290,18 +1131,30 @@ impl RhiWgpuDevice {
             };
             resources.push((binding, resource));
         }
-        let entries: Vec<_> = resources.iter().map(|(binding, resource)| {
-            let resource = match resource {
-                Resource::Buffer(buffer, offset, size) => wgpu::BindingResource::Buffer(
-                    wgpu::BufferBinding { buffer, offset: *offset, size: *size }
-                ),
-                Resource::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
-                Resource::TextureView(view) => wgpu::BindingResource::TextureView(view),
-            };
-            wgpu::BindGroupEntry { binding: *binding, resource }
-        }).collect();
+        let entries: Vec<_> = resources
+            .iter()
+            .map(|(binding, resource)| {
+                let resource = match resource {
+                    Resource::Buffer(buffer, offset, size) => {
+                        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer,
+                            offset: *offset,
+                            size: *size,
+                        })
+                    }
+                    Resource::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
+                    Resource::TextureView(view) => wgpu::BindingResource::TextureView(view),
+                };
+                wgpu::BindGroupEntry {
+                    binding: *binding,
+                    resource,
+                }
+            })
+            .collect();
         let descriptor = wgpu::BindGroupDescriptor {
-            label: label.as_deref(), layout: &layout, entries: &entries,
+            label: label.as_deref(),
+            layout: &layout,
+            entries: &entries,
         };
         let inner = create_with_uncaptured_error(|| self.inner.create_bind_group(&descriptor))?;
         Ok(RhiWgpuBindGroup { inner })
@@ -1336,15 +1189,23 @@ impl RhiWgpuDevice {
             resolve_shader_token(token)?
         };
         let entry_point = js_sys::Reflect::get(&vertex_js, &JsValue::from_str("entryPoint"))
-            .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "main".to_string());
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "main".to_string());
 
         let buffers_js = js_sys::Reflect::get(&vertex_js, &JsValue::from_str("buffers"))
-            .ok().unwrap_or(JsValue::UNDEFINED);
+            .ok()
+            .unwrap_or(JsValue::UNDEFINED);
         let vbs = parse_vertex_buffers(&buffers_js)?;
         let vbs: &[Option<wgpu::VertexBufferLayout<'static>>] = Box::leak(vbs.into_boxed_slice());
         let vertex_constants = parse_pipeline_constants(&vertex_js, "vertex.constants")?;
 
-        let ep_leaked: Box<Option<&'static str>> = Box::new(if entry_point.is_empty() || entry_point == "main" { None } else { Some(leak_str(entry_point)) });
+        let ep_leaked: Box<Option<&'static str>> =
+            Box::new(if entry_point.is_empty() || entry_point == "main" {
+                None
+            } else {
+                Some(leak_str(entry_point))
+            });
         let vertex = wgpu::VertexState {
             module: leaked_vertex,
             entry_point: *ep_leaked,
@@ -1360,12 +1221,14 @@ impl RhiWgpuDevice {
         // spec; missing / null gives None.
         let frag_ref: Option<&'static wgpu::ShaderModule> = {
             let frag_js = js_sys::Reflect::get(&desc_js, &JsValue::from_str("fragment"))
-                .ok().unwrap_or(JsValue::UNDEFINED);
+                .ok()
+                .unwrap_or(JsValue::UNDEFINED);
             if frag_js.is_undefined() || frag_js.is_null() {
                 None
             } else {
                 let m_js = js_sys::Reflect::get(&frag_js, &JsValue::from_str("module"))
-                    .ok().unwrap_or(JsValue::UNDEFINED);
+                    .ok()
+                    .unwrap_or(JsValue::UNDEFINED);
                 if m_js.is_undefined() || m_js.is_null() {
                     None
                 } else {
@@ -1381,18 +1244,26 @@ impl RhiWgpuDevice {
         // vertex-only equivalence).
         let fragment = if let Some(frag_mod) = frag_ref {
             let frag_js = js_sys::Reflect::get(&desc_js, &JsValue::from_str("fragment"))
-                .ok().unwrap_or(JsValue::UNDEFINED);
+                .ok()
+                .unwrap_or(JsValue::UNDEFINED);
             let targets_js = js_sys::Reflect::get(&frag_js, &JsValue::from_str("targets"))
-                .ok().unwrap_or(JsValue::UNDEFINED);
+                .ok()
+                .unwrap_or(JsValue::UNDEFINED);
             let ep = js_sys::Reflect::get(&frag_js, &JsValue::from_str("entryPoint"))
-                .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "main".to_string());
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| "main".to_string());
 
             let targets = parse_color_targets(&targets_js)?;
             let targets: &[Option<wgpu::ColorTargetState>] = Box::leak(targets.into_boxed_slice());
             let fragment_constants = parse_pipeline_constants(&frag_js, "fragment.constants")?;
             Some(wgpu::FragmentState {
                 module: frag_mod,
-                entry_point: if ep.is_empty() || ep == "main" { None } else { Some(leak_str(ep)) },
+                entry_point: if ep.is_empty() || ep == "main" {
+                    None
+                } else {
+                    Some(leak_str(ep))
+                },
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: fragment_constants,
                     ..Default::default()
@@ -1403,44 +1274,66 @@ impl RhiWgpuDevice {
             None
         };
 
-        let primitive = if let Ok(p_js) = js_sys::Reflect::get(&desc_js, &JsValue::from_str("primitive")) {
-            if p_js.is_undefined() { wgpu::PrimitiveState::default() } else {
-                match serde_wasm_bindgen::from_value::<PrimitiveStateJs>(p_js) {
-                    Ok(v) => v.into_wgpu(),
-                    Err(e) => {
-                        return Err(JsValue::from_str(&format!("[wgpu-wasm] failed to parse primitive: {e}")));
+        let primitive =
+            if let Ok(p_js) = js_sys::Reflect::get(&desc_js, &JsValue::from_str("primitive")) {
+                if p_js.is_undefined() {
+                    wgpu::PrimitiveState::default()
+                } else {
+                    match serde_wasm_bindgen::from_value::<PrimitiveStateJs>(p_js) {
+                        Ok(v) => v.into_wgpu(),
+                        Err(e) => {
+                            return Err(JsValue::from_str(&format!(
+                                "[wgpu-wasm] failed to parse primitive: {e}"
+                            )));
+                        }
                     }
                 }
-            }
-        } else { wgpu::PrimitiveState::default() };
+            } else {
+                wgpu::PrimitiveState::default()
+            };
 
-        let depth_stencil = if let Ok(ds_js) = js_sys::Reflect::get(&desc_js, &JsValue::from_str("depthStencil")) {
-            if ds_js.is_undefined() || ds_js.is_null() { None } else {
-                match serde_wasm_bindgen::from_value::<DepthStencilStateJs>(ds_js) {
-                    Ok(v) => Some(v.into_wgpu()),
-                    Err(e) => {
-                        return Err(JsValue::from_str(&format!("[wgpu-wasm] failed to parse depthStencil: {e}")));
+        let depth_stencil =
+            if let Ok(ds_js) = js_sys::Reflect::get(&desc_js, &JsValue::from_str("depthStencil")) {
+                if ds_js.is_undefined() || ds_js.is_null() {
+                    None
+                } else {
+                    match serde_wasm_bindgen::from_value::<DepthStencilStateJs>(ds_js) {
+                        Ok(v) => Some(v.into_wgpu()),
+                        Err(e) => {
+                            return Err(JsValue::from_str(&format!(
+                                "[wgpu-wasm] failed to parse depthStencil: {e}"
+                            )));
+                        }
                     }
                 }
-            }
-        } else { None };
+            } else {
+                None
+            };
 
-        let multisample = if let Ok(ms_js) = js_sys::Reflect::get(&desc_js, &JsValue::from_str("multisample")) {
-            if ms_js.is_undefined() || ms_js.is_null() { wgpu::MultisampleState::default() } else {
-                match serde_wasm_bindgen::from_value::<MultisampleStateJs>(ms_js) {
-                    Ok(v) => v.into_wgpu(),
-                    Err(e) => {
-                        return Err(JsValue::from_str(&format!("[wgpu-wasm] failed to parse multisample: {e}")));
+        let multisample =
+            if let Ok(ms_js) = js_sys::Reflect::get(&desc_js, &JsValue::from_str("multisample")) {
+                if ms_js.is_undefined() || ms_js.is_null() {
+                    wgpu::MultisampleState::default()
+                } else {
+                    match serde_wasm_bindgen::from_value::<MultisampleStateJs>(ms_js) {
+                        Ok(v) => v.into_wgpu(),
+                        Err(e) => {
+                            return Err(JsValue::from_str(&format!(
+                                "[wgpu-wasm] failed to parse multisample: {e}"
+                            )));
+                        }
                     }
                 }
-            }
-        } else { wgpu::MultisampleState::default() };
+            } else {
+                wgpu::MultisampleState::default()
+            };
 
         // bug-20260610 v9 side-channel resolution for pipeline layout — same
         // token registry pattern.
         let layout_ref: Option<&'static wgpu::PipelineLayout> = {
             let layout_js = js_sys::Reflect::get(&desc_js, &JsValue::from_str("layout"))
-                .ok().unwrap_or(JsValue::UNDEFINED);
+                .ok()
+                .unwrap_or(JsValue::UNDEFINED);
             if layout_js.is_undefined() || layout_js.is_null() {
                 None
             } else {
@@ -1450,7 +1343,8 @@ impl RhiWgpuDevice {
         };
 
         let label = js_sys::Reflect::get(&desc_js, &JsValue::from_str("label"))
-            .ok().and_then(|v| v.as_string());
+            .ok()
+            .and_then(|v| v.as_string());
 
         let wgpu_desc = wgpu::RenderPipelineDescriptor {
             label: label.map(|s| leak_str(s)),
@@ -1463,9 +1357,8 @@ impl RhiWgpuDevice {
             multiview_mask: None,
             cache: None,
         };
-        let pipeline = create_with_uncaptured_error(|| {
-            self.inner.create_render_pipeline(&wgpu_desc)
-        })?;
+        let pipeline =
+            create_with_uncaptured_error(|| self.inner.create_render_pipeline(&wgpu_desc))?;
         Ok(RhiWgpuRenderPipeline { inner: pipeline })
     }
 
@@ -1477,16 +1370,23 @@ impl RhiWgpuDevice {
         layout: Option<RhiWgpuPipelineLayout>,
     ) -> Result<RhiWgpuComputePipeline, JsValue> {
         let entry_point = js_sys::Reflect::get(&desc_js, &JsValue::from_str("entryPoint"))
-            .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "main".to_string());
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "main".to_string());
         let label = js_sys::Reflect::get(&desc_js, &JsValue::from_str("label"))
-            .ok().and_then(|v| v.as_string());
+            .ok()
+            .and_then(|v| v.as_string());
 
         let layout_ref = layout.map(|pl| {
             let leaked: &'static RhiWgpuPipelineLayout = Box::leak(Box::new(pl));
             &leaked.inner
         });
 
-        let cp_ep: Option<&str> = if entry_point.is_empty() || entry_point == "main" { None } else { Some(leak_str(entry_point)) };
+        let cp_ep: Option<&str> = if entry_point.is_empty() || entry_point == "main" {
+            None
+        } else {
+            Some(leak_str(entry_point))
+        };
         let wgpu_desc = wgpu::ComputePipelineDescriptor {
             label: label.map(|s| leak_str(s)),
             layout: layout_ref,
@@ -1531,12 +1431,20 @@ impl RhiWgpuDevice {
     }
 
     #[wasm_bindgen(js_name = createCommandEncoder, catch)]
-    pub fn create_command_encoder(&self, desc_js: JsValue) -> Result<RhiWgpuCommandEncoder, JsValue> {
+    pub fn create_command_encoder(
+        &self,
+        desc_js: JsValue,
+    ) -> Result<RhiWgpuCommandEncoder, JsValue> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct EncDesc { #[serde(default)] label: Option<String> }
+        struct EncDesc {
+            #[serde(default)]
+            label: Option<String>,
+        }
         let desc: EncDesc = serde_wasm_bindgen::from_value(desc_js)?;
-        let enc_desc = wgpu::CommandEncoderDescriptor { label: desc.label.as_deref() };
+        let enc_desc = wgpu::CommandEncoderDescriptor {
+            label: desc.label.as_deref(),
+        };
         let enc = self.inner.create_command_encoder(&enc_desc);
         Ok(RhiWgpuCommandEncoder { inner: Some(enc) })
     }
@@ -1545,17 +1453,34 @@ impl RhiWgpuDevice {
     pub fn create_query_set(&self, desc_js: JsValue) -> Result<RhiWgpuQuerySet, JsValue> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct QsDesc { #[serde(default)] label: Option<String>, #[serde(rename = "type")] ty: QueryTypeJs, count: u32 }
+        struct QsDesc {
+            #[serde(default)]
+            label: Option<String>,
+            #[serde(rename = "type")]
+            ty: QueryTypeJs,
+            count: u32,
+        }
         let desc: QsDesc = serde_wasm_bindgen::from_value(desc_js)?;
-        let qs_desc = wgpu::QuerySetDescriptor { label: desc.label.as_ref().map(|s| leak_str(s.clone())), ty: desc.ty.into_wgpu(), count: desc.count };
+        let qs_desc = wgpu::QuerySetDescriptor {
+            label: desc.label.as_ref().map(|s| leak_str(s.clone())),
+            ty: desc.ty.into_wgpu(),
+            count: desc.count,
+        };
         let qs = self.inner.create_query_set(&qs_desc);
         Ok(RhiWgpuQuerySet { inner: qs })
     }
 
     #[wasm_bindgen(js_name = createRenderBundleEncoder, catch)]
-    pub fn create_render_bundle_encoder(&self, desc_js: JsValue) -> Result<RhiWgpuRenderBundleEncoder, JsValue> {
+    pub fn create_render_bundle_encoder(
+        &self,
+        desc_js: JsValue,
+    ) -> Result<RhiWgpuRenderBundleEncoder, JsValue> {
         let desc = serde_wasm_bindgen::from_value(desc_js)?;
-        Ok(RhiWgpuRenderBundleEncoder { device: self.inner.clone(), desc, commands: Some(Vec::new()) })
+        Ok(RhiWgpuRenderBundleEncoder {
+            device: self.inner.clone(),
+            desc,
+            commands: Some(Vec::new()),
+        })
     }
 
     // w2: serde-based createBuffer (single JsValue descriptor param, D-2)
@@ -1564,7 +1489,14 @@ impl RhiWgpuDevice {
     pub fn create_buffer_serde(&self, desc_js: JsValue) -> Result<RhiWgpuBuffer, JsValue> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
-        struct BufDesc { #[serde(default)] label: Option<String>, size: u64, usage: u32, #[serde(default)] mapped_at_creation: bool }
+        struct BufDesc {
+            #[serde(default)]
+            label: Option<String>,
+            size: u64,
+            usage: u32,
+            #[serde(default)]
+            mapped_at_creation: bool,
+        }
         let desc: BufDesc = serde_wasm_bindgen::from_value(desc_js)?;
         let wgpu_desc = wgpu::BufferDescriptor {
             label: desc.label.as_ref().map(|s| leak_str(s.clone())),
@@ -1596,6 +1528,7 @@ impl RhiWgpuDevice {
     #[wasm_bindgen(getter, js_name = queue)]
     pub fn queue(&self) -> RhiWgpuQueue {
         RhiWgpuQueue {
+            loss: self.loss.clone(),
             inner: self.queue.clone(),
             device: self.inner.clone(),
             completion: self.queue_completion.clone(),
@@ -1623,19 +1556,33 @@ impl RhiWgpuDevice {
         let set = |k: &str, v: f64| {
             // Reflect::set is fallible only when the target is sealed/frozen;
             // a fresh Object never is, so this never errors in practice.
-            let _ = js_sys::Reflect::set(
-                &obj,
-                &JsValue::from_str(k),
-                &JsValue::from_f64(v),
-            );
+            let _ = js_sys::Reflect::set(&obj, &JsValue::from_str(k), &JsValue::from_f64(v));
         };
-        set("maxTextureDimension1D", f64::from(limits.max_texture_dimension_1d));
-        set("maxTextureDimension2D", f64::from(limits.max_texture_dimension_2d));
-        set("maxTextureDimension3D", f64::from(limits.max_texture_dimension_3d));
-        set("maxTextureArrayLayers", f64::from(limits.max_texture_array_layers));
+        set(
+            "maxTextureDimension1D",
+            f64::from(limits.max_texture_dimension_1d),
+        );
+        set(
+            "maxTextureDimension2D",
+            f64::from(limits.max_texture_dimension_2d),
+        );
+        set(
+            "maxTextureDimension3D",
+            f64::from(limits.max_texture_dimension_3d),
+        );
+        set(
+            "maxTextureArrayLayers",
+            f64::from(limits.max_texture_array_layers),
+        );
         set("maxBindGroups", f64::from(limits.max_bind_groups));
-        set("maxBindGroupsPerPipelineLayout", f64::from(limits.max_bind_groups));
-        set("maxBindingsPerBindGroup", f64::from(limits.max_bindings_per_bind_group));
+        set(
+            "maxBindGroupsPerPipelineLayout",
+            f64::from(limits.max_bind_groups),
+        );
+        set(
+            "maxBindingsPerBindGroup",
+            f64::from(limits.max_bindings_per_bind_group),
+        );
         set(
             "maxDynamicUniformBuffersPerPipelineLayout",
             f64::from(limits.max_dynamic_uniform_buffers_per_pipeline_layout),
@@ -1648,7 +1595,10 @@ impl RhiWgpuDevice {
             "maxSampledTexturesPerShaderStage",
             f64::from(limits.max_sampled_textures_per_shader_stage),
         );
-        set("maxSamplersPerShaderStage", f64::from(limits.max_samplers_per_shader_stage));
+        set(
+            "maxSamplersPerShaderStage",
+            f64::from(limits.max_samplers_per_shader_stage),
+        );
         set(
             "maxStorageBuffersPerShaderStage",
             f64::from(limits.max_storage_buffers_per_shader_stage),
@@ -1661,11 +1611,20 @@ impl RhiWgpuDevice {
             "maxUniformBuffersPerShaderStage",
             f64::from(limits.max_uniform_buffers_per_shader_stage),
         );
-        set("maxUniformBufferBindingSize", limits.max_uniform_buffer_binding_size as f64);
-        set("maxStorageBufferBindingSize", limits.max_storage_buffer_binding_size as f64);
+        set(
+            "maxUniformBufferBindingSize",
+            limits.max_uniform_buffer_binding_size as f64,
+        );
+        set(
+            "maxStorageBufferBindingSize",
+            limits.max_storage_buffer_binding_size as f64,
+        );
         set("maxVertexBuffers", f64::from(limits.max_vertex_buffers));
         set("maxBufferSize", limits.max_buffer_size as f64);
-        set("maxVertexAttributes", f64::from(limits.max_vertex_attributes));
+        set(
+            "maxVertexAttributes",
+            f64::from(limits.max_vertex_attributes),
+        );
         set(
             "maxVertexBufferArrayStride",
             f64::from(limits.max_vertex_buffer_array_stride),
@@ -1682,7 +1641,10 @@ impl RhiWgpuDevice {
             "minStorageBufferOffsetAlignment",
             f64::from(limits.min_storage_buffer_offset_alignment),
         );
-        set("maxColorAttachments", f64::from(limits.max_color_attachments));
+        set(
+            "maxColorAttachments",
+            f64::from(limits.max_color_attachments),
+        );
         set(
             "maxColorAttachmentBytesPerSample",
             f64::from(limits.max_color_attachment_bytes_per_sample),
@@ -1695,9 +1657,18 @@ impl RhiWgpuDevice {
             "maxComputeInvocationsPerWorkgroup",
             f64::from(limits.max_compute_invocations_per_workgroup),
         );
-        set("maxComputeWorkgroupSizeX", f64::from(limits.max_compute_workgroup_size_x));
-        set("maxComputeWorkgroupSizeY", f64::from(limits.max_compute_workgroup_size_y));
-        set("maxComputeWorkgroupSizeZ", f64::from(limits.max_compute_workgroup_size_z));
+        set(
+            "maxComputeWorkgroupSizeX",
+            f64::from(limits.max_compute_workgroup_size_x),
+        );
+        set(
+            "maxComputeWorkgroupSizeY",
+            f64::from(limits.max_compute_workgroup_size_y),
+        );
+        set(
+            "maxComputeWorkgroupSizeZ",
+            f64::from(limits.max_compute_workgroup_size_z),
+        );
         set(
             "maxComputeWorkgroupsPerDimension",
             f64::from(limits.max_compute_workgroups_per_dimension),
@@ -1726,7 +1697,8 @@ fn create_texture_view_from_descriptor(
     desc_js: &JsValue,
 ) -> Result<RhiWgpuTextureView, JsValue> {
     let label = js_sys::Reflect::get(desc_js, &JsValue::from_str("label"))
-        .ok().and_then(|v| v.as_string());
+        .ok()
+        .and_then(|v| v.as_string());
     let descriptor = parse_texture_view_descriptor(desc_js, label.as_deref())?;
     let inner = create_with_uncaptured_error(|| texture.create_view(&descriptor))?;
     let token = alloc_token();
@@ -1746,22 +1718,30 @@ fn parse_texture_view_descriptor<'a>(
     if desc_js.is_undefined() || desc_js.is_null() {
         return Ok(wgpu::TextureViewDescriptor::default());
     }
-    let format: Option<wgpu::TextureFormat> =
-        parse_texture_view_enum(desc_js, "format")?;
+    let format: Option<wgpu::TextureFormat> = parse_texture_view_enum(desc_js, "format")?;
     let dimension: Option<wgpu::TextureViewDimension> =
         parse_texture_view_enum(desc_js, "dimension")?;
-    let usage: Option<u32> =
-        js_sys::Reflect::get(desc_js, &JsValue::from_str("usage"))
-        .ok().and_then(|v| v.as_f64()).map(|n| n as u32);
+    let usage: Option<u32> = js_sys::Reflect::get(desc_js, &JsValue::from_str("usage"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|n| n as u32);
     let aspect = parse_texture_view_aspect(desc_js)?;
     let base_mip_level = js_sys::Reflect::get(desc_js, &JsValue::from_str("baseMipLevel"))
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
     let mip_level_count = js_sys::Reflect::get(desc_js, &JsValue::from_str("mipLevelCount"))
-        .ok().and_then(|v| v.as_f64()).map(|n| n as u32);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|n| n as u32);
     let base_array_layer = js_sys::Reflect::get(desc_js, &JsValue::from_str("baseArrayLayer"))
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
     let array_layer_count = js_sys::Reflect::get(desc_js, &JsValue::from_str("arrayLayerCount"))
-        .ok().and_then(|v| v.as_f64()).map(|n| n as u32);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|n| n as u32);
     Ok(wgpu::TextureViewDescriptor {
         label,
         format,
@@ -1780,7 +1760,10 @@ where
     T: for<'de> serde::Deserialize<'de>,
 {
     let value = js_sys::Reflect::get(desc_js, &JsValue::from_str(field)).map_err(|error| {
-        texture_view_parse_error(field, &format!("could not read descriptor field: {error:?}"))
+        texture_view_parse_error(
+            field,
+            &format!("could not read descriptor field: {error:?}"),
+        )
     })?;
     if value.is_undefined() || value.is_null() {
         return Ok(None);
@@ -1792,7 +1775,10 @@ where
 
 fn parse_texture_view_aspect(desc_js: &JsValue) -> Result<wgpu::TextureAspect, JsValue> {
     let value = js_sys::Reflect::get(desc_js, &JsValue::from_str("aspect")).map_err(|error| {
-        texture_view_parse_error("aspect", &format!("could not read descriptor field: {error:?}"))
+        texture_view_parse_error(
+            "aspect",
+            &format!("could not read descriptor field: {error:?}"),
+        )
     })?;
     if value.is_undefined() || value.is_null() {
         return Ok(wgpu::TextureAspect::All);
@@ -1858,7 +1844,9 @@ fn parse_vertex_buffers(
         for i in 0..arr.length() {
             let vb_js = arr.get(i);
             let vb: VbDesc = serde_wasm_bindgen::from_value(vb_js).map_err(|e| {
-                JsValue::from_str(&format!("[wgpu-wasm] failed to parse vertex.buffers[{i}]: {e}"))
+                JsValue::from_str(&format!(
+                    "[wgpu-wasm] failed to parse vertex.buffers[{i}]: {e}"
+                ))
             })?;
             let attrs: Vec<wgpu::VertexAttribute> = vb
                 .attributes
@@ -2038,7 +2026,8 @@ impl RhiWgpuBuffer {
             BufferMapping::Unmapped => "unmapped",
             BufferMapping::Pending(_) => "pending",
             BufferMapping::Mapped { .. } => "mapped",
-        }.into()
+        }
+        .into()
     }
 
     /// Start the native mapping before returning its Promise, so unmap can
@@ -2050,26 +2039,42 @@ impl RhiWgpuBuffer {
         let usage = match mode {
             1 => wgpu::BufferUsages::MAP_READ,
             2 => wgpu::BufferUsages::MAP_WRITE,
-            _ => return js_sys::Promise::reject(&JsValue::from_str("Buffer mapAsync mode must be READ or WRITE")),
+            _ => {
+                return js_sys::Promise::reject(&JsValue::from_str(
+                    "Buffer mapAsync mode must be READ or WRITE",
+                ))
+            }
         };
         let Some(end) = end.filter(|end| {
-            off.is_multiple_of(8) && *end > off && (*end - off).is_multiple_of(4)
+            off.is_multiple_of(8)
+                && *end > off
+                && (*end - off).is_multiple_of(4)
                 && *end <= self.inner.size()
         }) else {
-            return js_sys::Promise::reject(&JsValue::from_str("Buffer mapAsync range is outside the buffer or misaligned"));
+            return js_sys::Promise::reject(&JsValue::from_str(
+                "Buffer mapAsync range is outside the buffer or misaligned",
+            ));
         };
         if !self.inner.usage().contains(usage) {
-            return js_sys::Promise::reject(&JsValue::from_str("Buffer mapAsync mode is not enabled by its usage"));
+            return js_sys::Promise::reject(&JsValue::from_str(
+                "Buffer mapAsync mode is not enabled by its usage",
+            ));
         }
         if !matches!(&*self.mapping.borrow(), BufferMapping::Unmapped) {
-            return js_sys::Promise::reject(&JsValue::from_str("Buffer mapAsync requires an unmapped buffer"));
+            return js_sys::Promise::reject(&JsValue::from_str(
+                "Buffer mapAsync requires an unmapped buffer",
+            ));
         }
         let request = std::rc::Rc::new(());
         *self.mapping.borrow_mut() = BufferMapping::Pending(request.clone());
         let result = std::sync::Arc::new(std::sync::Mutex::new((None, None::<std::task::Waker>)));
         let completion = result.clone();
         self.inner.slice(off..end).map_async(
-            if mode == 2 { wgpu::MapMode::Write } else { wgpu::MapMode::Read },
+            if mode == 2 {
+                wgpu::MapMode::Write
+            } else {
+                wgpu::MapMode::Read
+            },
             move |mapped| {
                 let wake = {
                     let mut completion = completion.lock().unwrap();
@@ -2078,7 +2083,9 @@ impl RhiWgpuBuffer {
                 };
                 // Mapping callbacks precede work-done callbacks in wgpu. Wake
                 // the Promise now instead of waiting for a separate poll timer.
-                if let Some(wake) = wake { wake.wake(); }
+                if let Some(wake) = wake {
+                    wake.wake();
+                }
             },
         );
         let buffer = self.inner.clone();
@@ -2113,7 +2120,8 @@ impl RhiWgpuBuffer {
                     }).await?;
                 }
             }.await;
-            if !matches!(&*mapping.borrow(), BufferMapping::Pending(current) if std::rc::Rc::ptr_eq(current, &request)) {
+            if !matches!(&*mapping.borrow(), BufferMapping::Pending(current) if std::rc::Rc::ptr_eq(current, &request))
+            {
                 return Err(JsValue::from_str("Buffer mapAsync was cancelled"));
             }
             match completed {
@@ -2151,23 +2159,37 @@ impl RhiWgpuBuffer {
         let end = size.map_or(Some(self.inner.size()), |size| off.checked_add(size));
         let mut mapping = self.mapping.borrow_mut();
         let BufferMapping::Mapped { range, views, .. } = &mut *mapping else {
-            return Err(JsValue::from_str("Buffer getMappedRange requires a mapped buffer"));
+            return Err(JsValue::from_str(
+                "Buffer getMappedRange requires a mapped buffer",
+            ));
         };
         let Some(end) = end.filter(|end| {
-            off.is_multiple_of(8) && *end >= off && (*end - off).is_multiple_of(4)
-                && off >= range.start && *end <= range.end
+            off.is_multiple_of(8)
+                && *end >= off
+                && (*end - off).is_multiple_of(4)
+                && off >= range.start
+                && *end <= range.end
         }) else {
-            return Err(JsValue::from_str("Buffer getMappedRange range is outside the mapping or misaligned"));
+            return Err(JsValue::from_str(
+                "Buffer getMappedRange range is outside the mapping or misaligned",
+            ));
         };
-        if views.iter().any(|(range, _)| off < range.end && range.start < end) {
-            return Err(JsValue::from_str("Buffer getMappedRange overlaps an existing range"));
+        if views
+            .iter()
+            .any(|(range, _)| off < range.end && range.start < end)
+        {
+            return Err(JsValue::from_str(
+                "Buffer getMappedRange overlaps an existing range",
+            ));
         }
-        let length = u32::try_from(end - off)
-            .map_err(|_| JsValue::from_str("Buffer getMappedRange exceeds the WASM address space"))?;
+        let length = u32::try_from(end - off).map_err(|_| {
+            JsValue::from_str("Buffer getMappedRange exceeds the WASM address space")
+        })?;
         let array = js_sys::Uint8Array::new_with_length(length);
         if end > off {
-            let view = self.inner.get_mapped_range(off..end)
-                .map_err(|error| JsValue::from_str(&format!("Buffer getMappedRange failed: {error}")))?;
+            let view = self.inner.get_mapped_range(off..end).map_err(|error| {
+                JsValue::from_str(&format!("Buffer getMappedRange failed: {error}"))
+            })?;
             array.copy_from(&view);
         }
         let bytes = array.buffer();
@@ -2195,16 +2217,25 @@ impl RhiWgpuBuffer {
             return Ok(());
         }
         let mut result = Ok(());
-        if let BufferMapping::Mapped { writable, views, .. } = mapping {
+        if let BufferMapping::Mapped {
+            writable, views, ..
+        } = mapping
+        {
             for (range, bytes) in views {
                 if commit && writable && !range.is_empty() {
                     if u64::from(bytes.byte_length()) != range.end - range.start {
-                        result = Err(JsValue::from_str("Buffer mapped range was detached before unmap"));
+                        result = Err(JsValue::from_str(
+                            "Buffer mapped range was detached before unmap",
+                        ));
                     } else {
                         let data = js_sys::Uint8Array::new(&bytes).to_vec();
                         match self.inner.get_mapped_range_mut(range) {
                             Ok(mut view) => view.copy_from_slice(&data),
-                            Err(error) => result = Err(JsValue::from_str(&format!("Buffer unmap commit failed: {error}"))),
+                            Err(error) => {
+                                result = Err(JsValue::from_str(&format!(
+                                    "Buffer unmap commit failed: {error}"
+                                )))
+                            }
                         }
                     }
                 }
@@ -2244,6 +2275,7 @@ fn detach_mapped_buffer(bytes: &js_sys::ArrayBuffer) -> Result<(), JsValue> {
 /// Short-lived completion observation, explicitly released by the JS driver.
 #[wasm_bindgen]
 pub struct RhiWgpuCompletionRequest {
+    loss: std::rc::Rc<RefCell<DeviceLossState>>,
     device: wgpu::Device,
     completed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -2256,11 +2288,17 @@ impl RhiWgpuCompletionRequest {
             let device = unsafe { self.device.as_hal::<wgpu::hal::api::Gles>() }
                 .ok_or_else(|| JsValue::from_str("Queue completion requires its WebGL2 device"))?;
             if device.context().webgl2_context.is_context_lost() {
-                return Err(JsValue::from_str("WebGL context lost before queue completion"));
+                // Notify before rejecting completion so Renderer sees a physical
+                // device loss rather than an unconfirmed generic queue fault.
+                notify_device_loss(&self.loss, "unknown", "WebGL context lost");
+                return Err(JsValue::from_str(
+                    "WebGL context lost before queue completion",
+                ));
             }
         }
-        self.device.poll(wgpu::PollType::Poll)
-            .map_err(|error| JsValue::from_str(&format!("Queue completion poll failed: {error}")))?;
+        self.device.poll(wgpu::PollType::Poll).map_err(|error| {
+            JsValue::from_str(&format!("Queue completion poll failed: {error}"))
+        })?;
         Ok(self.completed.load(std::sync::atomic::Ordering::Acquire))
     }
 }
@@ -2274,19 +2312,28 @@ impl RhiWgpuQueue {
     /// The private JS driver owns scheduling and catches native throws/traps.
     /// Only the native callback is allowed to report completion.
     #[wasm_bindgen(js_name = onSubmittedWorkDone)]
-    pub fn on_submitted_work_done(&self, driver: &js_sys::Function) -> Result<js_sys::Promise, JsValue> {
+    pub fn on_submitted_work_done(
+        &self,
+        driver: &js_sys::Function,
+    ) -> Result<js_sys::Promise, JsValue> {
         let queue = self.inner.clone();
         let device = self.device.clone();
+        let loss = self.loss.clone();
         let start = Closure::once_into_js(move || -> RhiWgpuCompletionRequest {
             let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let callback = completed.clone();
             queue.on_submitted_work_done(move || {
                 callback.store(true, std::sync::atomic::Ordering::Release);
             });
-            RhiWgpuCompletionRequest { device, completed }
+            RhiWgpuCompletionRequest {
+                device,
+                completed,
+                loss,
+            }
         });
         let previous = self.completion.borrow().clone();
-        let result = driver.call2(&JsValue::UNDEFINED, &start, &previous)?
+        let result = driver
+            .call2(&JsValue::UNDEFINED, &start, &previous)?
             .dyn_into::<js_sys::Promise>()?;
         *self.completion.borrow_mut() = result.clone();
         Ok(result)
@@ -2314,9 +2361,11 @@ impl RhiWgpuQueue {
                     .map_err(|_| JsValue::from_str(&format!(
                         "[rhi-code:queue-submit-failed] submit requires an unsubmitted CommandBuffer at index {i}"
                     )))?;
-            let command = command.inner.take().ok_or_else(|| JsValue::from_str(
-                "[rhi-code:queue-submit-failed] CommandBuffer was already submitted"
-            ))?;
+            let command = command.inner.take().ok_or_else(|| {
+                JsValue::from_str(
+                    "[rhi-code:queue-submit-failed] CommandBuffer was already submitted",
+                )
+            })?;
             cmd_bufs.push(command);
         }
         self.inner.submit(cmd_bufs);
@@ -2358,7 +2407,8 @@ impl RhiWgpuQueue {
         // surfaces a useful message rather than a generic "memory access".
         let slice_end = end.min(data.len());
         let slice_start = data_offset.min(slice_end);
-        self.inner.write_buffer(&buffer.inner, buffer_offset, &data[slice_start..slice_end]);
+        self.inner
+            .write_buffer(&buffer.inner, buffer_offset, &data[slice_start..slice_end]);
     }
 
     /// bug-20260610 Gap 9: `queue.writeTexture(...)` flat-args form.
@@ -2396,7 +2446,11 @@ impl RhiWgpuQueue {
         let dest = wgpu::TexelCopyTextureInfo {
             texture: &texture.inner,
             mip_level,
-            origin: wgpu::Origin3d { x: origin_x, y: origin_y, z: origin_z },
+            origin: wgpu::Origin3d {
+                x: origin_x,
+                y: origin_y,
+                z: origin_z,
+            },
             aspect: aspect_from_u8(aspect),
         };
         let layout = wgpu::TexelCopyBufferLayout {
@@ -2519,25 +2573,17 @@ impl RhiWgpuCommandEncoder {
         let timestamp_writes: Option<wgpu::ComputePassTimestampWrites<'static>> =
             match js_sys::Reflect::get(&desc_js, &JsValue::from_str("timestampWrites")) {
                 Ok(js) if !js.is_null() && !js.is_undefined() => {
-                    let query_set = js_sys::Reflect::get(
-                        &js,
-                        &JsValue::from_str("querySet"),
-                    )
-                    .map_err(|_| JsValue::from_str("timestampWrites missing querySet"))?;
-                    let beginning = js_sys::Reflect::get(
-                        &js,
-                        &JsValue::from_str("beginningOfPassWriteIndex"),
-                    )
-                    .ok()
-                    .and_then(|value| value.as_f64())
-                    .map(|value| value as u32);
-                    let end = js_sys::Reflect::get(
-                        &js,
-                        &JsValue::from_str("endOfPassWriteIndex"),
-                    )
-                    .ok()
-                    .and_then(|value| value.as_f64())
-                    .map(|value| value as u32);
+                    let query_set = js_sys::Reflect::get(&js, &JsValue::from_str("querySet"))
+                        .map_err(|_| JsValue::from_str("timestampWrites missing querySet"))?;
+                    let beginning =
+                        js_sys::Reflect::get(&js, &JsValue::from_str("beginningOfPassWriteIndex"))
+                            .ok()
+                            .and_then(|value| value.as_f64())
+                            .map(|value| value as u32);
+                    let end = js_sys::Reflect::get(&js, &JsValue::from_str("endOfPassWriteIndex"))
+                        .ok()
+                        .and_then(|value| value.as_f64())
+                        .map(|value| value as u32);
                     Some(wgpu::ComputePassTimestampWrites {
                         query_set: query_set_borrow(
                             &query_set,
@@ -2553,121 +2599,148 @@ impl RhiWgpuCommandEncoder {
             label,
             timestamp_writes,
         };
-        let encoder = self.inner.as_mut().expect("CommandEncoder already consumed");
+        let encoder = self
+            .inner
+            .as_mut()
+            .expect("CommandEncoder already consumed");
         let pass = encoder.begin_compute_pass(&desc);
         // SAFETY: the pass is dropped by end() before the encoder can be finished,
         // matching the existing render-pass lifetime bridge above.
         let pass_static: wgpu::ComputePass<'static> = unsafe { core::mem::transmute(pass) };
-        Ok(RhiWgpuComputePass { inner: Some(pass_static) })
+        Ok(RhiWgpuComputePass {
+            inner: Some(pass_static),
+        })
     }
 
     #[wasm_bindgen(js_name = beginRenderPass, catch)]
     pub fn begin_render_pass(&mut self, desc_js: JsValue) -> Result<RhiWgpuRenderPass, JsValue> {
         let mut desc: RenderPassDescriptorJs = serde_wasm_bindgen::from_value(desc_js.clone())?;
-        let colors: js_sys::Array = js_sys::Reflect::get(&desc_js, &JsValue::from_str("colorAttachments"))
-            .map_err(|_| JsValue::from_str("missing colorAttachments"))?
-            .dyn_into().map_err(|_| JsValue::from_str("colorAttachments is not an array"))?;
+        let colors: js_sys::Array =
+            js_sys::Reflect::get(&desc_js, &JsValue::from_str("colorAttachments"))
+                .map_err(|_| JsValue::from_str("missing colorAttachments"))?
+                .dyn_into()
+                .map_err(|_| JsValue::from_str("colorAttachments is not an array"))?;
         for (index, attachment) in desc.color_attachments.iter_mut().enumerate() {
             let entry = colors.get(index as u32);
             let view_js = js_sys::Reflect::get(&entry, &JsValue::from_str("view"))
                 .map_err(|_| JsValue::from_str("colorAttachment missing view"))?;
             let token = read_token(&view_js, "beginRenderPass.colorAttachment.view")?;
             attachment.view = Some(lookup_texture_view(token).ok_or_else(|| {
-                JsValue::from_str(&format!("[wgpu-wasm v18] textureView token {token} not in registry"))
+                JsValue::from_str(&format!(
+                    "[wgpu-wasm v18] textureView token {token} not in registry"
+                ))
             })?);
-            if let Ok(resolve_js) = js_sys::Reflect::get(&entry, &JsValue::from_str("resolveTarget")) {
+            if let Ok(resolve_js) =
+                js_sys::Reflect::get(&entry, &JsValue::from_str("resolveTarget"))
+            {
                 if !resolve_js.is_null() && !resolve_js.is_undefined() {
-                    let token = read_token(&resolve_js, "beginRenderPass.colorAttachment.resolveTarget")?;
-                    attachment.resolve_target = Some(lookup_texture_view(token).ok_or_else(|| {
-                        JsValue::from_str(&format!("[wgpu-wasm v18] resolveTarget token {token} not in registry"))
-                    })?);
+                    let token =
+                        read_token(&resolve_js, "beginRenderPass.colorAttachment.resolveTarget")?;
+                    attachment.resolve_target =
+                        Some(lookup_texture_view(token).ok_or_else(|| {
+                            JsValue::from_str(&format!(
+                                "[wgpu-wasm v18] resolveTarget token {token} not in registry"
+                            ))
+                        })?);
                 }
             }
         }
         if let Some(attachment) = desc.depth_stencil_attachment.as_mut() {
-            let depth_js = js_sys::Reflect::get(&desc_js, &JsValue::from_str("depthStencilAttachment"))
-                .map_err(|_| JsValue::from_str("missing depthStencilAttachment"))?;
+            let depth_js =
+                js_sys::Reflect::get(&desc_js, &JsValue::from_str("depthStencilAttachment"))
+                    .map_err(|_| JsValue::from_str("missing depthStencilAttachment"))?;
             let view_js = js_sys::Reflect::get(&depth_js, &JsValue::from_str("view"))
                 .map_err(|_| JsValue::from_str("depthStencilAttachment missing view"))?;
             let token = read_token(&view_js, "beginRenderPass.depthStencilAttachment.view")?;
             attachment.view = Some(lookup_texture_view(token).ok_or_else(|| {
-                JsValue::from_str(&format!("[wgpu-wasm v18] depthStencil view token {token} not in registry"))
+                JsValue::from_str(&format!(
+                    "[wgpu-wasm v18] depthStencil view token {token} not in registry"
+                ))
             })?);
         }
 
         // The descriptor owns these temporary clones only for begin_render_pass.
         // wgpu records its own resource references; neither the attachment array
         // nor a leaked TextureView is needed after that call returns.
-        let color_attachments: Vec<_> = desc.color_attachments.iter().map(|attachment| {
-            Some(wgpu::RenderPassColorAttachment {
-                view: attachment.view.as_ref().expect("resolved color view"),
-                depth_slice: attachment.depth_slice,
-                resolve_target: attachment.resolve_target.as_ref(),
-                ops: wgpu::Operations {
-                    load: match attachment.load_op.as_ref().unwrap_or(&LoadOpStrJs::Load) {
-                        LoadOpStrJs::Load => wgpu::LoadOp::Load,
-                        LoadOpStrJs::Clear => wgpu::LoadOp::Clear(attachment.clear_value.unwrap_or(wgpu::Color::BLACK)),
+        let color_attachments: Vec<_> = desc
+            .color_attachments
+            .iter()
+            .map(|attachment| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view: attachment.view.as_ref().expect("resolved color view"),
+                    depth_slice: attachment.depth_slice,
+                    resolve_target: attachment.resolve_target.as_ref(),
+                    ops: wgpu::Operations {
+                        load: match attachment.load_op.as_ref().unwrap_or(&LoadOpStrJs::Load) {
+                            LoadOpStrJs::Load => wgpu::LoadOp::Load,
+                            LoadOpStrJs::Clear => wgpu::LoadOp::Clear(
+                                attachment.clear_value.unwrap_or(wgpu::Color::BLACK),
+                            ),
+                        },
+                        store: attachment.store_op.unwrap_or(wgpu::StoreOp::Store),
                     },
-                    store: attachment.store_op.unwrap_or(wgpu::StoreOp::Store),
-                },
+                })
             })
-        }).collect();
+            .collect();
         let depth_stencil = desc.depth_stencil_attachment.as_ref().map(|attachment| {
             wgpu::RenderPassDepthStencilAttachment {
                 view: attachment.view.as_ref().expect("resolved depth view"),
-                depth_ops: if attachment.depth_read_only { None } else {
-                    attachment.depth_load_op.as_ref().map(|op| wgpu::Operations {
-                        load: match op {
-                            LoadOpStrJs::Load => wgpu::LoadOp::Load,
-                            LoadOpStrJs::Clear => wgpu::LoadOp::Clear(attachment.depth_clear_value.unwrap_or(1.0)),
-                        },
-                        store: attachment.depth_store_op.unwrap_or(wgpu::StoreOp::Store),
-                    })
+                depth_ops: if attachment.depth_read_only {
+                    None
+                } else {
+                    attachment
+                        .depth_load_op
+                        .as_ref()
+                        .map(|op| wgpu::Operations {
+                            load: match op {
+                                LoadOpStrJs::Load => wgpu::LoadOp::Load,
+                                LoadOpStrJs::Clear => {
+                                    wgpu::LoadOp::Clear(attachment.depth_clear_value.unwrap_or(1.0))
+                                }
+                            },
+                            store: attachment.depth_store_op.unwrap_or(wgpu::StoreOp::Store),
+                        })
                 },
-                stencil_ops: if attachment.stencil_read_only { None } else {
-                    attachment.stencil_load_op.as_ref().map(|op| wgpu::Operations {
-                        load: match op {
-                            LoadOpStrJs::Load => wgpu::LoadOp::Load,
-                            LoadOpStrJs::Clear => wgpu::LoadOp::Clear(attachment.stencil_clear_value.unwrap_or(0)),
-                        },
-                        store: attachment.stencil_store_op.unwrap_or(wgpu::StoreOp::Store),
-                    })
+                stencil_ops: if attachment.stencil_read_only {
+                    None
+                } else {
+                    attachment
+                        .stencil_load_op
+                        .as_ref()
+                        .map(|op| wgpu::Operations {
+                            load: match op {
+                                LoadOpStrJs::Load => wgpu::LoadOp::Load,
+                                LoadOpStrJs::Clear => {
+                                    wgpu::LoadOp::Clear(attachment.stencil_clear_value.unwrap_or(0))
+                                }
+                            },
+                            store: attachment.stencil_store_op.unwrap_or(wgpu::StoreOp::Store),
+                        })
                 },
             }
         });
 
-        let occlusion_query_set = match js_sys::Reflect::get(
-            &desc_js,
-            &JsValue::from_str("occlusionQuerySet"),
-        ) {
-            Ok(js) if !js.is_null() && !js.is_undefined() => Some(query_set_borrow(
-                &js,
-                "beginRenderPass.occlusionQuerySet",
-            )?),
-            _ => None,
-        };
+        let occlusion_query_set =
+            match js_sys::Reflect::get(&desc_js, &JsValue::from_str("occlusionQuerySet")) {
+                Ok(js) if !js.is_null() && !js.is_undefined() => {
+                    Some(query_set_borrow(&js, "beginRenderPass.occlusionQuerySet")?)
+                }
+                _ => None,
+            };
         let timestamp_writes: Option<wgpu::RenderPassTimestampWrites<'static>> =
             match js_sys::Reflect::get(&desc_js, &JsValue::from_str("timestampWrites")) {
                 Ok(js) if !js.is_null() && !js.is_undefined() => {
-                    let query_set = js_sys::Reflect::get(
-                        &js,
-                        &JsValue::from_str("querySet"),
-                    )
-                    .map_err(|_| JsValue::from_str("timestampWrites missing querySet"))?;
-                    let beginning = js_sys::Reflect::get(
-                        &js,
-                        &JsValue::from_str("beginningOfPassWriteIndex"),
-                    )
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as u32);
-                    let end = js_sys::Reflect::get(
-                        &js,
-                        &JsValue::from_str("endOfPassWriteIndex"),
-                    )
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as u32);
+                    let query_set = js_sys::Reflect::get(&js, &JsValue::from_str("querySet"))
+                        .map_err(|_| JsValue::from_str("timestampWrites missing querySet"))?;
+                    let beginning =
+                        js_sys::Reflect::get(&js, &JsValue::from_str("beginningOfPassWriteIndex"))
+                            .ok()
+                            .and_then(|v| v.as_f64())
+                            .map(|v| v as u32);
+                    let end = js_sys::Reflect::get(&js, &JsValue::from_str("endOfPassWriteIndex"))
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as u32);
                     Some(wgpu::RenderPassTimestampWrites {
                         query_set: query_set_borrow(
                             &query_set,
@@ -2689,7 +2762,10 @@ impl RhiWgpuCommandEncoder {
             multiview_mask: None,
         };
 
-        let encoder = self.inner.as_mut().expect("CommandEncoder already consumed");
+        let encoder = self
+            .inner
+            .as_mut()
+            .expect("CommandEncoder already consumed");
         // wgpu's explicit lifetime bridge retains its runtime encoder lock.
         let pass = encoder.begin_render_pass(&rp_desc).forget_lifetime();
         Ok(RhiWgpuRenderPass { inner: Some(pass) })
@@ -2698,7 +2774,9 @@ impl RhiWgpuCommandEncoder {
     #[wasm_bindgen(js_name = finish)]
     pub fn finish_encoder(&mut self) -> RhiWgpuCommandBuffer {
         let enc = self.inner.take().expect("CommandEncoder already finished");
-        RhiWgpuCommandBuffer { inner: Some(enc.finish()) }
+        RhiWgpuCommandBuffer {
+            inner: Some(enc.finish()),
+        }
     }
 
     /// bug-20260610 Gap 12: copyBufferToBuffer per WebGPU spec
@@ -2714,8 +2792,10 @@ impl RhiWgpuCommandEncoder {
     ) {
         if let Some(enc) = self.inner.as_mut() {
             enc.copy_buffer_to_buffer(
-                &source.inner, source_offset,
-                &destination.inner, destination_offset,
+                &source.inner,
+                source_offset,
+                &destination.inner,
+                destination_offset,
                 size,
             );
         }
@@ -2753,7 +2833,11 @@ impl RhiWgpuCommandEncoder {
         let dst = wgpu::TexelCopyTextureInfo {
             texture: &dest_texture.inner,
             mip_level: dest_mip_level,
-            origin: wgpu::Origin3d { x: dest_origin_x, y: dest_origin_y, z: dest_origin_z },
+            origin: wgpu::Origin3d {
+                x: dest_origin_x,
+                y: dest_origin_y,
+                z: dest_origin_z,
+            },
             aspect: aspect_from_u8(dest_aspect),
         };
         let size = wgpu::Extent3d {
@@ -2788,7 +2872,11 @@ impl RhiWgpuCommandEncoder {
         let src = wgpu::TexelCopyTextureInfo {
             texture: &source_texture.inner,
             mip_level: source_mip_level,
-            origin: wgpu::Origin3d { x: source_origin_x, y: source_origin_y, z: source_origin_z },
+            origin: wgpu::Origin3d {
+                x: source_origin_x,
+                y: source_origin_y,
+                z: source_origin_z,
+            },
             aspect: aspect_from_u8(source_aspect),
         };
         let dst = wgpu::TexelCopyBufferInfo {
@@ -2833,13 +2921,21 @@ impl RhiWgpuCommandEncoder {
         let src = wgpu::TexelCopyTextureInfo {
             texture: &source_texture.inner,
             mip_level: source_mip_level,
-            origin: wgpu::Origin3d { x: source_origin_x, y: source_origin_y, z: source_origin_z },
+            origin: wgpu::Origin3d {
+                x: source_origin_x,
+                y: source_origin_y,
+                z: source_origin_z,
+            },
             aspect: aspect_from_u8(source_aspect),
         };
         let dst = wgpu::TexelCopyTextureInfo {
             texture: &dest_texture.inner,
             mip_level: dest_mip_level,
-            origin: wgpu::Origin3d { x: dest_origin_x, y: dest_origin_y, z: dest_origin_z },
+            origin: wgpu::Origin3d {
+                x: dest_origin_x,
+                y: dest_origin_y,
+                z: dest_origin_z,
+            },
             aspect: aspect_from_u8(dest_aspect),
         };
         let size = wgpu::Extent3d {
@@ -2962,12 +3058,17 @@ impl RhiWgpuComputePass {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BundleDescriptor {
-    #[serde(default)] label: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
     color_formats: Vec<Option<wgpu::TextureFormat>>,
-    #[serde(default)] depth_stencil_format: Option<wgpu::TextureFormat>,
-    #[serde(default = "one_u32")] sample_count: u32,
-    #[serde(default)] depth_read_only: bool,
-    #[serde(default)] stencil_read_only: bool,
+    #[serde(default)]
+    depth_stencil_format: Option<wgpu::TextureFormat>,
+    #[serde(default = "one_u32")]
+    sample_count: u32,
+    #[serde(default)]
+    depth_read_only: bool,
+    #[serde(default)]
+    stencil_read_only: bool,
 }
 
 enum BundleCommand {
@@ -2978,7 +3079,9 @@ enum BundleCommand {
     Draw(u32, u32, u32, u32),
     DrawIndexed(u32, u32, u32, i32, u32),
     Indirect(wgpu::Buffer, u64, bool),
-    Push(String), Pop, Marker(String),
+    Push(String),
+    Pop,
+    Marker(String),
 }
 
 thread_local! {
@@ -2986,21 +3089,30 @@ thread_local! {
 }
 
 #[wasm_bindgen]
-pub struct RhiWgpuRenderBundle { token: u32 }
+pub struct RhiWgpuRenderBundle {
+    token: u32,
+}
 
 #[wasm_bindgen]
 impl RhiWgpuRenderBundle {
     #[wasm_bindgen(getter, js_name = forgeaxToken)]
-    pub fn forgeax_token(&self) -> u32 { self.token }
+    pub fn forgeax_token(&self) -> u32 {
+        self.token
+    }
 }
 
 impl Drop for RhiWgpuRenderBundle {
-    fn drop(&mut self) { BUNDLE_REGISTRY.with(|r| r.borrow_mut().remove(&self.token)); }
+    fn drop(&mut self) {
+        BUNDLE_REGISTRY.with(|r| r.borrow_mut().remove(&self.token));
+    }
 }
 
 impl RhiWgpuRenderBundleEncoder {
     fn record(&mut self, command: BundleCommand) -> Result<(), JsValue> {
-        self.commands.as_mut().ok_or_else(|| JsValue::from_str("render bundle encoder already finished"))?.push(command);
+        self.commands
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("render bundle encoder already finished"))?
+            .push(command);
         Ok(())
     }
 }
@@ -3012,68 +3124,196 @@ impl RhiWgpuRenderBundleEncoder {
         self.record(BundleCommand::Pipeline(pipeline.inner.clone()))
     }
     #[wasm_bindgen(js_name = setVertexBuffer)]
-    pub fn set_vertex_buffer(&mut self, slot: u32, buffer: &RhiWgpuBuffer, offset: Option<u64>, size: Option<u64>) -> Result<(), JsValue> {
-        self.record(BundleCommand::Vertex(slot, buffer.inner.clone(), offset.unwrap_or(0), size))
+    pub fn set_vertex_buffer(
+        &mut self,
+        slot: u32,
+        buffer: &RhiWgpuBuffer,
+        offset: Option<u64>,
+        size: Option<u64>,
+    ) -> Result<(), JsValue> {
+        self.record(BundleCommand::Vertex(
+            slot,
+            buffer.inner.clone(),
+            offset.unwrap_or(0),
+            size,
+        ))
     }
     #[wasm_bindgen(js_name = setIndexBuffer)]
-    pub fn set_index_buffer(&mut self, buffer: &RhiWgpuBuffer, format: String, offset: Option<u64>, size: Option<u64>) -> Result<(), JsValue> {
-        let format = match format.as_str() { "uint16" => wgpu::IndexFormat::Uint16, "uint32" => wgpu::IndexFormat::Uint32, _ => return Err(JsValue::from_str("invalid index format")) };
-        self.record(BundleCommand::Index(buffer.inner.clone(), format, offset.unwrap_or(0), size))
+    pub fn set_index_buffer(
+        &mut self,
+        buffer: &RhiWgpuBuffer,
+        format: String,
+        offset: Option<u64>,
+        size: Option<u64>,
+    ) -> Result<(), JsValue> {
+        let format = match format.as_str() {
+            "uint16" => wgpu::IndexFormat::Uint16,
+            "uint32" => wgpu::IndexFormat::Uint32,
+            _ => return Err(JsValue::from_str("invalid index format")),
+        };
+        self.record(BundleCommand::Index(
+            buffer.inner.clone(),
+            format,
+            offset.unwrap_or(0),
+            size,
+        ))
     }
     #[wasm_bindgen(js_name = setBindGroup)]
-    pub fn set_bind_group(&mut self, index: u32, group: &RhiWgpuBindGroup, offsets: JsValue, start: Option<u32>, length: Option<u32>) -> Result<(), JsValue> {
-        let offsets: Vec<u32> = if offsets.is_undefined() { Vec::new() } else { serde_wasm_bindgen::from_value(offsets)? };
+    pub fn set_bind_group(
+        &mut self,
+        index: u32,
+        group: &RhiWgpuBindGroup,
+        offsets: JsValue,
+        start: Option<u32>,
+        length: Option<u32>,
+    ) -> Result<(), JsValue> {
+        let offsets: Vec<u32> = if offsets.is_undefined() {
+            Vec::new()
+        } else {
+            serde_wasm_bindgen::from_value(offsets)?
+        };
         let start = start.unwrap_or(0) as usize;
-        let end = start.checked_add(length.map(|v| v as usize).unwrap_or(offsets.len().saturating_sub(start))).ok_or_else(|| JsValue::from_str("invalid dynamic offsets range"))?;
-        let selected = offsets.get(start..end).ok_or_else(|| JsValue::from_str("invalid dynamic offsets range"))?.to_vec();
+        let end = start
+            .checked_add(
+                length
+                    .map(|v| v as usize)
+                    .unwrap_or(offsets.len().saturating_sub(start)),
+            )
+            .ok_or_else(|| JsValue::from_str("invalid dynamic offsets range"))?;
+        let selected = offsets
+            .get(start..end)
+            .ok_or_else(|| JsValue::from_str("invalid dynamic offsets range"))?
+            .to_vec();
         self.record(BundleCommand::Bind(index, group.inner.clone(), selected))
     }
     #[wasm_bindgen(js_name = draw)]
-    pub fn draw(&mut self, count: u32, instances: Option<u32>, first: Option<u32>, first_instance: Option<u32>) -> Result<(), JsValue> {
-        self.record(BundleCommand::Draw(count, instances.unwrap_or(1), first.unwrap_or(0), first_instance.unwrap_or(0)))
+    pub fn draw(
+        &mut self,
+        count: u32,
+        instances: Option<u32>,
+        first: Option<u32>,
+        first_instance: Option<u32>,
+    ) -> Result<(), JsValue> {
+        self.record(BundleCommand::Draw(
+            count,
+            instances.unwrap_or(1),
+            first.unwrap_or(0),
+            first_instance.unwrap_or(0),
+        ))
     }
     #[wasm_bindgen(js_name = drawIndexed)]
-    pub fn draw_indexed(&mut self, count: u32, instances: Option<u32>, first: Option<u32>, base: Option<i32>, first_instance: Option<u32>) -> Result<(), JsValue> {
-        self.record(BundleCommand::DrawIndexed(count, instances.unwrap_or(1), first.unwrap_or(0), base.unwrap_or(0), first_instance.unwrap_or(0)))
+    pub fn draw_indexed(
+        &mut self,
+        count: u32,
+        instances: Option<u32>,
+        first: Option<u32>,
+        base: Option<i32>,
+        first_instance: Option<u32>,
+    ) -> Result<(), JsValue> {
+        self.record(BundleCommand::DrawIndexed(
+            count,
+            instances.unwrap_or(1),
+            first.unwrap_or(0),
+            base.unwrap_or(0),
+            first_instance.unwrap_or(0),
+        ))
     }
     #[wasm_bindgen(js_name = drawIndirect)]
-    pub fn draw_indirect(&mut self, buffer: &RhiWgpuBuffer, offset: u64) -> Result<(), JsValue> { self.record(BundleCommand::Indirect(buffer.inner.clone(), offset, false)) }
+    pub fn draw_indirect(&mut self, buffer: &RhiWgpuBuffer, offset: u64) -> Result<(), JsValue> {
+        self.record(BundleCommand::Indirect(buffer.inner.clone(), offset, false))
+    }
     #[wasm_bindgen(js_name = drawIndexedIndirect)]
-    pub fn draw_indexed_indirect(&mut self, buffer: &RhiWgpuBuffer, offset: u64) -> Result<(), JsValue> { self.record(BundleCommand::Indirect(buffer.inner.clone(), offset, true)) }
+    pub fn draw_indexed_indirect(
+        &mut self,
+        buffer: &RhiWgpuBuffer,
+        offset: u64,
+    ) -> Result<(), JsValue> {
+        self.record(BundleCommand::Indirect(buffer.inner.clone(), offset, true))
+    }
     #[wasm_bindgen(js_name = pushDebugGroup)]
-    pub fn push_debug_group(&mut self, label: String) -> Result<(), JsValue> { self.record(BundleCommand::Push(label)) }
+    pub fn push_debug_group(&mut self, label: String) -> Result<(), JsValue> {
+        self.record(BundleCommand::Push(label))
+    }
     #[wasm_bindgen(js_name = popDebugGroup)]
-    pub fn pop_debug_group(&mut self) -> Result<(), JsValue> { self.record(BundleCommand::Pop) }
+    pub fn pop_debug_group(&mut self) -> Result<(), JsValue> {
+        self.record(BundleCommand::Pop)
+    }
     #[wasm_bindgen(js_name = insertDebugMarker)]
-    pub fn insert_debug_marker(&mut self, label: String) -> Result<(), JsValue> { self.record(BundleCommand::Marker(label)) }
+    pub fn insert_debug_marker(&mut self, label: String) -> Result<(), JsValue> {
+        self.record(BundleCommand::Marker(label))
+    }
     #[wasm_bindgen(js_name = finish)]
     pub fn finish(&mut self, desc: JsValue) -> Result<RhiWgpuRenderBundle, JsValue> {
-        let commands = self.commands.take().ok_or_else(|| JsValue::from_str("render bundle encoder already finished"))?;
-        let mut encoder = self.device.create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
-            label: self.desc.label.as_deref(), color_formats: &self.desc.color_formats,
-            depth_stencil: self.desc.depth_stencil_format.map(|format| wgpu::RenderBundleDepthStencil { format, depth_read_only: self.desc.depth_read_only, stencil_read_only: self.desc.stencil_read_only }),
-            sample_count: self.desc.sample_count, multiview: None,
-        });
+        let commands = self
+            .commands
+            .take()
+            .ok_or_else(|| JsValue::from_str("render bundle encoder already finished"))?;
+        let mut encoder =
+            self.device
+                .create_render_bundle_encoder(&wgpu::RenderBundleEncoderDescriptor {
+                    label: self.desc.label.as_deref(),
+                    color_formats: &self.desc.color_formats,
+                    depth_stencil: self.desc.depth_stencil_format.map(|format| {
+                        wgpu::RenderBundleDepthStencil {
+                            format,
+                            depth_read_only: self.desc.depth_read_only,
+                            stencil_read_only: self.desc.stencil_read_only,
+                        }
+                    }),
+                    sample_count: self.desc.sample_count,
+                    multiview: None,
+                });
         let mut debug_depth = 0u32;
         for command in &commands {
             match command {
                 BundleCommand::Pipeline(p) => encoder.set_pipeline(p),
-                BundleCommand::Vertex(slot, b, offset, size) => encoder.set_vertex_buffer(*slot, b.slice(*offset..size.map(|s| offset + s).unwrap_or(b.size()))),
-                BundleCommand::Index(b, format, offset, size) => encoder.set_index_buffer(b.slice(*offset..size.map(|s| offset + s).unwrap_or(b.size())), *format),
-                BundleCommand::Bind(index, group, offsets) => encoder.set_bind_group(*index, group, offsets),
-                BundleCommand::Draw(count, instances, first, first_instance) => encoder.draw(*first..first + count, *first_instance..first_instance + instances),
-                BundleCommand::DrawIndexed(count, instances, first, base, first_instance) => encoder.draw_indexed(*first..first + count, *base, *first_instance..first_instance + instances),
+                BundleCommand::Vertex(slot, b, offset, size) => encoder.set_vertex_buffer(
+                    *slot,
+                    b.slice(*offset..size.map(|s| offset + s).unwrap_or(b.size())),
+                ),
+                BundleCommand::Index(b, format, offset, size) => encoder.set_index_buffer(
+                    b.slice(*offset..size.map(|s| offset + s).unwrap_or(b.size())),
+                    *format,
+                ),
+                BundleCommand::Bind(index, group, offsets) => {
+                    encoder.set_bind_group(*index, group, offsets)
+                }
+                BundleCommand::Draw(count, instances, first, first_instance) => encoder.draw(
+                    *first..first + count,
+                    *first_instance..first_instance + instances,
+                ),
+                BundleCommand::DrawIndexed(count, instances, first, base, first_instance) => {
+                    encoder.draw_indexed(
+                        *first..first + count,
+                        *base,
+                        *first_instance..first_instance + instances,
+                    )
+                }
                 BundleCommand::Indirect(b, offset, false) => encoder.draw_indirect(b, *offset),
-                BundleCommand::Indirect(b, offset, true) => encoder.draw_indexed_indirect(b, *offset),
+                BundleCommand::Indirect(b, offset, true) => {
+                    encoder.draw_indexed_indirect(b, *offset)
+                }
                 // wgpu 30 has no bundle debug marker API; preserve balanced scope validation.
                 BundleCommand::Push(_label) => debug_depth += 1,
-                BundleCommand::Pop => debug_depth = debug_depth.checked_sub(1).ok_or_else(|| JsValue::from_str("unbalanced bundle debug group"))?,
-                BundleCommand::Marker(_label) => {},
+                BundleCommand::Pop => {
+                    debug_depth = debug_depth
+                        .checked_sub(1)
+                        .ok_or_else(|| JsValue::from_str("unbalanced bundle debug group"))?
+                }
+                BundleCommand::Marker(_label) => {}
             }
         }
-        if debug_depth != 0 { return Err(JsValue::from_str("unclosed bundle debug group")); }
-        let label = if desc.is_undefined() { None } else { js_sys::Reflect::get(&desc, &JsValue::from_str("label"))?.as_string() };
-        let bundle = encoder.finish(&wgpu::RenderBundleDescriptor { label: label.as_deref() });
+        if debug_depth != 0 {
+            return Err(JsValue::from_str("unclosed bundle debug group"));
+        }
+        let label = if desc.is_undefined() {
+            None
+        } else {
+            js_sys::Reflect::get(&desc, &JsValue::from_str("label"))?.as_string()
+        };
+        let bundle = encoder.finish(&wgpu::RenderBundleDescriptor {
+            label: label.as_deref(),
+        });
         let token = alloc_token();
         BUNDLE_REGISTRY.with(|r| r.borrow_mut().insert(token, bundle));
         Ok(RhiWgpuRenderBundle { token })
@@ -3090,11 +3330,19 @@ impl RhiWgpuRenderPass {
     pub fn execute_bundles(&mut self, bundles: js_sys::Array) -> Result<(), JsValue> {
         let mut native = Vec::with_capacity(bundles.length() as usize);
         for value in bundles.iter() {
-            let token = js_sys::Reflect::get(&value, &JsValue::from_str("forgeaxToken"))?.as_f64().ok_or_else(|| JsValue::from_str("expected a render bundle handle"))? as u32;
-            let bundle = BUNDLE_REGISTRY.with(|r| r.borrow().get(&token).cloned()).ok_or_else(|| JsValue::from_str("render bundle handle is no longer live"))?;
+            let token = js_sys::Reflect::get(&value, &JsValue::from_str("forgeaxToken"))?
+                .as_f64()
+                .ok_or_else(|| JsValue::from_str("expected a render bundle handle"))?
+                as u32;
+            let bundle = BUNDLE_REGISTRY
+                .with(|r| r.borrow().get(&token).cloned())
+                .ok_or_else(|| JsValue::from_str("render bundle handle is no longer live"))?;
             native.push(bundle);
         }
-        let pass = self.inner.as_mut().ok_or_else(|| JsValue::from_str("render pass already ended"))?;
+        let pass = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| JsValue::from_str("render pass already ended"))?;
         pass.execute_bundles(native.iter());
         Ok(())
     }
@@ -3107,14 +3355,26 @@ impl RhiWgpuRenderPass {
     }
 
     #[wasm_bindgen(js_name = setVertexBuffer)]
-    pub fn set_vertex_buffer(&mut self, slot: u32, buffer: &RhiWgpuBuffer, offset: u64, _size: Option<u64>) {
+    pub fn set_vertex_buffer(
+        &mut self,
+        slot: u32,
+        buffer: &RhiWgpuBuffer,
+        offset: u64,
+        _size: Option<u64>,
+    ) {
         if let Some(ref mut rp) = self.inner {
             rp.set_vertex_buffer(slot, buffer.inner.slice(offset..));
         }
     }
 
     #[wasm_bindgen(js_name = draw)]
-    pub fn draw(&mut self, vertex_count: u32, instance_count: Option<u32>, first_vertex: u32, first_instance: u32) {
+    pub fn draw(
+        &mut self,
+        vertex_count: u32,
+        instance_count: Option<u32>,
+        first_vertex: u32,
+        first_instance: u32,
+    ) {
         if let Some(ref mut rp) = self.inner {
             let instances = match instance_count {
                 Some(n) => first_instance..first_instance + n,
@@ -3125,13 +3385,24 @@ impl RhiWgpuRenderPass {
     }
 
     #[wasm_bindgen(js_name = drawIndexed)]
-    pub fn draw_indexed(&mut self, index_count: u32, instance_count: Option<u32>, first_index: u32, base_vertex: i32, first_instance: u32) {
+    pub fn draw_indexed(
+        &mut self,
+        index_count: u32,
+        instance_count: Option<u32>,
+        first_index: u32,
+        base_vertex: i32,
+        first_instance: u32,
+    ) {
         if let Some(ref mut rp) = self.inner {
             let instances = match instance_count {
                 Some(n) => first_instance..first_instance + n,
                 None => first_instance..first_instance + 1,
             };
-            rp.draw_indexed(first_index..first_index + index_count, base_vertex, instances);
+            rp.draw_indexed(
+                first_index..first_index + index_count,
+                base_vertex,
+                instances,
+            );
         }
     }
 
@@ -3172,7 +3443,10 @@ impl RhiWgpuRenderPass {
             };
             let off = offset.unwrap_or(0);
             let total = buffer.inner.size();
-            let end = match size { Some(s) => off + s, None => total };
+            let end = match size {
+                Some(s) => off + s,
+                None => total,
+            };
             rp.set_index_buffer(buffer.inner.slice(off..end), fmt);
         }
     }
@@ -3199,14 +3473,18 @@ impl RhiWgpuRenderPass {
                     .map(|i| arr.get(i).as_f64().unwrap_or(0.0) as u32)
                     .collect();
                 let s = start.unwrap_or(0) as usize;
-                let len = length.map(|l| l as usize).unwrap_or(raw.len().saturating_sub(s));
+                let len = length
+                    .map(|l| l as usize)
+                    .unwrap_or(raw.len().saturating_sub(s));
                 let end = (s + len).min(raw.len());
                 raw[s.min(end)..end].to_vec()
             } else if let Ok(u32arr) = dyn_offsets_js.dyn_into::<js_sys::Uint32Array>() {
                 let mut v = vec![0u32; u32arr.length() as usize];
                 u32arr.copy_to(&mut v);
                 let s = start.unwrap_or(0) as usize;
-                let len = length.map(|l| l as usize).unwrap_or(v.len().saturating_sub(s));
+                let len = length
+                    .map(|l| l as usize)
+                    .unwrap_or(v.len().saturating_sub(s));
                 let end = (s + len).min(v.len());
                 v[s.min(end)..end].to_vec()
             } else {
@@ -3241,8 +3519,8 @@ impl RhiWgpuRenderPass {
     #[wasm_bindgen(js_name = setBlendConstant)]
     pub fn set_blend_constant(&mut self, color_js: JsValue) {
         if let Some(rp) = self.inner.as_mut() {
-            let color: wgpu::Color = serde_wasm_bindgen::from_value(color_js)
-                .unwrap_or(wgpu::Color::BLACK);
+            let color: wgpu::Color =
+                serde_wasm_bindgen::from_value(color_js).unwrap_or(wgpu::Color::BLACK);
             rp.set_blend_constant(color);
         }
     }
@@ -3294,28 +3572,6 @@ impl RhiWgpuRenderPass {
 // Surface configuration mirror structs + RhiWgpuSurface impl (w11)
 // ============================================================================
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SurfaceConfigurationJs {
-    /// Resolved to wgpu::Device reference at call site via RhiWgpuDevice
-    #[serde(skip)]
-    device: (),
-    usage: u32,
-    format: wgpu::TextureFormat,
-    #[serde(default = "one_u32")]
-    width: u32,
-    #[serde(default = "one_u32")]
-    height: u32,
-    #[serde(default = "surface_default_present_mode")]
-    present_mode: PresentModeJs,
-    #[serde(default)]
-    desired_maximum_frame_latency: Option<u32>,
-    #[serde(default)]
-    alpha_mode: Option<wgpu::CompositeAlphaMode>,
-    #[serde(default)]
-    view_formats: Vec<wgpu::TextureFormat>,
-}
-
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SurfaceConfigurationFacts {
@@ -3334,7 +3590,10 @@ impl SurfaceConfigurationFacts {
             usage: desc.usage,
             width: desc.width,
             height: desc.height,
-            alpha_mode: format!("{:?}", desc.alpha_mode.unwrap_or(wgpu::CompositeAlphaMode::Auto)),
+            alpha_mode: format!(
+                "{:?}",
+                desc.alpha_mode.unwrap_or(wgpu::CompositeAlphaMode::Auto)
+            ),
             present_mode: format!("{:?}", desc.present_mode),
         }
     }
@@ -3368,10 +3627,6 @@ fn serialize_surface_presentation_proof(
     .map_err(|error| JsValue::from_str(&format!("surface probe serialization failed: {error}")))
 }
 
-const fn surface_default_present_mode() -> PresentModeJs {
-    PresentModeJs::Fifo
-}
-
 fn ensure_surface_configured(configured: bool) -> Result<(), JsValue> {
     if configured {
         Ok(())
@@ -3392,13 +3647,31 @@ fn surface_configure_error(
 ) -> JsValue {
     let supported_usage = capabilities.map(|value| value.usages.bits()).unwrap_or(0);
     let supported_formats = capabilities
-        .map(|value| value.formats.iter().map(|format| format!("{format:?}")).collect::<Vec<_>>())
+        .map(|value| {
+            value
+                .formats
+                .iter()
+                .map(|format| format!("{format:?}"))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let supported_present_modes = capabilities
-        .map(|value| value.present_modes.iter().map(|mode| format!("{mode:?}")).collect::<Vec<_>>())
+        .map(|value| {
+            value
+                .present_modes
+                .iter()
+                .map(|mode| format!("{mode:?}"))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     let supported_alpha_modes = capabilities
-        .map(|value| value.alpha_modes.iter().map(|mode| format!("{mode:?}")).collect::<Vec<_>>())
+        .map(|value| {
+            value
+                .alpha_modes
+                .iter()
+                .map(|mode| format!("{mode:?}"))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     JsValue::from_str(
         &serde_json::json!({
@@ -3470,10 +3743,24 @@ impl RhiWgpuSurface {
             }
         };
         let (device, queue) = lookup_device(token).ok_or_else(|| {
-            surface_configure_error("missing-device-token", &desc, None, token, self.identity, None)
+            surface_configure_error(
+                "missing-device-token",
+                &desc,
+                None,
+                token,
+                self.identity,
+                None,
+            )
         })?;
         let adapter = lookup_device_adapter(token).ok_or_else(|| {
-            surface_configure_error("missing-adapter-token", &desc, None, token, self.identity, None)
+            surface_configure_error(
+                "missing-adapter-token",
+                &desc,
+                None,
+                token,
+                self.identity,
+                None,
+            )
         })?;
         let capabilities = self.inner.get_capabilities(&adapter);
         let requested_usage = match wgpu::TextureUsages::from_bits(desc.usage) {
@@ -3547,7 +3834,9 @@ impl RhiWgpuSurface {
         self.inner.configure(&device, &config);
         if let Some(message) = take_uncaptured_error() {
             let detail = match previous_error {
-                Some(previous) => format!("previous_uncaptured_error={previous}; configure_error={message}"),
+                Some(previous) => {
+                    format!("previous_uncaptured_error={previous}; configure_error={message}")
+                }
                 None => message,
             };
             *self.configuration.borrow_mut() = None;
@@ -3621,23 +3910,30 @@ impl RhiWgpuSurface {
     pub fn get_current_texture(&self) -> Result<RhiWgpuSurfaceTexture, JsValue> {
         let configuration = self.configuration.borrow();
         ensure_surface_configured(configuration.is_some())?;
-        let queue = &configuration.as_ref().expect("configuration checked above").1;
+        let queue = &configuration
+            .as_ref()
+            .expect("configuration checked above")
+            .1;
         match self.inner.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(st) => {
-                Ok(RhiWgpuSurfaceTexture { inner: Some(st), surface_identity: self.identity, queue: queue.clone() })
-            }
-            wgpu::CurrentSurfaceTexture::Suboptimal(st) => {
-                Ok(RhiWgpuSurfaceTexture { inner: Some(st), surface_identity: self.identity, queue: queue.clone() })
-            }
+            wgpu::CurrentSurfaceTexture::Success(st) => Ok(RhiWgpuSurfaceTexture {
+                inner: Some(st),
+                surface_identity: self.identity,
+                queue: queue.clone(),
+            }),
+            wgpu::CurrentSurfaceTexture::Suboptimal(st) => Ok(RhiWgpuSurfaceTexture {
+                inner: Some(st),
+                surface_identity: self.identity,
+                queue: queue.clone(),
+            }),
             wgpu::CurrentSurfaceTexture::Timeout => {
                 Err(JsValue::from_str("getCurrentTexture timed out"))
             }
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                Err(JsValue::from_str("getCurrentTexture: surface outdated, reconfigure"))
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                Err(JsValue::from_str("getCurrentTexture: surface lost, recreate"))
-            }
+            wgpu::CurrentSurfaceTexture::Outdated => Err(JsValue::from_str(
+                "getCurrentTexture: surface outdated, reconfigure",
+            )),
+            wgpu::CurrentSurfaceTexture::Lost => Err(JsValue::from_str(
+                "getCurrentTexture: surface lost, recreate",
+            )),
             wgpu::CurrentSurfaceTexture::Occluded => {
                 Err(JsValue::from_str("getCurrentTexture: surface occluded"))
             }
@@ -3658,8 +3954,13 @@ impl RhiWgpuSurfaceTexture {
     /// release it.
     #[wasm_bindgen(js_name = getTexture)]
     pub fn get_texture(&self) -> RhiWgpuTexture {
-        let st = self.inner.as_ref().expect("SurfaceTexture already consumed");
-        RhiWgpuTexture { inner: st.texture.clone() }
+        let st = self
+            .inner
+            .as_ref()
+            .expect("SurfaceTexture already consumed");
+        RhiWgpuTexture {
+            inner: st.texture.clone(),
+        }
     }
 
     /// bug-20260610: spec-shaped `present()` so the runtime per-frame loop
@@ -3687,274 +3988,6 @@ impl RhiWgpuSurfaceTexture {
         }
         Ok(())
     }
-}
-
-// ============================================================================
-// Mirror structs for RenderPipeline sub-descriptors (w4)
-// ============================================================================
-
-/// bug-20260610: WebGPU spec `cullMode` is `'none' | 'front' | 'back'` but
-/// wgpu's `Face` is `Front | Back` only — "no culling" is `cull_mode: None`
-/// in Rust. Mirror the spec value set as a separate enum and project to
-/// `Option<wgpu::Face>` at conversion time so descriptors that pass
-/// `cullMode: 'none'` (e.g. tonemap, FXAA, fullscreen post-process passes)
-/// don't blow up at deserialization.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum CullModeJs {
-    None,
-    Front,
-    Back,
-}
-impl CullModeJs {
-    fn into_wgpu(self) -> Option<wgpu::Face> {
-        match self {
-            CullModeJs::None => None,
-            CullModeJs::Front => Some(wgpu::Face::Front),
-            CullModeJs::Back => Some(wgpu::Face::Back),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PrimitiveStateJs {
-    #[serde(default)]
-    topology: Option<wgpu::PrimitiveTopology>,
-    #[serde(default)]
-    strip_index_format: Option<wgpu::IndexFormat>,
-    #[serde(default)]
-    front_face: Option<wgpu::FrontFace>,
-    #[serde(default)]
-    cull_mode: Option<CullModeJs>,
-    #[serde(default)]
-    unclipped_depth: Option<bool>,
-    #[serde(default)]
-    polygon_mode: Option<wgpu::PolygonMode>,
-    #[serde(default)]
-    conservative: Option<bool>,
-}
-impl PrimitiveStateJs {
-    fn into_wgpu(self) -> wgpu::PrimitiveState {
-        wgpu::PrimitiveState {
-            topology: self.topology.unwrap_or(wgpu::PrimitiveTopology::TriangleList),
-            strip_index_format: self.strip_index_format,
-            front_face: self.front_face.unwrap_or(wgpu::FrontFace::Ccw),
-            cull_mode: self.cull_mode.and_then(|c| c.into_wgpu()),
-            unclipped_depth: self.unclipped_depth.unwrap_or(false),
-            polygon_mode: self.polygon_mode.unwrap_or(wgpu::PolygonMode::Fill),
-            conservative: self.conservative.unwrap_or(false),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DepthStencilStateJs {
-    format: wgpu::TextureFormat,
-    #[serde(default)]
-    depth_write_enabled: bool,
-    #[serde(default)]
-    depth_compare: Option<wgpu::CompareFunction>,
-    // GPUDepthStencilState keeps the stencil face states and masks at the
-    // top level. The RHI descriptor mirrors that WebGPU shape; nesting these
-    // fields under `stencil` silently dropped every custom stencil state on
-    // the WebGL2/WASM fallback path.
-    #[serde(default)]
-    stencil_front: Option<StencilFaceStateJs>,
-    #[serde(default)]
-    stencil_back: Option<StencilFaceStateJs>,
-    #[serde(default)]
-    stencil_read_mask: Option<u32>,
-    #[serde(default)]
-    stencil_write_mask: Option<u32>,
-    // GPUDepthStencilState keeps depth bias as three top-level fields. The
-    // RHI descriptor mirrors that WebGPU shape; nesting them under `bias`
-    // silently drops every authored depth-bias value on the WebGL2 fallback.
-    #[serde(default)]
-    depth_bias: Option<i32>,
-    #[serde(default)]
-    depth_bias_slope_scale: Option<f32>,
-    #[serde(default)]
-    depth_bias_clamp: Option<f32>,
-}
-impl DepthStencilStateJs {
-    fn into_wgpu(self) -> wgpu::DepthStencilState {
-        wgpu::DepthStencilState {
-            format: self.format,
-            depth_write_enabled: Some(self.depth_write_enabled),
-            depth_compare: self.depth_compare,
-            stencil: wgpu::StencilState {
-                front: self.stencil_front.map(|f| f.into_wgpu()).unwrap_or_default(),
-                back: self.stencil_back.map(|b| b.into_wgpu()).unwrap_or_default(),
-                read_mask: self.stencil_read_mask.unwrap_or(u32::MAX),
-                write_mask: self.stencil_write_mask.unwrap_or(u32::MAX),
-            },
-            bias: wgpu::DepthBiasState {
-                constant: self.depth_bias.unwrap_or(0),
-                slope_scale: self.depth_bias_slope_scale.unwrap_or(0.0),
-                clamp: self.depth_bias_clamp.unwrap_or(0.0),
-            },
-        }
-    }
-}
-
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct StencilFaceStateJs {
-    #[serde(default)]
-    compare: Option<wgpu::CompareFunction>,
-    #[serde(default)]
-    fail_op: Option<wgpu::StencilOperation>,
-    #[serde(default)]
-    depth_fail_op: Option<wgpu::StencilOperation>,
-    #[serde(default)]
-    pass_op: Option<wgpu::StencilOperation>,
-}
-impl StencilFaceStateJs {
-    fn into_wgpu(self) -> wgpu::StencilFaceState {
-        wgpu::StencilFaceState {
-            compare: self.compare.unwrap_or(wgpu::CompareFunction::Always),
-            fail_op: self.fail_op.unwrap_or(wgpu::StencilOperation::Keep),
-            depth_fail_op: self.depth_fail_op.unwrap_or(wgpu::StencilOperation::Keep),
-            pass_op: self.pass_op.unwrap_or(wgpu::StencilOperation::Keep),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MultisampleStateJs {
-    #[serde(default = "one_u32")]
-    count: u32,
-    #[serde(default)]
-    mask: Option<u64>,
-    #[serde(default)]
-    alpha_to_coverage_enabled: Option<bool>,
-}
-impl MultisampleStateJs {
-    fn into_wgpu(self) -> wgpu::MultisampleState {
-        wgpu::MultisampleState {
-            count: self.count,
-            mask: self.mask.unwrap_or(u64::MAX),
-            alpha_to_coverage_enabled: self.alpha_to_coverage_enabled.unwrap_or(false),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BlendStateJs {
-    color: BlendComponentJs,
-    alpha: BlendComponentJs,
-}
-impl BlendStateJs {
-    fn into_wgpu(self) -> wgpu::BlendState {
-        wgpu::BlendState {
-            color: self.color.into_wgpu(),
-            alpha: self.alpha.into_wgpu(),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BlendComponentJs {
-    #[serde(default)]
-    operation: Option<wgpu::BlendOperation>,
-    #[serde(default)]
-    src_factor: Option<wgpu::BlendFactor>,
-    #[serde(default)]
-    dst_factor: Option<wgpu::BlendFactor>,
-}
-impl BlendComponentJs {
-    fn into_wgpu(self) -> wgpu::BlendComponent {
-        wgpu::BlendComponent {
-            operation: self.operation.unwrap_or(wgpu::BlendOperation::Add),
-            src_factor: self.src_factor.unwrap_or(wgpu::BlendFactor::One),
-            dst_factor: self.dst_factor.unwrap_or(wgpu::BlendFactor::Zero),
-        }
-    }
-}
-
-// ============================================================================
-// RenderPass descriptor mirror structs (w10)
-// ============================================================================
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RenderPassDescriptorJs {
-    #[serde(default)]
-    label: Option<String>,
-    #[serde(default)]
-    color_attachments: Vec<RenderPassColorAttachmentJs>,
-    #[serde(default)]
-    depth_stencil_attachment: Option<RenderPassDepthStencilAttachmentJs>,
-}
-
-/// bug-20260610: WebGPU spec ships `loadOp` / `storeOp` as separate kebab-case
-/// strings + `clearValue` as a flat `{r,g,b,a}` dict, not a tagged enum
-/// payload. The earlier `Option<wgpu::LoadOp<wgpu::Color>>` deserialization
-/// blew up with "invalid type: unit value, expected f32 / wgpu::Color"
-/// because serde tried to fill the `Clear` variant's payload from the bare
-/// string `"clear"`. We mirror the spec shape and reassemble `wgpu::LoadOp`
-/// at the call site.
-#[derive(Debug, PartialEq, Default)]
-enum LoadOpStrJs {
-    #[default]
-    Load,
-    Clear,
-}
-impl<'de> serde::Deserialize<'de> for LoadOpStrJs {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = <String as serde::Deserialize>::deserialize(d)?;
-        match s.as_str() {
-            "load" => Ok(LoadOpStrJs::Load),
-            "clear" => Ok(LoadOpStrJs::Clear),
-            other => Err(serde::de::Error::custom(format!("unknown loadOp '{other}' (expected 'load' | 'clear')"))),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RenderPassColorAttachmentJs {
-    /// Borrowed JS handle resolved to an owned temporary clone for pass creation.
-    #[serde(skip)]
-    view: Option<wgpu::TextureView>,
-    #[serde(default)]
-    depth_slice: Option<u32>,
-    #[serde(skip)]
-    resolve_target: Option<wgpu::TextureView>,
-    #[serde(default)]
-    load_op: Option<LoadOpStrJs>,
-    #[serde(default)]
-    store_op: Option<wgpu::StoreOp>,
-    #[serde(default)]
-    clear_value: Option<wgpu::Color>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RenderPassDepthStencilAttachmentJs {
-    #[serde(skip)]
-    view: Option<wgpu::TextureView>,
-    #[serde(default)]
-    depth_load_op: Option<LoadOpStrJs>,
-    #[serde(default)]
-    depth_store_op: Option<wgpu::StoreOp>,
-    #[serde(default)]
-    depth_clear_value: Option<f32>,
-    #[serde(default)]
-    stencil_load_op: Option<LoadOpStrJs>,
-    #[serde(default)]
-    stencil_store_op: Option<wgpu::StoreOp>,
-    #[serde(default)]
-    stencil_clear_value: Option<u32>,
-    #[serde(default)]
-    depth_read_only: bool,
-    #[serde(default)]
-    stencil_read_only: bool,
 }
 
 #[cfg(test)]

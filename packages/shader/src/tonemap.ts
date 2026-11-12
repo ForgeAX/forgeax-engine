@@ -8,6 +8,7 @@ export const TONEMAP_SHADER_MODE = {
   agx: 5,
   neutral: 6,
   reinhard: 7,
+  ueFilmic: 8,
 } as const;
 
 /**

@@ -9,6 +9,7 @@ import {
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import type { MaterialRenderState, Result } from '@forgeax/engine-types';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { Materials } from '../materials';
 import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import { pipelineRenderState } from '../render-system-extract';
@@ -226,7 +227,7 @@ export async function verifyRasterCase(testCase: RasterCase) {
       const inspection = value(
         await session.inspectWork(workIndex, ['pipeline', 'bindings', 'pixels']),
       );
-      expect(inspection.attachment?.bytes).toEqual(live);
+      expect(equalBytes(inspection.attachment?.bytes, live)).toBe(true);
       const inspectedWork = testCase.overlay ? workIndex : 0;
       const event = model.works[inspectedWork]?.pipeline.descriptor;
       if (event === null || typeof event !== 'object' || !('desc' in event))

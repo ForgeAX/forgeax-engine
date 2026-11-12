@@ -152,7 +152,12 @@ it('records each known write once regardless of detached upload count', async ()
     key,
     value,
   ) {
-    if (key === row && value === 1) dirtyWrites++;
+    if (
+      key === row &&
+      (value as { start?: number; end?: number })?.start === row &&
+      (value as { end?: number })?.end === row + 1
+    )
+      dirtyWrites++;
     return original.call(this, key, value);
   });
   try {
@@ -425,6 +430,13 @@ it('writes a checked suffix under its full allocation owner and rejects partial 
     expect(writes.mock.calls[0]?.[4]).toBe(16);
     writes.mockClear();
     data.setUint32(0, 11, true);
+    arena.writeDescriptor(address, data, 4, 2);
+    upload.flush(gpu.queue, created, false).unwrap();
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls[0]?.[1]).toBe((address + 2) * 4);
+    expect(writes.mock.calls[0]?.[4]).toBe(8);
+    writes.mockClear();
+    data.setUint32(0, 17, true);
     arena.writeDescriptor(address, data, 4, 2);
     arena.releaseDescriptor(address, 4);
     upload.flush(gpu.queue, created, false).unwrap();

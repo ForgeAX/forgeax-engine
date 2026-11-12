@@ -3,20 +3,37 @@ import {
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA,
   DEFAULT_UNLIT_PARAM_SCHEMA,
 } from '@forgeax/engine-shader';
+import type { ShaderReflection } from '@forgeax/engine-types';
+import { STANDARD_CLUSTER_TEST_REFLECTION } from './cluster-test-abi';
 
 type FixtureEntry = {
   readonly hash: string;
   readonly wgsl: string;
   readonly glsl: string;
   readonly bindings: string;
+  readonly reflection?: ShaderReflection;
 };
 
 const pbrWgsl = '// fixture marker: f_schlick\n';
 const unlitWgsl = '// fixture marker: default-unlit\n';
 const shadowCasterWgsl = '// fixture marker: shadow-caster\n';
+const fixtureCompilerProfile = {
+  id: 'forgeax-material-wgsl-v1',
+  language: 'wgsl',
+  profileVersion: '1',
+  adapterVersion: '1',
+  compilerVersion: '1',
+  nagaVersion: '30.0.1',
+} as const;
 
 const entries: readonly FixtureEntry[] = [
-  { hash: 'fixture-pbr', wgsl: pbrWgsl, glsl: '', bindings: '[]' },
+  {
+    hash: 'fixture-pbr',
+    wgsl: pbrWgsl,
+    glsl: '',
+    bindings: '[]',
+    reflection: STANDARD_CLUSTER_TEST_REFLECTION,
+  },
   { hash: 'fixture-unlit', wgsl: unlitWgsl, glsl: '', bindings: '[]' },
   { hash: 'fixture-shadow-caster', wgsl: shadowCasterWgsl, glsl: '', bindings: '[]' },
   {
@@ -90,7 +107,11 @@ export function standardPbrFixtureVariants(composedWgsl: string) {
             definesKey,
             defines,
             composedWgsl,
+            hash: 'cafe1234',
+            sourceDigest: 'a'.repeat(64),
+            compilerProfile: fixtureCompilerProfile,
             receipt: createStandardPbrArtifactReceipt(false, vertexColor),
+            reflection: STANDARD_CLUSTER_TEST_REFLECTION,
           });
         }
       }
@@ -156,21 +177,18 @@ const materialShaders = [
     paramSchema: '[]',
     variants: [false, true].flatMap((cluster) =>
       [false, true].flatMap((extended) =>
-        [false, true].flatMap((projector) =>
-          [false, true].map((pcss) => ({
-            definesKey:
-              cluster && extended && projector && pcss
-                ? ''
-                : `CLUSTER_FORWARD_AVAILABLE=${cluster}+DIRECTIONAL_PCSS_AVAILABLE=${pcss}+EXTENDED_LIGHTING_AVAILABLE=${extended}+PROJECTOR_AVAILABLE=${projector}`,
-            defines: {
-              CLUSTER_FORWARD_AVAILABLE: cluster,
-              EXTENDED_LIGHTING_AVAILABLE: extended,
-              PROJECTOR_AVAILABLE: projector,
-              DIRECTIONAL_PCSS_AVAILABLE: pcss,
-            },
-            composedWgsl: '// fixture marker: standard deferred',
-          })),
-        ),
+        [false, true].map((projector) => ({
+          definesKey:
+            cluster && extended && projector
+              ? ''
+              : `CLUSTER_FORWARD_AVAILABLE=${cluster}+EXTENDED_LIGHTING_AVAILABLE=${extended}+PROJECTOR_AVAILABLE=${projector}`,
+          defines: {
+            CLUSTER_FORWARD_AVAILABLE: cluster,
+            EXTENDED_LIGHTING_AVAILABLE: extended,
+            PROJECTOR_AVAILABLE: projector,
+          },
+          composedWgsl: '// fixture marker: standard deferred',
+        })),
       ),
     ),
   },

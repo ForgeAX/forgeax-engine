@@ -8,11 +8,13 @@ import {
 } from '@forgeax/engine-rhi';
 import type { RendererGenerationFence } from '../assembly/renderer-frame-transaction';
 import { ResidencyLifetime } from '../device/residency-lifetime';
+import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import type { StandardIrradianceFieldGi } from '../pipeline/standard-profile';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { LightSnapshot } from '../render-system-extract';
 import type { PersistentGpuDrivenState } from '../scene/render-scene';
+import { recordContext } from '../world/view-record-context';
 import type { CardAtlasCapture, CardCaptureSlice } from './card-capture-schedule';
 import { CardResidency, type CardResidencyInspection } from './card-residency';
 import { createRayDiffuseComposite } from './diffuse-composite';
@@ -260,8 +262,8 @@ export interface PreparedIrradianceField {
   };
   /** Compose invocations: an edit recomposes only its box of voxels. */
   readonly composeDispatch: () => number;
-  /** Scene revision this field reflects; in-place edits advance it. */
-  revision: number;
+  /** GPU Scene content this field reflects; in-place edits advance it. */
+  content: SceneContentCursor;
   /** Accepted scene identity and content, including only its consumed assets. */
   retained: NonNullable<PersistentGpuDrivenState['retained']>;
   /**
@@ -400,7 +402,7 @@ export class RendererIrradianceField {
     const input = this.#input;
     if (input === undefined) return '';
     return JSON.stringify([
-      input.runtime.deviceScope.generation,
+      recordContext(input.runtime).deviceScope.generation,
       // Scene content edits are diffed against the field rows (`#sync`), not keyed.
       input.worlds.map((world) => world.identity),
       // Field identity only: the gather lane consuming the field never resets it.
@@ -535,7 +537,7 @@ export class RendererIrradianceField {
 
   /** Bring a prepared field to the current scene revision by an in-place edit. */
   #sync(field: PreparedIrradianceField, input: IrradianceFieldFrameInput): boolean {
-    const revision = input.scene.scene.contentRevision;
+    const content = input.scene.scene.contentCursor;
     const retained = input.scene.retained;
     if (retained === undefined || !retained.isCurrent()) return false;
     // A replacement CPU projection can restart its revision while keeping the
@@ -557,7 +559,7 @@ export class RendererIrradianceField {
     this.#projectedSources += this.#fieldRows.visits - visits;
     if (!projected.ok || !retained.isSourceCurrent()) return false;
     if (field.fieldRevision === this.#fieldRows.revision) {
-      field.revision = revision;
+      field.content = content;
       field.retained = retained;
       this.#skippedProjections++;
       return true;
@@ -566,7 +568,7 @@ export class RendererIrradianceField {
     const applied = field.edit(edit);
     if (applied === 'rebuild') return false;
     if (applied === 'applied') {
-      field.revision = revision;
+      field.content = content;
       field.retained = retained;
       field.fieldRevision = this.#fieldRows.revision;
       this.#fieldRows.acceptChanges(field.fieldRevision);
@@ -609,7 +611,7 @@ export class RendererIrradianceField {
     publishCards: (cards: ProbeCardCapture) => void,
   ): Promise<PreparedIrradianceField> {
     const { runtime, profile } = input;
-    const revision = input.scene.scene.contentRevision;
+    const content = input.scene.scene.contentCursor;
     const retained = input.scene.retained;
     if (retained === undefined) throw new Error('irradiance-field GI requires an accepted scene');
     const device = runtime.device;
@@ -977,7 +979,7 @@ export class RendererIrradianceField {
         },
         schedule,
         composeDispatch: () => composeDispatch,
-        revision,
+        content,
         retained,
         editState,
         residency,

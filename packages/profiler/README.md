@@ -179,7 +179,7 @@ Models and comparison sides expose capture completeness once, through
 `summary.completeness`. Frame/phase CLI queries project that value into their
 result envelope; the saved `ProfileCapture` schema remains version 1.0.
 
-The package root is the only supported import path for these entries. See `schema/profile-capture.schema.json` for the artifact contract and `scripts/bench/profiler-overhead.mjs` for the deterministic D-6 consumer gate. The gate alternates profiler-off/on windows, warms each new capture before sampling, keeps finalization outside the measured window, and uses $median(((p95_{on,i} - p95_{off,i}) / p95_{off,i}) \times 100)$ across paired groups. The owner-mode ceiling is 20%; allocation, overflow, and phase-catalog evidence remain hard-failing.
+The package root is the only supported import path for these entries. See `schema/profile-capture.schema.json` for the artifact contract and `scripts/bench/profiler-overhead.mjs` for the deterministic D-6 consumer gate. The gate prepares the ordinary base-SSAO profile through the maintained source producer, then admits its shader publication, including Cluster reflection, before its measured windows; Null RHI skips native GPU compilation. It alternates profiler-off/on windows, warms each new capture before sampling, keeps finalization outside the measured window, and uses $median(((p95_{on,i} - p95_{off,i}) / p95_{off,i}) \times 100)$ across paired groups. The owner-mode ceiling is 20%; allocation, overflow, and phase-catalog evidence remain hard-failing.
 
 ## Engine source profiler page
 

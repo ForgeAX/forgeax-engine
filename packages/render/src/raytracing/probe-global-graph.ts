@@ -83,7 +83,7 @@ export function addProbeGlobalPasses(
         { resource: region.settings, usage: 'uniform-read' },
         { resource: region.voxels, usage: 'storage-write' },
       ],
-      encode: ({ pass, resources, frame }) => {
+      encodeDirect: (pass, frame, resources) => {
         const value = current(frame);
         const input = Object.fromEntries(
           regionNames.map((name) => [
@@ -108,7 +108,7 @@ export function addProbeGlobalPasses(
       { resource: raySettings, usage: 'uniform-read' },
       ...[rays, emission].map((resource) => ({ resource, usage: 'storage-write' as const })),
     ],
-    encode: ({ pass, resources, frame }) =>
+    encodeDirect: (pass, frame, resources) =>
       current(frame)
         .emit(
           pass,
@@ -137,7 +137,7 @@ export function addProbeGlobalPasses(
       })),
       { resource: hits, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources, frame }) =>
+    encodeDirect: (pass, frame, resources) =>
       current(frame)
         .query(
           pass,
@@ -165,7 +165,7 @@ export function addProbeGlobalPasses(
       { resource: region.settings, usage: 'uniform-read' },
       { resource: diagnostics, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources, frame }) =>
+    encodeDirect: (pass, frame, resources) =>
       current(frame)
         .support(
           pass,

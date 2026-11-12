@@ -5,6 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { createRenderFeatureHost, getRenderFeaturePlanExecutionProjection } from '../features/host';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { abortFeatureFrame, prepareFeatureFrame } from './feature-frame-driver';
 
 it('keeps explicit disabled graphics pending until the actual pipeline resolves, then records zero work', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -59,7 +60,7 @@ it('keeps explicit disabled graphics pending until the actual pipeline resolves,
   const host = createRenderFeatureHost([feature]).unwrap();
   let pending = true;
   const frame = () =>
-    host.runFrame([
+    prepareFeatureFrame(host, [
       {
         worlds: [],
         owner: 0,
@@ -115,7 +116,7 @@ it('keeps explicit disabled graphics pending until the actual pipeline resolves,
     const originalReason = structuredClone(first.frame.preparationPendingReason);
     expect(first.frame.errors).toEqual([]);
     expect(create).not.toHaveBeenCalled();
-    first.onAborted();
+    abortFeatureFrame(host);
     pending = false;
     const ready = frame();
     expect(ready.frame.preparationPending).not.toBe(true);
@@ -130,7 +131,7 @@ it('keeps explicit disabled graphics pending until the actual pipeline resolves,
     );
     expect(projected).toHaveLength(1);
     expect(projected.every((pass) => pass.enabled === false)).toBe(true);
-    ready.onAborted();
+    abortFeatureFrame(host);
   } finally {
     host.dispose();
   }

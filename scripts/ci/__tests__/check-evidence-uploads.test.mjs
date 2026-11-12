@@ -63,7 +63,7 @@ test('the CI entrypoint rejects a committed capture and accepts an ordinary sour
   try {
     git(['init', '--quiet']);
     git(['config', 'user.email', 'ci@example.invalid']);
-    git(['config', 'user.name', 'ForgeaX CI']);
+    git(['config', 'user.name', 'ForgeAX CI']);
     writeFileSync(join(root, 'package.json'), '{"private":true}\n');
     git(['add', 'package.json']);
     git(['commit', '--quiet', '-m', 'base']);

@@ -1,9 +1,15 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
+import { DdcEntryStore, DdcLifecycle } from '@forgeax/engine-ddc';
 import { decodeCatalogWire } from '@forgeax/engine-pack';
-import { createStandaloneRuntimeAssetBinding, type Importer } from '@forgeax/engine-types';
-import { afterEach, describe, expect, it } from 'vitest';
+import {
+  createStandaloneRuntimeAssetBinding,
+  type Importer,
+  runtimeScopePath,
+} from '@forgeax/engine-types';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPluginPackInternal as pluginPack } from '../plugin-pack.js';
 
 const MAIN_GUID = '00000000-0000-4000-8000-000000000001';
@@ -22,7 +28,7 @@ interface Server {
 }
 
 type Handler = (
-  req: { url?: string; method?: string },
+  req: { url?: string; method?: string; headers?: Record<string, string> },
   res: Response & {
     setHeader(name: string, value: string): void;
     end(body?: string | Uint8Array): void;
@@ -42,11 +48,15 @@ function createServer(): Server {
   return server;
 }
 
-async function request(server: Server, url: string): Promise<Response> {
+async function request(
+  server: Server,
+  url: string,
+  headers?: Record<string, string>,
+): Promise<Response> {
   const response: Response = { statusCode: 200, body: undefined, headers: {} };
   if (server.handler === undefined) throw new Error('plugin middleware was not registered');
   await server.handler(
-    { url, method: 'GET' },
+    { url, method: 'GET', ...(headers === undefined ? {} : { headers }) },
     {
       ...response,
       setHeader(name, value) {
@@ -61,33 +71,36 @@ async function request(server: Server, url: string): Promise<Response> {
   return response;
 }
 
-const fixtureImporter: Importer = {
-  key: 'fixture',
-  import: async () => ({
-    ok: true,
-    value: {
-      assets: [
-        {
-          guid: MAIN_GUID,
-          kind: 'fixture-mesh',
-          payload: { kind: 'fixture-mesh', vertexCount: 3 },
-          refs: [{ guid: CHILD_GUID }],
-          artifacts: {
-            body: { mediaType: 'application/octet-stream', bytes: new Uint8Array([1, 2, 3]) },
+function fixtureImporterWithBody(bytes: Uint8Array): Importer {
+  return {
+    key: 'fixture',
+    import: async () => ({
+      ok: true,
+      value: {
+        assets: [
+          {
+            guid: MAIN_GUID,
+            kind: 'fixture-mesh',
+            payload: { kind: 'fixture-mesh', vertexCount: 3 },
+            refs: [{ guid: CHILD_GUID }],
+            artifacts: {
+              body: { mediaType: 'application/octet-stream', bytes },
+            },
           },
-        },
-        {
-          guid: CHILD_GUID,
-          kind: 'fixture-material',
-          payload: { kind: 'fixture-material', label: 'fixture' },
-          refs: [],
-          artifacts: {},
-        },
-      ],
-      sourceDependencies: ['scene.fixture'],
-    },
-  }),
-};
+          {
+            guid: CHILD_GUID,
+            kind: 'fixture-material',
+            payload: { kind: 'fixture-material', label: 'fixture' },
+            refs: [],
+            artifacts: {},
+          },
+        ],
+        sourceDependencies: ['scene.fixture'],
+      },
+    }),
+  };
+}
+const fixtureImporter = fixtureImporterWithBody(new Uint8Array([1, 2, 3]));
 
 function meta(): string {
   return JSON.stringify({
@@ -134,7 +147,64 @@ describe('source package dev/build parity', () => {
   const roots: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  });
+
+  it('reopens unchanged Meta catalog and artifact routes without republishing DDC', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-meta-publication-warm-'));
+    roots.push(root);
+    const assets = join(root, 'assets');
+    await mkdir(assets);
+    await writeFile(join(assets, 'scene.fixture'), 'fixture source');
+    await writeFile(join(assets, 'scene.fixture.meta.json'), meta());
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    try {
+      const binding = createStandaloneRuntimeAssetBinding('warm-publication');
+      const expectedBytes = new Uint8Array(4096).fill(7);
+      const importer = fixtureImporterWithBody(expectedBytes);
+      const reopen = async () => {
+        const plugin = pluginPack({ roots: [assets], importers: [importer] });
+        const server = createServer();
+        plugin.configureServer(server);
+        try {
+          await plugin.rebind(binding, [assets]);
+          const catalogResponse = await request(server, binding.catalogUrl);
+          expect(catalogResponse.statusCode, String(catalogResponse.body)).toBe(200);
+          const decoded = decodeCatalogWire(JSON.parse(String(catalogResponse.body)));
+          expect(decoded.ok, String(catalogResponse.body)).toBe(true);
+          const catalog = decoded.unwrap();
+          const row = catalog.find((entry) => entry.guid === MAIN_GUID);
+          if (row === undefined) throw new Error('missing restored catalog row');
+          const response = await request(server, row.packageUrl);
+          expect(response.statusCode).toBe(200);
+          const pack = JSON.parse(String(response.body));
+          const artifact = await request(
+            server,
+            `${runtimeScopePath(binding)}/asset/__forgeax-ddc/${MAIN_GUID}/body.bin`,
+            { 'accept-encoding': 'gzip' },
+          );
+          expect(artifact.statusCode).toBe(200);
+          expect(artifact.headers['Content-Encoding']).toBe('gzip');
+          expect(new Uint8Array(gunzipSync(artifact.body as Uint8Array))).toEqual(expectedBytes);
+          return { row, pack };
+        } finally {
+          await plugin.closeBundle();
+        }
+      };
+      const first = await reopen();
+      const begin = vi.spyOn(DdcLifecycle.prototype, 'beginWithSnapshot');
+      const stage = vi.spyOn(DdcEntryStore.prototype, 'stage');
+      const second = await reopen();
+      expect(second.pack).toEqual(first.pack);
+      expect(second.row.revision).toMatchObject({ digest: first.row.revision?.digest });
+      expect(second.row.publication).toEqual(first.row.publication);
+      expect(begin).not.toHaveBeenCalled();
+      expect(stage).not.toHaveBeenCalled();
+    } finally {
+      process.chdir(previousCwd);
+    }
   });
 
   it('retains warm DDC entries when a source revision changes without changing cooked bytes', async () => {
@@ -245,6 +315,40 @@ describe('source package dev/build parity', () => {
       ).toEqual(new Uint8Array([1, 2, 3]));
       await dev.closeBundle();
     } finally {
+      process.chdir(previousCwd);
+    }
+  });
+  it('uses the standard bounded production executor for a cold live Pack', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-live-pack-production-'));
+    roots.push(root);
+    const assets = join(root, 'assets');
+    await mkdir(assets);
+    await writeFile(
+      join(assets, 'cold.pack.ts'),
+      `
+      export default {
+        schemaVersion: '2.0.0',
+        packageId: new Uint8Array([1,159,250,151,0,0,112,0,128,0,0,0,0,0,0,93]),
+        async build() {
+          await new Promise(resolve => setTimeout(resolve, 15_250));
+          return { ok: true, value: { sampler: { kind: 'sampler', magFilter: 'linear' } } };
+        },
+      };
+    `,
+    );
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    const plugin = pluginPack({ roots: [assets] });
+    const server = createServer();
+    plugin.configureServer(server);
+    try {
+      const binding = createStandaloneRuntimeAssetBinding('cold-production');
+      await plugin.rebind(binding, [assets]);
+      const response = await request(server, binding.catalogUrl);
+      const catalog = decodeCatalogWire(JSON.parse(String(response.body))).unwrap();
+      expect(catalog.some((row) => row.kind === 'sampler')).toBe(true);
+    } finally {
+      await plugin.closeBundle();
       process.chdir(previousCwd);
     }
   });

@@ -136,7 +136,7 @@ struct Material { values: array<vec4<u32>, ${size}> }
   try {
     const original = await run(4, [23, 47, 71, 255]);
     selectedLayout = replacementLayout;
-    expect(await run(8, [89, 101, 127, 255])).not.toBe(original);
+    expect(Object.is(await run(8, [89, 101, 127, 255]), original)).toBe(false);
     selectedLayout = originalLayout;
     expect(await run(4, [23, 47, 71, 255])).toBe(original);
     expect(deps.bindGroupCounts.createBindGroup).toBe(2);

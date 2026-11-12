@@ -1,6 +1,11 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import {
+  LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+  LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+} from '@forgeax/engine-shader';
+import { MATERIAL_WGSL_PROFILE } from '@forgeax/engine-shader-compiler';
 import { describe, expect, it } from 'vitest';
 import {
   extractDefineImportPath,
@@ -9,6 +14,86 @@ import {
 import * as publicSurface from '../index.js';
 import { buildEngineShaderManifest, VIEW_ABI } from '../index.js';
 import { publishShaderManifest } from '../manifest-publication.js';
+
+const reflection = {
+  schemaVersion: 'shader-reflection/3' as const,
+  uvSetCount: 0,
+  boundGlobals: [],
+};
+
+const resamplingPrograms = [
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_resample', stage: 'compute', bindings: [] },
+      { name: 'light_texture_reduce', stage: 'compute', bindings: [] },
+    ],
+    programContract: { schemaVersion: 'shader-program-contract/1', colorTargets: [] },
+  },
+  {
+    identifier: LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
+    entryPoints: [
+      { name: 'light_texture_fullscreen', stage: 'vertex', bindings: [] },
+      { name: 'light_texture_resample_fragment', stage: 'fragment', bindings: [] },
+    ],
+    programContract: {
+      schemaVersion: 'shader-program-contract/1',
+      colorTargets: [
+        { location: 0, format: 'rgba32float', numericType: 'float' },
+        { location: 1, format: 'rgba8unorm', numericType: 'float' },
+      ],
+    },
+  },
+] as const;
+
+const engineMaterialIdentifiers = [
+  'forgeax::default-standard-pbr',
+  'forgeax::pbr-skin',
+  'forgeax::default-shadow-caster',
+  'forgeax::default-unlit',
+  ...resamplingPrograms.map(({ identifier }) => identifier),
+];
+
+const materialShaders = engineMaterialIdentifiers.map((identifier, index) => {
+  const program = resamplingPrograms.find((candidate) => candidate.identifier === identifier);
+  return {
+    identifier,
+    sourcePath: `${identifier}.wgsl`,
+    hash: (index + 1).toString(16).padStart(8, '0'),
+    compilerProfile: MATERIAL_WGSL_PROFILE,
+    reflection,
+    entryPoints: program?.entryPoints ?? [],
+    composedWgsl: `// ${identifier}`,
+    paramSchema: '[]',
+    variants: [],
+  };
+});
+
+const sharedEntry = {
+  hash: 'a11ce001',
+  wgsl: 'shared',
+  bindings: '[]',
+  compilerProfile: MATERIAL_WGSL_PROFILE,
+  reflection,
+};
+
+const resamplingEntries = resamplingPrograms.map((program) => {
+  const material = materialShaders.find((row) => row.identifier === program.identifier);
+  if (material === undefined)
+    throw new Error(`Missing synthetic material row: ${program.identifier}`);
+  return {
+    hash: material.hash,
+    identifier: program.identifier,
+    wgsl: material.composedWgsl,
+    bindings: '[]',
+    compilerProfile: material.compilerProfile,
+    reflection: material.reflection,
+    entryPoints: program.entryPoints,
+    programContract: program.programContract,
+  };
+});
+
+const sharedEntries = [sharedEntry, ...resamplingEntries];
 
 describe('vite-plugin-shader public engine input surface', () => {
   it('keeps the plugin front door without a version mirror', () => {
@@ -20,7 +105,7 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(VIEW_ABI.moduleId).toBe('forgeax_view::common');
     expect(VIEW_ABI.group).toBe(0);
     expect(VIEW_ABI.binding).toBe(0);
-    expect(VIEW_ABI.byteLength).toBe(1280);
+    expect(VIEW_ABI.byteLength).toBe(1296);
     expect(VIEW_ABI.fields.map((field) => field.name)).toEqual([
       'worldViewProj',
       'inverseViewProj',
@@ -37,10 +122,11 @@ describe('vite-plugin-shader public engine input surface', () => {
       'fogHeightOpacity',
       'atmosphere',
       'atmosphereControl',
+      'fogSky',
     ]);
     expect(VIEW_ABI.fields.at(-1)).toEqual({
-      name: 'atmosphereControl',
-      offsetBytes: 1264,
+      name: 'fogSky',
+      offsetBytes: 1280,
       sizeBytes: 16,
     });
     expect(JSON.stringify(VIEW_ABI)).not.toMatch(/device|buffer|texture/i);
@@ -67,7 +153,34 @@ describe('vite-plugin-shader public engine input surface', () => {
     expect(entries.ssrTrace.source).toContain('#define_import_path forgeax_ssr::trace');
     expect(entries.ssrTemporal.source).toContain('#define_import_path forgeax_ssr::temporal');
     expect(entries.ssrCompose.source).toContain('fn fs_ssr_compose(');
+    for (const [native, fragment] of [
+      [entries.depthPyramidSeed, entries.depthPyramidSeedFragment],
+      [entries.depthPyramidReduce, entries.depthPyramidReduceFragment],
+      [entries.ssrTrace, entries.ssrTraceFragment],
+      [entries.ssrTemporal, entries.ssrTemporalFragment],
+      [entries.ssrCompose, entries.ssrComposeFragment],
+    ] as const) {
+      expect(fragment.id).not.toBe(native.id);
+      expect(fragment.source).toBe(native.source);
+      expect(fragment.defines).toEqual({ PORTABLE_FRAGMENT: true });
+    }
   });
+
+  it('publishes the production GTAO compute adapter with its shared visibility function', async () => {
+    const entries = await loadEngineShaderEntries();
+    expect(entries.hdrpGtaoCompute.source).toContain('fn cs_gtao_calc(');
+    expect(entries.imports['forgeax_hdrp::ssao']).toContain('fn gtaoRawVisibility(');
+
+    const manifest = await buildEngineShaderManifest();
+    const computeEntries = manifest.entries.filter((entry) =>
+      entry.wgsl.includes('fn cs_gtao_calc('),
+    );
+    expect(computeEntries, 'runtime must receive the compiled GTAO compute module').toHaveLength(1);
+    expect(
+      manifest.materialShaders.some((shader) => shader.identifier.includes('gtao-compute')),
+      'the compute adapter is a renderer utility, not a material shader',
+    ).toBe(false);
+  }, 300_000);
 
   it('publishes and compiles the scene-temporal import closure', async () => {
     const entries = await loadEngineShaderEntries();
@@ -96,10 +209,9 @@ describe('vite-plugin-shader public engine input surface', () => {
       if (identifier !== 'forgeax::default-unlit') {
         for (const variant of shader?.variants ?? []) {
           expect(variant.composedWgsl).toContain('@id(64000)');
-          // Only the rigid Standard root owns the surface discard gates.
-          expect(variant.composedWgsl.match(/@id\(64001\)/g)?.length ?? 0).toBe(
-            identifier === 'forgeax::default-standard-pbr' ? 1 : 0,
-          );
+          // Discard sources are compile-time axes (LOD_DITHER / CLIPPING_PLANES);
+          // no program carries the 64001 override constant any more.
+          expect(variant.composedWgsl).not.toMatch(/@id\(64001\)/);
           for (const field of [
             'baseColor',
             'metallicRoughness',
@@ -124,9 +236,14 @@ describe('vite-plugin-shader public engine input surface', () => {
       'depth_pyramid_reduce',
       'ssr_trace',
       'ssr_temporal',
+      'depth_pyramid_seed_fragment',
+      'depth_pyramid_reduce_fragment',
+      'ssr_trace_fragment',
+      'ssr_temporal_fragment',
+      'vs_ssr_compose_fragment',
     ]) {
       expect(
-        manifest.entries.filter((entry) => entry.wgsl.includes(marker)),
+        manifest.entries.filter((entry) => entry.wgsl.includes(`fn ${marker}(`)),
         `${marker} must be published in the engine manifest`,
       ).toHaveLength(1);
     }
@@ -186,22 +303,7 @@ describe('vite-plugin-shader public engine input surface', () => {
       );
       writeFileSync(
         join(sharedRoot, 'shaders', 'manifest.json'),
-        JSON.stringify(
-          publishShaderManifest(
-            [{ hash: 'shared', wgsl: 'shared', bindings: '[]' }],
-            [
-              'forgeax::default-standard-pbr',
-              'forgeax::pbr-skin',
-              'forgeax::default-shadow-caster',
-            ].map((identifier) => ({
-              identifier,
-              sourcePath: `${identifier}.wgsl`,
-              composedWgsl: `// ${identifier}`,
-              paramSchema: '[]',
-              variants: [],
-            })),
-          ),
-        ),
+        JSON.stringify(publishShaderManifest(sharedEntries, materialShaders)),
       );
       const previous = process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST;
       process.env.FORGEAX_SHARED_APP_INPUTS_MANIFEST = manifestPath;
@@ -209,13 +311,46 @@ describe('vite-plugin-shader public engine input surface', () => {
         const manifest = await buildEngineShaderManifest();
         expect(manifest.schemaVersion).toBe('1.0.0');
         expect(manifest.entries).toEqual([
-          { hash: 'shared', wgsl: 'shared', bindings: '[]', glsl: '' },
+          {
+            ...sharedEntry,
+            glsl: '',
+            sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          },
+          ...resamplingEntries.map((entry) => ({
+            ...entry,
+            glsl: '',
+            sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+          })),
         ]);
         expect(manifest.materialShaders.map((entry) => entry.identifier)).toEqual([
           'forgeax::default-standard-pbr',
           'forgeax::pbr-skin',
           'forgeax::default-shadow-caster',
+          'forgeax::default-unlit',
+          LIGHT_TEXTURE_RESAMPLE_COMPUTE_IDENTIFIER,
+          LIGHT_TEXTURE_RESAMPLE_FRAGMENT_IDENTIFIER,
         ]);
+        for (const entry of manifest.materialShaders) {
+          expect(entry.hash).toMatch(/^[a-f0-9]{8}$/);
+          expect(entry.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+          expect(entry.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
+          expect(entry.reflection).toEqual(reflection);
+          for (const variant of entry.variants) {
+            expect(variant.hash).toMatch(/^[a-f0-9]{8}$/);
+            expect(variant.sourceDigest).toMatch(/^[a-f0-9]{64}$/);
+            expect(variant.compilerProfile).toEqual(MATERIAL_WGSL_PROFILE);
+            expect(variant.reflection).toEqual(reflection);
+          }
+        }
+        for (const program of resamplingPrograms) {
+          const direct = manifest.entries.find((entry) => entry.identifier === program.identifier);
+          const material = manifest.materialShaders.find(
+            (entry) => entry.identifier === program.identifier,
+          );
+          expect(direct?.entryPoints).toEqual(program.entryPoints);
+          expect(direct?.programContract).toEqual(program.programContract);
+          expect(material?.entryPoints).toEqual(program.entryPoints);
+        }
         const authored = await buildEngineShaderManifest({
           materialPackages: [
             resolve(import.meta.dirname, '../../../../apps/hello/ssr/src/ssr-reflection.pack.json'),
@@ -228,7 +363,7 @@ describe('vite-plugin-shader public engine input surface', () => {
         );
         expect(custom?.composedWgsl).toContain('textureSample');
         expect(custom?.variants.length).toBeGreaterThan(0);
-        expect(manifest.materialShaders).toHaveLength(3);
+        expect(manifest.materialShaders).toHaveLength(6);
         await expect(
           buildEngineShaderManifest({
             materialPackages: [join(root, 'missing.pack.json')],

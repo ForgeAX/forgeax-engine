@@ -7,14 +7,14 @@ import { selectEnvironment } from '../environment/frame';
 import { releaseAtmosphere, retainAtmosphere } from '../environment/storage';
 import { earthAtmosphere } from './atmosphere-fixture';
 
-function environment(sun = 1, mie = earthAtmosphere.mieScattering) {
+function environment(sun = 1, mie = earthAtmosphere.mieScattering, backgroundOnly = false) {
   return selectEnvironment({
     environments: [
       {
         kind: 'atmosphere',
         entityKey: 1,
         sourceKey: 'sky',
-        atmosphere: { ...earthAtmosphere, mieScattering: mie },
+        atmosphere: { ...earthAtmosphere, mieScattering: mie, backgroundOnly },
       },
     ],
     fogs: [],
@@ -84,5 +84,16 @@ it('retains an in-flight capture without selecting its old environment for displ
   for (const lease of [capture, display, face, current]) lease.release();
   releaseAtmosphere(runtime);
   await device.queue.onSubmittedWorkDone();
+  runtime.deviceScope.retire();
+});
+
+it('refuses background-only environment captures before allocating physical capture resources', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const runtime = { device, deviceScope: DeviceScope.create(1, 'background-capture-admission') };
+  const allocate = vi.spyOn(device, 'createTexture');
+  expect(() =>
+    retainAtmosphere(runtime, environment(1, earthAtmosphere.mieScattering, true)),
+  ).toThrow('full Atmosphere for environment, cube and planar captures');
+  expect(allocate).not.toHaveBeenCalled();
   runtime.deviceScope.retire();
 });

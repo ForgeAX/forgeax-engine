@@ -1,6 +1,15 @@
 /** Shared author markup and one startup lifecycle, emitted statically for each host. */
-import { DEFAULT_LOAD_PROGRESS_LABELS, type LoadProgressLabels } from '@forgeax/engine-types';
+import {
+  DEFAULT_LOAD_PROGRESS_LABELS,
+  encodeBase64,
+  type LoadProgressLabels,
+} from '@forgeax/engine-types';
+import forgeaxLogo from './forgeax-logo.svg?raw';
+import { type StartupCacheIdentity, startupCacheSource } from './startup-cache-source.js';
+import type { StartupUiOptions, StartupUiTemplate } from './startup-ui.js';
 import type { HostVersions } from './versions.js';
+
+const FORGEAX_LOGO_DATA_URI = `data:image/svg+xml;base64,${encodeBase64(new TextEncoder().encode(forgeaxLogo))}`;
 
 function escapeHtml(value: string): string {
   return value
@@ -16,6 +25,17 @@ function scriptJson(value: unknown): string {
   return JSON.stringify(value).replaceAll('<', '\\u003c');
 }
 
+function startupMarkup(
+  id: string,
+  role: string,
+  template: StartupUiOptions['loading'],
+  fallback: string,
+): string {
+  if (template === 'none') return '';
+  if (template === undefined || template === 'default') return fallback;
+  return `<div id="${id}" class="forgeax-startup-custom" role="${role}"${role === 'alert' ? ' style="display:none"' : ''}>${template.html}</div>`;
+}
+
 /**
  * Whole UI document, before any game program is loaded. The cover first shows
  * the engine-code phase, which is the work in progress at first paint.
@@ -24,9 +44,10 @@ export function hostStartupDocument(
   title: string,
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
   versions?: HostVersions,
+  ui: StartupUiOptions = {},
 ): string {
   const status = labels.phases['engine-code'] ?? labels.loading;
-  return `<!doctype html>
+  const html = `<!doctype html>
 <html lang="${escapeHtml(labels.lang)}">
   <head>
     <meta charset="UTF-8" />
@@ -40,15 +61,23 @@ export function hostStartupDocument(
       #app-shell { position: relative; isolation: isolate; }
       #game-ui { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
       #forgeax-status { display: none; position: absolute; left: 10px; bottom: 8px; max-width: calc(100% - 20px); z-index: 2147483645; color: #fff; opacity: 0.5; font: 400 10px/14px system-ui, sans-serif; pointer-events: none; user-select: none; }
-      #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #05070b; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
+      #forgeax-loading { position: absolute; inset: 0; z-index: 2147483646; display: grid; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #07090d; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; opacity: 1; transition: opacity 150ms ease; }
       #forgeax-loading[aria-hidden="true"] { opacity: 0; pointer-events: none; }
-      #forgeax-loading-content { display: grid; justify-items: center; gap: 12px; max-width: min(480px, 100%); }
-      #forgeax-loading-title { margin: 0; color: #f5f7fa; font-size: clamp(20px, 4vw, 30px); font-weight: 500; letter-spacing: 0.02em; }
-      #forgeax-loading-spinner { width: 22px; height: 22px; border: 2px solid rgb(230 235 245 / 20%); border-top-color: rgb(230 235 245 / 78%); border-radius: 50%; animation: forgeax-loading-spin 900ms linear infinite; }
-      #forgeax-loading-status { margin: 0; color: rgb(230 235 245 / 72%); }
-      #forgeax-loading-progress { width: min(360px, 80vw); height: 4px; border-radius: 2px; overflow: hidden; background: rgb(230 235 245 / 14%); }
-      #forgeax-loading-fill { width: 0; height: 100%; background: rgb(230 235 245 / 78%); transition: width 200ms linear; }
-      #forgeax-loading-detail, #forgeax-loading-meta { margin: 0; min-height: 1.5em; max-width: 100%; overflow: hidden; color: rgb(230 235 245 / 52%); font-size: 13px; }
+      #forgeax-loading-content { position: absolute; inset: 0; }
+      #forgeax-loading-brand { display: flex; align-items: center; gap: 9px; min-width: 0; white-space: nowrap; }
+      #forgeax-loading-logo { display: block; flex: 0 0 auto; width: 28px; height: auto; }
+      #forgeax-loading-brand-name { color: rgb(245 247 250 / 82%); font-size: 16px; font-weight: 600; letter-spacing: 0.02em; line-height: 1; }
+      #forgeax-loading-title { position: absolute; top: 50%; right: 24px; left: 24px; margin: 0; color: #f5f7fa; font-size: clamp(26px, 4vw, 38px); font-weight: 600; letter-spacing: 0.01em; line-height: 1.2; overflow-wrap: anywhere; transform: translateY(-50%); }
+      #forgeax-loading-progress-content { position: absolute; right: clamp(16px, 4vw, 64px); bottom: clamp(22px, 6vh, 52px); left: clamp(16px, 4vw, 64px); display: grid; gap: 12px; text-align: left; }
+      #forgeax-loading-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); align-items: center; column-gap: 16px; }
+      #forgeax-loading-summary { display: flex; align-items: baseline; justify-content: flex-end; gap: 10px; min-width: 0; white-space: nowrap; font-size: 13px; line-height: 1.6; }
+      #forgeax-loading-status { flex: 0 0 auto; margin: 0; color: rgb(230 235 245 / 62%); }
+      #forgeax-loading-detail { flex: 0 1 auto; min-width: 1em; margin: 0; overflow: hidden; color: rgb(230 235 245 / 42%); }
+      #forgeax-loading-detail:empty { display: none; }
+      #forgeax-loading-meta { flex: 0 0 auto; margin: 0; color: rgb(230 235 245 / 62%); font-variant-numeric: tabular-nums; }
+      #forgeax-loading-progress { width: 100%; height: 3px; border-radius: 2px; overflow: hidden; background: rgb(230 235 245 / 11%); }
+      #forgeax-loading-fill { width: 0; height: 100%; background: #c6764f; transition: width 200ms linear; }
+      #forgeax-loading-slow, #forgeax-loading-reload { margin: 0; justify-self: end; }
       #forgeax-loading-slow, #forgeax-loading-reload { display: none; }
       #forgeax-loading-reload, #forgeax-fatal-copy, #forgeax-fatal-reload { border: 1px solid rgb(230 235 245 / 35%); border-radius: 5px; padding: 7px 14px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
       #forgeax-fatal { position: absolute; inset: 0; z-index: 2147483647; display: none; place-items: center; overflow: auto; padding: 24px; box-sizing: border-box; background: #0b0d10; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: center; }
@@ -58,26 +87,56 @@ export function hostStartupDocument(
       #forgeax-fatal-diagnostics-title { margin: 0; font-size: 15px; font-weight: 600; }
       #forgeax-fatal-copy-status { min-height: 1.5em; margin: 0; color: rgb(230 235 245 / 68%); font-size: 12px; }
       #forgeax-fatal-details { min-width: 0; max-height: 45vh; margin: 0; padding: 12px; border: 1px solid rgb(230 235 245 / 16%); border-radius: 5px; background: rgb(0 0 0 / 24%); overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
-      @keyframes forgeax-loading-spin { to { transform: rotate(360deg); } }
-      @media (prefers-reduced-motion: reduce) { #forgeax-loading, #forgeax-loading-fill { transition: none; } #forgeax-loading-spinner { animation: none; } }
+      @media (max-width: 600px) {
+        #forgeax-loading-row { column-gap: 10px; }
+        #forgeax-loading-brand { gap: 5px; }
+        #forgeax-loading-logo { width: 18px; }
+        #forgeax-loading-brand-name { font-size: 12px; }
+        #forgeax-loading-summary { gap: 3px; font-size: clamp(8px, 2.6vw, 13px); }
+      }
+      @media (max-width: 360px) {
+        #forgeax-loading-brand { gap: 4px; }
+        #forgeax-loading-logo { width: 16px; }
+        #forgeax-loading-brand-name { font-size: 10px; }
+      }
+      @media (prefers-reduced-motion: reduce) { #forgeax-loading, #forgeax-loading-fill { transition: none; } }
     </style>
   </head>
   <body>
     <div id="app-shell"><canvas id="app"></canvas><div id="game-ui"></div>
     <div id="forgeax-status">${versions === undefined ? '' : `Game ${escapeHtml(versions.game)} | Engine ${escapeHtml(versions.engine)} | `}<span id="forgeax-fps" aria-label="Completed game frames per second">FPS --</span></div>
-    <div id="forgeax-loading" role="status" aria-live="polite" aria-atomic="true">
+${startupMarkup(
+  'forgeax-loading',
+  'status',
+  ui.loading,
+  `    <div id="forgeax-loading" role="status" aria-live="polite" aria-atomic="true">
       <div id="forgeax-loading-content">
         <h1 id="forgeax-loading-title">${escapeHtml(title)}</h1>
-        <div id="forgeax-loading-spinner" aria-hidden="true"></div>
-        <p id="forgeax-loading-status">${escapeHtml(status)}</p>
-        <div id="forgeax-loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="forgeax-loading-status"><div id="forgeax-loading-fill"></div></div>
-        <p id="forgeax-loading-detail"></p>
-        <p id="forgeax-loading-meta">0%</p>
-        <p id="forgeax-loading-slow">${escapeHtml(labels.slow)}</p>
-        <button id="forgeax-loading-reload" type="button">${escapeHtml(labels.reload)}</button>
+        <div id="forgeax-loading-progress-content">
+          <div id="forgeax-loading-row">
+            <div id="forgeax-loading-brand">
+              <img id="forgeax-loading-logo" src="${FORGEAX_LOGO_DATA_URI}" alt="" aria-hidden="true" />
+              <span id="forgeax-loading-brand-name">ForgeAX</span>
+            </div>
+            <div id="forgeax-loading-summary">
+              <p id="forgeax-loading-status">${escapeHtml(status)}</p>
+              <p id="forgeax-loading-detail"></p>
+              <p id="forgeax-loading-meta">0% · ${escapeHtml(labels.elapsed.replace('{seconds}', '0'))}</p>
+            </div>
+          </div>
+          <div id="forgeax-loading-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="forgeax-loading-status"><div id="forgeax-loading-fill"></div></div>
+          <p id="forgeax-loading-slow">${escapeHtml(labels.slow)}</p>
+          <button id="forgeax-loading-reload" type="button">${escapeHtml(labels.reload)}</button>
+        </div>
       </div>
     </div>
-    <div id="forgeax-fatal" role="alert">
+`,
+)}
+${startupMarkup(
+  'forgeax-fatal',
+  'alert',
+  ui.failure,
+  `    <div id="forgeax-fatal" role="alert">
       <div id="forgeax-fatal-content">
         <p id="forgeax-fatal-message">Unable to start the game.</p>
         <section id="forgeax-fatal-diagnostics" aria-labelledby="forgeax-fatal-diagnostics-title">
@@ -91,11 +150,31 @@ export function hostStartupDocument(
         <button id="forgeax-fatal-reload" type="button">Reload</button>
       </div>
     </div>
+`,
+)}
     </div>
     <noscript>JavaScript is required to start this game. Please enable JavaScript and reload.</noscript>
   </body>
 </html>
 `;
+  const styles = [ui.loading, ui.failure]
+    .filter((template): template is StartupUiTemplate => typeof template === 'object')
+    .map((template) => template.css ?? '')
+    .join('\n');
+  const customRoots = [
+    typeof ui.loading === 'object' ? '#forgeax-loading' : '',
+    typeof ui.failure === 'object' ? '#forgeax-fatal' : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+  return html.replace(
+    '  </head>',
+    `<style>
+${ui.loading === 'none' ? '#app-shell { background: #000; }' : ''}
+${customRoots === '' ? '' : `${customRoots} { display: grid; padding: 0; background: #000; color: #e6e6e6; font: 15px/1.6 system-ui, sans-serif; text-align: initial; }`}
+${styles.replaceAll('<', '\\3c ')}
+</style>\n  </head>`,
+  );
 }
 
 /**
@@ -110,6 +189,8 @@ export function hostStartupScript(
   startupScreen = true,
   hostExpression = 'undefined',
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
+  cacheIdentity?: StartupCacheIdentity,
+  ui: StartupUiOptions = {},
 ): string {
   const startupEnabled = startupScreen ? 'true' : 'false';
   return `
@@ -182,8 +263,9 @@ export function hostStartupScript(
           !query.has('forgeax-tool-recipe') && !query.has('forgeax-tool-replay');
         // Editor workspace/resource/tool pages omit the game loading overlay.
         // Editor Play uses it and waits for a completed game frame. Every page
-        // retains the fatal diagnostic surface and Reload action.
+        // retains fatal diagnostics independently of the chosen presentation.
         const fatalEnabled = true;
+        const startupCache = ${startupCacheSource(cacheIdentity)};
         let phase = gamePage ? 'loading' : 'disabled';
         let slowTimer;
         let fadeTimer;
@@ -195,7 +277,28 @@ export function hostStartupScript(
         let progressBound = false;
         let shownPercent = 0;
         let shownElapsed = '';
+        let shownActivity = labels.phases['engine-code'] ?? labels.loading;
+        let shownDetail = '';
         let lastView;
+        let uiMessage = '', uiDiagnostics = '', uiRecovery = 'idle', uiCopyStatus = 'idle';
+        const uiListeners = new Set();
+        const uiDisposers = new Map();
+        const snapshotUi = () => Object.freeze({ phase,
+            progress: Object.freeze({ percent: shownPercent,
+              activity: shownActivity, detail: shownDetail, elapsed: shownElapsed }),
+            slow: slowRemainingMs <= 0, message: uiMessage, diagnostics: uiDiagnostics,
+            recovery: uiRecovery, copyStatus: uiCopyStatus });
+        const notifyUi = () => {
+          const state = snapshotUi();
+          for (const listener of uiListeners) {
+            try { listener(state); } catch (error) { console.error('[ForgeAX startup UI]', error); }
+          }
+        };
+        const disposeUi = (kind) => {
+          const dispose = uiDisposers.get(kind);
+          uiDisposers.delete(kind);
+          try { dispose?.(); } catch (error) { console.error('[ForgeAX startup UI cleanup]', error); }
+        };
         let enteredCallbacks = [];
         let latestSubmitted;
         // A completion may legally lag behind a later submission. Keep the
@@ -218,7 +321,8 @@ export function hostStartupScript(
         };
         const reload = () => {
           if (phase === 'destroyed') return;
-          destroy();
+          // The page is going away: keep the game UI inert under the cover.
+          destroy(false);
           if (host !== undefined) host.reload();
           else if (typeof location?.reload === 'function') location.reload();
         };
@@ -226,7 +330,10 @@ export function hostStartupScript(
           if (node !== null && isElement(node)) node.textContent = text;
         };
         const setDisplay = (node, display) => {
-          if (node !== null && isElement(node)) node.style.display = display;
+          if (node !== null && isElement(node)) {
+            const custom = (node === loading && ${typeof ui.loading === 'object'}) || (node === fatal && ${typeof ui.failure === 'object'});
+            node.style.display = display === 'grid' && custom ? '' : display;
+          }
         };
         const setAttribute = (node, name, value) => {
           if (node !== null && isElement(node) && typeof node.setAttribute === 'function') {
@@ -234,7 +341,8 @@ export function hostStartupScript(
           }
         };
         const copyDiagnostics = async () => {
-          const text = [fatalMessage?.textContent, fatalDetails?.textContent]
+          if (phase === 'destroyed') return false;
+          const text = [uiMessage, uiDiagnostics]
             .map((value) => value?.trim())
             .filter((value) => value !== undefined && value.length > 0)
             .join('\\n\\n');
@@ -270,7 +378,10 @@ export function hostStartupScript(
               copied = false;
             }
           }
+          uiCopyStatus = copied ? 'copied' : 'failed';
           setText(fatalCopyStatus, copied ? 'Diagnostics copied.' : 'Could not copy diagnostics.');
+          notifyUi();
+          return copied;
         };
         const onCopyDiagnostics = () => {
           void copyDiagnostics();
@@ -348,11 +459,18 @@ export function hostStartupScript(
             }
           }
           inputBinding = callback;
-          setInputEnabled(false);
+          // A binding joins the current gate: an App bound after the first
+          // ready frame (hot reload, a replacement App) is admitted at once,
+          // and the game UI never falls back to inert behind no cover.
+          setInputEnabled(inputEnabled);
           return () => {
             if (inputBinding !== callback) return;
-            setInputEnabled(false);
             inputBinding = undefined;
+            try {
+              callback(false);
+            } catch {
+              // The retiring App may already be disposed.
+            }
           };
         };
         let fadeCanvasWatch;
@@ -405,7 +523,32 @@ export function hostStartupScript(
           }
           return bytes;
         };
-        const showMeta = () => showText(loadingMeta, shownPercent + '%' + (shownElapsed === '' ? '' : ' · ' + shownElapsed));
+        let detailLayout;
+        const showDetail = () => {
+          if (loadingDetail === null || !isElement(loadingDetail)) return;
+          setAttribute(loadingDetail, 'title', shownDetail);
+          const summary = loadingDetail.parentElement;
+          const layout = [shownDetail, summary?.clientWidth, loadingStatus?.scrollWidth, loadingMeta?.scrollWidth].join('|');
+          if (layout === detailLayout) return;
+          detailLayout = layout;
+          showText(loadingDetail, shownDetail);
+          if (!(loadingDetail.clientWidth > 0) || loadingDetail.scrollWidth <= loadingDetail.clientWidth) return;
+          // Use portable DOM measurements: the native UI profile has no CSS text-overflow.
+          const characters = Array.from(shownDetail);
+          let low = 0, high = characters.length;
+          while (low < high) {
+            const middle = Math.ceil((low + high) / 2);
+            showText(loadingDetail, characters.slice(0, middle).join('') + '…');
+            if (loadingDetail.scrollWidth <= loadingDetail.clientWidth) low = middle;
+            else high = middle - 1;
+          }
+          showText(loadingDetail, characters.slice(0, low).join('') + '…');
+        };
+        const showMeta = () => {
+          showText(loadingMeta, shownPercent + '%' + (shownElapsed === '' ? '' : ' · ' + shownElapsed));
+          showDetail();
+          notifyUi();
+        };
         const showPercent = (percent) => {
           shownPercent = Math.max(shownPercent, percent);
           showMeta();
@@ -420,7 +563,7 @@ export function hostStartupScript(
           showMeta();
           if (!progressBound) {
             const bytes = scriptBytes();
-            if (bytes > 0) showText(loadingDetail, megabytes(bytes));
+            if (bytes > 0) { shownDetail = megabytes(bytes); showDetail(); notifyUi(); }
           }
           elapsedTimer = setStartupTimeout(tickElapsed, 500);
         };
@@ -429,9 +572,11 @@ export function hostStartupScript(
           if (view === null || typeof view !== 'object') return;
           progressBound = true;
           lastView = view;
-          showText(loadingStatus, typeof view.activity === 'string' ? view.activity : labels.loading);
-          showText(loadingDetail, typeof view.detail === 'string' ? view.detail : '');
+          shownActivity = typeof view.activity === 'string' ? view.activity : labels.loading;
+          shownDetail = typeof view.detail === 'string' ? view.detail : '';
+          showText(loadingStatus, shownActivity);
           if (Number.isFinite(view.percent)) showPercent(Math.max(0, Math.min(100, Math.floor(view.percent))));
+          else { showDetail(); notifyUi(); }
         };
         const onEntered = (callback) => {
           if (typeof callback === 'function') enteredCallbacks.push(callback);
@@ -530,6 +675,7 @@ export function hostStartupScript(
           slowVisibleSince = undefined;
           setDisplay(loadingSlow, 'block');
           setDisplay(loadingReload, 'inline-block');
+          notifyUi();
         };
         const armSlowTimer = () => {
           if (gamePage && elapsedTimer === undefined) tickElapsed();
@@ -649,30 +795,66 @@ export function hostStartupScript(
           clearStartupWork();
           // Retain the first cause through teardown and keep Reload alive.
           cleanupStartupListeners();
+          bindUiKeys();
           bindStartupInputCapture();
           bindFatalReload();
           bindFatalCopy();
           let details = formatStartupFailure(reason);
           const notice = fatal;
-          if (!(isElement(notice))) return;
           const message = runtimeFailure ? 'The game stopped because execution failed.' : 'Unable to start the game.';
           if (/webgpu|adapter-unavailable|no usable (rendering )?backend/i.test(details)) {
-            details += '\\n\\nRenderer diagnosis: ForgeaX supports browser WebGPU and a wgpu/WebGL2 fallback. This failure alone does not prove that WebGPU is unsupported; use the structured code, hint, and nested backend causes above.';
+            details += '\\n\\nRenderer diagnosis: ForgeAX supports browser WebGPU and a wgpu/WebGL2 fallback. This failure alone does not prove that WebGPU is unsupported; use the structured code, hint, and nested backend causes above.';
           }
           // Keep the existing plain-text diagnostic fallback for hosts that
           // provide only one synthetic HTMLElement in a test harness.
-          if (fatalMessage === notice) {
-            notice.textContent = (runtimeFailure ? 'ForgeaX game stopped.\\n' : 'ForgeaX game failed to start.\\n') + message + '\\n' + details;
+          if (notice !== null && fatalMessage === notice) {
+            notice.textContent = (runtimeFailure ? 'ForgeAX game stopped.\\n' : 'ForgeAX game failed to start.\\n') + message + '\\n' + details;
           } else {
             setText(fatalMessage, message);
             setText(fatalDetails, details);
           }
+          uiMessage = message;
+          uiDiagnostics = details;
+          console.warn?.('[ForgeAX game failure]', message, details);
+          notifyUi();
+          if (startupCache === undefined) disposeUi('loading');
           setDisplay(loading, 'none');
           setDisplay(notice, 'grid');
           setDisplay(fatalReload, 'inline-block');
           setAttribute(loading, 'aria-hidden', 'true');
           setAttribute(loading, 'data-fading', 'false');
           if (gamePage && fatalReload !== null && isElement(fatalReload)) fatalReload.focus?.();
+          if (startupCache !== undefined) {
+            void startupCache.recover(details, () => {
+              // The native/dev startup oracle observes the fatal surface. Keep
+              // recovery nonterminal until its single retry has really failed.
+              uiRecovery = 'retrying';
+              notifyUi();
+              setDisplay(notice, 'none');
+              setDisplay(loading, 'grid');
+              setAttribute(loading, 'aria-hidden', 'false');
+              setText(loadingStatus, 'Refreshing cached startup resources and retrying once…');
+            }).then(result => {
+              if (phase === 'destroyed') return;
+              if (result.status === 'reloaded' || result.status === 'disabled') { disposeUi('loading'); return; }
+              setDisplay(loading, 'none');
+              setAttribute(loading, 'aria-hidden', 'true');
+              setDisplay(notice, 'grid');
+              setText(fatalMessage, message);
+              if (result.status === 'exhausted') {
+                uiRecovery = 'exhausted';
+                uiDiagnostics = details + '\\n\\nAutomatic startup cache recovery was attempted once.' +
+                  (result.previous ? '\\nFirst failure:\\n' + result.previous : '');
+              } else if (result.status === 'failed') {
+                uiRecovery = 'failed';
+                uiDiagnostics = details + '\\n\\nStartup cache recovery failed: ' + result.error;
+              }
+              setText(fatalDetails, uiDiagnostics);
+              notifyUi();
+              disposeUi('loading');
+            });
+          }
+
         };
         const prepare = () => {
           if (!gamePage || (phase !== 'loading' && phase !== 'fading')) return;
@@ -686,6 +868,8 @@ export function hostStartupScript(
             setAttribute(loading, 'data-fading', 'false');
           }
           phase = 'preparing';
+          shownActivity = labels.phases['first-frame'] ?? labels.loading;
+          notifyUi();
           latestSubmitted = undefined;
           submittedFrames = new Set();
           setText(loadingStatus, labels.phases['first-frame'] ?? labels.loading);
@@ -726,6 +910,7 @@ export function hostStartupScript(
           // The game is presentable now; the fade is cosmetic and must not
           // swallow the first player or scripted input.
           setInputEnabled(true);
+          startupCache?.complete();
           runEntered();
           const fadeGeneration = sessionGeneration;
           const fadeCanvas = latestSubmitted.canvas;
@@ -744,17 +929,26 @@ export function hostStartupScript(
             }
             stopFadeCanvasWatch();
             phase = 'entered';
+            notifyUi();
+            disposeUi('loading');
             setDisplay(loading, 'none');
             setAttribute(loading, 'data-fading', 'false');
             cleanupStartupListeners();
           }, fadeDurationMs);
         };
-        const destroy = () => {
+        const destroy = (releaseUi = true) => {
           if (phase === 'destroyed') return;
           sessionGeneration += 1;
           phase = 'destroyed';
+          notifyUi();
+          disposeUi('loading');
+          disposeUi('failure');
+          uiListeners.clear();
+          startupCache?.retire();
           frameRate.destroy();
           setInputEnabled(false);
+          // The retired startup owner no longer gates the page's UI.
+          if (releaseUi && gamePage && isElement(gameUi)) gameUi.inert = false;
           clearStartupWork();
           cleanupStartupListeners();
         };
@@ -805,7 +999,10 @@ export function hostStartupScript(
             slowTimer = undefined;
           }
         };
-        const onPageHide = () => destroy();
+        // A page kept in the back/forward cache resumes as it was.
+        const onPageHide = (event) => {
+          if (event?.persisted !== true) destroy();
+        };
         const onError = (event) => {
           if (event?.error !== undefined) {
             show(event.error);
@@ -847,7 +1044,18 @@ export function hostStartupScript(
           loadingReload[listen]('keydown', onStartupControlKey);
           loadingReload[listen]('keyup', onStartupControlKey);
         };
+        const bindUiKeys = () => {
+          for (const root of [loading, fatal]) {
+            root?.addEventListener?.('keydown', onStartupControlKey);
+            root?.addEventListener?.('keyup', onStartupControlKey);
+          }
+        };
+        bindUiKeys();
         const cleanupStartupListeners = () => {
+          for (const root of [loading, fatal]) {
+            root?.removeEventListener?.('keydown', onStartupControlKey);
+            root?.removeEventListener?.('keyup', onStartupControlKey);
+          }
           if (typeof window.removeEventListener === 'function') {
             window.removeEventListener('forgeax:frame-submitted', onSubmitted, { capture: true });
             window.removeEventListener('forgeax:frame-completed', onCompleted, { capture: true });
@@ -945,6 +1153,7 @@ export function hostStartupScript(
           }
         };
         const startup = Object.freeze({
+          ready: () => startupCache?.ready() ?? Promise.resolve(),
           prepare,
           enter,
           fail: show,
@@ -954,8 +1163,42 @@ export function hostStartupScript(
           submitted: (detail) => onSubmitted({ target: currentCanvas(), detail }),
           visibilityChanged: onVisibilityChange,
           progress,
+          inspect: snapshotUi,
           onEntered,
         });
+        ${(['loading', 'failure'] as const)
+          .map((kind) => {
+            const template = ui[kind];
+            if (typeof template !== 'object' || template.script === undefined) return '';
+            return `if (phase !== 'destroyed' && ${kind === 'loading' ? 'gamePage && loading !== null' : 'fatal !== null'}) {
+            const root = ${kind === 'loading' ? 'loading' : 'fatal'};
+            const ownedListeners = new Set();
+            let retired = false;
+            let cleanup;
+            uiDisposers.set('${kind}', () => {
+              retired = true;
+              for (const listener of ownedListeners) uiListeners.delete(listener);
+              ownedListeners.clear();
+              cleanup?.();
+            });
+            try {
+              cleanup = ((screen) => {\n${template.script.replace(/<\/script/gi, '<\\/script')}\n})(Object.freeze({
+                kind: '${kind}', root, document, reload, copyDiagnostics,
+                subscribe(listener) {
+                  if (retired || typeof listener !== 'function') return () => {};
+                  ownedListeners.add(listener); uiListeners.add(listener); listener(snapshotUi());
+                  return () => { ownedListeners.delete(listener); uiListeners.delete(listener); };
+                }
+              }));
+              if (typeof cleanup !== 'function') cleanup = undefined;
+              if (retired) cleanup?.();
+            } catch (error) {
+              console.error('[ForgeAX startup UI mount]', error);
+              disposeUi('${kind}');
+            }
+          }`;
+          })
+          .join('\n')}
         if (host === undefined) globalThis.__forgeaxStartup = startup;
         return startup;
       })(${hostExpression});

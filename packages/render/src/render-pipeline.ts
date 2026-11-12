@@ -34,6 +34,7 @@ import type {
   RhiCaps,
   RhiError,
   RhiRenderPassEncoder,
+  RenderPipeline as RhiRenderPipeline,
   Texture,
   TextureFormat,
   TextureView,
@@ -84,7 +85,7 @@ export interface DirectionalShadowBackendAdmission {
 
 /**
  * Resolve a Directional profile only after the selected production candidate
- * has been admitted. WebGL2 and RhiNull are the sole declared fallbacks;
+ * has been admitted. RhiNull retains structural admission;
  * capable candidate failure retains a compatible LKG and never silently maps
  * a failed PCSS request to PCF.
  */
@@ -108,22 +109,6 @@ export function resolveDirectionalShadowBackendAdmission(
       fallbackReason: 'rhi-null-structural',
       lastKnownGood: false,
       pixelEvidence: 'not-available',
-    };
-  }
-  if (input.backendKind === 'wgpu-webgl2') {
-    const effective =
-      input.requested === 'pcssMedium'
-        ? 'pcf3'
-        : input.requested === 'pcssHigh'
-          ? 'pcf5'
-          : input.requested;
-    return {
-      requested: input.requested,
-      effective,
-      status: effective === input.requested ? 'accepted' : 'fallback',
-      ...(effective === input.requested ? {} : { fallbackReason: 'webgl2-unsupported' as const }),
-      lastKnownGood: false,
-      pixelEvidence: 'available',
     };
   }
   if (input.candidate === 'accepted') {
@@ -220,8 +205,13 @@ export interface RenderPipelineTopology {
   /** Derived from the active fullscreen declarations, never authored twice in pipeline config. */
   readonly preTemporalEffects?: readonly string[];
   readonly subsurface?: { readonly quality: 'low' | 'high' };
+  readonly forwardContactShadows?: boolean;
+  readonly forwardCapsuleShadows?: boolean;
   readonly projectedDecals?: import('./decals/graph').ProjectedDecalTopology;
   readonly pipelineId: string;
+  /** Same per-view admission catalog authorization and stock Standard graph production. */
+  readonly sceneDataAdmission?: import('./temporal/scene-data').StandardSceneSurfaceAdmission;
+  readonly sceneDataBindings?: readonly import('./temporal/scene-data').SceneDataSurfaceBinding[];
   readonly standardProfile?: StandardProfile | undefined;
   readonly config: import('@forgeax/engine-types').RenderPipelineAsset['config'];
   /**
@@ -233,6 +223,8 @@ export interface RenderPipelineTopology {
   readonly clearOnly?: boolean | undefined;
   /** Selected atmosphere requires the graph-owned sky producer and background. */
   readonly atmosphere?: boolean | undefined;
+  /** Explicit background-only Atmosphere; materials and IBL do not consume it. */
+  readonly atmosphereBackgroundOnly?: boolean | undefined;
   /** Finite-depth distance / exponential-height fog; no volume history. */
   readonly analyticFog?: boolean | undefined;
   /** Whether Standard main draws carry the producer-owned fallback MRT. */
@@ -248,7 +240,7 @@ export interface RenderPipelineTopology {
   readonly extent?: RenderExtent;
   readonly camera: Pick<
     RenderPipelineContext['camera'],
-    'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity'
+    'tonemap' | 'antialias' | 'bloom' | 'bloomIntensity' | 'dynamicResolution'
   > & {
     /** Shape-only DoF admission; optical values remain per-frame UBO data. */
     readonly depthOfField?:
@@ -260,7 +252,10 @@ export interface RenderPipelineTopology {
       | undefined;
     /** Shape-only barrel admission; numeric mapping stays per-frame data. */
     readonly barrelDistortion?: boolean | undefined;
+    /** Vignette and grain after tone mapping. */
     readonly lensEffects?: boolean | undefined;
+    /** Scene color fringe before Bloom and tone mapping. */
+    readonly chromaticAberration?: boolean | undefined;
     readonly lensFlare?: boolean | undefined;
     readonly outline?: boolean | undefined;
   };
@@ -349,6 +344,8 @@ export interface RenderPipelineTopology {
   };
   readonly lane: {
     readonly compute: boolean;
+    /** Storage-texture kernels require an explicit capability, independently of compute. */
+    readonly storageTexture?: boolean | undefined;
     readonly storageBuffer: boolean;
     readonly multisample: boolean;
     readonly maxColorAttachments: number;
@@ -373,6 +370,8 @@ export interface RenderPipelineTopology {
   readonly transparency?:
     | { readonly weightedBlended: true; readonly residual: boolean }
     | undefined;
+  /** The view's planned opaque lane; the only Forward/Deferred and late-occlusion authority. */
+  readonly opaque: import('./world/pass-plan-systems').OpaquePassPlan;
 }
 
 /** Resolve the built-in final-output dither policy from the pipeline asset. */
@@ -393,6 +392,8 @@ export interface RenderPipelineTarget {
   readonly sampleCount: 1 | 4;
   readonly domain?: ColorValueDomain | undefined;
   readonly resolveTarget?: GraphTextureView | undefined;
+  /** Exact semantic owner tokens authorized for this physical target. */
+  readonly sceneDataBindings?: readonly import('./temporal/scene-data').SceneDataSurfaceBinding[];
 }
 
 export function createRenderPipelineTarget(
@@ -512,6 +513,8 @@ export interface RenderPipelineGpuDrivenProjection {
     filter?: RenderPipelineGpuDrivenFilter,
     fragmentEntryPoint?: string,
     coverageOnly?: boolean,
+    sampleCount?: 1 | 4,
+    seededDepth?: boolean,
   ) => void;
   /** @internal Poll the registered real PSOs before any graph pass is encoded. */
   readonly preparePipelines?: (
@@ -536,6 +539,8 @@ export interface RenderPipelineGpuDrivenProjection {
      * Every other pass draws the full visible set.
      */
     phase?: GpuDrivenDrawPhase,
+    /** The loaded depth is the exact prepass raster (see seededDepthRenderState). */
+    seededDepth?: boolean,
   ): void;
   /**
    * Present when the projection reserved two-phase occlusion. The caller adds
@@ -577,6 +582,12 @@ export interface GpuDrivenStandardPbrFrameResources {
   prepareMaterialBinding(
     slot: number,
   ): { readonly group: BindGroup; readonly byteOffset: number } | undefined;
+  /** Record the selected material pipeline only when its indirect draw is encoded. */
+  recordMaterialPipelineBinding?: (
+    slot: number,
+    pipeline: RhiRenderPipeline,
+    group: BindGroup,
+  ) => void;
   /** Frame-global material slots keyed by shared binding and its physical resource class. */
   materialSlotIndicesByBinding: import('./record/fold-buckets').MaterialBindingSlots;
   /** The current pass selects material membership and attachment formats. */
@@ -671,13 +682,7 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
   readonly cloudShadowResolution?: number;
   /** Prepared typed graph resources owned by RenderSystem/RenderFrameState. */
   readonly standardOutput?: {
-    readonly autoExposure?: {
-      readonly histogram: GraphBuffer;
-      readonly state: GraphBuffer;
-      readonly candidate: GraphBuffer;
-      /** Authored camera/time parameters consumed by the GPU adapt stage. */
-      readonly parameters: GraphBuffer;
-    };
+    readonly autoExposure?: import('./pipeline/standard-output/auto-exposure/gpu').AutoExposureGraphResources;
     readonly colorLut?: import('./pipeline/standard-output/lut-gpu').StandardLutGraphProjection;
   };
   /**
@@ -691,6 +696,9 @@ export interface RenderPipelineBuildContext<FrameCtx extends RenderPipelineFrame
     readonly previousTemporal: RenderPipelineTarget;
     readonly currentStability: RenderPipelineTarget;
     readonly previousStability: RenderPipelineTarget;
+    /** TAA only; TSR has no flickering history. */
+    readonly currentFlicker?: RenderPipelineTarget;
+    readonly previousFlicker?: RenderPipelineTarget;
   };
   /**
    * Renderer-owned CloudLayer transport history.  Each pair is backed by the

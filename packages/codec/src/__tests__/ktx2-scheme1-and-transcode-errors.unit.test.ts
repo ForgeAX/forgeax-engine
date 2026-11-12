@@ -170,6 +170,8 @@ function dummyDetailFor(code: CodecErrorCode): never {
       return { sourceFormat: 'uastc-ldr', targetFormat: 'bc7-rgba-unorm' } as never;
     case 'ktx2-encode-failed':
       return { mode: 'uastc-ldr', reason: 'test' } as never;
+    case 'ktx2-native-unsupported':
+      return { vkFormat: 37, reason: 'format' } as never;
     default: {
       const _exhaustive: never = code;
       return _exhaustive;

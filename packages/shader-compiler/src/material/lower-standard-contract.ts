@@ -2,12 +2,18 @@ import { isStandardRootModule } from '@forgeax/engine-pack';
 import {
   STANDARD_DIRECT_DFG_LUT_BINDING,
   STANDARD_OBJECT_SPACE_NORMAL_BIT,
+  STANDARD_PARALLAX_DISPLACEMENT_BIT,
+  STANDARD_PARALLAX_HEIGHT_DEFINE,
+  STANDARD_PARALLAX_HEIGHT_PAIR,
   STANDARD_PHYSICAL_BINDING_START,
+  STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
+  STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING,
   STANDARD_SAMPLE_REUSE,
   STANDARD_SHARED_TRANSMISSION_DEFINE,
   STANDARD_SHARED_TRANSMISSION_SLOTS,
   STANDARD_TEXTURE_MASK_OVERRIDE,
   STANDARD_TRIPLANAR_PROJECTION_BIT,
+  standardParallaxSelectable,
   standardTextureMask,
 } from '@forgeax/engine-shader';
 import type {
@@ -27,6 +33,7 @@ import {
   type MaterialError,
   ok,
   projectMaterialParameterSchema,
+  STANDARD_DISPLACEMENT_MODES,
   STANDARD_MATERIAL_PARAM_SCHEMA,
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
   STANDARD_TRANSMISSION_PARAMETER_NAMES,
@@ -49,6 +56,19 @@ function hasTransmission(names: ReadonlySet<string>): boolean {
   return [...names].some(
     (name) => STANDARD_TRANSMISSION_PARAMETER_NAMES.has(name) && name !== 'ior',
   );
+}
+
+/**
+ * Static switches that select a Standard code path without touching the ABI.
+ * `environmentBrdfApprox` opts into the analytic EnvBRDFApprox fit; the
+ * default program samples the preintegrated environment BRDF LUT.
+ */
+export function standardStaticSwitchDefines(
+  switches: MaterialStaticSwitches | undefined,
+  passes?: readonly MaterialPass[],
+): Record<string, boolean> {
+  if (switches?.environmentBrdfApprox !== true || !usesStandardTemplate(passes)) return {};
+  return { ENV_BRDF_FIT: true };
 }
 
 /** Shared by exact-root cooking and the engine's fixed-layout shader producer. */
@@ -81,6 +101,10 @@ export function standardMaterialDefines(
     defines.OBJECT_SPACE_NORMAL_AVAILABLE = true;
   if (schema.some((parameter) => parameter.name === 'directMultiscatteringLut'))
     defines.DIRECT_DFG_LUT_AVAILABLE = true;
+  if (schema.some((parameter) => parameter.name === 'planarReflection'))
+    defines.PLANAR_REFLECTION_AVAILABLE = true;
+  if (standardParallaxSelectable((name) => schema.some((parameter) => parameter.name === name)))
+    defines[STANDARD_PARALLAX_HEIGHT_DEFINE] = true;
   for (const parameter of schema) {
     if (parameter.type === 'texture2d') {
       const name = parameter.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
@@ -239,6 +263,13 @@ export function lowerStandardPhysicalBindings(
   }
   if (names.has('directMultiscatteringLut'))
     bindingByName.set('directDfgLut', STANDARD_DIRECT_DFG_LUT_BINDING);
+  if (names.has('planarReflection')) {
+    bindingByName.set(
+      'standardPlanarReflectionTexture',
+      STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING,
+    );
+    bindingByName.set('standardPlanarReflection', STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING);
+  }
   // The low-limit transmission variant declares no split scalar maps; its
   // transmission resources take over those exact pairs of the fixed layout.
   if (defines[STANDARD_SHARED_TRANSMISSION_DEFINE] === true) {
@@ -269,6 +300,12 @@ export function lowerStandardPhysicalBindings(
       return binding === undefined ? declaration : `${prefix}${binding}${suffix}`;
     },
   );
+  // Derived layout projection: the fragment march reads the height through
+  // its metallic host pair; the height's own pair stays vertex-only.
+  const parallaxHeight = STANDARD_PARALLAX_HEIGHT_PAIR.host;
+  lowered = lowered
+    .replace(/\bparallaxHeightTexture_sampler\b/g, `${parallaxHeight}_sampler`)
+    .replace(/\bparallaxHeightTexture\b/g, parallaxHeight);
   // Canonical normal and height maps are mutually exclusive. Share their GPU
   // pair without merging their independent UV records or authored presence bits.
   if (specializeTextures && names.has('normalTexture') && names.has('bumpTexture')) {
@@ -277,6 +314,7 @@ export function lowerStandardPhysicalBindings(
       .replace(/\bbumpTexture_sampler\b/g, 'normalTexture_sampler')
       .replace(/\bbumpTexture\b/g, 'normalTexture');
   }
+  const cookedParallax = standardParallaxSelectable((name) => names.has(name));
   // A cooked root is already sparse. The shared engine entry keeps its stable
   // BGL, but the GPU compiler can eliminate absent sampling paths at PSO creation.
   // Both the runtime mask and these bit positions derive from the same schema.
@@ -286,7 +324,13 @@ export function lowerStandardPhysicalBindings(
     .map((entry, index) => {
       if (!names.has(entry.name)) return '';
       const name = entry.name[0]?.toUpperCase() + entry.name.slice(1);
-      const value = specializeTextures ? `(standardTextureMask & ${2 ** index}u) != 0u` : 'true';
+      // A sparse cooked parallax root lends its declared metallic pair to the
+      // height; parallax admission forbids a metallic value in that mode.
+      const value = specializeTextures
+        ? `(standardTextureMask & ${2 ** index}u) != 0u`
+        : entry.name === STANDARD_PARALLAX_HEIGHT_PAIR.host && cookedParallax
+          ? `material.displacementMode != ${STANDARD_DISPLACEMENT_MODES.parallax}u`
+          : 'true';
       return `fn standardUses${name}() -> bool { return ${value}; }`;
     })
     .join('\n');
@@ -295,7 +339,7 @@ export function lowerStandardPhysicalBindings(
       entry.sources.map((source, index) => {
         const targetName = entry.target.charAt(0).toUpperCase() + entry.target.slice(1);
         const sourceName = source.charAt(0).toUpperCase() + source.slice(1);
-        const selectorMask = 2 ** Math.ceil(Math.log2(entry.sources.length + 1)) - 1;
+        const selectorMask = 2 ** entry.width - 1;
         const value = specializeTextures
           ? `((standardTextureMask >> ${entry.shift}u) & ${selectorMask}u) == ${index + 1}u`
           : 'false';
@@ -314,11 +358,22 @@ export function lowerStandardPhysicalBindings(
         `fn standardUses${name}() -> bool { return ${specializeTextures ? `(standardTextureMask & ${bit}u) != 0u` : 'false'}; }`,
     )
     .join('\n');
+  // Parallax changes vertex and fragment control flow. Specialized entries read
+  // the pipeline constant; a sparse cooked root has no override, so its declared
+  // closed u32 selects the path and mode 0 keeps the unchanged vertex kernel.
+  const parallaxValue = specializeTextures
+    ? `(standardTextureMask & ${STANDARD_PARALLAX_DISPLACEMENT_BIT}u) != 0u`
+    : names.has('displacementMode')
+      ? `material.displacementMode == ${STANDARD_DISPLACEMENT_MODES.parallax}u`
+      : 'false';
+  const parallaxFunction = names.has('displacementTexture')
+    ? `\nfn standardUsesParallaxDisplacement() -> bool { return ${parallaxValue}; }`
+    : '';
   const textureOverride = specializeTextures
     ? `@id(${STANDARD_TEXTURE_MASK_OVERRIDE}) override standardTextureMask: u32 = ${standardTextureMask(STANDARD_MATERIAL_PARAM_SCHEMA)}u;\n`
     : '';
   // Keep the import prelude at the entry head. naga_oil resolves imports in
   // declaration order; prepending generated helper functions would make a
   // composable Surface import disappear before its inlined body is lowered.
-  return `${lowered}\n${textureOverride}${textureFunctions}\n${sampleReuseFunctions}\n${projectionFunctions}`;
+  return `${lowered}\n${textureOverride}${textureFunctions}\n${sampleReuseFunctions}\n${projectionFunctions}${parallaxFunction}`;
 }

@@ -175,6 +175,24 @@ export function meshIrToMeshAsset(
   });
 }
 
+/** Vertex streams and index width one merged MeshAsset will carry, measured without copying. */
+export interface MergedMeshLayout {
+  readonly hasColor: boolean;
+  readonly hasSkin: boolean;
+  readonly extraUvSetCount: number;
+  readonly hasIndices: boolean;
+  readonly wideIndices: boolean;
+}
+
+export function mergedMeshLayout(
+  prims: readonly GltfMeshIr[],
+): Result<MergedMeshLayout, GltfError> {
+  const shape = measureMergedMesh(prims);
+  if (!shape.ok) return shape;
+  const { hasColor, hasSkin, extraUvSetCount, hasIndices, vertexCount } = shape.value;
+  return ok({ hasColor, hasSkin, extraUvSetCount, hasIndices, wideIndices: vertexCount > 0xffff });
+}
+
 /** Merged size and optional-stream presence across the primitives of one glTF mesh. */
 interface MergedMeshShape {
   readonly vertexCount: number;
@@ -335,6 +353,30 @@ function degenerateTangentFrames(
 }
 
 /**
+ * Missing TANGENT for a normal-mapped primitive (glTF 2.0 Specification.adoc l.1823:
+ * MikkTSpace; l.1827: bitangent = cross(N, T.xyz) * T.w). glTF UVs have a top-left
+ * origin (l.2361) and normal maps are green-up, so the bitangent must point toward the
+ * image top, i.e. toward decreasing v. `computeTangentVec4` keeps the supplied UV space
+ * (w = sign(det) puts the bitangent along +dP/dv), so the glTF path negates w.
+ * This is UE's rule too: it stores the MikkTSpace bitangent negated
+ * (MeshUtilities.cpp:1716-1720, MikkTSpace call at :2097). The shared kernel stays
+ * unchanged for the other UV conventions that call it.
+ */
+function generateGltfTangents(
+  positions: Float32Array,
+  normals: Float32Array,
+  uvs: Float32Array,
+  indices?: Uint16Array | Uint32Array,
+): ReturnType<typeof computeTangentVec4> {
+  const generated = computeTangentVec4(positions, normals, uvs, indices);
+  if (generated.ok) {
+    const tangents = generated.value;
+    for (let i = 3; i < tangents.length; i += 4) tangents[i] = -(tangents[i] ?? 1);
+  }
+  return generated;
+}
+
+/**
  * Repair only undefined source frames; valid authored MikkTSpace tangents
  * retain their direction and handedness. All consumers receive this same MeshAsset.
  */
@@ -353,7 +395,7 @@ function resolvePrimitiveTangents(
     mesh.normals !== undefined &&
     mesh.texcoord0 !== undefined
   ) {
-    const generated = computeTangentVec4(
+    const generated = generateGltfTangents(
       mesh.positions,
       mesh.normals,
       mesh.texcoord0,

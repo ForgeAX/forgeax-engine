@@ -5,7 +5,91 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { mergeShaderManifestPublications, publishShaderManifest } from '../manifest-publication.js';
 
+function withPublishedSourceDigests(
+  manifest: {
+    readonly entries: readonly Record<string, unknown>[];
+    readonly materialShaders: readonly (Record<string, unknown> & {
+      readonly variants: readonly Record<string, unknown>[];
+    })[];
+  },
+  publication: ReturnType<typeof publishShaderManifest>,
+) {
+  return {
+    entries: manifest.entries.map((entry, index) => {
+      const published = publication.entries[index];
+      if (published === undefined) throw new Error(`missing published entry ${index}`);
+      return { ...entry, sourceDigest: published.sourceDigest };
+    }),
+    materialShaders: manifest.materialShaders.map((material, index) => {
+      const published = publication.materialShaders[index];
+      if (published === undefined) throw new Error(`missing published material ${index}`);
+      return {
+        ...material,
+        sourceDigest: published.sourceDigest,
+        variants: material.variants.map((variant, variantIndex) => {
+          const publishedVariant = published.variants[variantIndex];
+          if (publishedVariant === undefined)
+            throw new Error(`missing published variant ${index}:${variantIndex}`);
+          return { ...variant, sourceDigest: publishedVariant.sourceDigest };
+        }),
+      };
+    }),
+  };
+}
+
 describe('shared shader source publication', () => {
+  it.each([
+    'source',
+    'merge',
+  ] as const)('serializes each shared fact object once within a %s publication', (route) => {
+    const reflection = { boundGlobals: [{ group: 0, binding: 0, kind: 'uniform-buffer' }] };
+    const reads = [{ name: 'main', stage: 'fragment', bindings: [] }];
+    const receipt = { identity: 'fixture', reflection };
+    const entries = [
+      { hash: 'engine', glsl: '', wgsl: 'fn main() {}', entryPoints: reads, reflection },
+    ];
+    const materials = [
+      {
+        identifier: 'material',
+        composedWgsl: 'fn main() {}',
+        entryPoints: reads,
+        reflection,
+        receipt,
+        variants: Array.from({ length: 64 }, (_, index) => ({
+          definesKey: `MODE=${index}`,
+          composedWgsl: 'fn main() {}',
+          entryPoints: reads,
+          reflection,
+          receipt,
+        })),
+      },
+    ];
+    const baseline = publishShaderManifest(entries, materials);
+    const expectedBytes = JSON.stringify(baseline);
+    const authored = publishShaderManifest([], []);
+    const stringify = vi.spyOn(JSON, 'stringify');
+    let actual: ReturnType<typeof publishShaderManifest>;
+    let counts: number[];
+    try {
+      actual =
+        route === 'source'
+          ? publishShaderManifest(entries, materials)
+          : mergeShaderManifestPublications(baseline, authored, new Set(['engine']));
+      counts = [reflection, reads, receipt].map(
+        (value) => stringify.mock.calls.filter(([input]) => input === value).length,
+      );
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(counts).toEqual([1, 1, 1]);
+    expect(JSON.stringify(actual)).toBe(expectedBytes);
+
+    // A new publication owns its own interning. Changed caller facts are
+    // visible immediately instead of reusing a previous operation's identity.
+    receipt.identity = 'changed';
+    expect(publishShaderManifest(entries, materials).receipts).toEqual([receipt]);
+  });
+
   it('rejects invalid pooled references on direct entries, materials and every variant', () => {
     const engine = publishShaderManifest(
       [{ hash: 'engine', wgsl: 'fn main() {}', entryPoints: [] }],
@@ -70,7 +154,7 @@ describe('shared shader source publication', () => {
     const decoded = (await readShaderManifestPublication(
       JSON.parse(JSON.stringify(publication)),
     )) as typeof original;
-    expect(decoded).toEqual(original);
+    expect(decoded).toEqual(withPublishedSourceDigests(original, publication));
     expect(decoded.materialShaders[0]?.variants[0]?.entryPoints).toBe(
       decoded.entries[0]?.entryPoints,
     );
@@ -82,10 +166,15 @@ describe('shared shader source publication', () => {
     const authored = publishShaderManifest(authoredEntries, []);
     const merged = mergeShaderManifestPublications(publication, authored, new Set(['engine']));
     expect(merged.entryPoints).toEqual([reads, alternate, []]);
-    expect(await readShaderManifestPublication(merged)).toEqual({
-      entries: [{ ...original.entries[0], glsl: '' }, ...authoredEntries],
-      materialShaders: original.materialShaders,
-    });
+    expect(await readShaderManifestPublication(merged)).toEqual(
+      withPublishedSourceDigests(
+        {
+          entries: [{ ...original.entries[0], glsl: '' }, ...authoredEntries],
+          materialShaders: original.materialShaders,
+        },
+        merged,
+      ),
+    );
   });
 
   it('interns repeated ABI receipts without losing nested facts or variant identity', async () => {
@@ -117,7 +206,7 @@ describe('shared shader source publication', () => {
     const publication = publishShaderManifest(original.entries, original.materialShaders);
     expect(JSON.stringify(publication).length).toBeLessThan(JSON.stringify(original).length / 8);
     expect(await readShaderManifestPublication(JSON.parse(JSON.stringify(publication)))).toEqual(
-      original,
+      withPublishedSourceDigests(original, publication),
     );
   });
 
@@ -151,15 +240,26 @@ describe('shared shader source publication', () => {
     const merged = mergeShaderManifestPublications(engine, authored, new Set(['kept']), {
       uvSetCount: 0,
     });
-    expect(await readShaderManifestPublication(merged)).toEqual({
-      entries: [
-        { hash: 'kept', bindings: '[]', glsl: '', uvSetCount: 8, wgsl: `${shared}fn engine() {}` },
-        { hash: 'authored', bindings: '[]', wgsl: `${shared}fn authored() {}` },
-      ],
-      materialShaders: [
-        { identifier: 'engine', composedWgsl: `${shared}fn engine() {}`, variants: [] },
-      ],
-    });
+    expect(await readShaderManifestPublication(merged)).toEqual(
+      withPublishedSourceDigests(
+        {
+          entries: [
+            {
+              hash: 'kept',
+              bindings: '[]',
+              glsl: '',
+              uvSetCount: 8,
+              wgsl: `${shared}fn engine() {}`,
+            },
+            { hash: 'authored', bindings: '[]', wgsl: `${shared}fn authored() {}` },
+          ],
+          materialShaders: [
+            { identifier: 'engine', composedWgsl: `${shared}fn engine() {}`, variants: [] },
+          ],
+        },
+        merged,
+      ),
+    );
     expect(JSON.stringify(merged)).not.toContain('fn removed()');
     expect(merged.fragments.filter((part) => part === shared)).toHaveLength(1);
     merged.fragments[0] = 'fn tampered() {}';
@@ -199,7 +299,7 @@ describe('shared shader source publication', () => {
     const publication = publishShaderManifest(original.entries, original.materialShaders);
     expect(publication.receipts).toEqual([receipt, distinct]);
     const expanded = (await readShaderManifestPublication(publication)) as typeof original;
-    expect(expanded).toEqual(original);
+    expect(expanded).toEqual(withPublishedSourceDigests(original, publication));
     expect(expanded.materialShaders[0]?.variants[0]?.receipt).toBe(
       expanded.materialShaders[0]?.receipt,
     );
@@ -251,7 +351,9 @@ describe('shared shader source publication', () => {
       }
     })();
     expect(divided).toEqual([fresh]);
-    expect(await readShaderManifestPublication(publication)).toEqual(original);
+    expect(await readShaderManifestPublication(publication)).toEqual(
+      withPublishedSourceDigests(original, publication),
+    );
     expect(Object.keys(publication.sources)).toHaveLength(2);
     expect(publication.fragments.join('')).not.toContain('fn removed()');
   });
@@ -271,10 +373,9 @@ describe('shared shader source publication', () => {
     const wgsl = '\n\n// prefix\r\n\r\nfn main() {}\n\n\n// tail  ';
     const entries = [{ hash: 'test', wgsl }];
     const publication = publishShaderManifest(entries, []);
-    expect(await readShaderManifestPublication(publication)).toEqual({
-      entries,
-      materialShaders: [],
-    });
+    expect(await readShaderManifestPublication(publication)).toEqual(
+      withPublishedSourceDigests({ entries, materialShaders: [] }, publication),
+    );
   });
 
   it('bounds the source table for many variants sharing a long WGSL declaration', () => {
@@ -323,7 +424,9 @@ describe('shared shader source publication', () => {
       published.entries[0]?.sourceDigest,
     );
     expect(Object.keys(published.sources)).toHaveLength(2);
-    expect(expandShaderManifestPublication(published).manifest).toEqual(original);
+    expect(expandShaderManifestPublication(published).manifest).toEqual(
+      withPublishedSourceDigests(original, published),
+    );
     expect(JSON.stringify(published).length).toBeLessThan(JSON.stringify(original).length);
   });
 });

@@ -1,4 +1,5 @@
 import { mat4 } from '@forgeax/engine-math';
+import { isTemporalAntialias } from '../components/camera';
 import type { CameraSnapshot } from '../render-contract';
 import type { ExtractedVolumetricFog } from '../render-system-extract';
 import type { VolumeBounds } from '../volume/component';
@@ -14,7 +15,7 @@ export function volumetricFogForView(
   if (fog?.status !== 'available') return fog;
   // Unknown target/scaling extents cannot bound TAA's physical-pixel jitter.
   if (
-    camera.antialias === 'taa' &&
+    isTemporalAntialias(camera.antialias) &&
     (camera.dynamicResolution !== undefined ||
       camera.target !== undefined ||
       camera.view !== undefined)

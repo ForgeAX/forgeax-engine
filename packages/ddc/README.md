@@ -16,6 +16,7 @@ The public entry point exports the following owners:
 | Layout | `resolveDdcLayout` | Resolve explicit build and project roots into the v2 child layout |
 | Status | `serializeDdcStatus`, `projectDdcStatusForBrowser` | Produce a versioned status envelope and a path-free browser projection |
 | Storage | `DdcEntryStore`, `ddcOutputDigest` | Stage, validate, publish, inspect, list, and remove immutable entries |
+| Native cook store | `createNativeCookCache`, `collectNativeCookGarbage` | Synchronous build-only `ByteCache` per cooker namespace under `<buildCacheRoot>/native-cook`; callers own keys and entry verification, unreadable files are misses. Reads refresh an entry's time and every write sweeps the root to `maxBytes` (default `NATIVE_COOK_CACHE_MAX_BYTES`, 4 GiB), least recently used first, never the entry just written |
 | Lifecycle | `DdcLifecycle`, `withDdcLock` | Allocate generation, fence leases, CAS heads, and recover failures |
 | Scope and GC | `createRuntimeScope`, `collectDdcGarbage` | Preserve original scope identity and sweep only unreachable project objects |
 | Errors | `DdcStoreError`, `DDC_ERROR_CODES` | Closed machine-readable errors with executable recovery actions |
@@ -93,6 +94,18 @@ stateDiagram-v2
 
 Each `begin` persists a strictly increasing generation and an expected head revision. `commit` rechecks the lease, expiry, expected revision, desired key, entry receipt, and integrity before switching `current`. A failed candidate never promotes LKG to current; LKG remains a read-only recovery view.
 
+`readCurrentEntry` validates the complete immutable entry once and fences the
+observed head under its existing lock after that read. A concurrent head change
+returns no adoptable entry. Reading an unchanged publication does not allocate a
+generation, acquire a producer lease or rewrite its head.
+
+Canonical hashing batches small scalar records and scalar-array runs through
+the native JSON encoder. Each run is bounded to 1024 items and a 48 KiB input
+text estimate; larger strings keep streaming. Private null-prototype buffers
+cannot invoke author callbacks. Canonical bytes, callback/omission behavior,
+binary snapshots, cooperative readback yields and complete integrity checks
+retain their existing contracts; no DDC format or key changes.
+
 A successful commit returns its accepted `head` and rollback fence. That head is
 the snapshot written by this CAS; later writers cannot change the returned
 publication's key, revision, generation, or LKG. Consumers use this snapshot
@@ -131,6 +144,12 @@ the payload is restored for transport.
 
 `DdcEntryStore.publish` is idempotent for the same key and integrity. A different payload under the same key remains a conflict; it is never silently overwritten. Staging and destination stay under the injected root so publication does not claim cross-device atomicity.
 
+`readPayloadCandidate` reads and checks only payload and receipt metadata for a
+producer's semantic comparison. It does not read artifacts or establish a
+complete/current entry. Meta publication uses it to select the existing immutable
+payload without loading unrelated binary data; ordinary staging, publication and
+lifecycle commit still perform their complete content and head checks.
+
 Concurrent publication preserves that contract on Windows: an `EPERM` rename
 is treated as an existing-entry race only when the destination is a directory,
 then the same complete integrity and immutable-content checks apply. Permission
@@ -149,10 +168,27 @@ whole publication. This permits aggregate artifact content above V8's single
 string limit while preserving existing cache keys and conflict checks.
 `canonicalDdcJson` still returns a string for the ordinary stored JSON records.
 Staging captures private payload JSON, references, receipt and logical artifact
-bytes synchronously, then validates that exact disk representation through the
-same three-digest reader. Its verified payload text is shared across the hashes;
-caller edits and callbacks cannot change the candidate after capture. Publication
-still independently reads and validates every staged file before promotion.
+bytes synchronously. It reuses its own canonical payload text within the output
+and entry digests without repeating that traversal. Source callbacks and binary wrappers retain
+the parsed canonical readback check before that text may be reused.
+`DdcEntryInput` permits an
+omitted `receipt.outputDigest`: staging derives it from that same private capture;
+a supplied digest is still checked exactly. This avoids a separate producer hash.
+Caller edits across asynchronous yields cannot change the captured candidate.
+When the validated candidate matches the destination receipt, staging returns an
+existing entry reference instead of writing duplicate temporary payload/artifacts.
+That receipt remains only an admission hint. Publication independently reads and
+validates the complete destination and compares its immutable identity. Discard
+never deletes the referenced entry. Changed or corrupt destinations retain the
+ordinary conflict/error path.
+
+`DdcGenerationSession.commitEntry` sends its staged candidate directly to the
+lifecycle owner. The lifecycle publishes and validates the entry, then carries
+that readback into the ordinary lease/head CAS instead of reading the same entry
+again. It never accepts a caller-provided validated-entry token. Existing entries
+receive one complete read; new entries retain destination readback after rename.
+`commitCandidate` without a staged entry retains its ordinary full read. Rollback,
+expiry, supersession, immutable conflicts and accepted-head snapshots are unchanged.
 Readback validation cooperatively hashes its private parsed JSON and artifact
 buffers, yielding between bounded chunks so lease heartbeats can run. Caller-owned
 inputs and author callbacks retain synchronous canonical evaluation; readback still

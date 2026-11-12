@@ -32,23 +32,59 @@ export function addAtmosphereComposition(
   );
   if (!view.ok) return view;
   const textures = [
-    depth,
-    atmosphere.transmittance,
-    atmosphere.multipleScattering,
-    atmosphere.aerialPerspective,
-    atmosphere.aerialTransmittance,
-    atmosphere.distantSkyLight,
+    { binding: 1, view: depth, sampleType: 'depth' as const, viewDimension: '2d' as const },
+    {
+      binding: 2,
+      view: atmosphere.transmittance,
+      sampleType: 'float' as const,
+      viewDimension: '2d' as const,
+    },
+    {
+      binding: 3,
+      view: atmosphere.multipleScattering,
+      sampleType: 'float' as const,
+      viewDimension: '2d' as const,
+    },
+    {
+      binding: 6,
+      view: atmosphere.distantSkyLight,
+      sampleType: 'float' as const,
+      viewDimension: '2d' as const,
+    },
+    ...(atmosphere.execution === 'compute-volume'
+      ? [
+          {
+            binding: 4,
+            view: atmosphere.aerialPerspective,
+            sampleType: 'float' as const,
+            viewDimension: '3d' as const,
+          },
+          {
+            binding: 5,
+            view: atmosphere.aerialTransmittance,
+            sampleType: 'float' as const,
+            viewDimension: '3d' as const,
+          },
+        ]
+      : [
+          {
+            binding: 8,
+            view: atmosphere.packed,
+            sampleType: 'uint' as const,
+            viewDimension: '2d' as const,
+          },
+        ]),
   ];
   let state: { layout: BindGroupLayout; pipelines: RenderPipeline[]; sampler: Sampler } | undefined;
   const added = graph.addRasterPass('atmosphere-opaque-composition', {
     accesses: [
       ...atmosphereVisibilityAccesses(atmosphere.visibility),
       { resource: view.value, usage: 'uniform-read' },
-      ...textures.map((resource) => ({ resource, usage: 'sampled-read' as const })),
+      ...textures.map(({ view: resource }) => ({ resource, usage: 'sampled-read' as const })),
       { resource: color.view, usage: 'color-attachment' },
     ],
     colorAttachments: [{ view: color.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ frame, pass, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const device = frame.runtime.device;
       if (state === undefined) {
         const source = frame.atmosphereShaders?.compose;
@@ -70,13 +106,10 @@ export function addAtmosphereComposition(
                 visibility: 2,
                 buffer: { type: 'uniform', minBindingSize: VIEW_UNIFORM_BYTES },
               },
-              ...textures.map((_, i) => ({
-                binding: i + 1,
+              ...textures.map(({ binding, sampleType, viewDimension }) => ({
+                binding,
                 visibility: 2,
-                texture: {
-                  sampleType: (i === 0 ? 'depth' : 'float') as 'depth' | 'float',
-                  viewDimension: (i === 3 || i === 4 ? '3d' : '2d') as '3d' | '2d',
-                },
+                texture: { sampleType, viewDimension },
               })),
               { binding: 7, visibility: 2, sampler: { type: 'filtering' } },
             ],
@@ -93,7 +126,7 @@ export function addAtmosphereComposition(
               vertex: { module, entryPoint: 'atmosphere_compose_vs', buffers: [] },
               fragment: {
                 module,
-                entryPoint: `atmosphere_${stage}_fs`,
+                entryPoint: `atmosphere_${atmosphere.execution === 'fragment-cluster' ? 'packed_' : ''}${stage}_fs`,
                 targets: [
                   {
                     format: color.format,
@@ -129,8 +162,8 @@ export function addAtmosphereComposition(
                 value: { buffer: resources.buffer(view.value).unwrap(), size: VIEW_UNIFORM_BYTES },
               },
             },
-            ...textures.map((texture, i) => ({
-              binding: i + 1,
+            ...textures.map(({ view: texture, binding }) => ({
+              binding,
               resource: {
                 kind: 'textureView' as const,
                 value: resources.textureView(texture).unwrap(),

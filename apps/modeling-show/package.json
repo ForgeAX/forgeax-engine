@@ -1,0 +1,45 @@
+{
+  "name": "@forgeax/app-modeling-show",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Reusable Show of modeling Pack sets: studio light, mirror floor, turntable, camera rails, transformation performance, explode/section/X-ray and a history timeline.",
+  "scripts": {
+    "dev": "forgeax dev start",
+    "typecheck": "tsc --noEmit",
+    "smoke": "cd ../.. && vitest run --project=dawn apps/modeling-show",
+    "smoke:browser": "node scripts/smoke-browser.mjs"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": false,
+        "reason": "Showcase project; bundle size is tracked by the Engine packages it uses."
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "The smoke proves completed frames and pixel falsifiers, not a repeatable performance benchmark."
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "No independent numerical benchmark."
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm --filter @forgeax/app-modeling-show smoke"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "Maintained showcase, not a spike."
+      }
+    }
+  },
+  "dependencies": {
+    "@forgeax/engine": "workspace:*",
+    "@forgeax/engine-modeling": "workspace:*"
+  },
+  "devDependencies": {
+    "@webgpu/types": "^0.1.74"
+  }
+}

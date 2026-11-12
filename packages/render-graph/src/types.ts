@@ -168,7 +168,8 @@ export interface RasterColorAttachment<FrameCtx> {
   readonly view: GraphTextureView;
   readonly resolveTarget?: GraphTextureView | undefined;
   readonly clearValue?: GPUColor | ((frame: FrameCtx) => GPUColor) | undefined;
-  readonly loadOp: GPULoadOp;
+  /** Dynamic loads conservatively require initialized attachment contents. */
+  readonly loadOp: GPULoadOp | ((frame: FrameCtx) => GPULoadOp);
   readonly storeOp: GPUStoreOp;
   readonly depthSlice?: number | undefined;
 }
@@ -185,42 +186,53 @@ export interface RasterDepthStencilAttachment {
   readonly stencilReadOnly?: boolean | undefined;
 }
 
-export interface RasterGraphPass<FrameCtx> {
+/** Exactly one callback form: direct arguments avoid a temporary context record. */
+export type GraphPassEncoding<Context, Args extends readonly unknown[]> =
+  | { encode(context: Context): void; readonly encodeDirect?: never }
+  | { readonly encode?: never; encodeDirect(...args: Args): void };
+
+export type RasterGraphPass<FrameCtx> = {
   readonly accesses: readonly GraphAccess[];
   readonly colorAttachments: readonly RasterColorAttachment<FrameCtx>[];
   readonly depthStencilAttachment?: RasterDepthStencilAttachment | undefined;
   /** Producer-owned query set, resolved once per execution when frame-dependent. */
   readonly occlusionQuerySet?: QuerySet | ((frame: FrameCtx) => QuerySet | undefined) | undefined;
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
-  encode(context: {
+} & GraphPassEncoding<
+  {
     readonly pass: RhiRenderPassEncoder;
     readonly frame: FrameCtx;
     readonly resources: GraphResourceResolver;
-  }): void;
-}
+  },
+  [pass: RhiRenderPassEncoder, frame: FrameCtx, resources: GraphResourceResolver]
+>;
 
-export interface ComputeGraphPass<FrameCtx> {
+export type ComputeGraphPass<FrameCtx> = {
   readonly accesses: readonly GraphAccess[];
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
   readonly begin?: ((frame: FrameCtx) => ComputePassDescriptor) | undefined;
   readonly onBeginError?: ((frame: FrameCtx, cause: unknown) => void) | undefined;
-  encode(context: {
+  readonly after?: ((frame: FrameCtx) => void) | undefined;
+} & GraphPassEncoding<
+  {
     readonly pass: RhiComputePassEncoder;
     readonly frame: FrameCtx;
     readonly resources: GraphResourceResolver;
-  }): void;
-  readonly after?: ((frame: FrameCtx) => void) | undefined;
-}
+  },
+  [pass: RhiComputePassEncoder, frame: FrameCtx, resources: GraphResourceResolver]
+>;
 
-export interface CopyGraphPass<FrameCtx> {
+export type CopyGraphPass<FrameCtx> = {
   readonly accesses: readonly GraphAccess[];
   readonly executeIf?: ((frame: FrameCtx) => boolean) | undefined;
-  encode(context: {
+} & GraphPassEncoding<
+  {
     readonly encoder: RhiCommandEncoder;
     readonly frame: FrameCtx;
     readonly resources: GraphResourceResolver;
-  }): void;
-}
+  },
+  [encoder: RhiCommandEncoder, frame: FrameCtx, resources: GraphResourceResolver]
+>;
 
 /**
  * Ordered import-only child work on the parent's device and encoder. Ports cover

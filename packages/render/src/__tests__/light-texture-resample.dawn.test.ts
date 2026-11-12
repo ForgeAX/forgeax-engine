@@ -1,6 +1,6 @@
 import { parseKtx2, transcodeKtx2 } from '@forgeax/engine-codec';
 import { basisEncode } from '@forgeax/engine-codec/encode';
-import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
+import type { Buffer, RhiDevice, Texture } from '@forgeax/engine-rhi';
 import {
   attachRecorder,
   buildFrameModel,
@@ -15,18 +15,25 @@ import { expect, it } from 'vitest';
 import {
   GPU_TEXTURE_USAGE_COPY_DST,
   GPU_TEXTURE_USAGE_COPY_SRC,
+  GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
 } from '../gpu-texture-usage';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_MAP_READ } from '../gpu-usage';
-import { resampleLightTextureSlice } from '../prepare/extended-lighting/light-texture-resample';
+import { prepareLightTextureSliceResample } from '../prepare/extended-lighting/light-texture-resample';
 import {
   COOKIE_MIP_LEVEL_COUNT,
   COOKIE_SLICE_CAPACITY,
   COOKIE_SLICE_SIZE,
 } from '../prepare/extended-lighting/resources';
 import { prepareCookieProjection } from '../prepare/extended-lighting/spot-modifiers';
+import { loadBuiltLightTextureResamplePrograms } from './light-texture-resample-admitted.dawn.fixture';
+import { consumePublishedResampleMips } from './light-texture-resample-compute-consumer.fixture';
+import { expectedLightTextureF32Levels } from './light-texture-resample-reference';
 
 const BC7 = 'bc7-rgba-unorm-srgb';
+const READBACK_ROW_ALIGNMENT = 256;
+const F32_MAX_ERROR = 2e-5;
+const F32_RMS_ERROR = 2e-6;
 
 /** A stained-glass style panel: hue bands, a sharp diagonal edge, and a fine checker. */
 function panelPixels(width: number, height: number): Uint8Array {
@@ -57,6 +64,75 @@ function rgba8(width: number, height: number): TextureAsset {
     mips: { kind: 'none' },
     data: panelPixels(width, height),
   };
+}
+
+function rgba8Linear(width: number, height: number): TextureAsset {
+  const asset = rgba8(width, height);
+  return { ...asset, format: 'rgba8unorm', colorSpace: 'linear' };
+}
+
+function floatReadbackSize(execution: 'compute' | 'fragment'): number {
+  let bytes = 0;
+  for (let level = 0; level < COOKIE_MIP_LEVEL_COUNT; level += 1) {
+    const size = COOKIE_SLICE_SIZE >> level;
+    const row =
+      execution === 'compute'
+        ? size * 16
+        : Math.ceil((size * 16) / READBACK_ROW_ALIGNMENT) * READBACK_ROW_ALIGNMENT;
+    bytes += row * size;
+  }
+  return bytes;
+}
+
+async function readF32Levels(
+  buffer: Buffer,
+  execution: 'compute' | 'fragment',
+): Promise<Float32Array[]> {
+  const mapped = (await buffer.mapAsync(1)).unwrap();
+  const bytes = new Uint8Array(mapped.getMappedRange().unwrap().slice(0));
+  mapped.unmap();
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const levels: Float32Array[] = [];
+  let offset = 0;
+  for (let level = 0; level < COOKIE_MIP_LEVEL_COUNT; level += 1) {
+    const size = COOKIE_SLICE_SIZE >> level;
+    const rowBytes =
+      execution === 'compute'
+        ? size * 16
+        : Math.ceil((size * 16) / READBACK_ROW_ALIGNMENT) * READBACK_ROW_ALIGNMENT;
+    const values = new Float32Array(size * size * 4);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size * 4; x += 1) {
+        values[y * size * 4 + x] = view.getFloat32(offset + y * rowBytes + x * 4, true);
+      }
+    }
+    levels.push(values);
+    offset += rowBytes * size;
+  }
+  return levels;
+}
+
+function expectF32Levels(
+  actual: readonly Float32Array[],
+  expected: readonly Float32Array[],
+  label: string,
+): void {
+  for (let level = 0; level < expected.length; level += 1) {
+    const actualLevel = actual[level] as Float32Array;
+    const expectedLevel = expected[level] as Float32Array;
+    let maximum = 0;
+    let squared = 0;
+    for (let index = 0; index < expectedLevel.length; index += 1) {
+      const delta = Math.abs((actualLevel[index] ?? 0) - (expectedLevel[index] ?? 0));
+      maximum = Math.max(maximum, delta);
+      squared += delta * delta;
+    }
+    const rms = Math.sqrt(squared / expectedLevel.length);
+    expect(maximum, `${label} mip ${level} maximum absolute f32 error`).toBeLessThanOrEqual(
+      F32_MAX_ERROR,
+    );
+    expect(rms, `${label} mip ${level} RMS f32 error`).toBeLessThanOrEqual(F32_RMS_ERROR);
+  }
 }
 
 /**
@@ -126,7 +202,10 @@ function createArray(device: RhiDevice): Texture {
       mipLevelCount: COOKIE_MIP_LEVEL_COUNT,
       format: 'rgba8unorm',
       usage:
-        GPU_TEXTURE_USAGE_COPY_DST | GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_SRC,
+        GPU_TEXTURE_USAGE_COPY_DST |
+        GPU_TEXTURE_USAGE_TEXTURE_BINDING |
+        GPU_TEXTURE_USAGE_COPY_SRC |
+        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
     })
     .unwrap();
 }
@@ -192,6 +271,7 @@ async function openFreshReplay(tape: Tape) {
 it('fills light-texture slices on the GPU with the CPU filter, including BC7 KTX2 sources', {
   timeout: 180_000,
 }, async () => {
+  const admitted = await loadBuiltLightTextureResamplePrograms();
   const recorder = attachRecorder(webgpu).unwrap();
   const adapter = (await recorder.backend.rhi.requestAdapter()).unwrap();
   const bcSupported = adapter.features.has('texture-compression-bc');
@@ -207,20 +287,82 @@ it('fills light-texture slices on the GPU with the CPU filter, including BC7 KTX
   ).createShaderModuleImmediate;
   if (immediate === undefined) throw new Error('recorder backend lacks immediate shader modules');
   const factory = {
-    createShaderModule: (descriptor: { readonly code: string; readonly label?: string }) =>
-      immediate(device, descriptor),
+    createShaderModule: (descriptor: { readonly code: string; readonly label?: string }) => {
+      consumedShaderSources.add(descriptor.code);
+      return immediate(device, descriptor);
+    },
   };
+  const consumedShaderSources = new Set<string>();
   const target = createArray(device);
   const timings: Record<string, number> = {};
-  const resample = async (label: string, slice: number, asset: TextureAsset) => {
+  const resample = async (
+    label: string,
+    slice: number,
+    asset: TextureAsset,
+    execution?: 'compute' | 'fragment',
+    verifyFloat = false,
+  ) => {
     const start = performance.now();
-    const result = resampleLightTextureSlice({ device, factory, target, slice, asset });
-    await device.queue.onSubmittedWorkDone();
-    timings[label] = performance.now() - start;
+    const selectedExecution = execution ?? (device.caps.compute ? 'compute' : 'fragment');
+    const readback = verifyFloat
+      ? device
+          .createBuffer({
+            size: floatReadbackSize(selectedExecution),
+            usage: GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_MAP_READ,
+          })
+          .unwrap()
+      : undefined;
+    const result = prepareLightTextureSliceResample({
+      device,
+      factory,
+      programs: admitted,
+      target,
+      slice,
+      asset,
+      ...(execution === undefined ? {} : { execution }),
+      ...(readback === undefined ? {} : { intermediateReadback: readback }),
+    });
     expect(
       result.ok,
       result.ok ? '' : JSON.stringify(result.error.detail ?? result.error.expected),
     ).toBe(true);
+    if (!result.ok) return;
+    const encoder = device
+      .createCommandEncoder({ label: 'light-texture-resample-dawn-frame' })
+      .unwrap();
+    const encoded = result.value.execute(encoder);
+    expect(encoded.ok, encoded.ok ? '' : encoded.error.expected).toBe(true);
+    if (!encoded.ok) {
+      result.value.discard();
+      return;
+    }
+    device.queue.submit([encoder.finish().unwrap()]).unwrap();
+    const completion = device.queue.onSubmittedWorkDone();
+    result.value.submitted(completion);
+    await completion;
+    if (readback !== undefined) {
+      expectF32Levels(
+        await readF32Levels(readback, selectedExecution),
+        expectedLightTextureF32Levels(asset),
+        `${label} ${selectedExecution}`,
+      );
+      device.destroyBuffer(readback).unwrap();
+    }
+    if (selectedExecution === 'compute') {
+      const consumed = await consumePublishedResampleMips(device, target, slice, factory);
+      for (let mip = 0; mip < COOKIE_MIP_LEVEL_COUNT; mip += 1) {
+        const pixels = await readSlice(device, target, slice, mip);
+        const size = COOKIE_SLICE_SIZE >> mip;
+        const center = (Math.floor(size / 2) * size + Math.floor(size / 2)) * 4;
+        for (let channel = 0; channel < 4; channel += 1) {
+          expect(
+            Math.abs((consumed[mip * 4 + channel] ?? 0) - (pixels[center + channel] ?? 0) / 255),
+            `ordinary sampled consumer slice ${slice} mip ${mip} channel ${channel}`,
+          ).toBeLessThanOrEqual(1e-7);
+        }
+      }
+    }
+    timings[label] = performance.now() - start;
   };
   try {
     // Parity: non-square rgba8 sources through both paths. 400x160 box-filters
@@ -242,6 +384,26 @@ it('fills light-texture slices on the GPU with the CPU filter, including BC7 KTX
         expect(delta.max, `slice ${slice} mip ${level}`).toBeLessThanOrEqual(1);
       }
     }
+    // Run the same complete production chain through the raster adapter on
+    // this device and compare every ordinary published Mip independently.
+    for (const [index, asset] of parity.entries()) {
+      const slice = index + 8;
+      await resample(
+        `fragment-${asset.shape.extent.width}x${asset.shape.extent.height}`,
+        slice,
+        asset,
+        'fragment',
+      );
+      const chain = cpuChain(asset);
+      for (let level = 0; level < COOKIE_MIP_LEVEL_COUNT; level += 1) {
+        const gpu = await readSlice(device, target, slice, level);
+        const delta = difference(gpu, chainLevel(chain, level));
+        expect(delta.max, `fragment slice ${slice} mip ${level}`).toBeLessThanOrEqual(1);
+      }
+    }
+    const f32Witness = rgba8Linear(7, 5);
+    await resample('f32-compute-reference', 11, f32Witness, undefined, true);
+    await resample('f32-fragment-reference', 12, f32Witness, 'fragment', true);
     // A 256x256 source copies texel for texel at unit scale.
     const identity = await readSlice(device, target, 2, 0);
     const exact = chainLevel(cpuChain(parity[2] as TextureAsset), 0);
@@ -288,6 +450,11 @@ it('fills light-texture slices on the GPU with the CPU filter, including BC7 KTX
     const kernels = model.works.filter((work) =>
       work.pipeline.shaders.some((shader) => shader.source?.includes('fn light_texture_resample')),
     );
+    expect(
+      kernels.every((work) =>
+        work.pipeline.shaders.some((shader) => shader.source === admitted.compute.wgsl),
+      ),
+    ).toBe(true);
     // One resample and eight 2x2 reductions per source.
     expect(kernels.length).toBe(2 * COOKIE_MIP_LEVEL_COUNT);
     const sourceFormats = model.resources.flatMap((resource) => {
@@ -352,7 +519,16 @@ it('fills light-texture slices on the GPU with the CPU filter, including BC7 KTX
       (await replay.dispose()).unwrap();
     }
     // biome-ignore lint/suspicious/noConsole: one-shot resample cost is perf evidence
-    console.log(JSON.stringify({ timings }));
+    console.log(
+      JSON.stringify({
+        timings,
+        admittedPublication: admitted.publication,
+        consumedEntrySources: {
+          compute: consumedShaderSources.has(admitted.compute.wgsl),
+          fragment: consumedShaderSources.has(admitted.fragment.wgsl),
+        },
+      }),
+    );
   } finally {
     device.destroyTexture(target).unwrap();
     (await recorder.dispose()).unwrap();

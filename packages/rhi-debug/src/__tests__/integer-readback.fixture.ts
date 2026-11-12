@@ -1,5 +1,6 @@
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '../index';
 
 export async function verifyIntegerReadback(format: 'r32uint' | 'rg32uint' = 'r32uint') {
@@ -79,7 +80,7 @@ export async function verifyIntegerReadback(format: 'r32uint' | 'rg32uint' = 'r3
       expected,
     );
     const inspected = (await replay.inspectWork(0, ['pixels'])).unwrap();
-    expect(inspected.attachment?.bytes).toEqual(read.bytes);
+    expect(equalBytes(inspected.attachment?.bytes, read.bytes)).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();
     (await recorder.dispose()).unwrap();

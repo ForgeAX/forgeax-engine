@@ -30,6 +30,9 @@ const browserNodeHeapArg = '--max-old-space-size=4096';
 const defaultShardCount = 1;
 const defaultShardIndex = 0;
 const defaultShardStrategy = 'round-robin';
+const compatibilitySceneBrowserFile =
+  'packages/runtime/src/__tests__/compatibility-scene.browser.test.ts';
+const compatibilitySceneBrowserConfig = 'config/vitest.webgpu-scene.config.ts';
 const entityVisibilityBrowserTest =
   'apps/hello/entity-visibility/src/__tests__/visibility.browser.test.ts';
 const r32floatCapabilityGenerationTest =
@@ -51,7 +54,7 @@ const threeShadowBrowserFiles = new Set(
     (kind) => `packages/three/src/__tests__/shadow-${kind}.browser.test.ts`,
   ),
 );
-const threeMaterialOutputBrowserFiles = [0, 1].map(
+const threeMaterialOutputBrowserFiles = [0, 1, 2, 3].map(
   (partition) => `packages/three/src/__tests__/material-output-${partition}.browser.test.ts`,
 );
 const topologyBrowserFile = 'apps/hello/topology/src/__tests__/topology.browser.test.ts';
@@ -60,7 +63,9 @@ const directLightBrowserFile =
 const instancingStaticBrowserFile =
   'apps/parity/instancing-static/src/__tests__/instances.browser.test.ts';
 const thinWrapperBrowserFile = 'packages/app/__tests__/thin-wrapper.browser.test.ts';
+const thinWrapperThrowBrowserFile = 'packages/app/__tests__/thin-wrapper-throw.browser.test.ts';
 const solarAtmosphereBrowserFiles = [
+  'packages/runtime/src/__tests__/atmosphere-full-webgl2.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-calibration.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-fog-time.browser.test.ts',
   'packages/runtime/src/__tests__/solar-atmosphere-mesh-occlusion.browser.test.ts',
@@ -86,11 +91,18 @@ const lightingChannelBrowserFiles = new Set([
     (receiver) =>
       `packages/runtime/src/__tests__/lighting-channels-world-${receiver}.browser.test.ts`,
   ),
-  'packages/runtime/src/__tests__/lighting-channels-views.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
   'packages/runtime/src/__tests__/lighting-channels-lifecycle.browser.test.ts',
   'packages/app/__tests__/lighting-channels.browser.test.ts',
 ]);
 const shortRendererBootstrapBrowserFiles = new Set([
+  // The archive creates a second cold native device. Drain neighboring
+  // compilation and native owners within the existing cold-start budget.
+  compatibilitySceneBrowserFile,
+  // The dual-host parity capture missed its unchanged 15 s ready-frame
+  // bound in mixed group 90 of run 41494219900. Keep its complete owner alone.
+  'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts',
   // Run38101911822: the unchanged 30 s textures bootstrap took 38.5 s
   // beside instancing. Preserve the case in one existing exclusive slot.
   'apps/learn-render/1.getting-started/4.textures/src/__tests__/onerror-gate.browser.test.ts',
@@ -101,15 +113,64 @@ const shortRendererBootstrapBrowserFiles = new Set([
 ]);
 const renderWorkerPreloadBrowserFile =
   'packages/app/src/__tests__/render-worker-preload-errors.browser.test.ts';
+const renderWorkerPressureBrowserFile =
+  'packages/app/__tests__/render-worker-pressure.browser.test.ts';
+const shadowQualityBrowserFiles = new Set([
+  'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts',
+  'packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts',
+  'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts',
+]);
+const pixelParityCaptureBrowserFile =
+  'packages/runtime/src/__tests__/pixel-parity-capture.browser.test.ts';
+const dynamicGeometryBrowserFile =
+  'packages/runtime/src/__tests__/wave1-dynamic-geometry.browser.test.ts';
 const exclusiveRunnerBrowserFiles = new Set([
+  // Run42247651279 exceeded its 60 s case after two volumetric-fog owners.
+  // Preserve the complete geometry, physics, shadow and TAA journey alone.
+  dynamicGeometryBrowserFile,
+  // Run42045444805: these native/replay owners exhausted both 300 s children
+  // while sharing the same runner. Retain complete cases and original bounds.
+  'packages/runtime/src/__tests__/multi-camera.browser.test.ts',
+  'packages/runtime/src/__tests__/multi-camera-publication.browser.test.ts',
+  'packages/runtime/src/__tests__/multi-camera-vfx.browser.test.ts',
+  'packages/three/src/__tests__/shadow-alpha.browser.test.ts',
+  // Run41607916066: the 15 s direct-light capture overlapped the wave/Toon
+  // group. The native observer also needs its own complete GPU realm.
+  directLightBrowserFile,
+  'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
+  // Runs 41474743972 and 41546866475 exhausted unchanged native readiness
+  // bounds beside another GPU owner. Run each complete view journey alone.
+  'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
+  'packages/three/src/__tests__/texture.browser.test.ts',
+  // Run 41535701837 exhausted Standard's 15 s preparation bound in a mixed
+  // four-file process. Keep both native pictures, compositor and light controls.
+  pixelParityCaptureBrowserFile,
+  // Ordinary and publication IES owners retain all four cases and 19 devices.
+  // Each keeps the original process deadline without competing GPU groups.
+  'packages/runtime/src/__tests__/ies-local-lights.browser.test.ts',
+  'packages/runtime/src/__tests__/ies-local-lights-publication.browser.test.ts',
+  // Run 41269699158 exhausted a mixed 300 s process. Keep the complete
+  // shared-renderer contact matrix away from competing software GPU owners.
+  ...shadowQualityBrowserFiles,
   // Run 40654473789 crossed the unchanged 120 s render/reference/replay case
   // beside a 111 s lighting-channel group on the same eight-CPU affinity set.
   'packages/three/src/__tests__/render.browser.test.ts',
+  // Run 41591466819 crossed the unchanged 240 s directional-shadow case
+  // beside mixed Browser work. Keep its full native/reference/replay journey.
+  'packages/three/src/__tests__/shadow-directional.browser.test.ts',
+  // Run 42292831412 exhausted the unchanged 240 s Spot case while a
+  // lighting-channel group competed with its fresh-device replay work.
+  'packages/three/src/__tests__/shadow-spot.browser.test.ts',
+  // Independent alpha material journeys keep every original pixel/replay
+  // control in separate exclusive processes under the same 300 s bound.
+  'packages/three/src/__tests__/shadow-alpha.browser.test.ts',
+  'packages/three/src/__tests__/shadow-alpha-standard.browser.test.ts',
   // The complete capture passed alone on Linux after mixed group 86 stalled.
   'packages/runtime/src/__tests__/wave1-shadow-diagnostic.browser.test.ts',
   // Run 39457755532 exceeded 300 s beside a 237 s GPU neighbor. The complete
   // 24-case owner later took 280.693 s alone (run 39554721730), so its cases are
-  // partitioned across two processes that keep the original deadlines.
+  // partitioned across four processes that keep the original deadlines.
   ...threeMaterialOutputBrowserFiles,
   'packages/runtime/src/__tests__/vfx-mesh-lighting.browser.test.ts',
   'packages/runtime/src/__tests__/image-environment-presentation.browser.test.ts',
@@ -130,6 +191,18 @@ const exclusiveRunnerBrowserFiles = new Set([
   'packages/runtime/src/__tests__/light-casters-9-light.browser.test.ts',
 ]);
 const browserProcessIsolatedFiles = new Set([
+  dynamicGeometryBrowserFile,
+  'packages/runtime/src/__tests__/weapon-spirit-material.browser.test.ts',
+  // Each independent-view path owns its own 300 s case and process deadline.
+  'packages/runtime/src/__tests__/lighting-channels-views-world.browser.test.ts',
+  'packages/runtime/src/__tests__/lighting-channels-views-publication.browser.test.ts',
+  pixelParityCaptureBrowserFile,
+  ...shadowQualityBrowserFiles,
+  // Run 40671760654 exhausted one 300 s process with all three native owners.
+  // Preserve each complete journey and its existing deadline in its own process.
+  'packages/runtime/src/__tests__/point-light-decay.browser.test.ts',
+  'packages/runtime/src/__tests__/point-light-shadow.browser.test.ts',
+  'packages/runtime/src/__tests__/point-sprites.browser.test.ts',
   'packages/three/src/__tests__/render.browser.test.ts',
   ...threeShadowBrowserFiles,
   ...threeMaterialOutputBrowserFiles,
@@ -142,6 +215,8 @@ const browserProcessIsolatedFiles = new Set([
   directLightBrowserFile,
   instancingStaticBrowserFile,
   thinWrapperBrowserFile,
+  // Its renderer-host module mock must not share the real App/Worker owner.
+  thinWrapperThrowBrowserFile,
   renderWorkerPreloadBrowserFile,
   'apps/learn-render/1.getting-started/5.transformations/src/__tests__/onerror-gate.browser.test.ts',
   'apps/learn-render/1.getting-started/2.hello-triangle/src/__tests__/onerror-gate.browser.test.ts',
@@ -167,11 +242,18 @@ const browserProcessIsolatedFiles = new Set([
   'packages/app/__tests__/subsurface.browser.test.ts',
 
   'packages/runtime/src/__tests__/multi-camera.browser.test.ts',
+  'packages/runtime/src/__tests__/multi-camera-publication.browser.test.ts',
+  'packages/runtime/src/__tests__/multi-camera-vfx.browser.test.ts',
   'packages/runtime/src/__tests__/render-publication.browser.test.ts',
   'packages/runtime/src/__tests__/shadow-contact-column.browser.test.ts',
   'packages/runtime/src/__tests__/shadow-contact-centimeter-1024.browser.test.ts',
   'packages/runtime/src/__tests__/shadow-contact-centimeter-2048.browser.test.ts',
+  'packages/runtime/src/__tests__/shadow-contact-webgl2-column.browser.test.ts',
+  'packages/runtime/src/__tests__/shadow-contact-webgl2-centimeter.browser.test.ts',
   'packages/app/__tests__/render-worker.browser.test.ts',
+  // Run 42870354116 exhausted the shared 300 s child after the recovery and
+  // engine-pressure receipts; keep full-Renderer pressure in its own process.
+  renderWorkerPressureBrowserFile,
   'packages/app/__tests__/render-worker-contract.browser.test.ts',
   'packages/app/__tests__/render-worker-multi-camera.browser.test.ts',
   'packages/app/__tests__/worker-policy.browser.test.ts',
@@ -287,25 +369,40 @@ export function parseArgs(argv) {
   return options;
 }
 
-// Median complete successful child cost from the runs recorded in the table;
-// failed or truncated children are excluded. Allocate startup/cleanup equally, so there
-// is no second fixed startup surcharge that overwhelms short groups.
+// Complete successful child costs from the runs recorded in the table. Refresh
+// conservatively against historical forecasts; failed or truncated children are
+// excluded even when their parent run has completed. Allocate startup/cleanup
+// equally, without a second fixed surcharge that overwhelms short groups.
 const measuredBrowserSeconds = JSON.parse(
   readFileSync(path.join(scriptDir, 'browser-file-seconds.json'), 'utf8'),
 );
 const measuredBrowserFileSeconds = new Map(Object.entries(measuredBrowserSeconds.files));
 const renderWorkerBrowserFile =
   /^packages\/app\/__tests__\/(?:render-worker[a-z-]*|worker-policy|engine-worker-asset-loss)\.browser\.test\.ts$/;
+function estimatedShadowQualitySeconds(file) {
+  // Scheduling estimate until a complete isolated CI receipt is available.
+  if (
+    file === 'packages/runtime/src/__tests__/cube-plane-shadow-contact.browser.test.ts' ||
+    file === 'packages/runtime/src/__tests__/cube-plane-shadow-contact-deferred.browser.test.ts'
+  )
+    return 120;
+  if (file === 'packages/runtime/src/__tests__/curved-shadow-receiver.browser.test.ts') return 180;
+}
+
 function estimatedBrowserFileSeconds(file) {
+  const shadowQualitySeconds = estimatedShadowQualitySeconds(file);
+  if (shadowQualitySeconds !== undefined) return shadowQualitySeconds;
   // Full native/reference/replay journeys. These are scheduling estimates;
   // unknown-file weights grouped them into a 300 s timeout in run 39384469626.
+  if (file === compatibilitySceneBrowserFile) return 90;
   if (file === 'packages/three/src/__tests__/output.browser.test.ts') return 100;
   if (file === 'packages/three/src/__tests__/render.browser.test.ts') return 90;
   // r184 comparisons include authored/filter mutations and retained-map replay.
   // Run 39435724371 exhausted 300 s when all shadow journeys shared one group.
   if (threeShadowBrowserFiles.has(file)) return 100;
   if (file === 'packages/three/src/__tests__/shadow-updates.browser.test.ts') return 240;
-  if (file === 'packages/three/src/__tests__/shadow-alpha.browser.test.ts') return 100;
+  if (/^packages\/three\/src\/__tests__\/shadow-alpha(?:-standard)?\.browser\.test\.ts$/.test(file))
+    return 100;
   if (file === 'packages/three/src/__tests__/variance-shadow.browser.test.ts') return 100;
   if (file === 'packages/three/src/__tests__/loading.browser.test.ts') return 60;
   if (file === 'packages/three/src/__tests__/environment.browser.test.ts') return 90;
@@ -342,11 +439,13 @@ export function browserGroupRunOrder(groups, selectedIndexes, concurrency) {
     );
 }
 
-// Median executed smoke/runtime tails in runs 38316658619 and 38320931831,
-// rounded to 5 s. Mesh uses
-// a conservative 200 s estimate for sixteen cases and their offline analyzer
-// inputs; the failed twenty-case receipt is not a timing baseline.
-export const ciBrowserShardTailSeconds = Object.freeze([125, 230, 200, 0]);
+// Preserve the unobserved smoke tail's historical forecast. Run 41725978104
+// completed the Runtime Pack Worker and mesh tails in 347 s and 221 s;
+// reserve their rounded-up costs. Interrupted children never lower a forecast.
+// Shard zero retains the completed MSAA, FXAA and reconnect reservation (210 s).
+// Shard 1 owns CSM after Runtime Pack Worker: 350 + 180 s. The uncompleted
+// CSM tail retains its placement estimate, not a timing sample or new deadline.
+export const ciBrowserShardTailSeconds = Object.freeze([210, 530, 225, 0]);
 
 export function assignBrowserGroupsToShards(
   groups,
@@ -507,9 +606,16 @@ export function browserProducerReadiness(group, requestedReadiness) {
     : 'on-demand';
 }
 
+// Native popup state belongs to the foreground window. Another group's page
+// activation dismisses an open select even when CDP still reports DOM focus.
+function browserGroupRequiresForeground(group) {
+  return group.some((file) => file.startsWith('packages/ui-blitz/src/__tests__/'));
+}
+
 export function browserGroupRequiresExclusiveRunner(group) {
   return (
     browserProducerReadiness(group, undefined) === 'before-consume' ||
+    browserGroupRequiresForeground(group) ||
     group.some(
       (file) =>
         shortRendererBootstrapBrowserFiles.has(file) ||
@@ -520,6 +626,8 @@ export function browserGroupRequiresExclusiveRunner(group) {
 }
 
 export function browserConfigForGroup(group) {
+  if (group.length === 1 && group[0] === compatibilitySceneBrowserFile)
+    return compatibilitySceneBrowserConfig;
   if (group.length === 1 && group[0] === renderWorkerPreloadBrowserFile) {
     return 'config/vitest.render-preload-fixture.config.ts';
   }
@@ -530,6 +638,7 @@ export function browserConfigForGroup(group) {
 
 export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWorkers }) {
   const hostOnly = browserGroupIsHostOnly(group);
+  const foreground = browserGroupRequiresForeground(group);
   process.stderr.write(`[vitest] browser group ${groupIndex}/${groupCount}: ${group.join(', ')}\n`);
   if (browserGroupRequiresExclusiveRunner(group))
     process.stderr.write('[vitest] browser group owns the runner exclusively\n');
@@ -548,15 +657,17 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
     group,
     process.env.FORGEAX_BROWSER_PACK_READINESS,
   );
+  const config = browserConfigForGroup(group);
   const command = [
     process.execPath,
     cliPath,
     'run',
     '--config',
-    browserConfigForGroup(group),
-    '--project=browser',
+    config,
+    `--project=${config === compatibilitySceneBrowserConfig ? 'compatibility-scene' : 'browser'}`,
     '--passWithNoTests=false',
-    `--maxWorkers=${maxWorkers}`,
+    `--maxWorkers=${foreground ? 1 : maxWorkers}`,
+    ...(foreground ? ['--no-file-parallelism'] : []),
     ...(process.env.FORGEAX_BROWSER_COST_REPORT === '1'
       ? [
           '--reporter=default',
@@ -567,6 +678,7 @@ export async function runGroup({ cliPath, group, groupIndex, groupCount, maxWork
   ];
   const environment = withBrowserHeapLimit({
     ...process.env,
+    ...(foreground ? { FORGEAX_BROWSER_BACKGROUND: '0' } : {}),
     FORGEAX_BROWSER_COST_COORDINATOR: '1',
     FORGEAX_BROWSER_ENTITY_VISIBILITY: '0',
     FORGEAX_BROWSER_CROSS_ORIGIN_ISOLATED: group.some(

@@ -10,9 +10,11 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { afterAll, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { compactTape } from '../../../runtime/src/__tests__/compact-tape.fixture';
 
 export const SIZE = 128;
+const CENTER = (SIZE * (SIZE / 2) + SIZE / 2) * 4;
 
 /** One GPU owner per immutable canvas configuration within a serial test file. */
 export function browserRendererFixture() {
@@ -56,21 +58,45 @@ export async function readyFrames(
   scene: THREE.Object3D,
   camera: THREE.Camera,
   frames = 1,
+  onTimeout?: () => Promise<void>,
 ) {
-  const deadline = Date.now() + 20000;
+  const started = Date.now();
+  const deadline = started + 20000;
   let completed = 0;
+  let longestRenderMs = 0,
+    longestCompletionMs = 0;
   while (completed < frames) {
+    const frameStarted = Date.now();
     renderer.render(scene, camera);
+    const submitted = Date.now();
+    longestRenderMs = Math.max(longestRenderMs, submitted - frameStarted);
     const receipt = renderer.inspect().receipt;
     if (receipt === undefined) throw new Error('render did not submit');
     const result = await receipt.completed;
+    longestCompletionMs = Math.max(longestCompletionMs, Date.now() - submitted);
     if (!result.ok) throw result.error;
     if (receipt.presentation === 'ready') completed++;
-    if (Date.now() > deadline)
-      throw new Error(
-        `scene readiness timed out: ${JSON.stringify(receipt.presentationPendingReason)}`,
+    const timeout = async (): Promise<never> => {
+      const error = new Error(
+        `scene readiness timed out: ${JSON.stringify({ completed, required: frames, elapsedMs: Date.now() - started, longestRenderMs, longestCompletionMs, presentation: receipt.presentation, pending: receipt.presentationPendingReason, frame: renderer.inspect().renderer.frame })}`,
       );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+      await onTimeout?.();
+      throw error;
+    };
+    if (Date.now() > deadline) await timeout();
+    // The Engine owns shader/native compilation. Wait for its captured work
+    // instead of submitting a new preparation barrier every fifty milliseconds.
+    if (receipt.presentation !== 'ready' && receipt.preparationCompleted !== undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const prepared = await Promise.race([
+        receipt.preparationCompleted,
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), Math.max(0, deadline - Date.now()));
+        }),
+      ]).finally(() => clearTimeout(timer));
+      if (prepared === undefined) await timeout();
+      else if (!prepared.ok) throw prepared.error;
+    }
   }
 }
 
@@ -97,39 +123,87 @@ export function comparePixels(actual: Uint8Array, expected: Uint8Array, epsilon 
   return error / actual.length;
 }
 
-export async function verifyReplay(capture: THREE.ThreeFrameCapture) {
-  // Replay the same lossless container saved as evidence, without materializing
-  // a second uncompressed artifact for this capture.
-  const decoded = decodeTape(compactTape(capture.tape).bytes).unwrap();
-  const model = buildFrameModel(decoded);
-  const draws = model.works.filter((work) => work.attachments?.colorViewHandleIds.length);
-  expect(draws.length).toBeGreaterThan(0);
-  const last = draws.at(-1);
-  const target =
-    last?.attachments?.colorResolveViewHandleIds[0] ?? last?.attachments?.colorViewHandleIds[0];
-  if (last === undefined || target === undefined) throw new Error('missing final output draw');
-  const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
-  const device = (
-    await adapter.requestDevice(replayDeviceRequest(decoded, adapter.features, adapter.limits))
-  ).unwrap();
-  const nativeDevice = device.nativeDevice().unwrap();
-  nativeDevice.pushErrorScope('validation');
-  const replay = (
-    await openReplay(decoded, { device, createShaderModule: webgpu.createShaderModule })
-  ).unwrap();
+export async function verifyReplay(capture: THREE.ThreeFrameCapture, label?: string) {
+  const started = performance.now();
+  const milestonesMs: Record<string, number> = {};
+  // biome-ignore lint/suspicious/noConsole: Preserve bounded native replay phase receipts.
+  console.info('[three-render-replay]', JSON.stringify({ state: 'start', label }));
   try {
-    const read = (await replay.readResourceAtWork(target, last.workIndex)).unwrap();
-    const image = readbackImage(read).unwrap();
-    expect(image.width).toBe(SIZE);
-    expect(image.height).toBe(SIZE);
-    comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
-    const validation = await nativeDevice.popErrorScope();
-    expect(validation?.message ?? null).toBeNull();
+    // Replay the same lossless container saved as evidence, without materializing
+    // a second uncompressed artifact for this capture.
+    const decoded = decodeTape(compactTape(capture.tape).bytes).unwrap();
+    const model = buildFrameModel(decoded);
+    const draws = model.works.filter((work) => work.attachments?.colorViewHandleIds.length);
+    expect(draws.length).toBeGreaterThan(0);
+    const last = draws.at(-1);
+    const target =
+      last?.attachments?.colorResolveViewHandleIds[0] ?? last?.attachments?.colorViewHandleIds[0];
+    if (last === undefined || target === undefined) throw new Error('missing final output draw');
+    milestonesMs.decoded = performance.now() - started;
+    const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
+    milestonesMs.adapter = performance.now() - started;
+    const device = (
+      await adapter.requestDevice(replayDeviceRequest(decoded, adapter.features, adapter.limits))
+    ).unwrap();
+    milestonesMs.device = performance.now() - started;
+    const nativeDevice = device.nativeDevice().unwrap();
+    nativeDevice.pushErrorScope('validation');
+    const replay = (
+      await openReplay(decoded, { device, createShaderModule: webgpu.createShaderModule })
+    ).unwrap();
+    milestonesMs.opened = performance.now() - started;
+    try {
+      const read = (await replay.readResourceAtWork(target, last.workIndex)).unwrap();
+      milestonesMs.readback = performance.now() - started;
+      const image = readbackImage(read).unwrap();
+      expect(image.width).toBe(SIZE);
+      expect(image.height).toBe(SIZE);
+      comparePixels(toRgba8(image), displayPixels(capture), 1 / 255);
+      const validation = await nativeDevice.popErrorScope();
+      expect(validation?.message ?? null).toBeNull();
+      milestonesMs.verified = performance.now() - started;
+    } finally {
+      (await replay.dispose()).unwrap();
+      webgpu.disposeDevice(device);
+      milestonesMs.disposed = performance.now() - started;
+    }
+    return { workCount: model.works.length, resourceCount: model.resources.length };
   } finally {
-    (await replay.dispose()).unwrap();
-    webgpu.disposeDevice(device);
+    // biome-ignore lint/suspicious/noConsole: Preserve bounded native replay phase receipts.
+    console.info(
+      '[three-render-replay]',
+      JSON.stringify({
+        state: 'end',
+        label,
+        milliseconds: performance.now() - started,
+        milestonesMs,
+      }),
+    );
   }
-  return { workCount: model.works.length, resourceCount: model.resources.length };
+}
+
+/** Two independent immutable captures, each still checked on a fresh device. */
+export function replayChecks() {
+  const slots = [Promise.resolve(), Promise.resolve()];
+  const failures: unknown[] = [];
+  let nextSlot = 0;
+  return {
+    queue(capture: THREE.ThreeFrameCapture, label?: string) {
+      const slot = nextSlot++ % slots.length;
+      slots[slot] = (slots[slot] as Promise<void>)
+        .then(async () => {
+          await verifyReplay(capture, label);
+        })
+        .catch((cause: unknown) => {
+          failures.push(cause);
+        });
+    },
+    async complete() {
+      await Promise.all(slots);
+      if (failures.length > 0)
+        throw new AggregateError(failures, 'Three fresh-device replay failed');
+    },
+  };
 }
 
 export async function verifyRender(
@@ -141,13 +215,26 @@ export async function verifyRender(
     expected: Uint8Array | undefined,
   ) => Promise<void>,
 ) {
+  const replays = replayChecks();
+  try {
+    return await verifyRenderFrames(renderer, oracle, evidence, replays.queue);
+  } finally {
+    await replays.complete();
+  }
+}
+
+async function verifyRenderFrames(
+  renderer: THREE.WebGPURenderer,
+  oracle: Parameters<typeof verifyRender>[1],
+  evidence: Parameters<typeof verifyRender>[2],
+  queueReplay: (capture: THREE.ThreeFrameCapture) => void,
+) {
   const f = testScene();
   await renderer.init();
   await readyFrames(renderer, f.scene, f.camera, 60);
   const capture = await renderer.captureFrame(f.scene, f.camera);
   const baseline = displayPixels(capture);
-  const center = (SIZE * (SIZE / 2) + SIZE / 2) * 4;
-  expect(baseline[center + 1]).toBeGreaterThan(150);
+  expect(baseline[CENTER + 1]).toBeGreaterThan(150);
   expect(baseline[0]).toBe(0);
   const source = capture.sources.find((source) => source.uuid === f.mesh.uuid);
   expect(source?.name).toBe('compatibility-cube');
@@ -166,7 +253,7 @@ export async function verifyRender(
   f.mesh.matrixAutoUpdate = false;
   f.mesh.matrix.set(1, 0.35, 0.2, 0.1, 0, 0.8, -0.2, 0, 0, 0, 1, 0, 0, 0, 0, 1);
   const affine = await coreFrame('manual-affine');
-  expect(displayPixels(affine)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(affine), baseline)).toBe(false);
   const normals = new THREE.MeshStandardMaterial({ color: 0x80b090, roughness: 1 });
   const affineLight = new THREE.DirectionalLight(0xffffff, 3);
   affineLight.position.set(2, 3, 5);
@@ -177,7 +264,7 @@ export async function verifyRender(
   const mirrored = await coreFrame('mirrored-affine');
   // The box is symmetric about local X: reflection changes winding, not its visible surface.
   comparePixels(displayPixels(mirrored), displayPixels(affineNormals), 1 / 255);
-  await verifyReplay(mirrored);
+  queueReplay(mirrored);
   f.mesh.matrix.elements[0] = 1;
   comparePixels(
     displayPixels(await coreFrame('restored-winding')),
@@ -192,20 +279,22 @@ export async function verifyRender(
   f.mesh.matrix.makeTranslation(100, 0, 0);
   comparePixels(displayPixels(await coreFrame('frozen-world')), displayPixels(affine), 1 / 255);
   f.mesh.matrixWorld.makeTranslation(-0.4, 0.3, 0);
-  expect(displayPixels(await coreFrame('world-edit'))).not.toEqual(displayPixels(affine));
-  await verifyReplay(affine);
+  expect(equalBytes(displayPixels(await coreFrame('world-edit')), displayPixels(affine))).toBe(
+    false,
+  );
+  queueReplay(affine);
   f.mesh.matrixAutoUpdate = true;
   f.mesh.matrixWorldAutoUpdate = true;
   f.camera.setViewOffset(SIZE * 2, SIZE * 2, SIZE / 2 + 12, SIZE / 2 - 8, SIZE, SIZE);
   const offset = await coreFrame('view-offset');
-  expect(displayPixels(offset)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(offset), baseline)).toBe(false);
   f.camera.filmOffset = 2;
   f.camera.updateProjectionMatrix();
   const film = await coreFrame('film-offset');
-  expect(displayPixels(film)).not.toEqual(displayPixels(offset));
+  expect(equalBytes(displayPixels(film), displayPixels(offset))).toBe(false);
   f.camera.filmOffset = -2;
   comparePixels(displayPixels(await coreFrame('cached-projection')), displayPixels(film), 1 / 255);
-  await verifyReplay(film);
+  queueReplay(film);
   f.camera.filmOffset = 0;
   f.camera.clearViewOffset();
   const root = new THREE.Group();
@@ -217,7 +306,7 @@ export async function verifyRender(
   cameraParent.add(f.camera);
   cameraParent.updateMatrixWorld(true);
   const parented = await coreFrame('external-camera-parent');
-  expect(displayPixels(parented)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(parented), baseline)).toBe(false);
   cameraParent.position.x = 100;
   comparePixels(
     displayPixels(await coreFrame('cached-camera-parent')),
@@ -236,32 +325,32 @@ export async function verifyRender(
   f.camera.matrixWorldAutoUpdate = false;
   f.camera.matrixWorldInverse.makeTranslation(-0.3, 0, -5);
   const manualView = await coreFrame('manual-view-cache');
-  expect(displayPixels(manualView)).not.toEqual(baseline);
+  expect(equalBytes(displayPixels(manualView), baseline)).toBe(false);
   f.camera.matrixWorld.makeTranslation(100, 0, 0);
   comparePixels(
     displayPixels(await coreFrame('frozen-view-cache')),
     displayPixels(manualView),
     1 / 255,
   );
-  await verifyReplay(manualView);
+  queueReplay(manualView);
   f.camera.matrixWorldAutoUpdate = true;
   f.camera.position.set(3.999999999999998, 2.499999999999999, 5.999999999999997);
   f.camera.lookAt(0, 0.3, 0);
   const orbit = await coreFrame('orbit-camera');
-  expect(displayPixels(orbit)).not.toEqual(baseline);
-  await verifyReplay(orbit);
+  expect(equalBytes(displayPixels(orbit), baseline)).toBe(false);
+  queueReplay(orbit);
   f.camera.position.set(0, 0, 5);
   f.camera.quaternion.identity();
   f.material.color.set(0xee3355);
   await readyFrames(renderer, f.scene, f.camera);
   const changed = await renderer.captureFrame(f.scene, f.camera);
   const changedPixels = displayPixels(changed);
-  expect(changedPixels[center]).toBeGreaterThan(200);
-  expect(changedPixels[center + 1]).toBeLessThan(100);
-  expect(changedPixels).not.toEqual(baseline);
+  expect(changedPixels[CENTER]).toBeGreaterThan(200);
+  expect(changedPixels[CENTER + 1]).toBeLessThan(100);
+  expect(equalBytes(changedPixels, baseline)).toBe(false);
   if (oracle !== undefined) comparePixels(changedPixels, await oracle(f.scene, f.camera));
   // An old tape must remain unchanged after the live source material was edited.
-  await verifyReplay(capture);
+  queueReplay(capture);
   f.scene.remove(f.mesh);
   await readyFrames(renderer, f.scene, f.camera);
   f.scene.add(f.mesh);
@@ -285,7 +374,7 @@ export async function verifyRender(
   const textureOracle = await oracle?.(f.scene, f.camera);
   await evidence?.('texture', textureCapture, textureOracle);
   if (textureOracle !== undefined) comparePixels(textured, textureOracle);
-  expect(textured).not.toEqual(restored);
+  expect(equalBytes(textured, restored)).toBe(false);
   const light = new THREE.DirectionalLight(0xffffff, 2);
   light.position.set(0, 0, 5);
   f.scene.add(light);
@@ -295,12 +384,45 @@ export async function verifyRender(
   const standard = displayPixels(standardCapture);
   const standardOracle = await oracle?.(f.scene, f.camera);
   await evidence?.('standard', standardCapture, standardOracle);
-  expect(standard[center + 1]).toBeGreaterThan(100);
+  expect(standard[CENTER + 1]).toBeGreaterThan(100);
   if (standardOracle !== undefined) comparePixels(standard, standardOracle);
 
+  f.scene.remove(light);
+  await verifyAmbientLights(renderer, f, texture, oracle, evidence, queueReplay);
+  await verifySpotLightMutations(renderer, f, oracle, evidence, queueReplay);
+  f.scene.add(light);
+  const materialFailures = await verifyMaterialMutations(
+    renderer,
+    f,
+    texture,
+    oracle,
+    evidence,
+    queueReplay,
+  );
+  const abort = new AbortController();
+  const pending = renderer.captureFrame(f.scene, f.camera, { signal: abort.signal });
+  expect(() => renderer.render(f.scene, f.camera)).toThrow('renderer-capture-busy');
+  expect(() => renderer.setSize(SIZE / 2, SIZE / 2)).toThrow('renderer-capture-busy');
+  expect(() => renderer.setPixelRatio(2)).toThrow('renderer-capture-busy');
+  expect(renderer.getPixelRatio()).toBe(1);
+  abort.abort();
+  await expect(pending).rejects.toBeDefined();
+  await readyFrames(renderer, f.scene, f.camera);
+  if (materialFailures.length > 0)
+    throw new AggregateError(materialFailures, 'Three material conformance failed');
+  return { capture, replay };
+}
+
+async function verifyAmbientLights(
+  renderer: THREE.WebGPURenderer,
+  f: ReturnType<typeof testScene>,
+  texture: THREE.DataTexture,
+  oracle: Parameters<typeof verifyRender>[1],
+  evidence: Parameters<typeof verifyRender>[2],
+  queueReplay: (capture: THREE.ThreeFrameCapture) => void,
+) {
   // A real migrated Rubik application uses AmbientLight with textured Lambert.
   // Keep ambient separate from image-based specular lighting and direct lights.
-  f.scene.remove(light);
   const ambient = new THREE.AmbientLight(0x80c0ff, 2);
   const ambientParent = new THREE.Group();
   ambientParent.add(ambient);
@@ -333,7 +455,7 @@ export async function verifyRender(
       });
     if (state === 'physical-map') {
       (f.mesh.material as THREE.MeshPhysicalMaterial).map = texture;
-      f.mesh.material.needsUpdate = true;
+      (f.mesh.material as THREE.MeshPhysicalMaterial).needsUpdate = true;
     }
     if (state === 'sum') {
       ambient.intensity = 1;
@@ -353,8 +475,8 @@ export async function verifyRender(
     const expected = await oracle?.(f.scene, f.camera);
     await evidence?.(`ambient-${state}`, frame, expected);
     if (expected !== undefined) comparePixels(actual, expected);
-    if (state === 'hidden' || state === 'removed') expect(actual[center + 1]).toBeLessThan(3);
-    else expect(actual[center + 1]).toBeGreaterThan(30);
+    if (state === 'hidden' || state === 'removed') expect(actual[CENTER + 1]).toBeLessThan(3);
+    else expect(actual[CENTER + 1]).toBeGreaterThan(30);
     if (state === 'physical-map') ambientBaseline = frame;
     if (state === 'sum' || state === 'restore') {
       if (ambientBaseline === undefined) throw new Error('missing ambient baseline');
@@ -362,13 +484,20 @@ export async function verifyRender(
     }
   }
   if (ambientBaseline === undefined) throw new Error('missing ambient replay');
-  await verifyReplay(ambientBaseline);
+  queueReplay(ambientBaseline);
   f.scene.remove(ambientParent);
   f.mesh.material = new THREE.MeshStandardMaterial({ color: 0x50bb80, roughness: 1, metalness: 0 });
+}
 
+async function verifySpotLightMutations(
+  renderer: THREE.WebGPURenderer,
+  f: ReturnType<typeof testScene>,
+  oracle: Parameters<typeof verifyRender>[1],
+  evidence: Parameters<typeof verifyRender>[2],
+  queueReplay: (capture: THREE.ThreeFrameCapture) => void,
+) {
   // Public SpotLight mutations must change native illumination before any
   // adapter-specific debug API is used. The original renderer is independent.
-  f.scene.remove(light);
   const spot = new THREE.SpotLight(0xffffff, 18, 0, 0.3, 0.4, 2);
   spot.position.set(0, 0, 3);
   f.scene.add(spot, spot.target);
@@ -394,25 +523,34 @@ export async function verifyRender(
     await evidence?.(`spot-${state}`, frame, reference);
     if (reference !== undefined) comparePixels(actual, reference);
     if (state === 'baseline') {
-      expect(actual[center + 1]).toBeGreaterThan(100);
+      expect(actual[CENTER + 1]).toBeGreaterThan(100);
       spotBaseline = frame;
       spotPixels = actual;
     } else if (state === 'range' || state === 'target') {
-      expect(actual[center + 1]).toBeLessThan(3);
+      expect(actual[CENTER + 1]).toBeLessThan(3);
     } else if (state === 'power') {
-      expect(actual[center + 1]).toBeLessThan((spotPixels?.[center + 1] ?? 0) - 20);
+      expect(actual[CENTER + 1]).toBeLessThan((spotPixels?.[CENTER + 1] ?? 0) - 20);
     } else if (state === 'hard-edge') {
-      expect(actual).not.toEqual(spotPixels);
+      expect(equalBytes(actual, spotPixels)).toBe(false);
     } else {
       if (spotPixels === undefined || spotBaseline === undefined)
         throw new Error('missing spot frame');
       comparePixels(actual, spotPixels, 1 / 255);
-      await verifyReplay(spotBaseline);
+      queueReplay(spotBaseline);
     }
   }
   f.scene.remove(spot, spot.target);
   spot.dispose();
-  f.scene.add(light);
+}
+
+async function verifyMaterialMutations(
+  renderer: THREE.WebGPURenderer,
+  f: ReturnType<typeof testScene>,
+  texture: THREE.DataTexture,
+  oracle: Parameters<typeof verifyRender>[1],
+  evidence: Parameters<typeof verifyRender>[2],
+  queueReplay: (capture: THREE.ThreeFrameCapture) => void,
+) {
   const materialFailures: unknown[] = [];
   for (const material of [
     new THREE.MeshLambertMaterial({ color: 0x50bb80 }),
@@ -437,7 +575,7 @@ export async function verifyRender(
     await evidence?.(material.type, frame, expected);
     // A ready receipt can contain only the output transform. Require visible
     // source geometry on both backends, including Dawn without the WebGPU oracle.
-    expect(displayPixels(frame)[center + 2]).toBeGreaterThan(30);
+    expect(displayPixels(frame)[CENTER + 2]).toBeGreaterThan(30);
     if (expected !== undefined) {
       try {
         comparePixels(displayPixels(frame), expected);
@@ -467,7 +605,7 @@ export async function verifyRender(
         if (clearcoat === 0) disabled = pixels;
         else if (clearcoat === 0.9) {
           expect(disabled).toBeDefined();
-          expect(pixels[center] as number).toBeGreaterThan((disabled?.[center] ?? 255) + 25);
+          expect(pixels[CENTER] as number).toBeGreaterThan((disabled?.[CENTER] ?? 255) + 25);
         } else comparePixels(pixels, displayPixels(frame), 1 / 255);
         if (reference !== undefined) {
           try {
@@ -490,20 +628,9 @@ export async function verifyRender(
         displayPixels(frame),
         1 / 255,
       );
-      await verifyReplay(frame);
+      queueReplay(frame);
     }
     f.scene.remove(sharedMap);
   }
-  const abort = new AbortController();
-  const pending = renderer.captureFrame(f.scene, f.camera, { signal: abort.signal });
-  expect(() => renderer.render(f.scene, f.camera)).toThrow('renderer-capture-busy');
-  expect(() => renderer.setSize(SIZE / 2, SIZE / 2)).toThrow('renderer-capture-busy');
-  expect(() => renderer.setPixelRatio(2)).toThrow('renderer-capture-busy');
-  expect(renderer.getPixelRatio()).toBe(1);
-  abort.abort();
-  await expect(pending).rejects.toBeDefined();
-  await readyFrames(renderer, f.scene, f.camera);
-  if (materialFailures.length > 0)
-    throw new AggregateError(materialFailures, 'Three material conformance failed');
-  return { capture, replay };
+  return materialFailures;
 }

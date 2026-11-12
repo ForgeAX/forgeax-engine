@@ -8,8 +8,7 @@ import type {
   Result,
 } from '@forgeax/engine-types';
 import { AssetError, beginLoadTimeline, err, ok } from '@forgeax/engine-types';
-import { copyAssetData } from './asset-data';
-import { freezeRuntimePayload } from './immutable-payload.js';
+import { copyAssetData, freezeAssetData } from './asset-data';
 
 interface DecoderEntry {
   readonly identity: symbol;
@@ -180,7 +179,10 @@ export class DecoderRegistry {
         return err(supersededError(input.envelope.guid, kind));
       }
       if (input.signal.aborted) return err(cancelledError(input.envelope.guid));
-      return result.ok ? ok(freezeRuntimePayload(copyAssetData(result.value))) : result;
+      // Decoder output becomes a frozen owner fact. Content already immutable
+      // (a verified Pack document's frozen JSON) keeps its identity; everything
+      // the decoder could still mutate, including every private binary view, is copied.
+      return result.ok ? ok(freezeAssetData(result.value)) : result;
     } catch {
       endDecode(undefined, { ok: false });
       return err({

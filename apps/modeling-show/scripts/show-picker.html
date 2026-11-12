@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Modeling Show · interactive 3D</title>
+<style>
+  body { margin: 0; padding: 24px; background: #0d0f13; color: #e6eaf0; font: 14px/1.5 system-ui, sans-serif; }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+  .muted { color: #8d9aab; }
+  details.archive { margin-top: 28px; }
+  details.archive > summary { cursor: pointer; font-weight: 600; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; margin-top: 18px; }
+  .card { padding: 14px 16px; border: 1px solid rgb(255 255 255 / 14%); border-radius: 8px; background: #151922; }
+  .card h2 { margin: 0 0 6px; font-size: 16px; }
+  .card .open { display: inline-block; margin-top: 10px; padding: 5px 12px; border-radius: 6px; background: #ffb347; color: #111; text-decoration: none; font-weight: 600; }
+  .wip { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: #5b3a10; color: #ffcc80; font-size: 12px; }
+  .fail { margin-top: 8px; padding: 6px 8px; border-radius: 6px; background: #3a1414; color: #ffb4b4; white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace; max-height: 8em; overflow: auto; }
+  code { font: 12px ui-monospace, monospace; color: #b9c6d6; }
+</style>
+</head>
+<body>
+<h1>Modeling Show · interactive 3D</h1>
+<div class="muted">Needs desktop Chrome or Edge with WebGPU. Each subject loads only its own build. Drag to orbit, Shift or right drag to pan, wheel to zoom.</div>
+<div class="muted" id="updated"></div>
+<div class="grid" id="subjects">Loading subjects…</div>
+<script>
+  const age = (iso) => {
+    const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (!Number.isFinite(minutes)) return '';
+    if (minutes < 90) return `${minutes} min ago`;
+    const hours = minutes / 60;
+    return hours < 48 ? `${hours.toFixed(1)} h ago` : `${(hours / 24).toFixed(1)} d ago`;
+  };
+  const text = (tag, value, cls) => {
+    const node = document.createElement(tag);
+    node.textContent = value;
+    if (cls) node.className = cls;
+    return node;
+  };
+  fetch('subjects.json', { cache: 'no-store' })
+    .then((response) => response.json())
+    .then((data) => {
+      document.getElementById('updated').textContent = `Checked ${age(data.updatedAt)}.`;
+      const grid = document.getElementById('subjects');
+      const render = (subject) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        const title = text('h2', subject.title);
+        if (subject.wip) title.append(text('span', 'work in progress', 'wip'));
+        card.append(title);
+        if (subject.note) card.append(text('div', subject.note, 'muted'));
+        card.append(text('div', `Branch ${subject.branch}`, 'muted'));
+        if (subject.available) {
+          card.append(text('div', `Built ${age(subject.builtAt)}`));
+          card.append(text('code', subject.label));
+          for (const line of Object.values(subject.sources ?? {})) if (line) card.append(text('div', `Source: ${line}`, 'muted'));
+          const open = text('a', 'Open', 'open');
+          open.href = `${subject.id}/index.html`;
+          card.append(document.createElement('br'), open);
+        } else {
+          card.append(text('div', 'No build yet.', 'muted'));
+        }
+        if (subject.failure) {
+          card.append(text("div", `Latest rebuild failed ${age(subject.failure.at)}${subject.available ? "; showing the last good build" : ""}.`, "muted"));
+          card.append(text('div', subject.failure.reason, 'fail'));
+        }
+        return card;
+      };
+      const archived = data.subjects.filter((subject) => subject.archive);
+      grid.replaceChildren(...data.subjects.filter((subject) => !subject.archive).map(render));
+      if (archived.length > 0) {
+        const details = document.createElement('details');
+        details.className = 'archive';
+        details.append(text('summary', `Archive (${archived.length})`));
+        const inner = document.createElement('div');
+        inner.className = 'grid';
+        inner.append(...archived.map(render));
+        details.append(inner);
+        grid.after(details);
+      }
+    })
+    .catch((error) => {
+      document.getElementById('subjects').textContent = `Could not read subjects.json: ${error}`;
+    });
+</script>
+</body>
+</html>

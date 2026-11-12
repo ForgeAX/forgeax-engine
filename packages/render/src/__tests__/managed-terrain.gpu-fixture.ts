@@ -4,11 +4,23 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Terrain } from '@forgeax/engine-terrain';
 import { standardSurfaceParameters } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
-import { createRenderer } from '../assembly/factory';
+
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
+import { createRenderer, exposeRenderer } from '../assembly/factory';
+
 import { samplerContribution } from '../assets/asset-decoders';
 import { Camera, DirectionalLight } from '../components';
+import type { FrameReceipt } from '../render-contract';
 
-export async function verifyRuntimeTerrain(encoding: 'weights' | 'ids', url: string) {
+export async function verifyRuntimeTerrain(
+  encoding: 'weights' | 'ids',
+  url: string,
+  portable?: {
+    readonly renderer: Awaited<ReturnType<typeof createRenderer>>;
+    readonly capture: (draw: () => Promise<FrameReceipt>) => Promise<number[][]>;
+    readonly captureWork?: (draw: () => Promise<FrameReceipt>) => Promise<void>;
+  },
+) {
   let device: GPUDevice | undefined;
   let target: GPUTexture | undefined;
   let format: GPUTextureFormat = 'rgba8unorm';
@@ -32,20 +44,23 @@ export async function verifyRuntimeTerrain(encoding: 'weights' | 'ids', url: str
     },
     unconfigure() {},
   };
-  const renderer = await createRenderer(
-    { width: 64, height: 64, getContext: (kind: string) => (kind === 'webgpu' ? context : null) },
-    undefined,
-    { shaderManifestUrl: url },
-    {
-      rhi,
-      createShaderModule: (device, descriptor) => rhi.createShaderModule(device, descriptor),
-      createShaderModuleImmediate: (device, descriptor) =>
-        rhi.createShaderModuleImmediate(device, descriptor),
-    },
-  );
+  const renderer =
+    portable?.renderer ??
+    (await createRenderer(
+      { width: 64, height: 64, getContext: (kind: string) => (kind === 'webgpu' ? context : null) },
+      undefined,
+      { shaderManifestUrl: url },
+      {
+        rhi,
+        createShaderModule: (device, descriptor) => rhi.createShaderModule(device, descriptor),
+        createShaderModuleImmediate: (device, descriptor) =>
+          rhi.createShaderModuleImmediate(device, descriptor),
+      },
+    ));
   renderer.onError((error) => failures.push(error));
   const initialized = await renderer.initialization;
   assert(initialized.ok, initialized.ok ? undefined : initialized.error.message);
+  const publicRenderer = exposeRenderer(renderer);
   const assets = renderer.assetRegistry;
   assets.installDecoder(samplerContribution.kind, samplerContribution.decoder);
   const world = new World({ assets });
@@ -125,17 +140,18 @@ export async function verifyRuntimeTerrain(encoding: 'weights' | 'ids', url: str
       { component: Terrain, data: { asset: root, forcedLod: 0 } },
     )
     .unwrap();
+  const draw = async () => {
+    world.update().unwrap();
+    return drawReadyFrame(publicRenderer, {
+      leases: [lease],
+      camera: { lease },
+      environment: { lease },
+    });
+  };
   const read = async () => {
-    for (let frame = 0; frame < 20; frame++) {
-      world.update().unwrap();
-      const drawn = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-      assert(
-        drawn.ok,
-        drawn.ok ? undefined : `${drawn.error.message}: ${JSON.stringify(failures)}`,
-      );
-      if (device === undefined) throw new Error('Missing configured GPU device');
-      await device.queue.onSubmittedWorkDone();
-    }
+    await portable?.captureWork?.(draw);
+    for (let frame = 0; frame < 60; frame++) await draw();
+    if (portable !== undefined) return portable.capture(draw);
     if (device === undefined || target === undefined)
       throw new Error('Missing configured GPU target');
     const nativeDevice = device,
@@ -210,7 +226,7 @@ export async function verifyRuntimeTerrain(encoding: 'weights' | 'ids', url: str
     expect(world.get(entity, Terrain).unwrap().asset).toBe(root);
     expect(failures).toEqual([]);
   } finally {
-    const disposed = renderer.dispose();
+    const disposed = await renderer.dispose();
     assert(disposed.ok, disposed.ok ? undefined : disposed.error.message);
     target?.destroy();
   }

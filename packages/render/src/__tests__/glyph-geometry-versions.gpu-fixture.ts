@@ -69,7 +69,7 @@ export async function verifyGlyphGeometryVersions() {
   change.accept();
   const next = sources.resolve(worldRenderResources(world), source, assets).mesh;
   const nextGpu = store.ensureGeneratedMesh(next).unwrap();
-  expect(nextGpu.vertexBuffer).not.toBe(oldGpu.vertexBuffer);
+  expect(Object.is(nextGpu.vertexBuffer, oldGpu.vertexBuffer)).toBe(false);
   const shader = (
     await createShaderModule(device, {
       code: `

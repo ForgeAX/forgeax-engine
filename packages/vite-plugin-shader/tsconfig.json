@@ -13,6 +13,7 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../codec" },
     { "path": "../pack" },
     { "path": "../types" },
     { "path": "../shader-compiler" },

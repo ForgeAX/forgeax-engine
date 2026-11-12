@@ -10,6 +10,7 @@ import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 import type { MaterialFrame } from '../scene/material-dispatch';
 import type { MeshFrame } from '../scene/mesh-frame';
+import { hasRasterDemand } from '../scene/raster-demand';
 import type { RenderSceneApplyResult, RenderSceneSlot } from '../scene/render-scene-types';
 import { projectedHeight as measureProjectedHeight } from '../scene/visibility/lod-selector';
 import { type BatchGeometry, captureBatchGeometry } from './batch-execution';
@@ -445,7 +446,7 @@ function eligibleDrawsUncached(
 ): readonly EligibleGpuDrivenDraw[] {
   // Authored hiding removes raster demand; per-view culling retains membership.
   // Explicit candidate preparation consumes eligibleGpuDrivenDraws directly.
-  if (snapshot.authorVisible === false) return [];
+  if (!hasRasterDemand(snapshot)) return [];
   const rowClass = rowGroup?.text;
   const draws = rowMaterialDraws(eligibleGpuDrivenDraws(snapshot), snapshot, rowGroup);
   const first = draws[0];
@@ -1030,7 +1031,9 @@ export class BatchTopology {
     projection?: MembershipProjection,
   ): boolean {
     if (draws.length === 0) {
-      this.unbatched = this.unbatched.with(slot.slot);
+      this.unbatched = hasRasterDemand(slot.snapshot)
+        ? this.unbatched.with(slot.slot)
+        : this.unbatched.without(slot.slot);
       return false;
     }
     this.unbatched = this.unbatched.without(slot.slot);

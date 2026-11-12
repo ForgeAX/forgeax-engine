@@ -12,6 +12,7 @@ import { LOD_VIEW_CONSTANTS_BYTES, writeLodViewConstants } from '../gpu-driven/l
 import { lodViewCameraFromMatrix } from '../gpu-driven/production-raster-lod';
 import { ShadowCasterClassifier } from '../gpu-driven/shadow-caster-classes';
 import {
+  POINT_SELECTION_BATCH_PASS,
   type ShadowViewIdentity,
   ShadowViewStatePool,
   type ShadowViewUpdateInput,
@@ -156,6 +157,7 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
   updateShadowView(pool, input).unwrap();
   pool._commitResourceReplacement();
   return {
+    device,
     pool,
     input,
     identity,
@@ -168,6 +170,206 @@ async function lodShadowFixture(extra: Partial<ShadowViewUpdateInput> = {}, coun
 }
 
 describe('GPU-driven shadow view owner contract', () => {
+  it('retains equal owned clipping evidence across rebuilds and detaches changed values', async () => {
+    const f = await lodShadowFixture({ matrix: mat4.identity(mat4.create()) });
+    const view = f.pool.submission(f.identity)?.view;
+    if (view === undefined) throw Error('missing shadow view');
+    const update = vi.spyOn(view, 'update');
+    const rebuild = (fixed: boolean) => {
+      f.pool.invalidate('artifact-changed', f.identity);
+      return updateShadowView(f.pool, f.input, fixed ? f.input.sourcePlan : undefined).unwrap();
+    };
+    try {
+      rebuild(true);
+      const first = update.mock.calls.at(-1)?.[3];
+      expect(first).not.toBe(f.input.planes);
+      rebuild(true);
+      expect(update.mock.calls.at(-1)?.[3]).toBe(first);
+      const old = Array.from(first ?? []);
+      f.input.planes[3] = (f.input.planes[3] as number) + 1;
+      rebuild(true);
+      const changed = update.mock.calls.at(-1)?.[3];
+      expect(changed).not.toBe(first);
+      expect(Array.from(first ?? [])).toEqual(old);
+      expect(changed?.[3]).toBe(f.input.planes[3]);
+      rebuild(false);
+      expect(update.mock.calls.at(-1)?.[3]).not.toBe(changed);
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('keeps the submitted culling mode when a delayed count crosses a record rebuild', async () => {
+    const matrix = mat4.identity(mat4.create());
+    const f = await lodShadowFixture({ matrix, targetSize: 64 });
+    try {
+      const view = f.pool.submission(f.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      type Counts = Awaited<ReturnType<typeof view.readCullingCounts>>;
+      let finish: (counts: Counts) => void = () => {
+        throw new Error('Missing pending read');
+      };
+      const read = vi.spyOn(view, 'readCullingCounts').mockImplementationOnce(
+        () =>
+          new Promise<Counts>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      f.pool.invalidate('view-changed');
+      updateShadowView(f.pool, f.input).unwrap();
+      f.pool._commitResourceReplacement();
+      expect(read).toHaveBeenCalledTimes(1);
+      view.cameraCullBound = true;
+      f.pool.invalidate('view-changed');
+      updateShadowView(f.pool, {
+        ...f.input,
+        cameraCull: {
+          camera: {
+            viewProjection: matrix,
+            near: 0.1,
+            far: 100,
+            orthographic: true,
+            historyKey: 'main',
+          },
+          ndcDilation: 0.01,
+          worldDilation: 0,
+        },
+      }).unwrap();
+      finish({ texelCulled: 5, cameraCulled: 777 });
+      await Promise.resolve();
+      expect(f.pool.texelCulled(f.identity)).toBe(5);
+      expect(f.pool.cameraCulled(f.identity)).toBeUndefined();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('demands the counts copy only for views whose counts are read after submit', async () => {
+    const unread = await lodShadowFixture();
+    try {
+      const view = unread.pool.submission(unread.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      const demand = vi.spyOn(view, '_setCullingReadbackDemand');
+      const read = vi.spyOn(view, 'readCullingCounts');
+      unread.pool.invalidate('view-changed');
+      updateShadowView(unread.pool, unread.input).unwrap();
+      unread.pool._commitResourceReplacement();
+      expect(demand).toHaveBeenLastCalledWith(false);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      unread.dispose();
+    }
+    const counted = await lodShadowFixture({
+      matrix: mat4.identity(mat4.create()),
+      targetSize: 64,
+    });
+    try {
+      const view = counted.pool.submission(counted.identity)?.view;
+      if (view === undefined) throw new Error('Missing fixture view');
+      const demand = vi.spyOn(view, '_setCullingReadbackDemand');
+      const read = vi.spyOn(view, 'readCullingCounts');
+      counted.pool.invalidate('view-changed');
+      updateShadowView(counted.pool, counted.input).unwrap();
+      counted.pool._commitResourceReplacement();
+      expect(demand).toHaveBeenLastCalledWith(true);
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally {
+      counted.dispose();
+    }
+  });
+
+  it('selects every point-face view in one compute pass ahead of their readbacks', async () => {
+    const f = await lodShadowFixture();
+    const faces: readonly ShadowViewIdentity[] = [
+      { kind: 'point', index: 0, face: 0 },
+      { kind: 'point', index: 0, face: 0, layer: 'static' },
+      { kind: 'point', index: 0, face: 1 },
+    ];
+    try {
+      for (const identity of faces) updateShadowView(f.pool, { ...f.input, identity }).unwrap();
+      const graph = new RenderGraphBuilder<{ readonly encoder: RhiCommandEncoder }>();
+      const directional = f.pool.project(graph, f.identity, true, undefined, true).unwrap();
+      const projected = faces.map((identity) =>
+        f.pool.project(graph, identity, true, undefined, true).unwrap(),
+      );
+      expect(directional.passNames).toEqual([
+        'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+      ]);
+      for (const projection of projected) {
+        expect(projection.passNames).toEqual([POINT_SELECTION_BATCH_PASS]);
+      }
+      // A second projection of the same face reuses the batch, not a new pass.
+      expect(f.pool.project(graph, faces[0] as ShadowViewIdentity, true, undefined, true).ok).toBe(
+        true,
+      );
+      const device = f.device;
+      const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } }).unwrap();
+      expect(compiled.inspect().passes.map((pass) => pass.name)).toEqual([
+        'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+        'gpu-driven.shadow.directional-cascade-0.static.lod-selection-readback',
+        POINT_SELECTION_BATCH_PASS,
+        'gpu-driven.shadow.point-cube-face-0-0.lod-selection-readback',
+        'gpu-driven.shadow.point-cube-face-0-0.static.lod-selection-readback',
+        'gpu-driven.shadow.point-cube-face-0-1.lod-selection-readback',
+      ]);
+      const encoder = device.createCommandEncoder().unwrap();
+      const passes: string[] = [];
+      let dispatches = 0;
+      const begin = encoder.beginComputePass.bind(encoder);
+      vi.spyOn(encoder, 'beginComputePass').mockImplementation((descriptor) => {
+        passes.push(descriptor?.label ?? '');
+        const pass = begin(descriptor);
+        const dispatch = pass.dispatchWorkgroups.bind(pass);
+        pass.dispatchWorkgroups = (...args) => {
+          dispatches++;
+          dispatch(...args);
+        };
+        return pass;
+      });
+      compiled.execute({ encoder }).unwrap();
+      expect(passes).toEqual([
+        'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+        POINT_SELECTION_BATCH_PASS,
+      ]);
+      // reset + compact (cull, order scan, order place) + finalize for each of the four views.
+      expect(dispatches).toBe(4 * 5);
+      (await compiled.retire()).unwrap();
+    } finally {
+      f.dispose();
+    }
+  });
+
+  it('rejects a retired physical view count after its logical identity is recreated', async () => {
+    const f = await lodShadowFixture({ matrix: mat4.identity(mat4.create()), targetSize: 64 });
+    try {
+      const oldView = f.pool.submission(f.identity)?.view;
+      if (oldView === undefined) throw new Error('Missing fixture view');
+      type Counts = Awaited<ReturnType<typeof oldView.readCullingCounts>>;
+      let finish: (counts: Counts) => void = () => {
+        throw new Error('Missing pending read');
+      };
+      vi.spyOn(oldView, 'readCullingCounts').mockImplementationOnce(
+        () =>
+          new Promise<Counts>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      f.pool.invalidate('view-changed');
+      updateShadowView(f.pool, f.input).unwrap();
+      f.pool._commitResourceReplacement();
+      f.pool.retain([]);
+      f.pool._commitResourceReplacement();
+      updateShadowView(f.pool, f.input).unwrap();
+      expect(f.pool.submission(f.identity)?.view).not.toBe(oldView);
+      finish({ texelCulled: 5, cameraCulled: 777 });
+      await Promise.resolve();
+      expect(f.pool.texelCulled(f.identity)).toBeUndefined();
+      expect(f.pool.cameraCulled(f.identity)).toBeUndefined();
+    } finally {
+      f.dispose();
+    }
+  });
+
   it('refreshes active Skin depth from current data even when retired root addresses are reused', async () => {
     const f = await lodShadowFixture();
     const skin = new SkinInputs(f.input.scene.inputs.arena);
@@ -1323,7 +1525,7 @@ describe('GPU-driven shadow view owner contract', () => {
     // Entity 2 moves from x=50 to x=60: both boxes lie outside the unit clip volume.
     scene.sync(projection.apply([updateSnapshot(at(2, 60))]), undefined, boundsOf).unwrap();
     expect(updateShadowView(pool, input).unwrap().cache).toBe('hit');
-    expect(scene.changedBoundsSince(scene.contentRevision)).toHaveLength(0);
+    expect(scene.changedBoundsSince(scene.contentCursor)).toHaveLength(0);
 
     // Moving into the view is a new box inside it.
     scene.sync(projection.apply([updateSnapshot(at(2, 0.5))]), undefined, boundsOf).unwrap();
@@ -1480,9 +1682,10 @@ describe('GPU-driven shadow view owner contract', () => {
     );
 
     // The dynamic caster moves inside the view: the static layer stays cached.
+    const before = scene.scene.contentCursor;
     scene.scene.sync(projection.apply([updateSnapshot(at(2, 0.5))]), undefined, boundsOf).unwrap();
     expect(updateShadowView(pool, input).unwrap().cache).toBe('hit');
-    expect(scene.scene.changedSlotsSince(scene.scene.contentRevision - 1)).toEqual([1]);
+    expect(scene.scene.changedSlotsSince(before)).toEqual([1]);
 
     // The static caster moves inside the view: the static layer re-rasters.
     scene.scene.sync(projection.apply([updateSnapshot(at(1, 0.5))]), undefined, boundsOf).unwrap();

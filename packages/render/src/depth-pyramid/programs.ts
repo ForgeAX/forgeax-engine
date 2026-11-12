@@ -8,6 +8,7 @@ import {
 } from '../compute-graph-state';
 import type { DeviceScope } from '../device/device-scope';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 
 type Variant =
   | 'seed'
@@ -67,7 +68,7 @@ export function createDepthPyramidProgramResolver(
     const factory = runtime?.shaderModuleFactory;
     if (factory === undefined) throw computePipelineError(`depth_pyramid_${stage} shader module`);
     const { device } = runtime;
-    const scope = (runtime as { readonly deviceScope?: DeviceScope }).deviceScope;
+    const scope = recordContext(runtime as { readonly deviceScope?: DeviceScope }).deviceScope;
     let programs: Programs;
     if (scope === undefined) {
       if (local?.device !== device) local = { device, entries: new Map() };

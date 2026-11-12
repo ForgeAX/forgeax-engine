@@ -29,7 +29,6 @@ import {
 
 const CUBE_SCALE = 0.32;
 const FIXED_DELTA_SECONDS = 1 / 60;
-const MAX_FRAMES = 600;
 
 export interface ThreePerfEvidence {
   readonly implementation: 'three';
@@ -72,6 +71,10 @@ const canvas = document.querySelector<HTMLCanvasElement>('#app');
 if (canvas === null) throw new Error('[three-10k-cubes-lights] missing <canvas id="app">');
 
 const params = new URLSearchParams(window.location.search);
+const MAX_FRAMES = Number(params.get('frameLimit') ?? 600);
+if (!Number.isSafeInteger(MAX_FRAMES) || MAX_FRAMES < 1 || MAX_FRAMES > 100_000) {
+  throw new Error('[three-10k-cubes-lights] frameLimit must be an integer in [1, 100000]');
+}
 const parsed = parseWorkloadOptions(params);
 if (!parsed.ok) {
   console.error(`[three-10k-cubes-lights] ${parsed.error.code}: ${parsed.error.hint}`);
@@ -88,7 +91,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
   const renderer = new WebGPURenderer({ canvas: target, antialias: false, forceWebGL: false });
   await renderer.init();
   renderer.setPixelRatio(1);
-  // The drawing buffer follows CSS size × devicePixelRatio, as the ForgeaX
+  // The drawing buffer follows CSS size × devicePixelRatio, as the ForgeAX
   // page does, so both implementations shade the same pixel count.
   const fitDrawingBuffer = (): void => {
     const ratio = window.devicePixelRatio || 1;
@@ -108,7 +111,7 @@ async function bootstrap(target: HTMLCanvasElement, options: WorkloadOptions): P
 
   const geometry = new BoxGeometry(1, 1, 1);
   const material = new MeshStandardMaterial({
-    // ForgeaX's built-in `color` material parameters are authored in sRGB and
+    // ForgeAX's built-in `color` material parameters are authored in sRGB and
     // extracted to linear RGB. Three's numeric Color constructor is already
     // linear, so name the authored color space here to compare the same
     // material instead of giving Three a substantially brighter albedo.

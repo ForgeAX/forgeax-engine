@@ -3,16 +3,14 @@ import { vec3 } from '@forgeax/engine-math';
 import { Camera, PointLight, SpotLight } from '@forgeax/engine-render';
 import { Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
+import { packTestDirectLightSlot as packDirectLightSlot } from '../../../render/src/__tests__/cluster-test-abi';
 import {
   computeInvRangeSquared,
   degToCos,
   validatePointLightShadowData,
   validateSpotLightData,
 } from '../../../render/src/components/light-helpers';
-import {
-  DIRECT_LIGHT_SLOT_KIND_MASK,
-  packDirectLightSlot,
-} from '../../../render/src/light-buffer-layout';
+import { DIRECT_LIGHT_SLOT_KIND_MASK } from '../../../render/src/light-buffer-layout';
 import { buildPbrViewBglEntries } from '../../../render/src/pbr-pipeline';
 import type {
   PointLightSnapshot,

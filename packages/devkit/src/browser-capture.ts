@@ -20,10 +20,12 @@ import {
 } from 'playwright';
 import type { ViteDevServer } from 'vite';
 import { type CaptureRendererError, captureRenderFailure } from './capture-render-failure.js';
+import type { StartupUiState } from './host/startup-ui.js';
 import { createViteConfig } from './host.js';
 import { type DevKitHostBinding, hostBindingError } from './host-binding.js';
 import { publicPageUrl } from './live-bridge-url.js';
 import { commandError, readProjectFacts } from './project.js';
+import { traceDevStartup } from './startup-timing.js';
 import type { BrowserCarrierTarget, BrowserExecutionTarget } from './tools/display-carrier.js';
 import { acquireBrowserCarrierPage } from './tools/display-carrier.js';
 import type {
@@ -82,6 +84,14 @@ export interface BrowserCaptureRequestWitness {
   readonly failed: boolean;
   readonly failure: string | null;
   readonly resourceMiss: boolean;
+  /** Opt-in startup diagnostics. Phase offsets are milliseconds; -1 is unobserved. */
+  readonly timing?: {
+    readonly startTime: number;
+    readonly requestStart: number;
+    readonly responseStart: number;
+    readonly responseEnd: number;
+  };
+  readonly freshnessMs?: number;
 }
 
 export interface BrowserCaptureRequestReport {
@@ -98,7 +108,7 @@ export interface BrowserCaptureRequestReport {
    * request of a single-HTML target. An ok run counts the remaining requests only.
    */
   readonly notable: readonly BrowserCaptureRequestWitness[];
-  /** Every request, kept whenever the run is not ok. */
+  /** Every request, kept on failure or with FORGEAX_WORKSPACE_TIMING=1. */
   readonly entries?: readonly BrowserCaptureRequestWitness[];
 }
 
@@ -496,11 +506,15 @@ export function browserLaunchArgs(
     );
   }
   if (backend !== 'software') return common;
+  // The software lane is a test-host fallback, not the player's browser: Chrome only
+  // exposes a SwiftShader adapter behind the unsafe flag, so every profile needs it.
+  const unsafe = common.includes('--enable-unsafe-webgpu') ? [] : ['--enable-unsafe-webgpu'];
   if (process.platform === 'win32') {
-    return [...common, '--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader'];
+    return [...common, ...unsafe, '--use-webgpu-adapter=swiftshader'];
   }
   return [
     ...common,
+    ...unsafe,
     '--enable-features=Vulkan',
     '--use-vulkan=swiftshader',
     '--use-angle=swiftshader',
@@ -727,6 +741,16 @@ async function composedCanvasPixels(
   return after.pixels.rendered ? pixels : after.pixels;
 }
 
+/** Canvas readiness precedes the Host's cosmetic fade; its hidden state owns unobscured UI. */
+async function waitForCaptureCover(
+  realm: Page | Frame,
+  diagnostic: boolean,
+  timeout: number,
+): Promise<void> {
+  if (diagnostic) return;
+  await realm.locator('#forgeax-loading').waitFor({ state: 'hidden', timeout });
+}
+
 function rejectCapture(record: BrowserCaptureRecord, reportPath: string): never {
   const renderFailure = captureRenderFailure(record);
   const rendererError = record.runtime.rendererError;
@@ -779,14 +803,27 @@ export async function runtimeWitness(
         }
       }
       const frameId = progress?.submitted?.frameId;
-      const fatal = document.querySelector('#forgeax-fatal');
-      const fatalError = fatal?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
-        ? (
-            document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
-            fatal.textContent?.trim() ||
-            'Engine execution failed'
-          ).slice(0, 16_384)
-        : null;
+      const inspectStartupFailure = (): string | null => {
+        const startup = (
+          Reflect.get(globalThis, '__forgeaxStartup') as { inspect?(): StartupUiState } | undefined
+        )?.inspect?.();
+        if (startup !== undefined) {
+          if (startup.phase !== 'failed' || startup.recovery === 'retrying') return null;
+          return (startup.diagnostics || startup.message || 'Engine execution failed').slice(
+            0,
+            16_384,
+          );
+        }
+        const fatal = document.querySelector('#forgeax-fatal');
+        return fatal?.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+          ? (
+              document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
+              fatal.textContent?.trim() ||
+              'Engine execution failed'
+            ).slice(0, 16_384)
+          : null;
+      };
+      const fatalError = inspectStartupFailure();
       let rendererError: unknown = null;
       try {
         const inspection = Reflect.get(globalThis, '__forgeaxGameInspection') as
@@ -857,6 +894,33 @@ interface MutableRequestWitness extends BrowserCaptureRequestWitness {
   failed: boolean;
   failure: string | null;
   resourceMiss: boolean;
+  timing?: NonNullable<BrowserCaptureRequestWitness['timing']>;
+  freshnessMs?: number;
+}
+
+function observeRequestTiming(request: Request, record: MutableRequestWitness): void {
+  // Timing observation must not change capture success for a missing target or
+  // a carrier that cannot report a completed request.
+  try {
+    if (typeof request.timing !== 'function') return;
+    const { startTime, requestStart, responseStart, responseEnd } = request.timing();
+    record.timing = { startTime, requestStart, responseStart, responseEnd };
+  } catch {}
+}
+
+function installFinishedRequestTiming(
+  page: Page,
+  records: ReadonlyMap<Request, MutableRequestWitness>,
+  cleanups: Array<() => void>,
+  enabled: boolean,
+): void {
+  if (!enabled) return;
+  const finished = (request: Request) => {
+    const record = records.get(request);
+    if (record !== undefined) observeRequestTiming(request, record);
+  };
+  page.on('requestfinished', finished);
+  cleanups.push(() => page.off?.('requestfinished', finished));
 }
 
 function requestProtocol(url: string): string | undefined {
@@ -877,7 +941,7 @@ function requestRecord(
   const requestDocument = url.split(/[?#]/, 1)[0];
   const candidateDocument = candidateUrl.split(/[?#]/, 1)[0];
   return {
-    url,
+    url: protocol === undefined ? url : publicPageUrl(url),
     resourceType: request.resourceType(),
     status: null,
     failed: false,
@@ -930,8 +994,11 @@ function reportedRequests(
   records: readonly MutableRequestWitness[],
   summary: BrowserCaptureRequestReport,
   ok: boolean,
+  traceRequests = false,
 ): BrowserCaptureRequestReport {
-  return ok ? summary : { ...summary, entries: records.map((record) => ({ ...record })) };
+  return ok && !traceRequests
+    ? summary
+    : { ...summary, entries: records.map((record) => ({ ...record })) };
 }
 
 function singleHtmlRuntimeClean(
@@ -1466,6 +1533,7 @@ async function openBrowserCaptureSession(
     const pageErrors: string[] = [];
     const inputWarnings: string[] = [];
     const requestRecords: MutableRequestWitness[] = [];
+    const traceRequests = process.env.FORGEAX_WORKSPACE_TIMING === '1';
     const requestByObject = new Map<Request, MutableRequestWitness>();
     const pageListenerCleanups: Array<() => void> = [];
     removePageListeners = (): void => {
@@ -1515,7 +1583,11 @@ async function openBrowserCaptureSession(
         // The early launch is the initial backend's; a software relaunch starts its own.
         const launching = earlyLaunch ?? launch(launchBackend);
         earlyLaunch = undefined;
-        ({ browser, page, release: releaseBrowser } = await launching);
+        ({
+          browser,
+          page,
+          release: releaseBrowser,
+        } = await traceDevStartup('browser-launch-wait', () => launching));
       }
       const activePage = page;
       if (activePage === undefined) throw new Error('browser carrier did not provide a page');
@@ -1552,22 +1624,49 @@ async function openBrowserCaptureSession(
       const onRequest = (request: Request) => {
         if (targetFrame !== undefined && request.frame() !== targetFrame) return;
         const record = requestRecord(request, target, captureUrl.href);
+        if (traceRequests) observeRequestTiming(request, record);
         requestRecords.push(record);
         requestByObject.set(request, record);
       };
       const onResponse = (response: Response) => {
         if (targetFrame !== undefined && response.frame() !== targetFrame) return;
         markResponse(requestByObject, response);
+        if (traceRequests) {
+          const request = response.request();
+          const record = requestByObject.get(request);
+          if (record !== undefined) {
+            observeRequestTiming(request, record);
+            const value =
+              typeof response.headers === 'function'
+                ? response.headers()['server-timing']
+                : undefined;
+            const durations = [
+              ...(value ?? '').matchAll(/(?:^|,)\s*forgeax-freshness;dur=([\d.]+)/g),
+            ]
+              .map((match) => Number(match[1]))
+              .filter(Number.isFinite);
+            if (durations.length > 0)
+              record.freshnessMs = durations.reduce((total, duration) => total + duration, 0);
+          }
+        }
       };
       const onRequestFailed = (request: Request) => {
         if (targetFrame !== undefined && request.frame() !== targetFrame) return;
         markFailed(requestByObject, request);
+        const record = requestByObject.get(request);
+        if (traceRequests && record !== undefined) observeRequestTiming(request, record);
       };
       activePage.on('console', onConsole);
       activePage.on('pageerror', onPageError);
       activePage.on('request', onRequest);
       activePage.on('response', onResponse);
       activePage.on('requestfailed', onRequestFailed);
+      installFinishedRequestTiming(
+        activePage,
+        requestByObject,
+        pageListenerCleanups,
+        traceRequests,
+      );
       pageListenerCleanups.push(
         () => activePage.off?.('console', onConsole),
         () => activePage.off?.('pageerror', onPageError),
@@ -1575,27 +1674,43 @@ async function openBrowserCaptureSession(
         () => activePage.off?.('response', onResponse),
         () => activePage.off?.('requestfailed', onRequestFailed),
       );
-      await activeRealm.goto(captureUrl.href, {
-        waitUntil: 'domcontentloaded',
-        timeout: startupTimeoutMs,
-      });
+      await traceDevStartup('browser-navigation', () =>
+        activeRealm.goto(captureUrl.href, {
+          waitUntil: 'domcontentloaded',
+          timeout: startupTimeoutMs,
+        }),
+      );
       const readinessDeadline = Date.now() + startupTimeoutMs;
       while (true) {
-        await activeRealm.waitForFunction(
-          (requireUi) => {
-            if (document.querySelector('#forgeax-fatal')?.checkVisibility()) return true;
-            const canvas = document.querySelector('canvas');
-            if (!(canvas instanceof HTMLCanvasElement) || canvas.width <= 0 || canvas.height <= 0)
-              return false;
-            if (!requireUi) return true;
-            const uiRoot = document.querySelector('#game-ui');
-            return uiRoot !== null && uiRoot.childElementCount > 0;
-          },
-          options.requireUi === true,
-          { timeout: Math.max(1, readinessDeadline - Date.now()) },
+        await traceDevStartup('browser-canvas-ready', () =>
+          activeRealm.waitForFunction(
+            (requireUi) => {
+              const startup = (
+                Reflect.get(globalThis, '__forgeaxStartup') as
+                  | { inspect?(): StartupUiState }
+                  | undefined
+              )?.inspect?.();
+              if (startup?.phase === 'failed' && startup.recovery !== 'retrying') return true;
+              if (
+                startup === undefined &&
+                document.querySelector('#forgeax-fatal')?.checkVisibility()
+              )
+                return true;
+              const canvas = document.querySelector('canvas');
+              if (!(canvas instanceof HTMLCanvasElement) || canvas.width <= 0 || canvas.height <= 0)
+                return false;
+              if (!requireUi) return true;
+              const uiRoot = document.querySelector('#game-ui');
+              return uiRoot !== null && uiRoot.childElementCount > 0;
+            },
+            options.requireUi === true,
+            { timeout: Math.max(1, readinessDeadline - Date.now()) },
+          ),
         );
         try {
-          return await runtimeWitness(activeRealm);
+          return await traceDevStartup('browser-runtime-witness', () =>
+            runtimeWitness(activeRealm),
+          );
         } catch (error) {
           // A development reload can destroy the asynchronous adapter probe
           // after readiness. Recheck the replacement document within the same
@@ -1661,7 +1776,12 @@ async function openBrowserCaptureSession(
       display: display.value ?? null,
       lavapipeIcd: icd ?? null,
       captures,
-      requests: reportedRequests(requestRecords, summarizeRequests(requestRecords, target), false),
+      requests: reportedRequests(
+        requestRecords,
+        summarizeRequests(requestRecords, target),
+        false,
+        traceRequests,
+      ),
       singleHtml: runtime.singleHtml,
       consoleErrors,
       pageErrors,
@@ -1681,7 +1801,7 @@ async function openBrowserCaptureSession(
         latestRuntime?.fatalError == null &&
         singleHtmlRuntimeClean(target, latestRuntime, requests);
       Object.assign(report, {
-        requests: reportedRequests(requestRecords, requests, ok),
+        requests: reportedRequests(requestRecords, requests, ok, traceRequests),
         singleHtml: latestRuntime?.singleHtml ?? null,
         ok,
       });
@@ -1786,11 +1906,18 @@ async function openBrowserCaptureSession(
             ({ afterFrameId }) => {
               const frameId =
                 document.querySelector('canvas')?.forgeaxFrameProgress?.submitted?.frameId;
+              const startup = (
+                Reflect.get(globalThis, '__forgeaxStartup') as
+                  | { inspect?(): StartupUiState }
+                  | undefined
+              )?.inspect?.();
               return (
                 (Number.isSafeInteger(frameId) &&
                   frameId !== undefined &&
                   frameId > afterFrameId) ||
-                document.querySelector('#forgeax-fatal')?.checkVisibility() === true
+                (startup === undefined
+                  ? document.querySelector('#forgeax-fatal')?.checkVisibility() === true
+                  : startup.phase === 'failed' && startup.recovery !== 'retrying')
               );
             },
             { afterFrameId: captureOptions.afterFrameId ?? 0 },
@@ -1800,9 +1927,19 @@ async function openBrowserCaptureSession(
         if (expectedReady !== undefined) {
           await withinBudget('the requested checkpoint', (remaining) =>
             activeRealm.waitForFunction(
-              (expected) =>
-                document.documentElement.dataset.forgeaxCaptureReady === expected ||
-                document.querySelector('#forgeax-fatal')?.checkVisibility() === true,
+              (expected) => {
+                const startup = (
+                  Reflect.get(globalThis, '__forgeaxStartup') as
+                    | { inspect?(): StartupUiState }
+                    | undefined
+                )?.inspect?.();
+                return (
+                  document.documentElement.dataset.forgeaxCaptureReady === expected ||
+                  (startup === undefined
+                    ? document.querySelector('#forgeax-fatal')?.checkVisibility() === true
+                    : startup.phase === 'failed' && startup.recovery !== 'retrying')
+                );
+              },
               expectedReady,
               { timeout: remaining },
             ),
@@ -1865,6 +2002,9 @@ async function openBrowserCaptureSession(
           // Readiness polling must not repeatedly compose the complete page.
           // Successful/observed captures and fatal diagnostics still retain its UI.
           const surface = execution ?? { kind: 'page', ownerPage: activePage, realm: activePage };
+          await withinBudget('the startup cover to leave', (remaining) =>
+            waitForCaptureCover(activeRealm, observe || terminal(runtime), remaining),
+          );
           png = await withinBudget('a compositor screenshot', () =>
             captureBrowserExecutionSurface(surface, deadline, { width, height }),
           );

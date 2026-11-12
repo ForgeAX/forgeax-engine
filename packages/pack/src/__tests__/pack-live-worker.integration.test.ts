@@ -72,6 +72,69 @@ describe('live Pack generation isolation in the actual Worker', () => {
     });
   });
 
+  it('accepts the Atmosphere schema and rejects render names outside the generation list', async () => {
+    const scene = `return ok({ 'scene/main': { kind: 'scene', entities: {
+          sun: { components: { DirectionalLight: {} } },
+          sky: { components: { Atmosphere: {} } }
+        } } });`;
+    const definition = (
+      await loadScriptablePack(
+        await file(
+          source(scene, "import { Atmosphere } from '@forgeax/engine/render';").replace(
+            '  build(context)',
+            '  sceneComponents: [Atmosphere],\n  build(context)',
+          ),
+        ),
+      )
+    ).unwrap();
+    expect(definition.sceneComponents?.map((component) => component.name)).toEqual(['Atmosphere']);
+    const built = await executePackBuild(definition, {
+      packageId: definition.packageId,
+      values: resolvePackParameterValues(definition, {}).unwrap(),
+      readByGuid: vi.fn(),
+    });
+    expect(built.unwrap()['scene/main']).toMatchObject({
+      entities: { sky: { components: { Atmosphere: {} } } },
+    });
+    const rejected = await loadScriptablePack(
+      await file(source(scene, "import { createRenderer } from '@forgeax/engine/render';")),
+    );
+    expect(rejected.ok).toBe(false);
+    expect(JSON.stringify(rejected.ok ? undefined : rejected.error)).toContain(
+      'createRenderer from @forgeax/engine/render: not on the live generation list; allowed: Materials',
+    );
+  });
+
+  it('accepts Fog and the Camera bloom and exposure constants', async () => {
+    const scene = `return ok({ 'scene/main': { kind: 'scene', entities: {
+          sun: { components: { DirectionalLight: {} } },
+          haze: { components: { Fog: { mode: FogModeValue.linear, near: 20, far: 200 } } },
+          view: { components: { Camera: { bloom: BLOOM_ENABLED, exposure: 1.2,
+            exposureMode: CAMERA_EXPOSURE_MODE_MANUAL } } }
+        } } });`;
+    const definition = (
+      await loadScriptablePack(
+        await file(
+          source(
+            scene,
+            "import { BLOOM_ENABLED, CAMERA_EXPOSURE_MODE_MANUAL, Fog, FogModeValue } from '@forgeax/engine/render';",
+          ).replace('  build(context)', '  sceneComponents: [Fog],\n  build(context)'),
+        ),
+      )
+    ).unwrap();
+    const built = await executePackBuild(definition, {
+      packageId: definition.packageId,
+      values: resolvePackParameterValues(definition, {}).unwrap(),
+      readByGuid: vi.fn(),
+    });
+    expect(built.unwrap()['scene/main']).toMatchObject({
+      entities: {
+        haze: { components: { Fog: { mode: 2, near: 20, far: 200 } } },
+        view: { components: { Camera: { bloom: 1, exposure: 1.2, exposureMode: 0 } } },
+      },
+    });
+  });
+
   it('cold-builds the Game3D scene with its schema imports and live defaults', async () => {
     const path = fileURLToPath(
       new URL('../../../../templates/game-3d/assets/scene.pack.ts', import.meta.url),

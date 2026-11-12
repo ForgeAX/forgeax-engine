@@ -1,6 +1,6 @@
 # Skinned resource previews
 
-Implementation: [Engine PR #4731](https://github.com/ForgeaX-Games/forgeax-engine/pull/4731),
+Implementation: [Engine PR #4731](https://github.com/ForgeAX/forgeax-engine/pull/4731),
 with the native contract introduced in Engine commit
 `94b4eef8f7a1826245d3846063d96b15796705ac`.
 The paired View delivery is PR #239.

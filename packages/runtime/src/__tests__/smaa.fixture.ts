@@ -22,6 +22,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { inspectReplayWorks } from './replay-inspections.fixture';
@@ -107,20 +108,17 @@ export async function verifySmaa(
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const draw = async () => {
+  const draw = async (observation?: readonly ['linear-ldr', 'final-display']) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    return drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      observation,
     );
-    value(await receipt.completed);
-    return receipt;
   };
   const observe = async (name: string) => {
-    if (renderer.requestObservation === undefined)
-      throw new Error('missing observation capability');
-    value(renderer.requestObservation(['linear-ldr', 'final-display']));
-    const receipt = await draw();
+    const receipt = await draw(['linear-ldr', 'final-display']);
     const result = value(
       await renderer.observe(receipt, { include: ['linear-ldr', 'final-display'] }),
     );

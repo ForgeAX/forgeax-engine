@@ -148,6 +148,7 @@ describe('DevKit RHI debug cold start', () => {
           source: 'rhi.capture',
         },
         workIndex: 0,
+        fields: ['pixels'],
       },
       capabilityContext,
     );

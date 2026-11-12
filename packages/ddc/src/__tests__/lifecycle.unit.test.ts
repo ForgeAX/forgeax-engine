@@ -155,11 +155,49 @@ describe('DDC lifecycle head', () => {
     const lease = await lifecycle.begin(GUID, KEY_A);
     await writeEntry(root, KEY_A);
     await lifecycle.commit(lease, KEY_A);
+    const before = await snapshotFiles(root);
+    const checked = vi.spyOn(DdcEntryStore.prototype, 'readChecked');
+    const read = vi.spyOn(DdcEntryStore.prototype, 'read');
+    try {
+      await expect(lifecycle.readCurrentEntry(GUID)).resolves.toMatchObject({
+        head: { state: 'current', desiredKey: KEY_A, currentKey: KEY_A },
+        entry: { key: KEY_A, guid: GUID, payload: { key: KEY_A } },
+      });
+      expect(checked).toHaveBeenCalledExactlyOnceWith(KEY_A);
+      expect(read).not.toHaveBeenCalled();
+      expect(await snapshotFiles(root)).toEqual(before);
+    } finally {
+      checked.mockRestore();
+      read.mockRestore();
+    }
+  });
 
-    await expect(lifecycle.readCurrentEntry(GUID)).resolves.toMatchObject({
-      head: { state: 'current', desiredKey: KEY_A, currentKey: KEY_A },
-      entry: { key: KEY_A, guid: GUID, payload: { key: KEY_A } },
-    });
+  it('rejects a current-entry read superseded during integrity validation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'forgeax-ddc-read-fence-'));
+    roots.push(root);
+    const lifecycle = new DdcLifecycle(root);
+    const first = await lifecycle.begin(GUID, KEY_A);
+    await writeEntry(root, KEY_A);
+    await lifecycle.commit(first, KEY_A);
+    const original = DdcEntryStore.prototype.readChecked;
+    const checked = vi
+      .spyOn(DdcEntryStore.prototype, 'readChecked')
+      .mockImplementationOnce(async function (this: DdcEntryStore, key) {
+        const result = await original.call(this, key);
+        const second = await lifecycle.begin(GUID, KEY_B);
+        await writeEntry(root, KEY_B);
+        await lifecycle.commit(second, KEY_B);
+        return result;
+      });
+    try {
+      await expect(lifecycle.readCurrentEntry(GUID)).resolves.toMatchObject({ entry: null });
+      await expect(lifecycle.inspect(GUID, KEY_B)).resolves.toMatchObject({
+        state: 'current',
+        currentKey: KEY_B,
+      });
+    } finally {
+      checked.mockRestore();
+    }
   });
 
   it('retains last-known-good when recook fails', async () => {

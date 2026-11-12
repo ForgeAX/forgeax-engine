@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { compileShader } from '../../../../shader-compiler/src/index';
 import { packIrradianceFieldUniform } from '../../raytracing/irradiance-field';
 import { IRRADIANCE_FIELD_PROBE_STRIDE } from '../../raytracing/irradiance-field-plan';
@@ -178,9 +179,10 @@ it('keeps receiver ray samples stable across adaptive allocation order and advan
           writeFileSync(`${directory}/${importance}-${frameIndex}-${permutation}.bin`, actual);
           if (baseline) {
             for (const [pixel, data] of selected)
-              expect(data, `receiver ${pixel} ${importance} frame ${frameIndex}`).toEqual(
-                baseline.get(pixel),
-              );
+              expect(
+                equalBytes(data, baseline.get(pixel)),
+                `receiver ${pixel} ${importance} frame ${frameIndex}`,
+              ).toBe(true);
           } else {
             baseline = selected;
             const identity = `${importance}/1`,
@@ -419,7 +421,7 @@ it('compacts adaptive receivers in pixel order across dispatch shapes, overflow 
               ordinal >= 0 && ordinal < liveCount ? uniformCount + ordinal : 0xffffffff,
             );
           }
-          if (baseline) expect(actual).toEqual(baseline);
+          if (baseline) expect(equalBytes(actual, baseline)).toBe(true);
           else baseline = actual;
         }
       }

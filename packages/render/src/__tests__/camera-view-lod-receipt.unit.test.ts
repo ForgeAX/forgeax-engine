@@ -9,9 +9,9 @@ import {
 } from '../assembly/lod-observation';
 import { ANTIALIAS_NONE, Camera } from '../components/camera';
 import { CameraView } from '../components/camera-view';
-import type { LodOcclusionInspectionCell } from '../render-system';
 import * as timingModule from '../renderer';
 import { inspectLodOcclusion } from '../scene/visibility/inspection';
+import type { LodOcclusionInspectionCell } from './render-system-driver';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
 async function createTimingReceiptFixture() {
@@ -514,13 +514,13 @@ describe('camera-view LOD receipt observation', () => {
     const capturedInspection = makeInspection();
     const replacementInspection = makeInspection();
     let currentInspection = capturedInspection;
-    const graphIncarnation = {};
+    const graphOf = () => ({ inspect: () => ({ generation: 11 }) });
+    const graphIncarnation = graphOf();
     let currentGraphIncarnation: object = graphIncarnation;
-    let readback: LodObservationCapture['views'][number]['system']['observeLodOcclusion'] =
-      async () => {
-        currentInspection = replacementInspection;
-        return undefined;
-      };
+    let readback: () => Promise<unknown> = async () => {
+      currentInspection = replacementInspection;
+      return undefined;
+    };
     const cells = new WeakMap<object, LodOcclusionInspectionCell>();
     const cellOf = (inspection: typeof capturedInspection): LodOcclusionInspectionCell => {
       let cell = cells.get(inspection);
@@ -530,17 +530,22 @@ describe('camera-view LOD receipt observation', () => {
       }
       return cell;
     };
-    const system = {
-      get lodOcclusion() {
-        return cellOf(currentInspection);
+    const owner = {
+      lod: {
+        get cell() {
+          return cellOf(currentInspection);
+        },
+        observe: () => readback(),
       },
-      perFrameGraphInfo: { generation: 11 },
-      get perFrameGraphIncarnation() {
-        return currentGraphIncarnation;
+      frameState: {
+        get compiledFrameGraph() {
+          return { graph: currentGraphIncarnation };
+        },
       },
-      gpuDrivenInspection: { overflow: false, channels: [] },
-      observeLodOcclusion: () => readback(),
-    } as unknown as LodObservationCapture['views'][number]['system'];
+      gpuDriven: { inspect: () => ({ overflow: false, channels: [] }) },
+      skin: { paletteUploadBytes: 0 },
+      surfaceSubmission: {},
+    } as unknown as LodObservationCapture['views'][number]['owner'];
     const lease = {} as LodObservationCapture['leases'][number]['lease'];
     const capture: LodObservationCapture = {
       frameId: submit.frameId,
@@ -555,7 +560,7 @@ describe('camera-view LOD receipt observation', () => {
           graphGeneration: 11,
           graphIncarnation,
           state: 'rendered',
-          system,
+          owner,
           viewRef: {},
           primary: false,
           inspection: cellOf(capturedInspection),
@@ -602,7 +607,7 @@ describe('camera-view LOD receipt observation', () => {
       views: [{ viewKey: '7', state: 'rendered' }],
     });
     currentInspection = capturedInspection;
-    currentGraphIncarnation = {};
+    currentGraphIncarnation = graphOf();
     readback = async () => undefined;
     const replacedGraph = await observeLodOcclusionCapture(
       { frameId: submit.frameId, deviceGeneration: submit.deviceGeneration },

@@ -6,7 +6,11 @@ import {
   type ShapeOf,
   type World,
 } from '@forgeax/engine-ecs';
-import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
+import {
+  createStateProjection,
+  type StateProjection,
+  type StateProjectionBatch,
+} from '@forgeax/engine-ecs/projection';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { type AudioError, ok, type Result } from '@forgeax/engine-types';
@@ -372,11 +376,11 @@ export function createAcousticRegionSystem() {
       const changes = regionProjection.projection.isCurrent()
         ? undefined
         : regionProjection.projection.read();
-      const next = changes === undefined ? regions : new Map<number, Region>();
-      const collected =
-        changes === undefined
-          ? ok(undefined)
-          : collectRegions(world, regions, next, regionProjection.projection);
+      const rebuild = hasRegionChanges(changes);
+      const next = rebuild ? new Map<number, Region>() : regions;
+      const collected = !rebuild
+        ? ok(undefined)
+        : collectRegions(world, regions, next, regionProjection.projection);
       if (!collected.ok) return collected;
       const ordered = [...next.values()].sort((a, b) => a.entity - b.entity);
       if (!ordered.length && !previous.size && environment === '[]') {
@@ -412,4 +416,8 @@ export function createAcousticRegionSystem() {
       return ok(undefined);
     },
   };
+}
+
+function hasRegionChanges(changes: StateProjectionBatch | undefined): boolean {
+  return changes !== undefined && (changes.membershipChanged || changes.indices.length !== 0);
 }

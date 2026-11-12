@@ -2,6 +2,7 @@
 // hello-topology Dawn smoke: public geometry factories, 60 frames, and
 // intentionally red topology/degenerate/threshold falsifiers.
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -277,28 +278,9 @@ const frameRequest = {
   camera: { lease: attached.value },
   environment: { lease: attached.value },
 };
-const warmUpdate = world.update();
-if (!warmUpdate.ok) {
-  console.error(`[smoke] FAIL - warmup update: ${warmUpdate.error.code}`);
-  process.exit(1);
-}
-const warmDraw = renderer.draw(frameRequest);
-if (!warmDraw.ok) {
-  console.error(`[smoke] FAIL - warmup draw: ${warmDraw.error.code}`);
-  process.exit(1);
-}
-await delay(0);
-for (let frame = 1; frame < FRAMES; frame += 1) {
-  const update = world.update();
-  if (!update.ok) {
-    console.error(`[smoke] FAIL - update at frame ${frame}: ${update.error.code}`);
-    process.exit(1);
-  }
-  const draw = renderer.draw(frameRequest);
-  if (!draw.ok) {
-    console.error(`[smoke] FAIL - draw at frame ${frame}: ${draw.error.code}`);
-    process.exit(1);
-  }
+for (let frame = 0; frame < FRAMES; frame += 1) {
+  world.update().unwrap();
+  await drawReadyFrame(renderer, frameRequest);
 }
 await device.queue.onSubmittedWorkDone();
 const pixels = await readPixels(device);

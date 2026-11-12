@@ -61,5 +61,6 @@ export type TapeStructure = Omit<Tape, 'blobs'> & {
 };
 
 export interface TapeEncodeOptions {
-  readonly compression?: TapeBlobCompression;
+  /** Auto keeps a blob raw unless gzip saves at least 32 bytes and 1%. */
+  readonly compression?: TapeBlobCompression | 'auto';
 }

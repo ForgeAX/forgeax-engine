@@ -2,16 +2,18 @@ import type {
   BindGroupLayout,
   Buffer,
   ComputePipeline,
+  RenderPipeline,
   RhiCommandEncoder,
   RhiDevice,
   Sampler,
   Texture,
   TextureView,
 } from '@forgeax/engine-rhi';
+import { RhiError } from '@forgeax/engine-rhi';
 import type { ImagePages, ImageVersion } from '../device/image-pages';
 import { type ResidencyLease, ResidencyLifetime } from '../device/residency-lifetime';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
-import { TERRAIN_LAYER_BAKE_SHADER } from './layer-bake';
+import { TERRAIN_LAYER_BAKE_FRAGMENT_SHADER, TERRAIN_LAYER_BAKE_SHADER } from './layer-bake';
 
 export interface TerrainLayerInput {
   readonly id: number;
@@ -43,11 +45,55 @@ interface Work {
 }
 const NAMES = ['color', 'normal-height', 'orm', 'emission'] as const;
 
+function layerDimensions(selection: readonly TerrainLayerSelection[], webgl2: boolean) {
+  let width = 1,
+    height = 1,
+    depth = webgl2 ? 2 : 1;
+  for (const layer of selection) {
+    depth = Math.max(depth, layer.index + 2);
+    for (const image of [
+      ...layer.input.images,
+      ...(layer.height === undefined ? [] : [layer.height]),
+    ]) {
+      width = Math.max(width, image.width);
+      height = Math.max(height, image.height);
+    }
+  }
+  return { width, height, depth };
+}
+
+function layerUniform(
+  layer: TerrainLayerSelection,
+  images: readonly ArrayLike<number>[],
+  heightImage: ArrayLike<number> | undefined,
+  width: number,
+  height: number,
+): Float32Array {
+  const bytes = new Float32Array(52);
+  bytes.set(layer.input.values);
+  for (const [channel, image] of images.entries()) bytes.set(image, 20 + channel * 4);
+  if (heightImage !== undefined) bytes.set(heightImage, 40);
+  bytes.set(
+    [
+      layer.heightRange?.[0] ?? 0,
+      layer.heightRange?.[1] ?? 1,
+      heightImage === undefined ? 0 : 1,
+      0,
+    ],
+    44,
+  );
+  new Uint32Array(bytes.buffer).set([layer.index + 1, width, height, 0], 48);
+  return bytes;
+}
+
 /** Actual selected frames own four derived arrays. Edits copy a retained frame
  * on GPU and bake only changed layers; there is no consumer list or CPU atlas. */
 export class TerrainLayerCache {
   private readonly sampler: Sampler;
-  private pipeline: ComputePipeline | undefined;
+  private pipeline:
+    | { readonly kind: 'compute'; readonly value: ComputePipeline }
+    | { readonly kind: 'raster'; readonly value: RenderPipeline }
+    | undefined;
   private layout: BindGroupLayout | undefined;
   private readonly work: Work[] = [];
   constructor(
@@ -73,19 +119,10 @@ export class TerrainLayerCache {
     previous?: TerrainLayerArrays,
   ): TerrainLayerArrays {
     this.initialize();
-    let width = 1,
-      height = 1,
-      depth = 1;
-    for (const layer of selection) {
-      depth = Math.max(depth, layer.index + 2);
-      for (const image of [
-        ...layer.input.images,
-        ...(layer.height === undefined ? [] : [layer.height]),
-      ]) {
-        width = Math.max(width, image.width);
-        height = Math.max(height, image.height);
-      }
-    }
+    const { width, height, depth } = layerDimensions(
+      selection,
+      this.device.caps.backendKind === 'wgpu-webgl2',
+    );
     const before =
       previous?.width === width && previous.height === height && previous.depth === depth
         ? previous
@@ -104,7 +141,7 @@ export class TerrainLayerCache {
             label: `terrain-layer-${name}`,
             size: { width, height, depthOrArrayLayers: depth },
             format: 'rgba16float',
-            usage: 1 | 2 | 4 | 8,
+            usage: 1 | 2 | 4 | (this.pipeline?.kind === 'compute' ? 8 : 16),
             textureBindingViewDimension: '2d-array',
           })
           .unwrap();
@@ -134,20 +171,7 @@ export class TerrainLayerCache {
           old.heightRange === layer.heightRange
         )
           continue;
-        const bytes = new Float32Array(52);
-        bytes.set(layer.input.values);
-        for (const [channel, image] of images.entries()) bytes.set(image, 20 + channel * 4);
-        if (heightImage !== undefined) bytes.set(heightImage, 40);
-        bytes.set(
-          [
-            layer.heightRange?.[0] ?? 0,
-            layer.heightRange?.[1] ?? 1,
-            heightImage === undefined ? 0 : 1,
-            0,
-          ],
-          44,
-        );
-        new Uint32Array(bytes.buffer).set([layer.index + 1, width, height, 0], 48);
+        const bytes = layerUniform(layer, images, heightImage, width, height);
         uniforms.push(bytes);
       }
       capture = this.source.texture.capture();
@@ -195,7 +219,8 @@ export class TerrainLayerCache {
   encode(encoder: RhiCommandEncoder): { complete(submitted: boolean): void } {
     const work = this.work.slice();
     const buffers: Buffer[] = [];
-    const { layout, pipeline } = this;
+    const layout = this.layout;
+    const pipeline = this.pipeline;
     try {
       for (const item of work) {
         if (layout === undefined || pipeline === undefined)
@@ -222,21 +247,46 @@ export class TerrainLayerCache {
                 { binding: 0, resource: { kind: 'buffer', value: { buffer: uniform } } },
                 { binding: 1, resource: { kind: 'textureView', value: item.source.textureView } },
                 { binding: 2, resource: { kind: 'sampler', value: item.source.sampler } },
-                ...item.output.bindings.map((binding, index) => ({
-                  binding: index + 3,
-                  resource: { kind: 'textureView' as const, value: binding.textureView },
-                })),
+                ...(pipeline.kind === 'compute'
+                  ? item.output.bindings.map((binding, index) => ({
+                      binding: index + 3,
+                      resource: { kind: 'textureView' as const, value: binding.textureView },
+                    }))
+                  : []),
               ],
             })
             .unwrap();
-          const pass = encoder.beginComputePass({ label: 'terrain-layer-bake' });
-          pass.setPipeline(pipeline);
-          pass.setBindGroup(0, group);
-          pass.dispatchWorkgroups(
-            Math.ceil(item.output.width / 8),
-            Math.ceil(item.output.height / 8),
-          );
-          pass.end();
+          if (pipeline.kind === 'compute') {
+            const pass = encoder.beginComputePass({ label: 'terrain-layer-bake' });
+            pass.setPipeline(pipeline.value);
+            pass.setBindGroup(0, group);
+            pass.dispatchWorkgroups(
+              Math.ceil(item.output.width / 8),
+              Math.ceil(item.output.height / 8),
+            );
+            pass.end();
+          } else {
+            const layer = new Uint32Array(bytes.buffer)[48] as number;
+            const pass = encoder.beginRenderPass({
+              label: 'terrain-layer-bake-raster',
+              colorAttachments: item.output.textures.map((texture) => ({
+                view: this.device
+                  .createTextureView(texture, {
+                    dimension: '2d',
+                    baseArrayLayer: layer,
+                    arrayLayerCount: 1,
+                  })
+                  .unwrap(),
+                loadOp: 'clear' as const,
+                storeOp: 'store' as const,
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+              })),
+            });
+            pass.setPipeline(pipeline.value);
+            pass.setBindGroup(0, group);
+            pass.draw(3);
+            pass.end();
+          }
         }
       }
     } catch (cause) {
@@ -273,38 +323,75 @@ export class TerrainLayerCache {
   }
   private initialize(): void {
     if (this.pipeline !== undefined) return;
-    this.layout = this.device
+    const compute = this.device.caps.compute;
+    if (
+      !compute &&
+      (!this.device.caps.rgba16floatRenderable ||
+        this.device.caps.maxColorAttachments < 4 ||
+        (this.device.limits.maxColorAttachmentBytesPerSample ?? 32) < 32)
+    )
+      throw new RhiError({
+        code: 'feature-not-enabled',
+        expected:
+          'Terrain layer baking with four renderable RGBA16F attachments (32 bytes per sample)',
+        hint: 'Use a device with floating-point color attachment support.',
+      });
+    const visibility = compute ? 4 : 2;
+    const layout = this.device
       .createBindGroupLayout({
         entries: [
-          { binding: 0, visibility: 4, buffer: { type: 'uniform' } },
-          {
-            binding: 1,
-            visibility: 4,
-            texture: { sampleType: 'float', viewDimension: '2d-array' },
-          },
-          { binding: 2, visibility: 4, sampler: { type: 'filtering' } },
-          ...NAMES.map((_, i) => ({
-            binding: i + 3,
-            visibility: 4,
-            storageTexture: {
-              access: 'write-only' as const,
-              format: 'rgba16float' as const,
-              viewDimension: '2d-array' as const,
-            },
-          })),
+          { binding: 0, visibility, buffer: { type: 'uniform' } },
+          { binding: 1, visibility, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+          { binding: 2, visibility, sampler: { type: 'filtering' } },
+          ...(compute
+            ? NAMES.map((_, i) => ({
+                binding: i + 3,
+                visibility,
+                storageTexture: {
+                  access: 'write-only' as const,
+                  format: 'rgba16float' as const,
+                  viewDimension: '2d-array' as const,
+                },
+              }))
+            : []),
         ],
       })
       .unwrap();
-    this.pipeline = this.device
-      .createComputePipeline({
-        layout: this.device.createPipelineLayout({ bindGroupLayouts: [this.layout] }).unwrap(),
-        compute: {
-          module: this.shader
-            .createShaderModule({ code: TERRAIN_LAYER_BAKE_SHADER, label: 'terrain-layer-bake' })
-            .unwrap(),
-          entryPoint: 'bakeLayers',
-        },
+    const pipelineLayout = this.device
+      .createPipelineLayout({ bindGroupLayouts: [layout] })
+      .unwrap();
+    const module = this.shader
+      .createShaderModule({
+        code: compute ? TERRAIN_LAYER_BAKE_SHADER : TERRAIN_LAYER_BAKE_FRAGMENT_SHADER,
+        label: compute ? 'terrain-layer-bake' : 'terrain-layer-bake-raster',
       })
       .unwrap();
+    this.pipeline = compute
+      ? {
+          kind: 'compute',
+          value: this.device
+            .createComputePipeline({
+              layout: pipelineLayout,
+              compute: { module, entryPoint: 'bakeLayers' },
+            })
+            .unwrap(),
+        }
+      : {
+          kind: 'raster',
+          value: this.device
+            .createRenderPipeline({
+              label: 'terrain-layer-bake-raster',
+              layout: pipelineLayout,
+              vertex: { module, entryPoint: 'vs', buffers: [] },
+              fragment: {
+                module,
+                entryPoint: 'fs',
+                targets: NAMES.map(() => ({ format: 'rgba16float' })),
+              },
+              primitive: { topology: 'triangle-list' },
+            })
+            .unwrap(),
+        };
+    this.layout = layout;
   }
 }

@@ -1,6 +1,9 @@
 import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
 import { unavailableDrawObservation } from '../record/draw-observation';
 import type { DrawObservation } from '../render-contract';
+import { viewRecordHistory } from '../world/record-history';
+import { renderWorldFor } from '../world/render-world';
+import type { ViewSettlementOwner } from '../world/view-settlement';
 import {
   type LodObservationCapture,
   type LodObservationCaptureValidity,
@@ -9,7 +12,14 @@ import {
 
 /** Reuse the issued frame's actual view/lease/graph capture, without another frame ledger. */
 export function captureMaterialDraws(capture: LodObservationCapture | undefined) {
-  return capture?.views.map((view) => ({ view, draws: view.system.materialDraws }));
+  return capture?.views.map((view) => ({ view, draws: materialDrawsOf(view.owner) }));
+}
+
+function materialDrawsOf({ internals }: ViewSettlementOwner): DrawObservation {
+  return (
+    viewRecordHistory(renderWorldFor(internals), internals.viewEntity)?.materialDraws ??
+    unavailableDrawObservation('not-captured')
+  );
 }
 
 export function observeMaterialDraws(
@@ -34,7 +44,7 @@ export function observeMaterialDraws(
   const rows: import('../render-contract').MaterialDrawObservation[] = [];
   for (const { view, draws } of recorded) {
     if (view.state === 'held') return unavailableDrawObservation('held-view');
-    if (view.system.materialDraws !== draws) return unavailableDrawObservation('superseded');
+    if (materialDrawsOf(view.owner) !== draws) return unavailableDrawObservation('superseded');
     if (draws.status !== 'complete') return draws;
     for (const row of draws.draws) {
       if (!capture.leases.some((lease) => lease.worldIdentity === row.worldIdentity))

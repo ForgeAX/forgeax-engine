@@ -9,7 +9,7 @@ import {
 const PRODUCER_TIMEOUT_MS = 120_000;
 
 it.skipIf(!autoExposureForgeaxProducerIsScheduled())(
-  'runs the ForgeaX AC-27 Dawn WebGPU readback producer',
+  'runs the ForgeAX AC-27 Dawn WebGPU readback producer',
   async () => {
     globalThis.__forgeaxAutoExposureForgeaxPublish = (path, output) => {
       writeFileSync(path, `${JSON.stringify(output, null, 2)}\n`);

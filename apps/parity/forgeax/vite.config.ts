@@ -7,7 +7,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const monorepoRoot = resolve(here, '..', '..', '..');
 
 // parity-forgeax vite config — dual-hook fixture for the pixel-parity bench.
-// Provides both __captureLeft and __captureRight from the same ForgeaX renderer.
+// Provides both __captureLeft and __captureRight from the same ForgeAX renderer.
 //
 // Preview port 4174 + strictPort=true: scripts/bench/pixel-parity.mjs spawns
 // this single preview and reads both capture hooks from it.

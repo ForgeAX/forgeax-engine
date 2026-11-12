@@ -4,14 +4,11 @@ import { preparePackProgram } from '@forgeax/engine-pack/runtime';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
 import type { Renderer } from '@forgeax/engine-render';
 import { defaultConnect } from '@forgeax/engine-types/inspector-client';
-import { afterEach, expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { createApp } from '../create-app';
 import { testPlatform } from './platform-fixture';
 
-afterEach(() => vi.unstubAllEnvs());
-
 it('uses the actual App Context to admit and execute a new plugin over the existing inspector', async () => {
-  vi.stubEnv('FORGEAX_ENGINE_REMOTE_SERVE', '1');
   const world = new World();
   const renderer = {
     ready: Promise.resolve({ ok: true, value: undefined }),
@@ -25,6 +22,7 @@ it('uses the actual App Context to admit and execute a new plugin over the exist
       platform: testPlatform(),
       world,
       renderer,
+      remoteServe: true,
       assets: new AssetRegistry({ shaderRegistry: {} as never }),
       assetCatalog: createCatalogSource({ entries: [] }),
       pluginPrograms: {

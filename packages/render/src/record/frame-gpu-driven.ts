@@ -1,3 +1,4 @@
+import { DirectionalLight } from '../components/directional-light';
 // GPU-driven lane preparation for one display frame: producer artifacts,
 // the GPU owner's prepare request, its shadow view roster, and the direct
 // shadow rows that remain CPU-recorded beside it.
@@ -13,7 +14,6 @@ import {
 } from '../gpu-driven/material-artifacts';
 import type {
   GpuDrivenPrepareInput,
-  GpuDrivenProduction,
   PreparedGpuDrivenFrame,
   ShadowViewRequest,
 } from '../gpu-driven/production-raster';
@@ -40,11 +40,15 @@ import type {
   PersistentGpuDrivenState,
   PersistentShadowCasterProjection,
 } from '../scene/render-scene';
+import { shadowPlanes } from '../shadow-frustum';
 import { SHADOW_CASTER_PASS_SELECTOR } from '../systems/pass-selector';
-import type { ViewLights } from '../world/render-lights';
-import { directDrawPhase } from './direct-draw-phase';
+import { storeViewGpuDrivenOutcome } from '../world/gpu-driven-systems';
+import { shadowViewCasterChannels, shadowViewLight, type ViewLights } from '../world/render-lights';
+import { renderWorldFor } from '../world/render-world';
+import { reflectionFallbackDemandOf } from '../world/ssr-admission-systems';
+import type { ViewDrawPhases } from './direct-draw-phase';
 import type { ShadowMeshInput } from './directional-shadow-cache';
-import type { CubeCaptureFrameInput, FrameRecordingAttempt, GpuDrivenRecordInput } from './frame';
+import type { CubeCaptureFrameInput, GpuDrivenRecordInput } from './frame';
 import type { RenderFrameState, ValidatedRenderable } from './frame-snapshot';
 import { materialMatchesPass } from './material-pass-selection';
 import { ensureProbeBlendRecordBuffer } from './probe-blend-buffer';
@@ -54,7 +58,6 @@ import {
   type RenderSystemInternals,
   runRecordProfilePhase,
 } from './render-context';
-import { shadowPlanes } from './shadow-culling';
 
 type PrepareSources = (
   sources: FrameList<RenderableSnapshot>,
@@ -67,16 +70,9 @@ type PrepareShadowGeometry = (
 ) => MeshGpuHandles;
 type LodRows = (rows: readonly ValidatedRenderable[]) => readonly ValidatedRenderable[];
 
-/** Clustered Standard lighting binds its cluster owner only with local lights or SSAO. */
-export function clusteredLightingActive(
-  standard: StandardTopologyInputValue,
-  frameState: RenderFrameState,
-): boolean {
-  return (
-    standard.kind === 'clustered' &&
-    (standard.prepared.local.length > 0 ||
-      frameState.installedPipelineConfig?.ssao?.enabled === true)
-  );
+/** GPU draws consume the same prepared lighting topology as direct draws. */
+export function clusteredLightingActive(standard: StandardTopologyInputValue): boolean {
+  return standard.kind === 'clustered';
 }
 
 /**
@@ -87,7 +83,6 @@ export function clusteredLightingActive(
  */
 export function collectFrameGpuDrivenArtifacts(
   internals: RenderSystemInternals,
-  frameState: RenderFrameState,
   scene: PersistentGpuDrivenState | undefined,
   programs: PersistentShadowCasterProjection['materialPrograms'] | undefined,
   standard: StandardTopologyInputValue,
@@ -98,8 +93,8 @@ export function collectFrameGpuDrivenArtifacts(
     probeBlend: (scene?.probeBlend?.records.length ?? 0) > 0,
     programs,
     resolve: internals.getMaterialShaderArtifact,
-    clustered: clusteredLightingActive(standard, frameState),
-    reflectionFallback: frameState.reflectionFallbackDemand === true,
+    clustered: clusteredLightingActive(standard),
+    reflectionFallback: reflectionFallbackDemandOf(internals),
     shadowViews,
   });
 }
@@ -199,7 +194,6 @@ function materialPipelineFactories(internals: RenderSystemInternals) {
 
 export function gpuDrivenPrepareRequest(
   internals: RenderSystemInternals,
-  frameState: RenderFrameState,
   frameGpuDriven: GpuDrivenRecordInput,
   artifacts: CollectedMaterialArtifacts,
   standard: StandardTopologyInputValue,
@@ -214,6 +208,8 @@ export function gpuDrivenPrepareRequest(
   shadowCasterProjection: PersistentShadowCasterProjection | undefined,
   profilePhase: RecordProfileRunner | undefined,
   capsuleShadowDirectional: boolean,
+  directionalShadowSimple = false,
+  leanLighting = false,
 ): GpuDrivenPrepareInput {
   const scene = frameGpuDriven.scene;
   return {
@@ -222,9 +218,9 @@ export function gpuDrivenPrepareRequest(
     materialArtifactResolver: (shader, request) =>
       internals.getMaterialShaderArtifact?.(shader, {
         ...(typeof request === 'boolean' ? { vertexColorAvailable: request } : request),
-        clustered: clusteredLightingActive(standard, frameState),
+        clustered: clusteredLightingActive(standard),
         probeBlend: (scene?.probeBlend?.records.length ?? 0) > 0,
-        reflectionFallback: frameState.reflectionFallbackDemand === true,
+        reflectionFallback: reflectionFallbackDemandOf(internals),
       }),
     geometryLane: frameGpuDriven.geometryLane ?? 'automatic',
     gbufferBatchOrderDiagnostic: internals.standardProfile?.gbufferBatchOrderDiagnostic,
@@ -236,7 +232,7 @@ export function gpuDrivenPrepareRequest(
     // the clustered topology. The production frame supplies the explicit
     // Standard topology, so the GPU owner can select a matching published
     // group(2) artifact and bind the existing cluster owner.
-    hdrp: clusteredLightingActive(standard, frameState),
+    hdrp: clusteredLightingActive(standard),
     clustered: standard.kind === 'clustered',
     materialBindingClasses,
     ...gpuDrivenFrameFacts(frameGpuDriven),
@@ -249,17 +245,10 @@ export function gpuDrivenPrepareRequest(
       : { materialFrame: shadowCasterProjection.content.materials }),
     ...materialPipelineFactories(internals),
     capsuleShadowDirectional,
+    ...(directionalShadowSimple ? { directionalShadowSimple } : {}),
+    ...(leanLighting ? { leanLighting } : {}),
     ...(profilePhase === undefined ? {} : { profilePhase }),
   };
-}
-
-/** The light owning a shadow view's layer: its stable cube layer or spot tile. */
-function shadowLightOf(lights: ViewLights, identity: ShadowViewIdentity) {
-  return identity.kind === 'point'
-    ? lights.pointShadow.find((light) => light.shadowAtlasLayer === identity.index)
-    : identity.kind === 'spot'
-      ? lights.spot.find((light) => light.shadowAtlasTile === identity.index)
-      : undefined;
 }
 
 function pushShadowViewRequest(
@@ -274,11 +263,15 @@ function pushShadowViewRequest(
 ): void {
   views.push({
     identity,
-    casterChannels:
-      identity.kind === 'directional'
-        ? lights.directionalCsmConfig?.shadowCasterChannels
-        : shadowLightOf(lights, identity)?.shadowCasterChannels,
-    planes: planesByView.get(shadowViewIdentityKey(identity)) ?? shadowPlanes(matrix),
+    casterChannels: shadowViewCasterChannels(lights, identity),
+    planes:
+      planesByView.get(shadowViewIdentityKey(identity)) ??
+      shadowPlanes(
+        matrix,
+        identity.kind === 'directional' &&
+          lights.directionalCsmConfig !== undefined &&
+          lights.directionalCsmConfig.shadowViewProjection === undefined,
+      ),
     matrix,
     targetSize,
     graphGeneration,
@@ -307,7 +300,7 @@ function gpuShadowViewRequests(
       ? undefined
       : shadowCameraCullDilation(
           directionalShadowFilterRadiusTexels(quality),
-          lights.normalBias ?? 0.05,
+          lights.normalBias ?? (DirectionalLight.fields.normalBias.default as number),
           targetSize,
         );
   for (const view of lights.shadowViews) {
@@ -320,7 +313,7 @@ function gpuShadowViewRequests(
       continue;
     const spot =
       identity.kind === 'spot'
-        ? (shadowLightOf(lights, identity) as SpotLightSnapshot | undefined)
+        ? (shadowViewLight(lights, identity) as SpotLightSnapshot | undefined)
         : undefined;
     pushShadowViewRequest(
       views,
@@ -350,11 +343,9 @@ function gpuShadowViewRequests(
  * semantic path. The last-known-good graph is preserved and the frame retries
  * after the producer publishes a validated artifact.
  */
-export function prepareGpuDrivenOwner(
+export function updateGpuDrivenShadowViews(
   internals: RenderSystemInternals,
-  attempt: FrameRecordingAttempt,
-  owner: GpuDrivenProduction,
-  request: GpuDrivenPrepareInput,
+  prepared: PreparedGpuDrivenFrame | undefined,
   profilePhase: RecordProfileRunner | undefined,
   gpuShadowViews: boolean,
   lights: ViewLights,
@@ -363,13 +354,7 @@ export function prepareGpuDrivenOwner(
   graphGeneration: number,
   directionalLimit: number | undefined,
 ): boolean {
-  const prepared = owner.prepare(request);
-  if (!prepared.ok) {
-    internals.errorRegistry.fire(prepared.error);
-    return false;
-  }
-  if (prepared.value === undefined) return true;
-  attempt.preparedGpuDriven = prepared.value;
+  if (prepared === undefined) return true;
   const requests = gpuShadowViews
     ? gpuShadowViewRequests(
         lights,
@@ -379,7 +364,7 @@ export function prepareGpuDrivenOwner(
         directionalLimit,
       )
     : [];
-  const updateShadowViews = prepared.value.updateShadowViews;
+  const updateShadowViews = prepared.updateShadowViews;
   if (updateShadowViews === undefined) return true;
   const shadowUpdate =
     profilePhase === undefined
@@ -388,13 +373,19 @@ export function prepareGpuDrivenOwner(
           updateShadowViews(requests, true),
         );
   if (!shadowUpdate.ok) {
+    if (internals.viewEntity !== undefined)
+      storeViewGpuDrivenOutcome(renderWorldFor(internals), internals.viewEntity, {
+        kind: 'rejected',
+        code: 'shadow-views-rejected',
+        error: shadowUpdate.error,
+      });
     internals.errorRegistry.fire(shadowUpdate.error);
     return false;
   }
   return true;
 }
 
-function captureViewsCastShadows(
+export function captureViewsCastShadows(
   captureWorkCount: number,
   cubeCapture: CubeCaptureFrameInput | undefined,
 ): boolean {
@@ -418,7 +409,7 @@ export interface DirectShadowRows {
 /** Inputs both shadow consumers share. */
 export interface DirectShadowInputs {
   readonly scene: PersistentGpuDrivenState;
-  readonly view: object;
+  readonly phases: ViewDrawPhases;
   readonly meshes: ReadonlyMap<GpuDrivenBatchBinding, MeshGpuHandles>;
   readonly worlds: readonly RenderResourceScope[];
   readonly materials: MaterialFrame;
@@ -435,8 +426,10 @@ function shadowRows(
   selection: readonly unknown[],
   select: (binding: GpuDrivenBatchBinding) => MaterialSnapshot | undefined,
 ): DirectShadowRows {
-  const phase = directDrawPhase(inputs.view, consumer);
-  const output = phase.sync({
+  const phase = inputs.phases.of(consumer);
+  // Record owns this graph-dependent cache: only the compiled graph names its
+  // shadow consumers. This queues direct rows, not a World schedule or submit.
+  phase.queue({
     scene: inputs.scene,
     selection,
     select,
@@ -450,7 +443,7 @@ function shadowRows(
     lod: (rows) => rows,
     geometry: inputs.geometry,
   });
-  return { rows: inputs.lodRows(output.rows), derived: phase.derivesGeometry };
+  return { rows: inputs.lodRows(phase.emit().rows), derived: phase.derivesGeometry };
 }
 
 /** Unbatched and capture-visible shadow casters beside the GPU shadow view pool. */

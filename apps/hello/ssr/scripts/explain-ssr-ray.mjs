@@ -21,7 +21,7 @@ const texelIntervals = traceSource.includes('exitFraction');
 const conservativeDepth = traceSource.includes('intervalDepth + thickness');
 const faceRefinement = traceSource.includes('covered && dot(normal, -direction)');
 const offsetOrigin = /worldPosition(?:_\d+)?\s*\+\s*normal(?:_\d+)?\s*\*/.test(traceSource);
-const coarseSteps = Number(traceSource?.match(/const SSR_TRACE_MAX_COARSE_STEPS[_\d]*\s*:\s*u32\s*=\s*(\d+)u?\s*;/)?.[1]);
+const coarseSteps = Number(traceSource?.match(/const SSR_TRACE_MAX_(?:COARSE_STEPS|HIZ_ITERATIONS)[_\d]*\s*:\s*u32\s*=\s*(\d+)u?\s*;/)?.[1]);
 assert.ok(Number.isInteger(coarseSteps) && coarseSteps > 0);
 const data = {};
 for (const name of ['depth', 'normal', 'camera', 'fallback']) {

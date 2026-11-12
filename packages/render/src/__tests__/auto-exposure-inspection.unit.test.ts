@@ -75,6 +75,6 @@ describe('auto-exposure inspection boundary', () => {
     });
     expect(snapshot.recentFailure?.code).toBe('auto-exposure-capability-unavailable');
     expect(snapshot.recentFailure?.detail).toEqual({ capability: 'compute', generation: 7 });
-    expect(snapshot.recentFailure?.hint).toContain('retry');
+    expect(snapshot.recentFailure?.hint).toContain('fallback exposure');
   });
 });

@@ -5,11 +5,6 @@ import { type RhiNullDevice, rhi } from '@forgeax/engine-rhi-null';
 import { createStandardPbrArtifactReceipt } from '@forgeax/engine-shader';
 import { ok } from '@forgeax/engine-types';
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  type FrameRecording,
-  recordFrameTransaction,
-  submitFrameRecordings,
-} from '../assembly/frame-recording';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import {
   collectGpuDrivenMaterialArtifacts,
@@ -25,6 +20,12 @@ import { MaterialDispatch } from '../scene/material-dispatch';
 import { MeshFrame } from '../scene/mesh-frame';
 import { RenderScene } from '../scene/render-scene';
 import { SkinFrames, SkinSceneInputs } from '../scene/skin-scene-inputs';
+import { createRenderWorld } from '../world/render-world';
+import {
+  type FrameRecording,
+  recordFrameTransaction,
+  submitFrameRecordings,
+} from './frame-recording-driver';
 import { observeCandidateReads } from './gpu-driven-candidate-read-observer';
 import { mesh, standardPbrInputs } from './gpu-driven-production-fixture';
 
@@ -342,8 +343,6 @@ it('retains physically submitted material versions when the frame generation rej
           },
         },
         {
-          encoder: f.device.createCommandEncoder().unwrap(),
-          device: f.device,
           onSubmittedWork: (done) => prepared._trackSubmittedWork?.(done),
           reportError: (error) => {
             throw error;
@@ -352,7 +351,7 @@ it('retains physically submitted material versions when the frame generation rej
       );
       return result.ok;
     })();
-    submitFrameRecordings([recording]);
+    submitFrameRecordings({ world: createRenderWorld(), device: f.device }, [recording]);
     expect(aborted).toHaveBeenCalledOnce();
     expect(committed).not.toHaveBeenCalled();
     f.adopt({ ...f.opaque, roughness: 0.2 });

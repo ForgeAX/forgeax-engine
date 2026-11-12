@@ -20,6 +20,7 @@ import {
 import {
   buildFrameModel,
   decodeTape,
+  type EncodedTape,
   encodeTape,
   openReplay,
   type RecorderAttachment,
@@ -131,39 +132,85 @@ export async function verifyMultiCamera(
         );
   const lease = publisher === undefined ? renderValue(renderer.attach(world)) : undefined;
   let time = 0;
-  const draw = async (observation?: readonly ['final-display']) => {
+  const draw = async (
+    observation?: readonly ['final-display'],
+    capture?: (tape: EncodedTape) => void,
+  ) => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
     time += 1 / 60;
-    return completeReadyFrame(async () => {
-      if (observation !== undefined)
-        renderValue(required(renderer.requestObservation).call(renderer, observation));
-      const candidate = publisher?.prepare(time).unwrap();
-      const packet =
-        candidate === undefined
-          ? undefined
-          : structuredClone(candidate.message, {
-              transfer: renderPublicationTransfers(candidate.message),
-            });
-      candidate?.accept();
-      try {
-        const result = renderer.draw(
-          packet === undefined
-            ? {
-                leases: [required(lease)],
-                camera: { lease: required(lease) },
-                environment: { lease: required(lease) },
-              }
-            : { publication: packet },
-        );
-        if (!result.ok) throw new Error(JSON.stringify({ failure: result.error, errors }));
-        renderValue(await result.value.completed);
-        return result.value;
-      } finally {
-        if (packet !== undefined)
-          required(publisher).recycle(packet.revision, renderPublicationTransfers(packet)).unwrap();
-      }
-    });
+    let pendingCapture: ReturnType<RecorderAttachment['captureFrame']> | undefined;
+    let captureAbort: AbortController | undefined;
+    let recycling: Promise<void> | undefined;
+    let capturedAttempt: EncodedTape | undefined;
+    try {
+      return await completeReadyFrame(
+        async () => {
+          if (observation !== undefined)
+            renderValue(required(renderer.requestObservation).call(renderer, observation));
+          if (capture !== undefined) {
+            captureAbort = new AbortController();
+            pendingCapture = recorder.captureFrame({ signal: captureAbort.signal });
+            (await recorder.frameBoundary()).unwrap();
+          }
+          const candidate = publisher?.prepare(time).unwrap();
+          const packet =
+            candidate === undefined
+              ? undefined
+              : structuredClone(candidate.message, {
+                  transfer: renderPublicationTransfers(candidate.message),
+                });
+          candidate?.accept();
+          const result = renderer.draw(
+            packet === undefined
+              ? {
+                  leases: [required(lease)],
+                  camera: { lease: required(lease) },
+                  environment: { lease: required(lease) },
+                }
+              : { publication: packet },
+          );
+          const recycle = () => {
+            if (packet !== undefined)
+              required(publisher)
+                .recycle(packet.revision, renderPublicationTransfers(packet))
+                .unwrap();
+          };
+          if (!result.ok) {
+            recycle();
+            throw new Error(JSON.stringify({ failure: result.error, errors }));
+          }
+          // Frame storage returns only after its physical completion, independently
+          // of the driver's compilation/GPU deadlines. Observe cleanup rejection.
+          recycling = result.value.completed.then(recycle);
+          void recycling.catch(() => {});
+          // The recorder boundary owns one physical submission. Close it now;
+          // GPU completion controls acceptance/recycling, not the tape boundary.
+          capturedAttempt = undefined;
+          if (pendingCapture !== undefined) {
+            (await recorder.frameBoundary()).unwrap();
+            capturedAttempt = (await pendingCapture).unwrap();
+            pendingCapture = undefined;
+            captureAbort = undefined;
+          }
+          return result.value;
+        },
+        {
+          onCompleted: async (receipt) => {
+            await recycling;
+            if (receipt.presentation === 'ready' && capturedAttempt !== undefined)
+              capture?.(capturedAttempt);
+          },
+        },
+      );
+    } catch (cause) {
+      if (capturedAttempt !== undefined)
+        await save('failed-physical-frame.rhitape', compactTape(capturedAttempt).bytes);
+      throw cause;
+    } finally {
+      captureAbort?.abort();
+      await pendingCapture;
+    }
   };
   try {
     for (let i = 0; i < warmupFrames; i++) await draw();
@@ -270,11 +317,13 @@ export async function verifyMultiCamera(
     }));
     for (let face = 0; face < 7; face += 1) {
       if (face === 6) world.set(captureLight, PointLight, { intensity: 0 }).unwrap();
-      const pendingCapture = recorder.captureFrame();
-      (await recorder.frameBoundary()).unwrap();
-      await draw();
-      (await recorder.frameBoundary()).unwrap();
-      const captured = (await pendingCapture).unwrap();
+      // A logical ready draw may submit preparation frames. Record each physical
+      // attempt separately, retaining only the completed ready picture's tape.
+      let readyCapture: EncodedTape | undefined;
+      await draw(undefined, (tape) => {
+        readyCapture = tape;
+      });
+      const captured = required(readyCapture);
       const tape = decodeTape(captured.bytes).unwrap();
       const targetPasses = tape.events.filter(
         (event) =>
@@ -282,8 +331,10 @@ export async function verifyMultiCamera(
           event.depthStencilViewHandleId !== undefined &&
           event.colorAttachmentViewHandleIds.length > 0,
       );
+      const submissions = tape.events.filter((event) => event.kind === 'submit');
+      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
       expect(targetPasses).toHaveLength(face < 6 ? 2 : 1);
-      expect(tape.events.filter((event) => event.kind === 'submit')).toHaveLength(1);
+      expect(submissions).toHaveLength(1);
       expect(
         required(renderer.inspect().views).map((view) => ({
           entity: view.entityKey,
@@ -336,7 +387,6 @@ export async function verifyMultiCamera(
           (await replay.dispose()).unwrap();
         }
       }
-      if (face === 0) await save('held-views-shared-captures.rhitape', compactTape(captured).bytes);
     }
     expect(required(captureBrightness[0]) - required(captureBrightness[1])).toBeGreaterThan(60);
     world.despawn(litModel).unwrap();

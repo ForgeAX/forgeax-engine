@@ -9,9 +9,9 @@ export default defineFeature({
   catalog: 'Public clipping planes',
   kind: 'visual',
   summary:
-    'Camera ClippingPlanes discards fragments where dot(n, p) + d < 0 for up to six world-space planes; empty planes disable it.',
+    'Camera ClippingPlanes discards fragments where dot(n, p) + d < 0 for up to six world-space planes; empty planes disable it. caps shades the cut of closed meshes as a solid section.',
   expect:
-    'ON: the upper half of the orange sphere and the tall cube is cut away along y = 0.9. OFF: both are whole.',
+    'ON: the upper half of the orange sphere and the tall cube is cut away along y = 0.9, and each cut shows a flat solid cap. OFF: both are whole.',
   setup({ world }) {
     const primitiveAssets = world.assets;
     if (!(primitiveAssets instanceof AssetRegistry))
@@ -24,7 +24,7 @@ export default defineFeature({
     const { camera } = spawnStage(world, { eye: [0, 2.5, 5], target: [0, 0.8, 0] });
     world.addComponent(camera, {
       component: ClippingPlanes,
-      data: clippingPlanesData({ planes: [[0, -1, 0, 0.9]] }),
+      data: clippingPlanesData({ planes: [[0, -1, 0, 0.9]], caps: true }),
     });
     spawnMesh(
       world,
@@ -49,7 +49,7 @@ export default defineFeature({
         world.set(
           camera,
           ClippingPlanes,
-          clippingPlanesData({ planes: on ? [[0, -1, 0, 0.9]] : [] }) as never,
+          clippingPlanesData({ planes: on ? [[0, -1, 0, 0.9]] : [], caps: true }) as never,
         );
       },
     };

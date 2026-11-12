@@ -96,6 +96,12 @@ export type {
   CubeCameraFaceViewInput,
 } from './capture/cube-views.js';
 export { buildCubeCameraFaceViews } from './capture/cube-views.js';
+export {
+  type CaptureFaceKind,
+  DEFAULT_CAPTURE_POLICY,
+  featureRecordsInCapture,
+  type RenderFeatureCapturePolicy,
+} from './capture/feature-policy.js';
 export { buildPlanarReflectionView, type PlanarReflectionViewInput } from './capture/planar-view';
 export {
   buildCloudDensityCache,
@@ -187,6 +193,9 @@ export {
   AMBIENT_OCCLUSION_ALGORITHMS,
   AMBIENT_OCCLUSION_GTAO,
   AMBIENT_OCCLUSION_QUALITIES,
+  AMBIENT_OCCLUSION_QUALITY_HIGH,
+  AMBIENT_OCCLUSION_QUALITY_LOW,
+  AMBIENT_OCCLUSION_QUALITY_MEDIUM,
   AMBIENT_OCCLUSION_SSAO,
   AmbientOcclusion,
   type AmbientOcclusionData,
@@ -216,6 +225,7 @@ export {
   ANTIALIAS_NONE,
   ANTIALIAS_SMAA,
   ANTIALIAS_TAA,
+  ANTIALIAS_TSR,
   BLOOM_DISABLED,
   BLOOM_ENABLED,
   CAMERA_BLOOM_INTENSITY_MAX,
@@ -248,6 +258,7 @@ export {
   TONEMAP_NONE,
   TONEMAP_REINHARD,
   TONEMAP_REINHARD_EXTENDED,
+  TONEMAP_UE_FILMIC,
   TRANSPARENCY_SORTED,
   TRANSPARENCY_WEIGHTED_BLENDED,
   validateCameraBloom,
@@ -374,6 +385,16 @@ export {
   visibilityStateFromU32,
 } from './components/visibility.js';
 export { ProjectedDecal, ProjectedDecalInvalidError } from './decals/component';
+export {
+  installRenderAblationDevtools,
+  parseRenderAblation,
+  type RenderAblation,
+  type RenderAblationDevtools,
+  type RenderAblationInvalidDetail,
+  RenderAblationInvalidError,
+  renderAblation,
+  setRenderAblation,
+} from './diagnostics/render-ablation.js';
 export type {
   DynamicGeometryCandidate,
   DynamicGeometryCandidateState,
@@ -395,6 +416,7 @@ export {
   MeshResidencyError,
   validateDynamicGeometryMeshBudget,
 } from './dynamic-geometry.js';
+export { resolveEntityMaterialHandles } from './entity-materials.js';
 // The environment selector owns this structured recovery error. Keep the
 // class on the public environment path so consumers can branch by `code` and
 // inspect its typed `detail` without importing an owner-private module.
@@ -674,6 +696,7 @@ export {
 export type { DynamicResolutionInspection } from './pipeline/dynamic-resolution';
 export type { RenderExtent } from './pipeline/render-extent.js';
 export type {
+  StandardAmbientOcclusionInspection,
   StandardClusterTransportInspection,
   StandardLightingInspection,
   StandardNoLocalLightingInspection,
@@ -864,6 +887,7 @@ export type {
   RendererState,
   RenderFrameInput,
   RenderInspection,
+  RenderInspectionOptions,
   RenderPreparationSchedule,
   RenderProfile,
   RenderResult,
@@ -994,10 +1018,16 @@ export type {
 export { renderTargetLayerCount } from './targets/contracts.js';
 export type { TemporalInspection, TemporalResourceInspection } from './temporal/inspection.js';
 export {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
   SCENE_DATA_TEMPORAL_V1_DESCRIPTOR,
   SCENE_DATA_TEMPORAL_V1_SCHEMA,
   type SceneDataLane,
   type SceneDataSchemaId,
+  type SceneDataStandardSurfaceDepthV1Descriptor,
+  type SceneDataStandardSurfaceNormalV1Descriptor,
   type SceneDataTarget,
   type SceneDataTemporalV1Descriptor,
 } from './temporal/scene-data.js';

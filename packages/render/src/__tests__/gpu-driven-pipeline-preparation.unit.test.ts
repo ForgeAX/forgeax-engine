@@ -23,9 +23,11 @@ import {
 } from './gpu-driven-production-fixture';
 
 it.each([
-  false,
-  true,
-])('prepares the exact scene-index pipeline from shared batches (culled=%s)', async (hidden) => {
+  [false, 1],
+  [true, 1],
+  [false, 4],
+  [true, 4],
+] as const)('prepares the exact scene-index pipeline from shared batches (culled=%s, mainSamples=%s)', async (hidden, mainSampleCount) => {
   const device = (
     await (await rhi.requestAdapter()).unwrap().requestDevice()
   ).unwrap() as RhiNullDevice;
@@ -104,10 +106,16 @@ it.each([
     if (prepared === undefined) throw Error('missing prepared owner');
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
     const projected = prepared
-      .project(graph, 'rgba16float', 1, undefined, undefined, false, true)
+      .project(graph, 'rgba16float', mainSampleCount, undefined, undefined, false, true)
       .unwrap();
     expect(ordinary).not.toHaveBeenCalled();
-    projected.registerPipelinePreparation?.(DEFERRED_COLOR_FORMATS, undefined, 'fs_gbuffer');
+    projected.registerPipelinePreparation?.(
+      DEFERRED_COLOR_FORMATS,
+      undefined,
+      'fs_gbuffer',
+      false,
+      1,
+    );
     const pending = vi.fn();
     expect(projected.preparePipelines?.([], undefined, pending)).toBe(false);
     expect(pending).toHaveBeenCalledWith(
@@ -119,6 +127,7 @@ it.each([
     );
     expect(ordinary).not.toHaveBeenCalled();
     expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare.mock.calls[0]?.[8]).toBe(1);
     expect(prepare.mock.calls[0]?.[15]).toBe('gpu-driven-pbr');
     expect(prepare.mock.calls[0]?.[16]).toBe('vs_scene_index');
     expect(prepare.mock.calls[0]?.[17]).toEqual(DEFERRED_COLOR_FORMATS.slice(1));

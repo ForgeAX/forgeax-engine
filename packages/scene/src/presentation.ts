@@ -39,11 +39,12 @@ interface History {
   tick: number;
 }
 interface CachedPose {
+  visited: number;
   matrix: Mat4;
   local: Mat4;
   version: number;
 }
-interface Presentation {
+interface Presentation extends Pose {
   history: Map<EntityHandle, History>;
   cache: Map<EntityHandle, CachedPose>;
   source: StateProjection;
@@ -55,10 +56,9 @@ interface Presentation {
   pending: Set<EntityHandle>;
   path: EntityHandle[];
   visited: Set<EntityHandle>;
-  position: Float32Array;
+  visit: number;
   rotation: ReturnType<typeof quat.create>;
-  scale: Float32Array;
-  shear: Float32Array;
+  published: Mat4;
   version: number;
   prepared: number;
   time: number;
@@ -77,22 +77,13 @@ function pose(): Pose {
   };
 }
 function readPose(world: World, entity: EntityHandle, target: Pose): boolean {
-  const position = readRenderArrayView(world, entity, Transform, 'pos');
-  const rotation = readRenderArrayView(world, entity, Transform, 'quat');
-  const scale = readRenderArrayView(world, entity, Transform, 'scale');
-  const shear = readRenderArrayView(world, entity, Transform, 'shear');
-  if (
-    position === undefined ||
-    rotation === undefined ||
-    scale === undefined ||
-    shear === undefined
-  )
-    return false;
-  target.pos.set(position);
-  target.rotation.set(rotation);
-  target.scale.set(scale);
-  target.shear.set(shear);
-  return true;
+  const read = world[worldRead];
+  return (
+    read.copyArray(entity, Transform, 'pos', target.pos) === 3 &&
+    read.copyArray(entity, Transform, 'quat', target.rotation) === 4 &&
+    read.copyArray(entity, Transform, 'scale', target.scale) === 3 &&
+    read.copyArray(entity, Transform, 'shear', target.shear) === 3
+  );
 }
 function copyPose(from: Pose, to: Pose): void {
   to.pos.set(from.pos);
@@ -117,27 +108,19 @@ function parent(world: World, entity: EntityHandle): number | undefined {
   const value = world[worldRead].getFieldValue(entity, ChildOf, 'parent');
   return value === ENTITY_NULL_RAW ? undefined : value;
 }
-function validHistory(world: World, entity: EntityHandle, history: History): boolean {
+function validHistory(
+  world: World,
+  entity: EntityHandle,
+  history: History,
+  scratch: Pose,
+): boolean {
   if (
     !world.hasComponent(entity, Transform) ||
     history.tick !== world.getResource(FixedTime).tick ||
     history.parent !== parent(world, entity)
   )
     return false;
-  const position = readRenderArrayView(world, entity, Transform, 'pos');
-  const rotation = readRenderArrayView(world, entity, Transform, 'quat');
-  const scale = readRenderArrayView(world, entity, Transform, 'scale');
-  const shear = readRenderArrayView(world, entity, Transform, 'shear');
-  return (
-    position !== undefined &&
-    rotation !== undefined &&
-    scale !== undefined &&
-    equal(history.current.pos, position) &&
-    equal(history.current.rotation, rotation) &&
-    equal(history.current.scale, scale) &&
-    shear !== undefined &&
-    equal(history.current.shear, shear)
-  );
+  return readPose(world, entity, scratch) && samePose(history.current, scratch);
 }
 
 function refresh(world: World, state: Presentation): void {
@@ -146,6 +129,8 @@ function refresh(world: World, state: Presentation): void {
   const structure = world.getStructureEpoch();
   if (state.time === time && state.epoch === epoch && state.structure === structure) return;
   if (state.structure !== structure) {
+    // Numeric path capacity follows the current structure, not every read.
+    state.path.length = 0;
     for (const entity of state.cache.keys())
       if (!world.hasComponent(entity, Transform)) state.cache.delete(entity);
   }
@@ -165,44 +150,60 @@ function refresh(world: World, state: Presentation): void {
   }
 }
 
-function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 | undefined {
+/** Build one ancestor path; hot entries already own the invocation's visit mark. */
+function buildPresentationPath(world: World, entity: EntityHandle, state: Presentation): number {
   const { path, visited } = state;
-  path.length = 0;
+  let length = 0;
   visited.clear();
+  const visit = ++state.visit;
   let cursor: EntityHandle | undefined = entity;
-  let resolved: Mat4 | undefined;
   while (cursor !== undefined) {
-    if (visited.has(cursor) || !world.hasComponent(cursor, Transform)) return undefined;
-    visited.add(cursor);
+    if (!world.hasComponent(cursor, Transform)) return -1;
     const cached = state.cache.get(cursor);
-    if (cached?.version === state.version) {
-      resolved = cached.matrix;
-      break;
+    if (cached === undefined) {
+      if (visited.has(cursor)) return -1;
+      visited.add(cursor);
+    } else {
+      if (cached.visited === visit) return -1;
+      cached.visited = visit;
     }
-    path.push(cursor);
+    path[length++] = cursor;
+    if (cached?.version === state.version) return length;
     cursor = parent(world, cursor) as EntityHandle | undefined;
   }
+  return length;
+}
+
+function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 | undefined {
+  const pathLength = buildPresentationPath(world, entity, state);
+  if (pathLength < 0) return undefined;
+  const path = state.path;
+  let resolved: Mat4 | undefined;
   const fixed = world.getResource(FixedTime);
   // Render one base step behind simulation. A merged catch-up spans
   // stepDelta between the captured poses, so offset into that wider interval.
   const span = Math.max(fixed.delta, fixed.stepDelta ?? fixed.delta);
   const alpha = Math.max(0, Math.min(1, (fixed.overstep + span - fixed.delta) / span));
-  for (let index = path.length - 1; index >= 0; index -= 1) {
+  for (let index = pathLength - 1; index >= 0; index -= 1) {
     const node = path[index];
     if (node === undefined) continue;
     let cached = state.cache.get(node);
+    if (cached?.version === state.version) {
+      resolved = cached.matrix;
+      continue;
+    }
     if (cached === undefined) {
-      cached = { matrix: mat4.create(), local: mat4.create(), version: -1 };
+      cached = { matrix: mat4.create(), local: mat4.create(), version: -1, visited: state.visit };
       state.cache.set(node, cached);
     }
     const history = state.history.get(node);
     if (
       history !== undefined &&
       world.hasComponent(node, TransformInterpolation) &&
-      validHistory(world, node, history)
+      validHistory(world, node, history, state)
     ) {
       for (let axis = 0; axis < 3; axis += 1) {
-        state.position[axis] =
+        state.pos[axis] =
           (history.previous.pos[axis] ?? 0) +
           ((history.current.pos[axis] ?? 0) - (history.previous.pos[axis] ?? 0)) * alpha;
         state.scale[axis] =
@@ -213,19 +214,10 @@ function sample(world: World, entity: EntityHandle, state: Presentation): Mat4 |
           ((history.current.shear[axis] ?? 0) - (history.previous.shear[axis] ?? 0)) * alpha;
       }
       quat.slerp(state.rotation, history.previous.rotation, history.current.rotation, alpha);
-      mat4.compose(cached.local, state.position, state.rotation, state.scale, state.shear);
+      mat4.compose(cached.local, state.pos, state.rotation, state.scale, state.shear);
     } else {
-      const position = readRenderArrayView(world, node, Transform, 'pos');
-      const rotation = readRenderArrayView(world, node, Transform, 'quat');
-      const scale = readRenderArrayView(world, node, Transform, 'scale');
-      const shear = readRenderArrayView(world, node, Transform, 'shear');
-      if (
-        position !== undefined &&
-        rotation !== undefined &&
-        scale !== undefined &&
-        shear !== undefined
-      ) {
-        mat4.compose(cached.local, position, rotation, scale, shear);
+      if (readPose(world, node, state)) {
+        mat4.compose(cached.local, state.pos, state.rotation, state.scale, state.shear);
       } else {
         const local = world.get(node, Transform).unwrap();
         mat4.compose(cached.local, local.pos, local.quat, local.scale, local.shear);
@@ -357,32 +349,34 @@ export function publishPresentationTransforms(world: World): void {
       history === undefined ||
       !world.hasComponent(entity, TransformInterpolation) ||
       samePose(history.previous, history.current) ||
-      !validHistory(world, entity, history)
+      !validHistory(world, entity, history, state)
     )
       continue;
-    state.path.length = 0;
-    state.path.push(entity);
-    while (state.path.length > 0) {
-      const node = state.path.pop();
+    const path = state.path;
+    let length = 1;
+    path[0] = entity;
+    while (length > 0) {
+      const node = path[--length];
       if (node === undefined) break;
       if (next.has(node)) continue;
       next.add(node);
       pending.add(node);
-      const children = readRenderArrayView(world, node, Children, 'entities');
-      if (children !== undefined)
-        for (let index = 0; index < children.length; index += 1) {
-          const child = children[index];
-          if (child !== undefined) state.path.push(child as EntityHandle);
+      const read = world[worldRead];
+      const childCount = read.getArrayLength(node, Children, 'entities');
+      if (childCount !== undefined)
+        for (let index = 0; index < childCount; index += 1) {
+          const child = read.getArrayElement(node, Children, 'entities', index);
+          if (child !== undefined) path[length++] = child as EntityHandle;
         }
     }
   }
   for (const entity of pending) {
-    const current = readRenderArrayView(world, entity, GlobalTransform, 'presentation');
-    if (current === undefined) continue;
+    if (world[worldRead].copyArray(entity, GlobalTransform, 'presentation', state.published) !== 16)
+      continue;
     const candidate = next.has(entity)
       ? sample(world, entity, state)
       : readRenderArrayView(world, entity, GlobalTransform, 'world');
-    if (candidate !== undefined && !equal(current, candidate))
+    if (candidate !== undefined && !equal(state.published, candidate))
       world.setArrayRange(entity, GlobalTransform, 'presentation', 0, candidate).unwrap();
   }
   const previous = state.active;
@@ -409,10 +403,12 @@ export function registerTransformInterpolation(world: World): () => void {
     pending: new Set(),
     path: [],
     visited: new Set(),
-    position: new Float32Array(3),
+    visit: 0,
+    pos: new Float32Array(3),
     rotation: quat.create(),
     scale: new Float32Array(3),
     shear: new Float32Array(3),
+    published: mat4.create(),
     version: 0,
     prepared: -1,
     time: -1,

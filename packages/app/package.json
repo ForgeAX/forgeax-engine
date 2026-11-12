@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Host assembly and execution tiers for ForgeaX: frame credit, input, Engine Worker, shared Kernels, reports, and rebuild.",
+  "description": "Host assembly and execution tiers for ForgeAX: frame credit, input, Engine Worker, shared Kernels, reports, and rebuild.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -15,6 +15,10 @@
     "./browser": {
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.mjs"
+    },
+    "./host-adapter": {
+      "types": "./dist/host-adapter.d.ts",
+      "import": "./dist/host-adapter.mjs"
     }
   },
   "main": "./dist/index.mjs",
@@ -23,6 +27,7 @@
     "dist",
     "schema",
     "src",
+    "!src/**/__tests__/**",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +44,7 @@
     "@forgeax/engine-debug-draw": "workspace:*",
     "@forgeax/engine-ecs": "workspace:*",
     "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
     "@forgeax/engine-import": "workspace:*",
     "@forgeax/engine-input": "workspace:*",
     "@forgeax/engine-math": "workspace:*",
@@ -69,8 +75,7 @@
     "@forgeax/engine-skinning": "workspace:*",
     "@webgpu/types": "^0.1.74",
     "@types/ws": "^8.5.10",
-    "ws": "^8.22.0",
-    "@forgeax/engine-graphics-extras": "workspace:*"
+    "ws": "^8.22.0"
   },
   "forgeax": {
     "metrics": {

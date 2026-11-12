@@ -69,7 +69,7 @@ with (output / "stdout.log").open("w") as log:
                 stage = facts["stage"]
                 if stage not in seen:
                     seen.add(stage)
-                    found = subprocess.run(["xdotool", "search", "--name", "^ForgeaX native TypeScript World$"],
+                    found = subprocess.run(["xdotool", "search", "--name", "^ForgeAX native TypeScript World$"],
                                            env=env, capture_output=True, text=True, check=True)
                     windows = found.stdout.split()
                     assert len(windows) == 1, f"Expected one top-level: {windows}"

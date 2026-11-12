@@ -141,14 +141,14 @@ Checked against Engine revision `df4c86bf12bf117ed229e2721e98d60ad1b0d7a0` on 20
 | Recovery/effects | `snapshot`/`exportSource` preserve source/program/accepted instances/reachable recipes; `restore` re-admits into the new scope and may replay generators. Host owns actual storage. Cancellation fences publication/next recipe, not executing JS; restore commits each Pack independently. Consumer rebinding and plugin installation remain separate owners. |
 | Structured failures | Read `code`, `expected`, `hint`, and `detail.cause`. Runtime codes include `runtime-pack-invalid`, `runtime-pack-conflict`, `runtime-pack-dependency-unavailable`, `runtime-pack-execution-failed`, `runtime-pack-cancelled`. Preserve evidence rather than substituting lastKnownGood. |
 
-Source locations in an Engine checkout: `packages/pack/src/pack-authoring.ts`, `packages/pack/src/program.ts`, `packages/import/src/runtime-pack.ts`, `runtime-pack-content.ts`, `runtime-pack-snapshot.ts`, and `packages/app/src/runtime-packs.ts`. Detailed contracts: [Pack](https://github.com/ForgeaX-Games/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/pack/README.md), [Import](https://github.com/ForgeaX-Games/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/import/README.md), [App](https://github.com/ForgeaX-Games/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/app/README.md), [DevKit](https://github.com/ForgeaX-Games/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/devkit/README.md).
+Source locations in an Engine checkout: `packages/pack/src/pack-authoring.ts`, `packages/pack/src/program.ts`, `packages/import/src/runtime-pack.ts`, `runtime-pack-content.ts`, `runtime-pack-snapshot.ts`, and `packages/app/src/runtime-packs.ts`. Detailed contracts: [Pack](https://github.com/ForgeAX/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/pack/README.md), [Import](https://github.com/ForgeAX/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/import/README.md), [App](https://github.com/ForgeAX/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/app/README.md), [DevKit](https://github.com/ForgeAX/forgeax-engine/blob/df4c86bf12bf117ed229e2721e98d60ad1b0d7a0/packages/devkit/README.md).
 
 ## Historical Palace evidence
 
 <details>
 <summary>Content-provenance examples from the 2026-09-15 Palace snapshot</summary>
 
-Engine revision `2b613d2209e4335c2eab2c75ebaeb2eb269b2879`, path `apps/showcase/palace`. These source observations were not a complete executed Palace review. They do not establish the current showcase's contents or runtime API. Start with the pinned [Palace README](https://github.com/ForgeaX-Games/forgeax-engine/blob/2b613d2209e4335c2eab2c75ebaeb2eb269b2879/apps/showcase/palace/README.md) for build instructions and asset provenance.
+Engine revision `2b613d2209e4335c2eab2c75ebaeb2eb269b2879`, path `apps/showcase/palace`. These source observations were not a complete executed Palace review. They do not establish the current showcase's contents or runtime API. Start with the pinned [Palace README](https://github.com/ForgeAX/forgeax-engine/blob/2b613d2209e4335c2eab2c75ebaeb2eb269b2879/apps/showcase/palace/README.md) for build instructions and asset provenance.
 
 | File relative to the Palace directory | Evidence | Limit |
 |:--|:--|:--|
@@ -187,7 +187,7 @@ For this historical whole-package strict-policy scope, known map/image inputs fa
 Produce a concise Markdown report; no additional JSON is required:
 
 ```markdown
-# ForgeaX procedural asset review
+# ForgeAX procedural asset review
 
 - Object / revision / delivery scope:
 - Required type / actual interface type:

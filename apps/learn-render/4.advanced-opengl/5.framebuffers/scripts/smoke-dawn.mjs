@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // LearnOpenGL framebuffers Dawn smoke through the Standard host.
 
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -203,9 +204,8 @@ async function drawFrames(count) {
   let frames = 0;
   for (let index = 0; index < count; index++) {
     world.update(1 / 60).unwrap();
-    const frame = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!frame.ok) throw frame.error;
-    const observed = await renderer.observe(frame.value, { include: ['draws'] });
+    const frame = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    const observed = await renderer.observe(frame, { include: ['draws'] });
     if (!observed.ok) throw observed.error;
     frames++;
     await sharedDevice.queue.onSubmittedWorkDone();

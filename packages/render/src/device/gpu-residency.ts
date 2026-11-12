@@ -329,6 +329,7 @@ interface CubemapGpuEntry {
   readonly revision: number | undefined;
   scope?: DeviceScope;
   status: 'pending' | 'ready' | 'failed';
+  projection?: Promise<Result<AssetHandle<'equirect'>, AssetError | RhiError>>;
   texture: GpuTexture | null;
   view: TextureView | undefined;
   faceViews: readonly TextureView[];
@@ -1453,6 +1454,19 @@ export class GpuResidencyCache {
     worldId: RenderResourceScope | number = 0,
   ): 'pending' | 'ready' | 'failed' | undefined {
     return this.cubemapGpuHandles.get(Number(handle), this.worldNamespace(worldId))?.status;
+  }
+
+  /** Borrow actual in-flight environment derivations, not another status poll. */
+  pendingCubemapCompletion(): Promise<Result<void, AssetError | RhiError>> | undefined {
+    const pending = [...this.cubemapGpuHandles.values()].flatMap((entry) =>
+      entry.status === 'pending' && entry.projection !== undefined ? [entry.projection] : [],
+    );
+    return pending.length === 0
+      ? undefined
+      : Promise.all(pending).then((results) => {
+          const failed = results.find((result) => !result.ok);
+          return failed !== undefined && !failed.ok ? err(failed.error) : ok(undefined);
+        });
   }
 
   /** The structured failure recorded with a `'failed'` projection status. */
@@ -2706,7 +2720,155 @@ export class GpuResidencyCache {
    * records `status:'failed'` EXPLICITLY (R-2 / AC-09) so the caller never
    * retries by inferring "no entry => try again".
    */
-  async _uploadCubemapFromEquirect(
+  _uploadCubemapFromEquirect(
+    world: RenderResourceScope,
+    sourceHandle: AssetHandle<'equirect'>,
+    sourcePod: EquirectAsset,
+  ): Promise<Result<AssetHandle<'equirect'>, AssetError | RhiError>> {
+    const namespace = this.worldNamespace(world);
+    const previous = this.cubemapGpuHandles.get(Number(sourceHandle), namespace)?.projection;
+    if (previous !== undefined) return previous;
+    const projection = this.projectCubemapFromEquirect(world, sourceHandle, sourcePod);
+    const entry = this.cubemapGpuHandles.get(Number(sourceHandle), namespace);
+    if (entry?.status === 'pending') entry.projection = projection;
+    return projection;
+  }
+
+  private allocateCubemapProjectionResources(
+    device: RhiDevice,
+    scope: DeviceScope,
+    sourceId: number,
+    tex: TextureAsset,
+    projected: CubeRenderData,
+    outputFormat: TextureFormat,
+  ) {
+    const cubeFaceSize = projected.cubeFaceSize;
+    const sourceMipLevelCount = 1;
+    // Usage flags for the small equirect helper texture (sampled source for the
+    // IBL precompute pass); the cube texture's usage comes from the projection.
+    const gpuTextureResult = device.createTexture({
+      label: `cubemap-${sourceId}`,
+      size: { width: cubeFaceSize, height: cubeFaceSize, depthOrArrayLayers: 6 },
+      mipLevelCount: sourceMipLevelCount,
+      sampleCount: 1,
+      dimension: '2d',
+      format: outputFormat,
+      usage: projected.cubeUsage,
+      viewFormats: [],
+      textureBindingViewDimension: undefined,
+    });
+    if (!gpuTextureResult.ok) return err(gpuTextureResult.error);
+    const gpuTexture = gpuTextureResult.value;
+    const gpuTextureWrapper = new GpuTexture(device, gpuTexture, scope);
+
+    const cubeViewResult = device.createTextureView(gpuTexture, {
+      label: `cubemap-view-${sourceId}`,
+      dimension: 'cube',
+      arrayLayerCount: 6,
+    });
+    if (!cubeViewResult.ok) return err(cubeViewResult.error);
+    const cubeView = cubeViewResult.value;
+
+    const faceViews: TextureView[] = [];
+    for (let face = 0; face < 6; face++) {
+      const faceViewResult = device.createTextureView(gpuTexture, {
+        label: `cubemap-face-${sourceId}-${face}`,
+        dimension: '2d',
+        baseArrayLayer: face,
+        arrayLayerCount: 1,
+      });
+      if (!faceViewResult.ok) return err(faceViewResult.error);
+      faceViews.push(faceViewResult.value);
+    }
+
+    const equirectTextureResult = device.createTexture({
+      label: `equirect-${sourceId}`,
+      size: {
+        width: tex.shape.extent.width,
+        height: tex.shape.extent.height,
+        depthOrArrayLayers: 1,
+      },
+      mipLevelCount: 1,
+      sampleCount: 1,
+      dimension: '2d',
+      format: tex.format,
+      usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_DST,
+      viewFormats: [],
+      textureBindingViewDimension: undefined,
+    });
+    if (!equirectTextureResult.ok) return err(equirectTextureResult.error);
+    const equirectGpuTex = equirectTextureResult.value;
+    scope._adopt('texture', equirectGpuTex, (texture) => {
+      device.destroyTexture(texture);
+    });
+
+    const equirectViewResult = device.createTextureView(equirectGpuTex, {
+      label: `equirect-view-${sourceId}`,
+      dimension: '2d',
+    });
+    if (!equirectViewResult.ok) return err(equirectViewResult.error);
+    const equirectView = equirectViewResult.value;
+
+    const bytesPerPixel = textureFormatBlock(tex.format).bytesPerBlock;
+    const equirectWriteResult = device.queue.writeTexture(
+      { texture: equirectGpuTex },
+      tex.data,
+      {
+        bytesPerRow: tex.shape.extent.width * bytesPerPixel,
+        rowsPerImage: tex.shape.extent.height,
+      },
+      {
+        width: tex.shape.extent.width,
+        height: tex.shape.extent.height,
+        depthOrArrayLayers: 1,
+      },
+    );
+    if (!equirectWriteResult.ok) return err(equirectWriteResult.error);
+
+    const faceBufferResult = createFaceUniformsBuffer(device);
+    if (!faceBufferResult.ok) return err(faceBufferResult.error);
+    const faceBuf = faceBufferResult.value;
+    scope._adopt('buffer', faceBuf, (buffer) => {
+      device.destroyBuffer(buffer);
+    });
+    const prefilterBufferResult = createPrefilterUniformsBuffer(device);
+    if (!prefilterBufferResult.ok) return err(prefilterBufferResult.error);
+    const prefBuf = prefilterBufferResult.value;
+    scope._adopt('buffer', prefBuf, (buffer) => {
+      device.destroyBuffer(buffer);
+    });
+
+    const cubeVertexResult = device.createBuffer({
+      label: 'ibl-cube-verts',
+      size: CUBEMAP_FACE_VERTICES.byteLength,
+      usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
+      mappedAtCreation: false,
+    });
+    if (!cubeVertexResult.ok) return err(cubeVertexResult.error);
+    const cubeVertex = cubeVertexResult.value;
+    scope._adopt('buffer', cubeVertex, (buffer) => {
+      device.destroyBuffer(buffer);
+    });
+
+    const cubeVertexWriteResult = device.queue.writeBuffer(cubeVertex, 0, CUBEMAP_FACE_VERTICES);
+    if (!cubeVertexWriteResult.ok) return err(cubeVertexWriteResult.error);
+    const faceUniformsResult = writeAllFaceUniforms(device, faceBuf);
+    if (!faceUniformsResult.ok) return err(faceUniformsResult.error);
+    const prefilterUniformsResult = writeAllPrefilterUniforms(device, prefBuf);
+    if (!prefilterUniformsResult.ok) return err(prefilterUniformsResult.error);
+
+    return ok({
+      gpuTextureWrapper,
+      cubeView,
+      faceViews,
+      equirectView,
+      faceBuf,
+      prefBuf,
+      cubeVertex,
+    });
+  }
+
+  private async projectCubemapFromEquirect(
     world: RenderResourceScope,
     sourceHandle: AssetHandle<'equirect'>,
     sourcePod: EquirectAsset,
@@ -2842,19 +3004,17 @@ export class GpuResidencyCache {
           kind: 'texture',
           shape: sourceTex.shape,
           format: projected.outputFormat,
-          data: halfFloat.f32ToF16Bytes(sourceTex.data),
+          data: halfFloat.f32ToF16Bytes(sourceTex.data, { clampFinite: true }),
           colorSpace: 'linear',
           mips: { kind: 'none' },
         }
       : sourceTex;
 
-    const cubeFaceSize = projected.cubeFaceSize;
     // The source equirect stays float for filtering, but WebGL2 cannot render
     // rgba16float attachments. Downlevel only the precompute outputs to the
     // universally renderable rgba8 path; the same format is threaded through
     // the cubemap and all three IBL side textures by IblPipelineCache.
     const outputFormat = this.caps?.rgba16floatRenderable === false ? 'rgba8unorm' : tex.format;
-    const sourceMipLevelCount = 1;
 
     // Lazy projection runs from the record arm, where the RHI device is always
     // wired (research R-5). The IBL path is deliberately independent from the
@@ -2883,118 +3043,17 @@ export class GpuResidencyCache {
     const scope = pipelineScope.createChild(`equirect-${sourceId}-${revision ?? 0}`);
     entry.scope = scope;
 
-    // Usage flags for the small equirect helper texture (sampled source for the
-    // IBL precompute pass); the cube texture's usage comes from the projection.
-    const gpuTextureResult = device.createTexture({
-      label: `cubemap-${sourceId}`,
-      size: { width: cubeFaceSize, height: cubeFaceSize, depthOrArrayLayers: 6 },
-      mipLevelCount: sourceMipLevelCount,
-      sampleCount: 1,
-      dimension: '2d',
-      format: outputFormat,
-      usage: projected.cubeUsage,
-      viewFormats: [],
-      textureBindingViewDimension: undefined,
-    });
-    if (!gpuTextureResult.ok) return recordFailed(gpuTextureResult.error);
-    const gpuTexture = gpuTextureResult.value;
-    const gpuTextureWrapper = new GpuTexture(device, gpuTexture, scope);
-
-    const cubeViewResult = device.createTextureView(gpuTexture, {
-      label: `cubemap-view-${sourceId}`,
-      dimension: 'cube',
-      arrayLayerCount: 6,
-    });
-    if (!cubeViewResult.ok) return recordFailed(cubeViewResult.error);
-    const cubeView = cubeViewResult.value;
-
-    const faceViews: TextureView[] = [];
-    for (let face = 0; face < 6; face++) {
-      const faceViewResult = device.createTextureView(gpuTexture, {
-        label: `cubemap-face-${sourceId}-${face}`,
-        dimension: '2d',
-        baseArrayLayer: face,
-        arrayLayerCount: 1,
-      });
-      if (!faceViewResult.ok) return recordFailed(faceViewResult.error);
-      faceViews.push(faceViewResult.value);
-    }
-
-    const equirectTextureResult = device.createTexture({
-      label: `equirect-${sourceId}`,
-      size: {
-        width: tex.shape.extent.width,
-        height: tex.shape.extent.height,
-        depthOrArrayLayers: 1,
-      },
-      mipLevelCount: 1,
-      sampleCount: 1,
-      dimension: '2d',
-      format: tex.format,
-      usage: GPU_TEXTURE_USAGE_TEXTURE_BINDING | GPU_TEXTURE_USAGE_COPY_DST,
-      viewFormats: [],
-      textureBindingViewDimension: undefined,
-    });
-    if (!equirectTextureResult.ok) return recordFailed(equirectTextureResult.error);
-    const equirectGpuTex = equirectTextureResult.value;
-    scope._adopt('texture', equirectGpuTex, (texture) => {
-      device.destroyTexture(texture);
-    });
-
-    const equirectViewResult = device.createTextureView(equirectGpuTex, {
-      label: `equirect-view-${sourceId}`,
-      dimension: '2d',
-    });
-    if (!equirectViewResult.ok) return recordFailed(equirectViewResult.error);
-    const equirectView = equirectViewResult.value;
-
-    const bytesPerPixel = textureFormatBlock(tex.format).bytesPerBlock;
-    const equirectWriteResult = device.queue.writeTexture(
-      { texture: equirectGpuTex },
-      tex.data,
-      {
-        bytesPerRow: tex.shape.extent.width * bytesPerPixel,
-        rowsPerImage: tex.shape.extent.height,
-      },
-      {
-        width: tex.shape.extent.width,
-        height: tex.shape.extent.height,
-        depthOrArrayLayers: 1,
-      },
+    const allocated = this.allocateCubemapProjectionResources(
+      device,
+      scope,
+      sourceId,
+      tex,
+      projected,
+      outputFormat,
     );
-    if (!equirectWriteResult.ok) return recordFailed(equirectWriteResult.error);
-
-    const faceBufferResult = createFaceUniformsBuffer(device);
-    if (!faceBufferResult.ok) return recordFailed(faceBufferResult.error);
-    const faceBuf = faceBufferResult.value;
-    scope._adopt('buffer', faceBuf, (buffer) => {
-      device.destroyBuffer(buffer);
-    });
-    const prefilterBufferResult = createPrefilterUniformsBuffer(device);
-    if (!prefilterBufferResult.ok) return recordFailed(prefilterBufferResult.error);
-    const prefBuf = prefilterBufferResult.value;
-    scope._adopt('buffer', prefBuf, (buffer) => {
-      device.destroyBuffer(buffer);
-    });
-
-    const cubeVertexResult = device.createBuffer({
-      label: 'ibl-cube-verts',
-      size: CUBEMAP_FACE_VERTICES.byteLength,
-      usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
-      mappedAtCreation: false,
-    });
-    if (!cubeVertexResult.ok) return recordFailed(cubeVertexResult.error);
-    const cubeVertex = cubeVertexResult.value;
-    scope._adopt('buffer', cubeVertex, (buffer) => {
-      device.destroyBuffer(buffer);
-    });
-
-    const cubeVertexWriteResult = device.queue.writeBuffer(cubeVertex, 0, CUBEMAP_FACE_VERTICES);
-    if (!cubeVertexWriteResult.ok) return recordFailed(cubeVertexWriteResult.error);
-    const faceUniformsResult = writeAllFaceUniforms(device, faceBuf);
-    if (!faceUniformsResult.ok) return recordFailed(faceUniformsResult.error);
-    const prefilterUniformsResult = writeAllPrefilterUniforms(device, prefBuf);
-    if (!prefilterUniformsResult.ok) return recordFailed(prefilterUniformsResult.error);
+    if (!allocated.ok) return recordFailed(allocated.error);
+    const { gpuTextureWrapper, cubeView, faceViews, equirectView, faceBuf, prefBuf, cubeVertex } =
+      allocated.value;
 
     const pipelinesResult = await createIblPipelines(
       pipelineScope,

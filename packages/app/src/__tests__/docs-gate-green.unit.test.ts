@@ -55,7 +55,7 @@ describe('M5 active-documentation token-first gate', () => {
   it('routes migrated ECS history through the owning README instead of requiring a source copy', () => {
     expect(existsSync(resolve(repoRoot, 'packages/ecs/CHANGELOG.md'))).toBe(false);
     expect(readFileSync(resolve(repoRoot, 'packages/ecs/README.md'), 'utf8')).toContain(
-      'https://github.com/ForgeaX-Games/forgeax-engine-harness/blob/main/docs/engine/packages/ecs/CHANGELOG.md',
+      'https://github.com/ForgeAX/forgeax-engine-harness/blob/main/docs/engine/packages/ecs/CHANGELOG.md',
     );
   });
 

@@ -16,6 +16,7 @@ import type { BufferPool } from './buffer-pool';
 import type { Component, ComponentSchema, ShapeOf } from './component';
 import type { EntityHandle } from './entity-handle';
 import type { WorldExecutionFault } from './execution/shared-kernel';
+import type { WorldFrameArena } from './frame-arena';
 import type { ResourceStore } from './resource';
 import type { Schedule } from './schedule';
 import type { ScheduleToken } from './schedule-token';
@@ -61,6 +62,8 @@ export interface WorldInternal {
     fieldName: string,
   ) => ArrayLike<number> | undefined;
   readonly getBufferPool: () => BufferPool;
+  readonly getFrameArena: () => WorldFrameArena;
+  readonly maintainMemory: () => void;
   readonly getClockWriter: () => ClockWriter;
   readonly getComponentChange: (
     entity: EntityHandle,

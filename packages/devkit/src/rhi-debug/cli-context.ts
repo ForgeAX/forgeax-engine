@@ -1,7 +1,8 @@
-import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { loadavg } from 'node:os';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createRhiDebugError,
   replayDeviceRequest,
@@ -11,6 +12,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { err } from '@forgeax/engine-types';
+import { nodeGpu } from '../node-gpu.js';
 import type { CommandResult } from '../types.js';
 import {
   type ArtifactRef,
@@ -21,18 +23,27 @@ import {
   type RhiReadInput,
   type RhiReadOutput,
   type RhiSummaryOutput,
+  type RhiTimingInput,
   type RhiTimingOutput,
   runRhiDebugOperation,
 } from './operations.js';
-
-// One GPU instance serves every replay in this process; each replay owns and
-// destroys only its fresh device, so a long-lived host accumulates neither.
-let replayInstance: GPU | undefined;
+import type {
+  HostLoadPhase,
+  HostLoadSample,
+  ReplayAdapterInfo,
+  TimestampQuantization,
+} from './timing-environment.js';
 
 type ProviderResult = CommandResult<GPU>;
 
-function providerUnavailable(expected: string, hint: string, cause: string): ProviderResult {
-  return {
+/**
+ * The replay `GPU` from the shared Node provider. Dawn has no acceleration
+ * structures, so a tape that builds them names the native route instead of
+ * failing later at device admission.
+ */
+async function replayGpu(tape: V7Tape): Promise<ProviderResult> {
+  const native = process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native';
+  const unavailable = (expected: string, hint: string, cause: string): ProviderResult => ({
     ok: false,
     error: {
       code: 'replay-backend-unavailable',
@@ -40,83 +51,86 @@ function providerUnavailable(expected: string, hint: string, cause: string): Pro
       hint,
       detail: { stage: 'provider', cause },
     },
-  };
-}
-
-/**
- * The replay `GPU`: Dawn by default, or the contributor-only native wgpu device
- * (hardware Ray Query) when `FORGEAX_WEBGPU_NODE=wgpu-native`. Dawn has no
- * acceleration structures, so a tape that builds them names the native route
- * instead of failing later at device admission.
- */
-async function replayGpu(tape: V7Tape): Promise<ProviderResult> {
-  const native = process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native';
+  });
   if (!native && usesAccelerationStructures(tape))
-    return providerUnavailable(
+    return unavailable(
       'a replay provider with hardware Ray Query for a tape that builds acceleration structures',
       'Dawn has no acceleration structures; rerun with FORGEAX_WEBGPU_NODE=wgpu-native from an Engine contributor checkout with the native addon built.',
       'tape builds acceleration structures; the default Dawn provider cannot replay them',
     );
-  if (replayInstance !== undefined) return { ok: true, value: replayInstance };
-  if (native) {
-    const entry = findNativeProvider(process.cwd());
-    if (entry === undefined)
-      return providerUnavailable(
-        'the contributor-only @forgeax/engine-rhi-wgpu-native package with its built addon',
-        'Run from an Engine contributor checkout after `pnpm --filter @forgeax/engine-rhi-wgpu-native build:native` and its `build`.',
-        `no rhi-wgpu-native dist/index.mjs above ${process.cwd()}`,
-      );
-    try {
-      const provider = (await import(pathToFileURL(entry).href)) as {
-        installNavigatorGpu():
-          | { readonly ok: true; readonly value: GPU }
-          | { readonly ok: false; readonly error: { readonly hint: string } };
-      };
-      const installed = provider.installNavigatorGpu();
-      if (!installed.ok)
-        return providerUnavailable(
-          'the native wgpu addon to load',
-          installed.error.hint,
-          installed.error.hint,
-        );
-      replayInstance = installed.value;
-      return { ok: true, value: installed.value };
-    } catch (cause) {
-      return providerUnavailable(
-        'the native wgpu provider to load',
-        'Rebuild @forgeax/engine-rhi-wgpu-native (`build:native`, then `build`).',
-        cause instanceof Error ? cause.message : String(cause),
-      );
-    }
-  }
-  try {
-    const dawn = await import('@forgeax/engine-dawn-node');
-    Object.assign(globalThis, dawn.globals as Record<string, unknown>);
-    replayInstance = (dawn.create as (options: readonly string[]) => GPU)([]);
-    return { ok: true, value: replayInstance };
-  } catch (cause) {
-    return providerUnavailable(
-      'the Dawn WebGPU provider to load',
-      'Dawn replay is opt-in: on Linux add the optional provider to the project (`pnpm add -D upstream-webgpu@npm:webgpu@0.4.0`); on macOS/Windows run `pnpm --filter @forgeax/engine-dawn-node build:native` from an Engine source checkout. Then retry rhi.inspect. Ray Query tapes use FORGEAX_WEBGPU_NODE=wgpu-native with its native addon built.',
-      cause instanceof Error ? cause.message : String(cause),
-    );
-  }
+  const gpu = await nodeGpu();
+  return gpu.ok ? gpu : unavailable(gpu.error.expected, gpu.error.hint, gpu.error.cause);
 }
 
-/** The workspace package, or an installed one, nearest to `from`. */
-function findNativeProvider(from: string): string | undefined {
-  for (let dir = resolve(from); ; dir = dirname(dir)) {
-    for (const candidate of [
-      join(dir, 'packages/rhi-wgpu-native/dist/index.mjs'),
-      join(dir, 'node_modules/@forgeax/engine-rhi-wgpu-native/dist/index.mjs'),
-    ])
-      if (existsSync(candidate)) return candidate;
-    if (dirname(dir) === dir) return undefined;
+function run(command: string, args: readonly string[], timeout = 3000): Promise<string | null> {
+  return new Promise((resolveRun) => {
+    execFile(command, args, { timeout, encoding: 'utf8' }, (error, stdout) =>
+      resolveRun(error === null ? stdout : null),
+    );
+  });
+}
+
+/** macOS IOAccelerator "Device Utilization %"; null where unreadable. */
+async function gpuUtilizationPercent(): Promise<number | null> {
+  if (process.platform !== 'darwin') return null;
+  const out = await run('ioreg', ['-r', '-d', '1', '-c', 'IOAccelerator']);
+  const values = [...(out ?? '').matchAll(/"Device Utilization %"=(\d+)/g)].map((m) =>
+    Number(m[1]),
+  );
+  return values.length === 0 ? null : Math.max(...values);
+}
+
+const LOAD_SAMPLES = 4;
+const LOAD_SAMPLE_INTERVAL_MS = 500;
+
+/**
+ * `before`: the busiest of a few samples over about 1.5 s, so a single idle
+ * tick between frames of another app does not pass. `after`: the quietest of
+ * them, since utilization trails our own just-finished replays.
+ */
+export async function sampleHostLoad(phase: HostLoadPhase): Promise<HostLoadSample> {
+  const samples: (number | null)[] = [];
+  for (let i = 0; i < LOAD_SAMPLES; i += 1) {
+    if (i > 0) await new Promise((wake) => setTimeout(wake, LOAD_SAMPLE_INTERVAL_MS));
+    const value = await gpuUtilizationPercent();
+    samples.push(value);
+    if (value === null || (phase === 'after' && value === 0)) break;
   }
+  const known = samples.filter((value): value is number => value !== null);
+  const gpu =
+    known.length === 0 ? null : phase === 'before' ? Math.max(...known) : Math.min(...known);
+  const load1 = process.platform === 'win32' ? null : (loadavg()[0] ?? null);
+  return { at: new Date().toISOString(), load1, gpuUtilizationPercent: gpu };
+}
+
+/** Git revision and dirty state of the checkout this devkit runs from, plus the runtime. */
+export async function buildIdentity(): Promise<Record<string, string | number | boolean>> {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const revision = (await run('git', ['-C', here, 'rev-parse', 'HEAD']))?.trim();
+  const status = await run('git', ['-C', here, 'status', '--porcelain', '--untracked-files=no']);
+  return {
+    ...(revision === undefined || revision === '' ? {} : { revision }),
+    ...(status === null ? {} : { dirty: status.trim() !== '' }),
+    provider: process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native' ? 'wgpu-native' : 'dawn',
+    node: process.version,
+    platform: `${process.platform}-${process.arch}`,
+  };
+}
+
+function adapterInfoOf(info: GPUAdapterInfo | undefined): ReplayAdapterInfo | undefined {
+  if (info === undefined) return undefined;
+  return {
+    vendor: info.vendor,
+    architecture: info.architecture,
+    device: info.device,
+    description: info.description,
+  };
 }
 
 export function createCliRhiDebugOperationContext(): RhiDebugOperationContext {
   return {
+    sampleHostLoad,
+    buildIdentity,
     captureFrame: async () =>
       err(
         createRhiDebugError('capture-unavailable', {
@@ -217,11 +231,17 @@ export function createCliRhiDebugOperationContext(): RhiDebugOperationContext {
         };
       }
       const replayDevice = device.value;
+      const adapterInfo = adapterInfoOf((await provider.value.requestAdapter())?.info);
+      // nodeGpu() creates Dawn without timestamp quantization; wgpu-native does not declare it.
+      const timestampQuantization: TimestampQuantization =
+        process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native' ? 'unknown' : 'disabled';
       return {
         ok: true as const,
         value: {
           device: replayDevice,
           createShaderModule,
+          timestampQuantization,
+          ...(adapterInfo === undefined ? {} : { adapterInfo }),
           release: () => {
             const native = replayDevice.nativeDevice();
             if (native.ok) native.value.destroy();
@@ -243,24 +263,41 @@ interface CliOutputs {
 export async function runCliRhiDebugOperation<N extends keyof CliOutputs>(
   name: N,
   input: Omit<RhiInspectInput, 'artifact' | 'workIndex'> &
-    Partial<Omit<RhiReadInput, 'artifact'>> & {
+    Partial<Omit<RhiReadInput, 'artifact'>> &
+    Partial<Omit<RhiTimingInput, 'artifact' | 'compare'>> & {
       readonly artifact: string;
       readonly digest?: string;
       readonly workIndex?: number;
+      /** `rhi timing` baseline tape path. */
+      readonly compare?: string;
     },
 ): Promise<CommandResult<CliOutputs[N]>> {
   const context = createCliRhiDebugOperationContext();
-  const source: ArtifactRef = {
-    kind: 'rhi-tape',
-    source: 'cli',
-    path: input.artifact,
-    digest: input.digest ?? '',
+  const files = new Map<string, CommandResult<Uint8Array>>();
+  const resolveRef = async (
+    path: string,
+    digest: string | undefined,
+  ): Promise<CommandResult<ArtifactRef>> => {
+    const source: ArtifactRef = { kind: 'rhi-tape', source: 'cli', path, digest: digest ?? '' };
+    const bytes = await context.readArtifact(source);
+    if (!bytes.ok) return bytes;
+    files.set(path, bytes);
+    return { ok: true, value: { ...source, digest: digest ?? tapeDigest(bytes.value) } };
   };
-  const bytes = await context.readArtifact(source);
-  if (!bytes.ok) return bytes;
-  const artifact = { ...source, digest: input.digest ?? tapeDigest(bytes.value) };
-  return runRhiDebugOperation(name, { ...input, artifact } as RhiDebugOperationInput, {
+  const artifact = await resolveRef(input.artifact, input.digest);
+  if (!artifact.ok) return artifact;
+  const compare =
+    input.compare === undefined ? undefined : await resolveRef(input.compare, undefined);
+  if (compare !== undefined && !compare.ok) return compare;
+  const resolved = {
+    ...input,
+    artifact: artifact.value,
+    ...(compare === undefined ? {} : { compare: compare.value }),
+  };
+  return runRhiDebugOperation(name, resolved as RhiDebugOperationInput, {
     ...context,
-    readArtifact: async () => bytes,
+    // Each path is read once; replay keeps decoding the bytes whose digest was taken.
+    readArtifact: async (ref) =>
+      (ref.path === undefined ? undefined : files.get(ref.path)) ?? context.readArtifact(ref),
   }) as Promise<CommandResult<CliOutputs[N]>>;
 }

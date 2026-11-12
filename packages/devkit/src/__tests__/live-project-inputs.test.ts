@@ -385,3 +385,25 @@ it('logs a ready line as an input count plus the paths changed since the last ge
   expect(bulk.addedInputPaths).toHaveLength(16);
   expect(bulk.inputChangeCount).toBe(80);
 });
+
+it('stops reference decoding once a dynamic loader already requires every document', async () => {
+  const root = await fixture();
+  // Fill the first bounded read batch; the next batch is no longer needed.
+  await Promise.all(
+    Array.from({ length: 32 }, (_, i) =>
+      writeFile(
+        join(root, `a${String(i).padStart(2, '0')}.ts`),
+        i === 0 ? 'await import(modulePath);' : 'export {};',
+      ),
+    ),
+  );
+  const bulk = join(root, 'z-bulk-data');
+  await writeFile(bulk, '');
+  await truncate(bulk, 17_336_057_856);
+  const first = await readLiveProjectInputs(root);
+  await writeFile(join(root, 'README.md'), '# runtime document');
+  const withDocument = await readLiveProjectInputs(root);
+  expect(withDocument).not.toBe(first);
+  await truncate(bulk, 17_336_057_855);
+  expect(await readLiveProjectInputs(root)).not.toBe(withDocument);
+});

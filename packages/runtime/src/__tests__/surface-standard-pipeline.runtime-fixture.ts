@@ -24,7 +24,14 @@ import {
   type SurfaceDynamicInputMemberIdentity,
 } from '@forgeax/engine-render';
 import { type RhiDevice, RhiError } from '@forgeax/engine-rhi';
-import { GlobalTransform, propagateTransforms, Transform } from '@forgeax/engine-scene';
+import type { EncodedTape } from '@forgeax/engine-rhi-debug';
+import {
+  GlobalTransform,
+  PROPAGATE_TRANSFORMS_SYSTEM,
+  propagateTransforms,
+  scenePlugin,
+  Transform,
+} from '@forgeax/engine-scene';
 import type { AssetHandle, MaterialAsset } from '@forgeax/engine-types';
 import { ok } from '@forgeax/engine-types';
 import {
@@ -69,6 +76,12 @@ import {
   type SurfaceMsaaEdgeResolveExpectation,
   surfaceRgbDistance,
 } from './surface-msaa-edge-oracle';
+import {
+  captureVfxFrame,
+  saveVfxFailureFrame,
+  snapshotVfxFailureState,
+  type VfxFrameDiagnostics,
+} from './vfx-failure-evidence.fixture';
 
 export const SURFACE_CLOSURE = 'forgeax_material::surface_v1';
 export const SURFACE_WIDTH = quality.viewport.width;
@@ -833,6 +846,7 @@ type SurfaceAppLifecycleInput = {
   readonly queueVfxContinuationDuringLoss?: boolean;
   /** Node/Dawn has no live host rAF; Browser must leave this omitted. */
   readonly hostFrameScheduler?: 'timer';
+  readonly diagnostics?: VfxFrameDiagnostics;
 };
 
 type SurfaceAppLifecycleSplashIntents = SurfaceAppLifecycleEvidence['splashIntents'];
@@ -1365,6 +1379,7 @@ class SurfaceAppLifecycleRun {
     this.world
       .addSystem(Update, {
         name: 'surface-water-public-event-lifecycle',
+        before: [PROPAGATE_TRANSFORMS_SYSTEM],
         queries: [],
         fn: () => this.updateWaterEvents(),
       })
@@ -1449,6 +1464,7 @@ class SurfaceAppLifecycleRun {
   async captureReceipt(
     label: SurfaceAppLifecycleFrameEvidence['label'],
     receipt: FrameReceipt,
+    tape?: EncodedTape,
   ): Promise<SurfaceAppLifecycleFrameCapture> {
     const masks = this.masks;
     const observed = await this.renderer.observe(receipt, { include: ['linear-hdr'] });
@@ -1480,6 +1496,22 @@ class SurfaceAppLifecycleRun {
     const waterB = readSurfaceAppLifecycleRoi(readback, masks.waterB);
     const coverage = readSurfaceAppLifecycleRoi(readback, masks.coverage);
     const splash = readSurfaceAppLifecycleRoi(readback, masks.splash);
+    const diagnostics = this.input.diagnostics;
+    if (diagnostics !== undefined && (label === 'baseline' || label === 'active')) {
+      await saveVfxFailureFrame({
+        write: diagnostics.write,
+        name: `${diagnostics.prefix}/${label}`,
+        receipt,
+        observation,
+        tape,
+        backend: diagnostics.backend(),
+        state: {
+          ...snapshotVfxFailureState(this.world, this.renderer, this.input.vfxHost),
+          masks,
+          rois: { waterA, waterB, coverage, splash },
+        },
+      });
+    }
     return {
       waterA,
       waterB,
@@ -1728,8 +1760,13 @@ class SurfaceAppLifecycleDrive {
     await run.waitForReceipts(eventReceiptIndex + 1);
     const eventSpawnIntents = run.inspectCommittedSplashes();
     run.armLifecycleObservation();
-    const activeReceipt = await run.stepAndComplete(app, 1 / 60, 'active receipt unavailable');
-    return { active: await run.captureReceipt('active', activeReceipt), eventSpawnIntents };
+    const active = await captureVfxFrame(run.input.diagnostics?.recorder, () =>
+      run.stepAndComplete(app, 1 / 60, 'active receipt unavailable'),
+    );
+    return {
+      active: await run.captureReceipt('active', active.value, active.tape),
+      eventSpawnIntents,
+    };
   }
 
   /** A paused App advances neither World time, frames nor VFX intent state. */
@@ -2365,6 +2402,17 @@ async function driveSurfaceAppLifecycle(
   };
 }
 
+/** Assemble the lifecycle's Scene propagation for late players and live camera writes. */
+export function createSurfaceAppLifecycleApp(renderer: Renderer, world: World) {
+  return createApp({
+    platform: testPlatform(),
+    renderer,
+    world,
+    plugins: [scenePlugin()],
+    silenceUnhandledErrors: true,
+  });
+}
+
 /**
  * Run the public App-owned water lifecycle. The World Update system is the
  * single time snapshot owner for both Surface event timestamps and VFX play
@@ -2385,12 +2433,7 @@ export async function runSurfaceAppLifecycle(
   scheduler?.install();
   const unsubscribeFrames = run.subscribeFrames();
   try {
-    const created = await createApp({
-      platform: testPlatform(),
-      renderer: input.renderer,
-      world: scene.world,
-      silenceUnhandledErrors: true,
-    });
+    const created = await createSurfaceAppLifecycleApp(input.renderer, scene.world);
     if (!created.ok) throw created.error;
     const app = created.value;
     run.app = app;
@@ -3064,6 +3107,7 @@ function centerActual(
 export async function runSurfaceOpticalOracle(
   renderer: Renderer,
   sourceAssets: AssetRegistry,
+  diagnostics?: VfxFrameDiagnostics,
 ): Promise<SurfaceOpticalRuntimeEvidence> {
   const assets = surfaceAssets(sourceAssets);
   const backgroundLoaded = await loadSurfaceMaterial(
@@ -3096,26 +3140,28 @@ export async function runSurfaceOpticalOracle(
     if (event.kind === 'error') renderErrors.push(event.error);
   });
   let receipt: FrameReceipt | undefined;
+  let tape: import('@forgeax/engine-rhi-debug').EncodedTape | undefined;
   try {
     for (let frame = 0; frame < quality.staticFrames; frame += 1) {
       renderer.setSurfaceDynamicInput({ ...dynamicInput, frameTime: 0 });
       world.update(1 / 60).unwrap();
-      if (frame === quality.staticFrames - 1) {
-        const armed = renderer.requestObservation?.(['linear-hdr']);
-        if (armed === undefined || !armed.ok) {
-          throw new Error('surface-optical: linear-hdr observation could not be armed');
-        }
-      }
-      const drawn = renderer.draw({
+      const request = {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
-        geometryLane: 'direct',
-      });
-      if (!drawn.ok) throw drawn.error;
-      const completed = await drawn.value.completed;
-      if (!completed.ok) throw completed.error;
-      if (frame === quality.staticFrames - 1) receipt = drawn.value;
+        geometryLane: 'direct' as const,
+      };
+      const finalFrame = frame === quality.staticFrames - 1;
+      // A diagnostic recorder must start after runtime preparation, so its
+      // one physical frame contains the actual nearest/color picture.
+      if (finalFrame && diagnostics !== undefined) await drawReadyFrame(renderer, request);
+      const captured = await captureVfxFrame(finalFrame ? diagnostics?.recorder : undefined, () =>
+        drawReadyFrame(renderer, request, finalFrame ? ['linear-hdr'] : undefined),
+      );
+      if (frame === quality.staticFrames - 1) {
+        receipt = captured.value;
+        tape = captured.tape;
+      }
     }
     if (receipt === undefined) throw new Error('surface-optical: observation receipt unavailable');
     const observed = await renderer.observe(receipt, { include: ['linear-hdr'] });
@@ -3161,6 +3207,16 @@ export async function runSurfaceOpticalOracle(
     }
 
     const records = evaluateSurfaceOpticalOracle(linearHdr);
+    if (diagnostics !== undefined)
+      await saveVfxFailureFrame({
+        write: diagnostics.write,
+        name: `${diagnostics.prefix}/optical`,
+        receipt,
+        observation,
+        tape,
+        backend: diagnostics.backend(),
+        state: { records, budget: SURFACE_OPTICAL_PIXEL_EPSILON, renderErrors, submission },
+      });
     const failed = records.find(
       (record) =>
         !Number.isFinite(record.maxError) || record.maxError > SURFACE_OPTICAL_PIXEL_EPSILON,
@@ -3176,7 +3232,9 @@ export async function runSurfaceOpticalOracle(
       falsifier?.falsifierMaxError === undefined ||
       falsifier.falsifierMaxError <= SURFACE_OPTICAL_PIXEL_EPSILON
     ) {
-      throw new Error('surface-optical: changed-absorption falsifier did not cross the threshold');
+      throw new Error(
+        `surface-optical: changed-absorption falsifier did not cross the threshold; evidence=${JSON.stringify({ budget: SURFACE_OPTICAL_PIXEL_EPSILON, falsifier, observation: linearHdr.metadata, renderErrors })}`,
+      );
     }
     for (const [nearId, farId] of [
       ['distance-near', 'distance-double'],
@@ -3482,22 +3540,18 @@ async function captureSurfaceMsaaEdgeFrame(input: {
   for (let frame = 0; frame < input.warmupFrames; frame += 1) {
     input.renderer.setSurfaceDynamicInput({ ...input.dynamicInput, frameTime: 0 });
     input.world.update(1 / 60).unwrap();
-    if (frame === input.warmupFrames - 1) {
-      const armed = input.renderer.requestObservation?.(['linear-hdr']);
-      if (armed === undefined || !armed.ok) {
-        throw new Error('surface-msaa-edge: linear-hdr observation could not be armed');
-      }
-    }
-    const drawn = input.renderer.draw({
-      leases: [input.lease],
-      camera: { lease: input.lease, entityKey: input.cameraEntity },
-      environment: { lease: input.lease },
-      geometryLane: 'direct',
-    });
-    if (!drawn.ok) throw drawn.error;
-    const completed = await drawn.value.completed;
-    if (!completed.ok) throw completed.error;
-    if (frame === input.warmupFrames - 1) receipt = drawn.value;
+    const finalFrame = frame === input.warmupFrames - 1;
+    const drawn = await drawReadyFrame(
+      input.renderer,
+      {
+        leases: [input.lease],
+        camera: { lease: input.lease, entityKey: input.cameraEntity },
+        environment: { lease: input.lease },
+        geometryLane: 'direct',
+      },
+      finalFrame ? ['linear-hdr'] : undefined,
+    );
+    if (finalFrame) receipt = drawn;
   }
   if (receipt === undefined) throw new Error('surface-msaa-edge: completed receipt unavailable');
   const observed = await input.renderer.observe(receipt, { include: ['linear-hdr'] });

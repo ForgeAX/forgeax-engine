@@ -30,6 +30,30 @@ describe('relationship index', () => {
     expect(Array.from(world.get(next, pair.target).unwrap().sources)).toEqual([source]);
     expect(Array.from(world.get(old, pair.target).unwrap().sources)).not.toContain(source);
   });
+  it('addChild writes the relationship target from its parent argument', () => {
+    // A Three port called `world.addChild(root, child, ChildOf, {})`: the
+    // component landed with a null parent, so the child silently stayed a root
+    // (its static trimesh collider kept the unparented pose).
+    const pair = defineRelationship({
+      sourceName: 'AddChildArgSource',
+      sourceField: 'target',
+      targetName: 'AddChildArgTargets',
+      targetField: 'sources',
+    });
+    const world = new World();
+    const parent = world.spawn().unwrap();
+    const other = world.spawn().unwrap();
+    const child = world.spawn().unwrap();
+    world.addChild(parent, child, pair.source, {}).unwrap();
+    expect(world.get(child, pair.source).unwrap().target).toBe(parent);
+    expect(Array.from(world.get(parent, pair.target).unwrap().sources)).toEqual([child]);
+    // The parent argument is authoritative over a conflicting data field.
+    world.addChild(other, child, pair.source, { target: parent }).unwrap();
+    expect(world.get(child, pair.source).unwrap().target).toBe(other);
+    expect(Array.from(world.get(other, pair.target).unwrap().sources)).toEqual([child]);
+    expect(world.get(parent, pair.target).ok).toBe(true);
+    expect(Array.from(world.get(parent, pair.target).unwrap().sources)).toEqual([]);
+  });
   it('keeps source writable and target materialized/read-only by role', () => {
     const pair = defineRelationship({
       sourceName: 'IndexSource',

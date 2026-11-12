@@ -19,6 +19,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { type MeshAsset, ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { SCENE_SDF_RUNTIME_WGSL } from '../../../vfx-compiler/src/scene-sdf';
 import { createFeatureSceneSdf } from '../assembly/feature-scene-sdf';
 import {
@@ -286,14 +287,14 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
     changeSource();
     owner.begin();
     const rejected = owner.prepare('a', request, source());
-    expect(rejected.buffer).not.toBe(scene.buffer);
+    expect(Object.is(rejected.buffer, scene.buffer)).toBe(false);
     owner.complete(false);
     // The rejected candidate was released, not adopted: the same changed source
     // prepares a fresh replacement, which an accepted submission then adopts.
     owner.begin();
     const replacement = owner.prepare('a', request, source());
-    expect(replacement.buffer).not.toBe(rejected.buffer);
-    expect(replacement.buffer).not.toBe(scene.buffer);
+    expect(Object.is(replacement.buffer, rejected.buffer)).toBe(false);
+    expect(Object.is(replacement.buffer, scene.buffer)).toBe(false);
     owner.complete(true);
     owner.begin();
     expect(owner.prepare('a', request, source()).buffer).toBe(replacement.buffer);
@@ -343,9 +344,9 @@ export async function verifySceneSdf(save?: (tape: Uint8Array, report: unknown) 
   try {
     const id = consumer.bindings.find((b) => b.binding === 0)?.resourceId;
     assert(id);
-    expect((await replay.readResourceAtWork(id, consumer.workIndex)).unwrap().bytes).toEqual(
-      actual,
-    );
+    expect(
+      equalBytes((await replay.readResourceAtWork(id, consumer.workIndex)).unwrap().bytes, actual),
+    ).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();
     webgpu._internal_getRawDevice(fresh)?.destroy();
@@ -573,7 +574,9 @@ struct ContactInput { position_delta:vec4f, velocity_gravity:vec4f, response:vec
     await openReplay(tape, { device: fresh, createShaderModule: webgpu.createShaderModule })
   ).unwrap();
   try {
-    expect((await replay.readResourceAtWork(id, work.workIndex)).unwrap().bytes).toEqual(actual);
+    expect(
+      equalBytes((await replay.readResourceAtWork(id, work.workIndex)).unwrap().bytes, actual),
+    ).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();
     webgpu._internal_getRawDevice(fresh)?.destroy();

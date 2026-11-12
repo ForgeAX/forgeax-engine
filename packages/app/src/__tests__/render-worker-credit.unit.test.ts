@@ -670,7 +670,8 @@ it.each([
       source.publish({ ...frame, frameId: 2 }, 1 / 60);
     }
     let admitted = false;
-    const admission = source.waitForPublicationCapacity().then(() => {
+    const onWait = vi.fn();
+    const admission = source.waitForPublicationCapacity(onWait).then(() => {
       admitted = true;
     });
     // Loss either invalidates a resolved readiness wait or releases a full queue.
@@ -683,11 +684,15 @@ it.each([
     await Promise.resolve();
     await Promise.resolve();
     expect(admitted).toBe(false);
+    expect(onWait).toHaveBeenCalled();
     expect(source.hasPublicationCapacity).toBe(false);
     expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-lost', epoch: 2 }));
     await source.replace(2, canvas);
     await admission;
     expect(admitted).toBe(true);
+    onWait.mockClear();
+    expect(await source.waitForPublicationCapacity(onWait)).toBe(true);
+    expect(onWait).not.toHaveBeenCalled();
     world.update(1 / 60).unwrap();
     source.publish({ ...frame, frameId: 3 }, 2 / 60);
     expect(CreditWorker.current).not.toBe(previous);
@@ -706,7 +711,7 @@ it.each([
 it.each([
   false,
   true,
-])('forwards timing and depth experiment %s to the child and retains the latest completed observation', async (featureReadOnlyDepthBatchDiagnostic) => {
+])('forwards timing and depth experiment %s to the child and retains the latest delivered observation', async (featureReadOnlyDepthBatchDiagnostic) => {
   vi.stubGlobal('Worker', CreditWorker);
   const world = new World();
   const assets = new AssetRegistry({
@@ -788,7 +793,6 @@ it.each([
     kind: 'completed',
     revision: publication.revision,
     buffers: renderPublicationTransfers(publication),
-    gpuPassTiming: observation,
     frame: {
       kind: 'frame-complete',
       worldIdentity: world.identity,
@@ -803,7 +807,25 @@ it.each([
       kernelWaitMs: 0,
     },
   });
-  expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation });
+  // Credit and completion do not wait for readback; timing merges when it arrives.
+  expect(source.inspectGpuPassTiming()).toBeUndefined();
+  worker.emit({
+    kind: 'gpu-pass-timing',
+    frameId: 7,
+    deviceGeneration: 7,
+    gpuPassTiming: observation,
+    skippedFrames: 2,
+  });
+  expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation, skippedFrames: 2 });
+  // A slower readback of an older receipt does not replace newer timing.
+  worker.emit({
+    kind: 'gpu-pass-timing',
+    frameId: 6,
+    deviceGeneration: 7,
+    gpuPassTiming: { status: 'failed', error: { code: 'timestamp-readback-failed' } },
+    skippedFrames: 2,
+  });
+  expect(source.inspectGpuPassTiming()).toEqual({ frameId: 7, observation, skippedFrames: 2 });
   // Render notices bypass the Engine; it only hands the Host the session port.
   expect(messages.some((message) => message.kind === 'render-complete')).toBe(false);
   expect(messages).toContainEqual(expect.objectContaining({ kind: 'render-host-port', epoch: 1 }));
@@ -1111,6 +1133,7 @@ it('forwards only the current child Renderer error without consuming publication
       canvas,
       bootstrapUrl: '',
       workers: workerSelection({ engine: true, render: true, kernels: false }),
+      diagnostics: { renderPipelineCapacity: 2 },
     },
     forwarded,
   );
@@ -1473,5 +1496,97 @@ it('bounds one geometry observation, validates its source epoch and cancels with
     expect(await next).toMatchObject({ ok: true, value: { frameId: 7 } });
   } finally {
     await source.dispose();
+  }
+});
+
+function stalledFrameFixture(frameTimeoutMs: number | null | undefined) {
+  vi.stubGlobal('Worker', CreditWorker);
+  const assets = new AssetRegistry({
+    shaderRegistry: new ShaderRegistry({ manifestUrl: undefined }),
+  });
+  const world = new World({ assets });
+  const canvas = {} as OffscreenCanvas;
+  const messages: EngineToHostMessage[] = [];
+  const source = new SourceRenderWorker(
+    world,
+    assets,
+    {
+      kind: 'init',
+      canvas,
+      startupTimeoutMs: 90_000,
+      ...(frameTimeoutMs === undefined ? {} : { frameTimeoutMs }),
+      bootstrapUrl: '',
+      workers: workerSelection({ render: true, kernels: false }),
+    },
+    (message) => messages.push(message),
+  );
+  const publish = () => {
+    world.update(1 / 60).unwrap();
+    source.publish(
+      {
+        kind: 'frame',
+        worldIdentity: world.identity,
+        frameId: 1,
+        deltaSeconds: 0,
+        canvasWidth: 32,
+        canvasHeight: 32,
+        inputSample: {
+          downKeys: new Set(),
+          upKeys: new Set(),
+          buttons: [false, false, false],
+          movementX: 0,
+          movementY: 0,
+          wheelDelta: 0,
+          focused: true,
+          pointerLocked: false,
+        },
+      },
+      0,
+    );
+  };
+  const lost = () => messages.filter((message) => message.kind === 'render-lost');
+  return { source, canvas, publish, lost };
+}
+
+it('bounds a GPU frame by the App frame timeout, never sooner than 30 s', async () => {
+  vi.useFakeTimers();
+  const f = stalledFrameFixture(60_000);
+  try {
+    await f.source.start(f.canvas);
+    f.publish();
+    // A software frame slower than 30 s stays within the App's 60 s frame budget.
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(f.lost()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(f.lost()).toHaveLength(1);
+    expect(JSON.parse(f.lost()[0]?.detail ?? '{}')).toMatchObject({
+      code: 'render-worker-failed',
+      detail: 'Render Worker frame timed out',
+    });
+  } finally {
+    await f.source.dispose();
+    vi.useRealTimers();
+  }
+});
+
+it('keeps the 30 s GPU completion floor under the default frame timeout and waits without one', async () => {
+  vi.useFakeTimers();
+  const bounded = stalledFrameFixture(undefined);
+  const unbounded = stalledFrameFixture(null);
+  try {
+    await bounded.source.start(bounded.canvas);
+    bounded.publish();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(bounded.lost()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(bounded.lost()).toHaveLength(1);
+    await unbounded.source.start(unbounded.canvas);
+    unbounded.publish();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(unbounded.lost()).toEqual([]);
+  } finally {
+    await bounded.source.dispose();
+    await unbounded.source.dispose();
+    vi.useRealTimers();
   }
 });

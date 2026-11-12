@@ -1,5 +1,297 @@
 # `@forgeax/engine-render`
 
+Lazy Scene row views follow immutable column pages. Reading a quiet frame does
+not rebuild a per-row registration map. Copying a changed page carries already
+read, unchanged row identities and replaces written lanes by version; old frames
+keep their own views, including deletion and slot reuse. Mesh and temporal draw
+owners supply versioned projections directly, without another per-frame slot map.
+Pose/version columns change independently of cold identity/content columns.
+Content writes copy the cold columns before changing them. Matrix windows already
+returned from a pending page remain fixed across another write or slot reuse;
+only overwriting an observed pose range requires preserving that numeric backing.
+Rigid draws without probe bindings reuse the pass's prepared identity instance
+descriptor; probe, Sprite and authored Instances retain their separate bindings.
+
+Native material receive detaches program metadata alongside numeric values.
+Plain JSON program groups are canonicalized as immutable facts; unsupported legacy
+groups retain their detached live path. Schema rebinding freezes its newly derived
+snapshot and entry-point map without freezing caller aliases. Surface contributors
+reuse program facts and exact serialized strings only after proving the complete
+program groups immutable, plain and dense. Borrowed/accessor/sparse data stays live;
+`immutableValues` alone grants no program proof. The memo follows snapshots and
+Passes, with bounded weak generations and no per-entity contributor registry.
+Low-frequency capture/rebinding costs are separate from warm contribution savings.
+Contributor selection reads the existing dispatch directly, observing identity and
+selection fields before borrowed material reads. It builds the frozen source tuple
+and native JSON identity only for contributing passes. Missing rows retain their
+sentinel identities and full diagnostics; no per-entity identity cache is retained.
+
+Stock source environment extraction observes its actual query vocabulary through
+ECS StateProjection, including optional absence, pose joins and membership.
+Unrelated gameplay writes and structural edits do not rebuild cameras or lights.
+Active-camera resource selection, interpolated poses, time-dependent media,
+asset changes and routed failures retain their separate invalidation rules.
+The source owner admits light content independently from camera pose changes.
+Successful nested reads carry component/global/pose inputs into the parent even
+on a cache hit; time dependence and routed failures also propagate. Failed
+nested reads restore the parent's observation, and foreign or unobserved child
+dependencies remain conservative. Per-view shadow fitting and culling keep
+their existing consumers and current camera inputs.
+Arbitrary extractors keep conservative mutation and structure checks.
+Stock environment queries keep detached read-only declarations and one live ECS
+Query per World. Every use still records the complete input vocabulary, including
+optional absence and joins, and iteration resolves current membership. Failed
+query creation is retried. An ECS-owned active-cursor probe gives nested error
+callbacks an independent Query while the outer traversal stays live. Temporal
+and arbitrary queries retain ordinary independent construction.
+Hidden-entity facts are captured as unique immutable producer snapshots. Feature
+frames reuse an unchanged snapshot without copying or deduplicating every hidden
+entity. Borrowed/custom arrays keep their ordinary per-frame observations, and
+Feature additions still merge by World and entity. Large populations are copied
+by iteration rather than expanded as function arguments.
+
+Standard surface admission can retain its prior available proof when all current
+producer-owned contributor fields, rejection inputs and view/device generations
+match. Its existing proof retains a detached roster of immutable
+producer observations; matching current program, dispatch and deformation facts
+can reuse a contributor before allocating its tuple or output objects. Raw/custom
+contributors and unavailable admissions retain full
+re-judgment and fresh diagnostics; a program identity alone never proves coverage.
+
+Single-World extraction passes its own detached rows and sorted dispatch through
+composition. Multi-World composition retains the producer's already stamped
+World identities and adjusts dispatch offsets. Source template hits compare the
+actual row fields before constructing another publication envelope. Large,
+synchronous dispatch grouping uses one bounded World arena span; tiny grouping
+keeps a single local array. Only detached template/transfer outputs survive it.
+Pose-only publication leaves its cold template/value ledgers unconstructed. Identity-only
+transform admission uses the retained query's synchronous borrowed traversal; no row
+capability escapes it. Per-World extraction fills one private request while preserving
+option observation order and independently owned prepared outputs.
+Publisher preparation and settlement reject callback reentry before shared state
+can be changed; closed candidates never acquire a later preparation's authority.
+
+Scene transform admission compares the canonical numerical pose before creating
+a pending identity or row observation. Earlier edits in the same batch retain
+their staged authority; selected source offsets, parity changes and late identities
+keep their normal merge behavior. Each live source window is read once, and an
+absent row does not read it. Only actual changes hydrate a row for its public delta.
+For validated native transform-only batches, large synchronous admission stages
+source coordinates and sticky parity in Render World arena chunks, sharing the
+existing commit-local slot index. It admits every chunk before the first row
+write. A denied budget leaves the row root unchanged and clears staging before
+returning the memory failure. Small inputs retain ordinary staging because their
+scope/view overhead exceeds the removed objects. Neither arena coordinates nor
+packet matrices escape: the public delta still owns immutable row observations.
+Overlapping commits are rejected before either staging format can be reused.
+
+Publication admission consumes verified transform ranges synchronously into the
+canonical Scene rows. Transform-only changes do not expand into per-entity
+operation objects or detached temporary matrices. The returned delta names the
+changed rows; old column pages remain immutable after transfer buffers recycle.
+Native address maintenance consumes the view's fixed membership changes. Required
+output validation still visits its output rows; unchanged native membership skips
+the address mark/sweep, and changed paths retain unaffected addresses. Independent
+capture sources, folded work, generation reuse and retirement keep their own rules.
+Retained authored-hidden and zero-instance identities request no raster work and
+enter neither GPU membership nor the CPU residual roster. Receipt, lane-summary
+and presentation admission use the same demand predicate. Visibility/count
+changes restore ordinary membership; genuinely visible unsupported or blocked
+work retains its recovery evidence.
+Captured Scene roots retain ordered raster membership alongside their existing
+sparse source indexes. No-light diagnostics and lane summaries consume that
+membership without materializing hidden rows. Pose writes preserve the index;
+visibility, instance-count and identity changes update it. Ordinary/custom
+projections retain live traversal because their output can change source demand.
+Disabled production warnings perform no row reads. Full diagnostic exports that
+return every retained entity remain proportional to their requested output.
+LOD/occlusion recording uses the identity lookup already captured by an admitted
+Scene row projection. It does not scan the roster merely to detach diagnostic
+samples; an explicit query resolves samples against that fixed root, preserving
+old slots and generations after deletion or address reuse. CPU LOD levels still
+capture submit-time residency. Borrowed lists and custom projections observe their
+current LOD count and sample addresses in one pass; list identity does not prove
+unchanged content, and a custom mapping cannot inherit its source's LOD facts.
+
+GPU Scene pose and instance updates read the required allocation columns directly;
+material updates read the shared range owner. Full detached allocation views remain
+for consumers that need the complete facts. Publication preserves create/update/
+recreate order without concatenating all rows or mapping temporary slot arrays.
+
+Scene Pass preparation captures its admitted material frame and pass ranges in a
+separate factory scope. Its finish callback has no reference to the prior memo or
+full frame input bag. Replacing the cache releases superseded preparations;
+explicitly held preparations keep their own rows and material observations.
+
+Material layout requests read their current optional-resource facts before cache
+admission, including borrowed schema changes. Hits use the existing finite numeric
+layout slots without constructing resource-name arrays. Only a rejected texture
+budget builds its conflict list; cold layout descriptors and residency/error
+behavior keep the same resource contract.
+
+Material preparation and native publication receive construct fixed value
+snapshots at the Render producer. Their existing MaterialResource keeps that
+fact for its exact current snapshot. Presentation and binding inspection pass
+it directly to the phase-local residency observer, without re-inspecting
+property descriptors. Readiness and device resources are still observed anew
+each phase. Old accepted snapshots, borrowed objects, copies and proxies retain
+ordinary live metadata reads; adoption replaces the resource's current proof.
+Program schema and entry-point rebinding preserve that value fact through their
+fresh metadata projection. This does not freeze public borrowed values or change
+the metadata record's existing shape; native value detachment retains its own
+freeze boundary.
+The snapshot's fixed-value fact stays in the existing identity table when its
+latest resource adopts another version. Exact-snapshot clones and accepted
+resource replacement retain it; a copied or borrowed snapshot does not acquire it.
+
+A stock view retains its immutable Cluster membership when all numerical binning
+inputs match: both camera matrices, near/far, grid/capacity and ordered local-light
+positions/ranges. Current directional/color/shadow data and the rendering path
+remain frame-specific. A failed budget or overflow never replaces the successful
+fact. Held outputs remain independent after later changes and owner disposal.
+Runtime reuse is admitted only for the stock pipeline and its frozen default
+grid; custom pipelines and borrowed grids, including shallow-frozen copies, keep
+ordinary preparation. This does not cache generic user declarations by identity.
+Ordinary Cluster index writes call the shared numeric kernel without per-light
+profiling closures; explicit profiling keeps its existing ordered phase boundaries.
+
+GPU Scene CPU tables retain their full byte/DataView windows per physical backing.
+Row writes, clearing and uploads use explicit offsets; growth refreshes only the
+replaced views. Synchronous sync/commit scopes reject reentry and keep CPU backing
+alive through the last queue call. Disposal drops that backing after the CPU scope
+closes; captured GPU tables and material/Mesh versions keep their independent
+resource leases. Disposal during growth retires every unadopted replacement.
+
+Render World systems read scalar and managed-reference identities directly from
+their current query entities. Dense camera staging reads span columns into the
+existing view scratch instead of materializing component rows. Managed payload
+edits still publish the ordinary component version through the derived writer;
+they neither replace the reference nor create a separate freshness registry.
+
+Feature installation slots retain immutable extract/plan event facts until identity
+or installation order changes; each frame still owns its event roster. Submission
+and abort use shared synchronous runners with the exact preparation and accepted
+work passed as arguments. Every finalizer still runs after a sibling failure;
+producer callbacks, frame contexts and native-plan capabilities remain frame-owned.
+
+View entities retain canonical source-World membership and camera/resource roles.
+Frame adoption publishes a changed role through the existing component version;
+leases and immutable prepared inputs remain specific to that frame. Feature slots
+retain resource-name routes across stable declarations while reading each new
+publication's resource values. Residual selection changes visit the affected material/group, World, Mesh and
+draw routes, including peer bindings whose coverage follows another execution.
+Only producer-admitted immutable selections use that dependency index; borrowed
+selection routes retain complete re-judgment, including in-place domain edits.
+Retired routes are removed with their source batches. Residual reads project their persistent accepted
+slot roster directly; publication and availability changes update that membership
+without rebuilding dense record and draw arrays. Bind-group producers retain only
+the latest physical dependency route into the existing weak cache. Layout, resource
+replacement and recovery roots resolve a new route. Stock GPU view selection encodes
+reset, compact and finalize as ordered dispatches within one compute pass; custom
+projections retain separate passes unless they explicitly select the combined mode.
+Skin clear/reset/claim/finalize share a pass as well; indirect resolve remains
+separate. All Skin work still precedes selection, including overflow propagation.
+
+Fixed shadow restrictions retain a membership bound with their existing query
+owner and enumerate the smaller domain, including nested restrictions. Ordered
+member multiplicity and held queries remain stable. The exact restricted count
+is retained after its first read. Internal sparse consumers borrow independent
+key cursors; empty roots share immutable termination and public Set iterators
+keep ordinary independent results. Closing a merged walk closes its inner cursors.
+
+Terrain, Skin, capsule and Points/Lines sparse rosters use fixed numeric bitmaps.
+Known membership edits coalesce by bitmap page before capture; changing one
+member does not copy and sort the complete roster. Older frame facts retain
+their own membership through removals and source-slot reuse.
+
+Transparent Sprite folding materializes only consecutive compatible runs with
+at least two draws. Non-Sprite, isolated and unsupported-sort work retains its
+direct commands without allocating inert buckets or copied transform matrices.
+Fold instance buffers remain resident for the admitted draw heads across frames;
+different graph nodes retain independent slots. Transform payloads still upload
+on every draw, and removed heads or changed payload sizes retire their buffers.
+Ordinary selected geometry reuses the phase's complete row order when its actual
+renderable keys agree; reordered capture and partial dispatch retain their lookup.
+Fixed parameter-only material versions retain their canonical Pass placements.
+Row-only moves keep an equal dispatch order while publishing new row snapshots;
+changed compact indices replace the consumed dispatch key. Borrowed material
+tables retain ordinary replacement. Fold and transmission value projections
+observe their own accepted-material changes, including zero-binding Sprite demand.
+Owned frames without any foldable Sprite skip fold source projection entirely.
+Prepared GPU plans own detached material/class requirements. Their first complete
+shared-material table supplies the fixed slot index for subsequent recordings.
+Each recording still reads accepted material versions and current World scopes.
+Mixed CPU/GPU requirements merge through the ordinary table without changing the
+shared index; borrowed or merely frozen arrays keep their live preparation route.
+
+Graph-selected Scene Passes always queue their real retained phases. Unchanged
+request/output/offset rosters reuse the combined row, dispatch and fold arrays;
+a changed row or request still publishes the selected phase's current work.
+Shadow identities originate with their ECS projection or typed graph producer.
+Owned immutable identities retain their logical key and bounded static child;
+borrowed declarations still observe their current properties on every read.
+Rebuilds keep equal private matrix/clipping evidence instead of copying it again.
+Shadow view rebuilds update their existing private record after successful preparation.
+Each externally visible submission remains a fresh immutable value with a shared,
+lazy enumerable selection accessor. Deferred culling readback captures its original
+physical view and culling mode before that private record can change.
+Stock shadow views retain and copy only batch culling counters for observation.
+Main views keep complete member and indirect readback; explicit geometry captures
+retain their original submission and resource fences.
+Shadow artifact observations retain detached scalar facts in their existing
+material-keyed map. Every observation reads the current complete field domain;
+equal facts reuse their value identity without allocating another scalar snapshot
+or serializing another signature.
+Borrowed edits, program replacement and independently retained history remain live.
+Standard lighting prepares membership with its view's existing cluster scratch.
+Quiet frames retain temporary counts, cursors and difference-volume capacity;
+each prepared frame still owns detached grid, index and light-bound outputs.
+Recording keeps a stock selector's already prepared dispatch identity. Each
+retained phase member owns its emitted material Pass groups; pose-only moves,
+neighboring membership changes and compact index shifts reuse equal groups.
+Changed Pass entries or order replace that member's groups. Exact complete owned
+Scene Passes consume the phase lookup; borrowed/custom dispatch is grouped from
+its current entries on every call, including in-place same-length replacements.
+An unchanged emitted dispatch and temporal mode reuse the complete lookup before
+any member-group scan; compact-address or mode changes publish a fresh lookup.
+The submitted-position join carries the original row-order proof into geometry;
+reordered plans and overridden dispatch still resolve their actual draw order.
+The extract owner constructs its base renderable and GPU draw fields together;
+World combination retains detached world-id-stamped snapshots.
+Complete owned Scene Passes consume their exact admitted material mode without
+projecting the row table again. Borrowed values, clipped capacity, different
+selectors/modes and special surface passes retain their ordinary live reads.
+Equal singleton material-lane selections share immutable values within the
+selection; multi-material routing and later borrowed reads remain independent.
+Residual camera tests reuse only their numeric facts when the complete row,
+Mesh, material, availability, Skin-root and camera-frustum inputs are equal.
+Fixed residual bounds retain a conservative enclosing box and their actual
+canonical Mesh reads. Camera motion that proves the whole box visible tests only
+changed rows; an unrelated Mesh replacement does not invalidate those bounds.
+Borrowed values, missing geometry, lost row history and an insufficient enclosure
+keep the ordinary conservative tests. Retired geometry dependencies remain weak.
+Singleton material slot vectors are immutable and shared by their actual binding;
+owner-specific classes, sparse slots and custom array mapping stay observable.
+Owned Scene Passes retain entity-to-material relations as numeric identity columns
+and shared immutable tuples in fixed pages, without one object per row. The view's
+material reader bitmaps consume changed pages, retaining unchanged relationships
+across pose updates. Draws read shared tuple slots directly; no complete per-frame
+row-to-slot array is required. Material versions remain captured independently,
+and removed readers retire their resources. Current resource scopes are read only
+for the actual shared bindings, independently of persistent membership.
+Borrowed values, reordered custom
+work and object-specific binding classes keep their ordinary live preparation.
+Adjacent direct draws in one synchronous pass share equal immutable execution
+facts; each submission still supplies its own entity and submesh identity.
+Changed facts publish detached values, and nested or later passes remain independent.
+Synchronous geometry recording shares submit callbacks within its actual pass;
+nested passes retain independent prepared draw facts. Material readiness observers
+reuse the latest owned snapshot within one resource scope and projection phase;
+borrowed keys, changed snapshots/scopes and the next phase observe their inputs.
+Command-cache hits compare selected dynamic offsets without a per-binding callback.
+On-demand queries bind the current frame; they never retain a released Skin
+frame's query closure. Changed bounds conservatively re-test residual rows.
+
 GPU Scene keeps each live source slot's primitive address stable while its
 instance, transform and material ranges resize independently. A prepared GPU
 resource frame resolves its actual Mesh/material demands during preparation;
@@ -34,14 +326,62 @@ evicts the membership producer's binding merely because a prewarm call omits
 the lighting topology. Its writer still validates device, layout and buffer
 identity before reuse. Failed creations publish no reusable handle.
 
+### Device-based Standard path
+
+`RendererOptions.standardProfile` and `renderer.setProfile()` accept
+`renderPath: 'auto'`. The renderer selects Deferred when the admitted device
+supports storage buffers, six color attachments and the base Deferred attachment
+byte budget; otherwise it selects Forward. This default is independent of the
+selected camera and AO. Recovery resolves the retained author request against
+the replacement device before candidate preparation. Inspection exposes the
+resolved `forward` or `deferred` path. Portable startup/background archives select only recipes
+whose color attachments fit the actual device; this selection repeats on recovery
+without changing the original archive or any runtime draw descriptor. Other native
+validation failures remain errors, and inspection counts omitted render-target recipes.
+Explicit paths retain validation and feature admission; unsupported Deferred-only features remain structured
+failures. Valid Forward-only opaque materials use the existing later Forward
+pass. Stock Deferred AO consumes the GBuffer before those writers; their lack
+of GBuffer output does not reject the frame. Full-scene SceneData normal/depth
+requests still require complete coverage and report unsupported contributors.
+Admission follows the selected pass: an unused `fs_gbuffer` published in a
+Forward module is not GBuffer coverage. The complete current-device contributor
+proof can certify an empty GBuffer. Its lighting pass retains attachment loads
+and auxiliary clears but creates no fullscreen lighting pipeline or draw;
+mixed, unsupported and stale-device inputs retain ordinary lighting admission.
+Cooked Skin aliases retain their artifact layouts; surface admission checks
+their supported authored Standard root independently from layout identity. `DEFAULT_STANDARD_PROFILE` keeps its existing Forward default.
+
 ## Preparing hidden loadout pipelines
 
 > [!IMPORTANT]
 > Material pipeline `constants` are common to both stages; texture masks also
 > control vertex displacement. `vertexConstants` can explicitly select the vertex
 > values and participates in pipeline cache identity. Standard material assembly
-> removes its fragment-only Surface discard gate from that vertex projection,
+> removes fragment-only Surface discard and shadow-reception gates from that vertex projection,
 > including the fixed GPU Scene path, while retaining the complete fragment map.
+
+The material PSO owner also omits Engine ABI constants that the selected shader
+program does not declare, before deriving its cache key. A custom ShadowCaster
+does not inherit Standard texture-mask overrides from its parent material.
+Authored constants retain native descriptor validation.
+
+Ordinary direct draws derive the same Surface discard mask as GPU Scene draws.
+Their direct ABI cannot read GPU LOD coverage; the view-clipping bit follows the
+current camera's plane count. Only the selected material program declaring the
+existing override receives it. Pipeline receipt and constant selection share one
+cooked-program request. Preparation and visible recording select identical constants; authored alpha/material clipping and temporal entries keep their rules.
+
+Direct Standard draws also specialize shadow reception from the admitted
+`ShadowParticipation.receive` snapshot. An explicit nonreceiver omits shadow
+sampling from native compilation; receiving and unknown GPU batches retain the
+conservative shader default. The selected program must declare the numeric
+override. Hidden preparation and visible recording share this selection, and
+receiver state participates in the pass-local lookup key; changing reception
+cannot reuse a nonreceiver pipeline. Texture masks remain valid vertex constants.
+
+Forward WebGL2 also omits shadow sampling when the current View has no shadow
+views, contact shadows, cloud shadows or capsule shadows. This uses the same
+program override and restores reception as soon as a shadow source is admitted.
 
 Set `MeshRenderer.preparePipelines: true` on the finite mesh roster that this
 session can select, including meshes with hidden `Visibility`. The renderer
@@ -55,14 +395,52 @@ do not enter raster batches or request their pipelines. Only explicit
 `MeshRenderer.preparePipelines` or candidate preparation requests prepare hidden
 PSOs; making an entity visible updates its ordinary batch membership.
 
+Hidden preparation retains geometry bindings and execution joins for each
+validated source, across frame validation wrappers. Forward and shadow preparation keep separate joins, while
+accepted material versions and every resolved shader artifact are rechecked.
+A new validated geometry source starts a new preparation; uncaptured material
+inputs retain live selection. This reuses the existing execution owner and
+does not bypass physical residency, pipeline readiness or device recovery.
+
 | Receipt | Meaning |
 | --- | --- |
 | `FrameReceipt.presentation === 'pending'` | At least one requested pipeline is still being prepared |
 | `FrameReceipt.presentation === 'ready'` | The current frame's required pipeline requests and existing presentation checks succeeded |
 
+`FrameReceipt.completed` acknowledges the submitted GPU work. It does not wait
+for asynchronous shader validation or native pipeline compilation.
+`preparationCompleted`, when present, is a separate generation-fenced completion
+for the runtime-demanded preparation captured at submission, including actual
+cubemap/IBL derivation jobs. It can already be
+settled if compilation finished between preparation and submission. It excludes
+undemanded background warmup and later requests; failure and Renderer disposal
+settle the captured wait. Completion is not a displayed-picture proof: submit
+again without advancing the static World, then require a new completed `ready`
+receipt. Never infer readiness from a duration or replace a failed compile with a
+synchronous fallback. Worker completion metadata remains a separate projection;
+the capability belongs to the local Render owner's actual `FrameReceipt`.
+Pending completion inspection retains a receipt until both its GPU fence and
+preparation signal settle; a completed queue stage alone does not mean the
+preparation dependency has finished.
+
+Candidate preparation retries only the current shader-module or native PSO owner's live pending signal. Module completion, invalidation and device retirement end
+that signal; compile and descriptor failures still reject the candidate.
+
+Published candidates can reuse the installed graph's exact typed demand without another Record when every ordinary PSO lookup is already ready; current accepted view facts are rechecked at lease admission. Mesh readiness requires accepted writes on the same queue and the actual current pipelines, not GPU completion of those writes or unrelated earlier submissions. The original held queue fence still retains physical allocations and source payloads through cancellation or retirement. A rejected completion invalidates its prepared leases and faults the owning Renderer; it is not a successful upload receipt. Unknown/custom demand retains the Record route.
+
+`Renderer.inspect().featureGraph.candidatePipelines` reports initial warm attempts, ready results, queued fallbacks, unavailable accepted demand and unsupported graphs; final currentness checks do not increment these counters.
+
+Skin pose history advances only after an accepted scene picture has ready
+presentation. Pending physical submissions still pin task buffers and retire
+their reads at GPU completion. The existing presentation record owns this check.
+
 A preparation barrier leaves the canvas surface untouched and does not publish
 a partially rendered scene or update shadow/temporal history. The receipt stays
 `pending`; this is not evidence that gameplay rendering continues.
+Composed display and auxiliary views share that barrier: one pending view holds
+all capture/scene encoding and the surface compositor, including Surface UI,
+until every required view pipeline is ready. The frame still submits its
+preparation fence; a ready sibling cannot publish a partial picture.
 
 For a specific pending variant, inspect `pipelineLibrary.pending` through the
 existing Renderer inspection (or `execution.inspectRenderer` across Workers).
@@ -174,6 +552,12 @@ unrelated meshes. Actual draw traversal merges member order; a completed travers
 retains that order on its fixed work root for subsequent draws and scalar edits.
 This costs one binding reference per consumed Pass member until that work and
 its retained frames retire; partial queries never precompute the remaining work.
+Each consumed membership walk owns a private cursor and one reused numeric result;
+independent readers and early return never share progress. Rank lookup reads that
+fixed sequence directly. Public dispatch entries retain their ordinary identities
+and complete-traversal generation policy. The existing read cache stamps its
+entries in one table, retaining only consecutive-query readers without mutating
+returned observations. Cold entry metadata and expiry scans remain cache costs.
 Binding preparation selects programs once per shared Mesh, authored tuple and
 geometry context, including vertex-color availability from the fixed layout.
 Rigid and skinned instances can share a Mesh without sharing an incompatible
@@ -235,6 +619,38 @@ with its retained depth and can reuse an unchanged Skin pose. Changed, missing
 or unknown Skin facts invalidate it; ordinary light, caster, material and graph
 invalidation still applies. New graphs explicitly initialize their physical
 Skin task resources even when depth itself is retained.
+
+CPU Skin shadow demand retains a staged GPU route across binding-count edits
+and canonical numeric-only material edits. The existing material batch class
+proves unchanged programs, physical bindings and admission; only changed
+accepted material versions are compared. Borrowed numeric values cannot widen
+that proof across program tables. A changed class, added/removed material
+or unproved custom-program replacement keeps conservative CPU demand. This
+does not retain a CPU palette or replace the current frame's resource fence.
+
+Skin demand runs after GPU preparation, so losing the resident lane widens this
+frame's CPU demand before recording. Prepare captures the shadow caster query
+and fitted lights without walking Skin rows; Queue resolves only its CPU Skin
+residuals under the current program fence. Main and shadow queries intersect
+captured Skin membership with their own residual sets through fixed bitmap
+diffs. They do not materialize rigid residual rows to discover Skin bindings.
+Capture, unknown shadow fits, generated rows and missing index evidence retain
+conservative candidates. Row frames capture the sparse index roots they describe;
+later writes and slot reuse do not change an older frame's query.
+
+Implicit engine defaults enter the accepted material frame only when a real Mesh
+slot query consumes them. Explicit overrides retain their authored resources;
+an unused fallback does not widen the frame's borrowed-value proof. A later
+missing override admits the default through the ordinary effective-Mesh query.
+
+Residual camera admission consumes the Scene row journal and the fixed residual
+and unavailable slot-set diffs. With unchanged frusta and bound resources, a row
+edit tests only that row; a removed, unavailable or newly GPU-owned slot releases
+its retained admission without resolving a bound. Hidden, bounded and Skin
+membership remain fixed bitmap roots for captured frames. Changing Skin inputs
+re-tests residual Skin rows only. Owned material edits preserve admission when
+the displacement interval and position proof agree. Camera, Mesh, unknown/raw
+material changes and a lapsed row journal retain the complete residual test.
 
 ## Managed simulation scene SDF
 
@@ -318,7 +734,7 @@ new band directly; they do not enqueue intermediate levels.
 | Cached camera-only frame | Grouping, candidates and the filtered plan are retained across every band and threshold; the GPU cull recomputes height, level and coverage from the view camera. |
 | Missing lower mesh or invalid projection | Resident fallback remains visible; a missing level never fades to an empty draw. |
 | Skinned, transparent, or arbitrary custom shader | Existing single-level behavior; no uncontracted opacity or extra draw is injected. |
-| CPU lane (no compute, storage or indirect, e.g. WebGL2) | Rigid, non-instanced indexed meshes hard-select the same level per camera from the same projected height, without crossfade; other shapes keep LOD0. Main and shadow recording consume the selected resident `first/count/baseVertex` range against the bound buffers. Source submeshes retain local geometry and material/claim identity. Meshes without resident ranges keep their source index range and zero base vertex. |
+| CPU lane (no compute, storage or indirect, e.g. WebGL2) | Rigid indexed meshes hard-select resident levels per camera from the same projected height, without crossfade. Explicit `Instances` select each composed entity/instance transform independently. Uniform-only opaque collections group equal levels inside each 128-instance page, so alternating levels need at most one draw per page/level/submesh. Main and shadow recording share the same packing and selected resident `first/count/baseVertex` ranges. Authored matrices, generations and ordinal identities remain unchanged; each distinct view permutation owns its buffer. Unchanged revisions upload nothing, a proven next revision uploads affected buckets, and skipped revisions upload conservatively. Blended collections retain original-order consecutive runs; storage-backed CPU draws retain their existing ranges. Skinned and morphed instances keep LOD0. Source submeshes retain material/claim identity; meshes without resident ranges keep their source index range and zero base vertex. |
 
 The GPU cull owns selection. Each candidate derives its projected height from
 the GpuScene root transform and local bounds plus the view's
@@ -636,6 +1052,11 @@ keep their own values. Stable frames reuse the admitted interface without repeat
 shape checks or layout derivation. Unregistered programs and uncompiled custom Surfaces
 retain their authored schema projection. Empty shader-manifest layouts retain
 the authored or built-in Sprite fallback; the built-in Standard ABI remains canonical.
+For local Worlds with a separate AssetRegistry, source assets still own material
+values and cooked program selection. Snapshot entry reads and position-bound
+receipts come from the receiving Renderer's ShaderRegistry, matching the artifact
+used for recording. An empty source shader registry cannot erase an admitted
+Deferred `fs_gbuffer` entry, and a missing receiving artifact remains unavailable.
 CPU uniform packing also selects the built-in shader's own parameter schema when
 an authored material omits it. Unlit, Sprite and MSDF parameters must never inherit
 Standard PBR byte offsets or defaults; numeric packing and texture-coordinate
@@ -910,6 +1331,9 @@ picture. The renderer publishes the mapping only after queue submission, and a
 candidate that fails validation keeps the previous accepted picture and
 mapping. The public projection is deeply frozen and contains no device, graph,
 texture, or mutable resource handle.
+Equal submitted camera and warp facts reuse the prior same-realm immutable value
+after current lens validation and matrix computation. Receipt frame, device and
+graph identities still advance at their ordinary submission boundary.
 
 `renderer.inspect().barrelDistortion` projects the same accepted context as
 `effectiveMapping`, `extent`, `frameId`, `deviceGeneration`,
@@ -941,7 +1365,18 @@ must be 0 for the other modes; `linear` needs `0 <= near < far` and ignores
 `Color`. `color`, `maxOpacity` and the law fields are selected from the
 frame's resource owner. Disabled fog (zero opacity, zero exponential density or
 an empty linear range) records no fog pass; there is no 3D texture, froxel grid
-or temporal history. The authored sky remains unchanged.
+or temporal history. Without an `Atmosphere`, the authored background is not
+fogged; only finite surfaces receive fog. With an `Atmosphere`, fog also covers
+the sky: background pixels take height fog at the view ray's exit from the
+atmosphere, as distant fog, so dense fog greys the sky. The fog source radiance
+is `color` plus the atmosphere's distant sky light and in-scattered sunlight;
+`color` defaults to black, as Unreal's height fog, so the atmosphere alone lights
+it. Without an `Atmosphere`, `color` is the whole fog color.
+`skyOpacity` (default 1, in `[0, 1]`) scales the fog opacity on those
+background pixels only: 1 is the physical distant fog, 0 leaves the sky
+unfogged, and finite surfaces are fogged the same either way. Without an
+`Atmosphere` it has no effect. An out-of-range value reports
+`environment-selection-invalid` naming `skyOpacity`.
 SMAA, FXAA, TAA and no-AA use single-sample depth; MSAA is rejected until a
 matching depth resolve is available. Use `VolumetricFog` for spatial density and
 lighting/scattering effects; the meadow-style distance haze needs only `Fog`.
@@ -968,6 +1403,12 @@ Fog composites depth-correctly with translucency (the Unreal
    Opaque draws and frames without Fog bind the unfogged composition, so the
    same program is never fogged twice. `translucentViewOffset(composition)` is
    the byte offset of each copy inside the View buffer.
+
+The recording view derives `viewFog` from its admitted analytic fog and finite
+atmosphere. Without either medium, transparent draws use the base View and the
+existing `fs_opaque` entry, keeping unused fog and atmosphere code out of native
+pipeline compilation. Preparation and visible recording share this decision;
+unknown helper contexts keep conservative fog composition.
 
 `renderState: { fog: false }` (Three `Material.fog = false`) skips fog per
 material. Blended draws bind the unfogged composition. Opaque forward draws with
@@ -1153,12 +1594,12 @@ Request per-view GPU LOD facts explicitly with
 `lodOcclusion` value is a detached `complete` or `unavailable` observation. A
 complete result contains the submitted display roster, each view's Camera
 identity, attachment, `Camera.historyVersion`, own graph generation, rendered
-state, and that RenderSystem's existing LOD inspection. It is receipt evidence,
+state, and that view owner's existing LOD inspection. It is receipt evidence,
 not a projection of the current live `inspect()` state. The view generations
 belong to their individual Cameras and need not match across Cameras.
-The capture also retains each actual view, RenderSystem, graph incarnation, and
+The capture also retains each actual view, view owner, graph incarnation, and
 World lease. A selector readback may replace the inspection only when that
-RenderSystem returns its frozen result after validating the same submit and
+view owner returns its frozen result after validating the same submit and
 World map; the capture is revalidated after async work and on cached reuse.
 
 LOD observation retains only the newest successful submit's bounded CPU capture.
@@ -1179,11 +1620,23 @@ binding inspection still publishes complete texture mip and sampler details;
 this projection introduces no readiness cache or skipped resource admission.
  Authored image-based Skybox and Skylight sources require their resident
 cube and completed IBL publication before it becomes `ready`; lazy projection
-continues during pending submissions. A single display view without capture,
-nonempty local Feature, or dynamic-resolution dependencies retains its
-existing picture only after a successful display submission, while an authored image is pending, instead of queueing fallback
-scene/shadow/post work behind IBL stages. The queue still accepts real submissions;
+continues during pending submissions. A single display view without cube/probe capture,
+nonempty local Feature, or adaptive exposure/LUT/resolution dependencies uses
+the preparation barrier while an authored image is pending after its first
+geometry picture, including planar reflections. It retains that picture instead of
+queueing fallback scene/shadow/reflection/post work behind IBL stages. The queue still accepts real submissions;
 these do not commit scene transforms, temporal history, or post-processing submissions.
+Uncached Forward/Deferred main-geometry pipelines explicitly select the existing
+generation-owned async preparation path when the backend supports it. Existing submitted-draw evidence keeps
+an incomplete scene pending while the frame still submits UI/composition work.
+Material getters, including Feature, shadow and temporal callers, retain their
+existing preparation policy; an explicit preparation owner selects async work. Warm draws reuse
+ordinary identities; retired generations cannot publish late compilation results.
+UI composition derives its background operation from the frame's actual encoded
+surface views. A preparation-only submission clears opaque black before blending
+UI; an encoded scene is loaded. The same graph and output survive this switch,
+preventing transparent UI from accumulating on the prior UI picture and keeping
+fresh-device capture replay identical to live pixels.
 Graph-admitted post-process parameter buffers remain
 owned by that graph when native pipeline preparation defers presentation; rejecting
 the frame releases only buffers which were never admitted. Scene-depth Feature
@@ -1249,13 +1702,24 @@ this frame. A later scene pass without shadow inputs, including Outline selectio
 preserves that evidence. Recording resets the views at each frame start; a cached
 shadow receiver still publishes its bound view even when no shadow raster pass runs.
 
+### MSAA on WebGL2
+
+`Camera.antialias = ANTIALIAS_MSAA` selects four-sample Forward coverage.
+WebGL2 readiness qualifies the actual RGBA16F/D32FS8 attachment, depth-test
+and resolve chain once per physical device. A missing or failed receipt returns
+`rhi-texture-format-capability-unavailable`; it cannot silently retain a
+single-sample graph. Recovery qualifies the replacement device independently.
+AO, SSR, projected decals and Forward screen shadows consume the shared
+single-sample scene surface while the main color/depth pair remains multisampled.
+See the [coverage and resize regression](../runtime/src/__tests__/msaa-webgl2.browser.test.ts).
+
 ### SMAA
 
 Set `Camera.antialias` to `ANTIALIAS_SMAA` from `@forgeax/engine/render`.
 It selects SMAA 1x Medium: spatial color-edge detection, eight two-pixel search
 steps with the original area/search tables, then linear neighborhood blending.
 It requires no jitter, motion vectors or history. The mode is exclusive with
-FXAA, MSAA and TAA; `DynamicResolution` continues to require TAA.
+FXAA, MSAA and TAA; `DynamicResolution` accepts TAA or TSR.
 
 | Stage | Input and output | Work |
 |:--|:--|:--|
@@ -1542,7 +2006,7 @@ Surface or repacking image channels. Each slot accepts a GUID or the existing
 
 Selectors are integers `0..3` for R/G/B/A. The default channels and scalar
 multiplication follow [Three.js MeshStandardMaterial](https://threejs.org/docs/pages/MeshStandardMaterial.html).
-ForgeaX retains its `metallic` naming; Standard roughness defaults to `1`, matching Three r184.
+ForgeAX retains its `metallic` naming; Standard roughness defaults to `1`, matching Three r184.
 The shared schema also defaults `emissiveIntensity` and `sheenRoughness` to `1`.
 An emissive color therefore works without an additional intensity override; black remains the default color.
 An independent metallic/roughness input replaces only its corresponding packed
@@ -1709,9 +2173,8 @@ glint (Three.js `Water` specular, widened by the wave-normal footprint), samples
 Skylight prefiltered environment along the reflection direction, and fogs its own light.
 Bind the same generated HDR equirect asset to `SkyboxBackground` and `Skylight` so
 the visible sky and water reflection share one source.
-Generate a fixed sky in a build-time Pack, as in the Game 3D template's
-`assets/environment.pack.ts`; use `Atmosphere` for a physical sky that changes
-with the sun. `GradientSky` and its presets have been removed. A solid fallback
+Generate a fixed sky in a build-time Pack; use `Atmosphere` for a physical sky that changes
+with the sun, as the Game 3D template does. `GradientSky` and its presets have been removed. A solid fallback
 uses `Camera.clearColor` and passes through exposure and tone mapping.
 
 #### Visible surface observation
@@ -1898,10 +2361,10 @@ import {
   MeshRenderer,
   ReadonlyDynamicInputPage,
   type Renderer,
-} from '@forgeax/engine-render';
-import { Transform } from '@forgeax/engine-scene';
-import { type AssetRegistry } from '@forgeax/engine-assets-runtime';
-import type { AssetGuid, MaterialAsset } from '@forgeax/engine-types';
+} from '@forgeax/engine/render';
+import { Transform } from '@forgeax/engine/scene';
+import { type AssetRegistry } from '@forgeax/engine/assets-runtime';
+import type { AssetGuid, MaterialAsset } from '@forgeax/engine/types';
 
 export async function drawProbeLitWater(
   renderer: Renderer,
@@ -2367,13 +2830,28 @@ fallback material. The projection preserves `layoutIdentity`,
 `programIdentity`, `cookIdentity`, and `materialPublicationIdentity` so a
 stale draw can be traced to the first producer divergence.
 
+### Sun disc specular (`DirectionalLight.sourceAngle`)
+
+`sourceAngle` is the light's apparent diameter in degrees (finite, >= 0,
+default 0.5357, the sun). The View UBO carries `sunSourceRadius =
+sin(0.5 * radians(sourceAngle))` in float 251 (the former `cloudShadowUp.w`
+padding; the 1280 B layout is unchanged). When it is positive, directional
+specular ports Unreal's sphere-light model: `SphereMaxNoH` (BRDF.ush:63-137,
+Newton iteration on) picks the N.H / V.H of the brightest point on the disc and
+`EnergyNormalization` (ShadingModels.ush:122-160) widens GGX and rescales it by
+`a2 / New_a2`. The disc shrinks with roughness as `saturate(R * (1 - alpha))`
+(CapsuleLightIntegrate.ush:98). `sourceAngle: 0` is the point-light path,
+bit-identical to before. Not ported: Unreal's soft source radius and the
+anisotropic X/Y terms. Direct lighting also floors roughness at 0.02 (Unreal
+`View.MinRoughness`, SceneView.cpp:2921); environment lobes are unaffected.
+
 ### Directional shadow quality: author → inspect → recover
 
 Set `DirectionalLight.castShadow: true` to enable the following shadow path.
 The bare light defaults off; `game-3d` explicitly enables its sun.
 
 `DirectionalLight` is the only authoring entry for directional shadow quality.
-Set `shadowFilter` with the numeric constant for one of the six closed labels
+Set `shadowFilter` with the numeric constant for one of the eight closed labels
 below; it is an ECS enum field, not a label string. Do not invent a numeric
 label or a compatibility alias. The default is `pcfVogel` (five rotated Vogel comparison samples, as in Three r184). The two PCSS fields
 are read only when `shadowFilter` is `pcssMedium` or `pcssHigh`:
@@ -2391,7 +2869,8 @@ world.spawn({ component: DirectionalLight, data: {
 
 | Author field | Valid values / units | Default | Effective meaning |
 |:--|:--|:--|:--|
-| `shadowFilter` | `pcfVogel`, `pcf1`, `pcf3`, `pcf5`, `pcssMedium`, `pcssHigh` | `pcfVogel` | Requested directional filter profile |
+| `shadowFilter` | `pcfVogel`, `pcf1`, `pcf3`, `pcf5`, `pcfSoft`, `variance`, `pcssMedium`, `pcssHigh` | `pcfVogel` | Requested directional filter profile |
+| `shadowRadius` | Nonnegative shadow texels | `1` | Native PCF3/5 and Vogel footprint; variance blur radius |
 | `shadowAngularRadius` | Radians, finite range `[0.0001, 0.05]` | `0.00465` | PCSS light angular radius |
 | `maxPenumbraTexels` | Texels, finite integer range `[1, 64]` | `32` | PCSS penumbra ceiling |
 
@@ -2400,7 +2879,7 @@ is an integer in `[1, 4]` (default `3`), `splitLambda` is `[0, 1]` (default
 `0.5`), `cascadeBlend` is `[0, 0.5]` (default `0.2`), `mapSize` is a positive
 map resolution (default `2048`), `depthBias` is a depth value (default
 `0.00001`, applied toward the light in normalized receiver depth), `normalBias` offsets the
-surface receiver position along its world-space normal before projection (default `0.05`), and
+surface receiver position along its world-space normal before projection (default `0`), and
 `shadowDistance` is a positive world-unit cap (default `200`); coverage ends at
 `min(camera.far, shadowDistance)`. Camera far still defaults to `2000`, so distant
 visibility does not implicitly spread the default shadow maps across that whole
@@ -2408,25 +2887,70 @@ range. Set `shadowDistance` explicitly when a scene needs shorter or longer
 coverage. A world unit represents a meter only when the scene uses that scale.
 This coverage rule matches Three.js CSM, while the default cap intentionally
 prioritizes nearby detail over Three.js's `maxFar: 100000`.
-CSM defaults to three cascades and practical split lambda `0.5`. Cascade blend `0.2`,
-receiver-plane depth correction and geometric-normal bias remain intentional stability features.
-At a fixed camera range and map size, reducing split lambda gives the near cascade
-more world-space coverage and larger texels. Centimeter-scale filter regressions
-pin their original cascade distribution to keep that sampling footprint constant.
+CSM defaults to three cascades, practical split lambda `0.5`, and blend `0.2`.
+The native automatic bias has one shared budget, expressed in shadow texels
+and normalized by each cascade's depth span. The caster VS uses its vertex
+normal and a bounded slope term; the receiver uses the actual raster triangle
+normal. Surface normal maps never move this geometric shadow test.
 
-Normal offset and depth bias are independent: increasing the CSM depth span must
-not magnify the world-space normal offset. Both PCF and PCSS project the offset
-receiver; volumetric samples have no surface normal and use only depth bias.
-Surface receivers get a per-cascade depth correction derived from a shadow
-texel's world size and the raster triangle's slope along the light's image axes.
-For integer PCF, the receiver bound covers the actual bilinear phase; Vogel
-keeps a one-texel bound. Wider kernels compare each tap against the receiver
-plane at that tap's offset;
-scaling the common receiver bias by the full kernel radius erases close caster
-shadows. Existing caster raster bias and authored state remain unchanged.
-PCSS compares each raw and filtered tap at its exact texel-center plane depth,
-and removes that plane offset before averaging blocker depths. Degenerate
-grazing receivers retain the bounded radius-based bias.
+`normalBias` remains an optional authored world offset, default zero: a fixed
+0.05-unit offset can lift a query above an entire centimeter-scale caster.
+An authored offset overlaps the automatic caster separation; the surface
+receiver compensates that overlap instead of adding both budgets. The authored
+normalized `depthBias` floor remains `0.00001`. Volume samples have no surface
+normal offset. Explicit constant-bias shadow cameras keep their authored policy.
+
+Native PCF compares every bilinear texel against its own receiver-plane depth,
+then combines visibility weights. The plane correction is one-sided toward
+light, as in UE's PCSS, and its projected slope is bounded instead of switching
+off at an arbitrary world-space cosine. This avoids the false curved-surface
+occlusion caused by a negative plane correction. Sampling at exact texel centers
+uses ordinary comparison sampling on both WebGPU and GLES; it needs no mixed
+raw/comparison depth binding.
+
+Native PCF3 and PCF5 change sample density within the same authored
+`shadowRadius`; increasing quality no longer silently widens contact blur.
+PCF1 retains one bilinear footprint. PCFSoft retains its compact weighted grid.
+PCSS quality changes blocker/filter sample counts while angular radius and the
+penumbra ceiling own softness. Explicit constant-bias cameras preserve the
+Three adapter's original kernels. Directional variance shadows keep native Reverse-Z mean
+and standard deviation through both RG16F passes: converting small depths to
+values near one loses useful half-float precision. The comparison reverses its
+inequality with that encoding; moments require extended-lighting texture capacity.
+Perspective spots and constant-bias cameras retain their existing forward-depth encoding and
+comparison, including explicit Three.js parity. Where the existing raw-depth
+capability is available, native point comparisons load one depth per texel
+instead of issuing a bilinear hardware comparison at every texel center.
+The caster budget is `min(0.1, (0.5 + 2 * min(tan(theta), 2.875)) * worldTexel / depthSpan)`.
+Its slope reaches the 6.25-texel cap only at grazing incidence. Saturating at
+45 degrees erased the existing 5 cm blocker at 1024 resolution; intermediate
+angles now retain proportionate separation, while the grazing cap and authored
+receiver-overlap compensation remain shared. The same unchanged centimeter
+contact gates cover 1024/2048 maps and three camera positions. The
+comparison-sampler fallback retains identical coverage on other backends. The
+four reads and plane references are expanded together to avoid nested fragment
+loops. On one M4 Pro Metal replay at 1280x720 with identical HDR output, a 512
+shadow map and 40 alternating samples, main-pass median was 1.51 ms versus
+1.18 ms for the old filter control (the first corrected implementation was
+2.42 ms). This is a bounded GPU cost comparison, not an application FPS result.
+
+At a fixed camera range and map size, reducing split lambda gives the near
+cascade more coverage and larger texels. Keep coverage, map size, filter radius
+and exposure fixed when comparing bias changes. The contact and curved-receiver
+regressions use real HDR on/off comparisons with SSAO and contact shadows disabled.
+
+Automatic orthographic CSM uses near-plane pancaking, as UE's traditional
+whole-scene directional shadows do. Source admission, CPU recording and GPU
+culling disable only the Reverse-Z near plane; the caster VS clamps depth to
+`min(z, w)` while preserving x/y coverage. The far and four side planes remain
+active. This keeps a blocker upstream of the finite depth fit from disappearing
+before it can cast into the receiver slice. Standard (including skinning and
+displacement) and Unlit share `forgeax_shadow::surface::projectShadowPosition`.
+Point and spot perspective projections, and explicit `shadowProjection: matrix`
+projections, retain normal clipping. The latter also preserves the Three adapter's
+explicit shadow-camera contract. Clamp policy is carried in the existing caster
+header. The VS applies its bounded bias after near clamping; receiver filtering
+uses the same budget authority.
 
 These are finite raster approximations. A local plane does not reconstruct
 arbitrary neighboring curvature or height changes. Real curved and continuous
@@ -2478,11 +3002,13 @@ world.spawn({ component: DirectionalLight, data: {
   render target, bind group or pipeline, and the frame topology is identical
   with the field on or off. The value travels in the View UBO lane
   `directionalShadowFilter.w`; `0` takes a uniform early-out.
-- The Forward path ignores the field. Select `renderPath: 'deferred'` to use
-  contact shadows.
+- Forward uses the same march over its semantic surface depth/normal prepass.
+  It shares the existing AO binding on storage backends and the Cluster texture
+  on WebGL2, without adding a material sampler. Only opaque directional
+  lighting receives it; receiver opt-out, ambient and emission remain intact.
 - It is independent of `castShadow`. It multiplies the directional shadow
   factor, so it can supplement cascades or stand alone for a cheap sun
-  occlusion term. Pixels already in full cascade shadow skip the march.
+  occlusion term. Deferred pixels already in full cascade shadow skip the march.
 - Cost is bounded: 3–8 depth taps, about one per 4 px of the ray's projected
   length. Rays shorter than 1.5 px and back-facing pixels do no work.
 - Noise uses interleaved gradient noise. It rotates per frame only when TAA
@@ -2522,21 +3048,30 @@ world.spawn(
   skeleton (`fitShadowCapsules` in `@forgeax/engine-skinning`); procedural
   skeletons author them directly. Loaders reject malformed sets and more than
   `MAX_SHADOW_CAPSULES_PER_SKELETON` capsules.
-- Admission needs the Deferred path, a `castShadow` DirectionalLight, a
+- Admission needs a capsule consumer in Forward or Deferred, a `castShadow` DirectionalLight, a
   ShadowCaster pass on the material, and capsules on the skeleton. An
   admitted entity leaves every directional cascade; spot and point shadows
   still rasterize its mesh. A non-admitted entity keeps its cascade shadow.
-- Extraction poses capsules with `jointWorld x inverseBind`. The Deferred
-  lighting prepare pass sorts them closest-first, keeps at most 1024 per view,
+- Extraction poses capsules with `jointWorld x inverseBind`. Preparation
+  sorts them closest-first, keeps at most 1024 per view,
   and bins each light-swept bound into 16 px tiles (at most 32 per tile). The
-  lighting pass evaluates only its tile's capsules: a cone-versus-sphere
-  occlusion toward the sun with a soft end fade. There is no extra pass or
-  render target.
+  consumer evaluates only its tile's capsules: the shared cone-versus-sphere
+  kernel toward the sun with a soft end fade.
 - The cone half-angle is five times the PCSS `shadowAngularRadius`, clamped
   to [1 deg, 30 deg], so PCSS lights give matching softness. Capsule shadows
   are soft, blob-like body occlusion: they do not reproduce fingers, clothing,
   or other silhouette detail, and they self-shadow only through the capsules.
-- Forward keeps the cascade shadow, so tagging changes nothing there.
+
+| Consumer | Transport and composition |
+|:--|:--|
+| Deferred | Existing capsule/tile storage buffers, evaluated inside lighting. |
+| Forward, including WebGL2 | Bounded RGBA32F capsule and RGBA32UI tile textures feed a fragment pass. Capsule and contact visibility share the existing Forward screen-data channel; material sampler count is unchanged. A directional-only capsule scene requests that transport even without local lights. |
+| Auxiliary cube/probe capture | Retains mesh cascades while its graph has no capsule surface consumer. |
+
+Forward applies the combined visibility only to shadow-receiving directional
+lighting; ambient and emissive terms retain their ordinary evaluation. Missing
+cooked consumers keep mesh cascades. A failed graph switch cannot retain a graph
+whose capsule consumer disagrees with the prepared caster policy.
 
 After `draw`, `renderer.inspect().capsuleShadow` is `undefined` without any
 tagged entity. Otherwise it reports `requested`, `admitted`, `capsuleCount`,
@@ -2550,12 +3085,18 @@ The real-render regression and RHI Debug tile-table evidence is
 After `draw`, read the single `renderer.inspect().directionalShadow` projection.
 It is JSON-safe and bounded: `requested` is author intent, `effective` is the
 admitted profile, `status` is `accepted | fallback | rejected`, and
-`fallbackReason` explains `webgl2-unsupported`, `rhi-null-structural`, or
-`candidate-failed`. `lastKnownGood` identifies retained output and
+`fallbackReason` explains `rhi-null-structural` or `candidate-failed`. The legacy
+`webgl2-unsupported` wire label remains readable but is no longer emitted for PCSS. `lastKnownGood` identifies retained output and
 `pixelEvidence` distinguishes real pixel evidence from `not-available`.
 `cascadeCount`, `mapSize`, `shadowMapBytes`, `writerPasses`, `blockerTaps`,
 `filterTapUpperBound`, `seamTapUpperBound`, `deviceGeneration`, and
 `graphGeneration` are inspection facts, not additional author controls.
+
+A queue-accepted preparation-only submission, such as an unfinished IBL projection,
+records no scene or shadow work. Its settlement reports `sceneSubmitted: false`
+and no current shadow pixel evidence, without inventing a shadow candidate
+error. Rejected submissions, recording failures and invalid light configuration
+retain their directional-shadow errors.
 
 `renderer.inspect().shadowRaster` reports the last submitted frame's shadow
 raster work across directional, point, and spot views. `passCount` counts the
@@ -2676,8 +3217,15 @@ parse `error.message`. Read `error.expected`, `error.hint`,
 `error.detail.reason`; repair the named `DirectionalLight` field and retry the
 same request. For a rejected candidate, retain `lastKnownGood` from inspection,
 repair or rebuild the named producer, then call the existing `renderer.recover()`
-boundary and retry. WebGL2 reports its explicit PCF lane; RhiNull reports
-`rhi-null-structural` only, so neither is PCSS pixel evidence.
+boundary and retry. WebGL2 admits the original Medium/High PCSS blocker search,
+world-scale penumbra and filter taps. Its cooked no-storage variant uses raw depth
+for both blocker reads and four bilinearly weighted shader comparisons per logical
+filter tap, avoiding incompatible raw/comparison sampler interpretations of the
+same GLES depth binding. Reverse-Z comparison, receiver bias and cascade/tile
+clamps stay shared with native. Native storage variants retain hardware comparison
+sampling. Tap inspection counts logical comparisons, not the four scalar depth
+loads inside a portable comparison. RhiNull reports `rhi-null-structural` only and
+provides no PCSS pixel evidence.
 Missing or `not-run` Browser/Dawn/PNG/timing evidence remains missing or
 `not-run`, never a pass. The authoritative labels and validation remain in
 [`directional-light.ts`](src/components/directional-light.ts) and
@@ -2731,6 +3279,8 @@ a tent profile. `DirectionalLight.intensity` is outer-space illuminance in lux.
 The same medium attenuates direct solar lighting, the visible disc and finite
 camera-to-surface paths. Geometry and cloud visibility affect single scattering;
 the multiple-scattering closure remains a low-frequency spherical approximation.
+Background rays below the horizon end on a virtual ground lit by the attenuated
+sun with `groundAlbedo` (Lambertian; sky irradiance on that ground is omitted).
 
 ### Atmosphere and aerial perspective
 
@@ -2748,7 +3298,7 @@ to match a fixed sky colour. Ordinary outdoor haze needs no additional `Fog`.
 | `mieAnisotropy` | 0.8 | Henyey-Greenstein phase asymmetry |
 | `absorption`, `absorptionPeakHeight`, `absorptionHalfWidth` | (0.650, 1.881, 0.085)e-6 /m; 25,000 m; 15,000 m | Ozone-like absorption |
 | `groundAlbedo`, `multipleScattering` | RGB 0.4; 1 | Ground bounce and high-order scattering scale |
-| `sunAngularRadius` | 0.004675 rad | Disc radius; zero hides the disc |
+| `sunAngularRadius` | 0.004675 rad | Disc radius; zero hides the disc. Disc radiance is the sun illuminance over the disc solid angle, capped at 100 × the sun colour (the default disc would otherwise be about 14,500 ×) |
 | `aerialPerspectiveStart`, `aerialPerspectiveDistanceScale` | 0 m; 1 | Skipped prefix and optical-distance scale |
 
 The component schema and extraction validation own supported ranges. Removed
@@ -2761,7 +3311,7 @@ Earth fixture, exposure is 1/5,000 with ACES Filmic output.
 | Transmittance | 256 x 64 RGBA16F | Medium geometry and density |
 | Multiple scattering | 32 x 32 RGBA16F | Medium and ground albedo |
 | Sky View | 192 x 208 RGBA16F | Observer, sun and local visibility |
-| Aerial perspective | Two 32-cubed RGBA16F volumes | View, sun and local visibility |
+| Aerial perspective | Native: two 32-cubed RGBA16F volumes; no-storage Forward: 32-cubed packed RGB transport in the Cluster texture | View, sun and local visibility |
 | Distant sky illumination | 1 x 1 RGBA16F | Atmosphere and sun; fixed ground reference |
 
 Radiance LUTs store unit-white-sun transport and consumers multiply the frozen
@@ -2785,12 +3335,70 @@ versions retire after GPU completion and the last capture lease; disabling the
 source releases its owner lease. Each camera owns its Sky/AP resources while
 medium tables are shared by the Renderer. All work uses its outer submission.
 
-Atmosphere requires compute, filterable/storage RGBA16F, 3D sampling and a
-31-sampled-texture device budget for the complete Standard material layout.
+`Atmosphere.backgroundOnly: true` explicitly selects a physical **display
+background** on WebGPU and WebGL2. It uses the same optical parameters, sun,
+transmittance, multiple scattering and Sky View kernels through raster LUT passes.
+It requires renderable/filterable RGBA16F, without compute, storage textures, 3D
+sampling or the full material binding extension. Background precedes geometry;
+a Skylight without an equirect also receives the physical sky through the existing
+cube, irradiance and roughness filtering. Without a Skylight, those producers do
+no GPU work. Atmospheric surface solar attenuation and aerial perspective stay
+disabled.
+
+| Mode | Sky and solar disc | Aerial perspective / surface solar attenuation | Automatic sky IBL and environment captures |
+|:--|:--|:--|:--|
+| Default (`backgroundOnly: false`) | Physical sky | Enabled | Enabled on capable devices |
+| `backgroundOnly: true` | Physical display sky, dynamic sun and observer | Disabled explicitly | Supplied through Skylight; auxiliary cube, planar and environment captures still require full Atmosphere |
+
+```ts
+world.spawn({ component: DirectionalLight,
+  data: { direction: [0, -0.6, 0.8], intensity: 100000 } }).unwrap();
+world.spawn({ component: Atmosphere, data: { backgroundOnly: true } }).unwrap();
+// Camera: exposure 1 / 5000, ACES Filmic; one unit is one metre.
+```
+
+The background mode is opt-in on every backend; full Atmosphere never silently
+downgrades to it. It shares the Renderer medium-generation and completion-fenced
+retirement owner. Sun and camera updates rebuild the dependent Sky View, while
+unchanged medium tables are reused. Resize and host-injected device-loss recovery
+retain real completed-frame and pixel controls. The injected signal exercises
+recovery on replacement GPU devices; it does not claim an operating-system or
+driver reset.
+
+`atmosphere-background.browser.test.ts` covers both actual backends, an unchanged
+Unlit foreground, sixty completed frames, sun/observer changes, resize, recovery
+and disable/restore. `atmosphere-tables.browser.test.ts` compares every LUT channel
+across WebGPU compute, WebGPU raster and actual WebGL2 raster, including an
+independent vertical Beer-law integral. Native Atmosphere optics, ray, transport
+and 512-step quality tests retain their original assertions.
+
+Default full Atmosphere has two GPU execution paths with the same transport
+kernel and 64-step integration budget:
+
+| Device path | Requirements | Material transport |
+|:--|:--|:--|
+| Native storage layout | Compute, filterable/storage RGBA16F, 3D sampling and 32 sampled textures | Ordinary LUTs and two 3D AP volumes |
+| No-storage Forward, including WebGL2 | Renderable/filterable RGBA16F, 16 sampled textures and a 1024-wide integer Cluster texture | Fragment LUT production and a GPU-owned 50-row Cluster footer; manual bilinear/trilinear reads |
+
+The footer packs the same medium tables, distant sky and RGB AP without adding
+another material texture binding. Its logical allocation is 819,200 bytes,
+294,912 bytes more than the two native AP volumes; these are resource descriptor
+bytes, not measured VRAM. Disabled full Atmosphere allocates no footer. Accepted
+submissions publish cached contents; unchanged frames do not regenerate tables.
+The backend continues reporting compute, storage and timestamp capabilities
+accurately. `backgroundOnly` remains an explicit authoring choice.
+
+`atmosphere-full-webgl2.browser.test.ts` exercises real WebGPU and WebGL2 paths:
+opaque and blended AP, Sprite transport, direct solar lighting, Fog/AO coexistence,
+medium/sun/camera edits, resize, pinned six-face cube and planar HDR captures,
+steady-state RHI Debug work, and real WebGL context loss followed by sixty completed
+recovered frames. Desktop pixel evidence does not qualify mobile hardware or FPS.
+
 Missing capabilities return structured unavailable; there is no silent old-sky
-fallback. The first delivery accepts single-sample scene depth; choose TAA,
-FXAA or no AA. GPU observations name the `atmosphere-*` passes and report
-unavailable timestamps explicitly.
+fallback. Full Atmosphere accepts single-sample scene depth; choose TAA, FXAA or
+no AA. GPU observations name the `atmosphere-*` passes and report unavailable
+timestamps explicitly. Existing cooked materials must be recooked to include the
+updated shader closure; runtime consumers do not cook shaders.
 The source lifecycle inspection and graph resource accounting describe different
 owners: a source revision is not a claim that its GPU cube was submitted.
 
@@ -2799,7 +3407,7 @@ shows the public scene inputs and associated acceptance gates.
 
 ## Adaptive dynamic resolution
 
-Add `DynamicResolution` to the active TAA camera. Renderer consumes completed
+Add `DynamicResolution` to the active TAA or TSR camera. Renderer consumes completed
 GPU timestamps and changes Standard's internal scene extent; the canvas, TAA
 history, output, overlays, and observation images retain their output dimensions.
 No App frame clock or World component is rewritten.
@@ -2886,6 +3494,27 @@ Rejected TAA history outputs the current sample and zero stability directly,
 preserving HDR rounding and temporal metadata while skipping unused history
 neighborhood and clipping work.
 
+### TAA flickering temporal analysis
+
+`Camera.taaFlickering` (default `1`, on; `0` disables) ports Unreal TSR's
+flickering temporal analysis (`TSRShadingAnalysis.ush`, cvars
+`r.TSR.ShadingRejection.Flickering.*`) into `taa-resolve.wgsl`. A 2-frame
+oscillation that the clip box would otherwise chase (thin specular, Moire) is
+detected from the luma history and the luma clip range is widened by the
+measured error (UE `StableFilteredBox`) so the history is held stable. Chroma
+is not widened. Pixels with reactive coverage, or whose screen velocity exceeds
+the parallax limit, count as moving: they keep updating normally and reset the
+analysis, so camera motion disables it.
+
+UE defaults used: period 2, frame-rate cap 60 Hz with AdjustToFrameRate,
+max parallax velocity 10 px at 1080p, min blend 0.05, 0.95 per-frame decay.
+Departures from UE: single pass (no 3x3 dilation, no median/MaxRMinG filters),
+nearest history fetch, no thin-geometry relaxation, no exposure scale.
+
+Cost: one extra `rgba8unorm` ping-pong history (luma, gradient, total
+variation, count), 8 B/px; TAA history is now 42 B/px (1200x826:
++7,929,600 B, 41,630,400 B total). It is allocated whenever TAA is active.
+
 At most one DRS readback is pending. Device generation, camera/World switch,
 resize, removal, detach and recovery invalidate old feedback. Budget/range edits
 clear filtered samples and clamp the current scale. DRS reuses requested GPU pass
@@ -2919,8 +3548,8 @@ Compared against Three.js commit
 | [`WebGPUTimestampQueryPool`](https://github.com/mrdoob/three.js/blob/b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2/src/renderers/webgpu/utils/WebGPUTimestampQueryPool.js) | Resolve GPU timestamps asynchronously with bounded pending readback. |
 
 These sources supply scaling, reconstruction and timing primitives. The automatic
-budget controller, smoothing thresholds and scale-step policy above are ForgeaX
-choices. Existing ForgeaX TAAU retains its reconstruction and 8-pixel alignment;
+budget controller, smoothing thresholds and scale-step policy above are ForgeAX
+choices. Existing ForgeAX TAAU retains its reconstruction and 8-pixel alignment;
 Three.js floors each scaled axis. The GPU regression checks output-sized history
 on every completed transition frame and verifies the actual TAAU texture bindings
 in the captured RHI work.
@@ -3001,6 +3630,11 @@ A timing error exposes the closed `code` union plus `expected`, `hint`, and
 observing a later receipt. `latestKnownGood` is a separate reference and never
 changes the current status or completeness. Omitting `timings` from `include`
 returns receipt metadata without materializing timing facts.
+
+Timestamp readback never holds frame submission. When all `maxFramesInFlight`
+timing slots still wait for readback, the next frame renders untimed: its
+observation is `failed` with `timing-in-flight-exhausted`, and
+`error.detail.skippedFrames` counts every frame the session skipped this way.
 
 Run the paired real-GPU benchmark with the Dawn host:
 
@@ -3450,6 +4084,11 @@ residual CPU-drawn rows, and the frame stays uncompacted. `ExtractedFrame.gpuOwn
 exposes those residual rows; presentation verification, per-entity receipts and
 dynamic-geometry consumption visit only them, while batch coverage stands as the
 evidence for GPU-drawn rows and draw summaries are computed on `inspect()`.
+Residual read lists retain fixed numeric membership and resolve only consumed rows.
+Their bitmap cursor and row projection reuse walk results, while row values remain
+captured independently. Ordinary FrameSet iterators retain their result lifetime;
+separate and early-closed walks keep independent state.
+
 A residual draw carries the Scene row it was selected from: its draw address,
 shadow-cull bounds and GPU-lane ownership read that row rather than searching
 by identity, and each recorded view resolves one pipeline per accepted material
@@ -3466,6 +4105,10 @@ A later draw never reuses an earlier failure. The host calls `createRenderer`, `
 `inspect`, `observe(receipt, request)`, and `recover`. `FrameReceipt` is the synchronous proof that
 submit completed. A failed `Result` carries `code`, `hint`, and `detail`; repair the named owner,
 rebuild or cold-cook its source, then retry the same request.
+
+Standard captures its linear HDR observation from the original scene target after
+generic feature writers, including indirect particles, and before HDR lens and
+output processing. Reflection fallback observations retain their own target.
 
 ```ts
 const created = await createRenderer(canvas);
@@ -3487,6 +4130,17 @@ and keeps shadow, PBR, IBL, SSAO, bloom, tone, antialiasing, sky, material, VFX,
 ownership inside the same graph and submit boundary. CPU and WebGL2 remain capability lanes for the
 Cluster membership producer and integer-texture transport, or for mesh/instance storage fallback; they do not reintroduce a
 PointLight/SpotLight buffer or a fixed four-light ABI.
+Asynchronous IBL shader preparation revalidates its DeviceScope before creating
+layouts or pipelines. If disposal or recovery retires that scope while compilation
+is pending, preparation returns `rhi-not-available` without touching the retired
+device; the current source owner can retry on the replacement generation.
+`Renderer.inspect().iblBinding` reports the bounded final Standard IBL binding
+receipt when a Standard material pass is recorded. It reflects the resources
+used by the frame and needs no process-environment diagnostic flag. Preparation
+baselines without a matching Standard draw are not published as final receipts.
+Texture residency failures continue through the structured renderer error channel and
+the existing fallback path.
+
 ## SSR admission and bounded inspection
 
 Coverage counters are `null` until GPU measurements are supplied; missing
@@ -3575,8 +4229,15 @@ roughness-to-mip mapping. Seven lowest logical levels retain 16-pixel faces,
 including their one-texel borders. A 128-pixel source produces ten logical levels
 in a 384×512 atlas. This changes specular radiance, not Skylight's UE-style
 ownership of diffuse and reflected environment light.
-ForgeaX retains its image-environment BRDF LUT; Three uses a 16×16 DFG table,
-also used by ForgeaX's solid environment. ForgeaX evaluates compensation on the blended
+Image Skylight diffuse irradiance is convolved after the prefilter, from logical
+PMREM level 4 of that finished atlas, rather than by point-sampling the full
+resolution cube. This matches Three's environment node, which reads diffuse from
+a blurred PMREM level, and keeps a single sun texel from aliasing into blocky
+speckles on rough surfaces. Imported `.hdr` radiance is clamped to the largest
+finite half float (65504), as Three's `HDRLoader` does; an unclamped sun texel
+used to encode as `+Inf` and turned the whole IBL black.
+ForgeAX retains its image-environment BRDF LUT; Three uses a 16×16 DFG table,
+also used by ForgeAX's solid environment. ForgeAX evaluates compensation on the blended
 F0, whereas Three mixes dielectric and metallic compensation. Material-grid
 appearance is therefore not claimed pixel-identical from the furnace gate.
 
@@ -3670,8 +4331,9 @@ until the paired Browser/Dawn 60-frame carrier, readback, falsifiers, and
 performance gates are present.
 
 SSR defaults are maxDistance `1`, thickness `0.1`, maxRoughness `1`, and full
-internal resolution. Descriptor admission allows 128 MiB; default 1080p with
-temporal history costs 116,119,892 bytes. Trace validation, confidence, roughness
+internal resolution. Descriptor admission allows 320 MiB. The native 1080p estimate with five
+completion-fenced history slots is 190,769,492 bytes. Portable raster scratch
+and Forward SceneData/response allocations are additional graph resources. Trace validation, confidence, roughness
 filtering and temporal rejection retain their own contracts.
 
 SSR temporal feedback and presentation use distinct coordinates without another
@@ -3771,26 +4433,65 @@ only consumer.
 ## Screen-space ambient occlusion
 
 Enable AO through the same public Standard profile used at creation or by
-`renderer.setProfile()`. It requires `renderPath: 'deferred'` for current-frame
-depth and world normals; an incompatible profile returns a structured error.
+`renderer.setProfile()`. AO can run through Forward or Deferred on an eligible
+device. Forward input uses the selected Standard material's evaluated normal,
+or rigid built-in Unlit's transformed mesh normal, with the same coverage as
+color. Standard Skin uses its posed surface normal. Unlit surfaces occlude
+their surroundings while their own color remains unlit. No normal texture is
+required; Standard's flat tangent-space default preserves its mesh normal.
+AO demand alone does not switch the profile to Deferred. An incompatible
+material input, format, or complete
+resource budget returns a structured error.
 
-The GLES fallback does not support the required raw-depth shader reads. It boots normally with AO disabled; requesting AO reports `feature-not-enabled` and requires WebGPU.
+For a camera-specific request, add the public component to that camera. The
+algorithm and quality fields use the exported closed numeric tables:
+
+```ts
+import {
+  AmbientOcclusion,
+  AMBIENT_OCCLUSION_GTAO,
+  AMBIENT_OCCLUSION_QUALITY_HIGH,
+} from '@forgeax/engine/render';
+
+world.addComponent(camera, {
+  component: AmbientOcclusion,
+  data: {
+    algorithm: AMBIENT_OCCLUSION_GTAO,
+    quality: AMBIENT_OCCLUSION_QUALITY_HIGH,
+    directLightingStrength: 0.25,
+  },
+}).unwrap();
+// Remove the camera request and its dedicated AO graph work:
+world.removeComponent(camera, AmbientOcclusion).unwrap();
+```
+
+The `wgpu-WebGL2` route executes SSAO and GTAO with fragment passes. It places
+visibility in a disjoint `rgba32uint` region of the existing Cluster texture,
+so AO does not take another material sampled-texture slot. Admission checks the
+complete selected program, texture extent, and render/sample usages; unsupported
+formats or capacity fail explicitly rather than changing the requested AO
+algorithm. WebGPU retains its production raster path, with an internal
+acceptance override exercising the same prepared graph through compute.
 
 `AmbientOcclusion` is an opt-in camera companion. On a device with storage
-buffers and enough deferred color attachments, its presence (or a
-`ScreenSpaceReflection` request) derives the deferred Standard lane for that
-selected view. The renderer's author profile remains unchanged. Each view owns
-its effective configuration; removing the companion restores the installed
-configuration, and display-only companions are omitted from capture-only views.
-Invalid AO returns a structured `ssao-*` error without blocking an independently
-authored SSR request. Incapable devices keep the base lane.
+buffers and enough deferred color attachments, an already selected Deferred
+view can reuse its compatible depth/normal input. Otherwise a compatible
+Forward input pass runs before AO. The renderer's author profile remains
+unchanged. Each view owns its effective configuration; removing the companion
+restores the installed configuration, and display-only companions are omitted
+from capture-only views. Invalid AO returns a structured `ssao-*` error without
+blocking an independently authored SSR request. SSR retains its independent
+Deferred admission policy.
 
 AO uses numeric closed tables: `algorithm` indexes `['ssao', 'gtao']` and
 `quality` indexes `['low', 'medium', 'high']`. Radius, bias and intensity share
 the existing SSAO validator. `directLightingStrength` is a finite value in
-`[0, 1]`, defaulting to zero; it applies `mix(1, screenAo, strength)` to deferred
-direct light, independently of material and environment occlusion. This camera
-fact travels in the ordinary extracted POD across Worker boundaries.
+`[0, 1]`, defaulting to zero; it applies `mix(1, screenAo, strength)` to direct
+light in both Forward and Deferred, independently of material and environment
+occlusion. Environment visibility is applied once to the indirect/reflection
+fallback contribution. Emissive, exposure, and output transforms are not
+globally darkened. This camera fact travels in the ordinary extracted POD
+across Worker boundaries.
 
 The early SSAO upload and graph pass pack the same sampled camera projection,
 its inverse and AO parameters. Camera jitter uses the same clip-space transform
@@ -3824,6 +4525,13 @@ if (!disabled.ok) throw disabled.error;
 | `resolutionScale` | AO dimensions relative to internal scene size, `[0.25,1]`, default `1`; `0.5` opts into half resolution |
 | `ssao: true` | Enables the same default parameter set |
 
+The camera component and profile use the same validation owner. Invalid enum or
+numeric values return the structured `ssao-parameter-invalid`,
+`ssao-radius-non-positive`, or `ssao-bias-negative` errors. Their hints identify
+the offending field and show both recovery routes: correct
+`AmbientOcclusion.<field>` or `config.ssao.<field>`, remove the camera component,
+or set the Standard profile's `ssao` field to `false`.
+
 AO runs at full resolution by default with a symmetric depth/normal-aware blur.
 Compared with `resolutionScale: 0.5`, this allocates four times as many AO texels
 and runs four times as many raw/filter pixels. The nominal sample setting is
@@ -3834,9 +4542,30 @@ texel instead of the full-resolution G-buffer; the blurred output stays
 single-channel. Sampling
 uses the raster projection, including camera jitter. Static, skinned, and
 custom Standard surfaces multiply ambient illumination and the corresponding
-SSR fallback by the same AO factor; direct lights remain unchanged. Material
-occlusion is applied once. AO is reconstructed every frame and owns no temporal
-history, so moved geometry cannot leave a retained AO image.
+SSR fallback by the same environment-visibility factor. Direct-light AO is an
+independent mix controlled by `directLightingStrength` in both Forward and
+Deferred. Material occlusion is applied once. AO is reconstructed every frame
+and owns no temporal history, so moved geometry cannot leave a retained AO image.
+
+`renderer.inspect().standardLighting.ambientOcclusion` reports the accepted
+view's requested state, algorithm, selected fragment/compute execution, input
+producer and SceneData schemas, numerical settings, known input/output bytes,
+raw/filter work budgets, actual AO graph passes, and graph/device generations.
+When a request is missing its calculation or filter pass, `status` is
+`requested-unavailable`; `failure` identifies the active-graph stage and gives
+the retry/rebuild recovery. The byte fields are omitted when the compiled graph
+cannot determine them. A disabled request reports no AO passes, work, Cluster AO
+region, history, or per-frame AO upload.
+
+The current-view input contract extends SceneData without changing
+`forgeax::scene-data::temporal-v1`: `standard-surface-normal-v1` is the packed
+world-space material normal (`r32uint`, octahedral X/Y plus roughness), and
+`standard-surface-depth-v1` is camera device depth (`depth32float-stencil8`,
+RHI zero-to-one, reconstructed with the current inverse projection). Both
+describe opaque and Alpha Mask coverage at render resolution. The Standard
+surface producer is admitted only for material routes that publish these same
+normal and coverage semantics; an unsupported route is a named input failure,
+not a depth-reconstructed-normal substitution.
 
 > [!NOTE]
 > AO is a local screen-space approximation. Offscreen occluders are absent,
@@ -3907,8 +4636,12 @@ request a readback ticket, draw, await `FrameReceipt.completed`, then call `obse
 The submitted copy binds the ticket to that exact receipt; an unencoded request or another
 receipt cannot consume it. Successful observation removes the ticket and releases its
 staging buffer while the target remains alive. Failed encoding or submission leaves the request available to
-retry. During resize, readback can still consume the accepted physical image until the
-replacement writer completes. A selected `Camera.target` contributes
+retry. Each pending ticket retains its requested format, mip extent, layer and device
+generation. During resize it reads a compatible newly written candidate, or the matching
+accepted physical image. If neither matches, observation returns
+`render-target-operation-failed` and releases the staging allocation without encoding an
+invalid copy; request a fresh ticket for the replacement extent. Copies already submitted
+remain bound to their original receipt until observation. A selected `Camera.target` contributes
 one capture into `Camera.targetLayer` (0 for a 2D target); `CubeCamera` contributes six real face views to the existing frame graph; a candidate becomes active only after its completed
 receipt. Target captures omit material draws that sample the same target, preventing a GPU
 read/write feedback loop; other submeshes remain eligible. Color captures draw opaque
@@ -4155,7 +4888,19 @@ multiplier; auto exposure carries a fallback, EV compensation, bounded EV
 range, and non-negative adaptation rates. The renderer owns the GPU receipt,
 but the author owns the Camera input. `perspective()` / `orthographic()` project
 the exposure union into the Camera's numeric SoA columns; `world.set` consumes
-that POD, not the authoring union directly:
+that POD, not the authoring union directly.
+
+| Live device capability | Auto-exposure behavior | Inspection |
+| --- | --- | --- |
+| Compute and storage buffers | GPU metering and adaptation | Committed GPU receipt after submit |
+| Either capability unavailable, including `wgpu-webgl2` | Render with the authored `fallback`; no metering buffers or compute passes | `actualState: 'fallback'`, zero metering cost and a structured capability failure; no committed GPU measurement |
+| Resource allocation or recording fails on a capable device | Preserve the ordinary structured render failure | Inspect the original cause; capability fallback does not suppress operational errors |
+
+The renderer evaluates admission for the live device generation without changing
+the Camera or saved preferences. Device recovery can therefore resume metering
+when the replacement device supports it.
+
+For example:
 
 ```ts
 world.set(camera, Camera, perspective({
@@ -4177,6 +4922,10 @@ reuse the accepted native texture; a replacement keeps any in-flight version ali
 Both standalone and fused tone/LUT passes read the current frame's accepted binding.
 Changing texels reuses the graph and pipeline layout; changing LUT dimensions rebuilds
 the graph's imported texture descriptor.
+The LUT is a display LUT, as in UE's LDR grading (`PostProcessCombineLUTs.usf`): the
+tone-mapped colour is sRGB-encoded, indexed at texel centres (`c * (N - 1) / N + 0.5 / N`),
+and the texels are read as sRGB-encoded output. A standard `.cube` identity is therefore a
+no-op, and the strength blend happens in linear.
 
 > [!NOTE]
 > Render Workers resolve the LUT through the accepted asset publication.
@@ -4474,6 +5223,18 @@ gate exercises the browser delivery path. Runtime inspection uses the public
 belongs in `packages/render/bench` and its dev-verify producer. Render does
 not expose a timing controller or a second membership-specific API.
 
+## Temporal super resolution
+
+`ANTIALIAS_TSR` selects the separate 1x-history TSR resolver. Compute/storage-texture
+devices retain cooperative workgroup caches; HDR devices with at least three color
+attachments use the fragment/MRT lane, including WebGL2. Both lanes share the same
+analysis, reconstruction and successful-submit history contract. TAA remains available; TAA at reduced input size is
+TAAU. TSR shares temporal view, jitter, scene data and successful-submit history
+ownership, and adds opaque Guide, input-domain shading/flicker analysis and
+output-domain reconstruction. It never silently falls back to TAA.
+See the TSR guide
+for the API, selected formats, memory formula, support boundaries and validation.
+
 ## TAA accumulation and private stability
 
 Motion weighting follows Three r184 TRAA/TAAU: UV velocity converts to input
@@ -4677,13 +5438,31 @@ and source-level falsifier paths.
 
 Bloom is a Camera-owned Standard post feature. `bloom` selects the enabled
 path, while `bloomIntensity` is bounded to `[0, 8]`, `bloomThreshold` to
-`[0, 65504]`, `bloomSmoothWidth` to `[0, 1]`, and `bloomRadius` to `[0, 1]`.
-The defaults bloom only highlights: threshold `1` (above-white scene-linear
-luminance), intensity `0.5`, smooth width `0.01`, and radius `0`. Three r184
-WebGPU BloomNode instead defaults to threshold `0` and intensity `1`, which
-blooms the whole frame; pass those values explicitly to reproduce it. Bloom is
+`[-1, 65504]`, `bloomSmoothWidth` to `[0, 1]`, and `bloomRadius` to `[0, 1]`.
+The defaults follow Unreal: threshold `-1` (no threshold, so every pixel
+scatters in proportion to its energy), intensity `0.5`, smooth width `0.01`,
+and radius `0`. Set a positive threshold (scene-linear luminance) to bloom only
+highlights; Three r184 WebGPU BloomNode defaults to threshold `0` and intensity
+`1`; pass those values explicitly to reproduce it. Bloom is
 off by default; the disabled value and intensity `0` are exact zero-work cases.
 Enabling Bloom creates the HDR chain even with `TONEMAP_NONE`.
+`bloomIntensity` is the fraction of above-threshold light scattered back as
+glow: the five level weights are normalised to sum to one, so `bloomRadius`
+only reshapes the halo and never changes its energy. Three's UnrealBloomPass
+adds the unnormalised weights (about three times as much); its strength `s`
+corresponds to `bloomIntensity = 3 × s` only when its input is clamped
+emissive, so with full-HDR emissive start from a much smaller value.
+The prefilter bounds each input tap at `64 × max(bloomThreshold, 1)` luminance
+(hue kept), so one extreme pixel such as a sun disc or a specular spike blooms
+like a bright highlight instead of washing out the frame. Content below that
+bound blooms exactly like Three r184 BloomNode. Scenes authored in physical
+units (for example 100,000-lux sun with a tiny exposure) raise `bloomThreshold`
+to their own white level, which raises the bound with it.
+
+A negative `bloomThreshold` disables the luminance threshold entirely (the whole
+frame blooms, weighted only by `bloomIntensity`), exactly like Unreal's
+`BloomThreshold = -1`, which skips PostProcessBloom.usf BloomSetup. This is the
+default; scenes authored against the old default `1` set it explicitly.
 
 Migration: `bloomSoftKnee` becomes the absolute `bloomSmoothWidth`, and
 `bloomScatter` becomes `bloomRadius`. Their meanings changed with the filter;
@@ -4705,8 +5484,16 @@ unit; it is not the recommended consumer import path.
 An enabled frame stays in linear HDR and uses five progressively ceil-halved
 levels, each with horizontal then vertical Gaussian filtering. The radii are
 6/10/14/18/22, with sigma equal to radius/3, matching Three's truncated kernel.
-The first horizontal pass fuses the half-resolution luminance highpass using
-`smoothstep(threshold, threshold + smoothWidth, luminance)`. The composite
+Every downsample uses Unreal's PostProcessDownsample.usf HIGH filter: four
+bilinear taps at +-1 source texel, i.e. a 4x4 filter, so a sub-pixel highlight
+(a wet-ground GGX glint that TAA lets through) is spread across its whole
+destination footprint before anything non-linear runs. The first horizontal pass
+fuses that filtered half-resolution input with the luminance highpass
+`smoothstep(threshold, threshold + smoothWidth, luminance)` (skipped when
+`bloomThreshold < 0`); like Unreal the threshold sees the filtered colour, not
+the raw full-resolution pixels. Unreal's linear `saturate((L - T) * 0.5)` ramp
+and its six Bloom1..6 size/tint stages are not exposed; the Three-style
+progressive five-level chain is kept. The composite
 adds all five levels with weights 1/0.8/0.6/0.4/0.2; radius blends each weight
 toward `1.2 - weight`. All five levels remain present even at tiny extents.
 The chain has 11 passes and 11 targets, adds RGB bloom and preserves scene alpha.
@@ -4920,6 +5707,14 @@ surface between sparse vertices. Provide enough mesh subdivisions for the
 intended silhouette; a four-vertex plane cannot express an interior peak.
 This feature does not tessellate meshes or move CPU mesh/picking vertices.
 
+Directional caster VS slope bias uses the mesh vertex normal before material
+vertex displacement, transformed by the instance or skin inverse transpose.
+This matches UE's WPO ordering; fragment-reconstructed displaced triangle normals
+are lighting inputs, not an unavailable VS derivative. Independent displacement
+depth references must therefore retain the source vertex normals as well as the
+CPU-displaced positions. The separate CPU face-normal oracle still validates
+lighting; both forward and deferred paths keep their original pixel thresholds.
+
 The extracted local AABB expands by `max(abs(bias), abs(scale + bias))` across
 all materials before world/instance transforms. CPU visibility, GPU candidates
 and shadow visibility consume that same detached bound; the shared MeshAsset
@@ -4943,6 +5738,68 @@ The regression journey is
 It uses the production renderer, a CPU-displaced Three-formula oracle, 60
 completed frames per case, and `.rhitape` capture/fresh-device pixel replay.
 Artifacts are written under `artifacts/standard-displacement/{browser,dawn}`.
+
+### Standard parallax displacement
+
+`displacementMode` is a closed author union, `'vertex'` (default) or
+`'parallax'`; the material ABI carries it as the u32 `displacementMode`
+(`0` / `1`), and any other value fails `material-authoring-contract-invalid` or
+`material-value-type-mismatch`; a violated parallax constraint fails
+`material-parallax-contract-invalid` at value admission (`detail.field` names
+`normalTexture` or `metallicTexture`). Parallax ray-marches the same height owner,
+`d(uv) = h * displacementScale + displacementBias` in object units along the
+normal, with `displacementTexture` and its own coordinate record.
+`displacementTexture`, `displacementScale` and `displacementBias` remain the
+only height author facts; the fragment binding below is derived.
+
+```ts
+const material = Materials.standard({
+  baseColor: [0.4, 0.3, 0.2, 1],
+  normalTexture: { texture: normalGuid, sampler: samplerGuid },
+  displacementTexture: { texture: heightGuid, sampler: samplerGuid },
+  displacementScale: 0.008, // a trim bake: scale = 2 * distance, bias = -distance
+  displacementBias: -0.004,
+  displacementMode: 'parallax',
+});
+```
+
+The parallax constraints are the one list in the `displacementMode` JSDoc of
+`StandardOptions` (`src/materials.ts`), mirrored by the material skill row and
+the feature-catalogue row; this contract does not restate them.
+
+| Fact | Behavior |
+|:--|:--|
+| Selection | A `standardTextureMask` projection bit (bit 31) on canonical pipelines: one variant, no extra batches. Sparse cooked roots without the override compare the declared u32 `material.displacementMode == 1u`; roots that do not declare it stay on the vertex path. |
+| Derived layout projection | `STANDARD_DERIVED_LAYOUT_PROJECTIONS` (`@forgeax/engine-shader`) is the one table of split scalar-map pairs that host another author fact per mode; shared transmission and parallax both derive from it. In `parallax` mode the fragment height (the `displacementTexture` view and its sampler) binds at the `metallicTexture` pair (bindings 17/18). The canonical layout keeps all 16 fragment textures, the vertex displacement pair stays vertex-only, and there is no extra bind-group layout, so the physical budget tiers are unchanged. A sparse cooked root hosts the height only when it declares `normalTexture`, `displacementTexture`, `displacementMode` and `metallicTexture` (`standardParallaxSelectable`); otherwise parallax mode skips the vertex kernel and renders plain normal mapping. |
+| Transmission fallback | Below the dedicated transmission budget the shared-transmission projection owns the metallic pair, so parallax falls back to plain normal mapping. `materialSampledTextureBudget` reports `parallax: 'normal-mapping'`, and the material preview readiness facts carry a warning naming parallax, transmission and the selected tier. |
+| March | Tangent-space view ray in the `applyTBN` frame, metric UV-per-unit lengths from the screen Jacobian, object height scaled by `\|M^T n\|`. The slab `[min(bias, scale + bias), max(...)]` is entered from the face toward the camera; `clamp(reliefPixels, 4, 32)` linear steps plus 5 bisections, sampled with `textureSampleGrad`. |
+| Fade | The offset fades to plain normal mapping as the projected relief drops to one pixel; there are no step or fade parameters. |
+| Shift | The hit offset is mapped back through the height slot's scale, rotation and physical extent onto its source UV set, so every slot on that set shifts; slots on other sets do not. |
+| Geometry | The vertex kernel and displaced-triangle normals are skipped. Depth, shadows, temporal, picking and bounds stay at the base polygon (no pixel-depth offset); shadow and temporal alpha coverage use unshifted UVs. No self-shadowing. |
+| Paths | Forward (`fs_main`, `fs_opaque`, `fs_oit*`) and Deferred (`fs_gbuffer`) for rigid and skinned Standard. Ray-hit surfaces have no derivatives and evaluate plain normal mapping. |
+
+Surface slots still choose their mip from implicit derivatives of the shifted
+UVs, so mipmapped slots can select a coarser level along relief walls.
+
+`standard-displacement.dawn.test.ts` and `standard-parallax.browser.test.ts`
+render a grazing square recess through the production Renderer: parallax off
+versus on, zero height as a byte-identical identity, the GPU-driven lane and the
+skinned template (both proven by captured pipeline entries), a doubled
+normal-axis object scale, a half-turn slot transform, and a height on UV1 that
+leaves UV0 colour unshifted. The measured recess edge shift must match
+`depth * sin(theta)` (orthographic) within 10% in Forward and Deferred, and the
+two paths must agree (edges within 1 px, mean colour delta at most 0.01). A lit
+pair (raking light, normal map derived from the same height) is look evidence.
+The Dawn suite also renders a tiled pit grid (half-width pits, depth 0.2 tile):
+at 30 degrees the visible-floor fraction must give the pit depth within 5%, and
+past the critical angle every floor must hide. The march samples the entry face
+first, so rays do not tunnel under near pit edges.
+Artifacts are written under `artifacts/standard-parallax/{dawn,browser}`.
+
+A heightfield cannot represent overhangs: a perforated sheet over a deep cavity
+encoded as one height becomes solid walls of the cavity depth, hiding hole floors
+below `atan(depth / width)` elevation. Encode the first occluder (the sheet
+underside) in the height instead.
 
 ### Mesh material binding resolution
 
@@ -4989,6 +5846,7 @@ taps blended by `|n|^sharpness` (Unreal `WorldAlignedTexture`, Three.js TSL
 normal blending. `normalMapSpace: 'object'` decodes the normal map as an
 object-space direction through `cofactor(objectToWorld)` (Three.js
 `ObjectSpaceNormalMap`), exact under non-uniform scale and without tangents.
+It needs an RGB normal texture; RG-only sources fail readiness (see texture residency).
 
 ```ts
 const rock = Materials.standard({ baseColor: [1, 1, 1, 1], baseColorTexture, normalTexture,
@@ -5027,6 +5885,14 @@ owner during preparation; render does not keep a second readiness ledger,
 infer state from URLs, or repair a producer failure. Aggregate counts are
 derived from the observations, so an AI can inspect first, repair or recook the
 producer, and retry without guessing at hidden renderer state.
+
+Use `renderer.inspect({ fields: ['state', 'frame'] })` for a status read. The
+result contains only those fields; Scene, instance, material-binding and LOD
+inventories are not produced unless selected. `execution.inspectRenderer` passes
+the same selection to the Render owner before cloning across Workers. An omitted
+selection retains the complete detached snapshot of the staged view;
+an empty selection returns an empty object. Explicit pipeline-library collection
+and export options keep their existing effects independently of selection.
 
 ### World-owned Instances and CPU bounds
 
@@ -5314,8 +6180,15 @@ if (!result.ok) {
 ## Standard lighting contract
 
 `forgeax::standard` is the only built-in lighting identity. Every finite point
-and spot light enters the shared Cluster membership path; `DirectionalLight`
-remains global and does not consume local-light membership. `renderPath` only
+and spot light enters the shared Cluster membership path. The first
+`DirectionalLight` remains global (View sun lane, CSM shadows, atmosphere sun)
+and does not consume local-light membership. Every later `DirectionalLight` is
+packed as an unshadowed `DIRECTIONAL` (kind 3) Cluster slot with infinite range,
+appended after point, spot, and rect lights so their slot indices stay stable;
+it reaches every cluster and counts toward the light budget. This matches
+[Three.js r184 DirectionalLight](https://github.com/mrdoob/three.js/blob/r184/src/lights/DirectionalLight.js):
+any number of lights, each with an optional shadow map. Extra lights receive no
+atmosphere transmittance, cloud shadow, or contact shadow. `renderPath` only
 selects Forward or Deferred graph topology. The derivation chain is
 `LightFrame -> PreparedStandardLighting -> StandardClusterTransportPlan`, with
 `packages/render/src/pipeline/standard-lighting/layout.ts` as the storage-size
@@ -5333,12 +6206,15 @@ and debug overlay.
 Without storage buffers, one baseline `rgba32uint` texture retains the complete
 96-byte light slots, cluster grid, and membership indices. It supports the same
 256-light and index budgets; unsigned channel masks retain their original bits.
-The renderer uploads only the rows occupied by this frame's corpus and retires
-the texture with the device queue. This Forward capability lane has no SSAO
-producer or unused SSAO texture binding, keeping the complete Standard material
-and lighting layout within WebGL2's 16 sampled textures. Missing both usable
-storage and integer-texture extent returns `standard-cluster-transport-unavailable`
-with `requested` and `admitted` counts.
+When AO is enabled, a row-aligned, disjoint visibility region follows the full
+Cluster payload in the same texture. The 64-byte group-2 Cluster uniform carries
+its base word, logical extent, packed row stride, and selected direct AO strength.
+Texture extent admission covers both regions; writes preserve the other owner's
+data, and queue-fenced retirement replaces the complete generation. Sharing
+this sampled binding keeps every authored Standard map within WebGL2's 16
+sampled-texture budget. Missing a usable transport or complete integer-texture
+extent returns `standard-cluster-transport-unavailable` with `requested` and
+`admitted` counts.
 
 All transports consume the same complete CPU canonical corpus; the compute
 lane materializes the GPU index list, while CPU lanes upload that list unchanged.
@@ -5411,7 +6287,7 @@ layer or transmission receives Forward and ShadowCaster; blending follows the
 same forward-only policy. This section is about the Standard lane, not the
 separate Points/Lines admission rule above. See the
 [`shader Surface contract`](../shader/README.md#standard-surface-contract) and
-the [`game-3d` import example](../../templates/game-3d/README.md#import-first-surface-material-example)
+the [`game-3d` import example](../../templates/game-3d/docs/guide.md#import-first-surface-material-example)
 for the source and Pack route. Water and other participating media use the
 separate [Single-layer medium Surface](#single-layer-medium-surface) ABI and
 runtime route.
@@ -5515,7 +6391,16 @@ The Renderer owns one `SceneComposition`: local World extraction, publication
 adoption, source rows, topology, material dispatch, Skin inputs and GPU Scene
 preparation run once per Renderer frame or accepted publication. `SceneSlots`
 is the unique row owner, with numeric pages over interned contents and a persistent
-identity lookup; there is no write-only ECS row mirror. Each view holds a
+identity lookup; there is no write-only ECS row mirror. Identity/content pages retain
+64 rows, while immutable pose storage is split into eight-row chunks. A pose write
+copies only its affected chunks and versions; unchanged chunks and row identities
+remain shared. Public matrix windows retain at most one pose chunk rather than a
+complete old page. Repeated writes protect already returned windows, including
+windows returned before capture. Removing a row clears its copied page's cached
+observation without changing held old roots. Clearing the Scene returns its row/
+box journal to cold capacity without reusing cursor positions. Bulk row disposal
+also drops grown bounds columns, instance hierarchies, Skin scratch and per-slot
+staging capacity; held captures keep their values independently. Each view holds a
 `PersistentRenderScene` over those shared rows and retains its own camera admission,
 residual roster, draw addresses, Skin recordings and successfully submitted history.
 A view-specific pipeline change retires only that view's derived state. Held views
@@ -5531,7 +6416,217 @@ GPU completion still controls physical retirement. One accepted submission advan
 of how many views recorded it.
 
 The ordinary `@forgeax/engine-ecs` Render World manages retained views, lights and
-shadow views; its explicit `RenderPrepare` schedule never advances simulation time.
+shadow views. Each Renderer frame runs its domain schedules once, in phase order:
+`RenderExtract → RenderPrepare → RenderQueue → RenderRecord → RenderCommit → RenderCleanup`.
+Physical source, native and folded draw addresses follow their Scene generation.
+Native roster reconciliation applies actual membership differences to existing
+physical slots. Its quiet output ledgers retain their backing and reference only
+the current root's detached numeric identity records; no borrowed row/snapshot is
+held. Changes and failures clear the retired or candidate ledger, and clear/shrink
+release their entries. A quiet roster creates no per-row membership Map/Set. Retiring keys, source-to-native
+replacement and folded work preserve the existing address and retirement order.
+This allocation bound does not remove the roster's CPU traversal.
+
+The numeric submission summary and camera membership probes use packed spans.
+View phase queries resolve managed unique owner states before callbacks and retain
+their semantic row path, documented at each `ecs-row-iteration` call site. Raw
+managed slot identifiers are not substitutes for resolved owner state. These
+bounded view/control traversals are separate from source-entity locality costs.
+Queue stages every view's attempt, sorted phases, prepared graph facts and temporal
+resources. Record encodes the ordered graphs and presentation, then submits one
+shared command buffer. They never advance simulation
+time. A domain registers its systems on the phase that owns its product, reads frame
+inputs from World resources, and orders inside a phase by system name. The
+`render-views` RenderExtract system reconciles the frame's `RenderViewInput` cameras
+into `RenderView` entities, plus one `primary` view for the Renderer's own recorder: the
+display while no display CameraView is declared, otherwise the shared capture view
+(`capture`) recorded from the first enabled composed view's camera. The role switches in
+place, so every record attempt has a view entity. After it, `render-view-cameras`
+writes each enabled view's `ViewCamera`: its recording extent (canvas, scaled CameraView
+rectangle or physical RenderTarget size), canvas rectangle and final camera with the
+extent's aspect and stereo eye applied. RenderPrepare systems and the view's extraction
+read that state; nothing re-derives a view camera during recording. Each record attempt writes
+its view's `ViewSubmission` (`accepted`, `attempt` frame, `scene`, `temporal`); the
+shared submission publishes the frame-level `RenderSubmission` (`accepted` and the GPU
+`completion`). Submission rejection retains the named stale input or queue cause through
+`render-frame-submit`; diagnostics cannot replace the original rejection. Progressive
+cube capture commits only when every recorded view has a ready picture, so an
+accepted preparation barrier does not advance captured faces. Commit systems commit a view's state only for its accepted attempt of
+the current frame, so a failed submission advances no history: `render-view-history`
+advances CameraView cadence this way, and `render-scene-commit` advances the shared GPU
+Scene stamp (plus canonical history when a submitting view staged temporal data) once
+per accepted Renderer submission. The `render-scene` RenderExtract system adopts
+the frame's staged source Worlds or publication into the Renderer's one shared
+`SceneComposition` once and publishes `RenderSceneDelta` (the advance every recording
+view follows) and `RenderLightInput` (the camera-independent light roster); an
+adoption failure is stored there and rethrown by each view's extraction, never
+poisoning the Render World. The composition's rows, material dispatch and batch
+topology are one `RenderSceneRows` resource with a journal of applied steps:
+`render-scene` appends each step, and `render-material-adopt`,
+`render-material-passes`, `render-batch-plan` and `render-scene-publish` each
+consume it once through their own cursor. The frame's one failure gates every
+later step and leaves the observation unaccepted; a cursor that missed a step
+drops the composition, which re-derives from its sources. The rows' one
+`RowChangeLog` also carries the GPU Scene's content entries (changed slot, old/new
+world box or an unbounded mark); `GpuScene.contentCursor` is a position in that
+journal, and shadow, cache and irradiance consumers ask `changedSince`,
+`changedSlotsSince` and `slotBoundsSince` from their retained cursor. A cursor of
+another journal or one the ring overwrote answers unbounded. Standalone rendering fixtures run the same phases through their explicit
+test-only World driver, with a primary display view entity; production uses the
+Renderer frame entry.
+Each view stages its culled dispatch, cameras and sort rows on its `ViewPhases`
+component through `render-view-record-start`; `render-phase-sort` (RenderQueue) orders
+queue-selected or blended work through the view's retained transparent-sort cache
+(profile phase `sort`), and the view records that order. A GPU-driven view stages
+nothing because its Scene Passes order their own work.
+GPU-driven views also stage producer facts on `ViewGpuDrivenPrepareInput` before
+that barrier. The capture owner's `recordsViewWork` admission is shared by Queue
+staging and recording: held views without capture work stage no GPU Scene query
+or prepare input. `render-gpu-driven-prepare` (RenderQueue, after
+`render-ssr-admission`) queries the resident Scene, resolves resident geometry
+and producer artifacts, and prepares the GPU owner once. Its frame-stamped
+`ViewGpuDriven` outcome carries the inputs and prepared frame recording reads;
+preparation failures are closed `unavailable`, `rejected` or `failed` data.
+Successful preparation immediately belongs to `render-gpu-driven-abort`, even
+if no recording resumes. `render-gpu-driven-raster` runs after
+`render-skin-demand` and `render-opaque-plan`, stages the view's raster lane on
+its scene owner, and refines late-HZB admission against the actual prepared
+raster. Skin therefore reads the previous staged lane before the new lane is
+published. Shadow-view updates retain their recording-time graph generation;
+GPU resource commit and abort remain in RenderCommit and RenderCleanup.
+Direct recorders without a view entity retain the positional preparation path.
+
+Each recording view stages its camera post candidate; `render-post-commit`
+(RenderCommit) adopts its antialias observation, depth of field and bloom only for
+that view's accepted attempt, and `render-post-cleanup` (RenderCleanup) records the
+failed submission and discards bloom for every candidate left. Each recording
+view's Feature frame input (scope identity, targets, cloud frame, skylight and
+published-Feature admission) is derived by `render-feature-views` (RenderPrepare,
+after `render-standard-lighting`) into its `ViewFeatureInput`, and
+`render-motion-blur-plan` plans its motion blur into the same component.
+Prepared graphics material bindings use the resource scopes of that current view frame
+during Prepare; they do not read a later Queue recording attempt or a prior frame.
+Recording reads the input and never re-derives it, so a view without one reports
+`render-feature-input-unavailable` and records no Features. Each display view's temporal frame candidate (TAA/CloudLayer
+frame transaction, view projection, extent) is staged by `render-temporal-stage` (RenderPrepare, after
+`render-standard-lighting`), and its Standard output resources plus auto-exposure/LUT
+candidates by `render-standard-output-stage`; both store a frame-stamped outcome on
+the view (`ViewTemporalStage`, `ViewStandardOutputStage`) and never throw. Recording
+reads only that outcome (a rejected preparation is reported by the recording), and
+the temporal commit and discard systems promote or drop the candidates as before.
+The Renderer's Feature frame is prepared in RenderPrepare too: `render-feature-open` opens it over
+every view's input, each installed RenderFeature extracts, plans and prepares as its
+own `render-feature:<identity>` system (chained in installation order), and
+`render-feature-batch` seals it. Recording reads the sealed batch and never
+prepares a Feature; a batch an installed Feature did not join is
+`render-feature-batch-incomplete` and records no Features. Each recording view's
+composite/post plan (the Feature graph candidate: plans, fullscreen effects, post
+identities and their parameter buffers) is written by `render-feature-plan`
+(RenderQueue) into its `ViewFeaturePlans`; graph compile reads only that plan, so a
+view it did not plan fails naming the system, a recorder outside a Render World view
+reads the empty plan, and `render-feature-plan-release` (RenderCleanup) abandons a
+plan no recording took. Each compiler produces a frame/device-generation/view receipt. The actual graph
+encoder records that receipt; Commit derives plan acknowledgments from current
+accepted receipts, including the shared frame graph. The frame settles in the Render World: `render-feature-commit`
+(RenderCommit) acknowledges exactly those plans of an accepted `RenderSubmission`
+(`onFrameSubmitted` and source acknowledgment) and retires prepared graphics on its
+completion; `render-feature-abort` (RenderCleanup) aborts a frame no submission
+accepted (`onFrameAborted`). Settlement failures are reported to Renderer error
+listeners as one `internal-error` (`detail.error.code` `render-feature-settlement-failed`),
+never thrown. A view's adopted graph settles first in RenderCommit:
+`render-graph-settle` promotes the graph candidate only when `viewAccepted` and
+`ViewSubmission.scene` both hold, and keeps the Feature state it committed; any other view that recorded this frame
+(including one whose queue submit succeeded while Feature scene inputs were pending)
+reinstalls its previous graph, generations and Feature plans, stashing a graph that
+waits on pipeline preparation. It advances the view's `frameNumber` once per recorded
+attempt and stores a frame-stamped `settled`/`failed` outcome on `ViewGraphCandidate`.
+Shared Feature work prepares in `render-feature-graph-compile` (RenderRecord)
+from the sealed Feature frame. Recording executes only that frame's receipt,
+after scene-input captures; the receipt supplies its submitted plans. An
+encode failure is `render-feature-stage-failed` with `stage: 'record'`, kept as
+data without poisoning the World.
+
+| Feature work | Preparation and lifetime | Current execution |
+|:--|:--|:--|
+| Native frame compute/copy using external prepared buffers | A zero-resource command graph belongs to the device scope; each frame keeps its own receipt and leases, including passless fullscreen registrations | Read the current sealed passes, buffers, dispatches and copy barriers, including changing emitter rosters |
+| Shared scene inputs, raw work or unsupported resource contracts | Compile the complete shared graph for that frame | Preserve ordinary graph validation, target dependencies and recording failures |
+| Eligible Standard transient view work | Keep its original `scene` or `post` contribution and parent color/depth ports; named cloud stages use the ordinary dependency path | Resolve current commands at that same stage; scene radiance remains before TAA and unrelated empty cloud segments acquire no scene-target reads |
+
+`render-feature-graph-retire` transfers an encoded frame-owned graph to the
+submission retirement queue before its completion fence settles; an unused
+frame-owned graph retires immediately. Native command graphs retire with their
+device scope. `featureGraph.sharedFrame` reports preparation routes separately
+from submitted plans and GPU completion. The frame must already be open
+before its recording coordinator starts, as in the Renderer frame entry.
+`render-graph-compile` reads the current Standard lighting, topology, SSR, GI,
+GPU raster lane, Feature plan and Pass plans from their view components. Its
+staged `ViewGraphCompileRequest` carries only the resolved camera, clear-only
+flag, subsurface capture class, recording mode and shadow-layer resource. The
+standalone graph harness supplies explicit compiler facts through the same pure
+compiler. A missing component produces `graph-build-failed` with its owning
+system; it never poisons the Render World. Pass plans remain borrowed until
+`render-pass-plan-release` in Cleanup so recording and compile consume one plan.
+`render-graph-seal` then consumes the view and capture compiler products. It
+adopts the selected graph, seals resource reads, stages temporal resources,
+writes view uniforms, resolves bindings and prepares native pipelines. Its
+`ViewGraphSeal` stores prepared facts and sealed/rejected/failed outcomes;
+removing the system produces a structured missing-product failure. Cleanup
+clears the staged facts. `render-capture-graph-encode` executes ready capture graphs
+in composition order, then `render-feature-graph-encode` executes the shared
+compiler receipt, then `render-view-graph-encode` encodes each sealed view graph.
+All three consume current products; a removed owner never triggers manual
+fallback. Scene-input PSO preparation defers the shared graph and admits only a
+preparation barrier; missing encoding or a thrown owner becomes closed failure
+data. `recordCompiledFrameGraph` is an ordinary encode kernel returning work and
+generation fences, with separate physical-submission settlement; it no longer
+suspends a graph transaction. `render-composite-encode` consumes view outputs and
+composition, `render-surface-ui-encode` consumes `RenderSurfaceUi`, and
+`render-frame-submit` owns the one finish/submit. `render-surface-ui-prepare`
+performs actual paint/layout and resource preparation from immutable
+`RenderSurfaceUiInput` in Prepare. Scene-free frames prepare their UI in
+`render-surface-ui-present-prepare` before the Record encoder opens; it never
+substitutes for a missing scene Prepare owner. A stale UI outcome cannot encode. Removing a required owner leaves
+no accepted frame; there is no assembly fallback. Submitted-work observers all
+receive the same physical fence, including when a sibling observer throws.
+`render-view-record-settle` stages each view's physical result and capture completion;
+Commit advances only accepted history and Cleanup releases the attempt. An
+unencoded preparation barrier never completes reflection probe tickets. The
+Prepare temporal stage publishes its view projection for Queue to consume;
+a missing stage cannot be replaced by a second matrix calculation. An encoded
+view whose physical submit fails still rejects its fallback candidate and retains
+only a source-compatible LKG; graph encoding and physical completion are distinct facts.
+`ViewRecordAttempt` holds one attempt per entity and frame. Production contains no
+per-view recording generator or `FrameSubmission` coordinator. The shared encoder
+uses the stable `render-frame` owner label: native validation messages must not
+turn one repeated rejected submit into distinct warnings merely because the frame
+advanced. Current frame identity stays in World products and UI preparation. The frame driver may
+yield once after Queue, before any Record work, while preserving material-version
+pins and completion holds. Cancellation at that checkpoint runs Cleanup and
+releases all attempts without submitting. Direct low-level fixtures use a test-only
+adapter over the same compiler, encoder and physical submission kernels.
+`render-graph-submission-commit` publishes accepted timing and GI products after
+graph promotion; `render-graph-submission-abort` releases unaccepted timing in
+Cleanup. Physical queue completion observers remain fenced to the submitted work,
+even when Feature scene inputs prevent accepted history. `render-display-commit`
+promotes the encoded display's target receipts, dynamic-resolution state and exact
+barrel mapping before record history; Cleanup drops its staged products. The old
+ordered frame-graph settlement step table and record-time display commit are gone.
+Per-view record kernels read `ViewSettlementOwner` explicitly. Its
+`ViewRecordingState` is the one owner of input scopes, direct profile identity,
+dispatch counters and transient Feature error cooldowns; constructor closures
+hold none of those record helpers. `ViewRecordContext` owns each composed or capture
+view's child scope, writable pipeline bindings, capture identity, timing view id and
+target color space. Recording selects that component authority explicitly; shared
+renderer services remain live on the renderer port. View initialization creates an
+owner bag without constructing a standalone RenderSystem facade. The primary device owner (`RendererState`) exposes initialization, post-process
+registration, detachment and recovery. It has no drawing or frame-preparation
+method. Standalone private-world drawing exists only in the test adapter and
+uses the same World schedules and frame driver.
+`render-temporal-resolve` resolves and uploads temporal/SSR/GI reprojection inputs
+in Queue after graph facts are prepared. Record seal consumes that result and
+stages only graph-dependent volume history. A missing resolve product fails closed.
+Motion blur installs at
+Renderer construction on a device with compute, storage and `rgba16float` targets.
 The publisher shrinks a column's storage once demand falls below 1/8 of a capacity
 above 64 KiB, so steady deltas cross the Worker with change-sized buffers.
 View transparency, Forward selection and OIT eligibility classify per Pass of
@@ -5539,8 +6634,17 @@ the shared material query and skip opaque Pass work unvisited. The
 [change-propagation bench](bench/change-propagation/README.md) is the scale
 falsifier (1M entities).
 
-Lights are Render World entities too. The `render-lights` RenderPrepare system
-reconciles each frame's extracted lights into one `RenderLight` entity per
+`render-capture-graph-compile` reads each requested view's current capture faces,
+fitted lights, reflection probes, admitted lighting and topology in RenderRecord,
+before its display graph compiles. A missing producer is structured failure data.
+Capture graph resources belong to `render-capture-graph-retire`: unused graphs
+release immediately; actual encoded work pins them to physical queue completion.
+View Feature acknowledgment consumes the graph compiler's frame, device-generation
+and view receipt after actual encoding. A preparation-only submission neither
+acknowledges the view plan nor promotes its candidate graph.
+
+Lights are Render World entities too. `RenderLights.sync` reconciles each
+recording view's extracted lights into one `RenderLight` entity per
 source light: a new light spawns, a vanished one despawns, a changed one is
 rewritten, and a steady frame compares in place and writes nothing. A
 shadow-capable light holds its atlas layer (point cube or spot tile) for its
@@ -5661,6 +6765,10 @@ differs per cache:
 | `temporalSnapshots` | one visible renderable's temporal snapshot per frame | a changed slot, source, submitted history or previous-visibility structure; transform-only motion rewrites the retained buffers and hits |
 | `transparentSort` | one frame with at least two transparent entries | any adjacent pair of the previous order failing under this frame's keys; layer modes are camera-independent, `TransparentSort.distance` is camera-dependent and misses whenever an orbit swaps a pair |
 | `renderBundles` | one drawing bundle segment per compiled scene pass per frame | a changed command in that segment, or its first bundle creation |
+
+Resource-cache cleanup disposes transient buffers first. With no per-entity bind
+or instance resource owners, it consumes no row roster and builds no entity Set;
+active caches retain the same cross-World, collection and retirement checks.
 
 GPU main and shadow encoders retain each bound group across pipeline transitions.
 Physical group identity and the full dynamic-offset shape still control replacement;
@@ -5883,6 +6991,15 @@ the runtime and imported-skin carriers. `alphaCutoff` is the Alpha Mask
 contract, and the factory always publishes the matching ShadowCaster pass;
 per-entity casting belongs to `ShadowParticipation`.
 
+Visible CPU residual authored casters validate their shader modules and prepare
+shadow PSOs before graph recording. Pending work defers the picture through the
+existing preparation barrier; declared light views and the residual roster bound
+the demand. Engine-owned program origins preserve synchronous direct readiness
+even when their cooked keys are hashes. Equal accepted material, Pass and layout
+requests share the existing selection owner within one preparation.
+Candidate preparation owns only its candidate materials and keeps the
+current visible caster roster outside that isolated context.
+
 Frame preparation and device recovery share the material-artifact collector.
 It indexes ShadowCaster dispatch once by renderable index and material handle;
 the selected last matching dispatch owns both the program identity and its
@@ -5944,9 +7061,10 @@ header uploads.
 
 Morph weights are GPU Scene row inputs. Each Mesh version's target deltas live
 once in the shared input arena (`MeshGeometry.morph`); each morphed row owns a
-`(vertexCount, targetCount, deltas, weights...)` descriptor named by its instance
-row's `customDataStart` (0 = no morph). The arena uploads changed words only, so
-a weight edit is one row-sized write and steady frames upload nothing. Standard,
+`(vertexCount, targetCount, deltas, channelMask, weights...)` descriptor named by
+its instance row's `customDataStart` (0 = no morph). A weight edit uploads only
+the weight suffix under the full allocation's retirement identity; the immutable
+Mesh header stays resident, and steady frames upload nothing. Standard,
 Standard skin and shadow-caster scene-index vertex stages add the weighted deltas
 to the position before skinning and transforms (`sceneIndexMorphPosition`, group 3
 binding 8). Morphed rows therefore share one batch per Mesh, material and pass
@@ -5992,10 +7110,11 @@ owner publishes the missing binding and recovery contract. The legacy
 [`custom-shader` demo](../../apps/hello/custom-shader) is direct-only by design;
 it does not publish `vs_scene_index`, so it is not evidence for the indirect lane.
 
-Clustered local lights and SSAO use the same group-2 lighting bindings in direct
+Clustered local lights and AO use the same group-2 lighting bindings in direct
 and scene-index programs, including custom Surface programs. These switches do
-not disable GPU-driven admission. SSAO requires `renderPath: 'deferred'` to
-produce depth and normals. SSR's fallback MRT selects the corresponding
+not disable GPU-driven admission. AO input can use a compatible Deferred
+producer or the selected Forward material-input pass; AO alone does not require
+`renderPath: 'deferred'`. SSR's fallback MRT selects the corresponding
 scene-index fragment variant; background probe capture preserves the display
 view's GPU submission. Each pass selects its own material slots and color
 attachments. Shared materials at different local probes retain separate binding
@@ -6066,14 +7185,27 @@ world.spawn(
 
 Spot `depthBias`, `normalBias` and `pcfKernelSize` are live per-frame values
 with normalized reverse-Z depth bias (default 0.00001) and world-space
-normal bias (default 0.05). Generated Unlit/Standard shadow passes reverse
-single-sided color culling, as Three's non-VSM shadow side does; double-sided
-materials retain both faces. Explicit custom ShadowCaster passes keep their
-authored raster state.
+normal bias (default 0.05). Generated Unlit/Standard shadow passes preserve
+the material's culling (`back` by default), following UE's traditional CSM
+policy. The light-facing entry surface must remain an occluder when receiver
+bias and filter taps reach inside a solid near contact. Reversing single-sided
+culling to store the exit surface, as Three's non-VSM path does, can classify
+those samples as lit in this receiver/filter implementation. Double-sided
+materials retain both faces; explicit custom ShadowCaster passes retain their
+authored raster state. Point-face projection winding is corrected separately.
+
+The shared `cube-plane-shadow-contact` Browser/Dawn regression uses a touching
+cube and plane with the default light settings in Forward and Deferred. It
+checks every pixel of the analytic central contact band against a shadow-disabled
+image, with screen-space contact shadows disabled, and
+independently checks exposed ground and the lit cube top for self-shadow stripes.
+Camera height/distance, sun elevation/yaw, double-sided materials and rotated
+scenes exercise both contact and receiver-plane behavior. A darker contact pixel
+alone is insufficient evidence: reducing bias can trade a bright gap for acne.
 
 RectAreaLight defaults to a 10 by 10 emitter with unlimited range (`Infinity`),
 matching Three's unbounded area light. A finite positive range is an explicit
-ForgeaX cutoff; color and intensity remain white and 1.
+ForgeAX cutoff; color and intensity remain white and 1.
 
 Bare-engine Directional and Spot lights default to `castShadow: false`; the
 `game-3d` template explicitly enables its sun. Point lights still require the
@@ -6146,7 +7278,7 @@ beams, glows and glass cast nothing by default, as with Three.js
 from every directional, spot and point shadow map while it stays visible.
 `receive: false` stops its own surface from sampling directional, contact,
 capsule, spot and point shadows, and it keeps casting. Deferred carries the
-receive flag in the GBuffer. The WebGL2 fallback always receives. Toggles are
+receive flag in the GBuffer. WebGL2 carries the same no-receive bit in the existing uniform Mesh surface tail; rigid and skinned Forward use it without enlarging the binding. Toggles are
 ordinary `world.set` writes and apply on the next extracted frame.
 
 After a successful `draw`, inspect the same renderer projection:
@@ -6455,7 +7587,12 @@ The public mode names are the same names used by the Three r184 oracle:
 | `agx` | `TONEMAP_AGX` | AgX curve |
 | `neutral` | `TONEMAP_NEUTRAL` | Khronos neutral curve |
 
-`TONEMAP_REINHARD_EXTENDED` is the existing ForgeaX luminance-domain curve. Its
+`TONEMAP_UE_FILMIC` (`ue-filmic`) has no Three counterpart: it is Unreal's default
+Filmic tone curve with Unreal's default post-process settings (slope 0.88, toe
+0.55, shoulder 0.26, black clip 0, white clip 0.04, blue correction 0.6, expand
+gamut 1), including the ACES glow and red modifiers.
+
+`TONEMAP_REINHARD_EXTENDED` is the existing ForgeAX luminance-domain curve. Its
 separate `reinhard-extended` name is intentional: it is not a second formula
 hidden behind the Three `reinhard` name.
 
@@ -6484,6 +7621,36 @@ world.spawn({
 }).unwrap();
 ```
 
+`Camera.exposure` is Three's `renderer.toneMappingExposure`: a linear multiplier
+applied before every curve in the table above, ACES Filmic included. Only
+`TONEMAP_NONE` ignores it, as Three's `NoToneMapping` does. Port a Three scene by
+copying its exposure, not by rescaling light intensities. `whitePoint` applies only
+to `reinhard-extended`.
+
+#### Three `material.toneMapped = false`
+
+Only Three's `WebGLRenderer` reads `material.toneMapped`. The r185 WebGPU
+renderer and its node materials never read it. A `RenderPipeline` renders
+`pass(scene, camera)` with `currentToneMapping === NoToneMapping`, then tone-maps
+the whole composite once in `outputColorTransform`. That means
+`toneMapped: false` materials are tone-mapped like everything else. The Standard
+post chain has the same behaviour, so a port of a WebGPU Three scene needs no
+per-material flag.
+
+To get WebGL's direct-output semantics, where one material bypasses the curve that
+other materials apply, use the encoded Forward route described below:
+
+- Tone-mapped materials declare `fragmentOutput = [mode, exposure, 1, gamut]`.
+- Opted-out materials declare `[0, 1, 1, gamut]`.
+
+Limits:
+
+- The HDR Standard post chain (bloom, auto exposure, TAA, Output Transform) has
+  no per-material bypass, because every material shares one linear scene target
+  before the curve.
+- To keep an element out of exposure and the curve, draw it in a separate view
+  or an encoded-output graph.
+
 The built-in Output Transform samples the linear scene target and writes the
 display-encoded result before FXAA, post effects, and present. Shader source authority is
 [`packages/shader/src/tonemap.wgsl`](../shader/src/tonemap.wgsl); the render
@@ -6494,13 +7661,13 @@ goes through exposure and the tone curve like any surface. This differs from
 Three.js, whose `scene.background` colour is display-referred. The default
 `[0, 0, 0, 0]` is transparent: on a premultiplied surface (the WebGPU canvas)
 the page behind the canvas shows through tone mapping, FXAA, TAA and bloom.
-Analytic fog skips background pixels and tints geometry only. A surface without
+Without an `Atmosphere`, analytic fog skips background pixels and tints geometry
+only. A surface without
 premultiplied alpha presents opaque, where a transparent clear shows black.
 
 For a procedural sky, generate an ordinary linear HDR `EquirectAsset` in a Pack
 and bind the same asset to `SkyboxBackground` and `Skylight`. This reuses the
 existing background, irradiance and prefiltered reflection route.
-`templates/game-3d/assets/environment.pack.ts` demonstrates this asset route.
 Use `Atmosphere` when the scene needs the physical atmosphere model.
 
 ### Material output and Forward graph composition
@@ -6724,7 +7891,7 @@ runtime content creates a new value object. Numeric World overrides preserve
 the shared source's cooked Forward, ShadowCaster and scene-index program
 selection, including when the Catalogue later replaces the same GUID. User material textures and samplers
 are visible to both vertex and fragment stages, including displacement through
-`textureSampleLevel`; engine-injected lighting bindings retain their own scopes.
+`textureSampleLevel` and parallax through `textureSampleGrad`; engine-injected lighting bindings retain their own scopes.
 Terminal DeviceScope children detach from their parent after cleanup; retiring
 children remain owned until their in-flight work can release them.
 
@@ -6846,6 +8013,8 @@ consume the structured `error.detail` context.
 | `render-feature-preparation-failed` | Repair the named prepared resource and retry on the action in `error.detail.recovery`; after device loss, verify that the feature's declared shader was included in the recovery prewarm set |
 | `render-feature-prepared-state-mismatch` | Read the discriminated `error.detail.reason`, repair the generation/layout/format mismatch, and retry |
 | `render-feature-draw-recording-failed` | Read `error.detail.backendReason`, then retry after the host reports renderer recovery |
+| `render-feature-batch-incomplete` | Every installed Feature joins the frame through its `render-feature:<id>` RenderPrepare system; restore the removed system or install the Feature through the Renderer (`error.detail.missing`) |
+| `render-feature-input-unavailable` | Read `error.detail.reason`: register `render-feature-views` (`not-prepared`), recover the reported view-frame failure, repair the camera Standard configuration, or install the published Feature (`error.detail.featureIdentity`) on the receiver |
 | `disposed` | Terminal; create a new renderer/feature registration |
 
 Use `renderer.inspect()` for a read-only snapshot. Call `renderer.dispose()`
@@ -6924,9 +8093,24 @@ publish no member evidence.
 
 Eligible sprite buckets share one fold instance buffer across the typed transparent
 geometry pass and the legacy sprite pass. Both consume the same head/skip plan;
-10,000 equal-depth sprites remain one instanced draw rather than 10,000 submissions.
-The sprite-atlas Dawn smoke checks this for 60 frames, and its browser probe
-checks the instance count, typed upload payload and WebGPU validation.
+Storage-capable backends keep 10,000 equal-depth sprites in one instanced draw.
+Uniform-only backends split each compatible run into consecutive pages of at most
+128 instances: 10,000 sprites use 79 draws. A final singleton stays direct.
+Material, layer, sort, parameter and atlas-region boundaries preserve their order;
+explicit `Instances` and `SpriteInstances` collections never enter automatic folding.
+Region changes rebuild the actual compatible runs instead of applying a head's
+region to unrelated members. Every page retains its own physical Mesh and instance
+binding, shared across typed geometry and linear-LDR recording.
+
+Explicit Sprite `Instances` reuse geometry's renderer-owned uniform pages.
+`SpriteInstances` pages interleave each original transform with its atlas rectangle
+(80 bytes per uniform instance); native storage retains its current/previous lane.
+Empty collections draw nothing, failed uploads remain unpresented, and shrinking or
+retiring a collection releases its obsolete pages. Native `Tilemap` keeps its
+chunk/atlas geometry batching; it does not lower to Sprite instance collections.
+The 512-element Browser regression checks every cell through 60 completed WebGL2
+frames, atlas edits, deletion and collection shrink. The sprite-atlas Dawn smoke
+retains its 60-frame storage draw and payload checks.
 
 The root barrel does not expose frame stores or extract/plan/record owners.
 Applications contribute work through `RenderFeature` plans; the Standard
@@ -6996,6 +8180,223 @@ const temporal = catalog.require('forgeax::scene-data::temporal-v1');
 available, `SceneDataUnavailableError` exposes the closed `reason`, missing
 producer IDs (at most 32 plus an omission count), and explicit `recovery`.
 Repair capability or producer coverage at its owner, then retry the next frame.
+
+Standard camera views can also publish two renderer-owned surface schemas:
+`forgeax::scene-data::standard-surface-normal-v1` and
+`forgeax::scene-data::standard-surface-depth-v1`. A RenderFeature requests the
+opaque tokens from the exact rendered view and binds those tokens through its
+normal prepared graph resources:
+
+```ts
+import {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  type RenderFeaturePlanContext,
+} from '@forgeax/engine/render';
+
+function standardSurfaceInputs(view: RenderFeaturePlanContext['views'][number]) {
+  return {
+    normal: view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA),
+    depth: view.sceneData.require(SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA),
+  };
+}
+```
+
+The normal token resolves the packed world-space material normal and roughness;
+the depth token resolves camera device depth for the same view, frame plan, and
+generation. Standard Forward/Deferred admission derives availability from the
+selected camera/profile and the visible material, geometry, and deformation
+contributors. Do not seed producer flags in a manually created catalog or
+replace a missing material normal with a depth-reconstructed normal. A consumer
+that needs both tokens should request both and let the graph bind their exact
+schema owners.
+
+Plans with SceneData reads retain surface admission and exact bound owners as
+graph dependencies. Other plans reuse their graph across contributor membership
+changes; resource replacement still invalidates its own dependencies.
+
+Surface requests fail closed through `scene-data-unavailable`. For this
+surface-input route, the supported material paths are Standard and qualified
+Skin, including Morph before skinning. Canonical Morph position/normal XYZ and
+tangent XYZW deltas feed both color and surface inputs; UVs remain unchanged.
+Imported glTF tangent deltas have zero W and preserve handedness. CPU-only devices update the prepared vertex stream;
+GPU Scene consumes the same compact selected-channel target records in its
+vertex stage. Zero weights retain the original stream. A Deferred GBuffer does not cover visible Forward-only
+opaque work, so that work remains required scene coverage and is rejected when
+the selected Deferred producer cannot supply it.
+
+| `detail.missingContributors[].reason` | `rejectedField` | Meaning |
+|:--|:--|:--|
+| `material-snapshot-missing` | `material-snapshot` | The material snapshot needed for admission is unavailable. |
+| `selected-pass-missing` | `selected-pass` | The selected Forward or Deferred material pass is absent. |
+| `authored-program-not-standard-pbr` | `authored-shader-id` | The authored material does not use the Standard PBR route. |
+| `unsupported-geometry` | `geometry` | The material program geometry context is outside this surface route. |
+| `unsupported-deformation` | `deformation` | The contribution uses Morph or an unqualified deformation route. |
+| `missing-fragment-entry` | `fragment-entry-point` | The selected published pass does not expose the expected surface entry point. |
+
+`producer-missing` means the selected view has no eligible Standard surface
+producer. `coverage-incomplete` means a required visible contributor cannot
+provide the selected producer's declared normal and coverage semantics.
+`detail.missingContributorIds` and the optional `detail.missingContributors`
+contain at most 32 entries; `omittedMissingContributorCount` reports rejected
+contributors beyond that bound. Each detailed record includes its closed
+rejection reason, rejected field, and the bounded facts used by the same
+admission decision; `sourceTuple` is present when the source row is available.
+Use those facts to repair or remove the visible input; a retry alone cannot
+make an unsupported contribution eligible.
+
+### Look up one rejected contributor
+
+`sourceTuple` is JSON `[renderSourceIndex, entityKey, materialHandle, passIndex]`.
+`renderSourceIndex` is the slot in the `World[]` passed to the draw that planned
+the surface input, usually `0`; it is not `World.id`. `entityKey` is the full
+packed ECS handle. `materialHandle` resolves in that source World's asset
+domain, and `passIndex` selects the authored material pass. For diagnosis, use
+the same source-world array as the rejected frame:
+
+> [!IMPORTANT]
+> Resolve `materialHandle` through the selected source World's asset domain.
+> Do not use `renderSourceIndex` as a `World.id` or query another World's asset
+> registry.
+
+```ts
+import type { EntityHandle } from '@forgeax/engine/ecs';
+import { MeshRenderer } from '@forgeax/engine/render';
+import type { MaterialAsset } from '@forgeax/engine/assets-runtime';
+import type { AssetHandle } from '@forgeax/engine/types';
+
+const contributor = sceneDataError.detail.missingContributors?.[0];
+const tuple = contributor?.sourceTuple;
+if (tuple !== undefined) {
+  const [renderSourceIndex, entityKey, materialHandle, passIndex] = tuple;
+  const sourceWorld = renderWorlds[renderSourceIndex]; // the World[] passed to this draw
+  if (sourceWorld !== undefined && sourceWorld.assets !== undefined) {
+    const entity = sourceWorld.get(entityKey as EntityHandle, MeshRenderer);
+    const material = sourceWorld.assets.read<'material', MaterialAsset>(
+      materialHandle as AssetHandle<'material'>,
+    );
+    if (entity.ok && material.ok) {
+      const selectedPass = material.value.passes?.[passIndex];
+      // Inspect entity.value, selectedPass, and contributor's rejectedField/reason.
+    }
+  }
+}
+```
+
+If the entity or pass no longer exists, the scene changed after the rejected
+frame; diagnose the current contributor and request new inputs instead of
+editing from stale identifiers.
+
+```mermaid
+flowchart TD
+  A["scene-data-unavailable"] --> B{"detail.reason"}
+  B -->|"producer-missing"| C["Choose a supported Standard view and producer"]
+  B -->|"coverage-incomplete"| D["Locate the rejected visible contributor"]
+  D --> E["Repair or remove unsupported input"]
+  C --> F["Plan the next frame"]
+  E --> F
+  F --> G["Request fresh normal and depth tokens"]
+  B -->|"renderer-recovering"| H["Wait for renderer recovery"]
+  H --> F
+```
+
+Surface tokens are bound to their feature, view, plan, admission identity and
+revision, frame generation, and device generation. Request tokens from the
+active view's `sceneData` for each new plan; do not retain them across a replan,
+producer change, or device recovery. Existing
+`render-feature-prepared-state-mismatch` details classify plan/admission
+ownership as `foreign-feature`, a different view as `foreign-view`, a replaced
+frame as `generation-mismatch`, and device replacement as
+`device-generation-mismatch`; follow that error's existing recovery field.
+`coverage-incomplete` and `producer-missing` use next-frame recovery and do not
+call for device recovery. For other SceneData reasons such as
+`capability-missing`, follow that error's own `hint` and `recovery`.
+Temporal-only consumers remain independent of these surface inputs.
+
+## Portable Hi-Z, SSR and histogram exposure
+
+### WebGL2 effect boundaries
+
+Physical display sky is available with explicit `Atmosphere.backgroundOnly: true`;
+see [Atmosphere and aerial perspective](#atmosphere-and-aerial-perspective) for
+the preserved full-mode limits and background-only scope.
+
+| Feature | WebGL2 execution | Required input or boundary |
+|:--|:--|:--|
+| Auto exposure | GPU fragment classification, integer histogram reductions and adaptation | HDR/integer render attachments and the bounded fragment exposure extent; no CPU metering |
+| SSR | GPU fragment depth pyramid, trace, temporal resolve and composition | Single-sampled Forward with complete built-in Standard material inputs and admitted format/texture budgets |
+| SSAO / GTAO | GPU fragment surface input, AO, bilateral filter and Cluster packing | Opaque/Alpha Mask Standard and Unlit input coverage; Unlit contributes geometry without receiving lighting attenuation |
+| Physical sky background | GPU raster medium/Sky View tables and background | Explicit `backgroundOnly: true`; optional Skylight IBL; no AP, surface solar attenuation or auxiliary captures |
+| Full `Atmosphere` (`backgroundOnly: false`) | Unavailable | Its compute, storage texture, 3D and full material binding requirements remain mandatory |
+| Cooked GPU VFX | Unavailable | The VFX owner still requires compute and indirect drawing; `Points` is the separate CPU-updated raster route |
+
+The public World/Camera Browser gate `standard-effects-webgl2.browser.test.ts`
+checks auto exposure, SSR and their GTAO combination through 60 completed frames,
+records the actual fragment entry points and pixels, then disables the effects
+and requires the original output to return. Kernel qualification additionally
+compares every histogram bin and depth level with independent references. The
+`unlit-ao.browser.test.ts` gate checks real rigid/masked Unlit and posed PBR-Skin
+normal inputs on both Browser WebGPU and WebGL2. These are correctness gates;
+they do not establish large-scene performance or device-wide support.
+
+The Standard pipeline selects compute when its required capabilities are admitted;
+otherwise the package-owned fragment plan uses the same numerical WGSL functions.
+There is no CPU metering path, runtime Kernel DSL or second renderer. Utility
+programs are cooked into distinct manifest entries, including their execution
+identity; publishing one plan must never replace another plan's entry.
+
+| Consumer | Compute plan | Fragment plan | Admission boundary |
+|:--|:--|:--|:--|
+| Depth pyramid | Existing seed and ordered mip dispatches | Independent R32F attachments and copies into the complete sampled mip chain | Real raster/sample/copy/readback profile; single-sampled input |
+| SSR | Trace, temporal and reflection mip dispatches | Two-output trace, three-output temporal MRT and separate reflection mip attachments | Standard inputs, HDR/MRT/texture limits and the actual depth format receipt |
+| Auto exposure V1 | Fixed atomic histogram cohort and adaptation | One classification, 16x16 integer tile counts, bounded reductions and adaptation | Integer/float attachment and copy support; dimensions <=4096 and <=8,847,360 pixels |
+
+Nearest and furthest Hi-Z preserve positive view-distance units, normalized odd
+footprints and the EMPTY sentinel. The conservative multisampled occlusion seed
+remains compute-only. A portable pyramid does not enable indirect GPU culling.
+Fragment code never requires `textureNumLevels`: the full depth chain derives its
+level count from level-zero extent; composition receives its actual reflection
+mip count, including the one-mip spatial-only case, through graph-owned metadata.
+
+Forward SSR uses the existing Standard surface producer with actual roughness,
+and writes fallback plus unit-radiance response at the same material callsite.
+The selected main MRT, GPU-driven projection and downstream composition share
+those exact attachments. Forward SSR currently requires single sampling and
+built-in Standard materials; Deferred retains its existing producer contract.
+Missing inputs remain an explicit admission failure. No material texture is
+removed to admit an effect.
+
+SSR reserves one accepted history plus four in-flight candidates. History reuse
+also requires the exact shared previous TemporalView identity; backlog uses
+current-only resolve instead of reprojecting an older view with one-step motion.
+Exposure leases
+up to nine buffer slots in its existing per-view GPU owner, covering previous
+reads and writes of four in-flight frames. Camera, graph extent/topology and
+device identities fence completion; scalar parameter updates preserve history. Accepted submission does
+not publish either history: queue completion promotes the exact candidate, while
+reset, failed submission and a retired device generation fence older candidates.
+Buffers/textures are never read and attached for writing in the same raster pass.
+The native exposure meter also treats previous state as read-only.
+
+The SSR budget counts all five history slots, shared depth levels, reflection
+mips, fragment scratch and conservative Forward surface/response inputs before
+aliasing. The portable Forward 1080p sum is 273,711,768 bytes (261 MiB); 4K
+exceeds the 320 MiB cap and is rejected before history allocation.
+
+The portable exposure plan preserves V1's 4x4 block-center sampling, center weights,
+256 log bins, 5/95 percentiles, EV bounds and adaptation. Counts use `u32` attachments
+and exact additions. Boundary-sensitive floating classification is tested separately
+from integer accumulation; average luminance is not a substitute. At 1080p the
+fragment plan performs one HDR classification per block, followed by repeated
+integer gathers. Its temporary bytes derive from `planFragmentExposure`; its cost
+is not claimed equal to native atomics. `inspect().output.autoExposure.cost` reports
+the actual physical pass count, including publication copies.
+
+The portable-kernel-expansion Browser/Dawn fixtures compare every depth level and
+all histogram bins to independent references. SSR runs 60 completed frames and
+checks the analytic mirror/wall coordinates plus compute/raster equivalence. A
+RhiNull result proves lifecycle/graph structure only; target-device pixel and
+performance evidence remain separate.
 
 ## AI-readable SSR fallback route
 
@@ -7425,8 +8826,10 @@ normal World path.
 
 ## Standard camera lens effects
 
-Add `LensEffects` to the active camera to combine vignette, directional chromatic
-aberration and animated monochrome grain in one output-resolution pass. Each
+Add `LensEffects` to the active camera for vignette, radial chromatic aberration
+and animated monochrome grain. The fringe is a linear-HDR `chromatic-aberration`
+pass before Bloom and tone mapping; vignette and grain share one output-resolution
+`lens-effects` pass. Each
 intensity is independently adjustable through ordinary World writes; gameplay
 systems own hit pulses, sprint ramps and fade timing.
 
@@ -7436,8 +8839,8 @@ systems own hit pulses, sprint ramps and fade timing.
 | `vignetteRadius` | 0.5 | Finite `[0, 1]`; unaffected inner radius, center 0 and corners 1 |
 | `vignetteSoftness` | 0.5 | Finite `[0.001, 1]`; smooth transition width in normalized viewport radius |
 | `vignetteColor` | `[0, 0, 0]` | Three finite linear RGB channels in `[0, 1]`; red supports hit feedback |
-| `chromaticAberration` | 0 | Finite `[0, 32]` output pixels; offset per red/blue channel |
-| `chromaticAberrationAngle` | 0 | Finite `[-pi, pi]` radians; counterclockwise sample direction, matching Three.js |
+| `chromaticAberration` | 0 | Finite `[0, 5]` percent, as UE `SceneFringeIntensity`; radial fringe growing toward the corners |
+| `chromaticAberrationStartOffset` | 0 | Finite `[0, 1]` normalized distance from the centre where the fringe starts, as UE `ChromaticAberrationStartOffset` |
 | `grainIntensity` | 0 | Finite `[0, 1]`; Three.js FilmShader multiplicative noise mix |
 | `grainSize` | 1 | Finite `[1, 8]` output pixels per grain cell |
 
@@ -7461,31 +8864,38 @@ world.set(camera, LensEffects, {
 }).unwrap();
 ```
 
-The Standard order is tone/LUT, outline, barrel distortion, FXAA, `lens-effects`,
-then the single output encoding. Grain is added after antialiasing, so temporal
-history and FXAA do not smear it. Chromatic aberration preserves the center
-green/alpha sample; red/blue sample in opposite directions with clamped edges.
+The Standard order is temporal, DoF, `chromatic-aberration`, Bloom, tone/LUT,
+outline, barrel distortion, FXAA, `lens-effects`, then the single output encoding.
+Grain is added after antialiasing, so temporal history and FXAA do not smear it.
+Chromatic aberration follows UE's scene color fringe (`PostProcessTonemap.usf:318-341`,
+`PostProcessTonemap.cpp:709-733` `ChromaticAberrationParams`). UE fringes the linear scene
+color before Bloom is added (`:525-526`) and before tone mapping, so bright HDR edges split
+before the curve compresses them; here the fringed image also feeds Bloom's downsample chain,
+whereas UE samples Bloom from its own unfringed input. In the `[-1, 1]` lens viewport, red and green sample at
+`lens - sign(lens) * max(|lens| - start, 0) * scale`, with scales proportional to the primary
+wavelength distance from blue (611.3 / 549.1 / 464.3 nm) and divided by `1 - start`; blue and alpha
+stay at the pixel centre, so the image centre is untouched and fringes grow toward the corners.
 This does not replace the displayed geometry/picking mapping or transform DOM HUDs.
 The reference is Three.js at [`b745e6c`](https://github.com/mrdoob/three.js/tree/b745e6cb7b098e4b56bb9a3dbb1ab0b480f35aa2/examples/jsm/shaders):
 
 | Three.js reference | Engine adaptation |
 |:--|:--|
 | `VignetteShader` | Centered RGB tint blend; explicit radius/softness replace offset/darkness for hit feedback |
-| `RGBShiftShader` | Same opposite R/B samples and center G/alpha; distance uses output pixels and Y follows top-left textures |
 | `FilmShader` | Same `mix(base, base + base * clamp(0.1 + noise, 0, 1), intensity)`; black stays black and increasing intensity also brightens the image |
 
 Grain uses output pixels and the captured renderer frame number, so a fresh-device
 RHI Debug replay reproduces the same pattern without a wall clock or random texture. Its integer hash replaces Three.js's time-driven floating-point random function; grayscale conversion is outside this effect.
 
 Absent components and three zero intensities declare no lens pass, intermediate
-texture or GPU upload. Invalid fields fail before graph admission with
+texture or GPU upload; a zero fringe drops only `chromatic-aberration`, and zero
+vignette and grain drop only `lens-effects`. Invalid fields fail before graph admission with
 `lens-effects-invalid-parameter` and structured field/value/bounds. The existing
 Renderer owns capability admission, graph replacement, in-flight retirement and
 recovery; this effect needs `rgba16floatRenderable` just like the other Standard
 linear-LDR companions.
 
-Inspect `renderer.inspect().perFramePassNames` for the single `lens-effects`
-pass. The shared `lens-effects.fixture.ts` Browser/Dawn regression captures live
+Inspect `renderer.inspect().perFramePassNames` for the `chromatic-aberration`
+and `lens-effects` passes. The shared `lens-effects.fixture.ts` Browser/Dawn regression captures live
 frames, inspects the effect's bindings/work item, compares fresh replay pixels,
 and rejects a tape with its draw removed. Evidence is saved under
 `artifacts/lens-effects/{browser,dawn}/`.
@@ -7604,7 +9014,18 @@ material schemas to their admitted program owner. The optional third argument
 `{ signal }` cancels outstanding preparation while still awaiting submitted upload
 fences before releasing physical ownership. It resolves only after physical queue completion and
 returns a device-generation lease with `isCurrent()`, fence-aware `release()`,
-and `recordStageLane(frame, entity)`. Preparation does not admit a scene row or
+`recordStageLane(frame, entity)`, and `consumeRecordStage(frame, entity)`.
+The explicit consumption operation releases the preparation-only pipeline proof
+only when an actual current draw used that exact entity and mesh. Subsequent
+draws retain physical, source and device validity checks and ordinary per-frame
+pipeline admission. Asset namespace adoption or a hidden mesh alone does not
+transfer this proof. The read-only lane query never transfers ownership.
+Typed scene passes may declare the renderer-owned `selection: 'camera-outline'`
+recipe. Ordinary recording and candidate pipeline demand read the same current
+camera selection; preparation rechecks it before accepting its lease. An opaque
+`selectEntities` callback takes precedence and keeps the ordinary Record route,
+as do unsupported capture graphs. The declaration does not bypass upload fences.
+Preparation does not admit a scene row or
 make an unpublished asset a valid dependency. The next packet must publish the
 same Mesh content under the same source handle; a conflict rejects the entire
 packet before accepted state changes. Receiver-owned bytes include copies of
@@ -7643,7 +9064,7 @@ form. Ineligible meshes silently keep full channels.
 synchronous mesh-buffer preparation. A caller that also needs raster readiness
 awaits `prepareDynamicGeometryPipelines(candidates, { signal })` on those same
 prepared credentials before FixedUpdate acceptance. This stage extracts each
-candidate's real rigid mesh layout, material bindings and selected programs without
+candidate's real rigid or Skin mesh layout, material bindings and selected programs without
 changing its `MeshFilter`. It requests only the CPU/GPU color, depth/temporal and
 shadow lanes selected by the current compiled view graphs, using the ordinary PSO
 owner. Typed scene passes retain their declared GPU material lane even when the
@@ -7658,14 +9079,30 @@ Candidate compilation has a separate pending state, so current scene frames keep
 submitting while native compilation is outstanding. A native PSO rejection returns
 its original cause with `dynamic-geometry-gpu-not-ready`. No current view or no
 applicable raster lane fails explicitly; stalled preparation is bounded to 30 seconds.
-Skin, morph, terrain, sprite and expanded point/line candidates require their own
-specialized preparation and are rejected by this rigid candidate path. Readiness
+Morph, terrain, sprite and expanded point/line candidates require their own
+specialized preparation and remain rejected by this candidate path. Readiness
 covers the captured current raster demand, not future camera or graph changes.
 Changing the candidate mesh, generation or material binding invalidates preparation.
 Supported numeric material changes that alter raster selection (including alpha
 coverage, transmission lane or texture specialization) invalidate it; ordinary
 uniform changes retain the compiled PSOs. Collective source currentness checks only
 pending candidates, never the retained published terrain roster.
+
+Skin candidates use their real entity's `Skin`, complete ordered live joint handles,
+validated Skeleton revision and Skin-input material programs. Local synchronous
+preparation captures and retains that source but cannot be accepted until
+`prepareDynamicGeometryPipelines` completes. The asynchronous Host already waits
+for that stage, including across a Render Worker. Static membership and Skeleton
+changes invalidate the candidate; numeric joint motion does not. Skeleton holding
+ends only with the candidate's existing physical cleanup fence. Collective source
+currentness includes Skin edits and World structure changes.
+
+> [!IMPORTANT]
+> Skin PSO preparation does not fabricate joint matrices, palette buffers or a
+> scene row. The ordinary publication and recording owners still supply the
+> source namespace, current/previous Skin inputs and actual task bindings.
+> A published/consumed candidate receipt requires that actual submitted draw;
+> mesh-buffer or pipeline readiness alone is not a consumed Skin receipt.
 
 `AsyncDynamicGeometryHost` separates asynchronous physical preparation from
 synchronous World admission. `createAsyncDynamicGeometryHost(renderer)` adapts
@@ -7825,12 +9262,15 @@ world.addComponent(camera, {
 | `planes` | Zero to six finite nonzero-normal planes; an empty list disables clipping. |
 | `intersection` | Default false discards any negative half-space; true discards only points negative to every plane. |
 | `clipShadows` | Default false, matching Three.js local clipping. True applies the same predicate to directional, spot and point shadow writers. |
+| `caps` | Camera only, default false. Opaque rigid Standard draws (direct and GPU Scene lanes) also rasterize back faces; a back face seen through the cut shades as the cut plane at the point where the camera ray leaves the kept region, with the plane normal facing the camera, in Forward and Deferred. |
 | Camera plus material | A fragment must survive both independently configured groups. |
 
 Color, GBuffer/depth and temporal coverage share the world-position predicate.
 Rigid, instanced, skinned and GPU Scene Standard geometry use their transformed
-world positions. Plane clipping does not construct section caps or modify CPU
-mesh bounds/picking. Expanded Points/Lines support camera planes and refuse local
+world positions. Plane clipping does not modify CPU mesh bounds/picking. Caps
+need closed meshes: an open sheet has no inside and caps wherever its back side
+shows. Cap depth stays at the back face, blended, skinned, Unlit and custom
+materials keep the open cut, and caps generate no geometry. Expanded Points/Lines support camera planes and refuse local
 material clipping with `points-lines-material-unsupported`. Custom shaders must
 explicitly consume the public clipping shader module; custom RenderFeatures remain responsible for their coverage.
 
@@ -7909,7 +9349,7 @@ bindings and pixels on a fresh device, and removes the composite draw as a falsi
 
 The reference is [Three.js OutlinePass](https://threejs.org/docs/pages/OutlinePass.html):
 selection mask, depth visibility classification, edge expansion, then composition.
-ForgeaX uses its existing depth and output chain. Glow, animated pulses and pattern
+ForgeAX uses its existing depth and output chain. Glow, animated pulses and pattern
 textures are separate effects and are not part of this component.
 
 ## Public material MRT
@@ -8022,7 +9462,7 @@ The focused gates supplement the full hello/learn-render 60-frame roster,
 Reference: Three.js [MRTNode](https://threejs.org/docs/pages/MRTNode.html) names
 outputs and permits individual blend/clear policy; its
 [post-processing guide](https://threejs.org/manual/pages/webgpu-postprocessing.html)
-shows attachment format selection and downstream sampling. ForgeaX preserves
+shows attachment format selection and downstream sampling. ForgeAX preserves
 those result capabilities through MaterialAsset and RenderGraph instead of adding
 a separate material node system.
 
@@ -8081,8 +9521,9 @@ pnpm exec vitest run --project dawn packages/render/src/__tests__/material-raste
 ```
 ## Planar reflection capture
 
-`PlanarReflection` belongs to a display `Camera` and names its distinct sampled
-2D reflection `target`. The owning camera supplies perspective/orthographic optics;
+`PlanarReflection` belongs to a display `Camera` and captures into a sampled 2D
+reflection target: the game's distinct `target`, or, when `target` is left unset,
+one the Renderer owns. The owning camera supplies perspective/orthographic optics;
 the renderer reflects its eye, forward and up, then applies an oblique near plane
 in the RHI zero-to-one depth convention. Capture and water sampling share the
 ordinary frame graph, encoder and submission.
@@ -8091,11 +9532,23 @@ ordinary frame graph, encoder and submission.
 |:--|:--|:--|
 | `normal`, `distance` | World plane `dot(normal, position) + distance = 0`; normal faces the retained half space | `[0, 1, 0]`, `0` |
 | `clipBias` | Meters trimmed from the retained half space at its boundary | `0.001` |
+| `distortion` | Normal distortion radius in world units (Unreal `NormalDistortionStrength`): the view ray reflects off the receiving shading normal (normal map or Surface ripples) and the mirror is sampled where it meets a sphere of this radius around the pixel. `0` or a flat normal is an undistorted mirror. Finite and nonnegative. | `0` |
 | `updateIntervalFrames` | Minimum renderer frame interval between captures | `1` |
 | `requestVersion` | Increment to refresh before the next scheduled interval | `0` |
-| `PlanarReflection.target` | Distinct sampled 2D reflection output (`3d`/`2d-array` targets are rejected); width/height control capture resolution | Required |
+| `PlanarReflection.target` | Distinct sampled 2D reflection output (`3d`/`2d-array` targets are rejected); width/height control capture resolution. Unset (`0`): the Renderer owns the target | Renderer-owned |
+| `resolutionScale` | Renderer-owned target size: `round(display drawing-buffer size × scale)`, at least 1×1, `rgba16float`; recreated on display resize or scale change and released with the component. Ignored with a game `target`. Finite and > 0 | `1` |
+| `generateMipmaps` | Build the mirror's GPU mip chain after each capture (frame-graph passes before any receiver samples it); receivers then sample trilinearly at `lod = roughness × (levels − 1)`. Renderer-owned target: full chain; game target: its own `mipLevels`, only when > 1 | `false` |
 
 ```ts
+// Renderer-owned: drawing-buffer resolution (resolutionScale 1), roughness-blurred mirror.
+world.addComponent(displayCamera, {
+  component: PlanarReflection,
+  data: { generateMipmaps: true },
+}).unwrap();
+```
+
+```ts
+// Game-owned target: full control of size and format; resolutionScale is ignored.
 const descriptor = {
   shape: '2d', width: 512, height: 512, format: 'rgba16float',
   mipLevels: 1, sampleCount: 1, sampled: true, readback: true,
@@ -8115,7 +9568,7 @@ renderer.resizeRenderTarget(target, { ...descriptor, width: 256, height: 256 }).
 flowchart LR
   A["Display camera and world plane"] --> B["Mirrored camera with oblique clipping"]
   B --> C["Forward capture into RenderTarget"]
-  C --> D["Single-layer medium reflection sampling"]
+  C --> D["Single-layer medium and mirroring Standard sampling"]
   C --> E["Completed frame receipt"]
   E --> F["Retained texture and capture matrix"]
   F --> D
@@ -8127,6 +9580,56 @@ transmission. Misses use the existing environment reflection. Capture includes
 retained offscreen opaque geometry and excludes media, UI and debug draws;
 there is no recursive water capture. The public target texture source remains
 available to authored mirror/floor materials.
+
+A Standard floor opts in with `Materials.standard({ ..., planarReflection: true })`
+in a Pack: the cooked program declares the capture texture and projection at
+group 1 bindings 73/74, which counts one more sampled texture. Where a fragment
+lies on the plane (within 1 mm) and faces along its normal, the capture
+replaces the environment specular radiance under the same split-sum response
+(Fresnel, metalness, SSR composition). Capture coverage (alpha) blends with the
+environment only where it has holes (alpha below 1). Without mips the
+roughness fades the sharp image into the prefiltered environment by 0.5; with
+`generateMipmaps` the receiver keeps the mirror at every roughness and blurs it
+by sampling `lod = roughness × (levels − 1)` with a trilinear sampler, as
+Three.js `reflector({ generateMipmaps })` + `textureBicubic(reflection, roughness)`.
+The level count rides in the projection's spare lanes. Mip generation reuses the
+transmission backdrop's scratch-and-copy chain and the renderer-prewarmed mipmap
+pipeline; a renderer readied without a material manifest has no prewarmed pipeline,
+warns once and samples mip 0. The material renders forward in both paths; GPU Scene rows
+carry no extra value. Captures and passes without a current capture bind a
+never-written (disabled) projection, so no draw samples its own target. A
+code-created material cannot carry the capability: `assets.create` returns
+`material-specialization-not-cooked` with `parameter:planarReflection`.
+
+A custom Standard Surface opts in the same way:
+`Materials.standard({ surfaceModule, parameters, values, planarReflection: true })`
+adds the engine-owned field (do not declare it yourself) and keeps the Surface
+forward-only. The Surface drives the wet look per pixel: `normalWS` ripples
+from `SurfaceInput.frameTime` distort the lookup by `PlanarReflection.distortion`
+(Unreal's virtual-sphere normal distortion), and `roughness` fades the mirror
+into the prefiltered environment (or, with `generateMipmaps`, blurs it), so dry
+patches stay matte while puddles reflect. Plane membership still uses the geometric normal,
+and the distorted lookup is clamped to the capture.
+
+```wgsl
+#define_import_path game::wet_ground
+#import forgeax_material::parameters::{material}
+#import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
+
+fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
+  let rings = rainRipples(input.positionWS.xz * 1.6, input.frameTime * 3.0) * material.wetness;
+  let normal = normalize(input.vertexNormalWS + vec3<f32>(rings.x, 0.0, rings.y) * 0.6);
+  let roughness = mix(0.7, 0.04, material.wetness);
+  return SurfaceData(vec3<f32>(0.3), normal, 0.0, roughness, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
+}
+```
+
+Limits: the Surface ABI is fragment-only. Vertex displacement uses Standard's
+`displacementTexture` / `displacementScale` (a height map, animatable through
+a runtime or video texture source), not an authored vertex function, and a
+custom Surface cannot add it. The mirror is not blended into emissive as the
+Three.js sample does; it replaces environment specular under the material's
+Fresnel response.
 
 The reflected camera keeps the display camera's public clipping coverage;
 its copied plane data is detached and does not request a second shadow-map
@@ -8145,7 +9648,15 @@ the plane, or looking away so its reflected frustum misses the retained half
 space, does not capture. Component removal, a captured resize and device-generation replacement
 invalidate the retained pairing; failed submission does not advance cadence.
 The texture and projection used between updates come from the same capture
-submission; completion receipts gate the next scheduled update. `planar-reflection-invalid`
+submission; completion receipts gate the next scheduled update.
+Capture work is Render World data: `render-capture-schedule` (RenderPrepare, after the
+Feature batch seals) schedules the Renderer's progressive cube faces and Feature scene
+inputs once, routes them to one shared recorder (the exclusive capture view, else the
+first display view) and prepares each view's auxiliary cameras and planar selection
+into its `ViewCaptureWork`; recording reads that component and never re-runs the
+scheduler. `render-view-capture-commit` (RenderCommit) promotes a planar selection
+only when the `RenderSubmission` was accepted and the view recorded it; a rejected
+frame, or a recording that failed before submit, rolls the selection back. `planar-reflection-invalid`
 identifies invalid planes, bias, interval or target admission. Keep targets linear (`rgba16float` or `rgba8unorm`).
 
 Reference: [Three.js Reflector](https://threejs.org/docs/pages/Reflector.html).
@@ -8171,8 +9682,8 @@ Engine smoke, browser and Dawn gates.
 
 `ProjectedDecal` is an optional render component installed by `renderPlugin`.
 Its Transform maps the unit box `[-0.5, 0.5]` into world space; +Z faces the
-receiving surface normal. It projects onto opaque Standard Deferred receivers
-using their visible depth, before SSAO and lighting. It needs neither a
+receiving surface normal. It projects onto opaque Standard Forward and Deferred
+receivers using their visible depth, before SSAO and lighting. It needs neither a
 receiver mesh scan nor a coplanar overlay mesh.
 
 ```ts
@@ -8205,7 +9716,7 @@ existing asset contract. Projection supplies UV set 0; authored other UV sets,
 video/render-target sources, alphaHash and other texture slots are rejected.
 The receiver retains metallic fraction, dielectric reflectance, occlusion and
 emissive. Custom Surface programs and physical layered receivers are outside
-this initial Deferred decal contract. This lane currently applies to display
+this projected decal contract. This lane currently applies to display
 cameras; auxiliary render-target and cube captures do not include projected
 decals. Mesh decals participate as ordinary geometry in those captures.
 For tangent-space normal projection, author an orientation-preserving box
@@ -8215,15 +9726,16 @@ this initial contract.
 The GPU draws each box's projected screen rectangle, reconstructs the world
 position from the current (including jitter) inverse camera matrix, and rejects
 pixels outside the box, behind the angle threshold or on the background. Three
-`rgba16float` buffers accumulate color/normal/roughness; one pass composes them
-into the canonical packed G-buffer. Lighting and SSAO/SSR consume the resulting
-surface. Texture gradients are evaluated before rejection for mip filtering.
+`rgba16float` buffers accumulate color/normal/roughness. Deferred composes them
+into the packed G-buffer. Forward shares the existing sampled screen transport,
+modifies the material surface before BRDF evaluation, and publishes the modified
+normal/roughness surface to SSAO/SSR. Texture gradients are evaluated before rejection for mip filtering.
 A box crossing the near plane conservatively covers the viewport. Overlap and
 screen coverage determine GPU cost; this is not a promise of universal speedup.
 
-This lane requires Standard Deferred and single-sample depth. Forward/MSAA
-requests report `projected-decal-invalid`; mesh decals remain ordinary geometry
-in those lanes. Up to 64 visible, nonzero decals are accepted across attached
+Forward decals consume independent single-sample surface depth while the main
+camera may use MSAA. Deferred still requires single-sample Standard scene depth;
+its MSAA requests report `projected-decal-invalid`. Up to 64 visible, nonzero decals are accepted across attached
 Worlds. Visibility and zero opacity remove work. With none, the graph allocates
 no decal targets or passes. Transforms, order and weights update frame values;
 only count/texture shape changes require different decal topology. Textures use
@@ -8317,7 +9829,7 @@ in the same Renderer submission; only success acknowledges the encoded upload.
 Idle mip preparation allocates nothing. Video uploads keep one level.
 The browser checkerboard regression verifies linear-light minification (white/black
 averages to sRGB 188), with a base-level-only sampling falsifier.
-ForgeaX uses `update()` and managed material assets;
+ForgeAX uses `update()` and managed material assets;
 it does not add a second asset catalogue or mimic Three's entire Texture hierarchy.
 
 Verification lives in `canvas-texture.browser.test.ts`,
@@ -8359,7 +9871,7 @@ handle.release(); // terminal; never destroys the caller's texture, element or f
 |:--|:--|
 | Admission | `gpu-texture`: filterable color format, single-sampled 2D with one layer, `TEXTURE_BINDING`, same device. `video`: an `HTMLVideoElement` or `VideoFrame`. Failures return `ExternalTextureInvalidError` (`external-texture-invalid`, `detail.reason` in `format`, `dimension`, `usage`, `device-mismatch`, `device-lost`, `source-unsupported`, `capability-absent`). |
 | Binding | `texture_external` slots derive an `externalTexture` BGL entry from the one `paramSchema`. A video binds a fresh `GPUExternalTexture` each frame (memoized across slots within the frame); only bind groups containing such a slot are rebuilt per frame. A `gpu-texture` binds its view into either slot kind. |
-| Capability absent | `caps.externalTexture === false` (Dawn node, rhi-wgpu) keeps the same layout and shader and binds a copied view (source orientation preserved in `texture_external` slots; ordinary slots flip to UV-up, like `CanvasTexture`). |
+| Capability absent | `caps.externalTexture === false` (Dawn node, rhi-wgpu) keeps the same layout and shader and binds a copied view. Every slot kind samples the copy in the source's top-left orientation, as image textures do (UE flips only bottom-up BMP samples, `MediaShaders.usf:48`). |
 | State failures | `ExternalTextureStateInvalidError` (`external-texture-state-invalid`) is reported once on the error channel per state and the slot keeps its default: `released`, `stale-generation` (a `gpu-texture` after device recovery; `replace` with a texture from the new `nativeDevice()`), `source-expired` (closed `VideoFrame` or undecoded element), `foreign-renderer`. `replace`/`release` return the same error synchronously. |
 | Ownership | The source is a copyable runtime token owned by the importing Renderer. Asset copies preserve it; another Renderer rejects it. Pack output rejects source bindings, and Worker publication rejects external imports as `unsupported`. |
 | RHI Debug | The recorder CPU-snapshots each imported video frame into a recorded `rgba8unorm` texture and records its view in place of the external binding, so a tape replays the exact frame on a fresh device with no media object. Bind groups cached before capture with an external slot are patched to the snapshot view and replayed inside the frame. A borrowed `gpu-texture` enters the tape as `createTexture`; its bytes are seeded only when the caller granted `COPY_SRC`. |
@@ -8533,7 +10045,7 @@ the Host budget, an implicit camera keeps the primary recording path. Canvas,
 screen UI and input coordinates remain native. The WeChat Host selects its own
 default through [DevKit's target configuration](../devkit/README.md#wechat-mini-game).
 
-For temporal upscaling, use the TAA camera's
+For temporal upscaling, use the TAA or TSR camera's
 [DynamicResolution](#adaptive-dynamic-resolution) instead. Equal bounds select a
 fixed internal scale with output-sized temporal history/resolve. Adding a scaled
 `CameraView` would also reduce that view's output/history dimensions, followed by
@@ -8587,7 +10099,7 @@ facts carry `viewId`; DynamicResolution consumes only its own view interval.
 
 The reference is [Three.js r184 multiple views](https://github.com/mrdoob/three.js/blob/r184/examples/webgl_multiple_views.html)
 for viewport/scissor and per-region aspect, and [EffectComposer](https://github.com/mrdoob/three.js/blob/r184/examples/jsm/postprocessing/EffectComposer.js)
-for independent post-processing targets. ForgeaX's ECS CameraView declaration owns
+for independent post-processing targets. ForgeAX's ECS CameraView declaration owns
 these choices instead of mutable global viewport state. Rendering cost remains
 proportional to repeated visible geometry and post-processing; reducing minimap
 resolution and cadence reduces that work without changing shared asset identity.
@@ -8724,7 +10236,7 @@ the count back to a positive value restores the ordinary presentation checks.
 
 ### Opaque ray reference foundation (experimental internal surface)
 
-The ray tracing continuation report preserves the implementation, failed acceptance evidence and reproduction commands for PR #3561. Its design index routes the research documents. The takeover checkpoint retains the final-head native captures; the [delivery relay](https://github.com/ForgeaX-Games/forgeax-engine/pull/3561#issuecomment-5959950959) records the subsequent merge and remaining evidence requests.
+The ray tracing continuation report preserves the implementation, failed acceptance evidence and reproduction commands for PR #3561. Its design index routes the research documents. The takeover checkpoint retains the final-head native captures; the [delivery relay](https://github.com/ForgeAX/forgeax-engine/pull/3561#issuecomment-5959950959) records the subsequent merge and remaining evidence requests.
 
 `@forgeax/engine-render/internal` exports `buildRayReferenceScene`,
 `createRayReferenceQuery`, `packReferenceRays`, and `traceReferenceRay`. This opt-in
@@ -10088,7 +11600,7 @@ contract rather than a second profile policy.
 
 Render extracts one `Terrain` root and projects its subsection draws per view. Integer LODs share immutable grid vertex bytes with separate index buffers. Continuous screen-size LOD, coarser-neighbor edge morph and packed raw-f32 height atlas mips and seam-aware neighboring height normals use one vertex kernel across Standard color, GBuffer, depth, temporal and CSM writers. Terrain uses the direct scene lane; it does not claim GPU Scene, ray-reference or card support.
 
-Layer Material and Texture changes enter their own renderer records. No reverse Terrain-root, section or instance list participates. Material rows reference stable image IDs; image versions own immutable RGBA8 CPU blocks and native RGBA8 GPU rectangles with repeated borders. Actual selected frame inputs derive four RGBA16F texture arrays at the largest selected source dimensions, with sRGB neighbors decoded before filtering. The fragment path uses four direct bilinear samples. Identical selections share only active arrays; changed selections GPU-copy their previous arrays and rebake changed layers when dimensions match. There is no per-fragment metadata table or CPU atlas mirror. Frame references retain exact inputs and GPU arrays, preserving mixed old/new submissions, eviction replay and recovery. Unchanged selected versions reuse the same frame even when an unrelated image changes. A source pixel edit uploads only changed pixels and affected repeated borders. The per-Terrain 128 MiB budget counts distinct active source bytes, independently of other Terrain roots. GPU preparation uses compute and RGBA16F storage textures; encoded images enter through the existing decoder before preparation and recovery publication.
+Layer Material and Texture changes enter their own renderer records. No reverse Terrain-root, section or instance list participates. Material rows reference stable image IDs; image versions own immutable RGBA8 CPU blocks and native RGBA8 GPU rectangles with repeated borders. Actual selected frame inputs derive four RGBA16F texture arrays at the largest selected source dimensions, with sRGB neighbors decoded before filtering. The fragment path uses four direct bilinear samples. Identical selections share only active arrays; changed selections GPU-copy their previous arrays and rebake changed layers when dimensions match. There is no per-fragment metadata table or CPU atlas mirror. Frame references retain exact inputs and GPU arrays, preserving mixed old/new submissions, eviction replay and recovery. Unchanged selected versions reuse the same frame even when an unrelated image changes. A source pixel edit uploads only changed pixels and affected repeated borders. The per-Terrain 128 MiB budget counts distinct active source bytes, independently of other Terrain roots. GPU preparation uses compute and RGBA16F storage textures when available, or four RGBA16F raster attachments on WebGL2. Both entries share standalone WGSL arithmetic; raster output binds one selected array layer per attachment. The shared image-page pool keeps at least two physical layers on WebGL2, whose GLES texture target is chosen at allocation; its logical cells and source identities remain unchanged, and allocated-byte inspection includes the spare physical layer. Encoded images enter through the existing decoder before preparation and recovery publication.
 
 `querySubmittedTerrainHeight(receipt, {worldId, entity, x, z, view?, expectedAsset?, expectedVersion?})` reconstructs canonical sampled triangles using the bytes, LOD, neighbors and pose retained by that completed submission. It does not promise bit-identical GPU floating point arithmetic. Multiple composed views require a view key; held views retain their actual surface. Eight receipts retain owned CPU height bytes. Pending, failed, unissued, stale-generation or expired receipts fail structurally. `expectedAsset` and `expectedVersion` fence the exact Terrain root and captured source version, so a held old view cannot release a replacement gameplay gate.
 
@@ -10205,8 +11717,8 @@ material maps, including their UV records, transforms, sampling and decoding.
 Engine lighting resources such as shadows and IBL retain their own contracts.
 
 For a known default Standard Surface, explicitly setting `alphaClipping: false`,
-`alphaHash: false`, and `displacement: false` selects position-only shadow
-coverage (plus skin inputs for skinned geometry). `alphaClipping: false` removes
+`alphaHash: false`, and `displacement: false` selects opaque shadow
+coverage with position and vertex-normal bias inputs (plus skin inputs for skinned geometry). `alphaClipping: false` removes
 `alphaCutoff` from the selected material ABI and gives Standard/temporal coverage
 a zero cutoff. The color pass keeps its authored textures and normal mapping.
 Shadow LOD, view clipping and local clipping remain active. Custom Surfaces and
@@ -10247,8 +11759,20 @@ contract receipt retains the authored static selection.
 Generated layout buffers use the normal GPU residency owner with a bounded current cache and submission-fenced retirement. A previous fixed layout remains renderable after Font adoption or cache eviction. The renderer's internal `generatedMesh` input is mutually exclusive with an authored `assetHandle`; generated geometry never crosses publication as an asset.
 
 Encoded Texture assets retain their Basis/KTX2 source bytes. Texture residency
-lazily derives BC7, ASTC, ETC2, BC6H or the native fallback from device capabilities;
-material readiness reports pending during initialization/transcode. Immutable
+lazily derives BC7, ASTC, ETC2, BC6H or the native fallback from device capabilities
+and the source's KTX2 DFD channels (`ktx2ChannelLanes`): a two-channel `RRRG` normal
+map derives BC5, EAC RG11 or RG8, a one-channel `RRR` source BC4, EAC R11 or R8;
+a non-Basis BC5 KTX2 (`format: 'bc5-rg-unorm'`, `encoding: 'ktx2'`) keeps its blocks
+on BC devices and otherwise derives their RG8 decode (`ktx2NativeTexture`);
+material readiness reports pending during initialization/transcode. A native
+(unencoded) block-compressed texture whose BC/ETC2/ASTC feature the device lacks
+fails residency with `AssetError` `device-unsupported` (`detail.reason`
+`texture-compression-<family>-unavailable`) instead of a device validation error.
+`normalMapSpace: 'object'` reads the normal's blue channel, so a normal texture
+whose resident format has none (`rg8unorm`, `bc5-rg-unorm`, `eac-rg11unorm`, or
+the R-only formats, including Basis RG/R derivations) fails material readiness
+with `asset-invalid-value`, `detail: { field: 'normalMapSpace', reason:
+'normal-texture-lacks-blue' }`; tangent space reconstructs Z from RG. Immutable
 private source captures are selected by scope, handle and content revision, never
 by a mutable borrowed object. The derivative cache retains at most 256 sources
 and 256 MiB, and actual GPU allocations use the existing submission lifetime.
@@ -10281,7 +11805,7 @@ intensity `1`. Its extraction subtracts the threshold and its tent pyramid is
 normalized. Three WebGPU uses smoothstep extraction over `threshold..threshold+0.01`,
 separable Gaussian kernels and five weighted mip contributions. At threshold `0`,
 strength `1`, radius `0`, the r184 truncated kernels yield uniform gain about
-`2.936`; ForgeaX yields `1`. Neither `scatter` nor `softKnee` is an alias for
+`2.936`; ForgeAX yields `1`. Neither `scatter` nor `softKnee` is an alias for
 Three's `radius` or `smoothWidth`. These are deliberate retained differences:
 copying the threshold default or multiplying intensity cannot align the spatial
 response and would change ordinary scene brightness.
@@ -10364,3 +11888,28 @@ and default shadow filter are unchanged.
 The private presented-draw recorder exposes its live GPU selection through an
 explicit reader consumed at record completion. Published draw records retain a
 detached selection value; internal callback identity is not a selection key.
+
+### Instance upload workspace
+
+Geometry storage-instance ranges, transparent fold uploads, sprite Instances
+and interleaved SpriteInstances pack into Render World frame scratch. Their
+last CPU reader is synchronous `queue.writeBuffer`; GPU buffers, accepted frame
+snapshots and previous-instance identity columns keep their existing lifetimes.
+Packers require exact caller-provided output windows, including nonzero byte
+offsets, and initialize every lane. Low-level standalone record calls open a
+synchronous scope; ordinary recording joins its existing Render World scope.
+
+The ECS arena budget covers the cumulative scratch requested in that scope,
+including multiple views/passes; it is not an unbounded allocation bypass. A
+failed admission publishes no successful upload revision and can be retried.
+GPU completion never reads these CPU staging bytes. Test queues retaining an
+upload must copy its exact view window before returning.
+
+## Features in capture faces
+
+`RenderFeature.capture` (`'display-only'` default, `'all'`, or `{ faces }`)
+decides whether a Feature plans work for capture faces. The planar mirror face is
+a Feature view (`renderer:capture:planar:<display>`) whose plans are projected
+into the face graph after its scene passes (`record/capture-face-features.ts`).
+Probe and cube faces are not yet wired. Faces with `sampleCount != 1` record no
+Feature work.

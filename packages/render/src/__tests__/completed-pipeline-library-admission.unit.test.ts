@@ -44,7 +44,10 @@ describe('physical-device completion is consumed in the first preparation frame'
     await expect(prepareDevicePipelineLibrary(target.device, manifest, registry)).rejects.toBe(
       failure,
     );
-    expect(prepare).toHaveBeenCalledWith(manifest, { sources: [] });
+    expect(prepare).toHaveBeenCalledWith(manifest, {
+      renderTargetPolicy: 'device-compatible',
+      sources: [],
+    });
   });
 
   it('prepares material source facts for the captured graphics roster before the first draw', async () => {

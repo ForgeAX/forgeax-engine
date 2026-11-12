@@ -12,9 +12,15 @@ import {
 } from '@forgeax/engine-vfx';
 import { cookParticleCodeEffect } from '@forgeax/engine-vfx-compiler';
 import { expect, it } from 'vitest';
+import {
+  abortFeatureFrame,
+  prepareFeatureFrame,
+  submitFeatureFrame,
+} from '../../../render/src/__tests__/feature-frame-driver';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureGpuWorkOwner } from '../../../render/src/features/prepared-gpu-work';
 import type { RenderFeatureWork } from '../../../render/src/features/types';
+import { encodeEventBuffer } from '../feature/event-resources';
 import { gpuParticleRenderFeature } from '../feature/gpu-particle-feature';
 
 const camera = {
@@ -23,14 +29,34 @@ const camera = {
   up: new Float32Array([0, 1, 0]),
   viewProjection: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
 };
-async function fixture(storageLimit = 8, nativePlanning = true) {
+async function fixture(
+  storageLimit = 8,
+  nativePlanning = true,
+  dynamicInputs = false,
+  retainedResources = true,
+) {
   const cooked = (
     await cookParticleCodeEffect(
       {
         schemaVersion: 3,
+        ...(dynamicInputs ? { parameters: { gain: { type: 'f32', default: 1 } } } : {}),
         emitters: [
           {
             id: 'spark',
+            ...(dynamicInputs
+              ? {
+                  channels: [{ id: 'impact', capacity: 2, overflow: 'drop-newest' }],
+                  events: [
+                    {
+                      id: 'impact-event',
+                      channel: 'impact',
+                      subEmitter: 'spark',
+                      fanOut: 2,
+                      recursionDepth: 1,
+                    },
+                  ],
+                }
+              : {}),
             capacity: 16,
             backend: { required: 'gpu' },
             space: 'world',
@@ -45,7 +71,7 @@ async function fixture(storageLimit = 8, nativePlanning = true) {
         spark: {
           entry: `#import forgeax_vfx::prelude::{VfxParticle,VfxSpawnContext,VfxUpdateContext}
 struct VfxCustom { heat:f32, }
-fn vfx_spawn(ctx:VfxSpawnContext,p:ptr<function,VfxParticle>,c:ptr<function,VfxCustom>){(*c).heat=1.0;}
+fn vfx_spawn(ctx:VfxSpawnContext,p:ptr<function,VfxParticle>,c:ptr<function,VfxCustom>){(*c).heat=${dynamicInputs ? 'vfx_parameters().gain' : '1.0'};}
 fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,VfxCustom>){(*c).heat+=ctx.delta;}`,
         },
       },
@@ -117,7 +143,7 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
       camera: { read: () => camera },
       instanceArenas: true,
       nativePlanning,
-      retainedResources: true,
+      retainedResources,
       isolateViewGraph: true,
     });
   const admissions: { scope: string; uniformBuffers: number }[] = [];
@@ -180,7 +206,8 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
   let sequence = 0;
   const frame = (generation = 0) => {
     const frameNumber = ++sequence;
-    const batch = host.runFrame(
+    const batch = prepareFeatureFrame(
+      host,
       ['main', 'side'].map((identity) => ({
         identity,
         render: true,
@@ -198,13 +225,17 @@ fn vfx_update(ctx:VfxUpdateContext,p:ptr<function,VfxParticle>,c:ptr<function,Vf
     return {
       batch,
       work,
-      close(submit = true) {
-        if (submit) {
-          batch.frame.onSubmitted();
-          for (const view of batch.views.values()) view.onSubmitted();
-          batch.onSubmitted();
-        } else batch.onAborted();
+      // Separate settlement from leases so tests can retain completed old plans.
+      settle(submit = true) {
+        if (submit) submitFeatureFrame(host);
+        else abortFeatureFrame(host);
+      },
+      release() {
         for (const lease of batch.preparedResourceBatches) lease.release().unwrap();
+      },
+      close(submit = true) {
+        this.settle(submit);
+        this.release();
       },
     };
   };
@@ -301,7 +332,7 @@ it('uses only the job table for current batch projection runtime bytes', async (
             (resource) =>
               resource.kind === 'buffer' &&
               resource.name.endsWith('.table') &&
-              resource.data?.byteLength === 2 * 336,
+              resource.data?.byteLength === 2 * 352,
           ),
         ),
     ).toBe(true);
@@ -338,13 +369,13 @@ it.each([
       });
       expect(projections).toHaveLength(4);
       for (const { binding, buffer } of projections) {
-        expect(binding.size).toBe(304);
+        expect(binding.size).toBe(320);
         expect(buffer?.kind).toBe('buffer');
         if (buffer?.kind !== 'buffer') throw new Error('Missing ordinary projection uniform');
         expect(buffer.usage).toContain('uniform');
         expect(
           buffer.uploads?.some(
-            (upload) => upload.offset === (binding.offset ?? 0) && upload.data.byteLength === 304,
+            (upload) => upload.offset === (binding.offset ?? 0) && upload.data.byteLength === 320,
           ),
         ).toBe(true);
       }
@@ -356,11 +387,137 @@ it.each([
           .every((entry) => entry.uniformBuffers > 0),
       ).toBe(true);
       expect(
-        f.uploads.filter((entry) => entry.scope !== 'frame' && entry.bytes === 304),
+        f.uploads.filter((entry) => entry.scope !== 'frame' && entry.bytes === 320),
       ).toHaveLength(4);
     }
     row.close();
   } finally {
+    await f.close();
+  }
+});
+
+function plannedInputBytes(work: readonly RenderFeatureWork[]): number[][] {
+  const bytes = (value: ArrayBufferView) => [
+    ...new Uint8Array(value.buffer, value.byteOffset, value.byteLength),
+  ];
+  return work.flatMap((row) =>
+    row.resources.flatMap((resource) => {
+      if (resource.kind !== 'buffer') return [];
+      return [
+        ...(resource.data === undefined ? [] : [bytes(resource.data)]),
+        ...(resource.uploads ?? []).map((upload) => bytes(upload.data)),
+      ];
+    }),
+  );
+}
+
+it.each([
+  false,
+  true,
+])('preserves current events and parameters while retaining only core storage: %s', async (retainCore) => {
+  const f = await fixture(8, true, true, retainCore);
+  const heldPlans: ReturnType<typeof f.frame>[] = [];
+  const cameraBefore = [...camera.position];
+  try {
+    f.world.update(1 / 60).unwrap();
+    const change = (gain: number, eventCount: number) => {
+      for (const player of f.players) {
+        const instance = f.runtime.getInstance(player);
+        expect(instance, `player must have a current instance before gain ${gain}`).toBeDefined();
+        f.runtime.patchParameters(player, { gain }).unwrap();
+        for (let index = 0; index < eventCount; index++)
+          instance
+            ?.submit({
+              channel: 'impact',
+              sequence: gain * 10 + index,
+              payload: { position: [gain, index, -gain], strength: gain / 10 },
+            })
+            .unwrap();
+      }
+      camera.position[0] = gain;
+      f.world.update(1 / 60).unwrap();
+    };
+    // The public runtime captures three different parameter/event snapshots.
+    change(3, 2);
+    change(5, 1);
+    const expected = f.runtime.snapshot().map((intent) => ({
+      parameters: [...intent.parameterBlock],
+      events: [...encodeEventBuffer(intent)],
+    }));
+    expect(expected.some((row) => row.events.slice(0, 64).every((value) => value === 255))).toBe(
+      true,
+    );
+    const held = f.frame();
+    heldPlans.push(held);
+    const originalHeld = structuredClone(held.work);
+    expect(
+      held.work
+        .flatMap((row) => row.resources)
+        .some(
+          (resource) =>
+            resource.kind === 'compute-bindings' &&
+            resource.entries.some((entry) => (entry.offset ?? 0) > 0),
+        ),
+    ).toBe(true);
+    const actual = plannedInputBytes(held.work);
+    for (const tick of expected) {
+      expect(actual).toContainEqual(tick.parameters);
+      expect(actual).toContainEqual(tick.events);
+    }
+    // A subsequent candidate invalidates the unsubmitted current transaction;
+    // its already published input arrays must nevertheless remain readable.
+    change(7, 0);
+    const aborted = f.frame();
+    heldPlans.push(aborted);
+    const originalAborted = structuredClone(aborted.work);
+    expect(held.work).toEqual(originalHeld);
+    const queued = f.runtime.snapshot().map((intent) => intent.sequence);
+    aborted.settle(false);
+    expect(f.runtime.snapshot().map((intent) => intent.sequence)).toEqual(queued);
+    const retried = f.frame();
+    heldPlans.push(retried);
+    for (const intent of f.runtime.snapshot()) {
+      expect(plannedInputBytes(retried.work)).toContainEqual([...intent.parameterBlock]);
+      expect(plannedInputBytes(retried.work)).toContainEqual([...encodeEventBuffer(intent)]);
+    }
+    retried.settle();
+    expect(f.runtime.snapshot()).toHaveLength(0);
+    const originalSubmitted = structuredClone(retried.work);
+    change(9, 0);
+    const next = f.frame();
+    next.close();
+    expect(retried.work).toEqual(originalSubmitted);
+    expect(aborted.work).toEqual(originalAborted);
+    expect(held.work).toEqual(originalHeld);
+    for (const player of f.players)
+      f.world.set(player, ParticleEffectPlayer, { playing: false }).unwrap();
+    f.world.update(1 / 60).unwrap();
+    f.frame().close();
+    expect(f.runtime.snapshot()).toHaveLength(0);
+    for (const player of f.players)
+      f.world.set(player, ParticleEffectPlayer, { playing: true }).unwrap();
+    // Restart/recovery must still use the ordinary current input declarations.
+    f.runtime.recover();
+    // Recovery intentionally clears instances. The authored Player restarts on
+    // the next real update; keep that queued tick in the same byte/ACK oracle.
+    f.world.update(1 / 60).unwrap();
+    change(11, 1);
+    const recovered = f.frame(1);
+    for (const intent of f.runtime.snapshot()) {
+      expect(plannedInputBytes(recovered.work)).toContainEqual([...intent.parameterBlock]);
+      expect(plannedInputBytes(recovered.work)).toContainEqual([...encodeEventBuffer(intent)]);
+    }
+    recovered.close();
+    expect(f.runtime.snapshot()).toHaveLength(0);
+    // The original implementation reaches this assertion with no admitted core.
+    // This is a behavior RED after the same input/ACK/lifetime controls above.
+    expect(f.admissions.some((row) => row.scope === 'frame' && row.uniformBuffers === 0)).toBe(
+      retainCore,
+    );
+    expect(f.uploads.filter((row) => row.scope === 'frame' && row.bytes === 320)).toEqual([]);
+  } finally {
+    for (const plan of heldPlans) plan.release();
+    camera.position.set(cameraBefore);
     await f.close();
   }
 });

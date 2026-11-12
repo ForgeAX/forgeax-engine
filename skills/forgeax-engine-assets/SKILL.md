@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-assets
 description: >-
-  ForgeaX authoring-to-runtime asset route with GUID identity and producer-owned recovery.
+  ForgeAX authoring-to-runtime asset route with GUID identity and producer-owned recovery.
   Use when authoring, importing, cooking, loading, validating, or repairing any game asset.
 ---
 
@@ -137,6 +137,32 @@ Use these entry points:
 
 IES has no runtime source parser; cookies use the existing texture registry. Catalog is a projection, DDC is cache evidence, and Pack/Meta retain authored authority. Do not claim readiness without `accepted` or `verified` evidence.
 
+For slow Meta startup in builds or live dev, enable `FORGEAX_WORKSPACE_TIMING=1`
+and inspect `forgeax.pack-ddc.timing` in the owning log. Trace the adapter through
+shared source-package production before changing cache policy; Meta publication
+uses `DdcEntryInput` to derive its receipt digest from the staging capture, and the
+DDC lifecycle validates staged publication before its ordinary lease/head fence.
+Never pass an unchecked readback token or skip artifact closure checks. Both routes use
+[the existing Pack product DDC](../../packages/import/README.md).
+
+For unchanged live Meta publications, use `readImportPublication` and serve its
+returned Pack and artifact bytes with the restored Catalog revision. Prepare HTTP
+compression for those exact restored bodies. Require complete artifact and
+output-digest agreement plus the DDC head fence; product hits alone are insufficient.
+Misses, corruption, changed content and active writers keep ordinary publication.
+Do not use rollback's `restoreImportPublication` as a warm-read operation.
+
+For live resource transport, keep one fresh source fence per HTTP request and
+recheck scope identity, generation, session state and authority before dispatch.
+Reuse only the fence already completed by that request; do not share it across
+requests or weaken artifact integrity. Keep accepted-byte recovery separate from
+new production when a scope is degraded.
+When projecting a Catalog into its runtime scope, preserve each producer's shared
+publication envelope for that response and canonical source path. Per-row copies
+make wire-table validation and JSON encoding repeat its entire output closure.
+Keep current/LKG locators scoped and all receipt/failure fields intact; a new
+projection or binding must build its own scoped envelopes.
+
 > [!IMPORTANT]
 > Material assets follow one route inside the catalog: authored `MaterialAsset` with `passes` and `values` -> cook record and artifact -> `load(guid, 'material')` -> runtime asset handle. Keep `parent` references, texture references, module identifiers, and per-slot `coordinates` transforms in the same package graph. For recovery, repair the producer or cook output, then retry loading or explicitly reload the existing handle.
 
@@ -145,6 +171,13 @@ IES has no runtime source parser; cookies use the existing texture registry. Cat
 Start with [`schemas/asset-authority.schema.json`](../../schemas/asset-authority.schema.json) and its gate [`check-asset-authority-audit.mjs`](../../scripts/forgeax/check-asset-authority-audit.mjs). Pack or external source plus Meta is author authority. Import and native cook produce validated outputs. DDC is disposable cache evidence, Catalog is a projection, and runtime only reads the validated projection. Editor writes go through the asset-authoring gateway.
 
 For any category, inspect the `subject`, `execution`, `lifecycle`, `lastKnownGood`, and `sourceKey` fields before choosing recovery. The AI path is `inspect` -> `rebuild` or `cold-cook`; `preview-LKG` is read-only, while `override`, `promote`, and `stop-publish` are explicit gateway or publication operations. Do not infer identity from a suffix, path, cache hit, or message text.
+
+For repeated production Meta imports, inspect the host's sealed producer identity
+and existing Pack product DDC before proposing another cache. Follow the
+[Import cache boundary](../../packages/import/README.md): a verified hit must
+skip import and native Cook, while changed source, sibling bytes, Meta settings
+or producer identities must miss. Retain importer/Cooker call counts in a
+cold/warm regression and verify the current publication after cache restoration.
 
 ### Transmission/refraction
 
@@ -354,3 +387,8 @@ Transparent PNGs are disposable DDC outputs. Source publication dependencies,
 the Preview preset and producer bytes determine invalidation; inspect a failed
 row's structured error before retrying the owning asset pipeline. See
 [DevKit's thumbnail contract](../../packages/devkit/README.md#progressive-asset-thumbnails).
+
+When compiler filesystem analysis needs imports, use the captured source
+snapshot's `imports(path, { includeTypeOnly: true })` fact. Inventory owns runtime
+import filtering; compiler policy keeps its conservative raw-import interpretation.
+Always preserve current-byte and resolution verification at publication.

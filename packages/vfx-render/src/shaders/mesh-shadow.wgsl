@@ -14,5 +14,5 @@ struct MeshShadowInput {
 fn vs_main(input: MeshShadowInput) -> @builtin(position) vec4<f32> {
   let worldPosition = input.center + input.right * input.position.x +
     input.up * input.position.y + input.forward * input.position.z;
-  return projectShadowPosition(vec4<f32>(worldPosition, 1.0));
+  return projectShadowPosition(vec4<f32>(worldPosition, 1.0), vec3<f32>(0.0));
 }

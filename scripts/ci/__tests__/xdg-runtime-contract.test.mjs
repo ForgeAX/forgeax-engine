@@ -17,7 +17,6 @@ const workflowJobs = new Map([
     [
       'primary-pnpm',
       'coverage-pnpm-shard',
-      'directional-csm-browser',
       'vitest-browser-shard',
       'shared-inputs-browser',
       'smoke-fleet',

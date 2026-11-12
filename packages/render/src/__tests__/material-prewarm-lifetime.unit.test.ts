@@ -265,6 +265,16 @@ describe('pending material module request lifetime', () => {
       expected: 'shader module pre-bake to complete asynchronously',
     });
     expect(first.error.hint).toContain(desc.label);
+    expect(adapter.isPending(first.error)).toBe(true);
+    expect(
+      adapter.isPending(
+        new RhiError({
+          code: 'rhi-not-available',
+          expected: first.error.expected,
+          hint: first.error.hint,
+        }),
+      ),
+    ).toBe(false);
     for (let retry = 0; retry < 256; retry++) {
       const result = adapter.createShaderModule(desc);
       expect(result.ok).toBe(false);
@@ -276,6 +286,7 @@ describe('pending material module request lifetime', () => {
     complete[0]?.(ok(module));
     await Promise.resolve();
     expect(adapter.createShaderModule(desc)).toEqual(ok(module));
+    expect(adapter.isPending(first.error)).toBe(false);
     expect(adapter.hasModule(desc.label)).toBe(true);
   });
 
@@ -290,6 +301,8 @@ describe('pending material module request lifetime', () => {
     expect(second.ok).toBe(false);
     if (first.ok || second.ok) throw Error('Expected pending requests');
     expect(second.error).not.toBe(first.error);
+    expect(adapter.isPending(first.error)).toBe(false);
+    expect(adapter.isPending(second.error)).toBe(true);
     complete[0]?.(ok({ old: true } as unknown as ShaderModule));
     await Promise.resolve();
     expect(adapter.createShaderModule(replacement)).toEqual(err(second.error));
@@ -302,6 +315,8 @@ describe('pending material module request lifetime', () => {
     complete[1]?.(err(terminal));
     await Promise.resolve();
     expect(adapter.createShaderModule(replacement)).toEqual(err(terminal));
+    expect(adapter.isPending(second.error)).toBe(false);
+    expect(adapter.isPending(terminal)).toBe(false);
     adapter.invalidateModule(desc.label);
     const third = adapter.createShaderModule(desc);
     expect(third.ok).toBe(false);
@@ -309,6 +324,22 @@ describe('pending material module request lifetime', () => {
     expect(third.error).not.toBe(second.error);
     expect(third.error).not.toBe(terminal);
     expect(compile).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps a content-seeded module when the draw requests the published source of the same text', () => {
+    const { adapter, compile } = fixture();
+    const seeded = {} as ShaderModule;
+    const code = '@fragment fn fs_main() {}';
+    adapter.seedModule('module-forgeax::sprite', seeded, code);
+    const published = new ShaderSource([code], 'a'.repeat(64));
+    expect(adapter.createShaderModule(published.descriptor('module-forgeax::sprite'))).toEqual(
+      ok(seeded),
+    );
+    expect(compile).not.toHaveBeenCalled();
+    // Different text under the same label still retires the seeded module.
+    const other = new ShaderSource(['@fragment fn fs_other() {}'], 'b'.repeat(64));
+    expect(adapter.createShaderModule(other.descriptor('module-forgeax::sprite')).ok).toBe(false);
+    expect(compile).toHaveBeenCalledTimes(1);
   });
 
   it('rejects a seed alias when its first request carries different source', () => {

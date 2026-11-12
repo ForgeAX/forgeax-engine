@@ -1,6 +1,6 @@
 # @forgeax/engine-intelligence-dsh
 
-Host-side adapter from the provider-neutral ForgeaX `Activity` contract to the
+Host-side adapter from the provider-neutral ForgeAX `Activity` contract to the
 DeepSeek Harness TypeScript SDK. The package exact-pins SDK `0.1.0-rc.6`; no DSH
 type crosses into `@forgeax/engine-intelligence` or an Engine Worker.
 

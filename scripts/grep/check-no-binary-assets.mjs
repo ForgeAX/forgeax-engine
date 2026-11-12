@@ -15,12 +15,14 @@
 // excluded for free):
 //
 //   1. Extension blocklist — a broad roster of game / media binary extensions
-//      (images, video, audio, 3D models, fonts, archives, native binaries, GPU
-//      textures). Mirrors and widens the `.gitignore` `*.ext` blocks.
+//      (raster images, video, audio, 3D models, fonts, archives, native binaries,
+//      GPU textures). Mirrors and widens the `.gitignore` `*.ext` blocks.
 //   2. Content sniff backstop — any tracked regular file whose first 8 KiB
 //      contains a NUL byte (0x00) is binary regardless of its extension. Catches
 //      renamed / extensionless blobs (`texture.dat`, no-ext payloads) that slip
 //      the extension list.
+//
+// SVG is XML text, so vector logos and diagrams are valid tracked source assets.
 //
 // TEXT_ALLOW exempts known text formats that look binary-adjacent by name or
 // could otherwise be mis-flagged — notably `.gltf`, which is JSON text with a
@@ -58,8 +60,6 @@ const BINARY_EXTS = new Set([
   'dng',
   'psd',
   'ai',
-  // svg: XML text, but `.gitignore` blocks it and it carries no engine value
-  'svg',
   // video
   'mp4',
   'avi',

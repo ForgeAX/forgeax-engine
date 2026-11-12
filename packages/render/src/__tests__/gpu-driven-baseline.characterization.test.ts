@@ -9,12 +9,14 @@ const productionRaster = read('../gpu-driven/production-raster.ts');
 const productionRasterMaterial = read('../gpu-driven/production-raster-material.ts');
 const frameRecord = read('../record/frame.ts');
 const frameGpuDriven = read('../record/frame-gpu-driven.ts');
+const gpuDrivenSystems = read('../world/gpu-driven-systems.ts');
 const mainPass = read('../record/main-pass.ts');
 const shadowPass = read('../record/shadow-pass.ts');
 const skinTasks = read('../record/skin-tasks.ts');
 const extractRoot = read('../render-system-extract.ts');
 const extractTail = read('../render-system-extract-tail.ts');
 const rendererSystem = read('../render-system.ts');
+const viewInspection = read('../view-inspection.ts');
 const webgpuReady = read('../assembly/webgpu-ready.ts');
 const webgpuPbrReady = read('../assembly/webgpu-pbr-ready.ts');
 const gpuDrivenOwner = read('../assembly/gpu-driven-owner.ts');
@@ -56,7 +58,7 @@ describe('GPU-driven baseline characterization', () => {
   });
 
   it('keeps probe-bearing rows on the GPU lane with the shared probe buffer', () => {
-    expect(frameRecord).toContain('return fallbackLaneLimit ? undefined : gpuDriven;');
+    expect(gpuDrivenSystems).toContain('gpuLane: !fallbackLaneLimit,');
     expect(frameRecord).not.toContain('const probeBlendFrame =');
     expect(frameGpuDriven).toContain(
       'ensureProbeBlendRecordBuffer(internals.device, frameState, scene?.probeBlend)',
@@ -75,8 +77,8 @@ describe('GPU-driven baseline characterization', () => {
   it('freezes current ownership and stable-frame inspection signals', () => {
     expect(productionRaster).toContain('selection: filtered.selection');
     expect(productionRaster).not.toContain('ownsAllRenderables');
-    expect(rendererSystem).toContain(
-      'gpuDriven: gpuDrivenProduction.inspect(skinTasks.paletteUploadBytes)',
+    expect(viewInspection).toContain(
+      'gpuDriven: owner.gpuDriven.inspect(owner.skin.paletteUploadBytes)',
     );
     expect(productionRaster).toContain('gpuOwnedSnapshotsMaterialized');
     expect(productionRaster).toContain('validatedGpuOwnedRows');

@@ -1,4 +1,4 @@
-# ForgeaX Engine SDK
+# ForgeAX Engine SDK
 
 > [!IMPORTANT]
 > Installed npm and ZIP SDKs extend the built Engine with editable source and the same release's prebuilt module outputs. The npm carrier omits bytes already supplied by its exact-version Engine dependency; `sdk install` materializes and verifies them. sdk-manifest.json owns per-file integrity.
@@ -11,7 +11,7 @@ pinned npm before installing:
 
 ```bash
 npm install --global npm@12.2.1
-pnpm dlx @forgeax/engine sdk install ~/ForgeaX/1.2.3
+pnpm dlx @forgeax/engine sdk install ~/ForgeAX/1.2.3
 ```
 
 ## Quick start

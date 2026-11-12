@@ -1,5 +1,6 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { comparePixels, displayPixels, readyFrames, verifyReplay } from './render.fixture';
 
 export async function verifyTextures(
@@ -66,7 +67,7 @@ export async function verifyTextures(
         map.channel = channel;
         material.needsUpdate = true;
         const selected = await frame(`${material.type}-uv${channel}`);
-        expect(selected.pixels).not.toEqual(baseline.pixels);
+        expect(equalBytes(selected.pixels, baseline.pixels)).toBe(false);
       }
       map.channel = 0;
       map.wrapS = map.wrapT = THREE.RepeatWrapping;
@@ -77,15 +78,15 @@ export async function verifyTextures(
       map.repeat.set(2, 3);
       map.center.set(0.3, 0.7);
       const tiled = await frame(`${material.type}-offset-repeat`);
-      expect(tiled.pixels).not.toEqual(identity.pixels);
+      expect(equalBytes(tiled.pixels, identity.pixels)).toBe(false);
       map.repeat.set(2, 2);
       map.rotation = 0.37;
       const rotated = await frame(`${material.type}-rotation-center`);
-      expect(rotated.pixels).not.toEqual(tiled.pixels);
+      expect(equalBytes(rotated.pixels, tiled.pixels)).toBe(false);
       map.matrixAutoUpdate = false;
       map.matrix.set(-1, 0, 0.2, 0, 2, -0.3, 0, 0, 1);
       const manual = await frame(`${material.type}-manual-matrix`);
-      expect(manual.pixels).not.toEqual(rotated.pixels);
+      expect(equalBytes(manual.pixels, rotated.pixels)).toBe(false);
       await verifyReplay(manual.capture);
       map.matrixAutoUpdate = true;
       map.offset.set(0, 0);
@@ -140,13 +141,13 @@ export async function verifyTextures(
     mipmap.minFilter = THREE.NearestFilter;
     mipmap.needsUpdate = true;
     const sameMips = await frame('nearest-filter-keeps-mips');
-    expect(mip.pixels).toEqual(sameMips.pixels);
+    expect(equalBytes(mip.pixels, sameMips.pixels)).toBe(true);
     const authored = mipmap.mipmaps;
     mipmap.mipmaps = [];
     mipmap.generateMipmaps = false;
     mipmap.needsUpdate = true;
     const base = await frame('base-level-only');
-    expect(mip.pixels).not.toEqual(base.pixels);
+    expect(equalBytes(mip.pixels, base.pixels)).toBe(false);
     mipmap.mipmaps = authored;
     await verifyReplay(mip.capture);
     mipmap.minFilter = THREE.LinearMipmapLinearFilter;
@@ -163,24 +164,24 @@ export async function verifyTextures(
     map.image.data.fill(255);
     map.needsUpdate = true;
     const after = await frame('byte-update');
-    expect(after.pixels).not.toEqual(before.pixels);
+    expect(equalBytes(after.pixels, before.pixels)).toBe(false);
     map.dispose();
     const reused = await frame('dispose-reuse');
-    expect(reused.pixels).toEqual(after.pixels);
+    expect(equalBytes(reused.pixels, after.pixels)).toBe(true);
     await verifyReplay(reused.capture);
 
     camera.near = 0;
     camera.updateProjectionMatrix();
     mesh.castShadow = mesh.receiveShadow = true;
     const zeroNear = await frame('zero-near-shadow-flags');
-    expect(zeroNear.pixels).toEqual(reused.pixels);
+    expect(equalBytes(zeroNear.pixels, reused.pixels)).toBe(true);
     map.image.data.set(mapBytes);
     map.needsUpdate = true;
     geometry.deleteAttribute('normal');
     const noNormals = await frame('missing-normal-basic');
-    expect(noNormals.pixels).toEqual(before.pixels);
+    expect(equalBytes(noNormals.pixels, before.pixels)).toBe(true);
     geometry.setAttribute('gameWeight', new THREE.Float32BufferAttribute([7], 1));
-    expect((await frame('unused-attribute')).pixels).toEqual(noNormals.pixels);
+    expect(equalBytes((await frame('unused-attribute')).pixels, noNormals.pixels)).toBe(true);
     // Lit WebGPU materials derive triangle normals when the attribute is missing.
     for (const material of materials.slice(1)) {
       mesh.material = material;
@@ -188,7 +189,7 @@ export async function verifyTextures(
     }
     mesh.material = basic;
     const restored = await frame('basic-after-flat-normals');
-    expect(restored.pixels).toEqual(noNormals.pixels);
+    expect(equalBytes(restored.pixels, noNormals.pixels)).toBe(true);
     await verifyReplay(restored.capture);
   } finally {
     for (const texture of textures) texture.dispose();

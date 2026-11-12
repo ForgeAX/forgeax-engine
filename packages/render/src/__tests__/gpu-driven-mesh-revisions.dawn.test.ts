@@ -586,9 +586,9 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         worldRenderResources(f.world),
       );
       const replacement = defined(f.store.getMeshGpuHandles(handle, worldRenderResources(f.world)));
-      expect(replacement).not.toBe(old);
+      expect(Object.is(replacement, old)).toBe(false);
       expect(replacement.contentEpoch).toBeGreaterThan(writtenEpoch);
-      expect(replacement.vertexBuffer).not.toBe(old.vertexBuffer);
+      expect(Object.is(replacement.vertexBuffer, old.vertexBuffer)).toBe(false);
       expect(old.vertexBuffer.isDestroyed).toBe(true);
       expect(replacement.indexBuffer).toBe(old.indexBuffer);
       expect(old.indexBuffer?.isDestroyed).toBe(false);
@@ -607,7 +607,7 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         },
         worldRenderResources(f.world),
       );
-      expect(restored).not.toBe(replacement);
+      expect(Object.is(restored, replacement)).toBe(false);
       expect(restored.contentEpoch).toBeGreaterThan(replacement.contentEpoch);
       f.bySlot.set(0, restored);
       expect(await pixels(f)).toEqual(original);
@@ -636,7 +636,7 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
         const entry = f.store
           .ensureResident(defined(f.handles[i]), defined(f.pods[i]), worldRenderResources(f.world))
           .unwrap();
-        expect(entry).not.toBe(beforeDestroy[i]);
+        expect(Object.is(entry, beforeDestroy[i])).toBe(false);
         expect(entry.contentEpoch).toBeGreaterThan(defined(beforeDestroy[i]).contentEpoch);
         f.bySlot.set(i, entry);
       }
@@ -721,14 +721,14 @@ describe('GPU-driven resident mesh epochs on native Dawn', () => {
       const replacementNative = replacementDevice.native;
       replacementNative.pushErrorScope('validation');
       try {
-        expect(replacementDevice.device).not.toBe(f.device);
+        expect(Object.is(replacementDevice.device, f.device)).toBe(false);
         const replacementEntry = replacementDevice.store.getMeshGpuHandles(
           defined(replacementDevice.handles[0]),
           worldRenderResources(replacementDevice.world),
         );
         expect(replacementEntry).toBe(replacementDevice.meshes[0]);
-        expect(replacementEntry).not.toBe(restored);
-        expect(replacementEntry?.vertexBuffer).not.toBe(restored.vertexBuffer);
+        expect(Object.is(replacementEntry, restored)).toBe(false);
+        expect(Object.is(replacementEntry?.vertexBuffer, restored.vertexBuffer)).toBe(false);
         expect(await pixels(replacementDevice)).toEqual(original);
         const replacementValidation = await replacementNative.popErrorScope();
         expect(replacementValidation, replacementValidation?.message).toBeNull();

@@ -17,6 +17,8 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { loadMaterialFixture } from '../../../assets-runtime/src/__tests__/fixtures/runtime-material';
 import type { RayPublicationSet } from '../../../render/src/__tests__/raytracing/path-tracer.commands';
 import { constructRuntimeRendererHost } from '../renderer-host';
@@ -226,16 +228,19 @@ export async function verifyRendererDiffuse(
     seed: 47,
     environment: [0.25, 0.5, 0.75] as const,
   };
-  const submit = () =>
-    renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-      geometryLane: 'direct',
-    });
-  const draw = async () => {
+  const request = {
+    leases: [lease],
+    camera: { lease },
+    environment: { lease },
+    geometryLane: 'direct' as const,
+  };
+  const submit = () => renderer.draw(request);
+  const advanceWorld = () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
+  };
+  const draw = async () => {
+    advanceWorld();
     const receipt = renderValue(submit());
     renderValue(await receipt.completed);
     return receipt;
@@ -254,9 +259,12 @@ export async function verifyRendererDiffuse(
     );
   };
   const hdr = async (name: string) => {
-    assert(renderer.requestObservation);
-    renderValue(renderer.requestObservation(['linear-hdr']));
-    const receipt = await draw();
+    advanceWorld();
+    const receipt = await drawReadyFrame(renderer, request, ['linear-hdr']);
+    expect(
+      receipt.presentation,
+      `${name}: ${JSON.stringify(receipt.presentationPendingReason)}`,
+    ).toBe('ready');
     const result = renderValue(
       await renderer.observe(receipt, { include: ['linear-hdr'] }),
     ).observations?.find((item) => item.domain === 'linear-hdr');
@@ -380,7 +388,7 @@ export async function verifyRendererDiffuse(
         await replay.inspectWork(composite.workIndex, ['pipeline', 'bindings', 'pixels'])
       ).unwrap();
       assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(captured.bytes);
+      expect(equalBytes(inspected.attachment.bytes, captured.bytes)).toBe(true);
       const accumulationResource = model.resources.find(
         (resource) =>
           (resource.descriptor as { desc?: { label?: string } })?.desc?.label ===
@@ -398,7 +406,7 @@ export async function verifyRendererDiffuse(
       ).unwrap();
       const reread = reads[0]?.unwrap();
       assert(reread);
-      expect(reread.bytes).toEqual(rawD);
+      expect(equalBytes(reread.bytes, rawD)).toBe(true);
       if (reconstruction !== undefined) {
         expect(histories).toHaveLength(2);
         for (const [index, resource] of histories.entries()) {
@@ -460,8 +468,8 @@ export async function verifyRendererDiffuse(
       const withoutGi = (
         await omittedReplay.readResourceAtWork(attachment, last.workIndex)
       ).unwrap();
-      expect(withoutGi.bytes).toEqual(direct.bytes);
-      expect(withoutGi.bytes).not.toEqual(captured.bytes);
+      expect(equalBytes(withoutGi.bytes, direct.bytes)).toBe(true);
+      expect(equalBytes(withoutGi.bytes, captured.bytes)).toBe(false);
       await save('missing-composite.rgba16float', withoutGi.bytes);
     } finally {
       (await omittedReplay.dispose()).unwrap();
@@ -548,7 +556,7 @@ export async function verifyRendererDiffuse(
     await settled();
     const off = await hdr('source-off');
     centers.sourceOff = off.center;
-    expect(off.bytes).toEqual(direct.bytes);
+    expect(equalBytes(off.bytes, direct.bytes)).toBe(true);
     const emitter = world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 2] } },
@@ -569,7 +577,7 @@ export async function verifyRendererDiffuse(
     expect((bounce.center[0] ?? NaN) - (direct.center[0] ?? NaN)).toBeGreaterThan(0.05);
     world.despawn(emitter).unwrap();
     await settled();
-    expect((await hdr('emitter-removed')).bytes).toEqual(direct.bytes);
+    expect(equalBytes((await hdr('emitter-removed')).bytes, direct.bytes)).toBe(true);
     world.set(receiver, MeshRenderer, { materials: [emitterMaterial] }).unwrap();
     renderValue(renderer.setProfile({ ...directProfile, diffuseGi: settings }));
     await settled();
@@ -577,7 +585,7 @@ export async function verifyRendererDiffuse(
     expect(new DataView((await readD()).buffer).getFloat32(centerOffset, true)).toBeGreaterThan(0);
     renderValue(renderer.setProfile(directProfile));
     const blackOff = await hdr('black-receiver-off');
-    expect(black.bytes).toEqual(blackOff.bytes);
+    expect(equalBytes(black.bytes, blackOff.bytes)).toBe(true);
     centers.blackReceiver = black.center;
     expect(errors).toEqual([]);
     world.set(receiver, MeshRenderer, { materials: [matte] }).unwrap();
@@ -633,9 +641,9 @@ export async function verifyRendererDiffuse(
     errors.length = 0;
     renderValue(await renderer.recover());
     oldDevice?.destroy();
-    expect(native).not.toBe(oldDevice);
+    expect(Object.is(native, oldDevice)).toBe(false);
     await settled();
-    expect((await hdr('recovered')).bytes).toEqual(beforeLoss.bytes);
+    expect(equalBytes((await hdr('recovered')).bytes, beforeLoss.bytes)).toBe(true);
     expect(errors).toEqual([]);
     await save(
       'result.json',

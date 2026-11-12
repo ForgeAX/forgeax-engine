@@ -443,7 +443,7 @@ describe('GPU-driven production shadow projection', () => {
     const slot = plan.materialSlots.indexOf(material.snapshot);
     expect(slot).toBeGreaterThanOrEqual(0);
     expect(plan.materialBindings[slot]?.material).toBe(material);
-    expect(plan.materialSlotIndices[withMain ? 1 : 0]?.[0]).toBe(slot);
+    expect(plan.materialSlotIndices.at(withMain ? 1 : 0)?.[0]).toBe(slot);
   });
 
   it.each([
@@ -540,7 +540,7 @@ describe('GPU-driven production shadow projection', () => {
           pipelineRequests.push(args);
           return { pipeline: {} as never, group2Contract: skinned ? 'skin' : 'mesh' };
         },
-        demandSkinTask: () => ({
+        skinTask: () => ({
           data: {},
           auxiliary: {},
           dataOffset: 0,

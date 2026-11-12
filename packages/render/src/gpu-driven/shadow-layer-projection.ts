@@ -268,6 +268,7 @@ export function projectShadowLayer(
     } else {
       // A retained subset only holds slots of its source members, and every
       // removed member is a member edit: other selection changes cannot touch it.
+      // Include every source edit so a complete predecessor can start from this source.
       batchSlots.length = 0;
       members.heldSlots(slots, batchSlots);
       if (row.source.candidates !== members) {
@@ -280,7 +281,12 @@ export function projectShadowLayer(
       if (batchSlots.length === 0) selected = retained;
       else {
         if (work !== undefined) work.layerBatchPatches++;
-        selected = members.patchSelection(retained, batchSlots, admitted);
+        selected = members.patchSelection(
+          retained,
+          batchSlots,
+          admitted,
+          row.source.candidates as MemberCandidates,
+        );
       }
     }
     const projected =

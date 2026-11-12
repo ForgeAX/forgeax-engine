@@ -1,8 +1,9 @@
 ---
 name: forgeax-engine-rhi-debug
 description: >-
-  ForgeaX first-line capture, replay, and per-work diagnosis for difficult rendering failures.
-  Use when output is black, missing, incorrectly lit or shadowed, flickering, divergent across backends, or unexplained.
+  ForgeAX capture, replay and per-work diagnosis. Use when output is black, missing,
+  mis-lit, flickering, backend-divergent or unexplained, and to benchmark a GPU-bound
+  frame by replaying its capture (pass timing, skip ablation).
 ---
 
 # forgeax-engine-rhi-debug
@@ -13,8 +14,10 @@ description: >-
 > and use GPU work and resource evidence to choose the repair owner. A concrete
 > startup, asset, or schema error can go directly to its named owner.
 >
-> Use it only for an observed rendering failure. It is not a delivery or acceptance
-> step: when the screenshot and `dev verify` pass, record no tape.
+> Use it for an observed rendering failure or for a GPU-bound frame you are
+> optimizing ([GPU performance from a capture](#gpu-performance-from-a-capture)).
+> It is not a delivery or acceptance step: when the screenshot and `dev verify`
+> pass, record no tape.
 >
 > When `rhi inspect`/`rhi read` return `replay-backend-unavailable` (for example no
 > native replay on the host), keep the tape and `rhi summary` structure, then continue
@@ -29,16 +32,35 @@ The package contract is [`packages/rhi-debug/README.md`](../../packages/rhi-debu
 In an installed game, read `node_modules/@forgeax/engine-rhi-debug/README.md`
 or the SDK's `source/engine/packages/rhi-debug/README.md`.
 
+For a pending multi-view receipt, inspect whether its tape contains sibling
+scene/compositor draws. Composed views share the frame's preparation barrier;
+a ready sibling cannot write a partial picture while another native PSO is
+pending. Route that violation to Render graph seal and physical frame submit,
+retaining the actual tape and the original Browser readiness bound.
+
 ## Diagnose and prove the repair
 
 1. Reproduce the symptom in its actual browser/backend and scene state. Preserve
    the screenshot, errors, and reproduction command; browser-only failures need
    the browser path even when Dawn smokes pass.
+   For cross-device pipeline misses, retain the actual selected render path,
+   attachment count/byte budget, sampled-texture/storage limits and complete
+   recipe. A passing default-device route cannot qualify another device's path.
+   Renderer archive warmup omits provably incompatible color-target recipes;
+   `skippedRenderTargetRecipes` is not a completed-preparation count. Other
+   descriptor failures stay failures. A real limited-device request preserves
+   native compilation evidence; mocked limits cannot qualify it.
+   For parity-bench failures, retain the per-target pixel-parity report and
+   failure screenshot. A `pixel-readback` hook timeout after host/World startup
+   is not a pixel mismatch or a Chromium-launch failure; no completed frame
+   may exist yet. Preserve those startup facts before choosing a shader owner.
    On Windows, record the process session for a black compositor capture. A
    Session 0 service can render offscreen while DXGI rejects its swapchain with
    `0x887A0022`; reproduce from the signed-in desktop before treating that as an
    Engine shading failure. Keep page/compositor screenshots as the visual gate.
-2. Capture a bounded failing frame using the host path below. Keep its tape,
+2. For CI-only failures, include the fixture's bounded evidence directory in the
+   existing failure upload; a screenshot alone does not preserve replay input.
+   Capture a bounded failing frame using the host path below. Keep its tape,
    digest, and reproduction inputs unchanged as failure evidence.
 3. Derive `FrameModel`, choose the relevant `workIndex`, and inspect pipeline,
    bindings, resource descriptors/data, and supported render-target readback.
@@ -57,12 +79,14 @@ or the SDK's `source/engine/packages/rhi-debug/README.md`.
    and writable `@group(G)@binding(B)` the work produced. Read one with
    `{"output":"depth","workIndex":N,"image":{"depth":{"near":0.1,"far":100,"reverseZ":true},"range":"auto","png":"shadow.png"}}`;
    `depthImage` linearizes depth and a layer view reads its own array layer.
-   Depth readback returns one f32 per texel through an independent unfiltered
-   load shader, including on WebGL2. Select an explicit aspect for depth-stencil
+   Depth readback returns one f32 per texel. WebGPU/native wgpu copy explicit
+   `depth32float` + `COPY_SRC` directly; WebGL2/Null/other formats retain the
+   independent unfiltered load shader. Keep the cached-depth Dawn layer/mip
+   and fresh replay checks. Select an explicit aspect for depth-stencil
    textures. Validate a positive control and cleared zero, retain raw values,
    and use a shared display range for comparisons; an all-zero image or a
    comparison-sampling search alone does not establish exact depth contents.
-   For a slow frame, `forgeax rhi timing` (or `session.timePasses()`)
+   For a slow frame, `forgeax rhi timing` (or `session.benchmarkPasses()`)
    ranks every pass by replay-device GPU time; see [per-pass timing](../../packages/rhi-debug/README.md#per-pass-gpu-timing).
    Trace the first incorrect producer or consumer through resource lineage.
    If the expected draw/dispatch is absent, follow extraction, culling, or asset
@@ -72,10 +96,28 @@ or the SDK's `source/engine/packages/rhi-debug/README.md`.
    shader, render-pipeline, assets, or RHI skills as the evidence requires. Keep generic
    RHI Debug free of workload-specific lighting, shadow, or post-effect policy;
    repair capture/replay itself only when its contract is the demonstrated fault.
+   For cross-texture palette or alpha corruption after mip generation, run
+   `mipmap-upload-isolation.browser-no-webgpu.test.ts` in the WebGL2 fallback
+   roster; keep uploads consecutive because readback or queue drains can hide it.
 5. Run the regression gate, capture again after the fix, and verify the same
    scene/backend and original visible symptom.
    Keep before/after artifacts explicit; replay evidence supplements the required
    browser, Dawn, and smoke gates for the changed implementation.
+   Save the recorder's existing compressed container directly. Fixture transport
+   must not decode and recompress its mixed raw/gzip blobs merely to save evidence.
+   Texture snapshot mapping shares staging across mips/layers within the device
+   buffer limit. Retain every subresource copy and validate all face/mip bytes with
+   `texture-readback-staging.browser-no-webgpu.test.ts` in the WebGL2 fallback roster.
+   Three oracles may borrow their file-owned upstream GPUDevice, but each picture
+   keeps fresh Renderer/node state; Engine capture and fresh-device replay stay independent.
+   For a complete Three process timeout beside another GPU group, preserve both
+   process spans and replay milestones, then verify the complete owner alone
+   before changing admission. Keep its cases, frames and deadlines unchanged.
+   On a complete Three case timeout, inspect its `three-render-phase` and
+   `three-render-replay` receipts before selecting the next performance owner.
+   For recorder fallback without a usable WebGPU adapter, use the
+   [Browser without WebGPU route](../../scripts/ci/README.md#browser-without-webgpu).
+   Keep its Worker, sixty-frame and decoded-tape checks in the Browser owner.
 
 If capture, replay, or readback is blocked, preserve the attempted command,
 structured failure, and capability result. Follow structured recovery below and
@@ -108,8 +150,23 @@ Use the returned path and select `summary.works[].workIndex`:
 pnpm exec forgeax rhi summary --artifact <path> --json
 pnpm exec forgeax rhi inspect --artifact <path> --work-index <workIndex> --json
 pnpm exec forgeax rhi read --artifact <path> --reads '[{"binding":{"group":0,"binding":2},"workIndex":<workIndex>,"image":{"format":"rgba16float","width":256,"height":256,"tile":{"tileWidth":8,"tileHeight":8,"index":0,"border":1},"png":"probe0.png"}}]' --json
-pnpm exec forgeax rhi timing --artifact <path> --json
+pnpm exec forgeax rhi timing <path>
 ```
+
+Replay GPU benchmark: `rhi timing <path>` replays the tape `--warmup` (default
+3, discarded) plus `--repeat` (default 20) times back to back, restoring state
+with GPU copies, and prints a table: whole-frame `union` p50 with its 95%
+interval, drift, the top passes, passes without timestamps, and preflight
+checks; `--json` gives everything in nanoseconds. Quote `union` on tile-based
+GPUs, where pass intervals overlap. `--ci-ms X` extends repeat until the
+interval is at most X ms. `--skip '<regex>'`, `--skip-passes '[i]'` and
+`--skip-works '[w]'` add an interleaved variant with a paired delta and a
+`significant` verdict; skipped passes leave stale targets that later passes
+still read, so the delta is a cost estimate, not a correct image. `--isolate`
+submits and waits around each pass (isolated sum >= real frame). A result that
+says `INVALID` (busy GPU, quantized timestamps) is not a measurement. Run it
+inside the host's perf slot. See
+[replay GPU benchmark](../../packages/rhi-debug/README.md#replay-gpu-benchmark).
 
 Summary, inspection, and the read-only Viewer consume the same `ArtifactRef`;
 they do not recapture or infer an input pair. Discover optional inspection fields
@@ -138,6 +195,41 @@ select `ui-raster-*` and `screen-ui-composite` pipeline labels, inspect layer
 reads/writes, and capture both changed and cached UI frames. Clear-only passes
 appear in pass events rather than draw works. A cached frame needs seeded UI
 texture contents before replay pixels can qualify it.
+
+## GPU performance from a capture
+
+A tape is also a deterministic GPU benchmark, like RenderDoc replay profiling:
+the same commands replay on the same device for every candidate.
+
+```bash
+pnpm exec forgeax dev start --rhi-capture true --json   # recorder must attach at device creation
+pnpm exec forgeax rhi capture --json                    # steady-state frame, after warm-up
+pnpm exec forgeax rhi summary --artifact <path> --passes --json
+pnpm exec forgeax rhi timing <path>                     # table; --json for the full result
+pnpm exec forgeax rhi timing <path> --skip 'shadow'     # paired cost delta + verdict
+pnpm exec forgeax rhi timing <after> --compare <before> # interleaved A/B, after minus before
+```
+
+- Check the first line: `VALID`, or `INVALID` with the reason (GPU busy before
+  or after, quantized timestamps). Discard invalid runs; `--require-idle`
+  refuses to start on a busy GPU.
+- Read `union` p50 and its 95% interval, and the `trend` column: `stable`
+  means the clock held. `--ci-ms 0.05` keeps replaying until the interval is
+  that tight (up to `--max-repeat`).
+- Rank passes from the table; `summary --passes` maps a pass to its targets and
+  pipelines. Passes listed without timestamps are not in `union`.
+- `--skip` / `--skip-passes` / `--skip-works` give a paired delta with a
+  bootstrap interval; `significant` means the interval excludes 0. It is a cost
+  estimate, not a correct image: consumers still read the skipped targets, so
+  shader-side work such as shadow sampling stays.
+- Compare builds by re-capturing at the same scene state and running
+  `--compare`: both tapes replay in alternating chunks on their own devices, and
+  the verdict is on the paired candidate-minus-baseline union.
+- Replay runs at a sustained GPU clock, so its ms are lower than live frame
+  time (r2-searchlight: 11.3 ms replay against 17.2 ms live). Compare replay
+  with replay. A gain is claimed only from live presented-frame rate and live
+  timing; see
+  [Optimize GPU frames from a capture](../forgeax-engine-performance/SKILL.md#optimize-gpu-frames-from-a-capture).
 
 ## Large captures
 
@@ -241,6 +333,12 @@ message text to decide control flow.
 | `readback-failed` | Preserve the detail stage and dispose the replay session. |
 
 ## Viewer evidence
+
+The Viewer owns its fresh replay device. Replacing or closing a tape drains the
+session before disposing that device once; rejected admission and failed cleanup
+must also release it. Check `viewer-replay-lifecycle.test.ts` for ownership, then
+qualify real captured-frame replay and pixels. Do not infer a device-loss cause
+from a lifecycle unit pass.
 
 The Viewer is read-only. It loads one `.rhitape`, shows the four linked views
 through the shared `workIndex`, and keeps the structural model available when

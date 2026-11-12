@@ -19,13 +19,13 @@ import { WORLD_CAPSULE_STRIDE } from '../capsule-shadow/world-capsules';
 import type { DeviceScope } from '../device/device-scope';
 import { getOrCreateDirectDfgLut, materialUsesDirectDfgLut } from '../device/direct-dfg-lut';
 import type { GraphEnvironment } from '../environment/ibl';
-import { atmosphereTextures } from '../environment/luts';
+import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { GPU_BUFFER_USAGE_COPY_DST, GPU_BUFFER_USAGE_STORAGE } from '../gpu-usage';
 import {
   SKYLIGHT_UNIFORM_BYTES,
   type SkylightBindGroupResources,
 } from '../ibl/skylight-bind-group';
-import { buildPerFrameBindGroups } from '../record/frame-lighting';
+import { buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
 import type {
@@ -33,20 +33,26 @@ import type {
   RenderSystemInternals,
 } from '../record/render-context';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { StandardClusterGraphBuffers } from './standard-lighting/graph';
 
 /** Two vec4 lanes shared by the graph allocation and uniform binding layout. */
 export const DEFERRED_LIGHTING_PARAMS_BYTES = 2 * 4 * Float32Array.BYTES_PER_ELEMENT;
 
-export interface StandardDeferredShaderSources {
+export interface StandardSceneShaderSources {
+  readonly forwardScreenPack?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly forwardScreenCompose?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly forwardContact?: string | import('@forgeax/engine-types').ShaderSource;
   readonly shadowVariance?: string | import('@forgeax/engine-types').ShaderSource;
   readonly decalProject?: string | import('@forgeax/engine-types').ShaderSource;
   readonly decalApply?: string | import('@forgeax/engine-types').ShaderSource;
   readonly subsurface?: string | import('@forgeax/engine-types').ShaderSource;
-  readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
-  readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
-  readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
-  readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+  readonly deferred?: {
+    readonly clustered: string | import('@forgeax/engine-types').ShaderSource;
+    readonly unclustered: string | import('@forgeax/engine-types').ShaderSource;
+    readonly clusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+    readonly unclusteredLut?: string | import('@forgeax/engine-types').ShaderSource;
+  };
 }
 
 interface DeferredLightingProgram {
@@ -58,6 +64,16 @@ interface DeferredLightingProgram {
   readonly material: BindGroupLayout;
   readonly cluster: BindGroupLayout;
   readonly probe: BindGroupLayout;
+}
+
+function deferredLightingSource(
+  sources: StandardSceneShaderSources | undefined,
+  clustered: boolean,
+  usesLut: boolean,
+) {
+  const deferred = sources?.deferred;
+  if (clustered) return usesLut ? deferred?.clusteredLut : deferred?.clustered;
+  return usesLut ? deferred?.unclusteredLut : deferred?.unclustered;
 }
 
 // Graph targets and bind groups have graph lifetime. Immutable layouts/PSOs
@@ -165,7 +181,7 @@ export function addStandardDeferredLighting(
       { resource: capsules.value, usage: 'copy-dst' },
       { resource: capsuleTiles.value, usage: 'copy-dst' },
     ],
-    encode: ({ frame, resources, encoder }) => {
+    encodeDirect: (encoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const settings = internal.frameState.installedPipelineConfig?.ssao;
       const queue = frame.runtime.device.queue;
@@ -287,29 +303,35 @@ export function addStandardDeferredLighting(
       storeOp: 'store' as const,
       clearValue: { r: 0, g: 0, b: 0, a: 0 },
     })),
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
+      const admission = internal.frameState?.standardSceneSurfaceAdmission;
+      // Keep attachment loads/clears, including reflection/SSS auxiliaries.
+      // Only a complete current-device proof can omit the fullscreen light
+      // program; Forward-only geometry is composed by the later opaque pass.
+      if (
+        admission?.deferredGBufferEmpty === true &&
+        admission.deviceGeneration === recordContext(internal.runtime).deviceScope.generation
+      )
+        return;
       const device = frame.runtime.device;
       const usesLut = (internal.validatedOrdered ?? []).some((entry) =>
         entry.source.materials.some((material) =>
           materialUsesDirectDfgLut(material.snapshot.materialParamSchema),
         ),
       );
-      const source =
-        input.cluster === null
-          ? usesLut
-            ? internal.runtime.standardDeferredShaders?.unclusteredLut
-            : internal.runtime.standardDeferredShaders?.unclustered
-          : usesLut
-            ? internal.runtime.standardDeferredShaders?.clusteredLut
-            : internal.runtime.standardDeferredShaders?.clustered;
+      const source = deferredLightingSource(
+        internal.runtime.standardSceneShaders,
+        input.cluster !== null,
+        usesLut,
+      );
       if (source === undefined)
         throw new RhiError({
           code: 'shader-compile-failed',
           expected: 'cooked Standard deferred lighting program',
           hint: 'rebuild the Engine shader manifest and reinitialize the Renderer',
         });
-      const scope = internal.runtime.deviceScope;
+      const scope = recordContext(internal.runtime).deviceScope;
       if (!scope.isAlive())
         throw new RhiError({
           code: 'rhi-not-available',
@@ -477,37 +499,17 @@ export function addStandardDeferredLighting(
       }
       const current = state;
       const directDfgLut = usesLut
-        ? getOrCreateDirectDfgLut(device, internal.runtime.deviceScope).unwrap()
+        ? getOrCreateDirectDfgLut(device, recordContext(internal.runtime).deviceScope).unwrap()
         : undefined;
       const view = (target: RenderPipelineTarget | undefined) =>
         target === undefined ? undefined : resources.textureView(target.view).unwrap();
-      const bindings = buildPerFrameBindGroups(
+      const viewBindGroup = buildViewBindGroup(
         internal.runtime as RenderSystemInternals,
         internal.frameState,
         internal.pipelineState,
-        true,
         internal.bindGroupCounts,
         {
-          atmosphere:
-            input.environment?.atmosphere === undefined
-              ? undefined
-              : {
-                  transmittance: resources
-                    .textureView(input.environment.atmosphere.transmittance)
-                    .unwrap(),
-                  distantSkyLight: resources
-                    .textureView(input.environment.atmosphere.distantSkyLight)
-                    .unwrap(),
-                  multipleScattering: resources
-                    .textureView(input.environment.atmosphere.multipleScattering)
-                    .unwrap(),
-                  aerialPerspective: resources
-                    .textureView(input.environment.atmosphere.aerialPerspective)
-                    .unwrap(),
-                  aerialTransmittance: resources
-                    .textureView(input.environment.atmosphere.aerialTransmittance)
-                    .unwrap(),
-                },
+          atmosphere: atmosphereVolumeViews(resources, input.environment?.atmosphere),
           directionalShadow: view(input.directionalShadow),
           spotShadow: view(input.spotShadow),
           shadowMoments: view(input.shadowMoments),
@@ -515,17 +517,15 @@ export function addStandardDeferredLighting(
           projector: internal.spotLightProjector?.view,
           projectorSampler: internal.spotLightProjector?.sampler,
         },
-        true,
-        internal.standardLighting,
       );
-      if (bindings.viewBindGroup === null)
+      if (viewBindGroup === null)
         throw new RhiError({
           code: 'rhi-not-available',
           expected: 'Standard view/shadow resources',
           hint: 'repair the frame lighting resources',
         });
       pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, bindings.viewBindGroup, [0, 0]);
+      pass.setBindGroup(0, viewBindGroup, [0, 0]);
       if (input.cluster?.kind === 'texture')
         throw new RhiError({
           code: 'rhi-not-available',

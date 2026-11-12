@@ -1,5 +1,6 @@
 #define_import_path forgeax_environment::cubemap
 #import forgeax_view::common::{View, clampLinearHdr}
+#import forgeax_atmosphere::optics::{atmosphere_sun_luminance}
 #import forgeax_atmosphere::coordinates::{atmosphere_observer, atmosphere_sky_uv}
 
 struct AtmosphereCubeVsIn {
@@ -43,5 +44,5 @@ fn atmosphere_cubemap_vs(input: AtmosphereCubeVsIn) -> AtmosphereCubeVsOut {
 fn atmosphere_cubemap_fs(input: AtmosphereCubeVsOut) -> @location(0) vec4<f32> {
   let origin=atmosphere_observer(view.atmosphere,view.cameraPos);
   let uv=atmosphere_sky_uv(view.atmosphere,origin,normalize(-view.lightDir),normalize(input.direction));
-  return vec4<f32>(clampLinearHdr(textureSampleLevel(sky,filtering,uv,0.0).rgb*view.lightColor),1.0);
+  return vec4<f32>(clampLinearHdr(textureSampleLevel(sky,filtering,uv,0.0).rgb*atmosphere_sun_luminance(view.lightColor)),1.0);
 }

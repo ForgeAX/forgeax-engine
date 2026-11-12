@@ -28,9 +28,10 @@ const receipt = (): GpuDrivenCullingProducerReceipt => ({
   sourceRevision: 6,
 });
 
-async function fixture() {
+async function fixture(cullingCountsOnly = false) {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
+  const bufferCreates = vi.spyOn(device, 'createBuffer');
   const shader = (await rhi.createShaderModule(device, { code: 'synthetic' })).unwrap();
   const source = new RenderScene();
   const material = new MaterialResource({
@@ -80,7 +81,11 @@ async function fixture() {
   topology.rebuild(source.slotsSnapshot());
   const planes = frustum.fromViewProjection(frustum.create(), mat4.identity(mat4.create()));
   const factory = { createShaderModule: () => ok(shader) };
-  const view = GpuDrivenView.create({ device, shaderModuleFactory: factory }).unwrap();
+  const view = GpuDrivenView.create({
+    device,
+    shaderModuleFactory: factory,
+    ...(cullingCountsOnly ? { readback: 'culling-counts' as const } : {}),
+  }).unwrap();
   updateGpuView(
     view,
     topology.query(topology.sourcePlan(), undefined),
@@ -97,7 +102,7 @@ async function fixture() {
     encoder.finish().unwrap();
     return copies.mock.calls.length;
   };
-  return { device, view, encode, topology, planes, scene: available.scene, factory };
+  return { device, view, encode, topology, planes, scene: available.scene, factory, bufferCreates };
 }
 
 function mappedCounters(view: GpuDrivenView) {
@@ -148,6 +153,58 @@ function mappedCounters(view: GpuDrivenView) {
 }
 
 describe('existing shadow culling readback producer receipt', () => {
+  it('copies and retains only batch counters for an explicitly counts-only view', async () => {
+    const f = await fixture(true);
+    const mapped = mappedCounters(f.view);
+    const readback = f.bufferCreates.mock.calls.find(([descriptor]) =>
+      descriptor.label?.endsWith('-lodReadback'),
+    )?.[0];
+    expect(readback?.size).toBe(f.view.inspect().batchCapacity * stride);
+    f.view._setCullingTelemetrySubmit(receipt());
+    expect(f.encode()).toBe(1);
+    // This owner did not capture detailed member/indirect facts. Do not issue
+    // a partial decode or pretend later live bytes belong to the copied frame.
+    expect(await f.view.readLodSelection()).toBeUndefined();
+    expect(mapped.mapAsync).not.toHaveBeenCalled();
+    const pending = f.view.readCullingCounts();
+    expect(f.encode()).toBe(0);
+    mapped.settle();
+    expect(await pending).toMatchObject({
+      texelCulled: 6,
+      cameraCulled: 8,
+      observation: { producer: receipt() },
+    });
+    expect(mapped.mapAsync).toHaveBeenCalledWith(GPU_BUFFER_USAGE_MAP_READ, 0, 2 * stride);
+    expect(f.encode()).toBe(1);
+    f.view.dispose();
+    f.scene.dispose();
+  });
+
+  it('skips the counts-only copy while no owner will read it, without a stale observation', async () => {
+    const f = await fixture(true);
+    const mapped = mappedCounters(f.view);
+    f.view._setCullingReadbackDemand(false);
+    expect(f.encode()).toBe(0);
+    // Nothing was copied, so nothing is readable or mapped.
+    expect(await f.view.readCullingCounts()).toBeUndefined();
+    expect(mapped.mapAsync).not.toHaveBeenCalled();
+    f.view._setCullingReadbackDemand(true);
+    expect(f.encode()).toBe(1);
+    const pending = f.view.readCullingCounts();
+    mapped.settle();
+    expect(await pending).toMatchObject({ texelCulled: 6, cameraCulled: 8 });
+    f.view.dispose();
+    f.scene.dispose();
+  });
+
+  it('keeps complete-readback copies regardless of counts-only demand', async () => {
+    const f = await fixture();
+    f.view._setCullingReadbackDemand(false);
+    expect(f.encode()).toBe(3);
+    f.view.dispose();
+    f.scene.dispose();
+  });
+
   it('keeps default copies/maps and legacy counters unchanged without diagnostic decoding', async () => {
     const f = await fixture();
     const mapped = mappedCounters(f.view);

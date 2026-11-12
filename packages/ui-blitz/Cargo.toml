@@ -9,9 +9,9 @@ path = "rust/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-blitz-dom = { path = "../../third_party/blitz/packages/blitz-dom", default-features = false, features = ["woff", "raster"] }
+blitz-dom = { path = "../../third_party/blitz/packages/blitz-dom", default-features = false, features = ["woff", "raster", "svg"] }
 blitz-html = { path = "../../third_party/blitz/packages/blitz-html", default-features = false }
-blitz-paint = { path = "../../third_party/blitz/packages/blitz-paint", default-features = false }
+blitz-paint = { path = "../../third_party/blitz/packages/blitz-paint", default-features = false, features = ["svg"] }
 blitz-traits = { path = "../../third_party/blitz/packages/blitz-traits", default-features = false }
 anyrender = "=0.14.0"
 vello_gpu = { path = "vendor/vello_gpu", version = "=0.3.0", default-features = false, features = ["portable"] }

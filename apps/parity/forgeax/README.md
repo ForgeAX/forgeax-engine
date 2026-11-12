@@ -40,7 +40,7 @@ Both fixtures declare the same `threshold = 256` independently — the runner re
 
 ### Fixture 8-dimension lock (D-P6) + cross-fixture alignment
 
-| # | Dimension | Locked value | Three.js side (apps/parity/threejs) | ForgeaX side (this) |
+| # | Dimension | Locked value | Three.js side (apps/parity/threejs) | ForgeAX side (this) |
 |:-:|:--|:--|:--|:--|
 | 1 | Canvas | 512 x 512 | `CANVAS_W` / `CANVAS_H` | same constants |
 | 2 | Material color | linear `[204/255, 102/255, 51/255]` (`#cc6633`) | `MeshBasicMaterial({color})` | `MeshRenderer.baseColor` |

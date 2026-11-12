@@ -252,6 +252,11 @@ function sequenceFixture(seed: number) {
   const assets = runtimeAssetRegistry(world.assets);
   const meshes = [randomMesh(next), randomMesh(next), randomMesh(next)];
   const handles = meshes.map((mesh) => assets.create(mesh).unwrap());
+  const handleAt = (index: number) => {
+    const handle = handles[index];
+    assert(handle !== undefined);
+    return handle;
+  };
   const materialHandle = assets
     .create({ kind: 'material', passes: [{ name: 'main', program: { module: 'fixture' } }] })
     .unwrap();
@@ -263,7 +268,7 @@ function sequenceFixture(seed: number) {
   const template = preparedPbrSnapshot({
     entityKey: 0,
     worldId: 0,
-    assetHandle: handles[0] as (typeof handles)[number],
+    assetHandle: handleAt(0),
     transform: { world: mat4.identity(mat4.create()) },
     material,
     materials: [material],
@@ -294,7 +299,7 @@ function sequenceFixture(seed: number) {
     return {
       ...template,
       entityKey,
-      assetHandle: handles[mesh] as (typeof handles)[number],
+      assetHandle: handleAt(mesh),
       transform: { world: randomPose(next) },
       ...(instanced
         ? { instances: randomInstances(next, 1 + Math.floor(next() * 3), entityKey) }

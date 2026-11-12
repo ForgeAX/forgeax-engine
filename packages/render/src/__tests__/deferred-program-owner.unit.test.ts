@@ -7,11 +7,14 @@ import { expect, it, vi } from 'vitest';
 import { DeviceScope } from '../device/device-scope';
 import { MaterialResource } from '../material-resource';
 import { addStandardDeferredLighting } from '../pipeline/standard-deferred-lighting';
-import { buildPerFrameBindGroups } from '../record/frame-lighting';
+import { buildPerFrameBindGroups, buildViewBindGroup } from '../record/frame-lighting';
 import { prepareMaterialSkylight } from '../record/main-pass-material';
 import type { RenderPipelineFrame } from '../render-pipeline';
 
-vi.mock('../record/frame-lighting', () => ({ buildPerFrameBindGroups: vi.fn() }));
+vi.mock('../record/frame-lighting', () => ({
+  buildPerFrameBindGroups: vi.fn(),
+  buildViewBindGroup: vi.fn(),
+}));
 vi.mock('../record/main-pass-material', () => ({ prepareMaterialSkylight: vi.fn() }));
 
 async function fixture() {
@@ -32,6 +35,10 @@ async function fixture() {
   vi.mocked(buildPerFrameBindGroups).mockReturnValue({ viewBindGroup: group } as ReturnType<
     typeof buildPerFrameBindGroups
   >);
+  vi.mocked(buildViewBindGroup).mockImplementation(
+    (runtime, state, pipeline, counts, targets) =>
+      buildPerFrameBindGroups(runtime, state, pipeline, true, counts, targets).viewBindGroup,
+  );
   vi.mocked(prepareMaterialSkylight).mockReturnValue({
     skylightResources: {
       irradianceView: view,
@@ -46,11 +53,13 @@ async function fixture() {
     runtime: {
       device,
       deviceScope: DeviceScope.create(1, 'deferred-program-owner'),
-      standardDeferredShaders: {
-        unclustered: 'fit',
-        unclusteredLut: 'lut',
-        clustered: 'cluster',
-        clusteredLut: 'cluster-lut',
+      standardSceneShaders: {
+        deferred: {
+          unclustered: 'fit',
+          unclusteredLut: 'lut',
+          clustered: 'cluster',
+          clusteredLut: 'cluster-lut',
+        },
       },
       shaderModuleFactory: {
         createShaderModule: (desc: Parameters<typeof createShaderModuleImmediate>[1]) =>
@@ -68,7 +77,7 @@ async function fixture() {
     frame: frame as unknown as RenderPipelineFrame,
     resources: { textureView: () => ok(view), buffer: () => ok(buffer) },
     pass: { setPipeline: vi.fn(), setBindGroup: vi.fn(), draw: vi.fn() },
-  } as unknown as Parameters<RasterGraphPass<RenderPipelineFrame>['encode']>[0];
+  } as unknown as Parameters<NonNullable<RasterGraphPass<RenderPipelineFrame>['encode']>>[0];
   const build = (
     options: {
       format?: TextureFormat;
@@ -120,10 +129,10 @@ async function fixture() {
       extraAccesses: [],
       size: { width: options.width ?? 1, height: 1 },
     }).unwrap();
-    const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encode;
+    const encode = raster.mock.calls.find(([name]) => name === 'lighting')?.[1].encodeDirect;
     expect(encode).toBeDefined();
     return () => {
-      encode?.(context);
+      encode?.(context.pass, context.frame, context.resources);
       return vi.mocked(context.pass.setPipeline).mock.calls.at(-1)?.[0];
     };
   };
@@ -189,10 +198,10 @@ it('separates target formats, fragment entries, cluster/LUT contracts and curren
     ];
     distinct.push(f.build()());
     f.frame.validatedOrdered = [];
-    f.frame.runtime.standardDeferredShaders.unclustered = 'replacement';
+    f.frame.runtime.standardSceneShaders.deferred.unclustered = 'replacement';
     distinct.push(f.build()());
     expect(new Set([base, ...distinct]).size).toBe(7);
-    f.frame.runtime.standardDeferredShaders.unclustered = 'fit';
+    f.frame.runtime.standardSceneShaders.deferred.unclustered = 'fit';
     expect(f.build()()).toBe(base);
     expect(f.makePipeline).toHaveBeenCalledTimes(7);
   } finally {

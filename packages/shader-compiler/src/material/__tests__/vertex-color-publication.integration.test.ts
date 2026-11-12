@@ -14,7 +14,7 @@ it('publishes and selects color and plain ABI programs for one custom Surface', 
       `#define_import_path test::color
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(input.vertexColor.rgb, input.geometricNormalWS, 0.0, 0.5, input.vertexColor.rgb, 1.0, 1.0, 0.0);
+  return SurfaceData(input.vertexColor.rgb, input.geometricNormalWS, 0.0, 0.5, input.vertexColor.rgb, 1.0, 1.0, 0.0, 0.0);
 }`,
     );
     const source: MaterialAsset = {
@@ -104,7 +104,7 @@ fn palette(uv : vec2<f32>) -> vec3<f32> { return vec3<f32>(uv, 0.5); }`,
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 #import test::plain_helper::{palette}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(palette(input.uv1), input.geometricNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(palette(input.uv1), input.geometricNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`,
     );
     const source: MaterialAsset = {
@@ -151,7 +151,7 @@ fn tint(input : SurfaceInput) -> vec3<f32> { return input.vertexColor.rgb; }`,
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 #import test::tint_helper::{tint}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(tint(input), input.geometricNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(tint(input), input.geometricNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`,
     );
     const source: MaterialAsset = {

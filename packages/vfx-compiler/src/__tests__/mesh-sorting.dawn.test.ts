@@ -73,7 +73,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>, custo
     particles.set([10, 0, -1], 0);
     particles.set([0, 0, -3], 28);
     particles.set([0, 0, -2], 56);
-    const runtime = new Float32Array(76);
+    const runtime = new Float32Array(80);
     const words = new Uint32Array(runtime.buffer);
     const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
     // Reverse-Z perspective: near=0.1, far=20, looking down negative Z.

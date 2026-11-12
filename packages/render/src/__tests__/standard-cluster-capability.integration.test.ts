@@ -4,7 +4,7 @@ import {
   prepareStandardLighting,
   type StandardLightFrame,
 } from '../pipeline/standard-lighting/prepare';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 
 function prepared(localCount: number) {
   const frame: StandardLightFrame = {

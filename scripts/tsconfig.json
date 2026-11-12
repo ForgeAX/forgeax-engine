@@ -13,6 +13,8 @@
     "worktree.ts",
     "vitest.fx.config.ts",
     "__tests__/fx.test.ts",
-    "__tests__/worktree.test.ts"
+    "__tests__/worktree.test.ts",
+    "__tests__/byte-equality.unit.test.ts",
+    "__tests__/byte-equality-work.unit.test.ts"
   ]
 }

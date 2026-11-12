@@ -3,7 +3,7 @@ import type { AssetHandle } from '@forgeax/engine-types';
 //
 // Bevy's source demonstrates Text2d as ordinary world-space text attached to
 // moving spatial entities: translation, rotation, scale, and a multi-line
-// label. ForgeaX's public equivalent is GlyphText + Transform. The scene keeps
+// label. ForgeAX's public equivalent is GlyphText + Transform. The scene keeps
 // that mapping explicit so the smoke cannot silently test a different scene.
 
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';

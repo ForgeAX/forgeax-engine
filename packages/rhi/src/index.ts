@@ -1,3 +1,4 @@
+/// <reference types="@webgpu/types" preserve="true" />
 // @forgeax/engine-rhi - pure-interface RHI surface for forgeax-engine.
 //
 // Iron laws: spec-aligned (descriptor field names mirror Pick<GPUXxxDescriptor, ...>
@@ -1040,16 +1041,17 @@ export interface RhiCaps {
    */
   readonly firstInstanceIndirect: boolean;
   /**
-   * Whether storage buffer bindings are available
-   * (`device.limits.maxStorageBuffersPerShaderStage > 0`).
+   * Whether storage buffer bindings are available across graphics stages.
+   * The general limit and implemented vertex/fragment limits must be positive.
    *
    * @spec-anchor W3C WebGPU §3.6.2 GPUSupportedLimits.
    *   maxStorageBuffersPerShaderStage; `> 0` means the device supports the
    *   `storage` / `read-only-storage` binding types.
    * @note `false` on backends without storage buffer support.
-   * @hint AI users gate compute / large-buffer paths on
-   *   `caps.storageBuffer`; the per-stage numeric limit lives on
-   *   `device.limits.maxStorageBuffersPerShaderStage` for capacity planning
+   * @hint AI users gate portable graphics storage paths on `caps.storageBuffer`;
+   *   compute-only access and stage capacity remain available through the
+   *   numeric device limits. Older providers without stage-specific members
+   *   retain their general per-stage guarantee
    *   (charter proposition 4: `caps.X = false` is an explicit signal).
    */
   readonly storageBuffer: boolean;
@@ -1067,6 +1069,8 @@ export interface RhiCaps {
    *   4: `caps.X = false` is an explicit signal).
    */
   readonly storageTexture: boolean;
+  /** Depth textureLoad in supported shader stages; Compatibility Mode may reject it. */
+  readonly depthTextureLoad: boolean;
   /**
    * Whether the device can create `rgba16float` textures with `RENDER_ATTACHMENT`
    * usage, enabling the HDR cubemap path for IBL irradiance / specular prefilter
@@ -1243,7 +1247,7 @@ export type RhiLimits = Readonly<GPUSupportedLimits>;
  * underlying `navigator.gpu.requestAdapter(opts)` call.
  */
 export type RequestAdapterOptions = ExplicitUndefined<
-  Pick<GPURequestAdapterOptions, 'powerPreference' | 'forceFallbackAdapter'>
+  Pick<GPURequestAdapterOptions, 'powerPreference' | 'forceFallbackAdapter' | 'featureLevel'>
 >;
 
 /**
@@ -1840,7 +1844,12 @@ export interface RhiDevice {
 /** GPU command queue - writeBuffer / submit + M5 writeTexture /
  *  copyExternalImageToTexture / onSubmittedWorkDone. */
 export interface RhiQueue {
-  /** Direct write to a buffer (POD + ArrayBufferView, math-free). */
+  /**
+   * Direct buffer upload. `bufferOffset` is in bytes. For TypedArray input,
+   * `dataOffset` and `size` are element counts; for ArrayBuffer/DataView they
+   * are byte counts. Omitted size consumes the remaining source view, explicit
+   * zero writes no bytes. The resulting byte length must be a multiple of four.
+   */
   writeBuffer(
     buffer: Buffer,
     bufferOffset: number,
@@ -1939,7 +1948,7 @@ export interface RhiQueue {
  *
  * Method NAMES align byte-for-byte with `@webgpu/types.GPUCommandEncoder` +
  * `GPUDebugCommandsMixin` (research F-1 / D-S4). 12 spec methods plus one
- * ForgeaX compound operation:
+ * ForgeAX compound operation:
  *   - 9 direct: beginRenderPass / beginComputePass / copyBufferToBuffer /
  *               copyBufferToTexture / copyTextureToBuffer / copyTextureToTexture /
  *               clearBuffer / resolveQuerySet / finish
@@ -1973,7 +1982,7 @@ export interface RhiCommandEncoder {
   /**
    * Record an empty timestamp-enabled compute pass and close it immediately.
    *
-   * This is a ForgeaX compound recording operation equivalent to
+   * This is a ForgeAX compound recording operation equivalent to
    * `const pass = encoder.beginComputePass(desc); pass.end()`; it is not a
    * native `GPUCommandEncoder` method and does not write a timestamp directly.
    *
@@ -2365,8 +2374,10 @@ export interface RhiComputePipelineOps {
 export {
   type CreateUnavailableR32FloatReceiptOptions,
   createUnavailableR32FloatReceipt,
+  R32FLOAT_MIP_SAMPLED_RENDER_PROFILE,
   R32FLOAT_MIP_SAMPLED_STORAGE_PROFILE,
   R32FLOAT_PROBE_STAGES,
+  R32FLOAT_RENDER_PROBE_STAGES,
   type RhiTextureFormatCapabilityReceipt,
   type RhiTextureFormatProbeEvidence,
   type RhiTextureFormatProbeStage,
@@ -2526,6 +2537,13 @@ export function cubeArrayDepthFaceView(
 }
 
 export { projectAdapterCapabilities } from './adapter-capabilities';
+export { bufferWriteRange } from './buffer-write-range';
+export {
+  type MultisampleRenderCapability,
+  multisampleRenderCapability,
+  probeMultisampleRenderCapability,
+} from './capability/multisample-render-probe';
+export { probeR32FloatRenderCapability } from './capability/r32float-render-probe';
 export { PIPELINE_LIBRARY_LIMITS } from './pipeline-library';
 export {
   checkPipelineLibraryAllocation,
@@ -2535,4 +2553,8 @@ export {
 export { ownPipelineLibrary } from './pipeline-library-source';
 export { PipelineRecipeState, pipelineDescriptorState } from './pipeline-recipe-state';
 export { createQueueCompletionHold, type QueueCompletionHold } from './queue-completion-hold';
-export { textureCopyOrigin, textureReadbackLayout } from './texture-copy-layout';
+export {
+  TEXTURE_COPY_BYTES_PER_ROW_ALIGNMENT,
+  textureCopyOrigin,
+  textureReadbackLayout,
+} from './texture-copy-layout';

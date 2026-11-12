@@ -40,9 +40,9 @@ describe('w07 type-level - ComputePipelineDescriptor field set === Pick<GPUCompu
   });
 
   it('label field type aligns with spec (string | undefined)', () => {
-    type LabelForgeaX = NonNullable<ComputePipelineDescriptor['label']>;
+    type LabelForgeAX = NonNullable<ComputePipelineDescriptor['label']>;
     type LabelSpec = NonNullable<GPUComputePipelineDescriptor['label']>;
-    expectTypeOf<LabelForgeaX>().toEqualTypeOf<LabelSpec>();
+    expectTypeOf<LabelForgeAX>().toEqualTypeOf<LabelSpec>();
   });
 });
 
@@ -74,8 +74,8 @@ describe("w07 type-level - layout union 'auto' | PipelineLayout", () => {
 
 describe('w07 type-level - compute nested dictionary mirrors GPUProgrammableStage', () => {
   it('compute.module is the forgeax ShaderModule opaque handle (not GPUShaderModule)', () => {
-    type ModuleForgeaX = ComputePipelineDescriptor['compute']['module'];
-    expectTypeOf<ModuleForgeaX>().toEqualTypeOf<ShaderModule>();
+    type ModuleForgeAX = ComputePipelineDescriptor['compute']['module'];
+    expectTypeOf<ModuleForgeAX>().toEqualTypeOf<ShaderModule>();
   });
 
   it('compute.entryPoint is optional string | undefined', () => {

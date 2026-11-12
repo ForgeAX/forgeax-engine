@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createShaderModuleImmediate, rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
+import { composeShader } from '../../../../naga/src/index';
 
 it('keeps production directional receiver bias finite at signed and tiny positive cosines', async () => {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
@@ -13,10 +14,17 @@ it('keeps production directional receiver bias finite at signed and tiny positiv
   const end = source.indexOf('\n}\n', start) + 3;
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
+  const common = readFileSync(resolve(process.cwd(), 'packages/shader/src/common.wgsl'), 'utf8');
+  const caster = common.match(/fn directionalShadowCasterBias[\s\S]*?\n}/)?.[0];
+  if (caster === undefined) throw new Error('Missing production caster bias');
   const module = createShaderModuleImmediate(device, {
-    code: `
+    code: await composeShader(
+      `
 struct ProbeView { splitPlanes:array<vec4<f32>,4>, depthBias:f32, normalBias:f32 };
 var<private> view:ProbeView;
+struct CasterPolicy { clampNear:u32 };
+const shadowCasterCascade=CasterPolicy(1u);
+${caster}
 struct Probe { shape:vec4<f32>, comparison:vec4<f32> };
 @group(0) @binding(0) var<uniform> probe:Probe;
 @group(0) @binding(1) var compareSampler:sampler_comparison;
@@ -30,12 +38,17 @@ ${source.slice(start, end)}
  return vec4<f32>(p,0.5,1);
 }
 @fragment fn fs()->@location(0) vec4<f32> {
- view.splitPlanes[0]=vec4<f32>(0,probe.shape.y,1,0);
+ view.splitPlanes[0]=vec4<f32>(0,probe.shape.y,probe.comparison.z,probe.shape.z);
  view.depthBias=probe.comparison.x; view.normalBias=probe.shape.w;
- let bias=_directionalReceiverDepthBias(0u,vec3<f32>(1,0,0),vec3<f32>(probe.shape.x,1,0),probe.shape.z);
- let lit=textureSampleCompareLevel(depth,compareSampler,vec2<f32>(0.5),probe.comparison.y+bias);
- return vec4<f32>(bias,lit,0,1);
+ let light=vec3<f32>(probe.shape.x,sqrt(max(0.0,1.0-probe.shape.x*probe.shape.x)),0);
+ let bias=_directionalReceiverDepthBias(0u,vec3<f32>(1,0,0),light);
+ let casterBias=select(directionalShadowCasterBias(abs(probe.shape.x),probe.shape.y,probe.comparison.z),0.0,probe.shape.z>0.5);
+ let lit=textureSampleCompareLevel(depth,compareSampler,vec2<f32>(0.5),max(0.0,probe.comparison.y+bias));
+ return vec4<f32>(bias,lit,casterBias,1);
 }`,
+      {},
+      {},
+    ),
   }).unwrap();
   const layout = device
     .createBindGroupLayout({
@@ -83,25 +96,47 @@ ${source.slice(start, end)}
     depthBias: number;
     receiverDepth: number;
     storedDepth: number;
-    bias: number | undefined;
-    lit: number | undefined;
+    bias: number;
+    lit: number;
+    mode: number;
+    span: number;
+    budget: number;
+    observedCaster: number;
   }[] = [];
   try {
-    for (const [cosine, normalBias, depthBias, receiverDepth, storedDepth] of [
-      [0.5, 0.005, 0.00001, 0.5, 0.5],
-      [0.0099, 0.005, 0.00001, 0, 1],
-      [0, 0.005, 0.00001, 0, 1],
-      [-0.1, 0.005, 0.00001, 0, 1],
-      [1e-40, 0.05, 0.00001, 0, 1],
-      [1e-40, 0.0001, 0.00001, 0, 1],
-      [0.0099, 0.005, 0, 0, 1],
-      [0.0099, 0.005, -0.25, 0, 1],
+    // Numeric budgets are independent controls for the production slope cap.
+    for (const [
+      cosine,
+      normalBias,
+      depthBias,
+      receiverDepth,
+      storedDepth,
+      mode,
+      texel,
+      span,
+      budget,
+    ] of [
+      [0.5, 0.005, 0.00001, 0.5, 0.5, 0, 0.01, 1, 0.03964101615137755],
+      [0.0099, 0.005, 0.00001, 0, 1, 0, 0.01, 1, 0.0625],
+      [0, 0.005, 0.00001, 0, 1, 0, 0.01, 1, 0.0625],
+      [-0.1, 0.005, 0.00001, 0, 1, 0, 0.01, 1, 0.0625],
+      [1e-40, 0.05, 0.00001, 0, 1, 0, 0.01, 1, 0.0625],
+      [1e-40, 0.0001, 0.00001, 0, 1, 0, 0.01, 1, 0.0625],
+      [0.0099, 0.005, 0, 0, 1, 0, 0.01, 1, 0.0625],
+      [0.0099, 0.005, -0.25, 0, 1, 0, 0.01, 1, 0.0625],
+      [1, 0.005, 0.00001, 0.5, 0.5, 0, 0.01, 1, 0.005],
+      [0.8, 0.005, 0.00001, 0.5, 0.5, 0, 0.01, 1, 0.02],
+      [0.5, 0, 0.00001, 0.5, 0.5, 0, 0.01, 1, 0.03964101615137755],
+      [0.0099, 0.005, 0.00001, 0.5, 0.5, 1, 0.01, 1, 0],
+      [0.0099, 0.005, 0, 0.5, 0.5, 1, 0.01, 1, 0],
+      [0.5, 0.005, 0.00001, 0.5, 0.5, 0, 0.1, 1, 0.1],
+      [0.5, 0.005, 0.00001, 0.5, 0.5, 0, 0.01, 2, 0.019820508075688775],
     ] as const) {
       device.queue
         .writeBuffer(
           uniform,
           0,
-          new Float32Array([cosine, 0.01, 2, normalBias, depthBias, receiverDepth, 0, 0]),
+          new Float32Array([cosine, texel, mode, normalBias, depthBias, receiverDepth, span, 0]),
         )
         .unwrap();
       const encoder = device.createCommandEncoder().unwrap();
@@ -109,7 +144,7 @@ ${source.slice(start, end)}
         colorAttachments: [],
         depthStencilAttachment: {
           view: depthView,
-          depthClearValue: storedDepth,
+          depthClearValue: storedDepth - budget,
           depthLoadOp: 'clear',
           depthStoreOp: 'store',
         },
@@ -136,7 +171,22 @@ ${source.slice(start, end)}
       const bias = values[0],
         lit = values[1];
       mapped.unmap();
-      results.push({ cosine, normalBias, depthBias, receiverDepth, storedDepth, bias, lit });
+      expect(values[3], 'the GPU must actually draw the probe').toBe(1);
+      if (bias === undefined || lit === undefined || values[2] === undefined)
+        throw new Error('Incomplete GPU probe');
+      results.push({
+        cosine,
+        normalBias,
+        depthBias,
+        receiverDepth,
+        storedDepth,
+        bias,
+        lit,
+        mode,
+        span,
+        budget,
+        observedCaster: values[2],
+      });
     }
     mkdirSync(resolve(process.cwd(), 'artifacts'), { recursive: true });
     writeFileSync(
@@ -151,32 +201,42 @@ ${source.slice(start, end)}
         2,
       ),
     );
-    for (const {
-      cosine,
-      normalBias,
-      depthBias,
-      receiverDepth,
-      storedDepth,
-      bias,
-      lit,
-    } of results) {
-      expect(Number.isFinite(bias), `cosine=${cosine}, normalBias=${normalBias}`).toBe(true);
-      expect(bias).toBeGreaterThanOrEqual(depthBias - 1e-6);
-      expect(bias).toBeLessThanOrEqual(1.00002);
-      if (cosine >= 1e-30)
-        expect(bias).toBeCloseTo(
-          Math.min(1.0000001192092896, depthBias + Math.max(0, 0.02 - normalBias) / cosine),
-          5,
+    for (const result of results) {
+      const {
+        cosine,
+        normalBias,
+        depthBias,
+        receiverDepth,
+        storedDepth,
+        bias,
+        lit,
+        mode,
+        span,
+        budget,
+        observedCaster,
+      } = result;
+      expect(Number.isFinite(bias), JSON.stringify(result)).toBe(true);
+      expect(observedCaster).toBeCloseTo(budget, 6);
+      // The receiver may subtract overlapping separation. Its sum with the
+      // depth already written by the caster retains the authored floor.
+      expect(bias + observedCaster).toBeGreaterThanOrEqual(depthBias - 1e-6);
+      expect(bias + observedCaster).toBeLessThanOrEqual(depthBias + budget + 1e-6);
+      if (Math.abs(cosine) >= 1e-30 || cosine === 0 || mode === 1) {
+        const overlap =
+          mode === 0 && cosine !== 0 ? Math.min(budget, normalBias / Math.abs(cosine) / span) : 0;
+        const expected = depthBias - overlap;
+        expect(bias).toBeCloseTo(expected, 6);
+        expect(lit, 'strict comparison against the caster-shifted depth').toBe(
+          Math.max(0, receiverDepth + expected) > storedDepth - budget ? 1 : 0,
         );
-      if (cosine <= 0 || normalBias >= 0.02) expect(bias).toBeCloseTo(depthBias, 6);
-      if (cosine >= 1e-30 || cosine <= 0 || normalBias >= 0.02) {
-        const mathematicalBias =
-          depthBias + (cosine > 0 ? Math.max(0, 0.02 - normalBias) / cosine : 0);
-        expect(lit, `strict greater comparison: floor=${depthBias}`).toBe(
-          receiverDepth + mathematicalBias > storedDepth ? 1 : 0,
-        );
+      } else {
+        // GPUs may flush subnormal cosines to zero. Both finite outcomes
+        // remain bounded, and this fully blocked control must stay dark.
+        expect(lit).toBe(0);
       }
     }
+    expect(results.some((result) => result.lit === 1)).toBe(true);
+    expect(results.some((result) => result.lit === 0)).toBe(true);
   } finally {
     device.destroyBuffer(read).unwrap();
     device.destroyBuffer(uniform).unwrap();

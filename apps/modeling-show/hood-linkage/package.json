@@ -1,0 +1,12 @@
+{
+  "name": "@forgeax/app-modeling-show-hood-linkage",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Case C-116 (B14 hood four-bar): the interactive page subject c-116.",
+  "forgeax": {
+    "frameTimeoutMs": 60000,
+    "startupTimeoutMs": 600000
+  }
+}

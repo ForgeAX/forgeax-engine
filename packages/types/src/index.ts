@@ -12,6 +12,7 @@ export {
   createAssetPublication,
 } from './asset-publication.js';
 export { encodeBase64 } from './base64.js';
+export type { ByteCache } from './byte-cache.js';
 export { canonicalJson } from './canonical-json.js';
 export * from './core-contracts.js';
 export { fnv1a32, fnv1aUtf16 } from './fnv1a.js';
@@ -77,6 +78,7 @@ export type {
   TerrainSection,
   TerrainSource,
 } from './terrain.js';
+export { type TextureFormatBlock, textureFormatBlock } from './texture/block.js';
 export type {
   UiGpuDataTexture,
   UiGpuFrame,

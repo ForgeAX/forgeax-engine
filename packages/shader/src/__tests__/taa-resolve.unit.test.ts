@@ -114,6 +114,29 @@ fn fs_temporal_probe() -> @location(0) vec4<f32> {
     }).toThrow();
   });
 
+  it('max-combines SurfaceData.reactive into both G-buffer temporal lanes', () => {
+    expect(pbrTemporal).toContain('fn surfaceTemporalReactive(reactive : f32) -> f32');
+    expect(pbrTemporal).toContain('select(0.0, clamp(reactive, 0.0, 1.0), reactive >= 0.0)');
+    for (const name of ['default-standard-pbr.wgsl', 'default-standard-pbr-skin.wgsl']) {
+      const entry = readFileSync(resolve(import.meta.dirname, `../${name}`), 'utf8');
+      const surfaceLine = 'reactive = max(reactive, surfaceTemporalReactive(surface.reactive));';
+      // After the alpha-hash override: a hashed Surface still owns its own
+      // responsiveness, while coverage reactivity stays unchanged.
+      const hashIndex = entry.indexOf(
+        'if (material.alphaHash > 0.5) { reactive = temporal.reactive; }',
+      );
+      const surfaceIndex = entry.indexOf(surfaceLine);
+      const packIndex = entry.indexOf('output.scene_temporal = packSceneTemporalV1WithValidity(');
+      expect(entry.split(surfaceLine)).toHaveLength(2);
+      expect(hashIndex).toBeGreaterThanOrEqual(0);
+      expect(surfaceIndex).toBeGreaterThan(hashIndex);
+      expect(packIndex).toBeGreaterThan(surfaceIndex);
+      expect(entry).toContain(
+        'resolvePbrTemporalReactive(temporal.reactive, materialOutputAlpha(surface.opacity',
+      );
+    }
+  });
+
   it('keeps the reactive coverage contract explicit', () => {
     expect(pbrTemporal).toContain('resolvePbrTemporalReactive');
     expect(pbrTemporal).toContain('coverageReactive');

@@ -738,3 +738,63 @@ it('still stops at a 5/8 m step and does not creep while pushing into it', () =>
   expect(pushed[1]).toBeCloseTo(run.end[1], 2);
   expect(pushed[2]).toBeCloseTo(run.end[2], 4);
 });
+
+it('climbs an 18 cm riser when accelerating from rest at its capsule contact', async () => {
+  const world = new World();
+  const context = await createWorldContext(world);
+  world.components.register(Transform).unwrap();
+  world.components.register(GlobalTransform).unwrap();
+  registerPhysicsComponents(world);
+  const physics = createRapier3DPhysicsWorld(await loadRapier3D());
+  world.insertResource('PhysicsWorld', physics);
+  registerPhysicsSystems(world);
+  for (let i = 0; i < 6; i++) {
+    const height = (i + 1) * 0.18;
+    world
+      .spawn(
+        { component: Transform, data: { pos: [24, height / 2, -i * 1.2] } },
+        { component: RigidBody, data: { type: RigidBodyTypeValue.static } },
+        {
+          component: Collider,
+          data: { shape: ColliderShapeValue.cuboid, halfExtents: [2, height / 2, 0.6] },
+        },
+      )
+      .unwrap();
+  }
+  const player = world
+    .spawn(
+      { component: Transform, data: { pos: [23.67, 1.46, -2.7] } },
+      { component: RigidBody, data: { type: RigidBodyTypeValue.kinematic } },
+      {
+        component: Collider,
+        data: { shape: ColliderShapeValue.capsule, radius: 0.32, halfHeight: 0.58 },
+      },
+      {
+        component: CharacterController,
+        data: {
+          offset: 0.02,
+          autoStepMaxHeight: 0.28,
+          autoStepMinWidth: 0.2,
+          snapToGroundDist: 0.2,
+          maxSlopeClimbDeg: 45,
+        },
+      },
+    )
+    .unwrap();
+  try {
+    world.update(DT).unwrap();
+    let speed = 0;
+    for (let i = 0; i < 32; i++) {
+      const requested = Math.min(3.5, speed + 28 * DT);
+      const movement = physics.moveAndSlide(player, vec3.create(0, -20 * DT * DT, -requested * DT));
+      speed = -(movement[2] ?? 0) / DT;
+      world.update(DT).unwrap();
+    }
+    const position = world.get(player, Transform).unwrap().pos;
+    expect(position[1]).toBeGreaterThan(0.73 + 0.9);
+    expect(position[2]).toBeLessThan(-3.1);
+  } finally {
+    await context.fiber.dispose();
+    physics.dispose();
+  }
+});

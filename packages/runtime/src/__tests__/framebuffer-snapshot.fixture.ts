@@ -28,6 +28,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { completeReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
@@ -188,7 +189,7 @@ interface SnapshotScene {
   readonly camera: EntityHandle;
   /** CPU time of the last `renderer.draw` call and its submit-to-completion latency. */
   readonly timing: { cpuMs: number; completionMs: number };
-  readonly draw: () => Promise<FrameReceipt>;
+  readonly draw: (advanceWorld?: boolean) => Promise<FrameReceipt>;
   readonly dispose: () => void;
 }
 
@@ -256,10 +257,12 @@ function buildSnapshotScene(
   const lease = publisher === undefined ? renderValue(renderer.attach(world)) : undefined;
   const timing = { cpuMs: 0, completionMs: 0 };
   let time = 0;
-  const draw = async () => {
-    world.update(1 / 60).unwrap();
-    propagateTransforms(world).unwrap();
-    time += 1 / 60;
+  const draw = async (advanceWorld = true) => {
+    if (advanceWorld) {
+      world.update(1 / 60).unwrap();
+      propagateTransforms(world).unwrap();
+      time += 1 / 60;
+    }
     const candidate = publisher?.prepare(time).unwrap();
     const packet =
       candidate === undefined
@@ -301,6 +304,17 @@ function buildSnapshotScene(
       targetOwner?.dispose();
     },
   };
+}
+
+async function prepareSnapshotFrames(scene: SnapshotScene, count: number) {
+  for (let frame = 0; frame < count; frame++) {
+    let advanceWorld = true;
+    await completeReadyFrame(() => {
+      const receipt = scene.draw(advanceWorld);
+      advanceWorld = false;
+      return receipt;
+    });
+  }
 }
 
 function recolorSource(scene: SnapshotScene, color: readonly number[]) {
@@ -397,7 +411,7 @@ export async function verifyFramebufferSnapshot(input: {
     textureSource(targets.missing),
   ]);
   try {
-    for (let frame = 0; frame < testQuality.staticFrames; frame++) await scene.draw();
+    await prepareSnapshotFrames(scene, testQuality.staticFrames);
     expect(errors).toEqual([]);
 
     const tickets = [
@@ -587,7 +601,7 @@ async function verifyCameraViewSnapshot(
     )
     .unwrap();
   try {
-    for (let frame = 0; frame < 3; frame++) await scene.draw();
+    await prepareSnapshotFrames(scene, 3);
     const view = required(
       renderer.inspect().views?.find((row) => row.entityKey === Number(right)),
       'right CameraView inspection',
@@ -635,7 +649,7 @@ export async function verifyPublicationSnapshot(input: {
   const target = renderValue(renderer.createRenderTarget(snapshotTargetDescriptor()));
   const scene = buildSnapshotScene(renderer, [], input);
   try {
-    for (let frame = 0; frame < 10; frame++) await scene.draw();
+    await prepareSnapshotFrames(scene, 10);
     const ticket = renderValue(
       renderer.requestFramebufferSnapshot(target, { region: SOURCE_REGION }),
     );
@@ -704,7 +718,7 @@ export async function measureSnapshotCost(
     return { cpu: median(cpu), completion: median(completion) };
   };
   try {
-    for (let frame = 0; frame < 10; frame++) await scene.draw();
+    await prepareSnapshotFrames(scene, 10);
     const without = await sample(false);
     const withSnapshot = await sample(true);
     const again = await sample(false);

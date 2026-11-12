@@ -492,3 +492,18 @@ preserve adopted runtime content. An initially unavailable or released runtime
 reference reports its structured missing-asset error; no zero field is substituted.
 
 Field sampling runs in shared frame simulation, independently of private view cadence. Stopped/removed players, World detach and renderer disposal reuse the existing lifecycle authority. The field owner has no independent queue submit, device handle registry, runtime compiler or per-particle CPU mirror. SDF collision remains a separate capability and binding.
+
+## Capture faces (reflections)
+
+GPU particles record into capture faces by default (`capture: 'all'`), so smoke,
+sparks and fog appear in planar reflections. Today the planar mirror face is
+wired; reflection-probe and cube captures are declared by the policy but are a
+follow-up (see the engine PR). Post effects stay display-only.
+
+- Cost: each recorded face re-runs the particle draw (soft-fade included) at
+  the face's resolution, in addition to the display draw. A planar mirror at
+  `resolutionScale` 0.5 costs about a quarter of the display particle fill. The
+  particle simulation itself is not repeated; the same particle state is drawn.
+- Opt out per Feature: `createGpuParticleFeature({ capture: 'display-only' })`,
+  or restrict faces: `capture: { faces: ['planar'] }`.
+- Multisampled faces record no Feature work.

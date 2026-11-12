@@ -1,9 +1,9 @@
 ---
 name: forgeax-engine-vfx
-description: ForgeaX code-first GPU VFX authoring, cooking, playback, and rendering. Use when creating, loading, debugging, or extending particle, ribbon, trail, beam, billboard, or mesh effects.
+description: ForgeAX code-first GPU VFX authoring, cooking, playback, and rendering. Use when creating, loading, debugging, or extending particle, ribbon, trail, beam, billboard, or mesh effects.
 ---
 
-# ForgeaX VFX
+# ForgeAX VFX
 
 ## Choose the path first
 
@@ -110,3 +110,52 @@ pnpm metrics:run
 ```
 
 Browser and Dawn are required because Null structural success cannot prove compute validation, topology draws, or pixels. Visual evidence records `advanced-renderers-visible`, `live-patch-continuity`, `event-sub-emitter-visible`, and `hmr-last-known-good-visible` with a PNG and falsifier result. Program v3 custom billboard sorting is executable only when the source declares one typed `VfxCustom` sort field; the compiler and managed GPU pass reject ambiguity instead of silently falling back to emitter order.
+
+## Time, parameters and a textured custom billboard
+
+- Time: `ctx.time` (Player elapsed, honours `timeScale`/pause), `ctx.time_whole` +
+  `ctx.time_fract` (precise split), `ctx.world_time*` (world clock), `ctx.delta`. Loop
+  with `vfx_loop_phase(ctx.time_whole, ctx.time_fract, rate, offset)`; never-ending
+  particles use `lifetime = vfx_forever()`. Do not burst once with `lifetime = 1e9` and
+  derive life from `particle.age`: f32 age loses precision over long sessions.
+- Parameters: declare `parameters: { name: { type: 'vec4<f32>', default: [...] } }` on
+  the effect source, read `vfx_parameters().name` in any emitter, override per Player with
+  `parameters: vfxPlayerParameters({ name: [...] })` (JSON string field, also valid in
+  scenes and packs). One effect then serves many placements; do not smuggle position or
+  scale through `Player.seed`. Errors surface as `vfx-parameters-invalid`;
+  `validateVfxPlayerParameters(json, fields)` checks offline (`fields` = declared `{ name, type }[]`).
+  Parameter types accept `vec4<f32>` or `vec4` (max 32 parameters). Read diagnostics with
+  `world.getResource('VfxGpuRuntime').diagnostics()`; helpers include `vfx_loop_phase` and
+  `vfx_loop_angle` (radians).
+- `loadVfxGpuEffect(assets, guid)` takes a GUID string or an `AssetGuid`.
+
+Textured custom `particle-billboard` material (smoke sprite), three files:
+
+1. `smoke.wgsl` with `#define_import_path game::smoke`, importing
+   `forgeax_view::common::{View, view}`, `forgeax_view::fog::{translucent_fog, ndc_world}` and
+   `forgeax_material::parameters::{material, smokeTexture, smokeTexture_sampler}`;
+   `vs_main`/`fs_main` read the particle vertex inputs (`position`, `right`, `up`, `color`).
+2. `smoke.wgsl.meta.json`: importer `shader`, `importSettings.materialShaderIdentifier`
+   `game::smoke`, and `paramSchema` listing `{ "name": "smokeTexture", "type": "texture" }`.
+3. Pack entry, kind `material`, pass `name: "particle-billboard"`,
+   `program: { module: "game::smoke", vertexEntry: "vs_main", fragmentEntry: "fs_main", bindings: "render-material" }`,
+   `renderState` with `cullMode: "none"`, `depthWriteEnabled: false`, a premultiplied blend
+   (`one` / `one-minus-src-alpha`), `parameters: [{ name: "baseColor", type: "color" }, { name: "smokeTexture", type: "texture" }]`
+   and `values: { baseColor: [1,1,1,1], smokeTexture: "<texture guid>" }`, with the texture
+   guid also listed in the asset `refs`.
+
+Material parameter types are `bool`, `f32`, `i32`, `u32`, `vec2`, `vec3`, `vec4`, `color`,
+`texture`, `texture_2d_array`, `texture_3d`, `texture_cube`, `texture_external`. The type is
+spelled `texture`, not `texture2d`; a texture value is the bare GUID string (or a texture
+descriptor object); vectors and colors are number arrays. The `material-value-type-mismatch`
+error hint lists these forms.
+
+## Capture faces
+
+Which Features record into capture faces (planar mirror now; probe and cube are
+a follow-up) is set per Feature by `RenderFeature.capture`: `'display-only'`
+(default), `'all'`, or `{ faces: ['planar' | 'probe' | 'cube'] }`. GPU particles
+declare `'all'`: they draw again in each recorded face, costing one extra
+particle draw per face at the face resolution. Opt out with
+`createGpuParticleFeature({ capture: 'display-only' })`. Post effects stay
+display-only. See `packages/vfx-render/README.md`.

@@ -2,6 +2,7 @@ import { semanticBuildKey } from '@forgeax/engine-ddc';
 import {
   type CookProduct,
   canonicalScriptableSourcePath,
+  finalizeImportProducts,
   finalizeSourcePackage,
   IMPORT_ERROR_HINTS,
   ImportError,
@@ -11,15 +12,18 @@ import {
   projectImportProductForBuild,
   publishImportPublication,
   type RunImportMeta,
-  runImport,
+  runSourcePackageImport,
+  type SourcePackageBuildDdc,
+  type TerminalImportProduct,
 } from '@forgeax/engine-import';
 import {
   type CatalogBuildResult,
   calculateCatalogDelta,
   createRuntimePackPublication,
   finalizePackageTransportSource,
+  sourceOverridesForOutput,
 } from '@forgeax/engine-pack/build';
-import { type NativeCooker, NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
+import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import type {
   ImportedAsset,
   ImportProduct,
@@ -42,6 +46,7 @@ interface MetaImportContext {
   readonly importerRegistry: ImporterRegistry;
   readonly cookers?: readonly NativeCooker[] | undefined;
   readonly fsForImport: ImportRunnerFs;
+  readonly sourcePackageDdc?: SourcePackageBuildDdc;
   readonly publishCatalogDelta:
     | ((delta: import('@forgeax/engine-types').CatalogDelta) => void)
     | undefined;
@@ -244,6 +249,7 @@ function replaceImportedRows(
     const importedRow: PackIndexEntry = {
       ...currentRaw,
       ...rowFields,
+      ...sourceOverridesForOutput(meta.sourceOverrides, sub.sourceKey ?? currentRaw.sourceKey),
       ...(importedAsset?.refs === undefined
         ? {}
         : { refs: importedAsset.refs.map((ref) => ref.guid) }),
@@ -282,7 +288,6 @@ function publicationSourcePathOf(
 
 /** Fields every imported Catalog row takes from this generation's publication. */
 function importedRowFields(
-  meta: RunImportMeta,
   sourcePath: string,
   packUrl: string | undefined,
   cookedProjection: Readonly<Record<string, unknown>>,
@@ -290,11 +295,6 @@ function importedRowFields(
 ): Partial<PackIndexEntry> {
   return {
     sourcePath,
-    ...(meta.sourceOverrides === undefined
-      ? {}
-      : {
-          sourceOverrides: meta.sourceOverrides as NonNullable<PackIndexEntry['sourceOverrides']>,
-        }),
     ...(packUrl === undefined ? {} : { packageUrl: packUrl, ...cookedProjection }),
     ...(publication === undefined ? {} : { publication }),
   };
@@ -377,6 +377,32 @@ function adoptPublishedRows(
   }
 }
 
+/** Adapt the cached/imported product to the Cook receipts required by live publication. */
+async function importMetaProducts(
+  metaPath: string,
+  meta: RunImportMeta,
+  context: MetaImportContext,
+): Promise<
+  | { readonly product: TerminalImportProduct; readonly cookProducts: readonly CookProduct[] }
+  | undefined
+> {
+  const runResult = await runSourcePackageImport({
+    meta,
+    registry: context.importerRegistry,
+    fs: context.fsForImport,
+    ...(context.cookers === undefined ? {} : { cookers: context.cookers }),
+    ...(context.sourcePackageDdc === undefined ? {} : { ddc: context.sourcePackageDdc }),
+  });
+  assertImportOpen(context, metaPath);
+  if (!runResult.ok) throw runResult.error;
+  if ('skipped' in runResult.value) return undefined;
+  const { product } = runResult.value;
+  const cookProducts =
+    runResult.value.cookProducts ?? (await finalizeImportProducts(product, product.sourceRevision));
+
+  return { product, cookProducts };
+}
+
 export async function startMetaImport(
   metaPath: string,
   context: MetaImportContext,
@@ -386,18 +412,9 @@ export async function startMetaImport(
   const catalog = [...previousCatalog];
   const previousImportedGuids = new Set(context.importedGuids);
   const meta = requireImportDeclaration(context, metaPath);
-  const cookers = new NativeCookerRegistry();
-  for (const cooker of context.cookers ?? []) cookers.register(cooker);
-  const runResult = await runImport(
-    { ...meta, buildPack: false },
-    context.importerRegistry,
-    context.fsForImport,
-    cookers,
-  );
-  assertImportOpen(context, metaPath);
-  if (!runResult.ok) throw runResult.error;
-  if ('skipped' in runResult.value) return [];
-  const { product, cookProducts } = runResult.value;
+  const imported = await importMetaProducts(metaPath, meta, context);
+  if (imported === undefined) return [];
+  const { product, cookProducts } = imported;
 
   const route = importRoute(meta, context, previousCatalog, previousImportedGuids);
   const publicationSourcePath = publicationSourcePathOf(catalog, route?.guid, meta);
@@ -449,7 +466,6 @@ export async function startMetaImport(
     catalog,
     meta,
     importedRowFields(
-      meta,
       publicationSourcePath,
       route?.packUrl,
       context.cookedProjection,

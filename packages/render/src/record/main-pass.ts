@@ -17,6 +17,7 @@ import {
   type SsaoBindOptions,
 } from '../hdrp-buffers';
 import type { SkylightBindGroupResources } from '../ibl/skylight-bind-group';
+import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
 import { standardTopologyBindGroupReady } from '../pipeline-spec';
 import { POINTS_LINES_MATERIAL_SHADER_ID } from '../points-lines/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
@@ -36,13 +37,19 @@ import {
   FORWARD_PASS_SELECTOR,
   matchPass,
 } from '../systems/pass-selector';
+import { recordContext } from '../world/view-record-context';
+import { FirstEntryMap } from './first-entry-map';
 import { materialSlotsByClass } from './fold-buckets';
 import type { ValidatedRenderable } from './frame-snapshot';
 import { getOpaqueResourceIdentity } from './frame-snapshot';
-import { recordGeometryDraws } from './main-pass-geometry';
+import {
+  type GeometryPipelinePreparationContext,
+  geometryPipelineRequestContext,
+  prepareGeometryPipelineRequests,
+} from './geometry-pipeline-requests';
+import { recordGeometryDraws, recordIblPipelineBinding } from './main-pass-geometry';
 import {
   buildPerSubmeshMaterialBg as buildPerSubmeshMaterialBgImpl,
-  materialDiagnosticsEnabled,
   type PerSubmeshMaterialBgDeps,
   prepareMaterialSkylight,
 } from './main-pass-material';
@@ -63,6 +70,7 @@ import { reflectionProbeMaterial } from './reflection-probe-material';
 import type { _InternalRenderPipelineContext } from './render-context';
 import { MATERIAL_PER_ENTITY_STRIDE, MATERIAL_UNIFORM_BYTES } from './render-context';
 import { buildMatchedMaterialHandlesByRenderable, filterDispatchBySelector } from './shadow-pass';
+import { SingleMaterialHandleSet } from './single-material-handle-set';
 import type { SkinTaskBinding } from './skin-tasks';
 import { selectForwardFragmentEntry } from './standard-opaque-entry';
 
@@ -99,6 +107,8 @@ export type MainPassOptions = {
   readonly fragmentEntryPoint?: string;
   /** Select the material temporal entry's binary coverage output. */
   readonly coverageOnly?: boolean;
+  /** The loaded depth is the exact prepass raster of this pass's opaque draws. */
+  readonly seededDepth?: boolean;
   readonly gpuDriven?: {
     readonly projection: RenderPipelineGpuDrivenProjection;
     readonly resources: GraphResourceResolver;
@@ -209,33 +219,62 @@ export function prepareMainPassPipelines(
   colorFormats: readonly GPUTextureFormat[],
   skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
 ): void {
+  prepareMainPassPipelineDemand(
+    {
+      ...geometryPipelineRequestContext(c),
+      frameState: c.frameState,
+      ...(c.materialFrame === undefined ? {} : { materialFrame: c.materialFrame }),
+      ...(c.pipelinePreparationEntries === undefined
+        ? {}
+        : { pipelinePreparationEntries: c.pipelinePreparationEntries }),
+      tonemapActive: c.tonemapActive,
+      ...(c.viewBindGroupDynamicOffset === undefined
+        ? {}
+        : { viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset }),
+    },
+    selector,
+    options,
+    sampleCount,
+    colorFormats,
+    skipDraw,
+  );
+}
+
+export function prepareMainPassPipelineDemand(
+  c: GeometryPipelinePreparationContext &
+    Pick<_InternalRenderPipelineContext, 'tonemapActive' | 'viewBindGroupDynamicOffset'>,
+  selector: PassSelector,
+  options: MainPassOptions,
+  sampleCount: number,
+  colorFormats: readonly GPUTextureFormat[],
+  skipDraw?: (entry: ValidatedRenderable, submeshIndex: number) => boolean,
+): void {
   if (!hasMainPassPipelinePreparation(c, selector, options.recordMode, options.excludeSelector))
     return;
   const mode = options.recordMode;
   const blended = mode === 'transparent' || mode === 'oit-accumulate' || mode === 'oit-residual';
-  recordGeometryDraws(
+  prepareGeometryPipelineRequests(
     {
       ...c,
       ...(colorFormats[0] === undefined ? {} : { transparentColorFormat: colorFormats[0] }),
-      msaaActive: sampleCount === 4,
-      translucentFog: blended && (c.viewBindGroupDynamicOffset ?? 0) === 0,
+      translucentFog: blended && (c.viewBindGroupDynamicOffset ?? 0) === 0 && c.viewFog !== false,
       splitLdrSprite: blended ? false : c.splitLdrSprite,
     },
-    undefined,
-    null,
-    [],
-    sampleCount,
-    null,
-    null,
-    undefined,
-    options.passKind ?? 'forward',
-    undefined,
-    colorFormats,
-    options.coverageOnly ?? false,
-    options.fragmentEntryPoint,
-    surfacePassForRecordMode(mode),
-    options.transparentDepthWrite ?? false,
-    oitPhaseForRecordMode(mode),
+    {
+      passKind: options.passKind ?? 'forward',
+      sampleCount,
+      colorFormats,
+      coverageOnly: options.coverageOnly ?? false,
+      tonemapActive: c.tonemapActive,
+      msaaActive: sampleCount === 4,
+      viewBindGroupDynamicOffset: c.viewBindGroupDynamicOffset ?? 0,
+      transparentDepthWrite: options.transparentDepthWrite ?? false,
+      seededDepth: options.seededDepth === true,
+      oit: oitPhaseForRecordMode(mode),
+      ...(options.fragmentEntryPoint === undefined
+        ? {}
+        : { fragmentEntryPoint: options.fragmentEntryPoint }),
+    },
     (pass, material) =>
       matchPass(pass.tags, selector) && (mode === undefined || matchesRecordMode(material, mode)),
     (entry, index) =>
@@ -290,8 +329,16 @@ function recordModeIndex(mode: MainPassRecordMode): number {
 /** Capture finalized facts only after the record owner has ordered its validation rows. */
 export function createMainPassMaterialSelectionOwner(
   input: Omit<MaterialSelectionContext, 'mainPassMaterialSelection'>,
+  prepared?: {
+    readonly selector: PassSelector | undefined;
+    readonly excludeSelector: PassSelector | undefined;
+    readonly recordMode: MainPassRecordMode;
+  },
 ): MainPassMaterialSelectionOwner {
   const { dispatch, validatedOrdered, materialSlots, materialSlotIndices } = input;
+  const preparedSelector = prepared?.selector;
+  const preparedMode = prepared?.recordMode;
+  const preparedExclude = prepared?.excludeSelector;
   const selectedDispatch: (DispatchList | undefined)[] = [];
   // Four exact selector identities and five equivalent material modes bound
   // this scratch to sixteen lane pairs; no per-query key strings or hash maps.
@@ -307,6 +354,9 @@ export function createMainPassMaterialSelectionOwner(
       const index = stockSelectorIndex(selector);
       if (c.dispatch !== dispatch || c.validatedOrdered !== validatedOrdered || index < 0)
         return filterDispatchBySelector(c.dispatch, selector);
+      // The Scene Pass producer already selected every entry with this exact
+      // stock selector. Preserve its fixed dispatch key for downstream grouping.
+      if (selector === preparedSelector) return dispatch;
       selectedDispatch[index] ??= filterDispatchBySelector(dispatch, selector);
       return selectedDispatch[index];
     },
@@ -338,6 +388,17 @@ export function createMainPassMaterialSelectionOwner(
       const modeIndex = recordModeIndex(mode);
       const cached = selected.modes[modeIndex];
       if (cached !== undefined) return cached;
+      // A complete owned Scene Pass already admitted each selected submesh.
+      // Its exact request needs no second row/material-mode projection.
+      if (
+        prepared !== undefined &&
+        modeIndex !== 4 &&
+        selected.membership !== null &&
+        selector === preparedSelector &&
+        mode === preparedMode &&
+        excludeSelector === preparedExclude
+      )
+        return selected.membership;
       const value =
         modeIndex !== 4 && selected.membership?.size === 0
           ? selected.membership
@@ -358,13 +419,14 @@ export function matchedMaterialsForRecordMode(
     mode === 'single-layer-medium-nearest-layer' || mode === 'single-layer-medium-color';
   const filtered = new Map<number, ReadonlySet<number>>();
   if (mode === 'transmission' && matchedMaterials === null) return filtered;
+  const singletons = new FirstEntryMap<number, SingleMaterialHandleSet>();
   let nextRow = 0;
   for (const entry of c.validatedOrdered) {
     const row = nextRow++;
     const dispatchHandles = matchedMaterials?.get(entry.renderableIndex);
     if (!surfaceMode && matchedMaterials !== null && dispatchHandles === undefined) continue;
-    let handles: Set<number> | undefined;
-    for (const slot of c.materialSlotIndices[row] ?? []) {
+    let handles: Set<number> | SingleMaterialHandleSet | undefined;
+    for (const slot of c.materialSlotIndices.at(row) ?? []) {
       const material = c.materialSlots[slot];
       if (material === undefined) throw new Error('Material selection has no submitted material');
       const handle = material.materialHandle ?? 0;
@@ -374,12 +436,31 @@ export function matchedMaterialsForRecordMode(
         filtered.set(entry.renderableIndex, dispatchHandles);
         break;
       }
-      handles ??= new Set<number>();
-      handles.add(handle);
+      handles = includeMaterialHandle(handles, handle, singletons);
     }
     if (handles !== undefined) filtered.set(entry.renderableIndex, handles);
   }
   return filtered;
+}
+
+/** Repeated singleton lanes share a value; a second distinct handle owns its Set. */
+function includeMaterialHandle(
+  handles: Set<number> | SingleMaterialHandleSet | undefined,
+  handle: number,
+  singletons: FirstEntryMap<number, SingleMaterialHandleSet>,
+): Set<number> | SingleMaterialHandleSet {
+  if (handles === undefined) {
+    let singleton = singletons.get(handle);
+    if (singleton === undefined) {
+      singleton = new SingleMaterialHandleSet(handle);
+      singletons.set(handle, singleton);
+    }
+    return singleton;
+  }
+  if (handles instanceof SingleMaterialHandleSet)
+    return handles.has(handle) ? handles : new Set([handles.onlyHandle, handle]);
+  handles.add(handle);
+  return handles;
 }
 
 /** Native Scene Pass rows include all CPU geometry and hidden pipeline preparation. */
@@ -427,12 +508,12 @@ export function encodeMainPass(
       : selectMainPassDispatch(c, passSelector);
   const selectedGpuMaterialSlots = selectPassGpuMaterialSlots(c, selector, options);
   const hasGpuMaterials = selectsGpuMaterials(c, options, selectedGpuMaterialSlots);
+  const hasDrawWork = hasGpuMaterials || selectsCpuDraws(validatedOrdered, matchedMaterials);
   // Shared GPU materials are work even when there are no direct draw rows.
   if (
     clusteredBindGroupMissing ||
     !(
-      selectsCpuDraws(validatedOrdered, matchedMaterials) ||
-      hasGpuMaterials ||
+      hasDrawWork ||
       hasMainPassPipelinePreparation(c, passSelector, recordMode, options?.excludeSelector)
     )
   )
@@ -441,7 +522,7 @@ export function encodeMainPass(
   // Per-entity material bind groups assemble inside the draw loops from the
   // scene-level Skylight resources resolved once here.
   const { skylightResources, activeViews } = prepareMaterialSkylight(c);
-  if (materialDiagnosticsEnabled()) publishIblBindingInspection(c, skylightResources, activeViews);
+  publishIblBindingInspection(c, skylightResources, activeViews, hasDrawWork);
   const resolveMaterialBindGroup = createMaterialBindGroupResolver(c, options, skylightResources);
   const colorFormats = mainPassColorFormats(c, options);
   if (gpuDrivenStandardPbrFrameResources !== undefined) {
@@ -503,6 +584,7 @@ export function encodeMainPass(
         matchPass(preparedPass.tags, passSelector) &&
         (recordMode === undefined || matchesRecordMode(material, recordMode)),
       (entry, index) => preparationSubmeshExcluded(entry, index, options?.excludeSelector),
+      options?.seededDepth === true,
     );
   };
   // The late occlusion pass only adds GPU items the HZB revealed; the CPU
@@ -609,7 +691,11 @@ function resolveStandardGroup2(
 ): BindGroup | null {
   const clusteredLighting = c.standardLighting?.kind === 'clustered';
   const hdrpBuffers = clusteredLighting
-    ? getOrCreateHdrpBuffers(c.runtime, c.frameState.installedPipelineConfig?.clusterGrid)
+    ? getOrCreateHdrpBuffers(
+        c.runtime,
+        c.frameState.installedPipelineConfig?.clusterGrid,
+        c.frameState.standardClusterTextureExtent,
+      )
     : null;
   const meshGroup2 = clusteredLighting
     ? (resolveHdrpSsaoBindGroup(c, hdrpBuffers) ?? c.hdrpClusterBindGroup)
@@ -762,7 +848,7 @@ function selectEntityMaterials(
       entry.renderableIndex,
       handles ??
         new Set(
-          (c.materialSlotIndices[index] ?? []).map(
+          (c.materialSlotIndices.at(index) ?? []).map(
             (slot) => c.materialSlots[slot]?.materialHandle ?? 0,
           ),
         ),
@@ -812,7 +898,8 @@ function mainPassRecordContext(
     recordMode === 'translucent-before-transmission' ||
     recordMode === 'oit-accumulate' ||
     recordMode === 'oit-residual';
-  const translucentFog = blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0;
+  const translucentFog =
+    blendedRecordMode && (c.viewBindGroupDynamicOffset ?? 0) === 0 && c.viewFog !== false;
   const splitLdrSprite = blendedRecordMode ? false : c.splitLdrSprite;
   if ((c.translucentFog === true) === translucentFog && c.splitLdrSprite === splitLdrSprite)
     return c;
@@ -877,7 +964,9 @@ function publishIblBindingInspection(
   c: _InternalRenderPipelineContext,
   skylightResources: SkylightBindGroupResources,
   activeViews: object | undefined,
+  hasDrawWork: boolean,
 ): void {
+  if (!hasDrawWork) return;
   const { runtime, frameState, pipelineState } = c;
   const activeCache =
     c.skylight === undefined
@@ -885,7 +974,7 @@ function publishIblBindingInspection(
       : c.store.getCubemapIbl(c.skylight.equirectHandle, c.world);
   const prefilterViewMipCount =
     activeCache?.prefilterLevelCount ?? (activeViews === undefined ? 1 : 0);
-  const deviceGeneration = runtime.deviceScope.generation;
+  const deviceGeneration = recordContext(runtime).deviceScope.generation;
   const resource = (view: object, sampler: object) => ({
     viewIdentity: getOpaqueResourceIdentity(view),
     samplerIdentity: getOpaqueResourceIdentity(sampler),
@@ -1031,7 +1120,6 @@ function createPerSubmeshMaterialBgDeps(
       : { planarReflectionView: c.planarReflectionView }),
     materialBgShared: frameState.materialBgShared,
     materialBgAssemblyCache: c.materialBgAssemblyCache,
-    diagnostics: materialDiagnosticsEnabled(),
     frameState,
     bindGroupCounts: c.bindGroupCounts,
     ...(sceneMaterialBuffer === undefined ? {} : { sceneMaterialBuffer }),
@@ -1102,6 +1190,10 @@ function publishMaterialBindingPreparer(
       ),
     };
   };
+  resources.recordMaterialPipelineBinding = (slot, pipeline, group) => {
+    const material = materialSlots[slot];
+    if (material !== undefined) recordIblPipelineBinding(c, material, pipeline, group);
+  };
 }
 
 function encodeGpuDrivenBatches(
@@ -1143,6 +1235,7 @@ function encodeGpuDrivenBatches(
     }),
     options.coverageOnly ?? false,
     gpuDriven.phase ?? 'all',
+    options.seededDepth === true,
   );
 }
 
@@ -1203,8 +1296,10 @@ export function hasSsrSceneInputs(
   if (renderPath === 'forward')
     return (
       c.renderables.length > 0 &&
-      c.renderables.every(
-        (source) => read(source.material).materialShaderId === 'forgeax::default-standard-pbr',
+      c.renderables.every((source) =>
+        (source.materials.length === 0 ? [source.material] : source.materials).every((resource) =>
+          isCanonicalStandardPbrMaterialShader(read(resource).materialShaderId),
+        ),
       )
     );
   const selected = buildMatchedMaterialHandlesByRenderable(c.dispatch, DEFERRED_PASS_SELECTOR);

@@ -1,53 +1,16 @@
 #define_import_path forgeax_pbr::lighting_directional
 
-// @forgeax/engine-shader - lighting-directional.wgsl
-// (feat-20260523-shader-template-instance-split M5 / T02;
-//  feat-20260613-csm-cascaded-shadow-maps-unique-shadow-path M5 / w18 rewrite).
-//
-// Directional-light evaluator extracted from pbr.wgsl. Cook-Torrance
-// (D_GGX + V_Smith + F_Schlick) microfacet specular + Lambertian diffuse,
-// modulated by a slope-scaled-bias 3x3 PCF shadow lookup against the
-// host's layered CSM shadow map (LearnOpenGL 3.1.3 PCF model + Bevy-style
-// cascaded shadow maps).
-//
-// Cascade selection (feat-20260613 AC-03 / AC-06 / AC-10):
-//   1. Pick layer in 0..cascadeCount-1 based on viewZ vs splitPlanes[i].
-//      The same code path covers a 1-layer config (single tile) and a
-//      4-layer config (Bevy default) -- AC-03 forbids any single-cascade
-//      fallback branch.
-//   2. Project worldPos through the matching lightViewProj. The host emits
-//      pure clip-space matrices (orthoProj * lightView); each cascade owns
-//      one full layer of the depth array, so NDC maps straight to layer UV.
-//   3. textureSampleCompareLevel against shadowMap layer `layer` with a
-//      slope-scaled bias (LO 3.1.3) and 3x3 PCF tap kernel.
-//   4. When cascadeBlend > 0 and the fragment lies near the cascade
-//      boundary, mix(shadow_curr, shadow_next, t) where t walks 0->1
-//      across a band of width splitPlanes[layer] * cascadeBlend.
-//
-// feat-20260612-point-light-shadows-urp-hdrp M2 / T-M2-2 (plan-strategy D-4):
-// 9-tap PCF taps come from shared sample_shadow_2d in forgeax_pbr::shadow_pcf.
-// Bias formula and 9-tap kernel are byte-equivalent to the prior inline
-// version (research L1.5 lines 47-81); the shared core is the single SSOT
-// for directional + point-light PCF.
-//
-// Pulls View + shadowMap from forgeax_view::common -- the helper inherits
-// the group(0) binding namespace from the host material shader (every
-// consumer already imports forgeax_view::common). Shadow PCF taps use
-// textureSampleCompareLevel against the comparison sampler so the path
-// is portable across WebGPU + GLES.
-//
-// Exports:
-//   - evalDirectional(...) -> vec3<f32>  (Cook-Torrance + CSM shadow mod)
-//   - evalDirectionalNoShadow(...) -> vec3<f32>  (Cook-Torrance, no shadow;
-//     sprite-lit M1' / w3 D-1; also the inner brdf body of evalDirectional)
-//   - evalDirectionalShadowFactor(...) -> f32 (one reusable CSM sample for
-//     layered BRDFs such as base + clearcoat)
+// Directional BRDF and layered CSM receiver. Native CSM shares a bounded
+// caster-depth budget with authored normal offsets, then compares the receiver
+// plane toward the light at individual filter texels. Constant-bias profiles
+// retain their authored comparison and kernel contract. Shadow comparisons use
+// native point loads where available and a portable comparison fallback.
 
-#import forgeax_view::common::{view, shadowMap, shadowSampler}
-#import forgeax_pbr::brdf::{standardOpaqueBrdf}
-#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d, sample_shadow_2d_vogel, sample_shadow_2d_soft, sample_shadow_variance}
+#import forgeax_view::common::{view, shadowMap, shadowSampler, shadowCasterCascade, directionalShadowCasterBias}
+#import forgeax_pbr::brdf::{standardOpaqueBrdfEnergy, halfVectorTerms, directLightingAlpha, sunDiscSpecularTerms}
+#import forgeax_pbr::shadow_pcf::{sample_shadow_2d_nearest, sample_shadow_2d, sample_shadow_2d_vogel, sample_shadow_2d_soft, sample_shadow_variance, shadow_vogel_rotation, SHADOW_VOGEL_OFFSETS, shadow_sample_compare}
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
-#import forgeax_pbr::shadow_pcf::{shadow_clamp_texel_to_tile, shadow_load_raw_depth, shadow_sample_compare}
+#import forgeax_pbr::shadow_pcf::{shadow_clamp_texel_to_tile, shadow_load_raw_depth}
 #endif
 
 // feat-20260621-learn-render-5-3-production-shadow-demos M0 / AC-14:
@@ -66,6 +29,9 @@ const PCSS_HIGH_COMPARE_TAPS : u32 = 32u;
 // Cascade-local disk points are fixed, bounded, and shared by raw and compare
 // phases. A rotation derived from the integer receiver texel and cascade keeps
 // the pattern stable without a temporal input.
+// A module constant, not a private variable: every Standard fragment imports
+// this module, and a private table is initialized per invocation whichever
+// filter profile runs, while the one PCSS tap site indexes the constant.
 const PCSS_DISK_OFFSETS : array<vec2<f32>, 32> = array<vec2<f32>, 32>(
   vec2<f32>(-0.326, -0.945), vec2<f32>(0.236, -0.873), vec2<f32>(0.891, -0.404), vec2<f32>(-0.761, -0.581),
   vec2<f32>(0.612, 0.146), vec2<f32>(-0.148, 0.514), vec2<f32>(-0.527, -0.109), vec2<f32>(0.074, 0.911),
@@ -119,42 +85,26 @@ fn _cascadeLightViewProj(layer : u32) -> mat4x4<f32> {
   }
 }
 
-fn _directionalReceiverDepthBias(layer : u32, normal : vec3<f32>, l : vec3<f32>, radius : f32) -> f32 {
-  if (view.splitPlanes[0].w > 0.5) { return view.depthBias; }
-  let nDotL = dot(normal, l);
-  let depthSpan = view.splitPlanes[layer].z;
-  // Every front-facing receiver needs its filter footprint, including grazing
-  // angles. A fixed cosine cutoff creates a discontinuity in self-shadowing.
-  if (!(nDotL > 0.0 && depthSpan > 0.0)) {
+fn _directionalReceiverDepthBias(layer : u32, normal : vec3<f32>, l : vec3<f32>) -> f32 {
+  let cosine = abs(dot(normal, l));
+  let span = view.splitPlanes[layer].z;
+  if (shadowCasterCascade.clampNear == 0u || view.splitPlanes[0].w > 0.5 || !(cosine > 0.0 && span > 0.0 && view.normalBias > 0.0)) {
     return view.depthBias;
   }
-  let matrix = _cascadeLightViewProj(layer);
-  let right = normalize(vec3<f32>(matrix[0].x, matrix[1].x, matrix[2].x));
-  let up = normalize(vec3<f32>(matrix[0].y, matrix[1].y, matrix[2].y));
-  let footprint = view.splitPlanes[layer].y * radius * (abs(dot(normal, right)) + abs(dot(normal, up)));
-  // The authored world normal offset already separates the receiver plane.
-  // Add only the missing footprint coverage, in this cascade's depth units.
-  let missingCoverage = max(0.0, footprint - view.normalBias);
-  if (!(missingCoverage > 0.0)) {
-    return view.depthBias;
-  }
-  // Receiver depths are nonnegative and stored depths are at most one. The
-  // sampler uses strict greater, so bound total bias by the next f32 above
-  // one, after adding the authored floor. This preserves zero/negative floors
-  // and every comparison while making an overflowed positive bias finite.
-  return min(1.00000011920928955078125, view.depthBias + missingCoverage / nDotL / depthSpan);
+  // The authored normal offset and automatic caster separation share a budget.
+  // Compensate their overlap for surfaces; volumes have no normal offset.
+  let casterBias = directionalShadowCasterBias(cosine, view.splitPlanes[layer].y, span);
+  let normalSeparation = view.normalBias / cosine / span;
+  return view.depthBias - min(casterBias, normalSeparation);
 }
 
 // Receiver-plane depth gradient (Isidoro 2006): normalized light depth change
 // per shadow texel along +u / +v on the receiver's tangent plane. PCF taps
-// compare against the plane depth at their own offset, so the receiver depth
-// bias only covers one texel of bilinear footprint instead of the whole
-// kernel radius. Zero where the plane is not a valid lit receiver.
+// correct individual texel references toward the light. The projected-plane
+// denominator is bounded at grazing angles, following UE directional PCSS.
+// Zero where the plane is not a valid lit receiver.
 fn _directionalReceiverPlaneGradient(layer : u32, normal : vec3<f32>, l : vec3<f32>) -> vec2<f32> {
-  if (view.splitPlanes[0].w > 0.5) { return vec2<f32>(0.0); }
-  if (!(dot(normal, l) > 0.01)) {
-    return vec2<f32>(0.0);
-  }
+  if (view.splitPlanes[0].w > 0.5 || !(dot(normal, l) > 0.0)) { return vec2<f32>(0.0); }
   let matrix = _cascadeLightViewProj(layer);
   let row0 = vec3<f32>(matrix[0].x, matrix[1].x, matrix[2].x);
   let row1 = vec3<f32>(matrix[0].y, matrix[1].y, matrix[2].y);
@@ -162,15 +112,12 @@ fn _directionalReceiverPlaneGradient(layer : u32, normal : vec3<f32>, l : vec3<f
   let sx = length(row0);
   let sy = length(row1);
   let sz = length(row2);
+  if (!(sx > 0.0 && sy > 0.0 && sz > 0.0)) { return vec2<f32>(0.0); }
   let nz = dot(row2, normal) / sz;
-  if (!(abs(nz) > 0.01 && sx > 0.0 && sy > 0.0)) {
-    return vec2<f32>(0.0);
-  }
-  let texels = vec2<f32>(textureDimensions(shadowMap, 0));
-  // Clip x grows with +u and clip y with -v; one texel spans 2 / size in clip.
-  let dzdx = -(dot(row0, normal) / sx) * sz / (nz * sx);
-  let dzdy = -(dot(row1, normal) / sy) * sz / (nz * sy);
-  return vec2<f32>(dzdx * 2.0 / texels.x, -dzdy * 2.0 / texels.y);
+  let numerator = vec2<f32>(-2.0 * dot(row0, normal) * sz / (sx * sx), 2.0 * dot(row1, normal) * sz / (sy * sy));
+  let denominator = max(abs(nz), length(vec3<f32>(numerator, nz)) * 0.0872665);
+  if (!(denominator > 0.0)) { return vec2<f32>(0.0); }
+  return numerator * sign(nz) / denominator / vec2<f32>(textureDimensions(shadowMap));
 }
 
 #ifdef DIRECTIONAL_PCSS_AVAILABLE
@@ -225,77 +172,127 @@ fn _samplePcssForCascade(
   let angle = _pcssDiskRotation(baseTexel, layer);
   let rawRadius = select(2.0, 3.0, profile == 5u);
   let planeGradient = _directionalReceiverPlaneGradient(layer, normal, l);
-  let planeCorrected = dot(normal, l) > 0.01;
   // Raw and comparison samples land at exact texel centers. Compare the
   // receiver plane at each center, without biasing past thin blockers by the
-  // full search radius. Retain bounded footprint bias at grazing degeneracy.
-  let biasedDepth = projCoords.z + select(
-    _directionalReceiverDepthBias(layer, normal, l, rawRadius + 1.0), view.depthBias, planeCorrected);
+  // full search radius. The shared caster budget covers grazing degeneracy.
+  let biasedDepth = projCoords.z + _directionalReceiverDepthBias(layer, normal, l);
   var blockerDepth = 0.0;
   var blockerCount = 0u;
-  if (profile == 4u) {
-    for (var i = 0u; i < PCSS_MEDIUM_RAW_TAPS; i = i + 1u) {
-      let rawUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, rawRadius));
-      let rawTexel = vec2<i32>(rawUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
-      let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
-      let correctedDepth = rawDepth - dot(planeGradient, (rawUv - tileUv) * vec2<f32>(shadowMapSize));
-      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
-        blockerDepth = blockerDepth + correctedDepth;
-        blockerCount = blockerCount + 1u;
-      }
-    }
-  } else {
-    for (var i = 0u; i < PCSS_HIGH_RAW_TAPS; i = i + 1u) {
-      let rawUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, rawRadius));
-      let rawTexel = vec2<i32>(rawUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
-      let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
-      let correctedDepth = rawDepth - dot(planeGradient, (rawUv - tileUv) * vec2<f32>(shadowMapSize));
-      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
-        blockerDepth = blockerDepth + correctedDepth;
-        blockerCount = blockerCount + 1u;
-      }
-    }
-  }
-  if (blockerCount == 0u) {
-    return 1.0;
-  }
-
-  let averageBlockerDepth = blockerDepth / f32(blockerCount);
-  let lightDepthWorldSpan = max(view.splitPlanes[layer].z, 0.0);
-  let worldUnitsPerTexel = max(view.splitPlanes[layer].y, 0.0);
-  if (!(lightDepthWorldSpan > 0.0 && worldUnitsPerTexel > 0.0 && view.directionalShadowFilter.y >= 0.0 && view.directionalShadowFilter.z >= 0.0)) {
-    return 1.0;
-  }
-  let worldDistance = max(0.0, averageBlockerDepth - biasedDepth) * lightDepthWorldSpan;
-  let penumbraTexels = clamp(
-    worldDistance * tan(view.directionalShadowFilter.y) / worldUnitsPerTexel,
-    0.0,
-    view.directionalShadowFilter.z,
-  );
-  let compareRadius = max(0.5, penumbraTexels);
-  let compareDepth = projCoords.z + select(
-    _directionalReceiverDepthBias(layer, normal, l, compareRadius + 1.5), view.depthBias, planeCorrected);
+  // Each phase shares the disk addressing call site. The second phase starts
+  // only after all blockers have been accumulated, preserving tap order.
+  let rawTaps = select(PCSS_MEDIUM_RAW_TAPS, PCSS_HIGH_RAW_TAPS, profile == 5u);
+  let compareTaps = select(PCSS_MEDIUM_COMPARE_TAPS, PCSS_HIGH_COMPARE_TAPS, profile == 5u);
+  var compareRadius = 0.5;
+  let compareDepth = projCoords.z + _directionalReceiverDepthBias(layer, normal, l);
   var litSum = 0.0;
-  if (profile == 4u) {
-    for (var i = 0u; i < PCSS_MEDIUM_COMPARE_TAPS; i = i + 1u) {
-      let compareUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, compareRadius));
-      let tapDepth = compareDepth + dot(planeGradient, (compareUv - tileUv) * vec2<f32>(shadowMapSize));
-      litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), tapDepth);
+  for (var sample = 0u; sample < rawTaps + compareTaps; sample++) {
+    if (sample == rawTaps) {
+      if (blockerCount == 0u) { return 1.0; }
+      let averageBlockerDepth = blockerDepth / f32(blockerCount);
+      let lightDepthWorldSpan = max(view.splitPlanes[layer].z, 0.0);
+      let worldUnitsPerTexel = max(view.splitPlanes[layer].y, 0.0);
+      if (!(lightDepthWorldSpan > 0.0 && worldUnitsPerTexel > 0.0 && view.directionalShadowFilter.y >= 0.0 && view.directionalShadowFilter.z >= 0.0)) { return 1.0; }
+      let worldDistance = max(0.0, averageBlockerDepth - biasedDepth) * lightDepthWorldSpan;
+      let penumbraTexels = clamp(worldDistance * tan(view.directionalShadowFilter.y) / worldUnitsPerTexel, 0.0, view.directionalShadowFilter.z);
+      compareRadius = max(0.5, penumbraTexels);
     }
-    return litSum / f32(PCSS_MEDIUM_COMPARE_TAPS);
+    let raw = sample < rawTaps;
+    let index = select(sample - rawTaps, sample, raw);
+    let radius = select(compareRadius, rawRadius, raw);
+    let sampleUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(index, angle, radius));
+    if (raw) {
+      let rawTexel = vec2<i32>(sampleUv * vec2<f32>(shadowMapSize) - vec2<f32>(0.5));
+      let rawDepth = shadow_load_raw_depth(shadowMap, rawTexel, i32(layer));
+      let correctedDepth = rawDepth - max(0.0, dot(planeGradient, (sampleUv - tileUv) * vec2<f32>(shadowMapSize)));
+      if (rawDepth > 0.0 && rawDepth <= 1.0 && correctedDepth > biasedDepth) {
+        blockerDepth = blockerDepth + correctedDepth;
+        blockerCount = blockerCount + 1u;
+      }
+    } else {
+      let tapDepth = max(0.0, compareDepth + max(0.0, dot(planeGradient, (sampleUv - tileUv) * vec2<f32>(shadowMapSize))));
+      litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, sampleUv, i32(layer), tapDepth);
+    }
   }
-  for (var i = 0u; i < PCSS_HIGH_COMPARE_TAPS; i = i + 1u) {
-    let compareUv = _pcssProjectedSample(shadowMapSize, baseTexel, _pcssDiskPoint(i, angle, compareRadius));
-    let tapDepth = compareDepth + dot(planeGradient, (compareUv - tileUv) * vec2<f32>(shadowMapSize));
-    litSum = litSum + shadow_sample_compare(shadowMap, shadowSampler, compareUv, i32(layer), tapDepth);
-  }
-  return litSum / f32(PCSS_HIGH_COMPARE_TAPS);
+  return litSum / f32(compareTaps);
 }
 #endif
 
-// Sample the cascade's shadow layer with the LO 3.1.3 slope-scaled bias +
-// dynamic PCF kernel (driven by the directional filter profile,
-// MAX_PCF_HALF=2), against the lightViewProj for the chosen cascade.
+fn _directionalPointCompare(center: vec2<f32>, layer: i32, origin: vec2<f32>, depth: f32, gradient: vec2<f32>) -> f32 {
+  let size = vec2<f32>(textureDimensions(shadowMap));
+  let reference = max(0.0, depth + max(0.0, dot(gradient, (center - origin) * size)));
+#ifdef DIRECTIONAL_PCSS_AVAILABLE
+  // This capability already permits raw depth reads beside comparison sampling.
+  // Four point loads avoid four bilinear hardware comparisons for one footprint.
+  let stored = textureLoad(shadowMap, vec2<i32>(center * size), layer, 0);
+  return select(0.0, 1.0, reference > stored);
+#else
+  return shadow_sample_compare(shadowMap, shadowSampler, center, layer, reference);
+#endif
+}
+
+fn _directionalPlaneCompare(uv: vec2<f32>, layer: i32, originUv: vec2<f32>, depth: f32, gradient: vec2<f32>, extent: vec2<f32>) -> f32 {
+  if (view.splitPlanes[0].w > 0.5) { return shadow_sample_compare(shadowMap, shadowSampler, uv, layer, depth); }
+  let size = vec2<f32>(textureDimensions(shadowMap));
+  let position = uv * size - vec2<f32>(0.5);
+  let base = floor(position);
+  let phase = fract(position);
+  let lo = clamp(base, vec2<f32>(0.0), size * extent - vec2<f32>(1.0));
+  let hi = clamp(base + vec2<f32>(1.0), vec2<f32>(0.0), size * extent - vec2<f32>(1.0));
+#ifdef DIRECTIONAL_PCSS_AVAILABLE
+  // Expand the four point reads once and compute the plane references together.
+  // This preserves bilinear coverage without nested per-fragment tap loops.
+  let stored = vec4<f32>(
+    textureLoad(shadowMap, vec2<i32>(lo), layer, 0),
+    textureLoad(shadowMap, vec2<i32>(vec2<f32>(hi.x, lo.y)), layer, 0),
+    textureLoad(shadowMap, vec2<i32>(vec2<f32>(lo.x, hi.y)), layer, 0),
+    textureLoad(shadowMap, vec2<i32>(hi), layer, 0));
+  let x = vec4<f32>(lo.x, hi.x, lo.x, hi.x) + vec4<f32>(0.5);
+  let y = vec4<f32>(lo.y, lo.y, hi.y, hi.y) + vec4<f32>(0.5);
+  let plane = gradient.x * (x - vec4<f32>(originUv.x * size.x)) + gradient.y * (y - vec4<f32>(originUv.y * size.y));
+  let reference = max(vec4<f32>(0.0), vec4<f32>(depth) + max(vec4<f32>(0.0), plane));
+  let lit = select(vec4<f32>(0.0), vec4<f32>(1.0), reference > stored);
+  let weights = vec4<f32>((1.0 - phase.x) * (1.0 - phase.y), phase.x * (1.0 - phase.y), (1.0 - phase.x) * phase.y, phase.x * phase.y);
+  return dot(lit, weights);
+#else
+  let a = _directionalPointCompare((lo + vec2<f32>(0.5)) / size, layer, originUv, depth, gradient);
+  let b = _directionalPointCompare((vec2<f32>(hi.x, lo.y) + vec2<f32>(0.5)) / size, layer, originUv, depth, gradient);
+  let c = _directionalPointCompare((vec2<f32>(lo.x, hi.y) + vec2<f32>(0.5)) / size, layer, originUv, depth, gradient);
+  let d = _directionalPointCompare((hi + vec2<f32>(0.5)) / size, layer, originUv, depth, gradient);
+  return mix(mix(a, b, phase.x), mix(c, d, phase.x), phase.y);
+#endif
+}
+
+fn _directionalVogel(uv: vec2<f32>, layer: i32, depth: f32, gradient: vec2<f32>, pixel: vec2<f32>, extent: vec2<f32>, radius: vec2<f32>) -> f32 {
+  let size = vec2<f32>(textureDimensions(shadowMap));
+  let rotation = shadow_vogel_rotation(pixel);
+  var lit = 0.0;
+  for (var i = 0u; i < 5u; i++) {
+    let point = SHADOW_VOGEL_OFFSETS[i];
+    let offset = vec2<f32>(point.x * rotation.x - point.y * rotation.y, point.x * rotation.y + point.y * rotation.x);
+    let sampleUv = clamp(uv + offset * radius, vec2<f32>(0.5) / size, extent - vec2<f32>(0.5) / size);
+    lit += _directionalPlaneCompare(sampleUv, layer, uv, depth, gradient, extent);
+  }
+  return lit * 0.2;
+}
+
+fn _directionalSoft(uv: vec2<f32>, layer: i32, depth: f32, gradient: vec2<f32>, extent: vec2<f32>) -> f32 {
+  let texel = vec2<f32>(1.0) / vec2<f32>(textureDimensions(shadowMap));
+  let phase = fract(uv / texel + vec2<f32>(0.5));
+  let base = uv - phase * texel;
+  let wx = vec4<f32>(1.0 - phase.x, 1.0, 1.0, phase.x);
+  let wy = vec4<f32>(1.0 - phase.y, 1.0, 1.0, phase.y);
+  var sum = 0.0;
+  for (var y = 0u; y < 4u; y++) {
+    for (var x = 0u; x < 4u; x++) {
+      let center = clamp(base + (vec2<f32>(f32(x), f32(y)) - vec2<f32>(1.0)) * texel, texel * 0.5, extent - texel * 0.5);
+      sum += _directionalPointCompare(center, layer, uv, depth, gradient) * wx[x] * wy[y];
+    }
+  }
+  return sum / 9.0;
+}
+
+// Project into one cascade and apply its authored filter profile. Native
+// comparison profiles share per-texel receiver-plane correction.
 fn _sampleShadowForCascade(
   worldPos : vec3<f32>,
   layer    : u32,
@@ -331,6 +328,16 @@ fn _sampleShadowForCascade(
   // PCF1/3/5 profiles 1/2/3 retain their existing receiver. PCSS profiles 4/5
   // use the bounded three-stage receiver below without a material or variant
   // axis; the carrier y/z lanes provide angular radius and penumbra limit.
+#ifdef DIRECTIONAL_SHADOW_SIMPLE
+  // Source-level specialization: the frame has exactly one cascade, no cascade
+  // blend and the Vogel PCF profile. Every other profile (PCSS, kernel,
+  // variance, soft) is absent from the compiled fragment; a runtime branch or a
+  // pipeline override that never fires still costs registers in Metal codegen.
+  let simpleDepth = currentDepth + _directionalReceiverDepthBias(layer, normal, l);
+  let simpleGradient = _directionalReceiverPlaneGradient(layer, normal, l);
+  let simpleRadius = texel * vec2<f32>(1.0, 1.0 / aspect) * max(1.0 + view.splitPlanes[2].w, 0.0);
+  return _directionalVogel(uv, shadowLayer, simpleDepth, simpleGradient, pixel, viewportScale, simpleRadius);
+#else
   let filterProfile = clamp(u32(round(view.directionalShadowFilter.x)), 1u, 8u);
   #ifdef DIRECTIONAL_PCSS_AVAILABLE
   if (filterProfile == 4u || filterProfile == 5u) {
@@ -338,18 +345,19 @@ fn _sampleShadowForCascade(
   }
   #endif
   let kernel = select(select(3u, 5u, filterProfile == 3u), 1u, filterProfile == 1u);
-  // Integer PCF offsets retain this bilinear phase. Bound only the actual
-  // distance to its four texel centers, rather than a full texel everywhere.
-  let phase = fract(uv * texelDims - vec2<f32>(0.5));
-  let reach = max(phase, vec2<f32>(1.0) - phase);
-  let footprintRadius = select(max(reach.x, reach.y), 1.0, filterProfile == 6u);
-  let adjustedDepth = currentDepth + _directionalReceiverDepthBias(layer, normal, l, footprintRadius);
+  let adjustedDepth = currentDepth + _directionalReceiverDepthBias(layer, normal, l);
   let planeGradient = _directionalReceiverPlaneGradient(layer, normal, l);
   if (filterProfile == 8u) {
-    return sample_shadow_variance(uv, shadowLayer, adjustedDepth, viewportScale);
+    return sample_shadow_variance(uv, shadowLayer, adjustedDepth, viewportScale, view.splitPlanes[0].w > 0.5);
+  }
+  if (filterProfile == 7u && view.splitPlanes[0].w < 0.5) {
+    return _directionalSoft(uv, shadowLayer, adjustedDepth, planeGradient, viewportScale);
   }
   if (filterProfile == 7u) {
     return sample_shadow_2d_soft(shadowMap, shadowSampler, uv, shadowLayer, texel, adjustedDepth, viewportScale);
+  }
+  if (filterProfile == 6u && view.splitPlanes[0].w < 0.5) {
+    return _directionalVogel(uv, shadowLayer, adjustedDepth, planeGradient, pixel, viewportScale, texel * vec2<f32>(1.0, 1.0 / aspect) * max(1.0 + view.splitPlanes[2].w, 0.0));
   }
   if (filterProfile == 6u) {
     return sample_shadow_2d_vogel(shadowMap, shadowSampler, uv, shadowLayer,
@@ -359,19 +367,22 @@ fn _sampleShadowForCascade(
     if (view.splitPlanes[0].w > 0.5) {
       return sample_shadow_2d_nearest(shadowMap, shadowSampler, uv, shadowLayer, adjustedDepth, viewportScale);
     }
-    let lit = textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv, tileLo, tileHi), shadowLayer, adjustedDepth);
+    let lit = _directionalPlaneCompare(clamp(uv, tileLo, tileHi), shadowLayer, uv, adjustedDepth, planeGradient, viewportScale);
     return lit;
   }
 
+  // Native quality changes sample density; the authored radius owns softness.
+  // Explicit constant-bias cameras retain their original integer kernels.
+  let spacing = select(1.0, max(1.0 + view.splitPlanes[2].w, 0.0) / (f32(kernel - 1u) * 0.5), view.splitPlanes[0].w < 0.5);
+  let sampleStep = texel * spacing;
   var blocked = 0.0;
   if (kernel == 3u) {
     // Each tap compares its own receiver-plane depth. Combining bilinear
     // weights before these nonlinear comparisons changes shadow coverage.
     for (var x = -1; x <= 1; x++) {
       for (var y = -1; y <= 1; y++) {
-        let offsetUv = clamp(uv + vec2<f32>(f32(x), f32(y)) * texel, tileLo, tileHi);
-        let tapDepth = adjustedDepth + dot(planeGradient, (offsetUv - uv) / texel);
-        let lit = textureSampleCompareLevel(shadowMap, shadowSampler, offsetUv, shadowLayer, tapDepth);
+        let offsetUv = clamp(uv + vec2<f32>(f32(x), f32(y)) * sampleStep, tileLo, tileHi);
+        let lit = _directionalPlaneCompare(offsetUv, shadowLayer, uv, adjustedDepth, planeGradient, viewportScale);
         blocked = blocked + (1.0 - lit);
       }
     }
@@ -380,13 +391,13 @@ fn _sampleShadowForCascade(
 
   for (var x = -i32(MAX_PCF_HALF); x <= i32(MAX_PCF_HALF); x++) {
     for (var y = -i32(MAX_PCF_HALF); y <= i32(MAX_PCF_HALF); y++) {
-      let offsetUv = clamp(uv + vec2<f32>(f32(x), f32(y)) * texel, tileLo, tileHi);
-      let tapDepth = adjustedDepth + dot(planeGradient, (offsetUv - uv) / texel);
-      let lit = textureSampleCompareLevel(shadowMap, shadowSampler, offsetUv, shadowLayer, tapDepth);
+      let offsetUv = clamp(uv + vec2<f32>(f32(x), f32(y)) * sampleStep, tileLo, tileHi);
+      let lit = _directionalPlaneCompare(offsetUv, shadowLayer, uv, adjustedDepth, planeGradient, viewportScale);
       blocked = blocked + (1.0 - lit);
     }
   }
   return 1.0 - blocked / 25.0;
+#endif
 }
 
 // `evalDirectionalNoShadow` evaluates the GGX direct-lighting term for the
@@ -423,15 +434,30 @@ fn evalDirectionalNoShadow(
 #endif
 ) -> vec3<f32> {
   let l = normalize(-view.lightDir);
-  let halfVector = viewDir + l;
-  let halfVectorLengthSquared = max(dot(halfVector, halfVector), 1e-8);
-  let h = halfVector * inverseSqrt(halfVectorLengthSquared);
   let signedNDotL = dot(normal, l);
   let nDotL = max(signedNDotL, 0.0);
-  let nDotV = max(dot(normal, viewDir), 1e-5);
-  let nDotH = max(dot(normal, h), 0.0);
-  let vDotH = max(dot(viewDir, h), 0.0);
-  let brdf = standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,
+  let signedNDotV = dot(normal, viewDir);
+  let nDotV = max(signedNDotV, 1e-5);
+  // Unreal's View.MinRoughness: direct lighting only (SceneView.cpp:2921).
+  let directAlpha = directLightingAlpha(alphaSq);
+  // Unreal BRDF.ush:24-31 N.H / V.H from dot products; with a sun disc
+  // (view.sunSourceRadius = sin(half angle) > 0) SphereMaxNoH and
+  // EnergyNormalization replace them (BRDF.ush:63-137, ShadingModels.ush:122-160).
+  // sunSourceRadius = 0 takes the point-light branch and is bit-identical to it.
+  var nDotH : f32;
+  var vDotH : f32;
+  var dEnergy = 1.0;
+  if (view.sunSourceRadius > 0.0) {
+    let disc = sunDiscSpecularTerms(signedNDotL, signedNDotV, dot(viewDir, l), view.sunSourceRadius, directAlpha);
+    nDotH = disc.x;
+    vDotH = disc.y;
+    dEnergy = disc.z;
+  } else {
+    let halfTerms = halfVectorTerms(signedNDotL, signedNDotV, dot(viewDir, l));
+    nDotH = halfTerms.x;
+    vDotH = halfTerms.y;
+  }
+  let brdf = standardOpaqueBrdfEnergy(baseColor, metallic, directAlpha, F0, nDotV, nDotL, nDotH, vDotH, dEnergy,
     useDirectDfgLut,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,
@@ -467,25 +493,37 @@ fn evalDirectionalShadowFactorAtPixel(
   if (viewDepth > view.splitPlanes[count - 1u].x) {
     return 1.0;
   }
+#ifdef DIRECTIONAL_SHADOW_SIMPLE
+  let simpleShadow = _sampleShadowForCascade(worldPos + normal * view.normalBias, 0u, normal, l, layerBase, pixel);
+  return mix(1.0, simpleShadow, 1.0 - view.splitPlanes[1].w);
+#else
   let layer = _pickCascadeLayer(viewDepth, count);
   // normalBias is a world-space distance, independent of cascade depth span.
   let receiverPosition = worldPos + normal * view.normalBias;
-  let shadowCurr = _sampleShadowForCascade(receiverPosition, layer, normal, l, layerBase, pixel);
-
-  var shadow = shadowCurr;
+  var blend = 0.0;
   if (view.cascadeBlend > 0.0 && layer + 1u < count) {
     let spCurr = view.splitPlanes[layer].x;
     let blendWidth = spCurr * view.cascadeBlend;
     if (blendWidth > 0.0) {
       let dist = spCurr - viewDepth;
-      let t = clamp(1.0 - dist / blendWidth, 0.0, 1.0);
-      if (t > 0.0) {
-        let shadowNext = _sampleShadowForCascade(receiverPosition, layer + 1u, normal, l, layerBase, pixel);
-        shadow = mix(shadowCurr, shadowNext, t);
-      }
+      blend = clamp(1.0 - dist / blendWidth, 0.0, 1.0);
+    }
+  }
+  // Keep one native filter call site. Duplicating the complete receiver for
+  // cascade blending can crash Metal code generation in composed medium shaders.
+  // The uniform bound still samples only the current and, when needed, next layer.
+  let sampleCount = select(1u, 2u, blend > 0.0);
+  var shadow = 1.0;
+  for (var sample = 0u; sample < sampleCount; sample++) {
+    let value = _sampleShadowForCascade(receiverPosition, layer + sample, normal, l, layerBase, pixel);
+    if (sample == 0u) {
+      shadow = value;
+    } else {
+      shadow = mix(shadow, value, blend);
     }
   }
   return mix(1.0, shadow, 1.0 - view.splitPlanes[1].w);
+#endif
 }
 
 // Volume receivers are samples in a medium, not surfaces. They therefore use
@@ -502,7 +540,7 @@ fn evalDirectionalVolumeShadowFactor(
   let count = u32(max(view.cascadeCount, 1.0));
   let layer = _pickCascadeLayer(viewDepth, count);
   let lightDirection = normalize(-view.lightDir);
-  let current = _sampleShadowForCascade(worldPos, layer, vec3<f32>(0.0), lightDirection, 0u);
+  let current = _sampleShadowForCascade(worldPos, layer, vec3<f32>(0.0), lightDirection, 0u, vec2<f32>(0.0));
   if (view.cascadeBlend <= 0.0 || layer + 1u >= count) {
     return current;
   }
@@ -511,7 +549,7 @@ fn evalDirectionalVolumeShadowFactor(
     return current;
   }
   let blend = clamp(1.0 - (view.splitPlanes[layer].x - viewDepth) / blendWidth, 0.0, 1.0);
-  let next = _sampleShadowForCascade(worldPos, layer + 1u, vec3<f32>(0.0), lightDirection, 0u);
+  let next = _sampleShadowForCascade(worldPos, layer + 1u, vec3<f32>(0.0), lightDirection, 0u, vec2<f32>(0.0));
   return mix(current, next, blend);
 }
 

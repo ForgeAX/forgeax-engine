@@ -29,13 +29,34 @@ export const DERIVED_REFLECTION_SCHEMA = [
 
 export const DERIVED_REFLECTION_FACTS = {
   members: [
-    { name: 'exposure', type: 'f32', offset: 0, size: 4, alignment: 4 },
+    {
+      name: 'exposure',
+      type: 'f32',
+      offset: 0,
+      size: 4,
+      alignment: 4,
+      typeDescriptor: {
+        kind: 'scalar',
+        scalarKind: 'float',
+        width: 4,
+        byteSize: 4,
+        alignment: 4,
+      },
+    },
     {
       name: 'albedoCoordinatesTransform',
       type: 'vec4<f32>',
       offset: 16,
       size: 16,
       alignment: 16,
+      typeDescriptor: {
+        kind: 'vector',
+        scalarKind: 'float',
+        width: 4,
+        components: 4,
+        byteSize: 16,
+        alignment: 16,
+      },
     },
     {
       name: 'albedoCoordinatesMetadata',
@@ -43,15 +64,59 @@ export const DERIVED_REFLECTION_FACTS = {
       offset: 32,
       size: 16,
       alignment: 16,
+      typeDescriptor: {
+        kind: 'vector',
+        scalarKind: 'float',
+        width: 4,
+        components: 4,
+        byteSize: 16,
+        alignment: 16,
+      },
     },
-    { name: 'albedoCoordinatesRotation', type: 'vec4<f32>', offset: 48, size: 16, alignment: 16 },
-    { name: 'tint', type: 'vec4<f32>', offset: 64, size: 16, alignment: 16 },
+    {
+      name: 'albedoCoordinatesRotation',
+      type: 'vec4<f32>',
+      offset: 48,
+      size: 16,
+      alignment: 16,
+      typeDescriptor: {
+        kind: 'vector',
+        scalarKind: 'float',
+        width: 4,
+        components: 4,
+        byteSize: 16,
+        alignment: 16,
+      },
+    },
+    {
+      name: 'tint',
+      type: 'vec4<f32>',
+      offset: 64,
+      size: 16,
+      alignment: 16,
+      typeDescriptor: {
+        kind: 'vector',
+        scalarKind: 'float',
+        width: 4,
+        components: 4,
+        byteSize: 16,
+        alignment: 16,
+      },
+    },
   ],
   resources: [
     { name: 'albedo_sampler', kind: 'sampler', binding: 1 },
     { name: 'albedo', kind: 'texture', binding: 2 },
   ],
   totalBytes: 80,
+} as const;
+
+export const DERIVED_REFLECTION_TYPE_DESCRIPTOR = {
+  kind: 'struct',
+  span: 80,
+  byteSize: 80,
+  alignment: 16,
+  members: DERIVED_REFLECTION_FACTS.members,
 } as const;
 
 export interface ReflectionFixture {

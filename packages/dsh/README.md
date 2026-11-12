@@ -1,6 +1,6 @@
 # @forgeax/engine-dsh
 
-This package is the concrete ForgeaX ↔ DeepSeek Harness federation connector. It does not merge the two Cordis roots or introduce a second plugin lifecycle.
+This package is the concrete ForgeAX ↔ DeepSeek Harness federation connector. It does not merge the two Cordis roots or introduce a second plugin lifecycle.
 
 ## Ownership
 

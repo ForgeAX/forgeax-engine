@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 // CodeCC's risk threshold: a function whose cyclomatic complexity exceeds 20
@@ -261,7 +262,10 @@ export function main(argv = process.argv.slice(2)) {
   return report.status;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (
+  process.argv[1] &&
+  realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
+) {
   try {
     process.exitCode = main();
   } catch (error) {

@@ -114,6 +114,21 @@ function validateDirectedLightData(
       ),
     );
   }
+  if (componentName === 'DirectionalLight') {
+    const sourceAngle =
+      (data.sourceAngle as number | undefined) ??
+      (DirectionalLight.fields.sourceAngle.default as number);
+    if (!Number.isFinite(sourceAngle) || sourceAngle < 0) {
+      return err(
+        new ShadowInvalidConfigError(
+          'sourceAngle',
+          sourceAngle,
+          { kind: 'lower-bound', value: 0, operator: '>=' },
+          'a finite angle in degrees >= 0 (0 is a point light)',
+        ),
+      );
+    }
+  }
   return ok(undefined);
 }
 

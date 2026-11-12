@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { composeShader } from '../../../naga/src/index';
 import {
   dfgTestReflectance,
@@ -60,7 +61,7 @@ it('opt-in DFG texture retains source texels and native linear filtering in comp
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   try {
-    expect(directDfgLutBytes()).toEqual(referenceBytes);
+    expect(equalBytes(directDfgLutBytes(), referenceBytes)).toBe(true);
     device.queue.writeTexture(
       { texture: productionTexture },
       directDfgLutBytes(),

@@ -25,7 +25,9 @@ function unwrap(result: {
   return result.ok && result.value !== undefined ? result.value.assets : [];
 }
 
-function makeHdrFixture(width: number, height: number): Uint8Array {
+// Every texel decodes to 128 * 2^(exponent - 136): the default exponent byte
+// 128 gives 0.5, exponent 146 gives 131072 (a sun disc above the f16 range).
+function makeHdrFixture(width: number, height: number, exponent = 128): Uint8Array {
   const header = `#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y ${height} +X ${width}\n`;
   const encoder = new TextEncoder();
   const headerBytes = encoder.encode(header);
@@ -35,6 +37,7 @@ function makeHdrFixture(width: number, height: number): Uint8Array {
   const prefix = new Uint8Array([0x02, 0x02, hi, lo]);
 
   const chRun = new Uint8Array([128 + width, 128]);
+  const expRun = new Uint8Array([128 + width, exponent]);
   const scanlineBytes = 4 + 4 * 2;
   const pixelBytes = new Uint8Array(height * scanlineBytes);
 
@@ -48,7 +51,7 @@ function makeHdrFixture(width: number, height: number): Uint8Array {
     off += 2;
     pixelBytes.set(chRun, off);
     off += 2;
-    pixelBytes.set(chRun, off);
+    pixelBytes.set(expRun, off);
   }
 
   const total = new Uint8Array(headerBytes.length + pixelBytes.length);
@@ -124,6 +127,27 @@ describe('imageImporter HDR arm produces EquirectAsset (w1)', () => {
     const produced = unwrap(await imageImporter.import(ctx));
     expect(produced.length).toBe(1);
     expect(produced[0]?.kind).toBe('equirect');
+  });
+
+  it('(f) radiance above the f16 range is clamped to 65504, never encoded as +Inf', async () => {
+    // Regression: sunflowers_puresky_1k.hdr has a sun texel of 77312. Encoded
+    // as +Inf it poisoned every IBL pass (black diffuse, blown-out specular),
+    // which bloom then spread into a white frame. three.js HDRLoader clamps.
+    const ctx = makeHdrCtx('sun.hdr', makeHdrFixture(8, 2, 146), [
+      { guid: HDR_GUID, sourceIndex: 0, kind: 'equirect' },
+    ]);
+    const produced = unwrap(await imageImporter.import(ctx));
+    const payload = (produced[0] as { payload: EquirectAsset })?.payload;
+    const view = new DataView(
+      payload.data.buffer,
+      payload.data.byteOffset,
+      payload.data.byteLength,
+    );
+    for (let i = 0; i < 8 * 2; i++) {
+      expect(view.getUint16(i * 8, true)).toBe(0x7bff);
+      expect(view.getUint16(i * 8 + 2, true)).toBe(0x7bff);
+      expect(view.getUint16(i * 8 + 4, true)).toBe(0x7bff);
+    }
   });
 
   it('(e) returns a structured validation error for a corrupt .hdr source (invalid RGBE header)', async () => {

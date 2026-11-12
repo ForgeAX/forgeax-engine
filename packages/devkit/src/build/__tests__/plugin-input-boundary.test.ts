@@ -165,3 +165,28 @@ it('retains the conservative fence for authored native filesystem readers', asyn
     code: 'plugin-bootstrap-failed',
   });
 });
+
+it.each([
+  "import type { Stats } from 'node:fs';",
+  'const documentation = "readFile(\'data.json\')";',
+])('preserves conservative filesystem evidence from %s', async (evidence) => {
+  const { root, write } = await fixture();
+  await write('assets/main.ts', `${evidence} export default { apply() {} };`);
+  await write('data.json', '{"value":1}');
+  const inventory = await discoverPluginAssets({ root, assetRoots: ['assets'] });
+  expect(inventory.filesystemInputs).toContain(resolve(root, 'data.json'));
+  await write('data.json', '{"value":2}');
+  await expect(assertPluginSourceInputs(inventory, root)).rejects.toMatchObject({
+    code: 'plugin-bootstrap-failed',
+  });
+});
+
+it('does not treat a commented filesystem import as executable evidence', async () => {
+  const { root, write } = await fixture();
+  await write(
+    'assets/main.ts',
+    "// import type { Stats } from 'node:fs';\nexport default { apply() {} };",
+  );
+  const inventory = await discoverPluginAssets({ root, assetRoots: ['assets'] });
+  expect(inventory.filesystemInputs).toBeUndefined();
+});

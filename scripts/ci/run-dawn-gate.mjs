@@ -3,7 +3,9 @@
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS } from './dawn-gate-roster.mjs';
+import { dawnOrdinaryWorkers } from '../lib/runner-resources.mjs';
+import { reportDawnEnvironment } from './dawn-environment-diagnostics.mjs';
+import { DAWN_GATE_GROUPS, DAWN_GATE_SHARDS, DAWN_VITEST_CONFIG } from './dawn-gate-roster.mjs';
 import { isRetryableOutput, runBrowserCommand } from './run-browser-gate-with-retry.mjs';
 import { DAWN_TEST_PARTITIONS, runDawnPartitions } from './run-dawn-partitions.mjs';
 import { runDirectLightDawn } from './run-direct-light-dawn.mjs';
@@ -35,19 +37,35 @@ export function validateDawnGateRoster(root = ROOT) {
   return owners;
 }
 
-export function dawnVitestArgs(group) {
+export function dawnVitestArgs(group, { ordinaryWorkers = 1 } = {}) {
+  if (ordinaryWorkers !== 1 && ordinaryWorkers !== 2) {
+    throw new Error('Dawn ordinary workers must be exactly 1 or 2');
+  }
+  const parallel = group.vitestShard !== undefined && ordinaryWorkers === 2;
   return [
     VITEST,
     'run',
+    '--config',
+    DAWN_VITEST_CONFIG,
     '--project=dawn',
     group.vitestShard === undefined ? '--passWithNoTests=false' : '--passWithNoTests=true',
-    '--maxWorkers=1',
-    '--no-file-parallelism',
+    `--maxWorkers=${parallel ? 2 : 1}`,
+    ...(parallel ? ['--pool=forks', '--fileParallelism=true'] : ['--no-file-parallelism']),
     group.isolate === false ? '--no-isolate' : '--isolate',
     ...(group.isolate === false ? ['--retry=0', '--bail=1'] : []),
     ...(group.vitestShard === undefined ? [] : [`--shard=${group.vitestShard}`]),
     ...group.files,
   ];
+}
+
+export function dawnGroupEnvironment(group, environment, ordinaryWorkers) {
+  return {
+    ...environment,
+    ...group.env,
+    ...(group.vitestShard !== undefined && ordinaryWorkers === 2
+      ? { LP_NUM_THREADS: '4', FORGEAX_SHADER_COMPILE_WORKERS: '1' }
+      : {}),
+  };
 }
 
 export function selectDawnGroups(id, shard) {
@@ -72,11 +90,15 @@ export function selectDawnShard(value) {
     );
   }
   const ids = new Set(DAWN_GATE_SHARDS[index - 1]);
-  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id));
+  return DAWN_GATE_GROUPS.filter((group) => ids.has(group.id)).sort(
+    (left, right) => (right.placementReserveSeconds ?? 0) - (left.placementReserveSeconds ?? 0),
+  );
 }
 
 export async function runDawnGate({ group: selectedGroup, shard } = {}) {
   validateDawnGateRoster();
+  const environmentDiagnostics = shard === '3/4';
+  if (environmentDiagnostics) reportDawnEnvironment(ROOT, 'start', true);
   // A full gate must not inherit a selector from a preceding single-owner probe.
   const environment = { ...process.env };
   for (const name of [
@@ -87,6 +109,9 @@ export async function runDawnGate({ group: selectedGroup, shard } = {}) {
   ])
     delete environment[name];
   const groups = selectDawnGroups(selectedGroup, shard);
+  const ordinaryWorkers = groups.some((group) => group.vitestShard !== undefined)
+    ? dawnOrdinaryWorkers(environment)
+    : 1;
   if (environment.FORGEAX_SHARED_APP_INPUTS_MANIFEST) {
     const prepared = await runBrowserCommand(
       [
@@ -109,7 +134,7 @@ export async function runDawnGate({ group: selectedGroup, shard } = {}) {
   for (const group of groups) {
     console.log(`::group::Dawn ${group.id}`);
     try {
-      const env = { ...environment, ...group.env };
+      const env = dawnGroupEnvironment(group, environment, ordinaryWorkers);
       if (Object.hasOwn(DAWN_TEST_PARTITIONS, group.id)) {
         const status = await runDawnPartitions(group.id, { env });
         if (status !== 0) return status;
@@ -117,7 +142,7 @@ export async function runDawnGate({ group: selectedGroup, shard } = {}) {
         await runDirectLightDawn({ env });
       } else {
         const run = () =>
-          runBrowserCommand([process.execPath, ...dawnVitestArgs(group)], {
+          runBrowserCommand([process.execPath, ...dawnVitestArgs(group, { ordinaryWorkers })], {
             cwd: ROOT,
             env,
             label: `Dawn ${group.id}`,
@@ -139,6 +164,7 @@ export async function runDawnGate({ group: selectedGroup, shard } = {}) {
         if (result.status !== 0) return result.status;
       }
     } finally {
+      if (environmentDiagnostics) reportDawnEnvironment(ROOT, `after:${group.id}`);
       console.log('::endgroup::');
     }
   }

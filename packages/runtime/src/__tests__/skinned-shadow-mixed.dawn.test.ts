@@ -1,5 +1,6 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import type { AssetHandle } from '@forgeax/engine-types';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // Real Dawn regression for the static/skinned shadow pipeline transition.
@@ -477,8 +478,8 @@ describe('mixed static/skinned shadow pipeline (Dawn)', () => {
     expect(shadow.checkpoints).toHaveLength(4);
     expect(baseline.checkpoints).toHaveLength(4);
     for (const capture of [shadow, baseline]) {
-      expect(capture.checkpoints[1]).toEqual(capture.checkpoints[0]);
-      expect(capture.checkpoints[3]).toEqual(capture.checkpoints[0]);
+      expect(equalBytes(capture.checkpoints[1], capture.checkpoints[0])).toBe(true);
+      expect(equalBytes(capture.checkpoints[3], capture.checkpoints[0])).toBe(true);
     }
     // Below the casters, subtract the matching unshadowed pose: changing color
     // geometry alone cannot satisfy this actual receiver-shadow falsifier.

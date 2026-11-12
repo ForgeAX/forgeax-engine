@@ -123,6 +123,7 @@ it('encodes a preparation-only lane without binding a missing frame view group',
     });
     expect(bind.mock.calls.filter(([index]) => index === 0)).toEqual([]);
     expect(f.receipts).toEqual([]);
+    expect(f.c.frameState.iblBindingInspection).toBeUndefined();
   } finally {
     f.dispose();
   }

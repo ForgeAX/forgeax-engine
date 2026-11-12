@@ -2,17 +2,18 @@ import { resolve } from 'node:path';
 import ts from 'typescript';
 import * as vite from 'vite';
 const packageRoot = resolve(import.meta.dirname, '../..');
-export function createRemoteBundler(allow) {
+export function createRemoteBundler(allow, { signal: lifetime } = {}) {
   const cache = new Map();
   let activeReads = 0;
   const waitingReads = [];
   // Source parsing shares this event loop with connection establishment. Bound
   // reads across builds so a wide import graph cannot starve loopback sockets.
-  async function readSource(url) {
+  async function readSource(url, scope) {
     if (activeReads === 4) await new Promise((resolve) => waitingReads.push(resolve));
     else activeReads++;
     try {
-      const signal = AbortSignal.timeout(30000);
+      const deadline = AbortSignal.timeout(30000);
+      const signal = scope ? AbortSignal.any([scope, deadline]) : deadline;
       for (let attempt = 0; ; attempt++) {
         try {
           const response = await fetch(url, {
@@ -39,7 +40,9 @@ export function createRemoteBundler(allow) {
       else activeReads--;
     }
   }
-  async function bundle(url, kind = 'module', inlineSource) {
+  async function bundle(url, kind = 'module', inlineSource, signal) {
+    const scope = lifetime && signal ? AbortSignal.any([lifetime, signal]) : lifetime ?? signal;
+    scope?.throwIfAborted();
     const key = `${kind}:${url}`;
     if (cache.has(key)) return cache.get(key);
     const promise = (async () => {
@@ -57,6 +60,7 @@ export function createRemoteBundler(allow) {
               return remote + new URL(id, importer.slice(remote.length)).href;
           },
           async load(id) {
+            scope?.throwIfAborted();
             if (!id.startsWith(remote)) return;
             const href = id.slice(remote.length);
             const u = allow(href);
@@ -70,7 +74,7 @@ export function createRemoteBundler(allow) {
               return 'export default {injectIntoGlobalHook(){},register(){},createSignatureFunctionForTransform(){return x=>x;}}';
             let code;
             if (inlineSource !== undefined && href === url) code = inlineSource;
-            else code = await readSource(u);
+            else code = await readSource(u, scope);
             code = code
               .replace(/import\.meta\.hot\s*=\s*[^;]+;/g, '')
               .replaceAll('import.meta.hot', 'undefined');
@@ -130,17 +134,23 @@ export function createRemoteBundler(allow) {
         },
       });
       const values = Array.isArray(result) ? result.flatMap((x) => x.output) : result.output;
+      scope?.throwIfAborted();
       const chunk = values.find((x) => x.type === 'chunk' && x.isEntry);
       if (!chunk) throw new Error('Vite produced no entry');
       return { source: chunk.code };
     })();
     cache.set(key, promise);
+    const retire = () => { if (cache.get(key) === promise) cache.delete(key); };
+    scope?.addEventListener('abort', retire, { once: true });
+    if (scope?.aborted) retire();
     while (cache.size > 32) cache.delete(cache.keys().next().value);
     try {
       return await promise;
     } catch (error) {
-      cache.delete(key);
+      retire();
       throw error;
+    } finally {
+      scope?.removeEventListener('abort', retire);
     }
   }
   return bundle;

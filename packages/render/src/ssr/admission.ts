@@ -8,6 +8,8 @@ import type { CameraSnapshot } from '../render-contract';
  */
 
 import {
+  R32FLOAT_MIP_SAMPLED_RENDER_PROFILE,
+  R32FLOAT_RENDER_PROBE_STAGES,
   type RhiTextureFormatCapabilityReceipt,
   validateR32FloatReceipt,
 } from '@forgeax/engine-rhi';
@@ -259,7 +261,8 @@ function validFallback(receipt: SsrReflectionFallbackReceipt | undefined): boole
 
 function validFormat(receipt: SsrFormatReceipt | undefined): boolean {
   if (
-    receipt?.profile !== SSR_FORMAT_PROFILE ||
+    (receipt?.profile !== SSR_FORMAT_PROFILE &&
+      receipt?.profile !== R32FLOAT_MIP_SAMPLED_RENDER_PROFILE) ||
     receipt.verdict !== 'admitted' ||
     receipt.evidence !== 'real' ||
     !Number.isInteger(receipt.deviceGeneration) ||
@@ -268,7 +271,11 @@ function validFormat(receipt: SsrFormatReceipt | undefined): boolean {
     return false;
   }
   if (
-    !SSR_FORMAT_STAGES.every((stage) =>
+    !(
+      receipt.profile === R32FLOAT_MIP_SAMPLED_RENDER_PROFILE
+        ? R32FLOAT_RENDER_PROBE_STAGES
+        : SSR_FORMAT_STAGES
+    ).every((stage) =>
       receipt.stages.some((entry) => entry.stage === stage && entry.verdict === 'admitted'),
     )
   ) {
@@ -459,6 +466,9 @@ export interface SsrSpatialCapabilities {
   readonly storageTexture: boolean;
   readonly rgba16floatRenderable: boolean;
   readonly r32floatSampledStorage: boolean;
+  readonly r32floatSampledRender?: boolean;
+  readonly maxColorAttachments?: number;
+  readonly maxSampledTexturesPerShaderStage?: number;
 }
 
 /** Detached owner facts consumed by spatial admission. */
@@ -658,10 +668,72 @@ function unavailableResult(
   });
 }
 
+/** The admission of a view that does not request SSR. */
+export function notRequestedSsrAdmission(
+  lane: SsrSpatialLane,
+  viewRange: number,
+): SsrSpatialAdmission {
+  return Object.freeze({
+    status: 'not-requested',
+    lane,
+    config: undefined,
+    viewRange,
+    work: ZERO_SPATIAL_WORK,
+  });
+}
+
 /**
  * Admit the active camera's schema-derived component into the M1 spatial
  * path. No graph/resource handle crosses this boundary.
  */
+function admitSsrCapabilities(
+  environment: SsrSpatialEnvironment,
+  viewRange: number,
+): SsrSpatialAdmission | undefined {
+  const capabilities = environment.capabilities;
+  const raster =
+    capabilities.r32floatSampledRender === true &&
+    (capabilities.maxColorAttachments ?? 0) >= 3 &&
+    (capabilities.maxSampledTexturesPerShaderStage ?? 0) >= 7;
+  if (
+    ((!capabilities.compute || !capabilities.storageTexture) && !raster) ||
+    !capabilities.rgba16floatRenderable
+  ) {
+    return unavailableResult(
+      environment.lane,
+      viewRange,
+      unavailable(
+        environment.lane,
+        'capability-unavailable',
+        [
+          'compute+storageTexture or qualified raster (MRT>=3, sampled textures>=7)',
+          'rgba16floatRenderable',
+        ],
+        {
+          compute: capabilities.compute,
+          storageTexture: capabilities.storageTexture,
+          rgba16floatRenderable: capabilities.rgba16floatRenderable,
+          maxColorAttachments: capabilities.maxColorAttachments ?? 0,
+          maxSampledTexturesPerShaderStage: capabilities.maxSampledTexturesPerShaderStage ?? 0,
+        },
+      ),
+    );
+  }
+  if (!capabilities.r32floatSampledStorage && !raster) {
+    return unavailableResult(
+      environment.lane,
+      viewRange,
+      unavailable(
+        environment.lane,
+        'format-unavailable',
+        ['r32float sampled and storage mip chain'],
+        { r32floatSampledStorage: false },
+      ),
+    );
+  }
+  return undefined;
+}
+
 export function admitSsrSpatial(input: {
   readonly camera: SsrSpatialCamera;
   readonly environment: SsrSpatialEnvironment;
@@ -670,15 +742,7 @@ export function admitSsrSpatial(input: {
   const environment = input.environment;
   const viewRange = camera.far - camera.near;
   const config = camera.screenSpaceReflection;
-  if (config === undefined) {
-    return Object.freeze({
-      status: 'not-requested',
-      lane: environment.lane,
-      config: undefined,
-      viewRange,
-      work: ZERO_SPATIAL_WORK,
-    });
-  }
+  if (config === undefined) return notRequestedSsrAdmission(environment.lane, viewRange);
 
   const valid = validateScreenSpaceReflection(config, { viewRange });
   if (!valid.ok) {
@@ -704,13 +768,23 @@ export function admitSsrSpatial(input: {
       ),
     );
   }
-  if (environment.lane !== 'clustered' && environment.lane !== 'deferred') {
+  if (
+    environment.lane !== 'clustered' &&
+    environment.lane !== 'deferred' &&
+    environment.lane !== 'forward' &&
+    environment.lane !== 'cpu-webgl2'
+  ) {
     return unavailableResult(
       environment.lane,
       viewRange,
-      unavailable(environment.lane, 'lane-unsupported', ['clustered or deferred Standard lane'], {
-        lane: environment.lane,
-      }),
+      unavailable(
+        environment.lane,
+        'lane-unsupported',
+        ['Forward, clustered or Deferred Standard lane'],
+        {
+          lane: environment.lane,
+        },
+      ),
     );
   }
   if (camera.projection !== 'perspective') {
@@ -729,7 +803,7 @@ export function admitSsrSpatial(input: {
       unavailable(
         environment.lane,
         'scene-input-unavailable',
-        ['deferred Standard scene/material/fallback inputs'],
+        ['complete Standard scene/material/fallback inputs'],
         { sceneInputs: false },
       ),
     );
@@ -762,39 +836,8 @@ export function admitSsrSpatial(input: {
       }),
     );
   }
-  const capabilities = environment.capabilities;
-  if (
-    !capabilities.compute ||
-    !capabilities.storageTexture ||
-    !capabilities.rgba16floatRenderable
-  ) {
-    return unavailableResult(
-      environment.lane,
-      viewRange,
-      unavailable(
-        environment.lane,
-        'capability-unavailable',
-        ['compute', 'storageTexture', 'rgba16floatRenderable'],
-        {
-          compute: capabilities.compute,
-          storageTexture: capabilities.storageTexture,
-          rgba16floatRenderable: capabilities.rgba16floatRenderable,
-        },
-      ),
-    );
-  }
-  if (!capabilities.r32floatSampledStorage) {
-    return unavailableResult(
-      environment.lane,
-      viewRange,
-      unavailable(
-        environment.lane,
-        'format-unavailable',
-        ['r32float sampled and storage mip chain'],
-        { r32floatSampledStorage: false },
-      ),
-    );
-  }
+  const capabilityFailure = admitSsrCapabilities(environment, viewRange);
+  if (capabilityFailure !== undefined) return capabilityFailure;
   return Object.freeze({
     status: 'admitted',
     lane: environment.lane,

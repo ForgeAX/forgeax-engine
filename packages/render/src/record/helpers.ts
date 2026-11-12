@@ -1,7 +1,7 @@
 import type { AssetHandle } from '@forgeax/engine-types';
 import { cameraLensProjection } from '../camera-projection';
 import type { RenderResourceScope } from '../publication/resource-scope';
-// @forgeax/engine-runtime - RenderSystem record stage: helpers.
+// @forgeax/engine-runtime - RendererState record stage: helpers.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
 import { type Mat4, mat4 } from '@forgeax/engine-math';
@@ -9,7 +9,13 @@ import type { EquirectAsset } from '@forgeax/engine-types';
 import { EquirectProjectionFailedError } from '../errors/render';
 import { isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { CameraSnapshot } from '../render-contract';
-import type { MaterialSnapshot, SkyboxSnapshot, SkylightSnapshot } from '../render-system-extract';
+import type {
+  ExtractedFrame,
+  LightRoster,
+  MaterialSnapshot,
+  SkyboxSnapshot,
+  SkylightSnapshot,
+} from '../render-system-extract';
 import type { RenderFrameState } from './frame-snapshot';
 import type { RenderSystemInternals } from './render-context';
 
@@ -63,39 +69,9 @@ export function selectLazyEquirectHandles(
 }
 
 /**
- * feat-20260608-multi-light-warn-once M3: warn-once latch for directional
- * N>1 overrun. Fires console.warn at most once per RenderSystem lifetime.
- * Extracted as a pure helper so the warn-once logic is directly testable
- * without a full recordFrame argument list (AC-05 (c)).
- */
-export function warnMultiLightDirectional(
-  frameState: Pick<RenderFrameState, 'warnedMultiLightDirectional'>,
-  directionalCount: number,
-  envOverride?: { env?: { NODE_ENV?: string } },
-): void {
-  if (!frameState.warnedMultiLightDirectional && directionalCount > 1) {
-    frameState.warnedMultiLightDirectional = true;
-    const env =
-      envOverride ?? (globalThis as { process?: { env?: { NODE_ENV?: string } } }).process;
-    if (env?.env?.NODE_ENV !== 'production') {
-      console.warn(
-        '[forgeax] render-system-multi-light directional: at most 1 entity (got N=' +
-          directionalCount +
-          '). First entity used; rest dropped.',
-        {
-          code: 'render-system-multi-light',
-          expected: 'at most 1 directional',
-          detail: { type: 'directional', got: directionalCount },
-        },
-      );
-    }
-  }
-}
-
-/**
  * feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w19:
  * once-warn for >1 Skylight entity (first archetype hit wins). Fires at most
- * once per RenderSystem lifetime and names the WINNING entity handle so the
+ * once per RendererState lifetime and names the WINNING entity handle so the
  * scene author can tell which Skylight is used and that the rest are ignored
  * (F-8: warn carries conflicting entity info; charter P3 explicit failure with
  * a warn-once signal floor, no per-frame flooding).
@@ -119,7 +95,7 @@ export function warnMultiSkylight(
 /**
  * feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w19:
  * once-warn for >1 SkyboxBackground entity (mirrors warnMultiSkylight). Names
- * the winning entity handle; fires once per RenderSystem lifetime.
+ * the winning entity handle; fires once per RendererState lifetime.
  */
 export function warnMultiSkybox(
   frameState: Pick<RenderFrameState, 'warnedMultiSkybox'>,
@@ -135,6 +111,43 @@ export function warnMultiSkybox(
         `Keep a single SkyboxBackground per scene.`,
     );
   }
+}
+
+/**
+ * Once-warn when more than one DirectionalLight sets castShadow. There is one
+ * CSM, owned by the first castShadow light; the rest render unshadowed. Names
+ * the owner and the ignored entities, once per RendererState lifetime.
+ */
+export function warnIgnoredDirectionalShadowCasters(
+  frameState: Pick<RenderFrameState, 'warnedIgnoredDirectionalShadow'>,
+  lights: Pick<LightRoster, 'directional' | 'ignoredDirectionalShadowCasters'>,
+): void {
+  const ignored = lights.ignoredDirectionalShadowCasters ?? [];
+  if (frameState.warnedIgnoredDirectionalShadow || ignored.length === 0) return;
+  frameState.warnedIgnoredDirectionalShadow = true;
+  console.warn(
+    `[forgeax] DirectionalLight: ${ignored.length + 1} DirectionalLights set castShadow; ` +
+      `entity ${lights.directional?.entity ?? 0} owns the single CSM shadow and ` +
+      `${ignored.length === 1 ? 'entity' : 'entities'} ${ignored.join(', ')} render unshadowed. ` +
+      'Set castShadow on one DirectionalLight only.',
+  );
+}
+
+/**
+ * `render-standard-lighting`'s sky step for one view: the multi-Skylight and
+ * multi-SkyboxBackground once-warns, then the lazy equirect projection of the
+ * handle(s) the sky names (see {@link driveLazyEquirectProjection}).
+ */
+export function prepareViewSky(
+  internals: RenderSystemInternals,
+  world: RenderResourceScope,
+  frameState: RenderFrameState,
+  sky: Pick<ExtractedFrame, 'skylight' | 'skylightCount' | 'skybox' | 'skyboxCount'>,
+): void {
+  warnMultiSkylight(frameState, sky.skylightCount, sky.skylight?.entityHandle ?? 0);
+  warnMultiSkybox(frameState, sky.skyboxCount, sky.skybox?.entityHandle ?? 0);
+  for (const handle of selectLazyEquirectHandles(sky.skylight, sky.skybox))
+    driveLazyEquirectProjection(internals, world, frameState, handle);
 }
 
 /**

@@ -183,7 +183,7 @@ declare global {
 
 function declare_capture_hook(capture: () => Promise<Uint8Array>): void {
   // D-1: both __captureLeft and __captureRight share the same capture
-  // function. The parity bench now drives a single ForgeaX preview; left
+  // function. The parity bench now drives a single ForgeAX preview; left
   // vs right is a self-consistency check (same renderer, same frame,
   // same scene — epsilon should be 0 or near-0).
   window.__captureLeft = capture;

@@ -7,12 +7,17 @@ import {
   resetHdrpBuffers,
 } from '../hdrp-buffers';
 import type { RenderSystemRuntime } from '../record/render-context';
+import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
 it('binds the current Standard cluster allocation without a scene mesh or palette', async () => {
   const adapter = (await rhi.requestAdapter()).unwrap();
   const device = (await adapter.requestDevice()).unwrap();
   const fire = vi.fn();
-  const runtime = { device, errorRegistry: { fire } } as unknown as RenderSystemRuntime;
+  const runtime = {
+    device,
+    standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
+    errorRegistry: { fire },
+  } as unknown as RenderSystemRuntime;
   const grid = { x: 32, y: 16, z: 32 };
   const prepared = getOrCreateHdrpBuffers(runtime, grid);
   if (prepared?.kind !== 'storage') throw new Error('Expected Standard storage allocation');

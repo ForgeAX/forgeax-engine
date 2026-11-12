@@ -7,7 +7,7 @@
  * lossless PNG Blob is the browser's presentation serialization boundary; it
  * lets the compositor finish the same frame without redrawing or retrying on
  * the observed pixel result. The Blob path remains the single authoritative
- * readback route for both ForgeaX and Three captures.
+ * readback route for both ForgeAX and Three captures.
  */
 
 export type CanvasReadbackErrorCode =

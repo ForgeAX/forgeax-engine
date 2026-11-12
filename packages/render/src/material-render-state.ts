@@ -56,6 +56,19 @@ function sameReflection(
   return Object.keys(target).length === count + (source.frontFace === undefined ? 1 : 0);
 }
 
+/**
+ * Clipping caps (ClippingOptions.caps) shade the back faces seen through a cut, so
+ * opaque back-culled Standard draws of a capping view rasterize both sides.
+ */
+export function clippingCapRenderState(
+  state: MaterialRenderState | undefined,
+  clipping: { readonly planes: readonly unknown[]; readonly caps?: boolean } | undefined,
+): MaterialRenderState | undefined {
+  if (clipping?.caps !== true || clipping.planes.length === 0) return state;
+  if (state?.blend !== undefined || (state?.cullMode ?? 'back') !== 'back') return state;
+  return { ...state, cullMode: 'none' };
+}
+
 export function transformRenderState(
   state: MaterialRenderState | undefined,
   world: Float32Array,
@@ -116,12 +129,13 @@ export function materialDepthStencil(
   };
 }
 
-/** Like Three's non-VSM shadow side, generated casters render the opposite
- * face of a single-sided surface. Closed meshes avoid self-shadow acne;
- * explicitly double-sided surfaces keep both faces. Custom passes own their state. */
+/** Generated casters preserve the material's sidedness, as in UE's CSM path.
+ * Entry-surface depth remains an occluder when receiver bias/filter taps move
+ * inside a solid near contact. Exit-face depth can report those taps as lit.
+ * Explicit double-sided surfaces and custom passes retain their authored state. */
 export function shadowCasterRenderState(state: MaterialRenderState = {}): MaterialRenderState {
   return {
-    cullMode: state.cullMode === 'none' ? 'none' : state.cullMode === 'front' ? 'back' : 'front',
+    cullMode: state.cullMode ?? 'back',
     ...(state.frontFace === undefined ? {} : { frontFace: state.frontFace }),
     ...(state.depthBias === undefined ? {} : { depthBias: state.depthBias }),
     ...(state.depthBiasSlopeScale === undefined
@@ -185,4 +199,46 @@ export function derivedRenderState<T>(
   const value = derive(state);
   states.set(variant, { base: state === undefined ? undefined : { ...state }, value });
   return value;
+}
+
+const seededDepthState = (state: MaterialRenderState | undefined): MaterialRenderState => ({
+  ...state,
+  depthCompare: 'less-equal',
+});
+const seededMaskState = (state: MaterialRenderState | undefined): MaterialRenderState => ({
+  ...state,
+  depthCompare: 'equal',
+  depthWriteEnabled: false,
+});
+
+/**
+ * Forward `main` over a depth seeded by the identical prepass raster (see
+ * forward-depth-seed). The visible fragment meets equal depth, so `less`
+ * accepts it as `less-equal`. An alpha-masked writer already resolved its
+ * coverage in the prepass; it draws with `equal` and no depth write, so its
+ * clipped and hidden fragments never shade (UE
+ * r.EarlyZPassOnlyMaterialMasking). Other comparisons are authored intent.
+ */
+export function seededDepthRenderState(
+  state: MaterialRenderState | undefined,
+  alphaMask: boolean,
+): MaterialRenderState | undefined {
+  if (seededDepthMasked(state, alphaMask))
+    return derivedRenderState(state, 'seeded-depth-mask', seededMaskState);
+  return (state?.depthCompare ?? 'less') === 'less'
+    ? derivedRenderState(state, 'seeded-depth', seededDepthState)
+    : state;
+}
+
+/**
+ * The masked branch of seededDepthRenderState: a default-depth alpha-masked
+ * writer whose coverage the identical prepass already resolved into depth.
+ */
+export function seededDepthMasked(
+  state: MaterialRenderState | undefined,
+  alphaMask: boolean,
+): boolean {
+  return (
+    alphaMask && state?.depthWriteEnabled !== false && (state?.depthCompare ?? 'less') === 'less'
+  );
 }

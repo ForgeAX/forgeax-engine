@@ -25,11 +25,12 @@ import {
 import { err, ok } from '@forgeax/engine-types';
 import { type RhiCapture, toArtifact, uploadRhiTape } from '../internal/rhi-capture';
 import { forwardGpuStub } from './gpu-stub';
-import type {
-  EngineToHostMessage,
-  ExecutionFrameMessage,
-  ExecutionInitMessage,
-  RetainedExecutionInit,
+import {
+  type EngineToHostMessage,
+  type ExecutionFrameMessage,
+  type ExecutionInitMessage,
+  type RetainedExecutionInit,
+  renderPipelineCapacityOf,
 } from './protocol';
 import {
   MESH_RESIDENCY_REQUEST_LIMIT,
@@ -63,6 +64,15 @@ function renderReadyLimits(
 }
 
 /** Sealed publications bounded by the same finite capacity as Host admission. */
+/**
+ * GPU completion watchdog of one published frame: never sooner than the App frame deadline
+ * (a slow software frame inside its budget is not a lost Renderer) nor than 30 s; none when
+ * the App waits without a deadline.
+ */
+export function renderFrameDeadlineMs(frameTimeoutMs: number | null | undefined): number | null {
+  return frameTimeoutMs === null ? null : Math.max(30_000, frameTimeoutMs ?? 0);
+}
+
 export class SourceRenderWorker {
   private worker: Worker | undefined;
   private publisher: ReturnType<typeof createRenderPublisher> | undefined;
@@ -111,7 +121,12 @@ export class SourceRenderWorker {
     | undefined;
   private captureRequest: { id: number; finish(result: CaptureResult): void } | undefined;
   private latestGpuPassTiming:
-    | { readonly frameId: number; readonly observation: GpuPassTimingObservation }
+    | {
+        readonly frameId: number;
+        readonly observation: GpuPassTimingObservation;
+        /** Frames rendered untimed because every timing slot was in flight. */
+        readonly skippedFrames: number;
+      }
     | undefined;
   private deviceGeneration: number | undefined;
   private captureCandidatePipelines:
@@ -129,12 +144,7 @@ export class SourceRenderWorker {
     private readonly features: readonly RenderFeature<unknown>[] = [],
     private readonly targets?: RenderPublicationTargetOwner,
   ) {
-    this.publicationCapacity =
-      init.diagnostics?.renderPipelineCapacity === 4
-        ? 4
-        : init.diagnostics?.renderPipelineCapacity === 3
-          ? 3
-          : 2;
+    this.publicationCapacity = renderPipelineCapacityOf(init.diagnostics?.renderPipelineCapacity);
     this.meshResidency = new SourceMeshResidency(world, () => {
       const worker = this.worker,
         epoch = this.epoch,
@@ -448,6 +458,8 @@ export class SourceRenderWorker {
             failure(cause, undefined, false);
             return;
           }
+        } else if (message.kind === 'gpu-pass-timing') {
+          this.receiveGpuPassTiming(message);
         } else if (message.kind === 'completed') {
           clearTimeout(this.deadline);
           const submitted = this.publishedFrames.get(message.revision);
@@ -497,12 +509,6 @@ export class SourceRenderWorker {
               message.frame.frameId > this.latestCompletedTerrainFrame)
           )
             this.latestCompletedTerrainFrame = message.frame.frameId;
-          if (message.gpuPassTiming !== undefined) {
-            this.latestGpuPassTiming = {
-              frameId: message.frame.frameId,
-              observation: message.gpuPassTiming,
-            };
-          }
           if (this.publisher?.inspect().inFlight) this.armFrameDeadline();
         }
       };
@@ -568,8 +574,10 @@ export class SourceRenderWorker {
         [canvas, hostChannel.port1],
       );
       // The same failure owner handles a GPU queue that never completes.
+      const frameDeadlineMs = renderFrameDeadlineMs(this.init.frameTimeoutMs);
       this.armFrameDeadline = () => {
-        this.deadline = setTimeout(() => failure('Render Worker frame timed out'), 30_000);
+        if (frameDeadlineMs === null) return;
+        this.deadline = setTimeout(() => failure('Render Worker frame timed out'), frameDeadlineMs);
       };
     });
   }
@@ -598,13 +606,15 @@ export class SourceRenderWorker {
    * only when the current session is ready and has a publication slot. Loss
    * clears the old queue; that is not capacity in the replacement session.
    */
-  async waitForPublicationCapacity(): Promise<boolean> {
+  async waitForPublicationCapacity(onWait?: () => void): Promise<boolean> {
     while (!this.disposed) {
+      if (!this.hasPublicationCapacity) onWait?.();
       const ready = this.readyWait;
       await ready;
       if (ready !== this.readyWait) continue;
       if (!this.inspectionReady) return false;
       if (this.hasPublicationCapacity) return true;
+      onWait?.();
       await new Promise<void>((resolve) => this.capacityWaiters.push(resolve));
     }
     return false;
@@ -954,8 +964,25 @@ export class SourceRenderWorker {
       }
     });
   }
+  private receiveGpuPassTiming(
+    message: Extract<RenderWorkerOutput, { kind: 'gpu-pass-timing' }>,
+  ): void {
+    // Readback resolves after credit and may land after a newer frame's timing.
+    const latest = this.latestGpuPassTiming;
+    if (latest !== undefined && latest.frameId > message.frameId) return;
+    this.latestGpuPassTiming = {
+      frameId: message.frameId,
+      observation: message.gpuPassTiming,
+      skippedFrames: message.skippedFrames,
+    };
+  }
   inspectGpuPassTiming():
-    | { readonly frameId: number; readonly observation: GpuPassTimingObservation }
+    | {
+        readonly frameId: number;
+        readonly observation: GpuPassTimingObservation;
+        /** Frames rendered untimed because every timing slot was in flight. */
+        readonly skippedFrames: number;
+      }
     | undefined {
     return this.latestGpuPassTiming;
   }

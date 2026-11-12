@@ -240,9 +240,9 @@ export interface LimitExceededDetail {
 
 /**
  * Detail structure exclusive to the `'render-system-multi-light'` path.
- * The only remaining cardinality rule is one global DirectionalLight; all
- * PointLight, SpotLight, and RectArea lights are admitted through the shared
- * shared Cluster corpus and are admitted by the same local-light contract.
+ * Retained vocabulary: every DirectionalLight is now rendered (the first owns
+ * CSM shadows; later ones are unshadowed Cluster members), so RenderSystem no
+ * longer emits this code.
  */
 export interface RhiMultiLightDetail {
   readonly type: 'directional';

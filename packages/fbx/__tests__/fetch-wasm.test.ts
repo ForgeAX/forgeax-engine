@@ -27,8 +27,8 @@ const ERROR_CODES = {
 
 describe('fetch-wasm git origin parsing', () => {
   it('parses SSH origin (git@github.com:OWNER/REPO.git)', () => {
-    const result = parseGitOrigin('git@github.com:ForgeaX-Games/forgeax-engine.git');
-    expect(result).toEqual({ owner: 'ForgeaX-Games', repo: 'forgeax-engine' });
+    const result = parseGitOrigin('git@github.com:ForgeAX/forgeax-engine.git');
+    expect(result).toEqual({ owner: 'ForgeAX', repo: 'forgeax-engine' });
   });
 
   it('parses SSH origin without .git suffix', () => {
@@ -37,8 +37,8 @@ describe('fetch-wasm git origin parsing', () => {
   });
 
   it('parses HTTPS origin (https://github.com/OWNER/REPO.git)', () => {
-    const result = parseGitOrigin('https://github.com/ForgeaX-Games/forgeax-engine.git');
-    expect(result).toEqual({ owner: 'ForgeaX-Games', repo: 'forgeax-engine' });
+    const result = parseGitOrigin('https://github.com/ForgeAX/forgeax-engine.git');
+    expect(result).toEqual({ owner: 'ForgeAX', repo: 'forgeax-engine' });
   });
 
   it('parses HTTPS origin without .git suffix', () => {
@@ -56,9 +56,9 @@ describe('fetch-wasm git origin parsing', () => {
   // used to be captured into the host group, tripping E3_ORIGIN_UNSUPPORTED_HOST.
   it('parses HTTPS origin with embedded token credential (TOKEN@github.com)', () => {
     const result = parseGitOrigin(
-      'https://ghp_ABCDEF1234567890@github.com/ForgeaX-Games/forgeax-engine.git',
+      'https://ghp_ABCDEF1234567890@github.com/ForgeAX/forgeax-engine.git',
     );
-    expect(result).toEqual({ owner: 'ForgeaX-Games', repo: 'forgeax-engine' });
+    expect(result).toEqual({ owner: 'ForgeAX', repo: 'forgeax-engine' });
   });
 
   it('parses HTTPS origin with embedded user:password credential', () => {

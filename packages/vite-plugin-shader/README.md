@@ -37,7 +37,10 @@ Source compilation keeps the complete variant roster, but projects each variant'
 source and import catalog only when a compiler slot starts that job. The worker
 pool therefore retains prepared inputs for active jobs rather than the complete
 Cartesian roster. A single worker follows the same sequential admission rule;
-results retain their original order. After all jobs settle, the pool closes each
+results retain their original order. Worker replies transmit the shared WGSL
+body once, and the parent interns equal immutable bodies across completed
+variants. Each result keeps its own metadata while its public WGSL fields
+refer to the same canonical body. After all jobs settle, the pool closes each
 worker's message port and awaits its normal exit rather than interrupting native
 or WASM teardown with `terminate()`. Job errors retain precedence over shutdown
 errors, and a worker that exits before returning its job rejects that job.
@@ -46,8 +49,11 @@ This applies to both Vite and the standalone source builder.
 Production and development publish the same `5.0.0` manifest: each WGSL source
 is identified by a domain-separated SHA-256 digest of its ordered fragment
 digests, while repeated source blocks are stored once in a shared fragment table.
-Material variants and direct entries refer to those identities. Identical ABI
-receipts and entry-read arrays are stored once; each row retains the exact
+Material variants and direct entries refer to those identities. A synchronous
+publication interns each immutable fact object once before canonical value
+deduplication; distinct equal objects still share the same table index. This
+identity reuse ends with that publication, so a later source or fact edit is
+read afresh. Identical ABI receipts and entry-read arrays are stored once; each row retains the exact
 receipt and entry-read references, including the distinction between missing and
 empty facts. Every pooled fragment, source sequence, receipt and entry-read
 reference is still validated;
@@ -64,6 +70,25 @@ publisher. It does not expand and republish every engine variant; profile
 replacement and plugin close retire the prepared publication with its input
 generation. Source-byte validation, the variant roster and source-build fallback
 remain authoritative.
+
+### Complete engine profiles
+
+The packaged base/point profiles and shared engine input must carry the complete
+renderer publication. Each material primary and variant keeps facts from its own
+compiled artifact; publication pooling stores compact indices and expansion
+resolves them before profile admission.
+
+| Published row | Required facts |
+|:--|:--|
+| Material primary and each variant | Artifact hash, exact source digest, current compiler profile, `/3` reflection, entry reads, and its own receipt/defines |
+| Resampling compute and fragment programs | Stable engine identifier, exact entry stages, `/3` reflection, compiler/source identity, and output contract |
+| Direct engine entry | Exact source/reflection references and selected variant identity where the entry is material-backed |
+
+`buildStart()` submits both light-texture resampling programs independently of
+the optional SSAO entry. An incomplete or stale packaged profile falls back to
+source compilation; shared engine input with missing rows or artifact facts is
+rejected and must be regenerated with the normal engine build. Custom manifests
+remain optional and continue to use `ShaderRegistry`'s general admission rules.
 
 Standalone callers use `JSON.stringify(manifest)` on the builder result. Its
 serialization retains verified shared blocks and projects only entry metadata;
@@ -148,7 +173,7 @@ an obsolete container version or an absent profile warns or falls back and
 compiles from source instead of publishing stale bindings.
 
 The public `VIEW_ABI` export is typed transport metadata for
-`forgeax_view::common`: group 0, binding 0, and the 1280-byte upload shape, including camera clipping planes, fog and atmosphere. It contains no live WebGPU object. Consumers should use the manifest
+`forgeax_view::common`: group 0, binding 0, and the 1296-byte upload shape, including camera clipping planes, fog, atmosphere and sky fog. It contains no live WebGPU object. Consumers should use the manifest
 and reflection output; they must not add a second manifest URL or hard-code a
 carrier-side index.
 
@@ -207,7 +232,7 @@ again. A completed authored generation is not held in a permanent option cache.
 | `engineShaderSourceDigest(root)` | Packaged-profile provenance: SHA-256 over every `*.wgsl` under `root`, recorded in the packaged container and re-derived by the loader |
 | `encodePackagedProfiles` / `decodePackagedProfiles` / `packagedProfilePublication` / `PACKAGED_PROFILES_FILE` / `PACKAGED_PROFILE_NAMES` | The pooled `profiles.json.gz` container and exact per-profile publication rebuild |
 | `toRollupLog(err)` | `ShaderError` → `RollupLog`（hint 双投影，w14 落地） |
-| `ForgeaXShaderRollupLog` | RollupLog 扩展类型（`hint` 顶层投影是 forgeax 自定义字段） |
+| `ForgeAXShaderRollupLog` | RollupLog 扩展类型（`hint` 顶层投影是 forgeax 自定义字段） |
 | `virtual:forgeax/bundler` | Build-time virtual module emitting `forgeaxBundlerAdapter()` factory（feat-20260608 M3，详见下节） |
 
 ## `virtual:forgeax/bundler` virtual module
@@ -217,7 +242,7 @@ plugins for unselected projects performs no revision subprocess. Explicit
 `FORGEAX_SOURCE_SHA` precedes `GITHUB_SHA`; an active load otherwise queries Git
 in the current working directory and keeps an undefined revision outside Git.
 
-> feat-20260608-create-app-param-surface-trim / M3 / D-4 q7-A: a single inline-emit virtual module that surfaces the build-time bundler-injected wiring (`shaderManifestUrl` + optional `importTransport`) as a `BundlerOptions`-compatible factory call. AI users discover the entry through one import line; the manifest URL stays a single SSOT inside the plugin emit path.
+> The inline virtual module returns renderer build inputs and App host capabilities through one factory call. It keeps the shader manifest URL as a single SSOT and moves Vite environment, HMR, debug recorder, and browser relay interpretation into this tool adapter.
 
 ```ts
 import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
@@ -225,7 +250,7 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 // One-screen takeoff: pass adapter() directly as the third arg.
 const app = await createApp(canvas, {}, forgeaxBundlerAdapter());
 
-// Spread form when a real dev import-transport must be wired:
+// Spread form when a host supplies a runtime import transport:
 import { createDevImportTransport } from '@forgeax/engine-runtime';
 const bundler = { ...forgeaxBundlerAdapter(), importTransport: createDevImportTransport() };
 const renderer = await createRenderer(canvas, {}, bundler);
@@ -235,7 +260,8 @@ const renderer = await createRenderer(canvas, {}, bundler);
 
 - `forgeaxShader(options?)` mounts `resolveId` (claims the virtual id) + `load` (returns the inline adapter source) hooks alongside the 4 build hooks. Same plugin, no second package.
 - The adapter source closes over the plugin's `SHADER_MANIFEST_URL` constant -- a single SSOT shared with `generateBundle` emit + dev `configureServer` middleware. `apps/` source never types the literal `'/shaders/manifest.json'`; CI grep gate (AC-12) enforces zero hits.
-- The adapter source **does NOT import** `@forgeax/engine-app`. The return value relies on TypeScript structural typing to satisfy `BundlerOptions` at every callsite (D-4 q7-A reverse-coupling guard: `vite-plugin-shader` -> `@forgeax/engine-app` is forbidden by the package layering).
+- App consumes the generated adapter as `AppHostAdapter`; generic App runtime code never reads Vite metadata. Optional recorder and browser bridge methods dynamically import `@forgeax/engine-app/host-adapter` only when the Vite gates enable them, and HMR teardown is registered by the tool adapter.
+- The plugin package does not add an App runtime dependency. Its ambient virtual module declaration type-imports the existing App facade so consumer callsites retain the full host adapter contract.
 - The TypeScript ambient module declaration (`declare module 'virtual:forgeax/bundler'`) ships in each app's `src/vite-env.d.ts` so per-app `tsc --noEmit` resolves the import without each app having to depend on the plugin's package types.
 
 ## 关联

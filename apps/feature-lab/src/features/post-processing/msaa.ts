@@ -7,7 +7,7 @@ export default defineFeature({
   catalog: 'MSAA',
   kind: 'visual',
   summary:
-    'Camera.antialias = ANTIALIAS_MSAA renders scene and depth into 4x multisampled attachments and resolves them.',
+    'Camera.antialias = ANTIALIAS_MSAA renders scene and depth into 4x multisampled attachments and resolves them. WebGL2 qualifies its HDR/depth resolve profile on the actual device.',
   expect:
     'ON: bar edges are smooth and the thinnest bars stay continuous lines. OFF: hard stair-steps and dotted, broken bars.',
   setup({ world }) {

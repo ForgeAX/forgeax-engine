@@ -111,7 +111,7 @@ export async function verifyMaterialVersions(device: RhiDevice) {
       materialParamSchema: [{ name: 'tint', type: 'color' }, ...fields],
       paramSnapshot: { tint: [0, 0, 1, 1] },
     });
-    expect(scene.materialBuffer).not.toBe(oldBuffers.material);
+    expect(Object.is(scene.materialBuffer, oldBuffers.material)).toBe(false);
     const blueAddress = scene.materialIndexForResource(material);
     if (blueAddress === undefined) throw new Error('Missing resized material');
     aborted = scene.captureResources().unwrap();

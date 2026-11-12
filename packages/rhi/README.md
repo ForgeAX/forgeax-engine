@@ -8,6 +8,13 @@ submission/write bounds. Backends retain their detection, native diagnostic
 payloads and Result-versus-throw channel; availability and native failures remain
 backend-owned.
 
+Adapter requests include the standard `featureLevel` option alongside
+`powerPreference` and `forceFallbackAdapter`. Omitting it retains WebGPU's core
+default. A compatibility request can resolve to a core adapter on a provider
+that does not implement that feature level. Only the admitted device's features
+and limits establish its execution contract; requesting a mode is not evidence
+that it ran. Optional Renderer effects retain their own feature/limit admission.
+
 ## Charter propositions (顶部命题 / AI users read AGENTS.md §RHI first)
 
 | Proposition | This package's contract |
@@ -35,6 +42,12 @@ snapshot. Diagnostic `collect()` retains the current and subsequent graph until 
 returned scope is disposed; ordinary runtime use has no history retainer. See the
 [backend contract](../rhi-webgpu/README.md#device-pipeline-library) for the failure,
 readback and dependency-lifetime rules.
+
+The optional internal `pendingRuntimeCompilation()` signal borrows existing
+native compilation records. It snapshots outstanding runtime demands, including
+a demanded warmup recipe, and does not include later requests or undemanded
+background work. Render combines this with its shader-module and graphics
+preparation owners before exposing a generation-fenced receipt completion.
 
 ## Pipeline compilation inspection
 
@@ -100,7 +113,7 @@ silently promoted from a Dawn or mock result.
 |:--|:--|
 | `RhiDevice` | resource create: `createBuffer` / `createTexture` / `createSampler` / `createBindGroupLayout` / `createPipelineLayout` / `createBindGroup` / `createRenderPipeline` / `createComputePipeline` / `createQuerySet` / `createCommandEncoder` / `createRenderBundleEncoder`; resource destroy: `destroyBuffer(buf): Result<void, RhiError>` / `destroyQuerySet(querySet): Result<void, RhiError>` / `destroyTexture(tex): Result<void, RhiError>`; readonly: `caps` / `features` / `limits` / `queue` / `lost` |
 | `RhiQueue` | submit: `submit(commandBuffers)`; copy: `writeBuffer(buffer, offset, data, dataOffset?, size?)` (real-path forwarding to `GPUQueue` w/ bounds guard, D-S3 #4) |
-| `RhiCommandEncoder` | pass open: `beginRenderPass` / `beginComputePass`; copy: `copyBufferToBuffer` (3-arg + 5-arg overloads) / `copyBufferToTexture` / `copyTextureToBuffer` / `copyTextureToTexture`; query: `resolveQuerySet` (validated forwarding); misc: `clearBuffer` / `pushDebugGroup` / `popDebugGroup` / `insertDebugMarker`; lifecycle: `finish() -> Result<CommandBuffer, RhiError>`; plus the ForgeaX compound `encodeEmptyComputePass(desc)` |
+| `RhiCommandEncoder` | pass open: `beginRenderPass` / `beginComputePass`; copy: `copyBufferToBuffer` (3-arg + 5-arg overloads) / `copyBufferToTexture` / `copyTextureToBuffer` / `copyTextureToTexture`; query: `resolveQuerySet` (validated forwarding); misc: `clearBuffer` / `pushDebugGroup` / `popDebugGroup` / `insertDebugMarker`; lifecycle: `finish() -> Result<CommandBuffer, RhiError>`; plus the ForgeAX compound `encodeEmptyComputePass(desc)` |
 | `RhiRenderPassEncoder` | bind: `setPipeline` / `setBindGroup` / `setVertexBuffer` / `setIndexBuffer`; draw: `draw` / `drawIndexed` / `drawIndirect` / `drawIndexedIndirect`; state: `setViewport` / `setScissorRect` / `setBlendConstant` / `setStencilReference`; query: `beginOcclusionQuery` / `endOcclusionQuery` (stateful forwarding); debug: `pushDebugGroup` / `popDebugGroup` / `insertDebugMarker`; lifecycle: `end()`; `executeBundles` executes compatible typed bundles and clears pipeline/binding/vertex/index state |
 | `RhiComputePassEncoder` | `setPipeline` / `setBindGroup` / direct `dispatchWorkgroups` / buffer-driven `dispatchWorkgroupsIndirect` / `end` |
 | `RhiRenderPipelineOps` | render-pipeline cache + dispatch helpers (op-set scoped to render path) |
@@ -147,6 +160,11 @@ markers when they need an encoder-level copy envelope.
 
 The descriptor projections above are wrapped by an internal `ExplicitUndefined<T>` mapped type that converts every `?: T` optional field into `?: T | undefined`. This is the **shape bridge** between `@webgpu/types` (W3C spec form) and the forgeax RHI surface.
 
+The published declarations retain a type-only reference to this package's declared
+`@webgpu/types` dependency. Consumers with an explicit `compilerOptions.types`
+list still receive the native declarations used by these projections. A field
+such as `featureLevel` remains optional even when the bundled DOM library predates it.
+
 | Concern | spec form (`@webgpu/types`) | forgeax form (this package) |
 |:--|:--|:--|
 | optional field syntax | `label?: string` (omit-or-string) | `label?: string \| undefined` (omit, `undefined`, or string) |
@@ -181,7 +199,7 @@ The descriptor projections above are wrapped by an internal `ExplicitUndefined<T
 | `'queue-write-buffer-out-of-bounds'` | `writeBuffer(buf, offset, data)` offset alignment or bounds violation; `.hint` carries concrete `got X` / `got Y` / `got Z` numbers | W3C 23.2 writeBuffer |
 | `'render-system-no-camera'` | Retained error vocabulary for existing external consumers. Current RenderSystem accepts zero cameras as a normal clear/UI frame and does not emit this code (engine-internal phase, feat-20260509-ecs-render-bridge-mvp D-S7) | engine-internal RenderSystem |
 | `'render-system-multi-camera'` | RenderSystem found N>1 entities matching `(Transform + Camera)`; the first archetype iteration hit is rendered, subsequent Cameras are ignored (D-S7) | engine-internal RenderSystem |
-| `'render-system-multi-light'` | RenderSystem found N>1 `DirectionalLight` entities; PointLight / SpotLight / RectArea lights are admitted through the shared Cluster corpus. 0-light + standard renders black (physically correct). `.detail = { type: 'directional', got: number }` identifies the offending bucket | engine-internal RenderSystem |
+| `'render-system-multi-light'` | Retained error vocabulary for existing external consumers. Current RenderSystem renders every `DirectionalLight` (the first owns CSM shadows and the atmosphere sun; later ones are unshadowed Cluster members) and does not emit this code. `.detail = { type: 'directional', got: number }` | engine-internal RenderSystem |
 | `'asset-not-registered'` | A `MeshFilter.assetHandle` is not in `engine.assets` (`AssetRegistry.get(handle)` returned undefined); the single entity is skipped (other entities continue rendering — charter proposition 9 graceful degradation). `.detail = { assetHandle: number }` carries the offending handle | engine-internal RenderSystem |
 | `'device-lost'` | `GPUDevice.lost` Promise resolved (spec 22.1 device lost flow); driver crash / power saver / extension swap. `.expected` / `.hint` template guides callers to `renderer.onError(cb)` + page reload (feat-20260511-asset-system-v1 D-P4 + R-02 §2.1) | W3C 22.1 device lost |
 | `'oom'` | `GPUOutOfMemoryError` subtype — buffer / texture allocation exceeded available GPU memory. `.hint` suggests `.destroy()` prior resources / split work across submissions / check `device.limits.maxBufferSize` | W3C 22.2 GPUOutOfMemoryError |
@@ -306,6 +324,30 @@ A bind group layout entry `{ externalTexture: {} }` (WGSL `texture_external`,
 copy fallback and borrowed textures share the same layout and shader. rhi-null
 admits both methods structurally (`caps.textureImport` and `caps.externalTexture`
 are `true`) so renderer lifecycle is unit-testable; it produces no pixels.
+
+## Multisample render receipt
+
+`probeMultisampleRenderCapability(device, createModule, generation)` qualifies
+the fixed four-sample RGBA16F/D32FS8 raster and resolve profile through opaque
+RHI handles. Its readback requires exact partial coverage and rejects Null
+evidence. `createModule` is the synchronous shader-module factory. The pending
+probe and its result are scoped to one physical device;
+`multisampleRenderCapability(device)` reads the completed result. Failure uses
+`rhi-texture-format-capability-unavailable` with the failing stage and generation.
+`resolvedCoverage` preserves the exact binary16 red-channel bit patterns in row order.
+
+## r32float-mip-sampled-render receipt
+
+`probeR32FloatRenderCapability(device, createModule, generation)` qualifies the
+portable raster path through opaque RHI handles. It renders a nonzero R32F sample
+to a separate attachment, copies into a mip, awaits submission completion and
+checks the real readback. One memoized result belongs to each physical device;
+RhiNull is refused. Renderer owns when this initialization probe is requested.
+
+The closed receipt names `r32float-mip-sampled-render`, `sampled-render-bind-group`
+and `render-attachment` usage. It does not claim storage support. The existing
+storage profile remains unchanged. Both use `validateR32FloatReceipt`; consumers
+must also require real admitted stages and matching generation/identity.
 
 ## r32float-mip-sampled-storage receipt
 
@@ -458,7 +500,7 @@ if (!dr.ok) {
     case 'queue-write-buffer-out-of-bounds': /* realign offset, re-check buffer.size */ break;
     case 'render-system-no-camera':   /* legacy diagnostic; current zero-camera frames are valid */ break;
     case 'render-system-multi-camera':/* deduplicate Camera entities or wait for feat-future-multi-viewport */ break;
-    case 'render-system-multi-light': /* keep one DirectionalLight; local lights use Cluster */ break;
+    case 'render-system-multi-light': /* retained vocabulary; not emitted */ break;
     case 'asset-not-registered':      /* use HANDLE_CUBE / HANDLE_TRIANGLE imports; or feat-future-asset-system custom register */ break;
     case 'device-lost':               /* renderer.onError fan-out + page reload; driver / OS-side recovery */ break;
     case 'oom':                       /* release prior buffers/textures via .destroy(); shrink descriptor; check device.limits.maxBufferSize */ break;
@@ -521,3 +563,17 @@ The WebGPU and wgpu adapter shells share `projectAdapterCapabilities` to snapsho
 feature sets and numeric enumerable limits, including inherited native accessors.
 Absent facts yield empty collections; device request and error handling stay with
 the backend shells.
+
+## Buffer upload semantics
+
+`RhiQueue.writeBuffer` uses bytes for the destination offset, TypedArray elements
+for source `dataOffset/size`, and bytes for ArrayBuffer/DataView source ranges.
+Omitted size means the remaining source view; explicit zero stays zero. The
+resulting byte count must be a multiple of four. `bufferWriteRange` is the pure
+shared conversion authority used by backends and Debug; it rejects invalid
+source ranges without clipping. Source subviews retain their own byte offset.
+
+Buffer-copy shorthand expands to the stable full native signature. An omitted
+size uses the source buffer size; explicit zero and complete-form offsets remain
+unchanged. See [CI compatibility](../../scripts/ci/README.md#pinned-webgpu-compatibility)
+for the all-interface change gate and real GPU assertions.

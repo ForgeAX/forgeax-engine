@@ -169,7 +169,8 @@ export class RhiWgpuDevice {
      */
     createTextureView(texture: RhiWgpuTexture, desc_js: any): RhiWgpuTextureView;
     createTexture(desc_js: any): RhiWgpuTexture;
-    registerLostCallback(js_callback: Function): void;
+    destroy(): void;
+    registerLostCallback(callback: Function): void;
     readonly features: Set<any>;
     readonly forgeaxToken: number;
     /**
@@ -554,6 +555,7 @@ export interface InitOutput {
     readonly rhiwgpudevice_createShaderModule: (a: number, b: any) => [number, number, number];
     readonly rhiwgpudevice_createTexture: (a: number, b: any) => [number, number, number];
     readonly rhiwgpudevice_createTextureView: (a: number, b: number, c: any) => [number, number, number];
+    readonly rhiwgpudevice_destroy: (a: number) => void;
     readonly rhiwgpudevice_features: (a: number) => any;
     readonly rhiwgpudevice_forgeaxToken: (a: number) => number;
     readonly rhiwgpudevice_limits: (a: number) => any;
@@ -621,10 +623,10 @@ export interface InitOutput {
     readonly start: () => void;
     readonly validate: (a: number) => [number, number, number];
     readonly validate_render_entries: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h4183095fef8c09a0: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h1312d179d1d9248b: (a: number, b: number, c: any, d: any) => void;
     readonly wasm_bindgen__convert__closures_____invoke__h9a8e4b1067196a8b: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h92ceaa4223fd4913: (a: number, b: number) => number;
+    readonly wasm_bindgen__convert__closures_____invoke__ha492078d2fab50b0: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen__convert__closures_____invoke__h92f313c647ae0719: (a: number, b: number) => number;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

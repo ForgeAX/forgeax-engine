@@ -64,7 +64,9 @@ describe('punctual light defaults', () => {
     // Extraction requests the shadow; the Render World assigns the light's tile.
     expect(on.lights.spot[0]).toMatchObject({ castShadow: true, shadowAtlasTile: -1 });
     expect(on.lights.spot[0]?.lightViewProj).toBeDefined();
-    expect(renderLightsOf(createRenderWorld()).sync(on.lights).spot[0]?.shadowAtlasTile).toBe(0);
+    const lightOwner = renderLightsOf(createRenderWorld());
+    lightOwner.adopt(on.lights);
+    expect(lightOwner.roster.spot[0]?.shadowAtlasTile).toBe(0);
     world.set(sun, DirectionalLight, { castShadow: false }).unwrap();
     world.set(spot, SpotLight, { castShadow: false }).unwrap();
     const disabled = extract();

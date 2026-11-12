@@ -58,7 +58,7 @@ struct Surface {
   const material = await prepareRayMaterialPublication(
     'emission',
     emissionRayMaterial(),
-    createMaterialPackCooker([directory]),
+    createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' }),
   );
   return { raster, material };
 }

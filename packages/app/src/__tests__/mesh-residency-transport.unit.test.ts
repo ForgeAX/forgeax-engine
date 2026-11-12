@@ -880,6 +880,7 @@ it('seals transferable mesh evidence without truncating safe-integer request ide
           isCurrent: () => true,
           release: () => undefined,
           recordStageLane: () => ok(lane),
+          consumeRecordStage: () => lane,
         }),
     } as unknown as Renderer,
     identity,
@@ -962,7 +963,13 @@ it('skips stale physical evidence without retiring its owner and rechecks recove
     {
       currentDeviceGeneration: () => 7,
       preparePublishedMeshResidency: async () =>
-        ok({ deviceGeneration: 7, isCurrent: () => current, release, recordStageLane }),
+        ok({
+          deviceGeneration: 7,
+          isCurrent: () => current,
+          release,
+          recordStageLane,
+          consumeRecordStage: () => (current ? recordStageLane().value : undefined),
+        }),
     } as unknown as Renderer,
     identity,
     () => {},
@@ -1011,6 +1018,11 @@ it('retains current-frame rejection and unexpected physical failures after curre
           },
           release: () => undefined,
           recordStageLane,
+          consumeRecordStage: (frame: FrameReceipt) => {
+            if (failure) throw Error('physical owner failed');
+            const lane = recordStageLane(frame);
+            return lane.ok ? lane.value : undefined;
+          },
         }),
     } as unknown as Renderer,
     identity,

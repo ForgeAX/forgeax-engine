@@ -10,6 +10,16 @@ The public SDK bundles that patched dependency. Source installs apply the same
 patch through pnpm's workspace declaration or Bun's root `patchedDependencies`;
 both lockfiles retain their package manager's native patch record.
 
+The same pinned patch reads an already available native injected implementation
+directly when the native event bus has no read interceptors. It consults current
+Fiber storage on every read; it does not retain a second service value. Accessors,
+interceptors, custom event accessors/overrides and missing/retired implementations
+keep the ordinary resolution and diagnostic path, including caller tracing.
+Run [`bench/service-reads.mjs`](bench/service-reads.mjs) against a built Cordis
+entry and private output for the allocation regression and positive control.
+Provider retirement/reinstall is a semantic control; its cold cost is separate
+from that bench's steady read rates.
+
 | Identity | Authority |
 |:--|:--|
 | Asset GUID | Pack namespace and output sourceKey |
@@ -135,7 +145,7 @@ const fiber = await ctx.plugin(optionalGameFeature);
 await fiber.dispose();
 ```
 
-| Cordis primitive | ForgeaX use |
+| Cordis primitive | ForgeAX use |
 |:--|:--|
 | `Context` | Capability scope for one App, Worker realm, or standalone World |
 | `Plugin.inject` | Declares dependencies such as `world`, `renderer`, and `assets` |
@@ -144,7 +154,7 @@ await fiber.dispose();
 | `Fiber` | State, update, and disposal for one activation |
 | `Context.isolate` | Separates same-named service scopes without another container |
 
-`EngineContextServices` is the only ForgeaX type extension point. Domain packages augment native `Context` with services such as `world`, `input`, `audio`, and `physics`; the augmentation adds no runtime layer.
+`EngineContextServices` is the only ForgeAX type extension point. Domain packages augment native `Context` with services such as `world`, `input`, `audio`, and `physics`; the augmentation adds no runtime layer.
 
 ## Engine built-in profiles
 

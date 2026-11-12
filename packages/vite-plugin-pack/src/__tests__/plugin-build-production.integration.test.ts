@@ -222,7 +222,22 @@ export default definePack({
     process.chdir(root);
     try {
       const emitted: Array<{ fileName?: string; name?: string; source?: string | Uint8Array }> = [];
-      const plugin = pluginPack({ roots: [assets], importers: [fixtureImporter] });
+      let imports = 0;
+      const options = {
+        roots: [assets],
+        importers: [
+          {
+            ...fixtureImporter,
+            async import(context: Parameters<typeof fixtureImporter.import>[0]) {
+              imports++;
+              return fixtureImporter.import(context);
+            },
+          },
+        ],
+        ddc: { buildCacheRoot: resolve(root, 'build-cache') },
+        producerIdentity: 'sealed-build-fixture-v1',
+      };
+      const plugin = pluginPack(options);
       plugin.configResolved?.({ base: '/preview/' } as Parameters<
         NonNullable<typeof plugin.configResolved>
       >[0]);
@@ -253,6 +268,52 @@ export default definePack({
       expect(
         emitted.some((asset) => asset.source?.toString().includes('createDevImportTransport')),
       ).toBe(false);
+      await plugin.closeBundle();
+      const warm = pluginPack(options);
+      const restored: typeof emitted = [];
+      try {
+        await warm.generateBundle.call({
+          emitFile(asset) {
+            restored.push(asset);
+            return asset.fileName ?? asset.name ?? 'asset';
+          },
+          getFileName(referenceId) {
+            return `assets/${referenceId}-hash`;
+          },
+        });
+        expect(imports).toBe(1);
+        expect(
+          restored.find((asset) => asset.fileName === `assets/${GUID}-body.bin`)?.source,
+        ).toEqual(new Uint8Array([4, 5, 6]));
+        const warmRows = decodeCatalogWire(
+          JSON.parse(
+            String(restored.find((asset) => asset.fileName === 'pack-index.json')?.source),
+          ),
+        ).unwrap();
+        expect(
+          warmRows.find((entry) => entry.guid.toLowerCase() === GUID)?.publication?.outputs,
+        ).toEqual(row?.publication?.outputs);
+      } finally {
+        await warm.closeBundle();
+      }
+      const dev = pluginPack(options);
+      try {
+        dev.configureServer({ middlewares: { use() {} }, ws: { send() {} } });
+        await dev.ready();
+        expect(imports).toBe(1);
+        const devRow = dev.catalogSnapshot().find((entry) => entry.guid === GUID);
+        expect(devRow?.publication?.outputs).toEqual([
+          expect.objectContaining({
+            guid: GUID,
+            sourceKey: 'fixture/main',
+            kind: 'fixture-mesh',
+            refs: [],
+          }),
+        ]);
+        expect(devRow?.publication?.current.packageUrl).toMatch(/^\/__forgeax-ddc\//);
+      } finally {
+        await dev.closeBundle();
+      }
     } finally {
       process.chdir(previousCwd);
     }

@@ -14,6 +14,7 @@ import { lensFlareGuardBandSize } from '../features/lens-flare-graph';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 import { setActiveCamera } from '../systems/active-camera';
+import { prepareFeatureFrame } from './feature-frame-driver';
 
 function fixture() {
   const world = new World();
@@ -103,7 +104,7 @@ describe('camera LensFlare', () => {
   it('creates no resources for disabled cameras and packs one shared parameter layout', () => {
     const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
     try {
-      const frame = host.runFrame([
+      const frame = prepareFeatureFrame(host, [
         {
           identity: 'main',
           render: true,

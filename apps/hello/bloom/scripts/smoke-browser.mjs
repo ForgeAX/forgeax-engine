@@ -217,12 +217,10 @@ try {
     { timeout: 30_000 },
   );
 
-  let targetSubmitted = 0;
-  async function waitForSubmitted(additional) {
-    targetSubmitted += additional;
+  async function waitForReady(additional) {
     await page.waitForFunction(
-      (target) => (globalThis.__bloomCarrierProbe?.inspect()?.submittedFrames ?? 0) >= target,
-      targetSubmitted,
+      async (count) => (await globalThis.__bloomCarrierProbe.waitForReadyFrames(count)) === count,
+      additional,
       { timeout: 30_000 },
     );
   }
@@ -267,9 +265,9 @@ try {
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('on'));
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(true));
-  await waitForSubmitted(frames);
+  await waitForReady(frames);
   const onStage = await captureStage('on');
-  await waitForSubmitted(3);
+  await waitForReady(3);
   const baselineRepeat = await captureStage('on-repeat', undefined, false);
 
   // Radius redistributes a fixed five-level contribution. Probe the full domain;
@@ -278,47 +276,47 @@ try {
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('radius-low'));
   const radiusLowValue = 0;
   const radiusLowSet = await page.evaluate((value) => globalThis.__bloomCarrierProbe.setBloomRadius(value), radiusLowValue);
-  await waitForSubmitted(3);
+  await waitForReady(3);
   const radiusLow = await captureStage('radius-low');
   radiusLow.action = { ok: radiusLowSet, radius: radiusLowValue };
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('radius-high'));
   const radiusHighValue = 1;
   const radiusHighSet = await page.evaluate((value) => globalThis.__bloomCarrierProbe.setBloomRadius(value), radiusHighValue);
-  await waitForSubmitted(3);
+  await waitForReady(3);
   const radiusHigh = await captureStage('radius-high');
   radiusHigh.action = { ok: radiusHighSet, radius: radiusHighValue };
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloomRadius(0));
-  await waitForSubmitted(3);
+  await waitForReady(3);
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('off'));
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(false));
-  await waitForSubmitted(3);
+  await waitForReady(3);
   await captureStage('off');
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('intensity-zero'));
   const intensityZeroSet = await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(true) && globalThis.__bloomCarrierProbe.setBloomIntensity(0));
-  await waitForSubmitted(3);
+  await waitForReady(3);
   const intensityZero = await captureStage('intensity-zero', undefined, false);
   intensityZero.action = { ok: intensityZeroSet };
   evidence.intensityZero = intensityZero;
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(false));
-  await waitForSubmitted(3);
+  await waitForReady(3);
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('resize'));
   await page.evaluate(() => globalThis.__bloomCarrierProbe.resize(200, 112));
-  await waitForSubmitted(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 8 : 60);
+  await waitForReady(process.env.FORGEAX_BROWSER_CI_LIGHTWEIGHT === '1' ? 8 : 60);
   await captureStage('resize');
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('re-enabled'));
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setBloom(true) && globalThis.__bloomCarrierProbe.setBloomIntensity(1));
-  await waitForSubmitted(3);
+  await waitForReady(3);
   await captureStage('re-enabled');
 
   await page.evaluate(() => globalThis.__bloomCarrierProbe.setStage('surface-reconfigure'));
   const recovery = await page.evaluate(() => globalThis.__bloomCarrierProbe.reconfigureSurface());
-  await waitForSubmitted(3);
+  await waitForReady(3);
   const recoveryStage = await captureStage('surface-reconfigure');
   recoveryStage.recovery = { release: resultShape(recovery.release), restore: resultShape(recovery.restore) };
 

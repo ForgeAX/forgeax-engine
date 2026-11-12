@@ -6,7 +6,7 @@ import type {
   RenderPipelineTarget,
   RenderPipelineTopology,
 } from '../render-pipeline';
-import { buildStandard, DEFAULT_STANDARD_PROFILE } from './standard-pipeline';
+import { buildStandard } from './standard-pipeline';
 
 /** Replace only Forward's color target and finishing graph; all scene work stays shared. */
 export interface StandardForwardOutput {
@@ -26,13 +26,8 @@ export function createStandardForwardPipeline(output: StandardForwardOutput): Re
     build(context, topology) {
       return buildStandard(
         { ...context, forwardOutput: output },
-        {
-          ...topology,
-          standardProfile: {
-            ...(topology.standardProfile ?? DEFAULT_STANDARD_PROFILE),
-            renderPath: 'forward',
-          },
-        },
+        // The replaced output exists only on the Forward lane.
+        { ...topology, opaque: { ...topology.opaque, lane: 'forward' } },
       );
     },
   };

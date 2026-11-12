@@ -1,9 +1,9 @@
 import { FXAA_POST_PROCESS_ID } from '../render-contract';
-import type { RenderSystem } from '../render-system';
+import type { RendererState } from '../render-system';
 
 /** Register the built-in FXAA post-process once for the active generation. */
 export function registerFxaaPostProcess(
-  renderSystem: Pick<RenderSystem, 'registerBuiltinPostProcess'>,
+  renderSystem: Pick<RendererState, 'registerBuiltinPostProcess'>,
   source: string,
   registered: boolean,
 ): boolean {

@@ -66,31 +66,6 @@ const surfacePackRoots = [
 // relying on a directory-name convention.
 const gameCapabilityPackRoots = gameCapabilityAssetRoots(templateAssetRoot);
 const selectedTemplateSlugs = parseTemplateSmokeSlugs(process.env.FORGEAX_TEMPLATE_SMOKE_SLUGS);
-const templatePackRoots = selectTemplateAssetRoots(
-  [
-    { slug: 'game-capability-lab', roots: gameCapabilityPackRoots },
-    {
-      slug: 'empty',
-      roots: collectAssetDeclarationRoots(resolve(templateRoot('empty', resolve(templatesDir, 'empty')), 'assets')),
-    },
-    {
-      slug: 'game-3d',
-      roots: collectAssetDeclarationRoots(resolve(game3dRoot, 'assets')),
-    },
-    {
-      slug: 'brotato-3d',
-      roots: [
-        resolve(brotatoAssetRoot, 'brotato-3d.pack.ts'),
-        resolve(brotatoAssetRoot, 'game.pack.json'),
-        resolve(brotatoAssetRoot, 'brotato-impact-vfx.pack.json'),
-        resolve(brotatoAssetRoot, 'ui/hud.pack.json'),
-      ],
-    },
-  ],
-  selectedTemplateSlugs,
-);
-const game3dOnlySmoke =
-  selectedTemplateSlugs.length === 1 && selectedTemplateSlugs[0] === 'game-3d';
 const materialPackages = selectedTemplateSlugs.length > 0 && !selectedTemplateSlugs.includes('game-capability-lab')
   ? []
   : [
@@ -179,29 +154,43 @@ const externalAssetRoots = isPublicDistribution
       submoduleDejavuLegacyPackPath,
       submoduleSpriteAtlasDir,
     ];
-// The tracked template packs are the Preview's required catalog. Public SDK
-// source snapshots intentionally omit contributor-only binary fixtures, so
-// exclude only those missing optional roots instead of disabling Pack (and
-// therefore every tracked game-3d pack) as a unit. The SDK collision lane
-// selects only game-3d; keep its startup closure to that template rather than
-// scanning unrelated Preview fixtures before the server can listen. The full
-// empty template needs no external resources. The full smoke roster retains
-// every template and its external dependency closure. The large
-// Surface material matrix is prepared only by the independent Surface owner.
+// Each selected template carries its own declaration and external dependency
+// closure. Full Preview keeps every canonical group and its binary fixtures.
+// Standalone templates must not eagerly cook another template's GLTF/FBX assets.
+const templatePackRoots = selectTemplateAssetRoots(
+  [
+    {
+      slug: 'game-capability-lab',
+      roots: [...gameCapabilityPackRoots, ...externalAssetRoots.filter((root) => existsSync(root))],
+    },
+    {
+      slug: 'empty',
+      roots: collectAssetDeclarationRoots(resolve(templateRoot('empty', resolve(templatesDir, 'empty')), 'assets')),
+    },
+    {
+      slug: 'game-3d',
+      roots: collectAssetDeclarationRoots(resolve(game3dRoot, 'assets')),
+    },
+    {
+      slug: 'brotato-3d',
+      roots: [
+        skyMetaPath,
+        resolve(brotatoAssetRoot, 'brotato-3d.pack.ts'),
+        resolve(brotatoAssetRoot, 'game.pack.json'),
+        resolve(brotatoAssetRoot, 'brotato-impact-vfx.pack.json'),
+        resolve(brotatoAssetRoot, 'ui/hud.pack.json'),
+      ],
+    },
+  ],
+  selectedTemplateSlugs,
+);
 const packRoots = surfaceOnly
   ? [...surfacePackRoots, ...(process.env.FORGEAX_WATER_DEMO === '1' ? [skyMetaPath] : [])]
   : [
       ...templatePackRoots,
-      ...(game3dOnlySmoke || (selectedTemplateSlugs.length === 1 && selectedTemplateSlugs[0] === 'empty')
+      ...(selectedTemplateSlugs.length > 0 || process.env.FORGEAX_TEMPLATE_SMOKE === '1'
         ? []
-        : [
-            // Template journeys never consume the independent Surface/water
-            // or UI-authoring fixtures. Their own gates retain those roots.
-            ...(process.env.FORGEAX_TEMPLATE_SMOKE === '1'
-              ? []
-              : [surfaceEvidencePackRoot, previewUiAuthoringMetaPath]),
-            ...externalAssetRoots.filter((root) => existsSync(root)),
-          ]),
+        : [surfaceEvidencePackRoot, previewUiAuthoringMetaPath]),
     ];
 const particleSourceRoots = surfaceOnly ? [resolve(here, 'assets')] : selectTemplateAssetRoots(
   [

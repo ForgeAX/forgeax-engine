@@ -414,6 +414,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
             case 'frame-receipt-stale':
               return 'frame receipt stale';
             case 'renderer-contract-failed':
+            case 'debug-overlay-failed':
               return 'renderer contract failed';
             case 'observation-unavailable':
               return 'observation unavailable';
@@ -469,6 +470,8 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
             // bidirectional Skin <-> pbr-skin material mismatch detected at extract.
             case 'skin-material-mismatch':
               return 'skin material mismatch';
+            case 'skin-demand-missing':
+              return 'skin demand missing';
             case 'material-skin-attr-missing':
               return 'material skin attr missing';
             // feat-20260612-skin-palette-per-frame-upload M2 / m2-5:
@@ -509,6 +512,10 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
               return 'render feature prepared state mismatch';
             case 'render-feature-draw-recording-failed':
               return 'render feature draw recording failed';
+            case 'render-feature-input-unavailable':
+              return 'render feature input unavailable';
+            case 'render-feature-batch-incomplete':
+              return 'render feature batch incomplete';
             case 'points-lines-invalid-style':
               return 'points lines invalid style';
             case 'points-lines-topology-mismatch':
@@ -646,6 +653,7 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
             case 'frame-receipt-stale':
               return 'ok';
             case 'renderer-contract-failed':
+            case 'debug-overlay-failed':
               return 'ok';
             case 'observation-unavailable':
               return 'ok';
@@ -684,6 +692,8 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
             case 'standard-cluster-index-overflow':
               return 'ok';
             case 'skin-material-mismatch':
+              return 'ok';
+            case 'skin-demand-missing':
               return 'ok';
             case 'material-skin-attr-missing':
               return 'ok';
@@ -730,6 +740,10 @@ type RuntimeLayerError = RenderError | AssetRuntimeError | SkinError;
             case 'render-feature-prepared-state-mismatch':
               return 'ok';
             case 'render-feature-draw-recording-failed':
+              return 'ok';
+            case 'render-feature-input-unavailable':
+              return 'ok';
+            case 'render-feature-batch-incomplete':
               return 'ok';
             case 'points-lines-invalid-style':
               return 'ok';

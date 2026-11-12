@@ -40,6 +40,14 @@ export async function prepareRayMaterialPublication(
   const record = validateCookedMaterialRecord(
     JSON.parse(JSON.stringify(normaliseForPack((draft.payload as { cooked: unknown }).cooked))),
   ).unwrap();
+  if (
+    record.programs.some(({ selections }) =>
+      selections.some(
+        ({ context }) => context.backend !== 'webgpu' || context.capability === 'uniform-fallback',
+      ),
+    )
+  )
+    throw new Error('ray fixture material producer must target storage WebGPU with ray programs');
   const ready = await createMaterialLoader({
     loadPublication: async () => ({ guid, record, artifacts: draft.artifacts }),
   }).load({ guid, specializationKey: record.specializationKey ?? '' });

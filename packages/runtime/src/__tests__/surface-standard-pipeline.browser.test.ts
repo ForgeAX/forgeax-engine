@@ -9,9 +9,10 @@ import {
   LightProbe,
   type Renderer,
 } from '@forgeax/engine-render';
+import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
-import { page } from 'vitest/browser';
+import { commands, page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import {
@@ -34,6 +35,7 @@ import {
   SURFACE_PIXEL_EPSILON,
   SURFACE_WIDTH,
 } from './surface-standard-pipeline.runtime-fixture';
+import { createVfxEvidenceBackend } from './vfx-failure-evidence.fixture';
 
 const evidenceEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
 const EVIDENCE_SOURCE_SHA = evidenceEnv?.VITE_FORGEAX_EVIDENCE_SOURCE_SHA ?? 'unavailable';
@@ -51,7 +53,7 @@ function armLaneObservation(renderer: Renderer, frame: number): void {
   if ([9, 19, 29, 39, 49].includes(frame)) {
     const armed = renderer.requestObservation?.(['final-display']);
     if (armed === undefined) throw new Error('surface-standard: lane observation unavailable');
-    armed.unwrap();
+    if (!armed.ok) throw armed.error;
   }
 }
 
@@ -173,11 +175,14 @@ async function loadSurfaceCatalog(
 describe('Standard Surface runtime Browser WebGPU provenance', () => {
   let renderer: Renderer | undefined;
   let canvas: HTMLCanvasElement | undefined;
+  let recorder: RecorderAttachment | undefined;
 
   afterEach(async () => {
     await renderer?.dispose();
+    (await recorder?.dispose())?.unwrap();
     canvas?.remove();
     renderer = undefined;
+    recorder = undefined;
     canvas = undefined;
   });
 
@@ -210,9 +215,23 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     const bundler = forgeaxBundlerAdapter();
     const vfxHost = createSurfaceSplashRuntimeHost();
     const hostLoss = createSurfaceHostLossInstrumentation();
+    const evidenceBackend = createVfxEvidenceBackend({
+      source: 'browser-native-webgpu',
+      userAgent: navigator.userAgent,
+      buildId: EVIDENCE_BUILD_ID,
+      sourceHead: EVIDENCE_SOURCE_SHA,
+    });
+    recorder = evidenceBackend.recorder;
     const constructed = await constructRuntimeRendererHost(
       canvas,
-      { features: [vfxHost.feature], rhiInstrumentation: hostLoss.instrumentation },
+      {
+        rhi: recorder.backend.rhi,
+        features: [vfxHost.feature],
+        rhiInstrumentation: {
+          ...hostLoss.instrumentation,
+          onDeviceLost: () => evidenceBackend.recorder.deviceLost(),
+        },
+      },
       {
         ...bundler,
         importTransport: createRuntimeAssetImportTransport(runtimeBinding),
@@ -222,6 +241,11 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
     if (!constructed.ok) throw constructed.error;
     const runtimeHost = constructed.value;
     renderer = runtimeHost.renderer;
+    let diagnosticErrorCount = 0;
+    renderer.subscribe((event) => {
+      if (event.kind === 'error' && diagnosticErrorCount++ < 8)
+        console.error('surface renderer failure:', JSON.stringify(event.error));
+    });
     const assets = runtimeHost.assets;
     assets.configureRuntimeBinding(runtimeBinding);
     const catalog = (await loadSurfaceCatalog(
@@ -279,6 +303,17 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
         vfxHost,
         hostLossSignals: hostLoss.signals,
         queueVfxContinuationDuringLoss,
+        diagnostics: {
+          recorder: evidenceBackend.recorder,
+          backend: evidenceBackend.metadata,
+          prefix: `artifacts/surface-vfx/browser/${queueVfxContinuationDuringLoss ? 'queued-recovery' : 'empty-recovery'}`,
+          async write(name, bytes) {
+            let binary = '';
+            for (let offset = 0; offset < bytes.length; offset += 8192)
+              binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+            await commands.writeFile(name, btoa(binary), 'base64');
+          },
+        },
       });
       expect(evidence.impactIds).toEqual([701, 702]);
       expect(evidence.emittedSplashCount).toBe(2);
@@ -381,7 +416,17 @@ describe('Standard Surface runtime Browser WebGPU provenance', () => {
       await verifyAppLifecycle(true);
       return;
     }
-    const opticalEvidence = await runSurfaceOpticalOracle(renderer, assets);
+    const opticalEvidence = await runSurfaceOpticalOracle(renderer, assets, {
+      recorder: evidenceBackend.recorder,
+      backend: evidenceBackend.metadata,
+      prefix: 'artifacts/surface-optical/browser',
+      async write(name, bytes) {
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += 8192)
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+        await commands.writeFile(name, btoa(binary), 'base64');
+      },
+    });
     expect(opticalEvidence.observation.format).toBe('rgba16float');
     expect(opticalEvidence.observation.frameId).toBe(opticalEvidence.receipt.frameId);
     expect(opticalEvidence.records.every((record) => record.maxError <= 0.05)).toBe(true);

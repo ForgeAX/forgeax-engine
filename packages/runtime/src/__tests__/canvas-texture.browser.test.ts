@@ -646,7 +646,7 @@ it('minifies a Canvas checker in linear light and falsifies a base-level-only vi
         )
         .unwrap();
       const lease = renderValue(renderer.attach(world));
-      for (let i = 0; i < 3; i++) {
+      const drawFrame = async () => {
         world.update(1 / 60).unwrap();
         const receipt = renderValue(
           renderer.draw({
@@ -657,19 +657,30 @@ it('minifies a Canvas checker in linear light and falsifies a base-level-only vi
           }),
         );
         renderValue(await receipt.completed);
+      };
+      const read = async () => {
+        const shot = await page.elementLocator(display).screenshot({ base64: true });
+        const bytes = Uint8Array.from(atob(typeof shot === 'string' ? shot : shot.base64), (c) =>
+          c.charCodeAt(0),
+        );
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+        const readback = new OffscreenCanvas(128, 128).getContext('2d');
+        if (readback === null) throw new Error('Readback context unavailable');
+        readback.drawImage(bitmap, 0, 0, 128, 128);
+        bitmap.close();
+        const data = readback.getImageData(56, 56, 16, 16).data;
+        return { bytes, values: Array.from({ length: 16 * 16 }, (_, i) => data[i * 4] ?? 0) };
+      };
+      for (let i = 0; i < 3; i++) await drawFrame();
+      // A new material is drawn once its pipelines finish compiling; until then the
+      // transparent canvas shows the white page behind it.
+      let shot = await read();
+      for (let frame = 0; frame < 60 && shot.values.every((value) => value === 255); frame++) {
+        await drawFrame();
+        shot = await read();
       }
-      const shot = await page.elementLocator(display).screenshot({ base64: true });
-      const bytes = Uint8Array.from(atob(typeof shot === 'string' ? shot : shot.base64), (c) =>
-        c.charCodeAt(0),
-      );
-      await save(`minification-${baseOnly ? 'base-only' : 'mipmapped'}.png`, bytes);
-      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
-      const readback = new OffscreenCanvas(128, 128).getContext('2d');
-      if (readback === null) throw new Error('Readback context unavailable');
-      readback.drawImage(bitmap, 0, 0, 128, 128);
-      bitmap.close();
-      const data = readback.getImageData(56, 56, 16, 16).data;
-      const values = Array.from({ length: 16 * 16 }, (_, i) => data[i * 4] ?? 0);
+      await save(`minification-${baseOnly ? 'base-only' : 'mipmapped'}.png`, shot.bytes);
+      const { values } = shot;
       expect(errors).toEqual([]);
       return Math.max(...values.map((value) => Math.abs(value - 188)));
     } finally {

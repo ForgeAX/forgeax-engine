@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-cli
 description: >-
-  ForgeaX project CLI, authoring-operation, preview, and live-inspection entrypoint. Use when
+  ForgeAX project CLI, authoring-operation, preview, and live-inspection entrypoint. Use when
   creating or validating games, running tools, managing plugins, capturing evidence, or inspecting a live engine.
 ---
 
@@ -154,6 +154,9 @@ relative paths resolve against the project. `--checkpoint` waits for an exact
 game-provided ready marker; it is not an image label and is unnecessary for
 ordinary screenshots. The frame number confirms a submission before capture,
 not the exact frame represented by the PNG.
+Validated captures also wait for the startup cover to become hidden within
+the capture deadline before accepting DOM pixels. Observation keeps the current
+surface, including startup or failure diagnostics.
 A white or transparent canvas under a working HUD is usually a renderer error: the JSON
 then carries `rendererError` (`code`, `message`, `frame`, `framesAgo`, `count`),
 `pixels.rendered: false` with `pixels.reason: "renderer-error"` and a one-line `hint`; the

@@ -727,7 +727,7 @@ function installCaptureHook(
       leases: [lease],
       camera: { lease },
       environment: { lease },
-    });
+    }, undefined, { timeoutMs: 90_000 });
   };
   win.__prepareCsmCapture = async (): Promise<void> => {
     // Stable frames intentionally reuse the populated directional atlas. The

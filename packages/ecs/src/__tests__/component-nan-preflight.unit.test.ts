@@ -13,6 +13,11 @@ const InlineNumeric = defineComponent('NanPreflightInlineNumeric', {
   scalar: 'f32',
   values: 'array<f32, 2>',
 });
+const WideNumeric = defineComponent('NanPreflightWideNumeric', {
+  f64: 'array<f64>',
+  u32: 'array<u32>',
+  fixed: 'array<f32, 4>',
+});
 const { source: ParentOf, target: ChildrenOf } = defineRelationship({
   sourceName: 'NanPreflightParentOf',
   sourceField: 'parent',
@@ -182,5 +187,87 @@ describe('component NaN object-write preflight', () => {
     for (const span of spans) span.mut(InlineNumeric).scalar[0] = Number.NaN;
 
     expect(world.get(entity, InlineNumeric).unwrap().scalar).toBeNaN();
+  });
+  it.each([
+    ['Float32Array', () => new Float32Array([0, 1, Number.NaN, 3])],
+    ['Float32Array subarray', () => new Float32Array([9, 0, 1, Number.NaN, 3]).subarray(1)],
+    ['Float64Array', () => new Float64Array([0, 1, Number.NaN, 3])],
+    ['double Array', () => [0.5, 1.5, Number.NaN, 3.5]],
+    [
+      'holey Array',
+      () => {
+        const values: number[] = [0];
+        values[2] = Number.NaN;
+        values[3] = 3;
+        return values;
+      },
+    ],
+  ])('rejects a %s NaN on each array scan path with the element index', (_kind, make) => {
+    const world = new World();
+    const entity = world
+      .spawn({ component: Numeric, data: { scalar: 1, values: [4, 5, 6, 7] } })
+      .unwrap();
+    const values = make();
+
+    const result = world.set(entity, Numeric, { values });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expectNumericValueError(result.error, { field: 'values', received: Number.NaN, index: 2 });
+      expect(result.error).toBeInstanceOf(Error);
+      expect((result.error as unknown as Error).name).toBe('ComponentNumericValueInvalidError');
+    }
+    expect(Array.from(world.get(entity, Numeric).unwrap().values)).toEqual([4, 5, 6, 7]);
+  });
+
+  it('reports the first NaN of a large instance-sized Float32Array', () => {
+    const world = new World();
+    const entity = world.spawn({ component: Numeric, data: { scalar: 1, values: [] } }).unwrap();
+    const values = new Float32Array(20_000 * 16).fill(1);
+    values[123_457] = Number.NaN;
+    values[200_000] = Number.NaN;
+
+    const result = world.set(entity, Numeric, { values: values.subarray(0, 150_000) });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expectNumericValueError(result.error, {
+        field: 'values',
+        received: Number.NaN,
+        index: 123_457,
+      });
+    }
+    expect(world.set(entity, Numeric, { values: values.subarray(0, 123_457) }).ok).toBe(true);
+  });
+
+  it('checks f64 and fixed fields and skips integer payloads that cannot hold NaN', () => {
+    const world = new World();
+    const entity = world
+      .spawn({ component: WideNumeric, data: { f64: [1], u32: [1], fixed: [0, 0, 0, 1] } })
+      .unwrap();
+
+    const f64 = world.set(entity, WideNumeric, { f64: new Float64Array([Number.NaN]) });
+    expect(f64.ok).toBe(false);
+    if (!f64.ok)
+      expect((f64.error as unknown as NumericValueError).detail).toMatchObject({
+        field: 'f64',
+        index: 0,
+      });
+    const fixed = world.set(entity, WideNumeric, { fixed: [0, 0, 0, Number.NaN] });
+    expect(fixed.ok).toBe(false);
+    if (!fixed.ok)
+      expect((fixed.error as unknown as NumericValueError).detail).toMatchObject({
+        field: 'fixed',
+        index: 3,
+      });
+
+    expect(world.set(entity, WideNumeric, { u32: new Uint32Array([1, 2, 3]) }).ok).toBe(true);
+    expect(
+      world.set(entity, WideNumeric, {
+        f64: new Float64Array([Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]),
+        fixed: new Float32Array([Number.POSITIVE_INFINITY, 0, 0, 1]),
+      }).ok,
+    ).toBe(true);
+    expect(Array.from(world.get(entity, WideNumeric).unwrap().u32)).toEqual([1, 2, 3]);
   });
 });

@@ -8,8 +8,8 @@ import { MeshFilter } from '../components/mesh-filter';
 import { MeshRenderer } from '../components/mesh-renderer';
 import { PointLight } from '../components/point-light';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
-import { packDirectLightSlot } from '../light-buffer-layout';
 import { extractFrames } from '../render-system-extract-tail';
+import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 
 describe('surface lighting channels', () => {
   it.each([

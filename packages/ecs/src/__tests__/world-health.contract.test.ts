@@ -81,10 +81,7 @@ describe('World execution health', () => {
     if (targetStorage === undefined) throw new Error('fixture target storage missing');
     targetStorage.fields.delete('entities:count');
 
-    const buffer = createCommandBuffer(world, {
-      systemName: 'relationship-flush',
-      scheduleName: Update.name,
-    });
+    const buffer = createCommandBuffer(world, 'relationship-flush', Update.name);
     const pending = buffer.spawn({ component: WorldHealthChildOf, data: { parent: target } });
     const mutationEpoch = world[worldInternal].getMutationEpoch();
 

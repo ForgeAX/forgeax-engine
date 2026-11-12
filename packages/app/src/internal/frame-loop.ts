@@ -16,6 +16,11 @@ import type { ExecutionFrameInspection } from '../execution';
 import { APP_PHASE_CATALOG, type DrawSource } from '../types';
 import type { FramePacer } from './frame-pacer';
 
+/** Delta given to the first tick after start()/resume() when its measured interval is ~0. */
+const NOMINAL_FRAME_SECONDS = 1 / 60;
+/** Shorter than any real display interval: a first tick this close to its baseline did not measure a frame. */
+const MIN_MEASURED_FRAME_SECONDS = 0.001;
+
 type FrameState = 'idle' | 'running' | 'paused' | 'stopped';
 
 export interface FrameLoopOptions {
@@ -34,6 +39,8 @@ export interface FrameLoopOptions {
   readonly onCompleted?: (receipt: FrameReceipt) => void;
   /** Reconcile host-owned camera state after World update and before draw. */
   readonly beforeDraw?: () => void;
+  /** An update-only step drew nothing: frame-scoped immediate-mode data of that update is dropped. */
+  readonly onFrameSkipped?: () => void;
   readonly drawSource?: DrawSource;
   readonly geometryLane?: RenderFrameInput['geometryLane'];
   /** Optional frame-rate limit; a callback it rejects only reserves its successor. */
@@ -213,6 +220,11 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
   // Pause/resume is an explicit temporal lifecycle boundary. Keep it pending
   // until a renderer receipt proves that the fresh baseline was submitted.
   let temporalResetPending = false;
+  // start()/resume() take the baseline timestamp just before the first tick,
+  // and a rAF timestamp may even precede it, so the first measured interval is
+  // ~0 or negative. That frame advances the World by one nominal frame instead
+  // of handing systems a zero delta.
+  let firstFramePending = false;
   let cancelPendingFrame: (() => void) | undefined;
 
   function cancelFrame(): Result<void, AppError> {
@@ -503,7 +515,14 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     }
     // Only admitted frames consume elapsed time. Manual steps supply their
     // delta; ordinary ticks retain skipped GPU-credit intervals for the World.
-    deltaSeconds ??= (timestamp - lastTimestamp) / 1000;
+    if (deltaSeconds === undefined) {
+      const measured = (timestamp - lastTimestamp) / 1000;
+      deltaSeconds =
+        firstFramePending && !(measured >= MIN_MEASURED_FRAME_SECONDS)
+          ? NOMINAL_FRAME_SECONDS
+          : measured;
+    }
+    firstFramePending = false;
     lastTimestamp = timestamp;
     const sampleTimeSeconds = manualStep ? lastSampleTimeSeconds + deltaSeconds : timestamp / 1000;
     const session = opts.profiler?.activeSession();
@@ -679,6 +698,11 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
     } catch (cause: unknown) {
       reportError(makeWorldUpdateError(cause));
     }
+    try {
+      opts.onFrameSkipped?.();
+    } catch (cause: unknown) {
+      reportError(makeWorldUpdateError(cause));
+    }
     lastSampleTimeSeconds = sampleTimeSeconds;
     temporalResetPending = true;
   }
@@ -784,6 +808,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
       }
       lastSampleTimeSeconds = lastTimestamp / 1000;
       temporalResetPending = wasPaused;
+      firstFramePending = true;
       setState('running');
       const scheduled = scheduleFrame();
       if (!scheduled.ok) setState(wasPaused ? 'paused' : 'idle');
@@ -852,6 +877,7 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoopHandle {
         return err(makeWorldUpdateError(cause));
       }
       temporalResetPending = true;
+      firstFramePending = true;
       setState('running');
       const scheduled = scheduleFrame();
       if (!scheduled.ok) setState('paused');

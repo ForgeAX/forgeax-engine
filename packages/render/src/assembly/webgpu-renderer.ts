@@ -1,3 +1,12 @@
+import { extendedLightingFallbackCandidate } from './extended-lighting-fallback';
+import { prewarmFullscreenFeatureModules } from './fullscreen-feature-preparation';
+import {
+  declaredOrVertexOnlyFragmentEntry,
+  materialFragmentEntry,
+} from './material-fragment-entry';
+import { prepareRenderFrame } from './render-frame';
+import { rendererConformanceHost } from './renderer-conformance';
+import { projectGpuPassTimingCapture } from './webgpu-renderer-pass-timing';
 // @forgeax/engine-render — WebGPU renderer lifecycle/frame interpreter.
 // Runtime selects the backend; structured RHI errors and browser isolation stay intact.
 
@@ -17,7 +26,14 @@ import type {
   RhiDevice,
   ShaderModule,
 } from '@forgeax/engine-rhi';
-import { err, ok, PIPELINE_LIBRARY_LIMITS, RhiError, validateDrawArgs } from '@forgeax/engine-rhi';
+import {
+  err,
+  ok,
+  PIPELINE_LIBRARY_LIMITS,
+  probeMultisampleRenderCapability,
+  RhiError,
+  validateDrawArgs,
+} from '@forgeax/engine-rhi';
 import type { PipelineGroup2Contract } from '@forgeax/engine-shader';
 import {
   type MaterialShaderEntry,
@@ -37,7 +53,11 @@ import { isStripTopology } from '@forgeax/engine-types';
 import { ProjectedDecalInvalidError } from '../decals/component';
 import { unavailableGeometry } from '../geometry-observation';
 import { InstanceProjectionStore } from '../instances';
-import { materialVertexConstants } from '../material-stage-constants';
+import {
+  applySurfaceDiscardAxis,
+  materialProgramRasterConstants,
+  materialVertexConstants,
+} from '../material-stage-constants';
 import {
   isOutputColorSpace,
   OUTPUT_COLOR_SPACES,
@@ -51,7 +71,7 @@ import { type PublishedRenderFrameInput, RenderPublicationError } from '../publi
 import { captureMeshPipelinePreparation } from '../publication/mesh-pipeline-preparation';
 import { preparePublicationGeometry } from '../publication/prepare-geometry';
 import { type PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
-import { encodeFrameObservationCapture } from '../record/observation-capture';
+import { candidateMaterialPipelineRequests } from '../record/candidate-pipeline-preparation';
 import {
   configureSurface,
   type MaterialShaderPipelineEntry,
@@ -62,20 +82,24 @@ import { isFrameObservationDomain } from '../render-contract';
 import { registerRenderSourceSystems } from '../scene/source-systems';
 import { createTerrainReceiptOwner } from '../terrain/submitted.js';
 import { prepareVolumePrograms } from '../volume/programs';
-import { createRenderWorld } from '../world/render-world';
+import { debugOverlayHolderOf, debugOverlayInspectionField } from '../world/debug-overlay-systems';
+import {
+  createRenderWorld,
+  publishSurfaceDynamicInput,
+  renderSubmission,
+} from '../world/render-world';
+import { retireAfterSubmission } from '../world/submission-systems';
+import { installSurfaceUi, RenderSurfaceUiInput, type SurfaceUiInput } from '../world/surface-ui';
 import { createCameraViews } from './camera-views';
 import { inspectDeviceCapabilities } from './device-feature-admission';
-import {
-  drainFramePreparation,
-  type FramePreparation,
-  type FrameRecording,
-  prepareFrameSubmission,
-} from './frame-recording';
-import type { MaterialShaderArtifactRequest } from './material/assembly';
+import { drainFramePreparation, type FramePreparation } from './frame-recording';
 import { createMaterialLayoutCache } from './material/layout-cache';
+import { materialPipelineRequestPending } from './material/pipeline-preparation-readiness';
 import {
   MaterialPipelineRequestCache,
   materialPipelineRequestFacts,
+  type PendingMaterialPipelineRequest,
+  requestMaterialPipeline,
 } from './material/pipeline-request-cache';
 import {
   type PreparedRenderPipelineOwner,
@@ -110,6 +134,7 @@ import {
   postProcessShaderModuleLabel,
 } from '../fullscreen-post-process-pass';
 import { isCanonicalStandardPbrMaterialShader, SKIN_MATERIAL_SHADER_ID } from '../pbr-pipeline';
+import { createRenderProfileSelection } from '../pipeline/render-profile-selection';
 import { registerSingleLayerMediumBuiltins } from '../pipeline/single-layer-medium-passes';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
@@ -120,14 +145,6 @@ import {
   PipelineSpecError,
   passKindPolicyTable,
 } from '../pipeline-spec';
-import type { ExtendedLightingResourceCandidate } from '../prepare/extended-lighting/resources';
-import {
-  COOKIE_MATRIX_BYTES,
-  COOKIE_SLICE_MIP_CHAIN_BYTES,
-  EXTENDED_LIGHTING_TOPOLOGY,
-  IES_SLICE_HEIGHT,
-  IES_SLICE_WIDTH,
-} from '../prepare/extended-lighting/resources';
 import {
   createExtendedLightingState,
   projectExtendedLightingInspection,
@@ -143,7 +160,7 @@ import {
   prepareGpuPassTimingSession,
 } from '../record/gpu-pass-timing/index.js';
 import { GpuTimingCapture, type VolumeTimingObservation } from '../record/gpu-timing';
-import { declaredFragmentEntry, materialProgramSource } from '../record/standard-opaque-entry';
+import { materialProgramSource } from '../record/standard-opaque-entry';
 import type { RecoveryPostProcessResources, RecoveryRootBundle } from '../recovery/types';
 import type {
   AtmosphereShaderSources,
@@ -167,13 +184,24 @@ import type {
 import { FXAA_POST_PROCESS_ID, STANDARD_OUTPUT_TRANSFORM_FEATURE_ID } from '../render-contract';
 import {
   attachGpuPassTimingSession,
-  createRenderSystem,
+  createRendererState,
   type PipelineState,
-  type RenderSystem,
+  type RendererState,
 } from '../render-system';
 import { createGpuPassTimingObservationStore, observeGpuPassTimingDisabled } from '../renderer.js';
 import { postSpawnResolveJoints } from '../scene-instances/post-spawn-resolve-joints';
 import type { RenderTarget } from '../targets/contracts';
+import {
+  observeViewFrame,
+  viewAutoExposure,
+  viewBarrelDistortion,
+  viewGraphInfo,
+  viewMeshMaterialBindings,
+  viewRecoveryEvidence,
+  viewRenderScene,
+  viewStandardLut,
+} from '../view-inspection';
+import { viewOwnerOf } from '../world/view-settlement';
 import { registerAnalyticFogPostProcess } from './analytic-fog-registration';
 import type { RhiBackendPack } from './backend-contract';
 import { inspectBarrelDistortion } from './barrel-distortion-inspection';
@@ -203,6 +231,7 @@ import {
   findStandardPbrEntry,
   isEngineOwnedMaterialShader,
   isSharedLayoutMaterialShader,
+  materialPipelineArtifactRequest,
   resolveMaterialPipelineGroup2Contract,
   resolveMaterialPipelineShaderId,
   resolveMaterialPipelineVertexEntry,
@@ -210,11 +239,13 @@ import {
 } from './material/pipeline-helpers';
 import {
   allowsUnlitPreparedFallback,
+  buildPipelineColorFormats,
   invokeDeviceCreateShaderModule,
   type LayoutKind,
   makeShaderDeviceAdapter,
   manifestVariantShaderEntry,
   materialPipelineAttachments,
+  materialPipelineCacheKey,
   materialPipelineGeometry,
   materialPipelineShaderSpec,
   prepareLowLimitMaterialShaderEntry,
@@ -245,15 +276,12 @@ import {
 } from './recovery/renderer-recover';
 import {
   collectRequiredFullscreenPostProcesses,
+  installMotionBlurFeature,
   registerStandardPostProcessBuiltins,
   withBuiltinRenderFeatures,
 } from './render-feature-post-processes';
 import { createRenderTargetHost } from './render-target-host';
-import {
-  freezeRenderProfile,
-  structuredRendererCause,
-  validateRenderProfile,
-} from './renderer-facade';
+import { freezeRenderProfile, structuredRendererCause } from './renderer-facade';
 import { projectRendererFeatureInspection } from './renderer-feature-inspection';
 import {
   type ContinuationTerminator,
@@ -275,7 +303,7 @@ import {
   projectRendererInspectionState,
   projectRendererOutputInspectionFromSurface,
   projectRendererOutputObservationInspection,
-  projectRenderSystemInspection,
+  projectRenderViewInspection,
 } from './renderer-inspection';
 import {
   createRecoveryContinuation,
@@ -298,7 +326,7 @@ import {
   tryCreateRendererFromBackend as tryCreateRendererFromBackendBootstrap,
   type WebGPURendererInternals,
 } from './webgpu-renderer-bootstrap';
-import type { WebGPUOutcome } from './webgpu-renderer-contract';
+import type { MaterialPipelineSource, WebGPUOutcome } from './webgpu-renderer-contract';
 import {
   observeRendererReceipt,
   type RendererReceiptLodCaptureState,
@@ -308,48 +336,13 @@ import {
   type ObservationCaptureRead,
 } from './webgpu-renderer-observation-owner';
 import {
-  hasColorAttribute,
   isPreparedMaterialVertexLayout,
   materialPipelineVertexAttributes,
   particleMaterialInputVertexBuffers,
   resolveWebGPUVertexBufferLayouts,
 } from './webgpu-vertex-layouts';
 
-export type { BundlerOptions } from './bundler-contract';
-export type {
-  LayoutKind,
-  MaterialShaderBindingContract,
-  MaterialShaderVertexInputContract,
-} from './material-shader-policy';
-export {
-  allowsUnlitPreparedFallback,
-  isSharedMaterialUserRegionCompatible,
-  normalizeMaterialShaderVariantSet,
-  requiresPreparedMaterialShader,
-  resolveMaterialShaderBackendArtifactKey,
-  resolveMaterialShaderBindingContract,
-  resolveMaterialShaderUvSetCount,
-  resolveMaterialShaderVariantSet,
-  resolveMaterialShaderVertexInputContract,
-  selectNoColorPbrVariant,
-  selectPipelineLayoutForVariant,
-  stripCloudShadowBindingsForLowLimit,
-} from './material-shader-policy';
-export {
-  createMeshSsboGrowController,
-  deriveStorageBufferCeiling,
-  INITIAL_MESH_SSBO_SLOT_COUNT,
-  requireMeshSsboBuffer,
-} from './mesh-ssbo-grow';
-export { exposeRenderer } from './renderer-facade';
-export {
-  selectGpuDrivenSceneIndexVariant,
-  selectHdrpPbrPrewarmVariants,
-  selectProbePrewarmVariants,
-  selectSkinPrewarmVariants,
-  selectStandardPbrTransmissionPrewarmVariants,
-} from './shader-prewarm-policy';
-export { disposeObservationCaptureSet } from './webgpu-renderer-observation';
+export * from './webgpu-renderer-exports';
 
 /** Bundler injection and construction from the selected backend pack. */
 export async function tryCreateRendererFromBackend(
@@ -360,6 +353,7 @@ export async function tryCreateRendererFromBackend(
 ): Promise<WebGPUOutcome> {
   return tryCreateRendererFromBackendBootstrap(canvas, options, pack, bundler, makeWebGPURenderer);
 }
+
 async function makeWebGPURenderer(
   internals: WebGPURendererInternals,
 ): Promise<RendererAssemblyImplementation> {
@@ -396,15 +390,18 @@ async function makeWebGPURenderer(
   };
   let renderTargetDevice = internals.device;
   let renderTargetGeneration = 0;
-  let renderSystemForTargetPromotion: RenderSystem | undefined;
-  let cameraViewsForTargetPromotion:
-    | { readonly active: boolean; isCubeCapturePending(target: RenderTarget): boolean }
-    | undefined;
+  let cameraViewsForTargetPromotion: ReturnType<typeof createCameraViews> | undefined;
+  // One Render World per Renderer: its view entities share every scene row,
+  // and each installed Feature prepares there as its own system.
+  const renderWorld = createRenderWorld();
   const featureHostResult = createRenderFeatureHost(
     withBuiltinRenderFeatures(internals.options?.features ?? []),
+    renderWorld,
+    internals.errorRegistry.fire.bind(internals.errorRegistry),
   );
   if (!featureHostResult.ok) throw featureHostResult.error;
   internals.featureHost = featureHostResult.value;
+  installMotionBlurFeature(internals.featureHost, internals.device.caps);
   let rendererRecovery: RendererRecovery | undefined;
   const recoveryFlight = createSingleFlight<Result<void, RecoverFailure>>(async () => {
     if (disposed) return err(new RecoverError('recover-not-needed'));
@@ -460,7 +457,7 @@ async function makeWebGPURenderer(
           recoveryFailureLocation = failure;
         },
       );
-      if (result.ok && ui !== undefined) await ui.recover(internals.device);
+      if (result.ok && ui !== undefined) await ui.owner.recover(internals.device);
     } catch (cause) {
       recoveryFailureLocation ??= createRecoveryFailureLocation('compile-graph', cause);
       candidateCleanup();
@@ -556,23 +553,30 @@ async function makeWebGPURenderer(
     sharedImmediateShaderModuleAdapter: null,
   };
   let candidateShaderState: RendererShaderState | undefined;
-  const getShaderModuleAdapter = (): ShaderDeviceAdapterInternal => {
+  const getShaderModuleAdapter = (
+    mode: 'validated' | 'immediate' = 'validated',
+  ): ShaderDeviceAdapterInternal => {
     const state = candidateShaderState ?? activeShaderState;
-    if (state.sharedShaderModuleAdapter === null) {
-      state.sharedShaderModuleAdapter = makeShaderDeviceAdapter(
+    const slot =
+      mode === 'validated' ? 'sharedShaderModuleAdapter' : 'sharedImmediateShaderModuleAdapter';
+    let adapter = state[slot];
+    if (adapter === null) {
+      adapter = makeShaderDeviceAdapter(
         state.device,
         internals.errorRegistry,
         internals.pack.createShaderModule,
         internals.pack.createShaderModuleImmediate,
-        'validated',
+        mode,
+        mode === 'immediate'
+          ? (key, source) => state.sharedShaderModuleAdapter?.completedModule(key, source)
+          : undefined,
       );
-      (candidateBuildState?.scope ?? activeDeviceScope)._adopt(
-        'shader',
-        state.sharedShaderModuleAdapter,
-        (adapter) => adapter.dispose(),
+      state[slot] = adapter;
+      (candidateBuildState?.scope ?? activeDeviceScope)._adopt('shader', adapter, (value) =>
+        value.dispose(),
       );
     }
-    return state.sharedShaderModuleAdapter;
+    return adapter;
   };
   // RenderSystem retains this factory across recovery. Module requests select
   // the current adapter synchronously; volume preparation resolves all modules
@@ -582,60 +586,7 @@ async function makeWebGPURenderer(
       descriptor: Parameters<ShaderDeviceAdapterInternal['createShaderModule']>[0],
     ) => getShaderModuleAdapter().createShaderModule(descriptor),
   };
-  const getImmediateShaderModuleAdapter = (): ShaderDeviceAdapterInternal => {
-    const state = candidateShaderState ?? activeShaderState;
-    if (state.sharedImmediateShaderModuleAdapter === null) {
-      state.sharedImmediateShaderModuleAdapter = makeShaderDeviceAdapter(
-        state.device,
-        internals.errorRegistry,
-        internals.pack.createShaderModule,
-        internals.pack.createShaderModuleImmediate,
-        'immediate',
-      );
-      (candidateBuildState?.scope ?? activeDeviceScope)._adopt(
-        'shader',
-        state.sharedImmediateShaderModuleAdapter,
-        (adapter) => adapter.dispose(),
-      );
-    }
-    return state.sharedImmediateShaderModuleAdapter;
-  };
   const featureShaderScopes = new WeakMap<RenderFeature<unknown>, DeviceScope>();
-  const prewarmFullscreenFeatureModules = async (
-    feature: RenderFeature<unknown>,
-    device: RhiDevice,
-    adapter: ShaderDeviceAdapterInternal,
-    retain: (label: string, module: ShaderModule) => void,
-    generationIsCurrent: () => boolean,
-  ): Promise<Result<void, RhiError>> => {
-    for (const postProcess of feature.requiredFullscreenPostProcesses ?? []) {
-      const label = postProcessShaderModuleLabel(postProcess.source);
-      const shaderResult = internals.pack.createShaderModule
-        ? await internals.pack.createShaderModule(device, {
-            code: postProcess.source,
-            label,
-          })
-        : await invokeDeviceCreateShaderModule(device, {
-            code: postProcess.source,
-            label,
-          });
-      if (!shaderResult.ok) {
-        internals.errorRegistry.fire(shaderResult.error);
-        return err(shaderResult.error);
-      }
-      if (!generationIsCurrent())
-        return err(
-          new RhiError({
-            code: 'rhi-not-available',
-            expected: 'the installing Feature keeps its device generation',
-            hint: 'retry Feature installation after Renderer recovery',
-          }),
-        );
-      retain(label, shaderResult.value);
-      adapter.seedModule(label, shaderResult.value, postProcess.source);
-    }
-    return ok(undefined);
-  };
   const getShader = (): ShaderCatalog => {
     const state = candidateShaderState ?? activeShaderState;
     if (state.shaderInstance === null) {
@@ -691,9 +642,7 @@ async function makeWebGPURenderer(
     getGeneration: () => renderTargetGeneration,
     getDevice: () => renderTargetDevice,
     canPromoteTarget: (target: RenderTarget) =>
-      (cameraViewsForTargetPromotion?.active
-        ? cameraViewsForTargetPromotion.isCubeCapturePending(target)
-        : renderSystemForTargetPromotion?.isCubeCapturePending(target)) !== true,
+      cameraViewsForTargetPromotion?.isCubeCapturePending(target) !== true,
   });
   const externalTextureHost = createExternalTextureHost({
     getDevice: () => internals.device,
@@ -702,8 +651,6 @@ async function makeWebGPURenderer(
     getDynamicTextureStore: () => dynamicTextureStore,
     onError: (error) => internals.errorRegistry.fire(error),
   });
-  // One Render World per Renderer: its view entities share every scene row.
-  const renderWorld = createRenderWorld();
   // Published rows are prepared once at acceptance, for every view.
   const publicationInstances =
     internals.options?.publicationSource === undefined ? undefined : new InstanceProjectionStore();
@@ -722,6 +669,7 @@ async function makeWebGPURenderer(
                 ? renderInternals.getMaterialShaderArtifact
                 : undefined,
             ),
+          renderWorld,
         );
   // feat-20260527-sprite-nineslice M4 / w16 (D-5): detached host-owned
   // EngineMetrics counter reaches the record stage via `RenderSystemRuntime.metrics`.
@@ -765,7 +713,7 @@ async function makeWebGPURenderer(
     prepareGpuPassTimingSession(
       device,
       gpuPassTimingOptions,
-      gpuPassTimingOptions === undefined ? undefined : getImmediateShaderModuleAdapter(),
+      gpuPassTimingOptions === undefined ? undefined : getShaderModuleAdapter('immediate'),
     );
   ({ gpuPassTimingSession, gpuPassTimingUnavailable } = prepareGpuPassTimingState(
     internals.device,
@@ -804,21 +752,32 @@ async function makeWebGPURenderer(
   const ui =
     internals.options?.ui === undefined
       ? undefined
-      : await createUiCompositor({
-          source: internals.options.ui,
-          device: internals.device,
-          format: uiFormats.storage,
-          createShaderModule: async (device, source) => {
-            const module = await (
-              internals.pack.createShaderModule ?? invokeDeviceCreateShaderModule
-            )(device, {
-              code: source,
-              label: 'screen-ui-composite',
-            });
-            if (!module.ok) throw module.error;
-            return module.value;
-          },
-        });
+      : installSurfaceUi(
+          renderWorld,
+          await createUiCompositor({
+            source: internals.options.ui,
+            device: internals.device,
+            format: uiFormats.storage,
+            // UI textures retire through the Renderer's one submission lifecycle.
+            retire: (owner, release) =>
+              retireAfterSubmission(renderWorld, {
+                generation: activeDeviceScope.generation,
+                queue: owner.queue,
+                release,
+              }),
+            createShaderModule: async (device, source) => {
+              const module = await (
+                internals.pack.createShaderModule ?? invokeDeviceCreateShaderModule
+              )(device, {
+                code: source,
+                label: 'screen-ui-composite',
+              });
+              if (!module.ok) throw module.error;
+              return module.value;
+            },
+          }),
+          uiFormats.storage,
+        );
   if (ui !== undefined) {
     const configured = configureSurface(
       internals.context,
@@ -828,7 +787,7 @@ async function makeWebGPURenderer(
       internals.outputColorSpace.requested,
     );
     if (!configured.ok) {
-      ui.dispose();
+      ui.owner.dispose();
       throw configured.error;
     }
     internals.outputColorSpace.report = configured.value;
@@ -946,35 +905,7 @@ async function makeWebGPURenderer(
     );
   };
   const promotePipelineExtendedLighting = (state: PipelineState, scope: DeviceScope): void => {
-    if (
-      state.extendedLightingAvailable !== true ||
-      state.iesProfileTexture === undefined ||
-      state.cookieTexture === undefined ||
-      state.cookieMatrixBuffer === undefined ||
-      state.iesProfileTextureView === undefined ||
-      state.cookieTextureView === undefined ||
-      state.ltcLambertTextureView === undefined ||
-      state.ltcGgxTextureView === undefined
-    ) {
-      return;
-    }
-    const candidate: ExtendedLightingResourceCandidate = {
-      topology: EXTENDED_LIGHTING_TOPOLOGY,
-      generation: scope.generation,
-      scope,
-      iesSliceCount: 0,
-      cookieSliceCount: 0,
-      cookieMatrices: 0,
-      sampler: state.defaultSampler,
-      iesTexture: state.iesProfileTexture,
-      cookieTexture: state.cookieTexture,
-      cookieMatrixBuffer: state.cookieMatrixBuffer,
-      descriptorBytes:
-        IES_SLICE_WIDTH * IES_SLICE_HEIGHT * 2 * 32 +
-        COOKIE_SLICE_MIP_CHAIN_BYTES * 32 +
-        COOKIE_MATRIX_BYTES,
-      uploadCount: 5,
-    };
+    const candidate = extendedLightingFallbackCandidate(state, scope);
     extendedLightingState = promoteExtendedLightingCandidate(extendedLightingState, candidate);
   };
   let tonemapRegistered = false,
@@ -995,7 +926,7 @@ async function makeWebGPURenderer(
     const registry = getShader();
     const pipelineCache = currentPipelineCacheState().materialShaderPipelineCache;
     const shaderAdapter = getShaderModuleAdapter();
-    const immediateAdapter = getImmediateShaderModuleAdapter();
+    const immediateAdapter = getShaderModuleAdapter('immediate');
     const buildIsCurrent = () => scope.isAlive() && candidateBuildState === buildState;
     const ensureBuildAlive = () => {
       if (!buildIsCurrent())
@@ -1131,7 +1062,7 @@ async function makeWebGPURenderer(
       },
       (sources) => {
         ensureBuildAlive();
-        internals.standardDeferredShaders = sources;
+        internals.standardSceneShaders = sources;
       },
       buildState === undefined ? ADMIT_EVERY_VARIANT : drewWithModule,
     ).then(async (state) => {
@@ -1139,6 +1070,12 @@ async function makeWebGPURenderer(
       // publishing readiness, including when rebuilding a lost device.
       ensureBuildAlive();
       await renderSystem.initializeSsr(device);
+      if (device.caps.backendKind === 'wgpu-webgl2')
+        await probeMultisampleRenderCapability(
+          device,
+          (descriptor) => getShaderModuleAdapter('immediate').createShaderModule(descriptor),
+          activeDeviceScope.generation,
+        );
       ensureBuildAlive();
       return state;
     });
@@ -1306,7 +1243,7 @@ async function makeWebGPURenderer(
         shaderModuleMode === 'immediate' ||
         (internals.pack.createShaderModuleImmediate !== undefined &&
           isCanonicalStandardPbrMaterialShader(materialShaderId))
-          ? getImmediateShaderModuleAdapter()
+          ? getShaderModuleAdapter('immediate')
           : getShaderModuleAdapter(),
       pipelineLayout,
       vertexBuffers,
@@ -1384,8 +1321,8 @@ async function makeWebGPURenderer(
     sampleCount: number = 1,
     // Transparent split passes use the swap-chain storage view. Preserve its
     // explicit non-sRGB format in both the PSO key and descriptor; HDR and
-    // depth-only passes select their own attachment formats.
-    colorFormatOverride?: GPUTextureFormat,
+    // depth-only passes select their own attachment formats; `null` is colorless.
+    colorFormatOverride?: GPUTextureFormat | null,
     // Prepared graphics passes use `null` to request an explicit color-only
     // pipeline; omitted preserves the material forward depth default.
     depthFormatOverride?: GPUTextureFormat | null,
@@ -1396,7 +1333,7 @@ async function makeWebGPURenderer(
     vertexEntryPoint?: string,
     additionalColorFormats?: readonly GPUTextureFormat[],
     vertexEntry?: string,
-    authoredFragmentEntry?: string,
+    authoredFragmentEntry?: string | null,
     particleInputLanes?: number,
     coverageOnly = false,
     constants?: Readonly<Record<string, number>>,
@@ -1446,15 +1383,15 @@ async function makeWebGPURenderer(
     const currentState = currentPipelineState();
     if (currentState === null) return null;
     const ldrColorFormat = colorFormatOverride ?? currentState.colorAttachmentFormat;
-    const fragmentEntry: string | undefined =
-      authoredFragmentEntry ??
-      (isHdr &&
-      passKind === 'forward' &&
-      (materialShaderId === 'forgeax::sprite' || materialShaderId === 'forgeax::sprite-lit')
-        ? 'fs_main_hdr'
-        : undefined);
-    // Public view clipping is dynamic coverage even on opaque casters.
-    // Preserve the producer's fragment stage so depth and color agree.
+    const fragmentEntry = materialFragmentEntry(
+      authoredFragmentEntry,
+      isHdr,
+      passKind,
+      materialShaderId,
+    );
+    // Public view clipping is dynamic coverage even on opaque casters, so the
+    // caller decides: `null` arrives only when no coverage source can discard
+    // (see shadowCasterDepthOnly); otherwise the producer's fragment stage stays.
     const preparedSource = program.sourceReference;
     const built = buildPipelineForMaterialShader(
       cacheKey,
@@ -1473,14 +1410,12 @@ async function makeWebGPURenderer(
             ? undefined
             : (descriptor) => prepared.request(cacheKey, preparedSource, descriptor),
         colorFormat: isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat,
-        colorFormats:
-          additionalColorFormats === undefined
-            ? undefined
-            : [
-                renderState?.outputs?.[0]?.format ??
-                  (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
-                ...additionalColorFormats,
-              ],
+        colorFormats: buildPipelineColorFormats(
+          colorFormatOverride === null,
+          additionalColorFormats,
+          renderState?.outputs?.[0]?.format ??
+            (isHdr ? HDR_COLOR_ATTACHMENT_FORMAT : ldrColorFormat),
+        ),
         depthFormat:
           depthFormatOverride === null
             ? undefined
@@ -1518,7 +1453,9 @@ async function makeWebGPURenderer(
       sampleCount,
     );
     if (!built.ok) {
-      if (candidatePipelineErrorScope && prepared?.isPending(built) !== true) throw built.error;
+      if (materialPipelineRequestPending(built, prepared, activeShaderState, candidateShaderState))
+        candidatePipelinePending?.();
+      else if (candidatePipelineErrorScope) throw built.error;
       reportMaterialPipelineFailure(cacheKey, built.error);
       return null;
     }
@@ -1538,13 +1475,17 @@ async function makeWebGPURenderer(
     pipelineState !== null &&
     !currentPipelineCacheState().rejectedMaterialPipelineKeys.has(cacheKey);
   let candidatePipelineErrorScope = false;
-  const withPipelinePreparationErrors = (action: () => void): void => {
+  let candidatePipelinePending: (() => void) | undefined;
+  const withPipelinePreparationErrors = (action: () => void, onPending?: () => void): void => {
     const previous = candidatePipelineErrorScope;
+    const previousPending = candidatePipelinePending;
     candidatePipelineErrorScope = true;
+    candidatePipelinePending = onPending ?? previousPending;
     try {
       action();
     } finally {
       candidatePipelineErrorScope = previous;
+      candidatePipelinePending = previousPending;
     }
   };
   const buildMaterialShaderPipeline = (
@@ -1572,8 +1513,8 @@ async function makeWebGPURenderer(
     // must override. Threaded into both the cache key (via the spec's
     // `attachments.colorFormats`) and the actual PSO descriptor. Ignored
     // for `isHdr=true` (HDR sub-pass uses rgba16float) and
-    // `passKind='shadow-caster'` (depth-only, no color attachment).
-    colorFormatOverride?: GPUTextureFormat,
+    // `passKind='shadow-caster'` (depth-only, no color attachment); `null` = colorless.
+    colorFormatOverride?: GPUTextureFormat | null,
     // feat-20260629-multi-uv-set-support m3-w5: shader-declared UV set count,
     // forwarded to PipelineSpec.geometry.shaderUvSetCount for clamp-to-last
     // alias. Undefined = fallback to mesh-provided count (no clamping).
@@ -1589,11 +1530,14 @@ async function makeWebGPURenderer(
     vertexEntryPoint?: string,
     additionalColorFormats?: readonly GPUTextureFormat[],
     vertexEntry?: string,
-    fragmentEntry?: string,
+    fragmentEntry?: string | null,
     particleInputLanes?: number,
     constants?: Readonly<Record<string, number>>,
     pipelinePreparation = false,
   ): RenderPipeline | null => {
+    // The raster class requests LOD-fade / view-clipping discards as a mask;
+    // they are a compile-time source axis, so resolve them before any key.
+    ({ variantSet, constants } = applySurfaceDiscardAxis(variantSet, constants));
     const coverageOnly =
       passKind === 'temporal' && variantSet?.split('+').includes('COVERAGE_ONLY=true') === true;
     // WebGL2 is a downlevel backend even when the record stage asks for the
@@ -1613,11 +1557,14 @@ async function makeWebGPURenderer(
       assets.getMaterialArtifact(materialShaderIdForPass),
     );
     const materialShaderEntry = getShader().findMaterialArtifact(pipelineShaderId);
+    const program = materialProgramSource(materialShaderEntry);
+    // A custom ShadowCaster can share a Standard material's texture snapshot
+    // without declaring its specialization ABI. Normalize before the PSO key
+    // so undeclared Engine values neither invalidate nor duplicate that PSO.
+    constants = materialProgramRasterConstants(constants, program);
     // Programs that predate fs_opaque keep their default forward entry.
-    fragmentEntry = declaredFragmentEntry(
-      fragmentEntry,
-      materialProgramSource(materialShaderEntry),
-    );
+    // `null` (vertex-only depth) needs no declared entry.
+    fragmentEntry = declaredOrVertexOnlyFragmentEntry(fragmentEntry, materialShaderEntry);
     const resolvedUvSetCount =
       shaderUvSetCount ?? rememberMaterialUvSetCount(pipelineShaderId, materialShaderEntry);
     const manifestEntry = getShader().materialShaderManifestEntry(pipelineShaderId);
@@ -1641,7 +1588,7 @@ async function makeWebGPURenderer(
         passKind,
         effectiveVariantSet,
         resolvedVertexEntry,
-        fragmentEntry,
+        fragmentEntry ?? undefined,
         constants,
       ),
       attachments: materialPipelineAttachments(
@@ -1650,6 +1597,7 @@ async function makeWebGPURenderer(
         additionalColorFormats,
         depthFormatOverride,
         sampleCount,
+        colorFormatOverride === null,
       ),
       geometry: materialPipelineGeometry(
         topology,
@@ -1661,7 +1609,7 @@ async function makeWebGPURenderer(
       ),
       renderState,
     };
-    const cacheKey = `${cacheKeyOf(spec)}|vertex:${resolvedVertexEntry ?? 'vs_main'}`;
+    const cacheKey = materialPipelineCacheKey(cacheKeyOf(spec), resolvedVertexEntry, fragmentEntry);
     const requestCounter = pipelineRequests.get(currentPipelineCacheState());
     if (requestCounter !== undefined) requestCounter.keyCharacters += cacheKey.length;
     const cached = currentPipelineCacheState().materialShaderPipelineCache.get(cacheKey);
@@ -1767,13 +1715,7 @@ async function makeWebGPURenderer(
     renderState: MaterialRenderState | undefined,
     depthFormatOverride: GPUTextureFormat | null | undefined,
     vertexLayout: string | undefined,
-  ): {
-    readonly entry: MaterialShaderEntry;
-    readonly label: string;
-    readonly moduleLabel: string;
-    readonly layoutShaderId: string;
-    readonly ownEntries: boolean;
-  } | null => {
+  ): MaterialPipelineSource | null => {
     const lookup = getShader().findMaterialArtifact(pipelineShaderId);
     if (!lookup.ok) {
       if (requiresPreparedMaterialShader(vertexLayout)) {
@@ -1894,12 +1836,13 @@ async function makeWebGPURenderer(
   };
   const pipelineRequests = new WeakMap<
     RendererPipelineCacheState,
-    MaterialPipelineRequestCache<RenderPipeline>
+    MaterialPipelineRequestCache<RenderPipeline | PendingMaterialPipelineRequest>
   >();
   const pipelineRequestScratch: Parameters<typeof materialPipelineRequestFacts>[1] = [];
   // Array form: per-draw callers pass their argument list without re-spreading.
   const getMaterialShaderPipelineFor = (
     args: Parameters<typeof buildMaterialShaderPipeline>,
+    lookupOnly = false,
   ): RenderPipeline | null => {
     const registry = getShader();
     const shaderId = resolveMaterialPipelineShaderId(args[0], args[6] ?? 'forward');
@@ -1911,17 +1854,18 @@ async function makeWebGPURenderer(
     );
     const artifact = registry.findMaterialArtifact(artifactId);
     // Missing artifacts and pending pipelines remain retryable.
-    if (!artifact.ok) return buildMaterialShaderPipeline(...args);
+    if (!artifact.ok) return lookupOnly ? null : buildMaterialShaderPipeline(...args);
     const owner = currentPipelineCacheState();
     let requests = pipelineRequests.get(owner);
     if (requests === undefined) {
+      if (lookupOnly) return null;
       requests = new MaterialPipelineRequestCache(512, 6);
       pipelineRequests.set(owner, requests);
     }
     // Lookups reuse one scratch fact list; a miss stores its own copy before
     // building, since a build may request another pipeline.
     const facts = materialPipelineRequestFacts(args, pipelineRequestScratch);
-    facts.push(args[22] === true);
+    facts.push(args[22] ?? false);
     facts.push(
       currentMaterialShaderUvSetCounts().get(artifactId),
       registry,
@@ -1931,12 +1875,13 @@ async function makeWebGPURenderer(
       currentPipelineState(),
       currentBuildDevice(),
     );
-    const cached = requests.get(facts);
-    if (cached !== undefined) return cached;
-    const stored = facts.slice();
-    const pipeline = buildMaterialShaderPipeline(...args);
-    if (pipeline !== null) requests.set(stored, pipeline);
-    return pipeline;
+    return requestMaterialPipeline(
+      requests,
+      facts,
+      lookupOnly,
+      () => buildMaterialShaderPipeline(...args),
+      () => preparedPipelineOwners.get(owner),
+    );
   };
   const getMaterialShaderPipeline = (
     ...args: Parameters<typeof buildMaterialShaderPipeline>
@@ -1944,6 +1889,9 @@ async function makeWebGPURenderer(
   let activeProfile = freezeRenderProfile(
     internals.options?.standardProfile ?? DEFAULT_STANDARD_PROFILE,
   );
+  const selectProfile = createRenderProfileSelection();
+  const selectedProfile = (device = internals.device) =>
+    selectProfile.select(activeProfile, device);
   // Recovery prewarm and live draws must select the same material ABI.
   const getMaterialShaderArtifact: NonNullable<
     RenderSystemInternals['getMaterialShaderArtifact']
@@ -1959,34 +1907,21 @@ async function makeWebGPURenderer(
   const pipelineEntries = new WeakMap<object, MaterialShaderPipelineEntry[]>();
   const getMaterialShaderPipelineEntryFor = (
     args: Parameters<typeof buildMaterialShaderPipeline>,
+    lookupOnly = false,
   ) => {
-    const pipeline = getMaterialShaderPipelineFor(args);
+    const pipeline = getMaterialShaderPipelineFor(args, lookupOnly);
     if (pipeline === null) return null;
     const materialShaderId = args[0];
     const variantSet = args[5];
     const passKind = args[6] ?? 'forward';
     const vertexLayoutProjection = args[13];
     const layoutKind = args[15];
-    const sceneIndexAddress =
-      layoutKind === 'gpu-driven-pbr' ||
-      layoutKind === 'gpu-driven-skin' ||
-      layoutKind === 'gpu-driven-cluster-pbr' ||
-      layoutKind === 'gpu-driven-cluster-skin';
-    const options: {
-      -readonly [K in keyof MaterialShaderArtifactRequest]: MaterialShaderArtifactRequest[K];
-    } = {
-      address: sceneIndexAddress ? 'scene-index' : 'direct',
-      pass: passKind === 'shadow-caster' ? 'shadow' : 'forward',
-    };
-    if (vertexLayoutProjection !== undefined)
-      options.vertexColorAvailable = hasColorAttribute(vertexLayoutProjection);
-    if (
-      layoutKind === 'pbr-skin' ||
-      layoutKind === 'gpu-driven-skin' ||
-      layoutKind === 'gpu-driven-cluster-skin'
-    )
-      options.deformation = 'skin';
-    if (variantSet !== undefined) options.variantSet = variantSet;
+    const options = materialPipelineArtifactRequest(
+      variantSet,
+      passKind,
+      vertexLayoutProjection,
+      layoutKind,
+    );
     const artifact = getMaterialShaderArtifact(materialShaderId, options);
     const group2Contract =
       materialShaderPipelineGroup2Contracts.get(pipeline as object) ?? ('mesh' as const);
@@ -2017,22 +1952,15 @@ async function makeWebGPURenderer(
   };
   const getMaterialShaderPipelineEntry = (...args: Parameters<typeof getMaterialShaderPipeline>) =>
     getMaterialShaderPipelineEntryFor(args);
-  // The rest array is this call's own copy: mark it as a preparation request
-  // in place instead of copying and re-spreading it per call.
-  const prepareMaterialShaderPipeline = (
-    ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipeline']>>
-  ) => {
-    const request = args as unknown as Parameters<typeof buildMaterialShaderPipeline>;
-    request[22] = true;
-    return getMaterialShaderPipelineFor(request);
-  };
-  const prepareMaterialShaderPipelineEntry = (
-    ...args: Parameters<NonNullable<RenderSystemInternals['getMaterialShaderPipelineEntry']>>
-  ) => {
-    const request = args as unknown as Parameters<typeof buildMaterialShaderPipeline>;
-    request[22] = true;
-    return getMaterialShaderPipelineEntryFor(request);
-  };
+  const {
+    prepareMaterialShaderPipeline,
+    prepareMaterialShaderPipelineEntry,
+    lookupMaterialShaderPipeline,
+    lookupMaterialShaderPipelineEntry,
+  } = candidateMaterialPipelineRequests(
+    getMaterialShaderPipelineFor,
+    getMaterialShaderPipelineEntryFor,
+  );
   // Post-process modules share the async shader adapter: pending compilation
   // returns null; subsequent frames consume the cached pipeline. Group 0 is
   // reserved for View, group 1 holds inputs; vs_main/fs_main draw a fullscreen
@@ -2116,6 +2044,9 @@ async function makeWebGPURenderer(
     return pipelineRes.value;
   };
   const renderInternals: RenderSystemInternals = {
+    get presentationOutput() {
+      return ui?.owner.output;
+    },
     renderWorld,
     ...(publicationInstances === undefined ? {} : { instanceCollections: publicationInstances }),
     get canvas() {
@@ -2131,7 +2062,7 @@ async function makeWebGPURenderer(
     captureReflectionFallbackReadback: internals.options?.captureReflectionFallbackReadback,
     shadowWorkload: internals.options?.shadowWorkload,
     get standardProfile() {
-      return activeProfile;
+      return selectedProfile(currentBuildDevice());
     },
     standardPipeline: internals.options?.pipeline ?? standardPipeline,
     get featureHost() {
@@ -2143,11 +2074,11 @@ async function makeWebGPURenderer(
     shaderModuleFactory: renderShaderModuleFactory,
     immediateShaderModuleFactory: {
       createShaderModule: (descriptor) =>
-        getImmediateShaderModuleAdapter().createShaderModule(descriptor),
+        getShaderModuleAdapter('immediate').createShaderModule(descriptor),
     },
     profiler: internals.options?.profiler,
     // Keep device/context getters live so recovery swaps are observed by the
-    // record stage without reconstructing the RenderSystem.
+    // record stage without reconstructing the RendererState.
     get device() {
       return internals.device;
     },
@@ -2171,7 +2102,7 @@ async function makeWebGPURenderer(
     // The graph records receipt-bound color observations through the same
     // renderer-owned capture bridge consumed after queue submission. Keep the
     // identity and demand live on internals so recovery and per-frame graph
-    // rebuilds observe the current device without reconstructing RenderSystem.
+    // rebuilds observe the current device without reconstructing RendererState.
     get deviceGeneration() {
       return activeDeviceScope.generation;
     },
@@ -2208,10 +2139,13 @@ async function makeWebGPURenderer(
       return internals.debugOverlay;
     },
     // feat-20260608-create-app-param-surface-trim / M1 / AC-02: clearColor
-    // is no longer threaded through createRenderSystem; the record stage
+    // is no longer threaded through createRendererState; the record stage
     // reads `camera.clearColor` straight from the Camera SoA column
     // (array<f32,4>, feat-20260709 M3).
     getPipelineState: () => pipelineState,
+    get standardClusterAbi() {
+      return pipelineState?.standardClusterAbi;
+    },
     assets,
     get gpuStore() {
       return gpuStore;
@@ -2233,6 +2167,8 @@ async function makeWebGPURenderer(
     getMaterialShaderPipelineEntry,
     prepareMaterialShaderPipeline,
     prepareMaterialShaderPipelineEntry,
+    lookupMaterialShaderPipeline,
+    lookupMaterialShaderPipelineEntry,
     withPipelinePreparationErrors,
     getMaterialShaderBindingContract: getMaterialShaderBindingContract,
     getFeatureShaderSource: (identifier) =>
@@ -2241,7 +2177,7 @@ async function makeWebGPURenderer(
     getParamSchema,
     getMaterialBindGroupLayout,
     metrics,
-    // createRenderSystem wraps this in a per-RenderSystem cache + the public
+    // createRendererState wraps this in a per-RendererState cache + the public
     // getPostProcessPipeline lookup the dispatcher reads at frame time.
     buildPostProcessPipeline,
     // feat-20260608-mesh-ssbo-dynamic-grow-l1-lift-1024-entity-cap M3 / T-M3-04:
@@ -2324,6 +2260,7 @@ async function makeWebGPURenderer(
       ).gpuPassTimingBeginReason = reason;
     },
     getRenderTargetPhysical: (target) => renderTargetHost.getPhysicalTarget(target),
+    ownedRenderTargets: renderTargetHost,
     markRenderTargetSubmitted: (target, physical) =>
       renderTargetHost.markTargetSubmitted(target, physical),
     resolveRenderTargetTextureSource: (source) =>
@@ -2343,56 +2280,21 @@ async function makeWebGPURenderer(
     get depthPyramidShaders() {
       return internals.depthPyramidShaders;
     },
-    get standardDeferredShaders() {
-      return internals.standardDeferredShaders;
+    get standardSceneShaders() {
+      return internals.standardSceneShaders;
     },
     get atmosphereShaders() {
       return internals.atmosphereShaders;
     },
   };
-  const renderSystem: RenderSystem = createRenderSystem(renderInternals);
+  const renderSystem: RendererState = createRendererState(renderInternals);
+  const primaryOwner = viewOwnerOf(renderInternals);
   let uiOnlyFrame = false;
-  if (ui !== undefined) {
-    Object.defineProperty(renderInternals, 'presentationOutput', {
-      configurable: true,
-      enumerable: true,
-      get: () => ui.output,
-    });
-    renderInternals.deferFinalDisplayObservation = true;
-    renderInternals.encodePresentation = (encoder) => {
-      const output = internals.context.getCurrentTexture();
-      if (!output.ok) throw output.error;
-      ui.encode(encoder, output.value);
-      renderInternals.framePassNames?.push('screen-ui-composite');
-      if (ui.output !== undefined) renderInternals.framePassNames?.push('screen-ui-present');
-      encodeFrameObservationCapture(
-        {
-          device: internals.device,
-          deviceGeneration: activeDeviceScope.generation,
-          outputColorSpace: internals.outputColorSpace,
-          observationCaptureOwner: renderInternals.observationCaptureOwner,
-          observationCaptureDomains: internals.observationCaptureDomains,
-          observationFrameId: internals.observationFrameId,
-          observationGraphGeneration: internals.observationGraphGeneration,
-        },
-        encoder,
-        {
-          texture: ui.output ?? output.value,
-          format: uiFormats.storage,
-          domain: 'final-display',
-          width: internals.canvas.width,
-          height: internals.canvas.height,
-          frameNumber: internals.observationFrameId ?? 0,
-          graphGeneration: ui.generation,
-        },
-      );
-      internals.observationGraphGeneration = ui.generation;
-    };
-  }
+  if (ui !== undefined) renderInternals.deferFinalDisplayObservation = true;
   const cameraViews = createCameraViews(
     renderInternals,
-    renderSystem,
     internals.options?.maxRenderShortSide,
+    () => publicationReceiver?.borrowAcceptedDemand(),
   );
   internals.lossObserver.current = (detail) => {
     renderInternals.submittedPassNames = [];
@@ -2401,13 +2303,12 @@ async function makeWebGPURenderer(
   };
   cameraViewsForTargetPromotion = cameraViews;
   attachGpuPassTimingSession(internals, gpuPassTimingSession);
-  renderSystemForTargetPromotion = renderSystem;
   registerSingleLayerMediumBuiltins(renderSystem);
   registerStandardPostProcessBuiltins(renderSystem);
   // The Standard pipeline is the sole built-in graph owner. Feature plans are
   // projected into that graph directly; no second post-process registry is
   // installed for fullscreen producers.
-  renderSystem.configureStandard(undefined);
+  cameraViews.configureStandard(undefined);
   renderSystem.restorePostProcessResources();
   const attachedWorlds = new Set<World>();
   const attachedLeases = new Map<RenderReadLease, World>();
@@ -2742,9 +2643,16 @@ async function makeWebGPURenderer(
       (frameRequest?.profileFrame !== undefined || internals.options?.captureGpuTimings === true);
     const volumeTimingCapture = createVolumeTimingCapture(timingRequested);
     if (isFrameRequest) beginObservationFrame();
-    prepareScreenUi(frameRequest?.camera === null, drawOptions);
+    const uiFrameId = stageScreenUi(frameRequest?.camera === null, drawOptions);
     const submitted = uiOnlyFrame
-      ? yield* prepareFrameSubmission([recordScreenUi()], undefined, renderInternals, isCurrent)
+      ? yield* prepareRenderFrame({
+          world: renderWorld,
+          device: internals.device,
+          frameId: uiFrameId,
+          rendererInternals: renderInternals,
+          isCurrent,
+          shared: true,
+        })
       : yield* cameraViews.prepareSubmission(
           worlds,
           drawOptions,
@@ -2757,17 +2665,20 @@ async function makeWebGPURenderer(
     internals.observationCaptureDomains = undefined;
     internals.gpuPassTimingFrameIdentity = undefined;
     if (!submitted) return err(unsubmittedFrameError(volumeTimingCapture));
-    const timingCompletion = internals.gpuPassTimingSubmittedWork;
     internals.gpuPassTimingSubmittedWork = undefined;
     const reflectionFallbackCompletion = uiOnlyFrame
       ? undefined
-      : cameraViews.currentSystem.reflectionFallbackCompletion;
+      : cameraViews.currentOwner.frameState.reflectionFallbackCompletion;
     const receiptFrameId = isFrameRequest ? ++frameId : undefined;
-    const receiptGeneration = activeDeviceScope.generation;
-    const queueCompletion = timingCompletion ?? internals.device.queue.onSubmittedWorkDone();
-    const unheldQueueCompletion = internals.device.queue.onSubmittedWorkDoneUnheld?.();
+    // The receipt, frame credit and generation fence read the one published submission.
+    const {
+      completion: queueCompletion,
+      creditCompletion: unheldQueueCompletion,
+      generation: receiptGeneration,
+    } = renderSubmission(renderWorld);
+    if (queueCompletion === undefined)
+      throw new Error('A submitted frame publishes its GPU completion to its Render World');
     watchQueueCompletion(queueCompletion, receiptFrameId, receiptGeneration);
-    ui?.submitted(queueCompletion);
     gpuStore.trackMeshSubmission(queueCompletion);
     internals.pack.instrumentation?.onFrameBoundary?.();
     if (receiptFrameId === undefined) {
@@ -2799,6 +2710,13 @@ async function makeWebGPURenderer(
     terrainReceipts.register(receipt, uiOnlyFrame ? [] : cameraViews.terrainSections());
     if (!uiOnlyFrame)
       dynamicGeometryHost.publishDynamicGeometry(receipt, worlds, frameRequest?.fixedStep);
+    cameraViews.recordClusterWorkReceiptForConformance({
+      observationFrameId: receipt.frameId,
+      publicReceiptFrameId: receipt.frameId,
+      deviceGeneration: receipt.deviceGeneration,
+      presentation: receipt.presentation,
+      completed: receipt.completed,
+    });
     return ok(receipt);
   }
   const createVolumeTimingCapture = (timingRequested: boolean): GpuTimingCapture | undefined => {
@@ -2816,39 +2734,30 @@ async function makeWebGPURenderer(
       graphGeneration: 0,
     };
   };
-  /** Select a UI-only frame when no scene can draw, then lay out screen UI. */
-  const prepareScreenUi = (sceneAbsent: boolean, drawOptions: DrawOwnerOptions): void => {
+  /** Select a UI-only frame when no scene can draw, then publish its immutable preparation inputs. */
+  const stageScreenUi = (sceneAbsent: boolean, drawOptions: DrawOwnerOptions): number => {
+    const frame = internals.observationFrameId ?? 0;
     uiOnlyFrame = ui !== undefined && (sceneAbsent || !readySettled || pipelineState === null);
-    ui?.prepare(
-      (drawOptions.sampleTimeSeconds ?? 0) * 1000,
-      internals.canvas.width,
-      internals.canvas.height,
-      uiOnlyFrame,
-      internals.outputColorSpace.report.effective,
-      uiFormats.storage === uiFormats.view &&
+    if (ui === undefined) return frame;
+    renderWorld.insertResource<SurfaceUiInput>(RenderSurfaceUiInput, {
+      frame,
+      sampleTimeMs: (drawOptions.sampleTimeSeconds ?? 0) * 1000,
+      width: internals.canvas.width,
+      height: internals.canvas.height,
+      colorSpace: internals.outputColorSpace.report.effective,
+      captureEncodedOutput:
+        uiFormats.storage === uiFormats.view &&
         pendingObservationDomains?.includes('final-display') === true,
-    );
+    });
+    return frame;
   };
-  function* recordScreenUi(): FrameRecording {
-    const encoded = internals.device.createCommandEncoder({ label: 'screen-ui-frame' });
-    if (!encoded.ok) throw encoded.error;
-    const generation = activeDeviceScope.generation;
-    const submitted = yield {
-      encoder: encoded.value,
-      device: internals.device,
-      beforeSubmit: renderInternals.beforeSubmit,
-      isCurrent: () => !disposed && activeDeviceScope.generation === generation,
-      reportError: (error: RhiError) => internals.errorRegistry.fire(error),
-    };
-    return submitted.ok;
-  }
   const unsubmittedFrameError = (
     volumeTimingCapture: GpuTimingCapture | undefined,
   ): RhiError | RenderError => {
     const cleanupFailure = disposeOwnedObservationCaptures(observationCaptureOwner.drain());
     volumeTimingCapture?.discard();
     if (cleanupFailure !== undefined) return cleanupFailure;
-    const invalidMotionBlur = cameraViews.currentSystem.motionBlurInvalidParams;
+    const invalidMotionBlur = cameraViews.currentOwner.recorded.motionBlurInvalidParams;
     if (invalidMotionBlur !== undefined) return invalidMotionBlur;
     return new RendererContractFailureError(
       'draw',
@@ -2887,13 +2796,11 @@ async function makeWebGPURenderer(
     });
   };
   const receiptPresentation = (): FrameReceipt['presentation'] =>
-    uiOnlyFrame ? 'pending' : (cameraViews.presentation ?? renderSystem.presentation);
+    uiOnlyFrame ? 'pending' : cameraViews.presentation;
   const receiptPresentationPendingReason = (presentation: FrameReceipt['presentation']) => {
     if (presentation === 'ready') return undefined;
     if (uiOnlyFrame) return Object.freeze({ code: 'ui-only' as const });
-    return cameraViews.active
-      ? cameraViews.presentationPendingReason
-      : (renderSystem.presentationPendingReason ?? cameraViews.presentationPendingReason);
+    return cameraViews.presentationPendingReason;
   };
   /** Publish the receipt of a submitted frame with its completion and observations. */
   const issueFrameReceipt = (
@@ -2918,23 +2825,62 @@ async function makeWebGPURenderer(
       presentation,
       stages: observeFrameCompletionStages(queueCompletion, reflectionFallbackCompletion),
     });
+    let gpuSettled = false;
+    let preparationSettled = false;
+    let preparationCompleted: FrameReceipt['preparationCompleted'];
     const completed: FrameReceipt['completed'] = raceFrameContinuation(
       completion,
       continuation,
       receiptFrameId,
       receiptGeneration,
     ).finally(() => {
-      frameContinuations.delete(continuation);
+      gpuSettled = true;
+      if (preparationCompleted === undefined || preparationSettled)
+        frameContinuations.delete(continuation);
     });
+    const shaderState = candidateShaderState ?? activeShaderState;
+    const preparations =
+      presentation === 'ready'
+        ? []
+        : [
+            internals.device.pipelineLibrary?.pendingRuntimeCompilation?.(),
+            gpuStore.pendingCubemapCompletion(),
+            preparedPipelineOwners.get(currentPipelineCacheState())?.pendingCompletion(),
+            shaderState.sharedShaderModuleAdapter?.pendingCompletion(),
+            shaderState.sharedImmediateShaderModuleAdapter?.pendingCompletion(),
+          ].filter((value) => value !== undefined);
+    preparationCompleted =
+      preparations.length === 0 && !presentationPendingReason?.code.includes('pipeline-preparation')
+        ? undefined
+        : raceFrameContinuation(
+            Promise.all(preparations).then(
+              (results) => {
+                const failed = results.find((result) => !result.ok);
+                return failed !== undefined && !failed.ok
+                  ? err(completeFrameFailure(receiptFrameId, receiptGeneration, failed.error))
+                  : ok(undefined);
+              },
+              (cause: unknown) =>
+                err(completeFrameFailure(receiptFrameId, receiptGeneration, cause)),
+            ),
+            continuation,
+            receiptFrameId,
+            receiptGeneration,
+          ).finally(() => {
+            preparationSettled = true;
+            if (gpuSettled) frameContinuations.delete(continuation);
+          });
     const creditCompleted: FrameReceipt['creditCompleted'] =
       unheldQueueCompletion === undefined
         ? undefined
         : raceFrameContinuation(
+            // Reflection fallback settlement consumes the held queue fence and
+            // belongs to `completed`; credit follows the GPU work alone.
             settleFrameCompletion(
               receiptFrameId,
               receiptGeneration,
               unheldQueueCompletion,
-              reflectionFallbackCompletion,
+              undefined,
             ),
             continuation,
             receiptFrameId,
@@ -2948,7 +2894,7 @@ async function makeWebGPURenderer(
     pendingObservationDomains = undefined;
     const receiptGraphGeneration =
       internals.observationGraphGeneration ??
-      (uiOnlyFrame ? 0 : (cameraViews.currentSystem.perFrameGraphInfo?.generation ?? 0));
+      (uiOnlyFrame ? 0 : (viewGraphInfo(cameraViews.currentOwner)?.generation ?? 0));
     const receipt = Object.freeze({
       frameId: receiptFrameId,
       deviceGeneration: receiptGeneration,
@@ -2959,10 +2905,11 @@ async function makeWebGPURenderer(
       graphGeneration: receiptGraphGeneration,
       ...(uiOnlyFrame ||
       cameraViews.active ||
-      renderSystem.lastSuccessfulBarrelDistortion === undefined
+      primaryOwner.frameState.lastSuccessfulBarrelDistortion === undefined
         ? {}
-        : { barrelDistortion: renderSystem.lastSuccessfulBarrelDistortion }),
+        : { barrelDistortion: primaryOwner.frameState.lastSuccessfulBarrelDistortion }),
       completed,
+      ...(preparationCompleted === undefined ? {} : { preparationCompleted }),
       ...(creditCompleted === undefined ? {} : { creditCompleted }),
       ...(internals.options?.shadowWorkload !== true
         ? {}
@@ -3018,36 +2965,13 @@ async function makeWebGPURenderer(
   /** The current frame's pass-timing observation, or its unavailable/failed reason. */
   const gpuPassTimingSource = (): (() => Promise<GpuPassTimingObservation>) | undefined => {
     const passTimingCapture = uiOnlyFrame ? undefined : internals.gpuPassTimingCapture;
-    if (passTimingCapture !== undefined) return () => observeGpuPassTiming(passTimingCapture);
+    if (passTimingCapture !== undefined)
+      return () => projectGpuPassTimingCapture(passTimingCapture, failedGpuPassTimingObservation);
     const timingBeginReason = uiOnlyFrame ? undefined : internals.gpuPassTimingBeginReason;
     if (gpuPassTimingUnavailable === undefined && timingBeginReason === undefined) return undefined;
     return async (): Promise<GpuPassTimingObservation> =>
       gpuPassTimingUnavailable ??
       failedGpuPassTimingObservation(timingBeginReason as GpuPassTimingError);
-  };
-  const observeGpuPassTiming = async (
-    passTimingCapture: GpuPassTimingCapture,
-  ): Promise<GpuPassTimingObservation> => {
-    const observed = await passTimingCapture.observe();
-    if (!observed.ok) return failedGpuPassTimingObservation(observed.error);
-    const frame = observed.value;
-    const unmeasured = frame.passes.find((pass) => pass.status === 'unmeasured');
-    if (unmeasured !== undefined) {
-      return { status: 'partial', frame, reason: unmeasured.reason };
-    }
-    if (frame.droppedPassCount > 0) {
-      return {
-        status: 'partial',
-        frame,
-        reason: {
-          code: 'query-budget-exceeded',
-          expected: 'all executed passes fit within the bounded query budget',
-          hint: 'increase maxPassesPerFrame or simplify the pass graph',
-          detail: { droppedPassCount: frame.droppedPassCount },
-        },
-      };
-    }
-    return { status: 'complete', frame };
   };
   const drawFailure = (cause: unknown): Result<never, RhiError | RenderError> => {
     internals.observationFrameId = undefined;
@@ -3066,7 +2990,7 @@ async function makeWebGPURenderer(
       code: 'webgpu-runtime-error',
       expected:
         'renderSystem.draw(worlds, { cameraOwner, resourceOwner }) completes without throwing',
-      hint: `RenderSystem internal error: ${error.message}`,
+      hint: `RendererState internal error: ${error.message}`,
       detail: { error },
     });
     internals.errorRegistry.fire(e);
@@ -3074,7 +2998,7 @@ async function makeWebGPURenderer(
   };
   const renderer: RendererAssemblyImplementation = {
     setSurfaceDynamicInput(frame) {
-      cameraViews.setSurfaceDynamicInput(frame);
+      publishSurfaceDynamicInput(renderWorld, frame);
     },
     attach(world: World): RenderResult<RenderWorldLease, RenderError> {
       if (publicationReceiver !== undefined)
@@ -3106,7 +3030,14 @@ async function makeWebGPURenderer(
       receiver: publicationReceiver,
       getGpuStore: () => gpuStore,
       currentGeneration: () => activeDeviceScope.generation,
-      completeUploads: () => internals.device.queue.onSubmittedWorkDone(),
+      completeUploads: () => {
+        const failure = drawHealthError();
+        if (failure !== undefined) throw failure;
+        const generation = activeDeviceScope.generation;
+        const completed = internals.device.queue.onSubmittedWorkDone();
+        watchQueueCompletion(completed, undefined, generation);
+        return completed;
+      },
       isCurrentFrame: (receipt) =>
         !uiOnlyFrame &&
         latestReceipt === receipt &&
@@ -3127,7 +3058,7 @@ async function makeWebGPURenderer(
     importTexture: (input) => externalTextureHost.importTexture(input),
     nativeDevice: () => externalTextureHost.nativeDevice(),
     setProfile(profile: RenderProfile): RenderResult<void, RenderError> {
-      const invalid = validateRenderProfile(profile);
+      const invalid = selectProfile.validate(profile, internals.device);
       if (invalid !== undefined) {
         return err(
           new RendererOperationError('frame-input-invalid', {
@@ -3177,10 +3108,10 @@ async function makeWebGPURenderer(
       return ok(undefined);
     },
     inspectLodOcclusion() {
-      const inspectedSystem = cameraViews.currentSystem;
+      const inspected = cameraViews.currentOwner;
       return {
-        lodOcclusion: inspectedSystem.lodOcclusion?.value(),
-        gpuDriven: inspectedSystem.gpuDrivenInspection,
+        lodOcclusion: inspected.lod.cell?.value(),
+        gpuDriven: inspected.gpuDriven.inspect(inspected.skin.paletteUploadBytes),
       };
     },
     bounds: (world, entity) => (disposed ? undefined : cameraViews.bounds(world, entity)),
@@ -3199,7 +3130,7 @@ async function makeWebGPURenderer(
           hint: 'select WebGPU for pipeline recipe collection',
         });
       if (exported?.ok === false) throw exported.error;
-      const inspectedSystem = cameraViews.currentSystem;
+      const inspected = cameraViews.currentOwner;
       const health = internals.healthRegistry.getLastSnapshot();
       const deviceLost = health.reason === 'device-lost';
       const state = projectRendererInspectionState(
@@ -3207,14 +3138,14 @@ async function makeWebGPURenderer(
         deviceLost,
         health.reason === 'internal-fault' || (!readySettled && ui === undefined),
       );
-      const graph = deviceLost ? undefined : inspectedSystem.perFrameGraphInfo;
+      const graph = deviceLost ? undefined : viewGraphInfo(inspected);
       const barrelDistortion = inspectBarrelDistortion(
         disposed,
         deviceLost,
         surfaceReleased,
         frameId,
         activeDeviceScope.generation,
-        inspectedSystem.barrelDistortionInspection,
+        viewBarrelDistortion(inspected),
       );
       const observationId = `${STANDARD_OUTPUT_TRANSFORM_FEATURE_ID}:frame-${frameId}`;
       const outputInspection = projectRendererOutputInspectionFromSurface({
@@ -3223,16 +3154,17 @@ async function makeWebGPURenderer(
         pipelineState,
         rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
         colorSpace: internals.outputColorSpace.report,
-        autoExposure: inspectedSystem.autoExposure,
-        standardLut: inspectedSystem.standardLut,
+        autoExposure: viewAutoExposure(inspected),
+        standardLut: viewStandardLut(inspected),
         presentationProof: internals.context?.presentationProof,
       });
-      const recoveryEvidence = inspectedSystem.recoveryEvidence;
+      const recoveryEvidence = viewRecoveryEvidence(inspected);
       const pointShadow = projectPointShadowInspection(
-        inspectedSystem.pointShadowInspection,
+        inspected.frameState.submittedInspection?.pointShadow,
         materialShadersSamplePointShadows(getShader().materialShaderManifestEntries()),
       );
-      return Object.freeze({
+      const inspection = {
+        ...debugOverlayInspectionField(renderWorld),
         ...(library === undefined
           ? {}
           : {
@@ -3250,10 +3182,12 @@ async function makeWebGPURenderer(
             }
           : {}),
         state,
-        views: cameraViews.inspect(),
+        ...(options?.fields?.some((field) => field === 'views') === false
+          ? {}
+          : { views: cameraViews.inspect() }),
         recovery: recoveryInspection,
         surface: surfaceReleased ? 'released' : 'available',
-        profile: activeProfile,
+        profile: selectedProfile(),
         ...inspectDeviceCapabilities(internals.device),
         frame: inspectFrameCompletionContinuations(
           frameId,
@@ -3262,7 +3196,7 @@ async function makeWebGPURenderer(
         ),
         barrelDistortion,
         ...projectRendererFeatureInspection(internals.featureHost),
-        ...projectRenderSystemInspection(inspectedSystem, deviceLost),
+        ...projectRenderViewInspection(inspected, deviceLost, options?.fields),
         dynamicGeometry: dynamicGeometry.inspect(),
         extendedLighting: projectExtendedLightingInspection(extendedLightingState),
         ...(pointShadow === undefined ? {} : { pointShadow: Object.freeze({ ...pointShadow }) }),
@@ -3281,12 +3215,17 @@ async function makeWebGPURenderer(
         ...projectRendererOutputObservationInspection({
           observationId,
           frameId,
-          antialias: inspectedSystem.lastSuccessfulCameraAntialias,
+          antialias: inspected.frameState.lastSuccessfulCameraAntialias,
           outputInspection,
           rgba16floatRenderable: internals.device.caps.rgba16floatRenderable,
           resourceStats: observationStats,
         }),
-      });
+      } as RenderInspection;
+      return Object.freeze(
+        options?.fields === undefined
+          ? inspection
+          : Object.fromEntries(options.fields.map((field) => [field, inspection[field]])),
+      ) as RenderInspection;
     },
     get device(): RhiDevice {
       return internals.device;
@@ -3351,7 +3290,7 @@ async function makeWebGPURenderer(
       transformReleases.delete(world);
     },
     observeCurrentFrame(options: FrameObservationOptions) {
-      return cameraViews.currentSystem.observeCurrentFrame(options);
+      return observeViewFrame(cameraViews.currentOwner, options);
     },
     requestObservation(
       domains: readonly FrameObservationDomain[],
@@ -3399,29 +3338,24 @@ async function makeWebGPURenderer(
       pendingObservationDomains = Object.freeze([...domains]);
       return ok(undefined);
     },
-    getCurrentGraphTarget(name: string) {
-      return cameraViews.currentSystem.getCurrentGraphTarget(name);
-    },
-    requestGraphTargetCapture(request) {
-      cameraViews.currentSystem.requestGraphTargetCapture(request);
-    },
+    ...rendererConformanceHost(cameraViews),
     get frustumStats() {
-      return cameraViews.currentSystem.frustumStats;
+      return cameraViews.currentOwner.recorded.frustum;
     },
     get visibilityStats() {
-      return cameraViews.currentSystem.visibilityStats;
+      return cameraViews.currentOwner.recorded.visibility;
     },
     get renderScene() {
-      return cameraViews.currentSystem.renderScene;
+      return viewRenderScene(cameraViews.currentOwner);
     },
     get meshMaterialBindings() {
-      return cameraViews.currentSystem.meshMaterialBindings;
+      return viewMeshMaterialBindings(cameraViews.currentOwner);
     },
     get perFramePassNames() {
       return cameraViews.perFramePassNames;
     },
     get bindGroupCounts() {
-      return cameraViews.currentSystem.bindGroupCounts;
+      return cameraViews.currentOwner.recorded.bindGroups;
     },
     configureStandard(config) {
       cameraViews.configureStandard(config);
@@ -3451,10 +3385,7 @@ async function makeWebGPURenderer(
           new RenderFeatureCapabilityMissingError(feature.identity, host.size, missingCapability),
         );
       }
-      let nextRequiredFullscreenPostProcesses: readonly {
-        readonly identity: string;
-        readonly source: string;
-      }[];
+      let nextRequiredFullscreenPostProcesses: typeof requiredFullscreenPostProcesses;
       try {
         nextRequiredFullscreenPostProcesses = collectRequiredFullscreenPostProcesses([
           ...host.features,
@@ -3492,6 +3423,7 @@ async function makeWebGPURenderer(
       let committed = false;
       try {
         const fullscreenPrewarm = await prewarmFullscreenFeatureModules(
+          internals,
           feature,
           featureDevice,
           featureAdapter,
@@ -3686,7 +3618,7 @@ async function makeWebGPURenderer(
     },
     async observeGeometry(receipt: FrameReceipt) {
       const state = latestLodObservation;
-      const view = state?.capture?.views.find((view) => view.system === cameraViews.currentSystem);
+      const view = state?.capture?.views.find((view) => view.owner === cameraViews.currentOwner);
       const valid = () =>
         state !== undefined &&
         view !== undefined &&
@@ -3708,7 +3640,7 @@ async function makeWebGPURenderer(
           receipt.frameId,
           receipt.deviceGeneration,
         );
-      const observed = await view.system.observeGeometry(receipt);
+      const observed = await view.owner.gpuDriven.observeGeometry(receipt);
       if (!valid())
         return unavailableGeometry('superseded', receipt.frameId, receipt.deviceGeneration);
       return {
@@ -3787,6 +3719,7 @@ async function makeWebGPURenderer(
       internals.lossObserver.current = null;
       delete internals.generationState.onStaleLoss;
       cameraViews.dispose();
+      debugOverlayHolderOf(renderWorld)?.residency.dispose();
       retireGpuPassTimingSession();
       internals.gpuPassTimingCapture = undefined;
       internals.gpuPassTimingSubmittedWork = undefined;
@@ -3799,7 +3732,7 @@ async function makeWebGPURenderer(
       }
       const cleanupFailures: RendererOperationCause[] = [];
       try {
-        ui?.dispose();
+        ui?.owner.dispose();
       } catch (cause) {
         const error = wrapDisposeError(cause, 'ui.dispose');
         cleanupFailures.push(error);
@@ -3864,11 +3797,11 @@ async function makeWebGPURenderer(
       }
       // Step 3: drain the per-frame render-graph pool + the per-entity
       // instanceBuffers GPU storage cache. Both walks live on the
-      // RenderSystem closure (frameState is closure-private).
+      // RendererState closure (frameState is closure-private).
       try {
-        renderSystem.disposeFrameState();
+        primaryOwner.disposeFrameState();
       } catch (cause) {
-        const error = wrapDisposeError(cause, 'renderSystem.disposeFrameState');
+        const error = wrapDisposeError(cause, 'viewOwner.disposeFrameState');
         cleanupFailures.push(error);
         internals.errorRegistry.fire(error);
       }
@@ -3999,7 +3932,7 @@ async function makeWebGPURenderer(
     const previousScope = previous?.scope ?? activeDeviceScope;
     // This is the first line of the synchronous publication boundary. The
     // candidate was already compiled and its setup work completed; now shed
-    // lost-device RenderSystem owners before installing the candidate state.
+    // lost-device RendererState owners before installing the candidate state.
     renderSystem.resetForRecover(previous?.pipeline, candidate.device);
     // Candidate readiness is the first point where the target owner may shed
     // old physical handles. Keep its device getter pinned to the old device,
@@ -4038,7 +3971,7 @@ async function makeWebGPURenderer(
     renderSystem.publishRecoveryPostProcessResources(candidatePostProcessResources);
     candidate.pipeline.perPassResources.commitBloomResources?.();
     recoveryRootBundle.publish();
-    // RenderSystem owns frame/feature GPU state; the generation bindings own
+    // RendererState owns frame/feature GPU state; the generation bindings own
     // residency stores; DeviceScope owns the remaining lifecycle roots. Their
     // retirement is intentionally centralized and ordered after publication.
     previousGpuStore.destroyAll();

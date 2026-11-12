@@ -11,11 +11,11 @@ export default defineFeature<FeatureDefinition>({
   catalog: 'Screen-space reflections',
   kind: 'visual',
   summary:
-    'A ScreenSpaceReflection companion on a Standard Deferred camera traces the depth buffer and composes a bounded reflection delta over the environment fallback. Admission is fail-closed: every visible opaque row must use the built-in Standard PBR material, so the pillars are emissive Standard rather than unlit.',
+    'A ScreenSpaceReflection companion on a Standard Forward camera shares its surface data and exact BRDF response with the depth hierarchy, trace, temporal resolve and composition. Compute-capable devices retain compute stages; WebGL2 uses the same math in fragment stages. Every Forward receiver must use the built-in Standard PBR material.',
   expect:
     'ON: the glossy dark floor mirrors the bright emissive red, green and blue pillars below them. OFF: the floor shows only the flat skylight sheen, with no pillar reflections.',
   appOptions: {
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred' },
+    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward' },
     ssrIdentity: {
       sourceHead: 'unknown',
       sourceTree: 'unknown',
@@ -77,7 +77,7 @@ export default defineFeature<FeatureDefinition>({
         await frames(3);
         const inspection = app.renderer.inspect();
         return new CheckList()
-          .equal('profile render path', inspection.profile.renderPath, 'deferred')
+          .equal('profile render path', inspection.profile.renderPath, 'forward')
           .ok(
             'SSR admitted',
             inspection.ssr.status === 'admitted',

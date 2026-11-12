@@ -1,21 +1,25 @@
-/** Optional observations join the receipt; ordinary frames borrow its existing promise. */
-export function joinRenderCompletion<T>(
-  completion: Promise<undefined>,
-  timing: Promise<T> | undefined,
-  snapshotBoundary: Promise<unknown> | undefined,
-): Promise<T | undefined> {
-  if (timing === undefined && snapshotBoundary === undefined) return completion;
-  return Promise.all([completion, timing, snapshotBoundary]).then((values) => values[1]);
-}
-
 const discardSettlement = (): undefined => undefined;
 
-/** A proven completed prefix needs no second all-settled array or per-result records. */
-export function drainRenderCompletion(
-  completed: Promise<unknown>,
+/**
+ * Credit joins GPU completion and any snapshot boundary only; timing readback
+ * travels separately so it never delays the next admission.
+ */
+export function joinRenderCompletion(
+  completion: Promise<undefined>,
+  snapshotBoundary: Promise<unknown> | undefined,
+): Promise<undefined> {
+  if (snapshotBoundary === undefined) return completion;
+  return Promise.all([completion, snapshotBoundary]).then(discardSettlement);
+}
+
+/**
+ * Retirement drains this receipt and its predecessor's retirement, whatever
+ * their outcome, and yields this receipt's settled value when it has one.
+ */
+export async function drainRenderCompletion<T>(
+  completed: Promise<T>,
   previous: Promise<void>,
-  previousSettled: boolean,
-): Promise<unknown> {
-  if (previousSettled) return completed.then(discardSettlement, discardSettlement);
-  return Promise.allSettled([previous, completed]);
+): Promise<T | undefined> {
+  const [, own] = await Promise.allSettled([previous, completed]);
+  return own.status === 'fulfilled' ? own.value : undefined;
 }

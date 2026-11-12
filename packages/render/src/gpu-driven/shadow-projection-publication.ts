@@ -1,4 +1,4 @@
-import type { SubmissionPlan } from './batch-topology';
+import type { GpuDrivenBatch, SubmissionPlan } from './batch-topology';
 
 /** Publish a uniquely owned map without exposing its mutation capability or copying entries. */
 export function publishReadonlyMap<K, V>(owned: Map<K, V>): ReadonlyMap<K, V> {
@@ -49,9 +49,36 @@ class ReadonlyMapPublication<K, V> implements ReadonlyMap<K, V> {
 }
 Object.freeze(ReadonlyMapPublication.prototype);
 
+/**
+ * Plans are immutable, and every view of a frame that last drew the same plan
+ * compares it with the same successor: the verdict is computed once per pair.
+ */
+export function memoizedPlanPair(
+  verdicts: WeakMap<SubmissionPlan, WeakMap<SubmissionPlan, boolean>>,
+  left: SubmissionPlan,
+  right: SubmissionPlan,
+  compare: (left: SubmissionPlan, right: SubmissionPlan) => boolean,
+): boolean {
+  let known = verdicts.get(left);
+  const verdict = known?.get(right);
+  if (verdict !== undefined) return verdict;
+  if (known === undefined) {
+    known = new WeakMap();
+    verdicts.set(left, known);
+  }
+  const computed = compare(left, right);
+  known.set(right, computed);
+  return computed;
+}
+
+const layoutVerdicts = new WeakMap<SubmissionPlan, WeakMap<SubmissionPlan, boolean>>();
+
 /** Plan revision and wrapper identity do not change an otherwise identical shadow draw layout. */
 export function sameShadowProjectionLayout(left: SubmissionPlan, right: SubmissionPlan): boolean {
-  if (left === right) return true;
+  return left === right || memoizedPlanPair(layoutVerdicts, left, right, comparePlanLayout);
+}
+
+function comparePlanLayout(left: SubmissionPlan, right: SubmissionPlan): boolean {
   if (left.batches.length !== right.batches.length) return false;
   for (let index = 0; index < left.batches.length; index++) {
     const a = left.batches.at(index);
@@ -72,22 +99,30 @@ export function sameShadowProjectionLayout(left: SubmissionPlan, right: Submissi
         (b.visibleAllocationCapacity ?? b.visibleCapacity)
     )
       return false;
-    if (a.candidates === b.candidates) continue;
-    if (a.candidates.length !== b.candidates.length) return false;
-    for (let member = 0; member < a.candidates.length; member++) {
-      const before = a.candidates.at(member);
-      const after = b.candidates.at(member);
-      if (before === after) continue;
-      if (
-        before === undefined ||
-        after === undefined ||
-        before.primitiveIndex !== after.primitiveIndex ||
-        before.generation !== after.generation ||
-        before.drawItemIndex !== after.drawItemIndex ||
-        before.instanceOrdinal !== after.instanceOrdinal
-      )
-        return false;
-    }
+    if (!sameCandidates(a.candidates, b.candidates)) return false;
+  }
+  return true;
+}
+
+function sameCandidates(
+  left: GpuDrivenBatch['candidates'],
+  right: GpuDrivenBatch['candidates'],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let member = 0; member < left.length; member++) {
+    const before = left.at(member);
+    const after = right.at(member);
+    if (before === after) continue;
+    if (
+      before === undefined ||
+      after === undefined ||
+      before.primitiveIndex !== after.primitiveIndex ||
+      before.generation !== after.generation ||
+      before.drawItemIndex !== after.drawItemIndex ||
+      before.instanceOrdinal !== after.instanceOrdinal
+    )
+      return false;
   }
   return true;
 }

@@ -21,22 +21,74 @@ describe('Fog View ABI reflection', () => {
   });
 
   it('round-trips reflected View fog metadata without changing JSON shape', () => {
+    const vec3Descriptor = {
+      kind: 'vector',
+      scalarKind: 'float',
+      width: 4,
+      components: 3,
+      byteSize: 12,
+      alignment: 16,
+    } as const;
+    const f32Descriptor = {
+      kind: 'scalar',
+      scalarKind: 'float',
+      width: 4,
+      byteSize: 4,
+      alignment: 4,
+    } as const;
+    const members = [
+      {
+        name: 'fog.color',
+        type: 'vec3<f32>',
+        offset: 800,
+        size: 12,
+        alignment: 16,
+        typeDescriptor: vec3Descriptor,
+      },
+      {
+        name: 'fog.density',
+        type: 'f32',
+        offset: 816,
+        size: 4,
+        alignment: 4,
+        typeDescriptor: f32Descriptor,
+      },
+      {
+        name: 'fog.heightFalloff',
+        type: 'f32',
+        offset: 820,
+        size: 4,
+        alignment: 4,
+        typeDescriptor: f32Descriptor,
+      },
+      {
+        name: 'fog.maxOpacity',
+        type: 'f32',
+        offset: 824,
+        size: 4,
+        alignment: 4,
+        typeDescriptor: f32Descriptor,
+      },
+    ] as const;
     const reflection = {
-      schemaVersion: 'shader-reflection/2',
+      schemaVersion: 'shader-reflection/3',
       boundGlobals: [
         {
           group: 0,
           binding: 0,
           addressSpace: 'uniform',
           resourceKind: 'buffer',
+          elementType: 'struct',
           visibility: 2,
-          members: [
-            { name: 'fog.color', type: 'vec3<f32>', offset: 800, size: 16, alignment: 16 },
-            { name: 'fog.density', type: 'f32', offset: 816, size: 4, alignment: 4 },
-            { name: 'fog.heightFalloff', type: 'f32', offset: 820, size: 4, alignment: 4 },
-            { name: 'fog.maxOpacity', type: 'f32', offset: 824, size: 4, alignment: 4 },
-          ],
+          members,
           span: 832,
+          typeDescriptor: {
+            kind: 'struct',
+            span: 832,
+            byteSize: 832,
+            alignment: 16,
+            members,
+          },
         },
       ],
       uvSetCount: 0,

@@ -30,14 +30,14 @@ describe('w10 type-level - QuerySetDescriptor field set === Pick<GPUQuerySetDesc
   });
 
   it('label field type aligns with spec (string | undefined)', () => {
-    type LabelForgeaX = NonNullable<QuerySetDescriptor['label']>;
+    type LabelForgeAX = NonNullable<QuerySetDescriptor['label']>;
     type LabelSpec = NonNullable<GPUQuerySetDescriptor['label']>;
-    expectTypeOf<LabelForgeaX>().toEqualTypeOf<LabelSpec>();
+    expectTypeOf<LabelForgeAX>().toEqualTypeOf<LabelSpec>();
   });
 
   it("type field is a closed union 'occlusion' | 'timestamp' (GPUQueryType)", () => {
-    type TypeForgeaX = ValueOf<QuerySetDescriptor, 'type'>;
-    expectTypeOf<TypeForgeaX>().toEqualTypeOf<ValueOf<GPUQuerySetDescriptor, 'type'>>();
+    type TypeForgeAX = ValueOf<QuerySetDescriptor, 'type'>;
+    expectTypeOf<TypeForgeAX>().toEqualTypeOf<ValueOf<GPUQuerySetDescriptor, 'type'>>();
     // Sentinel assignment: both literal members are accepted.
     const _occ: QuerySetDescriptor = { type: 'occlusion', count: 4 };
     const _ts: QuerySetDescriptor = { type: 'timestamp', count: 4 };
@@ -46,8 +46,8 @@ describe('w10 type-level - QuerySetDescriptor field set === Pick<GPUQuerySetDesc
   });
 
   it('count field is GPUSize32 (number)', () => {
-    type CountForgeaX = ValueOf<QuerySetDescriptor, 'count'>;
-    expectTypeOf<CountForgeaX>().toEqualTypeOf<ValueOf<GPUQuerySetDescriptor, 'count'>>();
+    type CountForgeAX = ValueOf<QuerySetDescriptor, 'count'>;
+    expectTypeOf<CountForgeAX>().toEqualTypeOf<ValueOf<GPUQuerySetDescriptor, 'count'>>();
   });
 
   it('S-7 optional shape: label uses `?: T | undefined`', () => {

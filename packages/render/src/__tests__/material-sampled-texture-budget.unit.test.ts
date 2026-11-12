@@ -59,6 +59,7 @@ describe('materialSampledTextureBudget', () => {
       required: WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE,
       transmission: 'none',
       conflicts: [],
+      parallax: 'none',
     });
   });
 
@@ -72,6 +73,7 @@ describe('materialSampledTextureBudget', () => {
       required: 17,
       transmission: 'none',
       conflicts: [],
+      parallax: 'none',
     });
   });
 
@@ -102,6 +104,50 @@ describe('materialSampledTextureBudget', () => {
     });
   });
 
+  it('reports parallax falling back to normal mapping under shared transmission', () => {
+    const { world, assets } = fixture();
+    const map = assets
+      .create({
+        kind: 'texture',
+        shape: { viewDimension: '2d', extent: { width: 1, height: 1 } },
+        format: 'rgba8unorm',
+        colorSpace: 'linear',
+        mips: { kind: 'none' },
+        data: new Uint8Array([255, 255, 255, 255]),
+      })
+      .unwrap();
+    const material = (transmission?: number) =>
+      testAssets(world)
+        .create(
+          Materials.standard({
+            baseColor: [1, 1, 1, 1],
+            ...(transmission === undefined ? {} : { transmission }),
+            normalTexture: map,
+            displacementTexture: map,
+            displacementMode: 'parallax',
+          }),
+        )
+        .unwrap();
+    expect(materialSampledTextureBudget(world, assets, material(1))).toMatchObject({
+      limit: WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE,
+      transmission: 'shared',
+      parallax: 'normal-mapping',
+    });
+    expect(
+      materialSampledTextureBudget(
+        world,
+        assets,
+        material(1),
+        STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
+      ),
+    ).toMatchObject({ transmission: 'dedicated', parallax: 'parallax' });
+    expect(materialSampledTextureBudget(world, assets, material())).toMatchObject({
+      required: WEBGPU_MIN_SAMPLED_TEXTURES_PER_SHADER_STAGE,
+      transmission: 'none',
+      parallax: 'parallax',
+    });
+  });
+
   it('names the split scalar map that blocks shared transmission', () => {
     const { world, assets } = fixture();
     const material = testAssets(world)
@@ -127,6 +173,7 @@ describe('materialSampledTextureBudget', () => {
       required: STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
       transmission: 'exceeded',
       conflicts: ['metallicTexture'],
+      parallax: 'none',
     });
   });
 
@@ -157,6 +204,7 @@ describe('materialSampledTextureBudget', () => {
       required: STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES,
       transmission: 'dedicated',
       conflicts: [],
+      parallax: 'none',
     });
   });
 });

@@ -16,7 +16,13 @@ import type {
 import { RendererContractFailureError } from '../errors/render';
 import { type OutputColorSpace, renderOutputGamutWgsl } from '../output-color-space';
 import type { RendererOptions } from '../render-contract';
-import { createGpuUiRaster } from './gpu-ui-raster';
+import type {
+  SurfaceUiEncodeOutcome,
+  SurfaceUiFailed,
+  SurfaceUiFailureCode,
+  SurfaceUiOutcome,
+} from '../world/surface-ui';
+import { createGpuUiRaster, type UiRetire } from './gpu-ui-raster';
 
 const SOURCE = `
 ${renderOutputGamutWgsl()}
@@ -44,12 +50,19 @@ function value<T>(result: { ok: true; value: T } | { ok: false; error: unknown }
   return result.value;
 }
 
+function failureDetail(cause: unknown): string {
+  if (cause instanceof RendererContractFailureError) return cause.detail.cause;
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 /** Document data has no GPU authority; raster and composition belong to Renderer. */
 export async function createUiCompositor(options: {
   readonly source: NonNullable<RendererOptions['ui']>;
   readonly device: RhiDevice;
   readonly format: TextureFormat;
   readonly createShaderModule: (device: RhiDevice, source: string) => Promise<ShaderModule>;
+  /** Releases `release` once the GPU work that may still read the resource completed. */
+  readonly retire: UiRetire;
 }) {
   let device = options.device;
   let module = await options.createShaderModule(device, SOURCE);
@@ -59,6 +72,7 @@ export async function createUiCompositor(options: {
           device,
           shaders: options.source.shaders,
           createShaderModule: options.createShaderModule,
+          retire: options.retire,
         })
       : undefined;
   let layout: BindGroupLayout | undefined;
@@ -68,9 +82,8 @@ export async function createUiCompositor(options: {
   let height = 0;
   let pixels: Uint8Array | undefined;
   let uploaded = false;
-  let lastSubmission: Promise<void> = Promise.resolve();
   const pipelines = new Map<OutputColorSpace, RenderPipeline>();
-  type Frame = { encoder: RhiCommandEncoder; output: Texture };
+  type Frame = { encoder: RhiCommandEncoder; output: Texture; clear: boolean };
   let graph: CompiledRenderGraph<Frame> | undefined;
   let graphKey = '';
   let output: Texture | undefined;
@@ -86,7 +99,7 @@ export async function createUiCompositor(options: {
       const release = () => {
         value(owner.destroyTexture(retired));
       };
-      void lastSubmission.then(release, release);
+      options.retire(owner, release);
     }
   }
 
@@ -101,12 +114,115 @@ export async function createUiCompositor(options: {
       const release = () => {
         value(owner.destroyTexture(retired));
       };
-      void lastSubmission.then(release, release);
+      options.retire(owner, release);
     }
   }
 
-  function prepareGraph(clear: boolean, colorSpace: OutputColorSpace, capture: boolean): void {
-    const nextKey = `${width}:${height}:${clear}:${colorSpace}:${texture !== undefined}:${capture}`;
+  type Painted = boolean | SurfaceUiFailed;
+  const fail = (frame: number, code: SurfaceUiFailureCode, detail: string): SurfaceUiFailed => ({
+    kind: 'failed',
+    frame,
+    code,
+    detail,
+  });
+
+  function paintSparse(
+    source: Extract<NonNullable<RendererOptions['ui']>, { kind: 'sparse-strips' }>,
+    frame: number,
+    timeMs: number,
+    nextWidth: number,
+    nextHeight: number,
+  ): Painted {
+    if (raster === undefined)
+      return fail(frame, 'ui-raster-failed', 'UI GPU raster is not initialized');
+    const changed = source.paint(timeMs, nextWidth, nextHeight);
+    if (changed !== null) {
+      if (changed.width !== nextWidth || changed.height !== nextHeight)
+        return fail(
+          frame,
+          'ui-paint-extent-mismatch',
+          'UI raster extent differs from the physical output',
+        );
+      try {
+        raster.prepare(changed);
+      } catch (cause) {
+        return fail(frame, 'ui-raster-failed', failureDetail(cause));
+      }
+    }
+    const nextTexture = raster.texture;
+    if (width !== nextWidth || height !== nextHeight || texture !== nextTexture) {
+      discardGraph();
+      binding = undefined;
+      width = nextWidth;
+      height = nextHeight;
+      texture = nextTexture;
+    }
+    return changed !== null;
+  }
+
+  function paintRgba(
+    source: Extract<NonNullable<RendererOptions['ui']>, { kind: 'rgba' }>,
+    frame: number,
+    timeMs: number,
+    nextWidth: number,
+    nextHeight: number,
+  ): Painted {
+    const changed = source.paint(timeMs, nextWidth, nextHeight);
+    if (
+      changed !== null &&
+      (!(changed instanceof Uint8Array) || changed.length !== nextWidth * nextHeight * 4)
+    ) {
+      return fail(
+        frame,
+        'ui-paint-invalid-bytes',
+        `UI paint must return tightly packed premultiplied sRGB RGBA8 matching the physical output extent: expected ${nextWidth} × ${nextHeight} (${nextWidth * nextHeight * 4} bytes), received ${Object.prototype.toString.call(changed)} (${ArrayBuffer.isView(changed) ? changed.byteLength : 'unknown'} bytes)`,
+      );
+    }
+    try {
+      if (width !== nextWidth || height !== nextHeight) {
+        discardGraph();
+        retireTexture();
+        width = nextWidth;
+        height = nextHeight;
+        pixels = undefined;
+        uploaded = false;
+      }
+      if (changed !== null) {
+        // The source may recycle its WASM buffer after this call. Retain one
+        // owned image so device recovery can reupload an otherwise clean UI.
+        pixels = changed.slice();
+        uploaded = false;
+      }
+      if (pixels !== undefined && !uploaded) {
+        if (texture === undefined) {
+          texture = value(
+            device.createTexture({
+              label: 'screen-ui-pixels',
+              size: { width, height, depthOrArrayLayers: 1 },
+              format: 'rgba8unorm',
+              usage: 0x02 | 0x04,
+              textureBindingViewDimension: '2d',
+            }),
+          );
+        }
+        value(
+          device.queue.writeTexture(
+            { texture },
+            pixels,
+            { bytesPerRow: width * 4, rowsPerImage: height },
+            { width, height, depthOrArrayLayers: 1 },
+          ),
+        );
+        uploaded = true;
+      }
+    } catch (cause) {
+      return fail(frame, 'ui-device-operation-failed', failureDetail(cause));
+    }
+    return changed !== null;
+  }
+
+  function prepareGraph(colorSpace: OutputColorSpace, capture: boolean): void {
+    const nextKey = `${width}:${height}:${colorSpace}:${texture !== undefined}:${capture}`;
     if (graph === undefined || graphKey !== nextKey) {
       discardGraph();
       const builder = new RenderGraphBuilder<Frame>();
@@ -232,12 +348,12 @@ export async function createUiCompositor(options: {
           colorAttachments: [
             {
               view: targetView,
-              loadOp: clear ? 'clear' : 'load',
+              loadOp: (frame) => (frame.clear ? 'clear' : 'load'),
               storeOp: 'store',
               clearValue: { r: 0, g: 0, b: 0, a: 1 },
             },
           ],
-          encode: ({ pass }) => {
+          encodeDirect: (pass, _graphframe, _graphresources) => {
             if (acceptedPipeline === undefined || acceptedBinding === undefined) return;
             pass.setPipeline(acceptedPipeline);
             pass.setBindGroup(0, acceptedBinding);
@@ -280,7 +396,7 @@ export async function createUiCompositor(options: {
                 clearValue: { r: 0, g: 0, b: 0, a: 1 },
               },
             ],
-            encode: ({ pass, resources }) => {
+            encodeDirect: (pass, _graphframe, resources) => {
               presentBinding ??= value(
                 device.createBindGroup({
                   layout: presentLayout,
@@ -328,93 +444,48 @@ export async function createUiCompositor(options: {
       await raster?.recover(nextDevice);
     },
     prepare(
+      frame: number,
       timeMs: number,
       nextWidth: number,
       nextHeight: number,
-      clear: boolean,
       colorSpace: OutputColorSpace,
       capture: boolean,
-    ): void {
-      if (disposed) throw new RendererContractFailureError('draw', 'UI compositor is disposed');
-      if (options.source.kind === 'sparse-strips') {
-        if (raster === undefined)
-          throw new RendererContractFailureError('draw', 'UI GPU raster is not initialized');
-        const changed = options.source.paint(timeMs, nextWidth, nextHeight);
-        if (changed !== null) {
-          if (changed.width !== nextWidth || changed.height !== nextHeight)
-            throw new RendererContractFailureError(
-              'draw',
-              'UI raster extent differs from the physical output',
-            );
-          raster.prepare(changed);
-        }
-        const nextTexture = raster.texture;
-        if (width !== nextWidth || height !== nextHeight || texture !== nextTexture) {
-          discardGraph();
-          binding = undefined;
-          width = nextWidth;
-          height = nextHeight;
-          texture = nextTexture;
-        }
-      } else {
-        const changed = options.source.paint(timeMs, nextWidth, nextHeight);
-        if (
-          changed !== null &&
-          (!(changed instanceof Uint8Array) || changed.length !== nextWidth * nextHeight * 4)
-        ) {
-          throw new RendererContractFailureError(
-            'draw',
-            `UI paint must return tightly packed premultiplied sRGB RGBA8 matching the physical output extent: expected ${nextWidth} × ${nextHeight} (${nextWidth * nextHeight * 4} bytes), received ${Object.prototype.toString.call(changed)} (${ArrayBuffer.isView(changed) ? changed.byteLength : 'unknown'} bytes)`,
-          );
-        }
-        if (width !== nextWidth || height !== nextHeight) {
-          discardGraph();
-          retireTexture();
-          width = nextWidth;
-          height = nextHeight;
-          pixels = undefined;
-          uploaded = false;
-        }
-        if (changed !== null) {
-          // The source may recycle its WASM buffer after this call. Retain one
-          // owned image so device recovery can reupload an otherwise clean UI.
-          pixels = changed.slice();
-          uploaded = false;
-        }
-        if (pixels !== undefined && !uploaded) {
-          if (texture === undefined) {
-            texture = value(
-              device.createTexture({
-                label: 'screen-ui-pixels',
-                size: { width, height, depthOrArrayLayers: 1 },
-                format: 'rgba8unorm',
-                usage: 0x02 | 0x04,
-                textureBindingViewDimension: '2d',
-              }),
-            );
-          }
-          value(
-            device.queue.writeTexture(
-              { texture },
-              pixels,
-              { bytesPerRow: width * 4, rowsPerImage: height },
-              { width, height, depthOrArrayLayers: 1 },
-            ),
-          );
-          uploaded = true;
-        }
+    ): SurfaceUiOutcome {
+      if (disposed) return fail(frame, 'ui-device-operation-failed', 'UI compositor is disposed');
+      const source = options.source;
+      const painted =
+        source.kind === 'sparse-strips'
+          ? paintSparse(source, frame, timeMs, nextWidth, nextHeight)
+          : paintRgba(source, frame, timeMs, nextWidth, nextHeight);
+      if (typeof painted !== 'boolean') return painted;
+      try {
+        prepareGraph(colorSpace, capture);
+      } catch (cause) {
+        return fail(frame, 'ui-device-operation-failed', failureDetail(cause));
       }
-      prepareGraph(clear, colorSpace, capture);
+      const generation = graph?.inspect().generation ?? 0;
+      return { kind: painted ? 'painted' : 'retained', frame, generation };
     },
-    encode(encoder: RhiCommandEncoder, surface: Texture): void {
+    encode(
+      frame: number,
+      encoder: RhiCommandEncoder,
+      surface: Texture,
+      clear: boolean,
+    ): SurfaceUiEncodeOutcome {
       if (graph === undefined)
-        throw new RendererContractFailureError('draw', 'prepare the UI before encoding');
-      raster?.encode(encoder);
-      value(graph.execute({ encoder, output: surface }));
-    },
-    submitted(completed: Promise<void>): void {
-      lastSubmission = completed;
-      raster?.submitted(completed);
+        return {
+          kind: 'failed',
+          frame,
+          code: 'ui-raster-failed',
+          detail: 'prepare the UI before encoding',
+        };
+      try {
+        raster?.encode(encoder);
+        value(graph.execute({ encoder, output: surface, clear }));
+      } catch (cause) {
+        return { kind: 'failed', frame, code: 'ui-raster-failed', detail: failureDetail(cause) };
+      }
+      return { kind: 'encoded' };
     },
     dispose(): void {
       if (disposed) return;

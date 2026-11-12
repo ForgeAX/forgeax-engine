@@ -34,6 +34,14 @@ it('samples the current moving subtree without materializing full component snap
     .unwrap();
   try {
     const snapshots = vi.spyOn(world, 'get');
+    const owner = Reflect.get(world, Symbol.for('forgeax.ecs.worldInternal')) as {
+      getArrayView(
+        entity: number,
+        component: unknown,
+        field: string,
+      ): ArrayLike<number> | undefined;
+    };
+    const arrayReads = vi.spyOn(owner, 'getArrayView');
     try {
       const fixed = world.getResource(FixedTime);
       world.update(fixed.delta * 1.5).unwrap();
@@ -44,8 +52,12 @@ it('samples the current moving subtree without materializing full component snap
           ([, component]) => component === Transform || component === Children,
         ),
       ).toHaveLength(0);
+      expect(arrayReads.mock.calls.filter(([, component]) => component === Transform)).toHaveLength(
+        0,
+      );
     } finally {
       snapshots.mockRestore();
+      arrayReads.mockRestore();
     }
     expect(world.get(root, GlobalTransform).unwrap().world[12]).toBeCloseTo(2);
     const children = world.get(root, Children).unwrap();

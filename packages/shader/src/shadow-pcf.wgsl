@@ -41,7 +41,27 @@ fn shadow_sample_compare(
   layer        : i32,
   depthRef     : f32,
 ) -> f32 {
+#if STORAGE_BUFFER_AVAILABLE == false
+  // GLES requires one sampler interpretation per depth binding. Raw blocker
+  // reads and filtering therefore share four unfiltered depth comparisons.
+  // This is the bilinear comparison footprint of the existing clamp sampler.
+  let dimensions = vec2<i32>(textureDimensions(shadowMap));
+  let coordinate = uv * vec2<f32>(dimensions) - vec2<f32>(0.5);
+  let base = vec2<i32>(floor(coordinate));
+  let lo = clamp(base, vec2<i32>(0), dimensions - vec2<i32>(1));
+  let hi = clamp(base + vec2<i32>(1), vec2<i32>(0), dimensions - vec2<i32>(1));
+  let stored = vec4<f32>(
+    textureLoad(shadowMap, lo, layer, 0),
+    textureLoad(shadowMap, vec2<i32>(hi.x, lo.y), layer, 0),
+    textureLoad(shadowMap, vec2<i32>(lo.x, hi.y), layer, 0),
+    textureLoad(shadowMap, hi, layer, 0),
+  );
+  let lit = select(vec4<f32>(0.0), vec4<f32>(1.0), vec4<f32>(depthRef) > stored);
+  let phase = fract(coordinate);
+  return mix(mix(lit.x, lit.y, phase.x), mix(lit.z, lit.w, phase.x), phase.y);
+#else
   return textureSampleCompareLevel(shadowMap, shadowSampler, uv, layer, depthRef);
+#endif
 }
 
 fn shadow_biased_receiver_depth(
@@ -124,7 +144,7 @@ fn sample_shadow_2d_kernel(
     for (var x = -2; x <= 2; x = x + 1) {
       if (abs(x) <= halfWidth && abs(y) <= halfWidth) {
         let offsetUv = clamp(uv + vec2<f32>(f32(x), f32(y)) * texel, tileLo, tileHi);
-        let lit = textureSampleCompareLevel(shadowMap, shadowSampler, offsetUv, layer, adjustedDepth);
+        let lit = shadow_sample_compare(shadowMap, shadowSampler, offsetUv, layer, adjustedDepth);
         blocked = blocked + (1.0 - lit);
         samples = samples + 1.0;
       }
@@ -193,7 +213,7 @@ fn sample_shadow_2d_punctual(
   let radius = max(0.0, (kernelSize - 1.0) * 0.5);
   if (radius == 0.0) {
     let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMap));
-    return textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv, edge, extent - edge), layer, depthRef);
+    return shadow_sample_compare(shadowMap, shadowSampler, clamp(uv, edge, extent - edge), layer, depthRef);
   }
   return sample_shadow_2d_vogel(shadowMap, shadowSampler, uv, layer,
     texel * radius, depthRef, vec2<f32>(0.0), pixel, extent);
@@ -238,7 +258,7 @@ fn sample_shadow_2d_vogel(
 ) -> f32 {
   if (any(texel <= vec2<f32>(0.0))) {
     let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMap));
-    return textureSampleCompareLevel(shadowMap, shadowSampler, clamp(uv, edge, extent - edge), layer, depthRef);
+    return shadow_sample_compare(shadowMap, shadowSampler, clamp(uv, edge, extent - edge), layer, depthRef);
   }
   let rotation = shadow_vogel_rotation(pixel);
   var lit = 0.0;
@@ -252,7 +272,7 @@ fn sample_shadow_2d_vogel(
     let sampleUv = clamp(uv + offset * texel, physicalTexel * 0.5, extent - physicalTexel * 0.5);
     let receiverUv = clamp(sampleUv, 0.5 * texel, vec2<f32>(1.0) - 0.5 * texel);
     let sampleDepth = depthRef + dot(planeGradient, (receiverUv - uv) / texel);
-    lit += textureSampleCompareLevel(shadowMap, shadowSampler, sampleUv, layer, sampleDepth);
+    lit += shadow_sample_compare(shadowMap, shadowSampler, sampleUv, layer, sampleDepth);
   }
   return lit * 0.2;
 }
@@ -263,7 +283,7 @@ fn sample_shadow_2d_nearest(shadowMap: texture_depth_2d_array, shadowSampler: sa
   uv: vec2<f32>, layer: i32, depthRef: f32, extent: vec2<f32>) -> f32 {
   let dimensions = vec2<f32>(textureDimensions(shadowMap));
   let pixel = clamp(floor(uv * dimensions), vec2<f32>(0.0), dimensions * extent - vec2<f32>(1.0));
-  return textureSampleCompareLevel(shadowMap, shadowSampler, (pixel + vec2<f32>(0.5)) / dimensions, layer, depthRef);
+  return shadow_sample_compare(shadowMap, shadowSampler, (pixel + vec2<f32>(0.5)) / dimensions, layer, depthRef);
 }
 
 // Separable r184 PCFSoft weights: nine bilinear contributions on a 4x4 grid.
@@ -276,7 +296,7 @@ fn sample_shadow_2d_soft(shadowMap: texture_depth_2d_array, shadowSampler: sampl
   var sum = 0.0;
   for (var y = 0u; y < 4u; y++) {
     for (var x = 0u; x < 4u; x++) {
-      sum += textureSampleCompareLevel(shadowMap, shadowSampler,
+      sum += shadow_sample_compare(shadowMap, shadowSampler,
         clamp(base + (vec2<f32>(f32(x), f32(y)) - vec2<f32>(1.0)) * texel, texel * 0.5, extent - texel * 0.5), layer, depthRef) * wx[x] * wy[y];
     }
   }
@@ -287,14 +307,15 @@ fn sample_shadow_2d_soft(shadowMap: texture_depth_2d_array, shadowSampler: sampl
 #ifdef EXTENDED_LIGHTING_AVAILABLE
 #import forgeax_view::common::{shadowMoments, spotModifierSampler}
 #endif
-fn sample_shadow_variance(uv : vec2<f32>, layer : i32, reversedDepth : f32, extent : vec2<f32>) -> f32 {
+fn sample_shadow_variance(uv : vec2<f32>, layer : i32, reversedDepth : f32, extent : vec2<f32>, forwardDepth : bool) -> f32 {
 #ifdef EXTENDED_LIGHTING_AVAILABLE
   let edge = vec2<f32>(0.5) / vec2<f32>(textureDimensions(shadowMoments));
   let distribution = textureSampleLevel(shadowMoments, spotModifierSampler, clamp(uv, edge, extent - edge), layer, 0.0).rg;
-  let depth = 1.0 - reversedDepth;
-  if (depth <= distribution.x) { return 1.0; }
+  let forward = forwardDepth;
+  let depth = select(reversedDepth, 1.0 - reversedDepth, forward);
+  if (select(depth >= distribution.x, depth <= distribution.x, forward)) { return 1.0; }
   let variance = max(0.0000001, distribution.y * distribution.y);
-  let delta = depth - distribution.x;
+  let delta = distribution.x - depth;
   return clamp((variance / (variance + delta * delta) - 0.3) / 0.65, 0.0, 1.0);
 #else
   return 1.0;

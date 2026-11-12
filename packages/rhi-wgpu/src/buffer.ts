@@ -72,6 +72,7 @@ export { doubleDestroy };
  * (research §4.1 mapState 3-state enum transitions).
  */
 export interface RawBufferLike {
+  readonly size?: number;
   // forgeax-async-whitelist: wasm-bindgen — wgpu-wasm `Buffer.mapAsync()` raw entry
   // bug-20260610: u64 args accepted as number | bigint; the wasm-bindgen
   // class signature requires bigint, the navigator.gpu spec signature accepts
@@ -117,7 +118,10 @@ class RhiWgpuBufferImpl {
   private readonly raw: RawBufferLike;
   private destroyed: boolean = false;
 
-  constructor(raw: RawBufferLike) {
+  constructor(
+    raw: RawBufferLike,
+    readonly byteLength: number | undefined,
+  ) {
     this.raw = raw;
   }
 
@@ -255,8 +259,8 @@ export const BUFFER_RAW_MAP: WeakMap<Buffer, RawBufferLike> = new WeakMap();
  * queue paths recover the raw handle without exposing it through the forgeax
  * surface.
  */
-export function makeRhiBuffer(raw: RawBufferLike): Buffer {
-  const wrapper = new RhiWgpuBufferImpl(raw) as unknown as Buffer;
+export function makeRhiBuffer(raw: RawBufferLike, size = raw.size): Buffer {
+  const wrapper = new RhiWgpuBufferImpl(raw, size) as unknown as Buffer;
   BUFFER_RAW_MAP.set(wrapper, raw);
   return wrapper;
 }
@@ -270,4 +274,9 @@ export function makeRhiBuffer(raw: RawBufferLike): Buffer {
  */
 export function unwrapBuffer(buffer: Buffer): unknown {
   return BUFFER_RAW_MAP.get(buffer) ?? buffer;
+}
+
+/** Creation metadata belongs to the existing wrapper; the public handle stays opaque. */
+export function bufferByteLength(buffer: Buffer): number | undefined {
+  return buffer instanceof RhiWgpuBufferImpl ? buffer.byteLength : BUFFER_RAW_MAP.get(buffer)?.size;
 }

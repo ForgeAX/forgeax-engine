@@ -21,7 +21,8 @@
 
 import type { CodecResult } from '../errors.js';
 import { codecError } from '../errors.js';
-import type { TranscodeModel } from '../transcode.js';
+import { parseKtx2 } from '../ktx2.js';
+import type { TranscodeChannels, TranscodeModel } from '../transcode.js';
 import type { BasisEncoder, BasisEncoderModule, BasisModuleFactory } from '../wasm/basis-types.js';
 
 /** Which delivery encoding to produce. Mirrors the transcode source models (D-3). */
@@ -72,8 +73,30 @@ export interface BasisEncodeOptions {
   readonly perceptual: boolean;
   /** Wrap the UASTC-LDR payload in KTX2 zstd supercompression. Ignored otherwise. */
   readonly uastcSupercompression: boolean;
-  /** Generate a mip chain in the encoder. M3 keeps this false (offline mips are w18/M5). */
+  /** Generate a mip chain in the encoder (box filter, no renormalization). */
   readonly mipGen: boolean;
+  /**
+   * Pre-generated levels 1..n after `pixels` (level 0), each `max(1, size >> k)` on
+   * both axes in the same pixel layout. UASTC only: every level is encoded on its
+   * own and the block payloads are assembled into one KTX2 chain, so offline
+   * filtering (normal renormalization, variance-aware roughness) reaches the GPU
+   * unchanged. Exclusive with `mipGen`.
+   */
+  readonly levels?: readonly Uint8Array[];
+  /**
+   * Source channels (default 'rgba'). 'rg' encodes R and G of `pixels` (a normal
+   * map's XY) as UASTC luminance-alpha, `RRRG` in the DFD, the lanes Basis reads
+   * for BC5 and EAC RG11; 'r' encodes R as `RRR` for BC4 and EAC R11. Transcoding
+   * derives the target arm from this DFD id. UASTC-LDR only.
+   */
+  readonly channels?: TranscodeChannels;
+  /** UASTC-LDR rate-distortion lambda ([0.001, 10]; lower keeps more quality). Absent: no RDO. */
+  readonly uastcRdo?: number;
+  /**
+   * UASTC-LDR pack level 0 (fastest, default) to 4 (very slow). Offline deliveries of
+   * normal and packed maps use a higher level; the import default keeps the fast tier.
+   */
+  readonly uastcLevel?: 0 | 1 | 2 | 3 | 4;
 }
 
 /** How the encoder WASM module is loaded. Overridable in tests. @internal */
@@ -152,14 +175,128 @@ export async function basisEncode(
   } catch {
     return codecError('codec-init-failed', { stage: 'dynamic-import-basis-encoder' });
   }
-
-  const { mode, width, height, srgb, perceptual, uastcSupercompression, mipGen } = options;
-  if (width <= 0 || height <= 0) {
-    return codecError('ktx2-encode-failed', {
-      mode,
-      reason: `invalid dimensions ${width}x${height}`,
-    });
+  const { mode, width, height, levels = [], channels = 'rgba' } = options;
+  const fail = (reason: string) => codecError('ktx2-encode-failed', { mode, reason });
+  if (width <= 0 || height <= 0) return fail(`invalid dimensions ${width}x${height}`);
+  if (channels !== 'rgba' && mode !== 'uastc-ldr')
+    return fail(`channels '${channels}' needs uastc-ldr`);
+  if (levels.length > 0) {
+    if (mode === 'etc1s') return fail('pre-generated levels need a UASTC mode');
+    if (options.mipGen) return fail('levels and mipGen are exclusive');
+    if (levels.length >= Math.floor(Math.log2(Math.max(width, height))) + 1)
+      return fail(
+        `at most ${Math.floor(Math.log2(Math.max(width, height)))} levels follow ${width}x${height}`,
+      );
   }
+  const texel = mode === 'uastc-hdr' ? 8 : 4;
+  const encoded: Uint8Array[] = [];
+  for (const [k, level] of [pixels, ...levels].entries()) {
+    const w = Math.max(1, width >> k);
+    const h = Math.max(1, height >> k);
+    if (level.byteLength !== w * h * texel)
+      return fail(
+        `level ${k} holds ${w}x${h} texels of ${texel} bytes (${level.byteLength} bytes given)`,
+      );
+    const one = encodeLevel(mod, level, { ...options, width: w, height: h });
+    if (!one.ok) return one;
+    encoded.push(one.value);
+  }
+  const chain = encoded.length === 1 ? (encoded[0] as Uint8Array) : assembleLevels(encoded);
+  if (typeof chain === 'string') return fail(chain);
+  return channels === 'rgba' ? { ok: true, value: chain } : markChannels(chain, channels, fail);
+}
+
+const KTX2_HEADER_BYTES = 80;
+const LEVEL_ENTRY_BYTES = 24;
+/** UASTC DFD channel ids (KTX 2.0 section 3.10.2) and the source swizzle into them. */
+const UASTC_CHANNELS = {
+  rg: { id: 5, swizzle: [0, 0, 0, 1] },
+  r: { id: 4, swizzle: [0, 0, 0, 3] },
+} as const;
+
+/** Rewrite the single UASTC DFD sample's channel id (bits 24-27 of its first word). */
+function markChannels(
+  bytes: Uint8Array,
+  channels: 'rg' | 'r',
+  fail: (reason: string) => CodecResult<Uint8Array>,
+): CodecResult<Uint8Array> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const dfd = view.getUint32(48, true);
+  // totalSize word, 24-byte descriptor header, then sample 0.
+  const sample = dfd + 4 + 24;
+  if (view.getUint32(dfd + 4 + 8, true) % 256 !== 166 || sample + 16 > bytes.byteLength)
+    return fail('the encoder wrote no UASTC DFD sample');
+  const word = view.getUint32(sample, true);
+  view.setUint32(sample, ((word & ~(0xf << 24)) | (UASTC_CHANNELS[channels].id << 24)) >>> 0, true);
+  return { ok: true, value: bytes };
+}
+
+/**
+ * One KTX2 file from single-level encodes of the same settings: the header and DFD
+ * of level 0, its key/value data, and each file's level payload (UASTC blocks are
+ * independent, and zstd supercompression is per level). Data runs smallest level
+ * first, aligned to the 16-byte UASTC block unless supercompressed.
+ */
+function assembleLevels(files: readonly Uint8Array[]): Uint8Array | string {
+  const parsed = files.map((file) => parseKtx2(file));
+  const payloads: Uint8Array[] = [];
+  const entries: { uncompressed: number }[] = [];
+  for (const one of parsed) {
+    if (!one.ok) return `a level did not parse: ${one.error.code}`;
+    const level = one.value.levelIndex[0];
+    if (one.value.levelIndex.length !== 1 || level === undefined || one.value.sgd !== null)
+      return 'a level encoded to more than one UASTC level';
+    payloads.push(
+      one.value.rawBytes.subarray(level.byteOffset, level.byteOffset + level.byteLength),
+    );
+    entries.push({ uncompressed: level.uncompressedByteLength });
+  }
+  const base = parsed[0] as { ok: true; value: Ktx2ParsedLike };
+  const { header, index, rawBytes } = base.value;
+  const scheme = header.supercompressionScheme;
+  if (parsed.some((p) => p.ok && p.value.header.supercompressionScheme !== scheme))
+    return 'levels disagree on supercompression';
+  const align = scheme === 0 ? 16 : 1;
+  const dfd = rawBytes.subarray(index.dfdByteOffset, index.dfdByteOffset + index.dfdByteLength);
+  const kvd = rawBytes.subarray(index.kvdByteOffset, index.kvdByteOffset + index.kvdByteLength);
+  const pad = (n: number, a: number) => Math.ceil(n / a) * a;
+  const dfdOffset = KTX2_HEADER_BYTES + files.length * LEVEL_ENTRY_BYTES;
+  const kvdOffset = dfdOffset + dfd.byteLength;
+  let cursor = pad(kvdOffset + kvd.byteLength, align);
+  const offsets: number[] = new Array(files.length);
+  for (let k = files.length - 1; k >= 0; k--) {
+    cursor = pad(cursor, align);
+    offsets[k] = cursor;
+    cursor += (payloads[k] as Uint8Array).byteLength;
+  }
+  const out = new Uint8Array(cursor);
+  const view = new DataView(out.buffer);
+  out.set(rawBytes.subarray(0, 48));
+  view.setUint32(40, files.length, true);
+  view.setUint32(48, dfdOffset, true);
+  view.setUint32(52, dfd.byteLength, true);
+  view.setUint32(56, kvd.byteLength === 0 ? 0 : kvdOffset, true);
+  view.setUint32(60, kvd.byteLength, true);
+  for (let k = 0; k < files.length; k++) {
+    const at = KTX2_HEADER_BYTES + k * LEVEL_ENTRY_BYTES;
+    view.setBigUint64(at, BigInt(offsets[k] as number), true);
+    view.setBigUint64(at + 8, BigInt((payloads[k] as Uint8Array).byteLength), true);
+    view.setBigUint64(at + 16, BigInt((entries[k] as { uncompressed: number }).uncompressed), true);
+    out.set(payloads[k] as Uint8Array, offsets[k] as number);
+  }
+  out.set(dfd, dfdOffset);
+  out.set(kvd, kvdOffset);
+  return out;
+}
+
+type Ktx2ParsedLike = Extract<ReturnType<typeof parseKtx2>, { ok: true }>['value'];
+
+function encodeLevel(
+  mod: BasisEncoderModule,
+  pixels: Uint8Array,
+  options: BasisEncodeOptions,
+): CodecResult<Uint8Array> {
+  const { mode, width, height, srgb, perceptual, uastcSupercompression, mipGen } = options;
 
   let encoder: BasisEncoder;
   try {
@@ -210,8 +347,16 @@ export async function basisEncode(
         encoder.setKTX2UASTCSupercompression(uastcSupercompression);
         // Fastest pack tier (R-9). Unlike ETC1S this lowers quality; per-fixture
         // opt-out / D-12 upgrade covers any smoke that will not converge.
-        encoder.setPackUASTCFlags(PACK_UASTC_LDR_LEVEL_FASTEST);
+        encoder.setPackUASTCFlags(options.uastcLevel ?? PACK_UASTC_LDR_LEVEL_FASTEST);
         encoder.setPerceptual(perceptual);
+        if (options.channels === 'rg' || options.channels === 'r') {
+          const [r, g, b, a] = UASTC_CHANNELS[options.channels].swizzle;
+          encoder.setSwizzle(r, g, b, a);
+        }
+        if (options.uastcRdo !== undefined) {
+          encoder.setRDOUASTC(true);
+          encoder.setRDOUASTCQualityScalar(options.uastcRdo);
+        }
       } else {
         // uastc-hdr: fastest HDR search tier (R-9); block bytes unchanged in size.
         encoder.setUASTCHDRQualityLevel(UASTC_HDR_QUALITY_LEVEL_FASTEST);

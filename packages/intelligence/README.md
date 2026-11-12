@@ -1,6 +1,6 @@
 # @forgeax/engine-intelligence
 
-Provider-neutral asynchronous work for ForgeaX Engine. The public concept is an
+Provider-neutral asynchronous work for ForgeAX Engine. The public concept is an
 `Activity`: submit bounded input, poll ordered bounded events, cancel it, and
 retain only its provider-scoped `SessionRef` when conversation continuity is
 needed. The package does not define prompts, agents, tools, skills, memory, or

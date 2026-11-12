@@ -14,15 +14,48 @@ import type { NativeCooker } from '@forgeax/engine-pack/native-cooker';
 import { AssetGuid, isScriptablePackAssetKind, PackageId } from '@forgeax/engine-pack/source';
 import { engineProducerVersion } from './engine-version.js';
 import type {
+  PackBuildCacheSubject,
   ScriptablePackBuildProduct,
   ScriptablePackBuildProductCache,
-  ScriptablePackBuildWorkItem,
+  ScriptablePackDependencyResolver,
 } from './scriptable-pack-build-core.js';
 
+// Format 10 clears unobserved pooled storage and normalizes V8 string storage.
 // Format 9 keeps typed-array backing buffers independent of the serialized Pack.
 // DefaultSerializer restores small views into the whole Pack buffer; per-output
 // structuredClone then copies that entire buffer at every content-read boundary.
-const CACHE_SCHEMA = 'scriptable-pack-product/9';
+async function contentDependencyFailure(
+  product: ScriptablePackBuildProduct,
+  resolve: ScriptablePackDependencyResolver | undefined,
+): Promise<
+  | {
+      reason: 'dependency-unavailable' | 'dependency-changed';
+      dependency: {
+        guid: string;
+        expected: string | undefined;
+        actual?: string;
+        unavailable: boolean;
+      };
+    }
+  | undefined
+> {
+  for (const row of product.externalEvidence) {
+    const actual = await resolve?.(row.guid);
+    if (actual !== row.digest)
+      return {
+        reason: actual === undefined ? 'dependency-unavailable' : 'dependency-changed',
+        dependency: {
+          guid: row.guid,
+          expected: row.digest,
+          ...(actual === undefined ? {} : { actual }),
+          unavailable: actual === undefined,
+        },
+      };
+  }
+  return undefined;
+}
+
+const CACHE_SCHEMA = 'scriptable-pack-product/10';
 const PRODUCT_ARTIFACT = 'product.v8.br';
 const LEGACY_CACHE_SCHEMAS = [] as const;
 const KINDS_SCHEMA = 'scriptable-pack-product-kinds/1';
@@ -37,6 +70,9 @@ interface CachePayload {
 interface CookerDependencies {
   readonly kinds: readonly string[];
   readonly nativeFree: boolean;
+  readonly outputs?: readonly string[];
+  readonly reads?: readonly string[];
+  readonly sourceFiles?: readonly string[];
 }
 
 function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
@@ -59,30 +95,130 @@ function nativeFreeProduct(product: ScriptablePackBuildProduct): boolean {
   });
 }
 
+/** Retain every reachable view and alias while discarding unobserved storage tails. */
+function productBufferLengths(product: unknown): WeakMap<ArrayBufferLike, number> {
+  const lengths = new WeakMap<ArrayBufferLike, number>();
+  const visited = new WeakSet<object>();
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== 'object' || visited.has(value)) return;
+    visited.add(value);
+    if (ArrayBuffer.isView(value)) {
+      lengths.set(
+        value.buffer,
+        Math.max(lengths.get(value.buffer) ?? 0, value.byteOffset + value.byteLength),
+      );
+    } else if (value instanceof ArrayBuffer) {
+      lengths.set(value, value.byteLength);
+    } else if (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype) {
+      for (const child of Object.values(value)) visit(child);
+    }
+  };
+  visit(product);
+  return lengths;
+}
+
+function productBinaryCopier(
+  product: unknown,
+): (value: ArrayBufferView | ArrayBuffer) => { value: object; digest?: string } {
+  const bytesByDigest = new Map<string, Uint8Array[]>();
+  const backingBuffers = new WeakMap<ArrayBufferLike, ArrayBuffer>();
+  const bufferLengths = productBufferLengths(product);
+  return (value) => {
+    if (ArrayBuffer.isView(value)) {
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      const digest =
+        value instanceof Uint8Array
+          ? `${value.constructor.name}:${createHash('sha256').update(bytes).digest('hex')}`
+          : undefined;
+      let buffer = backingBuffers.get(value.buffer);
+      // Intern complete byte bodies only. Partial views retain their offsets
+      // and backing identity with every other view in the product graph.
+      const complete = value.byteOffset === 0 && value.byteLength === value.buffer.byteLength;
+      const matches = digest === undefined ? undefined : bytesByDigest.get(digest);
+      const existing =
+        buffer === undefined && complete
+          ? matches?.find((candidate) => Buffer.compare(candidate, bytes) === 0)
+          : undefined;
+      if (existing !== undefined) {
+        backingBuffers.set(value.buffer, existing.buffer as ArrayBuffer);
+        const shared = { value: existing, digest: `bytes:${digest}` };
+        return shared;
+      }
+      if (buffer === undefined) {
+        // Preserve observable offsets and aliases, but leave storage outside
+        // all reachable views zeroed instead of serializing pooled garbage.
+        buffer = new ArrayBuffer(bufferLengths.get(value.buffer) ?? value.buffer.byteLength);
+        backingBuffers.set(value.buffer, buffer);
+      }
+      new Uint8Array(buffer, value.byteOffset, value.byteLength).set(bytes);
+      const View = value.constructor as new (
+        buffer: ArrayBuffer,
+        offset: number,
+        length: number,
+      ) => ArrayBufferView;
+      const canonical = Buffer.isBuffer(value)
+        ? Buffer.from(buffer, value.byteOffset, value.byteLength)
+        : new View(
+            buffer,
+            value.byteOffset,
+            value instanceof DataView
+              ? value.byteLength
+              : (value as Exclude<ArrayBufferView, DataView> & { length: number }).length,
+          );
+      if (digest !== undefined && complete) {
+        if (matches === undefined) bytesByDigest.set(digest, [canonical as Uint8Array]);
+        else matches.push(canonical as Uint8Array);
+      }
+      const shared = {
+        value: canonical,
+        ...(digest === undefined ? {} : { digest: `bytes:${digest}` }),
+      };
+      return shared;
+    }
+    {
+      let buffer = backingBuffers.get(value);
+      if (buffer === undefined) {
+        buffer = new ArrayBuffer(value.byteLength);
+        backingBuffers.set(value, buffer);
+      }
+      new Uint8Array(buffer).set(new Uint8Array(value));
+      const shared = { value: buffer };
+      return shared;
+    }
+  };
+}
+
 /**
  * The same cooked program can appear in several materials and again in each
  * material's artifact map. V8 preserves reference identity, so intern equal
  * immutable POD and byte bodies before encoding the product. This changes
  * representation only; caller-owned publications and non-POD remain intact.
  */
-function shareImmutableProductData<T>(
+export function shareImmutableProductData<T>(
   product: T,
   mapString: (value: string) => string = (value) => value,
 ): T {
   type Shared = { value: unknown; digest?: string };
-  const bytesByDigest = new Map<string, Uint8Array[]>();
+  const copyBinary = productBinaryCopier(product);
   const objectsByDigest = new Map<string, object>();
-  const strings = new Map<string, string>();
+  const strings = new Map<string, Shared>();
   const visited = new WeakMap<object, Shared>();
   const share = (input: unknown): Shared => {
     const value = typeof input === 'string' ? mapString(input) : input;
     if (typeof value === 'string') {
-      let digest = strings.get(value);
-      if (digest === undefined) {
-        digest = createHash('sha256').update(value, 'utf16le').digest('hex');
-        strings.set(value, digest);
+      let shared = strings.get(value);
+      if (shared === undefined) {
+        // Equal V8 strings may retain one-byte or two-byte representations.
+        // Decode code units once to select the same representation without
+        // changing lone surrogates or other author-provided string content.
+        const bytes = Buffer.from(value, 'utf16le');
+        shared = {
+          value: bytes.toString('utf16le'),
+          digest: `string:${createHash('sha256').update(bytes).digest('hex')}`,
+        };
+        strings.set(value, shared);
       }
-      return { value, digest: `string:${digest}` };
+      return shared;
     }
     if (value === null || typeof value !== 'object') {
       const kind = typeof value;
@@ -97,15 +233,8 @@ function shareImmutableProductData<T>(
     }
     const prior = visited.get(value);
     if (prior !== undefined) return prior;
-    if (value instanceof Uint8Array) {
-      const digest = `${value.constructor.name}:${createHash('sha256').update(value).digest('hex')}`;
-      const matches = bytesByDigest.get(digest);
-      const existing = matches?.find((candidate) => Buffer.compare(candidate, value) === 0);
-      const shared = { value: existing ?? value, digest: `bytes:${digest}` };
-      if (existing === undefined) {
-        if (matches === undefined) bytesByDigest.set(digest, [value]);
-        else matches.push(value);
-      }
+    if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) {
+      const shared = copyBinary(value);
       visited.set(value, shared);
       return shared;
     }
@@ -150,7 +279,7 @@ function shareImmutableProductData<T>(
   return share(product).value as T;
 }
 
-async function sourceClosureCurrent(subject: ScriptablePackBuildWorkItem): Promise<boolean> {
+async function sourceClosureCurrent(subject: PackBuildCacheSubject): Promise<boolean> {
   if (subject.sourceClosure === undefined || subject.sourceClosure.length === 0) return false;
   try {
     const checks = await Promise.all(
@@ -199,7 +328,7 @@ function escapeRegExp(text: string): string {
  * the bytes a fresh cook at that location would. Anything still naming a root
  * after tokenization is location-bound and stays out of the cache.
  */
-function createProductRelocation(roots: readonly string[]) {
+export function createProductRelocation(roots: readonly string[]) {
   const tokens = roots.map((root, index) => ({
     root,
     token: `${ROOT_TOKEN_PREFIX}${index}\u0000`,
@@ -275,7 +404,12 @@ export async function createScriptablePackProductCache(options: {
    * keep absolute paths and entries are private to one checkout location.
    */
   readonly identityRoot?: string;
-}): Promise<ScriptablePackBuildProductCache> {
+}): Promise<
+  ScriptablePackBuildProductCache & {
+    readonly canReuse: (product: ScriptablePackBuildProduct) => boolean;
+    readonly producerIdentity: string;
+  }
+> {
   // Source closures hold canonical paths, other strings may use the
   // configured spelling. Keep both positions, even when equal: relocation
   // tokens are positional across the writing and reading checkouts.
@@ -319,8 +453,12 @@ export async function createScriptablePackProductCache(options: {
   const cookerIdentity = [...cookerIdentities].sort(([left], [right]) => left.localeCompare(right));
   const productKinds = (product: ScriptablePackBuildProduct): readonly string[] =>
     [...new Set(product.product.assets.map((asset) => asset.kind))].sort();
+  // Content reads are admitted with their observed digest; reference-only rows
+  // carry no bytes to validate and keep the product uncacheable.
   const cacheable = (product: ScriptablePackBuildProduct): boolean =>
-    product.externalEvidence.length === 0 &&
+    product.externalEvidence.every(
+      (row) => row.usage !== 'reference' && typeof row.digest === 'string',
+    ) &&
     product.product.assets.every(
       (asset) =>
         !cookerIdentities.has(asset.kind) || cookerIdentities.get(asset.kind) !== undefined,
@@ -357,7 +495,7 @@ export async function createScriptablePackProductCache(options: {
     return { ...product, product: { ...product.product, assets } };
   };
   const identity = (
-    subject: ScriptablePackBuildWorkItem,
+    subject: PackBuildCacheSubject,
     schema: string,
     dependencies?: CookerDependencies,
   ): { key: string; guid: string } => {
@@ -386,7 +524,11 @@ export async function createScriptablePackProductCache(options: {
         },
         // Closure order follows absolute paths; sort the relative rows so the
         // key does not depend on where the checkout sits beside its externals.
-        sourceBytes: (subject.sourceClosure ?? [])
+        sourceBytes: (
+          (schema === KINDS_SCHEMA ? subject.discoverySourceClosure : undefined) ??
+          subject.sourceClosure ??
+          []
+        )
           .map((entry) => `${sourceIdentity(entry.path)}\0${entry.digest}`)
           .sort()
           .map((row) => new TextEncoder().encode(row)),
@@ -397,12 +539,18 @@ export async function createScriptablePackProductCache(options: {
     };
   };
   const readEntry = async (
-    subject: ScriptablePackBuildWorkItem,
+    subject: PackBuildCacheSubject,
     schema: CachePayload['schemaVersion'],
     artifact: string,
     decode: (bytes: Uint8Array) => Promise<Uint8Array>,
+    resolve: ScriptablePackDependencyResolver | undefined,
     dependencies?: CookerDependencies,
-  ): Promise<{ product?: ScriptablePackBuildProduct; reason: string; key: string }> => {
+  ): Promise<{
+    product?: ScriptablePackBuildProduct;
+    reason: string;
+    key: string;
+    dependency?: NonNullable<Awaited<ReturnType<typeof contentDependencyFailure>>>['dependency'];
+  }> => {
     const { key, guid } = identity(subject, schema, dependencies);
     try {
       const entry = await store.read(key);
@@ -429,6 +577,8 @@ export async function createScriptablePackProductCache(options: {
             (JSON.stringify(productKinds(product)) === JSON.stringify(dependencies.kinds) &&
               nativeFreeProduct(product) === dependencies.nativeFree))
         ) {
+          const failure = await contentDependencyFailure(product, resolve);
+          if (failure !== undefined) return { key, ...failure };
           // Only this producer's format was validated before it was stored.
           const rebound = bindGeneration(
             product,
@@ -453,11 +603,19 @@ export async function createScriptablePackProductCache(options: {
   // A source generation determines its output kinds before native cooking.
   // This immutable discovery row selects a fully semantic product key; it is
   // never a substitute for checking current source bytes or cooker versions.
-  const readDependencies = async (subject: ScriptablePackBuildWorkItem) => {
+  const readDependencies = async (subject: PackBuildCacheSubject) => {
     const { key, guid } = identity(subject, KINDS_SCHEMA);
     const entry = await kindStore.read(key);
     const payload = entry?.payload as
-      | { schemaVersion?: unknown; sourcePath?: unknown; kinds?: unknown; nativeFree?: unknown }
+      | {
+          schemaVersion?: unknown;
+          sourcePath?: unknown;
+          kinds?: unknown;
+          nativeFree?: unknown;
+          outputs?: unknown;
+          reads?: unknown;
+          sourceFiles?: unknown;
+        }
       | undefined;
     const kinds = payload?.kinds;
     return entry?.guid === guid &&
@@ -467,8 +625,48 @@ export async function createScriptablePackProductCache(options: {
       Array.isArray(kinds) &&
       kinds.every((kind) => typeof kind === 'string') &&
       JSON.stringify(kinds) === JSON.stringify([...new Set(kinds)].sort())
-      ? { kinds: kinds as readonly string[], nativeFree: payload.nativeFree }
+      ? {
+          kinds: kinds as readonly string[],
+          nativeFree: payload.nativeFree,
+          ...(Array.isArray(payload.outputs) &&
+          payload.outputs.every((guid) => typeof guid === 'string')
+            ? { outputs: payload.outputs as string[] }
+            : {}),
+          ...(Array.isArray(payload.reads) &&
+          payload.reads.every((guid) => typeof guid === 'string')
+            ? { reads: payload.reads as string[] }
+            : {}),
+          ...(Array.isArray(payload.sourceFiles) &&
+          payload.sourceFiles.every((path) => typeof path === 'string')
+            ? { sourceFiles: payload.sourceFiles as string[] }
+            : {}),
+        }
       : undefined;
+  };
+  const withDiscoveredSources = async (
+    subject: PackBuildCacheSubject,
+    dependencies: CookerDependencies | undefined,
+  ): Promise<PackBuildCacheSubject | undefined> => {
+    if (subject.discoverySourceClosure === undefined || dependencies?.sourceFiles === undefined)
+      return subject;
+    const closure = new Map(
+      (subject.sourceClosure ?? []).map((row) => [sourceIdentity(row.path), row]),
+    );
+    try {
+      for (const file of dependencies.sourceFiles) {
+        const path = resolve(identityRoots[0] ?? '.', file);
+        if (!closure.has(file))
+          closure.set(file, {
+            path,
+            digest: `sha256:${createHash('sha256')
+              .update(await readFile(path))
+              .digest('hex')}`,
+          });
+      }
+      return { ...subject, sourceClosure: [...closure.values()] };
+    } catch {
+      return undefined;
+    }
   };
   const write: ScriptablePackBuildProductCache['write'] = async (subject, product) => {
     const startedAt = performance.now();
@@ -496,7 +694,23 @@ export async function createScriptablePackProductCache(options: {
       const compressed = await compress(bytes, {
         params: { [constants.BROTLI_PARAM_QUALITY]: 4 },
       });
-      const dependencies = { kinds: productKinds(product), nativeFree: nativeFreeProduct(product) };
+      const dependencies = {
+        kinds: productKinds(product),
+        nativeFree: nativeFreeProduct(product),
+        ...(subject.discoverySourceClosure === undefined
+          ? {}
+          : {
+              sourceFiles: (subject.sourceClosure ?? [])
+                .map((row) => sourceIdentity(row.path))
+                .sort(),
+            }),
+        outputs: product.product.assets.flatMap((asset) =>
+          typeof asset.guid === 'string' ? [asset.guid.toLowerCase()] : [],
+        ),
+        reads: product.externalEvidence.flatMap((row) =>
+          typeof row.guid === 'string' ? [row.guid.toLowerCase()] : [],
+        ),
+      };
       const { key, guid } = identity(subject, CACHE_SCHEMA, dependencies);
       const entry = {
         key,
@@ -552,28 +766,50 @@ export async function createScriptablePackProductCache(options: {
     }
   };
   return {
-    async read(subject) {
+    canReuse: cacheable,
+    producerIdentity: `sha256:${createHash('sha256')
+      .update(JSON.stringify([engineProducerVersion(), options.outputVersions, cookerIdentity]))
+      .digest('hex')}`,
+    async dependencies(subject) {
+      const metadata = await readDependencies(subject);
+      return metadata?.outputs === undefined || metadata.reads === undefined
+        ? undefined
+        : { outputs: metadata.outputs, reads: metadata.reads };
+    },
+    async read(subject, resolve) {
       const startedAt = performance.now();
       if (!(await sourceClosureCurrent(subject))) {
         timing('miss', subject.sourcePath, startedAt, { reason: 'source-changed' });
         return undefined;
       }
       const dependencies = await readDependencies(subject);
+      const lookup = await withDiscoveredSources(subject, dependencies);
+      if (lookup === undefined || (lookup !== subject && !(await sourceClosureCurrent(lookup)))) {
+        timing('miss', subject.sourcePath, startedAt, { reason: 'dependency-source-unavailable' });
+        return undefined;
+      }
       const current: Awaited<ReturnType<typeof readEntry>> =
         dependencies === undefined
           ? { reason: 'entry-not-found', key: identity(subject, KINDS_SCHEMA).key }
-          : await readEntry(subject, CACHE_SCHEMA, PRODUCT_ARTIFACT, decompress, dependencies);
+          : await readEntry(
+              lookup,
+              CACHE_SCHEMA,
+              PRODUCT_ARTIFACT,
+              decompress,
+              resolve,
+              dependencies,
+            );
       let legacy: Awaited<ReturnType<typeof readEntry>> | undefined;
       if (current.product === undefined)
         for (const schema of LEGACY_CACHE_SCHEMAS) {
-          legacy = await readEntry(subject, schema, PRODUCT_ARTIFACT, decompress);
+          legacy = await readEntry(lookup, schema, PRODUCT_ARTIFACT, decompress, resolve);
           if (legacy.product !== undefined) break;
         }
       const product = current.product ?? legacy?.product;
-      if (product !== undefined && (await sourceClosureCurrent(subject))) {
+      if (product !== undefined && (await sourceClosureCurrent(lookup))) {
         // Format migration only republishes a verified immutable product; it
         // never changes source identity or makes an old publication authoritative.
-        if (legacy?.product !== undefined) await write(subject, legacy.product);
+        if (legacy?.product !== undefined) await write(lookup, legacy.product);
         timing('hit', subject.sourcePath, startedAt, {
           key: current.product === undefined ? legacy?.key : current.key,
         });
@@ -582,9 +818,13 @@ export async function createScriptablePackProductCache(options: {
       timing('miss', subject.sourcePath, startedAt, {
         key: current.key,
         reason: product === undefined ? current.reason : 'source-changed',
+        ...(current.dependency === undefined ? {} : { dependency: current.dependency }),
       });
       return undefined;
     },
     write,
   };
 }
+
+/** The same product owner also accepts Meta-backed Pack build subjects. */
+export { createScriptablePackProductCache as createPackBuildProductCache };

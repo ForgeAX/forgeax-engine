@@ -1192,6 +1192,7 @@ beforeAll(async () => {
     forgeax_scene_temporal: SCENE_TEMPORAL,
     'forgeax_view::fog': readSrc('fog.wgsl'),
     'forgeax_view::atmosphere': readSrc('view-atmosphere.wgsl'),
+    'forgeax_atmosphere::table_access': readSrc('atmosphere-table-access.wgsl'),
     'forgeax_atmosphere::optics': readSrc('atmosphere-optics.wgsl'),
     'forgeax_atmosphere::visibility': readSrc('atmosphere-visibility.wgsl'),
     'forgeax_atmosphere::coordinates': readSrc('atmosphere-coordinates.wgsl'),
@@ -1221,6 +1222,7 @@ beforeAll(async () => {
     'forgeax_pbr::lighting_rect_area': readSrc('lighting-rect-area.wgsl'),
     'forgeax_pbr::lighting_attenuation': LIGHTING_ATTENUATION,
     'forgeax_pbr::lighting_spot_projector': readSrc('lighting-spot-projector.wgsl'),
+    'forgeax_standard::cluster_texture_data': readSrc('cluster-texture-data.wgsl'),
     'forgeax_standard::cluster': STANDARD_CLUSTER,
     'forgeax_pbr::shadow_pcf': SHADOW_PCF,
     'forgeax_skin::task': readSrc('skin-task.wgsl'),
@@ -1239,6 +1241,7 @@ beforeAll(async () => {
 
   UNLIT_ENTRY_IMPORTS = {
     'forgeax_clipping::planes': readSrc('clipping.wgsl'),
+    'forgeax_pbr::gbuffer': readSrc('standard-gbuffer.wgsl'),
     'forgeax_material::fragment_output': readSrc('material/fragment-output.wgsl'),
     'forgeax_material::texture_coordinates': readSrc('texture-coordinates.wgsl'),
     'forgeax_view::tone_mapping': readSrc('tone-mapping.wgsl'),
@@ -1252,7 +1255,10 @@ beforeAll(async () => {
     'forgeax_view::fog': readSrc('fog.wgsl'),
     'forgeax_view::atmosphere': readSrc('view-atmosphere.wgsl'),
     'forgeax_cloud::layer': readSrc('cloud.wgsl'),
+    'forgeax_standard::cluster_texture_data': readSrc('cluster-texture-data.wgsl'),
+    'forgeax_atmosphere::table_access': readSrc('atmosphere-table-access.wgsl'),
     'forgeax_atmosphere::optics': readSrc('atmosphere-optics.wgsl'),
+    'forgeax_pbr::shadow_pcf': readSrc('shadow-pcf.wgsl'),
     'forgeax_atmosphere::visibility': readSrc('atmosphere-visibility.wgsl'),
     'forgeax_atmosphere::coordinates': readSrc('atmosphere-coordinates.wgsl'),
     'forgeax_atmosphere::sampling': readSrc('atmosphere-sampling.wgsl'),
@@ -1390,7 +1396,52 @@ describe('standard clustered projector composition', () => {
           result.ok,
           result.ok ? '' : `${extendedLighting}/${projector}: ${result.error.message}`,
         ).toBe(true);
+        if (result.ok) {
+          const clusterUniform = result.value.manifestEntry.reflection?.boundGlobals.find(
+            (global) => global.name === 'cluster_uniform',
+          );
+          expect(clusterUniform?.span).toBe(96);
+          expect(clusterUniform?.members?.map(({ name, offset }) => [name, offset])).toEqual([
+            ['grid', 0],
+            ['near_far_log', 16],
+            ['ao', 32],
+            ['direct_ao', 48],
+            ['texture', 64],
+            ['cluster_layout', 80],
+          ]);
+        }
       }
+    }
+
+    const textureVariant = await compileShader(cluster, {
+      id: 'forgeax_standard::cluster#texture-transport',
+      imports: PBR_ENTRY_IMPORTS,
+      defines: {
+        CLUSTER_FORWARD_AVAILABLE: true,
+        EXTENDED_LIGHTING_AVAILABLE: false,
+        PROJECTOR_AVAILABLE: false,
+        STORAGE_BUFFER_AVAILABLE: false,
+      },
+    });
+    expect(
+      textureVariant.ok,
+      textureVariant.ok ? '' : textureVariant.error.message,
+    ).toBe(true);
+    if (textureVariant.ok) {
+      const clusterUniform = textureVariant.value.manifestEntry.reflection?.boundGlobals.find(
+        (global) => global.name === 'cluster_uniform',
+      );
+      expect(clusterUniform?.span).toBe(96);
+      expect(clusterUniform?.members?.find(({ name }) => name === 'texture')).toMatchObject({
+        name: 'texture',
+        offset: 64,
+        type: 'vec4<u32>',
+      });
+      expect(clusterUniform?.members?.at(-1)).toMatchObject({
+        name: 'cluster_layout',
+        offset: 80,
+        type: 'vec4<u32>',
+      });
     }
   });
 });

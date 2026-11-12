@@ -4,7 +4,6 @@ import { rhi } from '@forgeax/engine-rhi-null';
 import { err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { createFeatureSceneInputs } from '../assembly/feature-scene-inputs';
-import { type FrameRecording, submitFrameRecordings } from '../assembly/frame-recording';
 import { createRenderFeatureHost } from '../features/host';
 import {
   type RenderFeatureWorkPlan,
@@ -15,6 +14,17 @@ import type { RenderFeature } from '../features/types';
 import { computeProjectionMatrix, computeViewMatrix } from '../record/helpers';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { CubeCaptureGraphWork } from '../record/target-capture-graph';
+import { ViewCaptureWork } from '../world/capture-systems';
+import {
+  RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM,
+  RENDER_FEATURE_GRAPH_ENCODE_SYSTEM,
+  ViewGraphSeal,
+  type ViewGraphSealState,
+} from '../world/graph-seal-systems';
+import { awaitsRenderRecord } from '../world/graph-systems';
+import { RenderRecord } from '../world/render-world';
+import { abortFeatureFrame, prepareFeatureFrame, stageFeatureFrame } from './feature-frame-driver';
+import { type FrameRecording, submitFrameRecordings } from './frame-recording-driver';
 
 const camera = () => ({
   position: new Float32Array([3, 0, 3]),
@@ -235,8 +245,8 @@ describe('Renderer scene inputs', () => {
       ...beginFeature(...args),
       prepareBindings: failed,
     }));
-    f.owner.begin(1);
-    const batch = host.runFrame([
+    // RenderPrepare opens the frame's scene-input transaction.
+    const batch = prepareFeatureFrame(host, [
       {
         identity: 'left',
         render: true,
@@ -252,7 +262,7 @@ describe('Renderer scene inputs', () => {
     expect(batch.frame.errors).not.toHaveLength(0);
     expect(f.owner.work).toHaveLength(0);
     expect(destroyed).toHaveBeenCalledTimes(2);
-    batch.onAborted();
+    abortFeatureFrame(host);
     f.owner.complete(false);
     host.dispose();
     gpu.dispose().unwrap();
@@ -329,51 +339,79 @@ describe('Renderer scene inputs', () => {
     const feature = simulationFeature();
     const host = createRenderFeatureHost([feature]).unwrap();
     const encoder = f.device.createCommandEncoder().unwrap();
+    // RenderRecord opens the submission encoder this case inspects.
+    vi.spyOn(f.device, 'createCommandEncoder').mockReturnValue(ok(encoder) as never);
     const compute = vi.spyOn(encoder, 'beginComputePass');
     const events: string[] = [];
-    function* record(identity: string): FrameRecording {
-      let captures: readonly CubeCaptureGraphWork[] = [];
-      yield {
-        kind: 'features',
-        host,
-        internals: f.runtime,
-        encoder,
-        input: {
-          identity,
-          render,
-          worlds: [],
-          owner: 0,
-          frameNumber: 1,
-          caps: f.device.caps,
-          gpuWork: gpu,
-          sceneResources: f.owner,
+    Object.assign(f.runtime, { renderWorld: host.world });
+    const outcome = stageFeatureFrame(
+      host,
+      ['left', 'right'].map((identity) => ({
+        identity,
+        render,
+        worlds: [],
+        owner: 0,
+        frameNumber: 1,
+        caps: f.device.caps,
+        gpuWork: gpu,
+        sceneResources: f.owner,
+      })),
+    );
+    expect(outcome.kind).toBe('sealed');
+    const captureState: ViewGraphSealState = { frame: 1, prepared: undefined, outcome: undefined };
+    host.world
+      .spawn(
+        {
+          component: ViewGraphSeal,
+          data: { state: host.world.allocUniqueRef('ViewGraphSeal', captureState) },
         },
-        captures: {
-          snapshots: [],
-          exclusive: false,
-          accept: (_work, scene) => {
-            captures = scene;
+        {
+          component: ViewCaptureWork,
+          data: {
+            state: host.world.allocUniqueRef('ViewCaptureWork', {
+              frame: 1,
+              outcome: {
+                kind: 'prepared',
+                value: { cube: [], sceneInputs: f.owner.work, auxiliaryCameras: [], faces: [] },
+              },
+            }),
           },
         },
-        accept: (result) => {
-          expect(result.errors).toEqual([]);
+      )
+      .unwrap();
+    host.world
+      .addSystem(RenderRecord, {
+        name: 'test-scene-input-encode',
+        after: [RENDER_CAPTURE_GRAPH_ENCODE_SYSTEM],
+        before: [RENDER_FEATURE_GRAPH_ENCODE_SYSTEM],
+        queries: [{ write: [ViewGraphSeal] }],
+        fn: () => {
+          expect(compute).not.toHaveBeenCalled();
+          events.push('depth');
+          f.runtime.framePassNames?.push('feature-scene-depth-face.0');
+          captureState.captures = { kind: 'ready' };
         },
-      };
-      if (captures.length > 0) {
-        expect(compute).not.toHaveBeenCalled();
-        events.push('depth');
-        f.runtime.framePassNames?.push('feature-scene-depth-face.0');
-        yield { kind: 'scene-inputs', encoder };
-      }
+      })
+      .unwrap();
+    function* record(identity: string): FrameRecording {
+      // `render-capture-schedule` routes the scene inputs to the first shared view.
+      const captures: readonly CubeCaptureGraphWork[] = identity === 'left' ? f.owner.work : [];
+      if (outcome.kind === 'sealed') expect(outcome.batch.views.get(identity)?.errors).toEqual([]);
+      yield { kind: 'shared-work', internals: f.runtime, sceneInputs: captures.length > 0 };
+      // The view's graph compiles in RenderRecord, before any view encodes.
+      if (awaitsRenderRecord(host.world)) yield { kind: 'compile', world: host.world };
       expect(compute).toHaveBeenCalledTimes(1);
       events.push(identity);
       f.runtime.framePassNames?.push(identity);
-      return (yield { device: f.device, encoder, reportError() {} }).ok;
+      return (yield { reportError() {} }).ok;
     }
     try {
-      expect(submitFrameRecordings([record('left'), record('right')], undefined, f.runtime)).toBe(
-        true,
-      );
+      expect(
+        submitFrameRecordings(
+          { world: host.world, device: f.device, rendererInternals: f.runtime },
+          [record('left'), record('right')],
+        ),
+      ).toBe(true);
       expect(events).toEqual(['depth', 'left', 'right']);
       expect(f.runtime.submittedPassNames).toEqual([
         'feature-scene-depth-face.0',

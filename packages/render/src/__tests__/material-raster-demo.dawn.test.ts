@@ -11,6 +11,7 @@ import {
 import * as backend from '@forgeax/engine-rhi-webgpu';
 import type { MaterialRenderState, Result } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { Materials } from '../materials';
 import { buildPipelineForMaterialShader } from '../pipeline-builder';
 import { pipelineRenderState } from '../render-system-extract';
@@ -173,7 +174,7 @@ it('captures a four-panel material raster demo from the real GPU', async () => {
       const result = value(
         await replay.inspectWork(model.works.length - 1, ['pipeline', 'pixels']),
       );
-      expect(result.attachment?.bytes).toEqual(pixels);
+      expect(equalBytes(result.attachment?.bytes, pixels)).toBe(true);
     } finally {
       value(await replay.dispose());
     }

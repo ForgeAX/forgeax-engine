@@ -134,12 +134,15 @@ it.each([
   expect(target.library.inspect().pending?.pipelines[0]?.origin).toBe(
     background ? 'background-warmup' : 'startup-warmup',
   );
+  expect(target.library.pendingRuntimeCompilation()).toBeUndefined();
   required(target.finishes[0])();
   expect((await preparing).ok).toBe(true);
   target.render.mockRejectedValueOnce(new Error('native compile refused') as never);
-  await expect(
-    target.library.createRenderPipelineAsync(target.descriptor('invalid source')),
-  ).rejects.toThrow('native compile refused');
+  const rejected = target.library.createRenderPipelineAsync(target.descriptor('invalid source'));
+  const failedCompletion = target.library.pendingRuntimeCompilation();
+  expect(failedCompletion).toBeDefined();
+  await expect(rejected).rejects.toThrow('native compile refused');
+  expect((await failedCompletion)?.ok).toBe(false);
   expect(target.library.inspect()).toMatchObject({
     compilationPending: 0,
     failures: 1,
@@ -210,4 +213,27 @@ it('keeps coverage unresolved until background indexing finishes and reports sha
   await Promise.all([background, startup, runtime]);
   expect(target.render).toHaveBeenCalledTimes(1);
   expect(target.library.export().ok).toBe(true);
+});
+
+it('signals completion of captured runtime compilations without waiting for later requests', async () => {
+  const f = await fixture();
+  expect(f.library.pendingRuntimeCompilation()).toBeUndefined();
+  const first = f.library.createRenderPipelineAsync(f.descriptor('first'));
+  const completion = f.library.pendingRuntimeCompilation();
+  expect(completion).toBeDefined();
+  let settled = false;
+  void completion?.then(() => {
+    settled = true;
+  });
+  const later = f.library.createRenderPipelineAsync(f.descriptor('later'));
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  required(f.finishes[0])();
+  await first;
+  expect((await completion)?.ok).toBe(true);
+  expect(settled).toBe(true);
+  expect(f.library.inspect().compilationPending).toBe(1);
+  required(f.finishes[1])();
+  await later;
+  expect(f.library.pendingRuntimeCompilation()).toBeUndefined();
 });

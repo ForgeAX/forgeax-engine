@@ -78,7 +78,7 @@ async function buildRayPublicationFixture(name: RayPublicationMaterialName) {
   const material = await prepareRayMaterialPublication(
     name,
     asset,
-    createMaterialPackCooker([directory]),
+    createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' }),
   );
   return { kernel, material };
 }
@@ -175,7 +175,7 @@ export async function prepareRayRecordingFixture(directMultiscattering: 'fit' | 
 async function buildRayPathFixture() {
   const { directory, sources, imports, kernel } = await buildRayKernelFixture();
   const assets = rayMaterialAssets();
-  const cooker = createMaterialPackCooker([directory]);
+  const cooker = createMaterialPackCooker([directory], { profile: 'webgpu-storage-ray' });
   const materials = await Promise.all(
     Object.entries(assets).map(([id, asset]) => prepareRayMaterialPublication(id, asset, cooker)),
   );

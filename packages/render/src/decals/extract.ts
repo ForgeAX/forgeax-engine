@@ -3,9 +3,14 @@ import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { readRenderArrayView } from '@forgeax/engine-ecs/projection';
 import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { mat4, vec3 } from '@forgeax/engine-math';
-import { GlobalTransform } from '@forgeax/engine-scene';
+import { ChildOf, GlobalTransform } from '@forgeax/engine-scene';
 import type { AssetHandle, SamplerAsset, TextureAsset } from '@forgeax/engine-types';
-import { noteEnvironmentPose } from '../extract/environment-gate';
+import { Visibility } from '../components/visibility';
+import {
+  createEnvironmentQuery,
+  noteEnvironmentInputs,
+  noteEnvironmentPose,
+} from '../extract/environment-gate';
 import { worldRenderResources } from '../publication/resource-scope';
 import { deriveRenderDataTexture } from '../render-data';
 import {
@@ -17,6 +22,8 @@ import {
   resolveMaterialSnapshot,
 } from '../render-system-extract';
 import { ProjectedDecal, ProjectedDecalInvalidError } from './component';
+
+const extractProjectedDecalsQuery = createEnvironmentQuery({ read: [ProjectedDecal] });
 
 export const MAX_PROJECTED_DECALS = 64;
 export const DECAL_TEXTURE_FIELDS = [
@@ -74,8 +81,9 @@ export function extractProjectedDecals(
   context: PreparedExtractContext,
 ): ProjectedDecalSnapshot[] {
   const result: ProjectedDecalSnapshot[] = [];
-  const query = world.query({ read: [ProjectedDecal] }).unwrap();
+  const query = extractProjectedDecalsQuery(world).unwrap();
   for (const batch of query.batches().unwrap()) {
+    noteEnvironmentInputs(world, [Visibility, ChildOf]);
     const entities = batch.entities;
     const selection = batch.kind === 'indexed' ? batch.rows : undefined;
     const first = batch.kind === 'range' ? batch.start : 0;

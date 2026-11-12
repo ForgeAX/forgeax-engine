@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { samplerContribution } from '@forgeax/engine-render';
 // apps/hello/2d-flashlight/scripts/smoke-dawn.mjs
 //
@@ -43,8 +44,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 void HERE;
 
 const SMOKE_MIN_FRAMES = Number.parseInt(process.env.SMOKE_MIN_FRAMES ?? '60', 10);
-const WIDTH = 800;
-const HEIGHT = 600;
+const WIDTH = 320;
+const HEIGHT = 240;
 // AC-1 / AC-2 assertion thresholds (max-channel-brightness / 255).
 const AC1_WEDGE_MIN = Number.parseFloat(process.env.SMOKE_AC1_MIN ?? '0.5');
 const AC2_CENTER_MIN = Number.parseFloat(process.env.SMOKE_AC2_CENTER_MIN ?? '0.7');
@@ -397,21 +398,16 @@ async function renderAndReadback(world, label) {
   const attached = renderer.attach(world);
   if (!attached.ok) return { ok: false, error: `${label}: attach failed: ${attached.error.code}` };
   let draws = 0;
-  let drawErrors = 0;
   for (let i = 0; i < SMOKE_MIN_FRAMES; i++) {
     world.update().unwrap();
-    const r = renderer.draw({
+    await drawReadyFrame(renderer, {
       leases: [attached.value],
       camera: { lease: attached.value },
       environment: { lease: attached.value },
     });
-    if (!r.ok) drawErrors++;
     draws++;
   }
   await sharedDevice?.queue.onSubmittedWorkDone();
-  if (drawErrors > 0) {
-    return { ok: false, error: `${label}: ${drawErrors} draw errors over ${draws} frames` };
-  }
   if (!activeRenderTarget || !sharedDevice) {
     return { ok: false, error: `${label}: render target / device missing for readback` };
   }

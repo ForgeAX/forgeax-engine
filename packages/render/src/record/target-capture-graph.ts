@@ -4,10 +4,14 @@ import type {
   RenderGraphBuilder,
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
-import { err, ok, type Result } from '@forgeax/engine-types';
+import { err, mipDimension, ok, type Result } from '@forgeax/engine-types';
+import type { PlanarCapture } from '../capture/planar-state';
+import { planarReflectionLevels } from '../capture/planar-target';
 import { addAtmosphereBackground } from '../environment/background';
+import { atmosphereTextures, atmosphereVolumeViews } from '../environment/luts';
 import { atmosphereStorage } from '../environment/storage';
 import { analyticFogSampleCountError } from '../pipeline/analytic-fog-pass';
+import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import type { RenderPipelineFrame, RenderPipelineGpuDrivenProjection } from '../render-pipeline';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import {
@@ -19,7 +23,9 @@ import { resolveRenderTargetMaterialSource } from '../targets/material-source';
 import type { RenderTargetPhysical } from '../targets/physical';
 import { isCanvasTextureSource } from '../textures/canvas-texture';
 import { isExternalTextureSource } from '../textures/external-texture';
+import type { TransmissionBackdropMipEncoder } from '../transmission/backdrop';
 import type { TypedShadowTargets } from '../typed-shadow-passes';
+import { addCaptureFaceFeaturePasses } from './capture-face-features';
 import { buildPerFrameBindGroups } from './frame-lighting';
 import { encodeMainPass } from './main-pass';
 import type { _InternalRenderPipelineContext, RenderSystemInternals } from './render-context';
@@ -29,12 +35,22 @@ import type { ReflectionProbeGraphState } from './typed-frame-graph';
 
 export interface CubeCaptureGraphWork {
   readonly sceneInput?: true;
+  /** The Feature that requested this scene input; absent for every other face. */
+  readonly featureIdentity?: string;
   readonly candidateGeneration?: number;
   readonly target: RenderTarget;
   /** Cube face, array layer, or 3D depth slice written by this work item. */
   readonly layer: number;
   readonly physical: RenderTargetPhysical;
   readonly faceCamera: import('../render-contract').CameraSnapshot;
+  /** Feature work the face records after its scene passes; set by `render-capture-schedule`. */
+  feature?: CaptureFaceFeatureWork | undefined;
+}
+
+/** The sealed Feature plans of one capture face (see `capture/feature-policy`). */
+export interface CaptureFaceFeatureWork {
+  readonly executions: readonly import('../features/host').RenderFeaturePlanExecution[];
+  readonly plans: readonly import('../features/plan').RenderFeaturePlannedFrame[];
 }
 
 export interface CubeCaptureGraphState {
@@ -42,6 +58,8 @@ export interface CubeCaptureGraphState {
   atmosphere?: boolean;
   reflectionProbes?: ReflectionProbeGraphState;
   planar?: import('../capture/planar-state').PlanarCaptureState;
+  /** The engine-owned mirror target of a targetless PlanarReflection. */
+  planarTarget?: import('../capture/planar-target').PlanarTargetLease;
 }
 
 /** Whether a material binds `target` as a sampled texture source. */
@@ -69,7 +87,7 @@ function captureSelfSampling(
   let nextIndex = 0;
   for (const row of internal.validatedOrdered) {
     const index = nextIndex++;
-    for (const slot of internal.materialSlotIndices[index] ?? []) {
+    for (const slot of internal.materialSlotIndices.at(index) ?? []) {
       const material = internal.materialSlots[slot];
       if (material === undefined) throw new Error('Capture has no submitted material');
       if (!materialSamplesTarget(material, target)) continue;
@@ -98,13 +116,21 @@ function captureShadowReads(shadows: TypedShadowTargets | undefined): GraphAcces
  * the recording view itself (a capture view): its rows are culled for that
  * camera, its opaque GPU-lane rows are drawn indirectly by the view's own
  * production, and the face publishes the view's shadow evidence.
+ *
+ * `encodeMip` downsamples one level; with it a planar mirror that generates
+ * mipmaps fills its chain after the face, before any receiver samples it.
  */
 export function addTargetCaptureGraphPasses(
   builder: RenderGraphBuilder<RenderPipelineFrame>,
   state: CubeCaptureGraphState,
-  lighting?: { readonly shadows: TypedShadowTargets; readonly accesses: readonly GraphAccess[] },
+  lighting?: {
+    readonly shadows: TypedShadowTargets;
+    readonly accesses: readonly GraphAccess[];
+    readonly clusters?: StandardClusterGraphBuffers | null;
+  },
   view?: { readonly gpuDriven: RenderPipelineGpuDrivenProjection | undefined },
-): Result<GraphTextureView | undefined, RenderGraphError> {
+  encodeMip?: TransmissionBackdropMipEncoder,
+): Result<GraphTextureView | undefined, RenderGraphError | import('../errors/render').RenderError> {
   const gpuDriven = view?.gpuDriven;
   if (
     state.atmosphere === true &&
@@ -116,16 +142,13 @@ export function addTargetCaptureGraphPasses(
     const slot = index;
     const initial = state.work[slot];
     if (initial === undefined) continue;
-    const label = initial.sceneInput
-      ? 'feature-scene-depth'
-      : initial.faceCamera.planarReflection === undefined
-        ? 'cube-capture'
-        : 'planar-reflection';
+    const label = captureLabel(initial);
     const current = (): CubeCaptureGraphWork => state.work[slot] ?? initial;
     const descriptor = initial.physical.descriptor;
     const volume = descriptor.shape === '3d';
     const msaa = descriptor.sampleCount === 4;
     const layers = renderTargetLayerCount(descriptor);
+    const { levels: mipLevels, usage: mipUsage } = planarMipPlan(encodeMip, initial, descriptor);
     const texture = builder.importTexture(
       `${label}.${slot}.texture`,
       {
@@ -138,7 +161,7 @@ export function addTargetCaptureGraphPasses(
         mipLevelCount: msaa ? 1 : renderTargetMipCount(descriptor),
         sampleCount: descriptor.sampleCount,
         dimension: volume ? '3d' : '2d',
-        usage: 0x10 | 0x04 | 0x01,
+        usage: 0x10 | 0x04 | 0x01 | (msaa ? 0 : mipUsage),
       },
       () => current().physical.colorTextures[current().layer] ?? initial.physical.texture,
     );
@@ -196,7 +219,7 @@ export function addTargetCaptureGraphPasses(
             mipLevelCount: renderTargetMipCount(descriptor),
             sampleCount: 1,
             dimension: '2d',
-            usage: 0x10 | 0x04 | 0x01,
+            usage: 0x10 | 0x04 | 0x01 | mipUsage,
           },
           () =>
             current().physical.resolveTexture ??
@@ -237,6 +260,10 @@ export function addTargetCaptureGraphPasses(
               sampleCount: initial.physical.descriptor.sampleCount,
             },
             { directional: lighting?.shadows.directional?.view },
+            {
+              mode: 'full',
+              clusters: lighting?.clusters,
+            },
           )
         : undefined;
     if (environment !== undefined && !environment.ok) return environment;
@@ -270,13 +297,10 @@ export function addTargetCaptureGraphPasses(
         ...(lighting?.accesses ?? []),
         ...(atmosphere === undefined
           ? []
-          : [
-              atmosphere.transmittance,
-              atmosphere.multipleScattering,
-              atmosphere.aerialPerspective,
-              atmosphere.aerialTransmittance,
-              atmosphere.distantSkyLight,
-            ].map((resource) => ({ resource, usage: 'sampled-read' as const }))),
+          : atmosphereTextures(atmosphere).map((resource) => ({
+              resource,
+              usage: 'sampled-read' as const,
+            }))),
         ...(environment === undefined
           ? []
           : [environment.value.irradiance, environment.value.prefilter].map((resource) => ({
@@ -316,7 +340,7 @@ export function addTargetCaptureGraphPasses(
         stencilLoadOp: 'clear',
         stencilStoreOp: 'store',
       },
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         for (const request of requests) {
           const internal = scenePassContext(frame as _InternalRenderPipelineContext, request);
           const selfSampling = captureSelfSampling(internal, current().target);
@@ -353,25 +377,7 @@ export function addTargetCaptureGraphPasses(
                   internal.validatedOrdered.length > 0 || gpuDriven !== undefined,
                   internal.bindGroupCounts,
                   {
-                    ...(atmosphere === undefined
-                      ? {}
-                      : {
-                          atmosphere: {
-                            transmittance: resources.textureView(atmosphere.transmittance).unwrap(),
-                            multipleScattering: resources
-                              .textureView(atmosphere.multipleScattering)
-                              .unwrap(),
-                            aerialPerspective: resources
-                              .textureView(atmosphere.aerialPerspective)
-                              .unwrap(),
-                            aerialTransmittance: resources
-                              .textureView(atmosphere.aerialTransmittance)
-                              .unwrap(),
-                            distantSkyLight: resources
-                              .textureView(atmosphere.distantSkyLight)
-                              .unwrap(),
-                          },
-                        }),
+                    atmosphere: atmosphereVolumeViews(resources, atmosphere),
                     directionalShadow: resolveShadow(lighting.shadows.directional),
                     spotShadow: resolveShadow(lighting.shadows.spot),
                     shadowMoments: resolveShadow(lighting.shadows.moments),
@@ -413,6 +419,7 @@ export function addTargetCaptureGraphPasses(
             viewBindGroupDynamicOffset: 0,
             splitLdrSprite: false,
           };
+          delete captureContext.planarReflectionView;
           delete captureContext.gpuDrivenSelection;
           if (gpuDriven === undefined) delete captureContext.gpuDrivenStandardPbrFrameResources;
           // Each prepared lane uses the capture camera's own sorted draw roster.
@@ -430,35 +437,184 @@ export function addTargetCaptureGraphPasses(
         }
       },
     });
-    if (!added.ok) return added;
+    const featured = addCaptureFaceFeaturePasses(builder, added, {
+      work: initial,
+      color: color.value,
+      colorTexture: texture.value,
+      depth: depth.value,
+      depthTexture: depthTexture.value,
+      lighting,
+    });
+    if (!featured.ok) return featured;
+    const mipped = addPlanarMipPasses(
+      builder,
+      `${label}.${slot}`,
+      resolveTexture?.value ?? texture.value,
+      descriptor,
+      mipLevels,
+      encodeMip,
+      planarView,
+    );
+    if (!mipped.ok) return mipped;
+    planarView = mipped.value;
   }
   const retained = state.planar?.current();
   if (planarView === undefined && retained !== undefined) {
-    const texture = builder.importTexture(
-      'planar-reflection.retained',
-      {
-        format: retained.physical.descriptor.format,
-        size: {
-          width: retained.physical.descriptor.width,
-          height: retained.physical.descriptor.height,
-        },
-        mipLevelCount: 1,
-        sampleCount: 1,
-        dimension: '2d',
-        usage: 0x10 | 0x04 | 0x01,
-      },
-      () =>
-        (state.planar?.current() ?? retained).physical.resolveTexture ??
-        (state.planar?.current() ?? retained).physical.texture,
-    );
-    if (!texture.ok) return texture;
-    const view = builder.importView(
-      texture.value,
-      { dimension: '2d' },
-      () => (state.planar?.current() ?? retained).physical.resolveView,
-    );
-    if (!view.ok) return view;
-    planarView = view.value;
+    const imported = importRetainedPlanarView(builder, state, retained);
+    if (!imported.ok) return imported;
+    planarView = imported.value;
   }
   return ok(planarView);
+}
+
+/** Import the previous planar mirror when this frame's update interval skipped the capture. */
+function importRetainedPlanarView(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  state: CubeCaptureGraphState,
+  retained: PlanarCapture,
+): Result<GraphTextureView, RenderGraphError> {
+  const latest = () => state.planar?.current() ?? retained;
+  const texture = builder.importTexture(
+    'planar-reflection.retained',
+    {
+      format: retained.physical.descriptor.format,
+      size: {
+        width: retained.physical.descriptor.width,
+        height: retained.physical.descriptor.height,
+      },
+      mipLevelCount: renderTargetMipCount(retained.physical.descriptor),
+      sampleCount: 1,
+      dimension: '2d',
+      usage: 0x10 | 0x04 | 0x01,
+    },
+    () => latest().physical.resolveTexture ?? latest().physical.texture,
+  );
+  if (!texture.ok) return texture;
+  return builder.importView(
+    texture.value,
+    { dimension: '2d' },
+    () => latest().physical.resolveView,
+  );
+}
+
+/**
+ * Fill a planar mirror's mip chain from level 0, then return the full-chain
+ * view its receivers sample. Each level renders into scratch and is copied
+ * back, as the transmission backdrop does, so no draw samples its own
+ * attachment texture (some WebGL2 drivers reject that as a feedback loop).
+ */
+function addPlanarMipPasses(
+  builder: RenderGraphBuilder<RenderPipelineFrame>,
+  label: string,
+  texture: import('@forgeax/engine-render-graph').GraphTexture,
+  descriptor: RenderTargetPhysical['descriptor'],
+  levels: number,
+  encodeMip: TransmissionBackdropMipEncoder | undefined,
+  direct: GraphTextureView | undefined,
+): Result<GraphTextureView | undefined, RenderGraphError> {
+  if (levels <= 1 || encodeMip === undefined) return ok(direct);
+  const levelSize = (level: number) => ({
+    width: mipDimension(descriptor.width, level),
+    height: mipDimension(descriptor.height, level),
+  });
+  const mipView = (level: number) =>
+    builder.view(texture, {
+      label: `${label}.mip-${level}`,
+      dimension: '2d',
+      baseMipLevel: level,
+      mipLevelCount: 1,
+      baseArrayLayer: 0,
+      arrayLayerCount: 1,
+    });
+  const scratch = builder.createTexture(`${label}.mip-scratch`, {
+    format: descriptor.format,
+    size: levelSize(1),
+    sampleCount: 1,
+    mipLevelCount: levels - 1,
+  });
+  if (!scratch.ok) return scratch;
+  let source = mipView(0);
+  if (!source.ok) return source;
+  for (let level = 1; level < levels; level += 1) {
+    const destination = mipView(level);
+    if (!destination.ok) return destination;
+    const scratchView = builder.view(scratch.value, {
+      label: `${label}.mip-scratch.${level - 1}`,
+      baseMipLevel: level - 1,
+      mipLevelCount: 1,
+    });
+    if (!scratchView.ok) return scratchView;
+    const from = source.value;
+    const mip = builder.addRasterPass(`${label}-mip-${level}`, {
+      accesses: [
+        { resource: from, usage: 'sampled-read' },
+        { resource: scratchView.value, usage: 'color-attachment' },
+      ],
+      colorAttachments: [
+        {
+          view: scratchView.value,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        },
+      ],
+      encodeDirect: (pass, frame, resources) =>
+        encodeMip({
+          pass,
+          frame,
+          resources,
+          source: from,
+          destination: scratchView.value,
+          format: descriptor.format,
+          level,
+        }),
+    });
+    if (!mip.ok) return mip;
+    const copied = builder.addCopyPass(`${label}-mip-copy-${level}`, {
+      accesses: [
+        { resource: scratchView.value, usage: 'copy-src' },
+        { resource: destination.value, usage: 'copy-dst' },
+      ],
+      encodeDirect: (encoder, _frame, resources) => {
+        const scratchTexture = resources.texture(scratch.value);
+        const target = resources.texture(texture);
+        if (!scratchTexture.ok) throw scratchTexture.error;
+        if (!target.ok) throw target.error;
+        encoder.copyTextureToTexture(
+          { texture: scratchTexture.value, mipLevel: level - 1, origin: { x: 0, y: 0, z: 0 } },
+          { texture: target.value, mipLevel: level, origin: { x: 0, y: 0, z: 0 } },
+          { ...levelSize(level), depthOrArrayLayers: 1 },
+        );
+      },
+    });
+    if (!copied.ok) return copied;
+    source = destination;
+  }
+  return builder.view(texture, {
+    label: `${label}.mips`,
+    dimension: '2d',
+    baseMipLevel: 0,
+    mipLevelCount: levels,
+    baseArrayLayer: 0,
+    arrayLayerCount: 1,
+  });
+}
+
+function captureLabel(work: CubeCaptureGraphWork): string {
+  if (work.sceneInput) return 'feature-scene-depth';
+  return work.faceCamera.planarReflection === undefined ? 'cube-capture' : 'planar-reflection';
+}
+
+/** A planar mirror's mip level count and the extra texture usage its chain copies need. */
+function planarMipPlan(
+  encodeMip: TransmissionBackdropMipEncoder | undefined,
+  work: CubeCaptureGraphWork,
+  descriptor: RenderTargetPhysical['descriptor'],
+): { readonly levels: number; readonly usage: number } {
+  const levels =
+    encodeMip === undefined
+      ? 1
+      : planarReflectionLevels(work.physical.device, work.faceCamera.planarReflection, descriptor);
+  // The mip chain is written by copies into the sampled texture.
+  return { levels, usage: levels > 1 ? 0x02 : 0 };
 }

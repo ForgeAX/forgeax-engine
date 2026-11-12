@@ -1,0 +1,12 @@
+{
+  "name": "@forgeax/app-modeling-show-mech-gt",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "F1 (C-100, mech-gt) program of the Modeling Show: the finished car, the transformation and the robot form.",
+  "forgeax": {
+    "frameTimeoutMs": 60000,
+    "startupTimeoutMs": 600000
+  }
+}

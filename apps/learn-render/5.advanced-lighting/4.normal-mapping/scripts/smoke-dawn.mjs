@@ -10,6 +10,7 @@
 //   - `[smoke] PASS`
 //   - `[smoke] FAIL`
 
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
@@ -332,13 +333,7 @@ let framesObserved = 0;
 const TARGET_FRAMES = SMOKE_MIN_FRAMES;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
+  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   framesObserved++;
 }
 const device = sharedDevice;

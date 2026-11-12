@@ -1031,10 +1031,15 @@ function mirrorSceneWrites(device: RhiNullDevice, scene: GpuScene) {
   });
   const writeBuffer = device.queue.writeBuffer.bind(device.queue);
   vi.spyOn(device.queue, 'writeBuffer').mockImplementation((buffer, offset, data, ...rest) => {
-    const bytes =
+    const source =
       data instanceof ArrayBuffer
         ? new Uint8Array(data)
         : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    const start = rest[0] ?? 0;
+    const length = rest[1] ?? source.byteLength - start;
+    const bytes = source.subarray(start, start + length);
+    if (length < 0 || bytes.byteLength !== length)
+      throw new RangeError('Scene upload mirror requires the complete source window');
     bytesByBuffer.set(buffer, (bytesByBuffer.get(buffer) ?? 0) + bytes.byteLength);
     if (transformTables.has(buffer)) {
       if (offset + bytes.byteLength > transforms.byteLength) {

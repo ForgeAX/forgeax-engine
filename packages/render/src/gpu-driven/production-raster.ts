@@ -13,6 +13,7 @@ import type {
   Result,
   RhiDevice,
   RhiRenderPassEncoder,
+  RenderPipeline as RhiRenderPipeline,
   TextureFormat,
 } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
@@ -37,8 +38,9 @@ import type {
   GpuDrivenProductionInspection,
   GpuDrivenStructureMetrics,
 } from '../inspection-types';
-import { reflectedRenderState } from '../material-render-state';
-import { isCanonicalStandardPbrMaterialShader } from '../pbr-pipeline';
+import { clippingCapRenderState, reflectedRenderState } from '../material-render-state';
+import { standardSurfaceDiscardMask } from '../material-stage-constants';
+import { isCanonicalStandardPbrMaterialShader, isStandardPbrMaterialShader } from '../pbr-pipeline';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
 import { getOpaqueResourceIdentity } from '../record/frame-snapshot';
@@ -142,7 +144,6 @@ import {
   MaterialAbiRasterAdapter,
   resolveGpuDrivenMeshGroup,
   SurfaceFrameProjectionOwner,
-  standardSurfaceDiscardMask,
 } from './production-raster-material';
 import {
   assemblePreparedPlan,
@@ -189,12 +190,14 @@ import {
   classOwner,
   materialOwner,
   type RetainedPassEncode,
+  type RetainedRasterBlock,
   RetainedRasterEncodes,
   runFacts,
 } from './retained-raster-encode';
 import { restrictShadowCasterClasses, ShadowCasterClassifier } from './shadow-caster-classes';
 import { ShadowProjectionDiffs } from './shadow-projection-diffs';
 import { publishReadonlyMap, sameShadowProjectionLayout } from './shadow-projection-publication';
+import { staticShadowViewIdentity } from './shadow-view-identity';
 import {
   type ShadowCameraCullDilation,
   type ShadowViewIdentity,
@@ -292,6 +295,8 @@ export interface PreparedGpuDrivenFrame {
   readonly worldKeys: readonly number[];
   /** Shared execution queried by each actual draw consumer. */
   readonly selection: GpuDrawSelection;
+  /** Actual GPU Shadow executions; direct residual casters do not erase this coverage. */
+  readonly shadowSelection?: GpuDrawSelection | undefined;
   readonly standardPbrFrameResources: GpuDrivenStandardPbrFrameResources;
   /** Published Surface admission and its pass lane decision. */
   readonly surfaceSubmission?: SurfaceGpuSubmissionAdmission;
@@ -372,6 +377,9 @@ export interface GpuDrivenPrepareInput {
   readonly materialPipelinePreparationFactory?: MaterialPipelineFactory;
   /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
   readonly capsuleShadowDirectional?: boolean;
+  /** One-cascade Vogel receiver: forward colour pipelines take the simple Standard variant. */
+  readonly directionalShadowSimple?: boolean;
+  readonly leanLighting?: boolean;
   /** Entity keys admitted by the persistent visibility facet for this view. */
   readonly activeEntityKeys?: ReadonlySet<number>;
   /** Collision-free renderer-owned revision for the active visibility set. */
@@ -454,6 +462,16 @@ type PipelinePreparationJob = (
   onPending?: (reason: FramePresentationPendingReason) => void,
   materials?: import('../scene/material-dispatch').MaterialFrame,
 ) => boolean;
+
+/** GPU raster pipelines follow the actual pass attachment profile. */
+function rasterSampleCount(value: number): 1 | 4 {
+  if (value === 1 || value === 4) return value;
+  throw new RhiError({
+    code: 'rhi-descriptor-invalid',
+    expected: 'one or four samples in a GPU raster pass',
+    hint: 'derive pipeline samples from the actual graph pass attachments',
+  });
+}
 
 function hasSurfaceArtifact(input: GpuDrivenPrepareInput): boolean {
   if (input.materialArtifact?.receipt?.surface !== undefined) return true;
@@ -695,7 +713,7 @@ function bindMaterialSlot(
   batch: ProjectedRasterClass,
   frameResources: GpuDrivenStandardPbrFrameResources,
   globalMaterialSlot: number,
-): void {
+): { readonly group: BindGroup; readonly byteOffset: number } {
   const prepared = frameResources.prepareMaterialBinding(globalMaterialSlot);
   if (prepared === undefined) {
     throw new RhiError({
@@ -707,6 +725,7 @@ function bindMaterialSlot(
   bindings.observeRunMaterial(globalMaterialSlot, prepared.group, prepared.byteOffset);
   const offset = batch.artifact.program.materialUniformRequired === false ? 0 : prepared.byteOffset;
   bindings.bindMaterial(prepared.group, offset);
+  return prepared;
 }
 
 function shadowViewPass(
@@ -1645,9 +1664,13 @@ export class GpuDrivenProduction {
       materialRaster.visibleBindingIdentity,
       skinRaster?.visibleBindingIdentity,
     );
-    const discardSignature = frame.viewClippingLive ? '|view-clipping' : '';
-    const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${discardSignature}`;
-    const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${discardSignature}`;
+    const discardSignature = frame.viewClippingLive
+      ? `|view-clipping${frame.input.camera.clipping?.caps === true ? '-caps' : ''}`
+      : '';
+    // Both independent lighting facts are fixed into the projected pipelines.
+    const variantSignature = `${discardSignature}${input.directionalShadowSimple === true ? '|simple' : ''}${input.directionalShadowSimple === true && input.leanLighting === true ? '|lean' : ''}`;
+    const signature = `gpu:${getOpaqueResourceIdentity(graphIdentity.raw)}${variantSignature}`;
+    const recordingSignature = `gpu:${getOpaqueResourceIdentity(graphIdentity.recording)}${variantSignature}`;
 
     const surfaceSubmission = this.surfaceSubmission;
     const consumeSurfaceDynamicInput =
@@ -1666,6 +1689,7 @@ export class GpuDrivenProduction {
       },
       worldKeys: scene.worldKeys ?? [],
       selection: filtered.selection,
+      shadowSelection: frame.shadowFiltered?.selection,
       shadowDirectRequired: shadowDirectRequired(scene, input.batchExecutions),
       ...(surfaceSubmission === undefined ? {} : { surfaceSubmission }),
       standardPbrFrameResources: {
@@ -1702,7 +1726,7 @@ export class GpuDrivenProduction {
       projectShadow: (graph, identity, forceCompute = false, cameraPyramid) => {
         if (!shadowViewPool.isActive(identity) || shadowViewPool.submission(identity) === undefined)
           return ok(undefined);
-        return shadowViewPool.project(graph, identity, forceCompute, cameraPyramid);
+        return shadowViewPool.project(graph, identity, forceCompute, cameraPyramid, true);
       },
       updateShadowViews: (views, ownedRequests) =>
         this.updateFrameShadowViews(frame, views, ownedRequests),
@@ -1811,6 +1835,7 @@ export class GpuDrivenProduction {
       lateOcclusion,
       undefined,
       target.rendererRecording ? () => this.liveRasterCache?.meshBindings.capture() : undefined,
+      rendererRecording ? 'combined' : 'separate',
     );
     if (!outputs.ok) return outputs;
     const accesses = this.rasterGraphAccesses(graph, outputs.value, frame.materialRaster);
@@ -2053,10 +2078,15 @@ export class GpuDrivenProduction {
       ),
       layoutProjection: recording ? mesh.layoutProjection : undefined,
       topology: recording ? batch.key.topology : undefined,
-      renderState: recording ? prepared.renderState : undefined,
+      renderState:
+        deformation === 'skin' || !isStandardPbrMaterialShader(artifact.material)
+          ? prepared.renderState
+          : clippingCapRenderState(prepared.renderState, frame.input.camera.clipping),
       standardTextureMask: recording ? prepared.standardTextureMask : undefined,
       preparationFactory: frame.input.materialPipelinePreparationFactory,
       visibleSurface: frame.input.visibleSurface !== undefined,
+      directionalShadowSimple: frame.input.directionalShadowSimple === true,
+      leanLighting: frame.input.leanLighting === true,
     };
   }
 
@@ -2077,16 +2107,17 @@ export class GpuDrivenProduction {
               filter,
               fragmentEntryPoint,
               coverageOnly = false,
+              sampleCount = projected.target.sampleCount,
+              seededDepth = false,
             ) =>
-              this.registerPipelinePreparation(
-                projected,
-                preparationJobs,
-                preparationFactory,
+              this.registerPipelinePreparation(projected, preparationJobs, preparationFactory, {
                 formats,
                 filter,
                 fragmentEntryPoint,
                 coverageOnly,
-              ),
+                sampleCount,
+                seededDepth,
+              }),
             preparePipelines: (entries = [], artifacts, onPending, materials) =>
               runPipelinePreparations(preparationJobs, entries, artifacts, onPending, materials),
           }
@@ -2122,6 +2153,7 @@ export class GpuDrivenProduction {
         fragmentEntryPoint,
         coverageOnly = false,
         phase = 'all',
+        seededDepth = false,
       ) =>
         this.encodeProjected(
           projected,
@@ -2133,6 +2165,7 @@ export class GpuDrivenProduction {
           fragmentEntryPoint,
           coverageOnly,
           phase,
+          seededDepth,
         ),
     };
   }
@@ -2142,12 +2175,24 @@ export class GpuDrivenProduction {
     projected: ProjectedRasterGraph,
     jobs: Map<string, PipelinePreparationJob>,
     factory: MaterialPipelineFactory,
-    formats: readonly TextureFormat[],
-    filter: RenderPipelineGpuDrivenFilter | undefined,
-    fragmentEntryPoint: string | undefined,
-    coverageOnly: boolean,
+    pass: {
+      readonly formats: readonly TextureFormat[];
+      readonly filter: RenderPipelineGpuDrivenFilter | undefined;
+      readonly fragmentEntryPoint: string | undefined;
+      readonly coverageOnly: boolean;
+      readonly sampleCount: 1 | 4;
+      readonly seededDepth: boolean;
+    },
   ): void {
-    const key = JSON.stringify([formats, filter, fragmentEntryPoint, coverageOnly]);
+    const { formats, filter, fragmentEntryPoint, coverageOnly, sampleCount, seededDepth } = pass;
+    const key = JSON.stringify([
+      formats,
+      filter,
+      fragmentEntryPoint,
+      coverageOnly,
+      sampleCount,
+      seededDepth,
+    ]);
     if (jobs.has(key)) return;
     // Classes may join a compiled stock graph; select pipelines from the
     // current live batches whenever that set is replaced.
@@ -2161,20 +2206,27 @@ export class GpuDrivenProduction {
         const batch = this.classFor(projected, live, filter, fragmentEntryPoint);
         if (batch !== undefined)
           selected.set(
-            selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly),
+            selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly, seededDepth),
             batch.artifact,
           );
       }
     };
     select();
-    const { frame, target } = projected;
+    const { frame } = projected;
     const ownedFormats = [...formats];
     const formatKey = ownedFormats.join(',');
     jobs.set(key, (entries, artifacts, onPending, materials) => {
       select();
       let ready = true;
       for (const [pipelineFor, artifact] of selected)
-        if (!pipelineFor(ownedFormats, formatKey, gpuLanePreparesAsynchronously(artifact)).ok) {
+        if (
+          !pipelineFor(
+            ownedFormats,
+            formatKey,
+            gpuLanePreparesAsynchronously(artifact),
+            sampleCount,
+          ).ok
+        ) {
           ready = false;
           onPending?.({
             code: 'scene-pipeline-preparation',
@@ -2190,11 +2242,12 @@ export class GpuDrivenProduction {
           resolve: frame.input.materialArtifactResolver,
           factory,
           formats: ownedFormats,
-          sampleCount: target.sampleCount,
+          sampleCount,
           shaderUvSetCount: frame.materialPipelineState.standardPbrShaderUvSetCount,
           filter,
           fragmentEntry: fragmentEntryPoint,
           coverageOnly,
+          seededDepth,
           visibleSurface: frame.input.visibleSurface !== undefined,
           viewClipping: frame.viewClippingLive,
           ...(onPending === undefined ? {} : { onPending }),
@@ -2221,6 +2274,7 @@ export class GpuDrivenProduction {
     fragmentEntryPoint: string | undefined,
     coverageOnly: boolean,
     phase: GpuDrivenDrawPhase,
+    seededDepth: boolean,
   ): void {
     const { target } = projected;
     const region = phase === 'late' ? requireLateRegion(projected) : undefined;
@@ -2234,20 +2288,25 @@ export class GpuDrivenProduction {
       descriptor === undefined
         ? undefined
         : this.rasterPasses.prepare(
-            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}`,
+            `${filter ?? ''}/${fragmentEntryPoint ?? ''}/${coverageOnly ? 1 : 0}/${phase}${seededDepth ? '/seeded' : ''}`,
             descriptor,
           );
     const bindings = new IndirectPassBindings(pass, viewBindGroup, descriptor, bundlePass);
     if (descriptor === undefined) pass.setBindGroup(0, viewBindGroup, [0, 0]);
     const colorFormats = frameResources.colorFormats ?? target.colorFormats;
+    const sampleCount = rasterSampleCount(
+      frameResources.bundleDescriptor?.sampleCount ?? target.sampleCount,
+    );
     const call: RasterEncodeCall = {
       resources,
       frameResources,
       filter,
       fragmentEntryPoint,
       coverageOnly,
+      seededDepth,
       phase,
       colorFormats,
+      sampleCount,
       // Stock recording owns the attachments for this encode. Raw callers
       // retain per-selected-batch format observations.
       formatKey: target.rendererRecording ? colorFormats.join(',') : undefined,
@@ -2281,7 +2340,14 @@ export class GpuDrivenProduction {
     viewBindGroup: BindGroup,
     bundlePass: PreparedRasterPass | undefined,
   ): RetainedEncode | undefined {
-    const { frameResources, fragmentEntryPoint, coverageOnly, colorFormats, formatKey } = call;
+    const {
+      frameResources,
+      fragmentEntryPoint,
+      coverageOnly,
+      seededDepth,
+      colorFormats,
+      formatKey,
+    } = call;
     if (
       !projected.target.rendererRecording ||
       bindings.direct ||
@@ -2320,8 +2386,13 @@ export class GpuDrivenProduction {
       (slot) => materialOwner(frameResources.prepareMaterialBinding(slot)),
       (cls) => {
         const batch = cls as ProjectedRasterClass;
-        const pipelineFor = selectRasterPipeline(batch, fragmentEntryPoint, coverageOnly);
-        const pipeline = pipelineFor(colorFormats, formatKey);
+        const pipelineFor = selectRasterPipeline(
+          batch,
+          fragmentEntryPoint,
+          coverageOnly,
+          seededDepth,
+        );
+        const pipeline = pipelineFor(colorFormats, formatKey, false, call.sampleCount);
         const mesh = this.resolveMeshGroup(projected, call, bindings, batch);
         return classOwner(pipeline, mesh);
       },
@@ -2356,6 +2427,8 @@ export class GpuDrivenProduction {
       if (reused !== undefined) {
         bindings.replayRun(reused, this.preparedBundleCounters);
         this.encodedIndirectDraws += reused.draws;
+        if (reused.bundle !== undefined && reused.draws > 0)
+          this.observeRetainedMaterialPipelineBindings(projected, call, reused);
       } else {
         bindings.recordRun(retained.runs.record(lives, start, end, retained.facts));
         for (let index = start; index < end; index++)
@@ -2448,10 +2521,11 @@ export class GpuDrivenProduction {
       batch,
       call.fragmentEntryPoint,
       call.coverageOnly,
-    )(call.colorFormats, call.formatKey);
+      call.seededDepth,
+    )(call.colorFormats, call.formatKey, false, call.sampleCount);
     if (!selectedPipeline.ok) throw selectedPipeline.error;
     bindings.bindPipeline(selectedPipeline.value);
-    bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot);
+    const material = bindMaterialSlot(bindings, batch, frameResources, globalMaterialSlot);
     const group2 = this.meshGroupFor(projected, call, bindings, batch);
     bindings.observeRunClass(batch, selectedPipeline.value, group2);
     bindings.bindMesh(group2, batch.deformation, frame.view);
@@ -2466,6 +2540,11 @@ export class GpuDrivenProduction {
     }
     const windows = visibleWindowsFor(live, batch, call);
     this.encodeLevels(projected, call, bindings, live, batch, windows);
+    frameResources.recordMaterialPipelineBinding?.(
+      globalMaterialSlot,
+      selectedPipeline.value,
+      material.group,
+    );
     bindings.recordBundle(
       live,
       windows,
@@ -2474,6 +2553,27 @@ export class GpuDrivenProduction {
       this.device,
       this.preparedBundleCounters,
     );
+  }
+
+  private observeRetainedMaterialPipelineBindings(
+    projected: ProjectedRasterGraph,
+    call: RasterEncodeCall,
+    reused: RetainedRasterBlock,
+  ): void {
+    for (const owner of reused.lives) {
+      const live = owner as LiveRasterBatch;
+      const batch = this.classFor(projected, live, call.filter, call.fragmentEntryPoint);
+      const slot = selectedMaterialSlot(live, call.frameResources);
+      if (batch === undefined || slot === undefined) continue;
+      const material = reused.materials.get(slot);
+      const rasterClass = reused.classes.get(batch);
+      if (material !== undefined && rasterClass !== undefined)
+        call.frameResources.recordMaterialPipelineBinding?.(
+          slot,
+          rasterClass.pipeline as RhiRenderPipeline,
+          material.group as BindGroup,
+        );
+    }
   }
 
   /**
@@ -2805,7 +2905,7 @@ export class GpuDrivenProduction {
     const input = restrictShadowCasterChannels(requested, this.shadowChannelSlots, pass);
     retained.push(input.identity);
     if (!shadowViewHasStaticLayer(input.identity)) return this.projectShadowView(pass, input);
-    const staticIdentity: ShadowViewIdentity = { ...input.identity, layer: 'static' };
+    const staticIdentity: ShadowViewIdentity = staticShadowViewIdentity(input.identity);
     const viewClasses = restrictShadowCasterClasses(classes, input.candidatePrimitiveIndices);
     const singleLayer = input.staticLayer === false;
     this.syncShadowLayerMode(pass.pool, input.identity, staticIdentity, singleLayer);
@@ -3091,6 +3191,8 @@ export class GpuDrivenProduction {
   ): boolean {
     if (!sameShadowProjectionLayout(previousSource.plan, plan)) return false;
     if (!this.shadowRowsRetained(pass, previousProjections, previousSource, plan)) return false;
+    // The same rows against the same execution table are each retained.
+    if (previousSource.plan === plan && previousSource.executions === pass.executions) return true;
     return plan.batches.every((batch, index) =>
       sameShadowExecution(batch, index, previousSource, previousProjections, pass.executions),
     );
@@ -3481,7 +3583,7 @@ export class GpuDrivenProduction {
       if (entry.layer !== undefined) continue;
       let total = 0;
       let claimed = 0;
-      for (const identity of [entry, { ...entry, layer: 'static' as const }])
+      for (const identity of [entry, staticShadowViewIdentity(entry)])
         for (const batch of this.shadowViews?.submission(identity)?.plan.batches ?? []) {
           total += batch.candidates.length;
           if (batch.visibleCapacity > 0) claimed += batch.candidates.length;

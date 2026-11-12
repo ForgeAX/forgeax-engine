@@ -87,7 +87,7 @@ function validInstanceCompute(value: unknown): boolean {
   if (
     !record(value) ||
     value.format !== 'forgeax-vfx-instance-compute-1' ||
-    value.jobBytes !== 336 ||
+    value.jobBytes !== 352 ||
     typeof value.wgsl !== 'string' ||
     value.wgsl.length === 0 ||
     !Array.isArray(value.bindings) ||

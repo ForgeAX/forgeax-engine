@@ -10,14 +10,20 @@
   },
   "packageManager": "pnpm@12.15.0",
   "overrides": {
-    "@hono/node-server": "^2.1.3",
+    "@hono/node-server": "2.1.3",
     "body-parser": "^2.4.0",
     "fast-uri": "^3.1.9",
+    "follow-redirects": "^1.16.2",
+    "glob": "^14.0.2",
+    "joi": "^18.3.1",
+    "minimatch": "^11.0.1",
     "qs": "^6.16.1",
     "zod": "^4.6.7"
   },
   "patchedDependencies": {
-    "@deepseek-ai/cordis@4.0.4": "patches/@deepseek-ai__cordis@4.0.4.patch"
+    "@actions/glob@0.7.0": "patches/@actions__glob@0.7.0.patch",
+    "@deepseek-ai/cordis@4.0.4": "patches/@deepseek-ai__cordis@4.0.4-native-service-read.patch",
+    "vitest@4.1.12": "patches/vitest@4.1.12.patch"
   },
   "workspaces": [
     "packages/*",
@@ -60,6 +66,9 @@
     "check:dependency-vulnerabilities": "node scripts/ci/check-dependency-vulnerabilities.mjs",
     "test:layout": "node scripts/check-test-layout.mjs",
     "check:package-runtime-dependencies": "node scripts/forgeax/check-package-runtime-dependencies.mjs",
+    "check:runtime-boundaries": "node scripts/forgeax/check-runtime-boundaries.mjs",
+    "check:runtime-boundaries:dist": "node scripts/forgeax/check-runtime-boundaries.mjs --dist",
+    "test:runtime-boundaries": "node --test scripts/forgeax/__tests__/runtime-boundaries.test.mjs",
     "test:package-runtime-dependencies": "node --test scripts/forgeax/__tests__/check-package-runtime-dependencies.test.mjs scripts/forgeax/__tests__/workspace-dependency-names.test.mjs",
     "check:package-directory-names": "node scripts/check-package-directory-names.mjs",
     "test": "node scripts/ci/run-vitest-unit.mjs",
@@ -144,7 +153,8 @@
     "sync": "node scripts/sync.mjs",
     "sync:check": "node scripts/check-workspaces-equivalence.mjs",
     "build:tools": "node tools/view-plugins/integration/build.mjs",
-    "test:view": "node scripts/ci/run-view-integration.mjs"
+    "test:view": "node scripts/ci/run-view-integration.mjs",
+    "test:modeling": "node scripts/ci/run-modeling-integration.mjs"
   },
   "devDependencies": {
     "@actions/glob": "0.7.0",

@@ -34,7 +34,7 @@ function captureOutput(
 }
 
 describe('independent vertex-color producers', () => {
-  it('keeps ForgeaX and Three r184 identities and captures separate', async () => {
+  it('keeps ForgeAX and Three r184 identities and captures separate', async () => {
     const forgeax = createVertexColorForgeaxProducer(
       async (_fixture, backend) => captureOutput(backend, 'engine-sha', 'copyTextureToBuffer'),
       'engine-sha',

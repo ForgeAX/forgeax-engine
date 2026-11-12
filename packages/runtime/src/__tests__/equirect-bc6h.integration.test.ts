@@ -25,7 +25,8 @@ import { AssetRegistry, createCatalogSource } from '@forgeax/engine-assets-runti
 import { equirectContribution } from '@forgeax/engine-image';
 import { createRuntimePackPublication } from '@forgeax/engine-pack/runtime';
 import type { EquirectAsset } from '@forgeax/engine-types';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { assert, beforeAll, describe, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { deriveRenderDataCubemap } from '../../../render/src/render-data';
 
 const gpu = globalThis.navigator?.gpu;
@@ -144,7 +145,8 @@ describe.skipIf(!hasGpu)('equirect renderable-source integration (feat-20260707 
     // Never a block-compressed format: an equirect drives cube RENDER passes and
     // BC6H is not color-renderable.
     expect(asset.format).toBe('rgba16float');
-    expect(asset.data).toEqual(binBytes);
+    assert(asset.data instanceof Uint8Array);
+    expect(equalBytes(asset.data, binBytes)).toBe(true);
   });
 
   it('deriveRenderDataCubemap accepts the rgba16float equirect (renderable cube source)', async () => {

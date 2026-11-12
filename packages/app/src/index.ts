@@ -182,6 +182,7 @@ export type {
   EngineWorkspacePreview,
   EngineWorkspacePreviewDisplay,
   EngineWorkspacePreviewDisplayOptions,
+  EngineWorkspacePreviewOverlay,
   EngineWorkspaceProject,
   EngineWorkspaceProjectHandle,
   EngineWorkspaceProjectSession,
@@ -292,8 +293,10 @@ export {
 export type {
   App,
   AppAssembleArgs,
+  AppHostAdapter,
   AppStepFrameOptions,
   AssembleAppError,
+  BrowserRemoteBridgeAdapter,
   BundlerOptions,
   CanvasAppError,
   CanvasDrawingBufferSize,

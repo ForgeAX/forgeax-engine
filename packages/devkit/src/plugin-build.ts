@@ -1,14 +1,23 @@
 /** Plugin compilation and runtime program preparation for custom project hosts. */
 
+export { loadProjectCookers, type ProjectCookers } from './build/cookers.js';
 export { executionWorkerEntries } from './build/execution-workers.js';
 export { preparePackProgramSource, prepareRuntimePackProgram } from './build/pack-program.js';
 export { discoverPluginAssets, publishedPluginInventory } from './build/plugin-assets.js';
 export { pluginProgramsBuild, pluginRuntimeProjection } from './build/plugin-programs.js';
 
+export type {
+  StartupUiOptions,
+  StartupUiScreen,
+  StartupUiState,
+  StartupUiTemplate,
+} from './host/startup-ui.js';
+
 import type { CreateAppOptions } from '@forgeax/engine-app';
 import type { ImporterRegistry } from '@forgeax/engine-import';
 import type { NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type { LoadProgressLabelInput } from '@forgeax/engine-types';
+import type { StartupUiOptions } from './host/startup-ui.js';
 
 /** Serializable project options sampled after the native build root starts. */
 export type DevKitAppOptions = Pick<
@@ -45,6 +54,8 @@ export type DevKitAppOptions = Pick<
    * and `lang`; apps reuse the same labels with `describeLoadProgress`.
    */
   readonly loadingLabels?: LoadProgressLabelInput;
+  /** Independently replace or disable the loading and failure presentation. */
+  readonly startupUi?: StartupUiOptions;
 };
 
 /**

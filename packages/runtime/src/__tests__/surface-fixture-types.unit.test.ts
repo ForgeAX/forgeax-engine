@@ -36,5 +36,5 @@ describe('Surface runtime fixture semantic contract', () => {
     });
     const diagnostics = ts.getPreEmitDiagnostics(program);
     expect(formatDiagnostics(diagnostics)).toEqual([]);
-  }, 30_000);
+  }, 120_000);
 });

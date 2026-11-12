@@ -11,12 +11,12 @@ import type { GpuDrivenBatch } from '../gpu-driven/batch-topology';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
 import { lodCoverageMayFade } from '../gpu-driven/production-raster-lod';
+import { requestMaterialAbiRasterPipeline } from '../gpu-driven/production-raster-material';
+import { GpuScene } from '../gpu-scene';
 import {
   effectiveStandardSurfaceDiscards,
-  requestMaterialAbiRasterPipeline,
   standardSurfaceDiscardMask,
-} from '../gpu-driven/production-raster-material';
-import { GpuScene } from '../gpu-scene';
+} from '../material-stage-constants';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import type { RenderPipelineFrame } from '../render-pipeline';
@@ -34,6 +34,8 @@ const DECLARING = createMaterialShaderProgram(
   '@id(64000) override standardTextureMask: u32 = 0u;\n' +
     '@id(64001) override standardSurfaceDiscards: u32 = 3u;',
 );
+
+const DECLARING_VARIANT_SET = 'LOD_DITHER=false+CLIPPING_PLANES=false';
 
 const rigid = (lod?: GpuDrivenBatch['lod'], material = 'forgeax::default-standard-pbr') =>
   ({
@@ -68,7 +70,11 @@ describe('GPU-driven Standard surface discard specialization', () => {
     const viewLayout = device.createBindGroupLayout({ entries: [] }).unwrap();
     const base = standardPbrInputs(device, shader, viewLayout).materialArtifact;
     if (base === undefined) throw new Error('missing fixture artifact');
-    const declaring: MaterialShaderArtifact = { ...base, program: DECLARING };
+    const declaring: MaterialShaderArtifact = {
+      ...base,
+      program: DECLARING,
+      variantSet: DECLARING_VARIANT_SET,
+    };
     expect(effectiveStandardSurfaceDiscards(base, 0)).toBeUndefined();
     expect(effectiveStandardSurfaceDiscards(declaring, 0)).toBe(0);
     expect(effectiveStandardSurfaceDiscards(declaring, undefined)).toBeUndefined();
@@ -107,7 +113,11 @@ describe('GPU-driven Standard surface discard specialization', () => {
     const state = fixture.materialPipelineState;
     if (base === undefined || state === undefined) throw new Error('missing fixture');
     // The legacy module is compiled from its producer artifact; declare the override there.
-    const artifact: MaterialShaderArtifact = { ...base, program: DECLARING };
+    const artifact: MaterialShaderArtifact = {
+      ...base,
+      program: DECLARING,
+      variantSet: DECLARING_VARIANT_SET,
+    };
     const pbrInputs = {
       materialArtifact: artifact,
       materialPipelineState: {
@@ -150,10 +160,12 @@ describe('GPU-driven Standard surface discard specialization', () => {
           }),
         )
         .unwrap();
+    // The request is resolved into compile-time axes; the transport key never
+    // reaches a pipeline descriptor.
     const discards = () =>
       new Set(
-        pipelines.mock.calls.map(
-          ([descriptor]) => descriptor.fragment?.constants?.[STANDARD_SURFACE_DISCARDS_OVERRIDE],
+        pipelines.mock.calls.map(([descriptor]) =>
+          Object.hasOwn(descriptor.fragment?.constants ?? {}, STANDARD_SURFACE_DISCARDS_OVERRIDE),
         ),
       );
     try {
@@ -174,9 +186,11 @@ describe('GPU-driven Standard surface discard specialization', () => {
       plain?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
       // Each prepared frame is submitted before the next one is prepared.
       plain?._commitResourceReplacement();
-      expect(discards()).toEqual(new Set([0, 1]));
+      expect(discards()).toEqual(new Set([false]));
       for (const [descriptor] of pipelines.mock.calls)
-        expect(descriptor.vertex.constants).not.toHaveProperty(STANDARD_SURFACE_DISCARDS_OVERRIDE);
+        expect(descriptor.vertex.constants ?? {}).not.toHaveProperty(
+          STANDARD_SURFACE_DISCARDS_OVERRIDE,
+        );
       const repeated = prepare(camera);
       expect(repeated?.topologySignature()).toBe(plain?.topologySignature());
       repeated?._commitResourceReplacement();
@@ -189,7 +203,9 @@ describe('GPU-driven Standard surface discard specialization', () => {
       );
       clip?.project(new RenderGraphBuilder<RenderPipelineFrame>(), 'rgba8unorm', 1).unwrap();
       clip?._commitResourceReplacement();
-      expect(discards()).toEqual(new Set([2, 3]));
+      // The fixed legacy module is the discard-free program and carries no
+      // discard constant, so the clipped view reuses its cached pipeline.
+      expect(pipelines).not.toHaveBeenCalled();
 
       pipelines.mockClear();
       const restored = prepare(camera);

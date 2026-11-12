@@ -10,6 +10,11 @@ import { ok, type Result } from '@forgeax/engine-types';
 import { PointShadowAtlasUninitializedError } from './errors/render';
 import type { RenderFeatureShadowDraws } from './features/render-graph-raster';
 import {
+  captureShadowViewIdentity,
+  directionalShadowViewIdentity,
+  staticShadowViewIdentity,
+} from './gpu-driven/shadow-view-identity';
+import {
   type ShadowDirtyRect,
   type ShadowViewIdentity,
   type ShadowViewProjection,
@@ -25,6 +30,7 @@ type ProjectGpuDrivenShadow = (
   cameraPyramid?: GraphTextureView,
 ) => Result<ShadowViewProjection | undefined, RenderGraphError>;
 
+import { renderAblation } from './diagnostics/render-ablation';
 import {
   GPU_TEXTURE_USAGE_COPY_DST,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT_AND_TEXTURE_BINDING,
@@ -60,12 +66,12 @@ function shadowViewCacheMiss(
   const context = frame as _InternalRenderPipelineContext;
   const gpuShadowViews = context.gpuDrivenShadowViews;
   if (identity.terrainReceiver !== undefined) {
-    const logical = { kind: 'directional' as const, index: identity.index };
+    const logical = directionalShadowViewIdentity(identity.index);
     const final = gpuShadowViews?.invalidationReason(logical);
     if (final !== undefined) return final;
     // An active final view without a static view belongs to a light that
     // disabled its static cache; the final view alone decides.
-    const staticReason = gpuShadowViews?.invalidationReason({ ...logical, layer: 'static' });
+    const staticReason = gpuShadowViews?.invalidationReason(staticShadowViewIdentity(logical));
     return (
       (staticReason === 'uncached' ? undefined : staticReason) ?? context.directionalShadowCacheMiss
     );
@@ -148,6 +154,15 @@ interface RetainedShadowTarget {
   readonly retained: () => boolean;
   /** Records that the staged frame rasters the target. */
   readonly rastered: () => void;
+  /** Records that the staged frame leaves the target behind its view. */
+  readonly discard?: () => void;
+  /** Why an empty target holds no depth when no graph compile emptied it. */
+  readonly emptyReason?: () => ShadowViewInvalidationReason | undefined;
+}
+
+/** A static layer that rebuilds from a cleared target forces its final layer to recompose. */
+function staticLayerEmptied(reason: ShadowViewInvalidationReason | undefined): boolean {
+  return reason === 'graph-compiled' || reason === 'merged-static-layer';
 }
 
 /**
@@ -160,6 +175,22 @@ interface RetainedShadowTarget {
  * shadow raster ledger; `identity === undefined` marks the empty spot target,
  * which is no view.
  */
+/**
+ * Whether this point / spot view belongs to a light that emits zero radiance
+ * this frame. Its atlas layer stays held, so no other light's layer, map size
+ * or allocation order moves when it toggles.
+ */
+function shadowLightIsDark(
+  context: _InternalRenderPipelineContext,
+  identity: ShadowViewIdentity,
+): boolean {
+  const dark = context.frameState.darkShadowViews;
+  if (dark === undefined) return false;
+  if (identity.kind === 'point') return dark.point.size > 0 && dark.point.has(identity.index);
+  if (identity.kind === 'spot') return dark.spot.size > 0 && dark.spot.has(identity.index);
+  return false;
+}
+
 function shadowViewRaster(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   identity: ShadowViewIdentity | undefined,
@@ -170,11 +201,25 @@ function shadowViewRaster(
   let slot = -1;
   let decided: ShadowViewInvalidationReason | undefined;
   let dirtyRects: readonly ShadowDirtyRect[] | undefined;
+  // Set while this view's light emits nothing: its casters were not rastered
+  // and its pool culling was not prepared, so the retained depth is stale.
+  let skippedDark = false;
+  const isEmpty = (): boolean => (target === undefined ? graphCompiled : !target.retained());
   const reasonFor = (
     frame: RenderPipelineFrame,
     follow?: ShadowViewInvalidationReason,
   ): ShadowViewInvalidationReason | undefined => {
-    const empty = target === undefined ? graphCompiled : !target.retained();
+    const context = frame as _InternalRenderPipelineContext;
+    if (identity !== undefined && shadowLightIsDark(context, identity)) return undefined;
+    // A light that lights again re-rasters its whole view before sampling it.
+    if (skippedDark && !isEmpty()) return 'source-changed';
+    return litReasonFor(frame, follow);
+  };
+  const litReasonFor = (
+    frame: RenderPipelineFrame,
+    follow?: ShadowViewInvalidationReason,
+  ): ShadowViewInvalidationReason | undefined => {
+    const empty = isEmpty();
     const context = frame as _InternalRenderPipelineContext;
     const policy = identity === undefined ? undefined : context.shadowUpdatePolicy?.(identity);
     if (
@@ -190,7 +235,8 @@ function shadowViewRaster(
     }
     // Automatic maps must observe graph membership changes, including a
     // feature that has stopped drawing shadows. Frozen maps retain their data.
-    return empty || (graphCompiled && identity?.layer !== 'static')
+    if (empty) return target?.emptyReason?.() ?? 'graph-compiled';
+    return graphCompiled && identity?.layer !== 'static'
       ? 'graph-compiled'
       : identity === undefined
         ? undefined
@@ -205,17 +251,30 @@ function shadowViewRaster(
     dirtyRects: () => dirtyRects,
     reason: () => decided,
     executeIf: (frame, follow) => {
+      const context = frame as _InternalRenderPipelineContext;
+      if (identity !== undefined && shadowLightIsDark(context, identity)) {
+        // A dark light's map is never sampled with weight: skip its casters
+        // and keep it out of the raster ledger, like UE's black-light cull.
+        skippedDark = true;
+        decided = undefined;
+        dirtyRects = undefined;
+        slot = -1;
+        return false;
+      }
       const reason = reasonFor(frame, follow);
+      const relit = skippedDark && reason !== undefined;
+      skippedDark = false;
       graphCompiled = false;
       decided = reason;
       if (reason !== undefined) target?.rastered();
-      const context = frame as _InternalRenderPipelineContext;
-      // A fresh graph target holds no retained depth to redraw over.
+      // A fresh graph target holds no retained depth to redraw over, and a
+      // relit view missed every change made while it was dark.
       dirtyRects =
         identity === undefined ||
         identity.terrainReceiver !== undefined ||
         reason === undefined ||
-        reason === 'graph-compiled'
+        reason === 'graph-compiled' ||
+        relit
           ? undefined
           : context.gpuDrivenShadowViews?.dirtyRects(identity);
       slot =
@@ -354,8 +413,11 @@ function recordShadowPass(
       depthClearValue: 0,
     },
     executeIf: raster.executeIf,
-    encode: ({ pass, frame, resources }) =>
-      raster.encode(frame, pass, (counted) => encode(counted, frame, resources), name),
+    encodeDirect: (pass, frame, resources) => {
+      // Diagnostic ablation: keep the pass and its clear, drop the casters.
+      if (renderAblation()?.shadowRaster === false) return;
+      raster.encode(frame, pass, (counted) => encode(counted, frame, resources), name);
+    },
   });
 }
 
@@ -372,7 +434,22 @@ function projectionAccesses(
  * static array layer only when that layer misses. Whenever the final layer
  * rasters, it first copies the static layer and then loads it to add dynamic,
  * residual, and feature casters.
+ *
+ * When the light's view itself changed this frame the static layer cannot be
+ * reused, so rebuilding it only to copy it out costs a raster pass, a layer
+ * copy and its bandwidth for nothing. The final layer then clears and encodes
+ * static and dynamic casters in one pass, and the static layer is discarded
+ * so the first frame whose view holds still rebuilds it and the split resumes.
+ * `singlePass` is false when another target copies the static layer.
  */
+/**
+ * Frames a merged static view keeps rastering in one pass after its light
+ * stops moving before it rebuilds the cached static layer. Mirrors UE's
+ * ComputeWholeSceneShadowCacheModes (ShadowSetup.cpp), which renders a light
+ * that moved recently uncached rather than refreshing its static cache.
+ */
+export const MERGED_STATIC_HYSTERESIS_FRAMES = 8;
+
 function recordStaticLayeredShadowPass(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   projectGpuDrivenShadow: ProjectGpuDrivenShadow,
@@ -385,15 +462,12 @@ function recordStaticLayeredShadowPass(
   layer: number,
   size: number,
   raster: ShadowViewRaster,
-  encode: (
-    pass: RhiRenderPassEncoder,
-    frame: RenderPipelineFrame,
-    resources: GraphResourceResolver,
-  ) => void,
+  encode: ShadowPassEncoder,
   extraAccesses: readonly GraphAccess[],
   reuseAdjacentShadow = false,
+  singlePass = true,
 ): Result<ShadowViewRaster, RenderGraphError> {
-  const staticIdentity: ShadowViewIdentity = Object.freeze({ ...identity, layer: 'static' });
+  const staticIdentity: ShadowViewIdentity = Object.freeze(staticShadowViewIdentity(identity));
   const staticProjection = projectGpuDrivenShadow(staticIdentity);
   if (!staticProjection.ok) return staticProjection;
   const staticLayer = shadowLayerTarget(
@@ -404,21 +478,24 @@ function recordStaticLayeredShadowPass(
     staticLayers === undefined ? undefined : () => staticLayers.view(staticLabel, layer),
   );
   if (!staticLayer.ok) return staticLayer;
-  const staticRaster = shadowViewRaster(
-    graph,
-    staticIdentity,
-    undefined,
-    retainedShadowLayer(staticLayers, staticLabel, layer),
-  );
+  const staticTarget = skippableStaticLayer(retainedShadowLayer(staticLayers, staticLabel, layer));
+  const staticRaster = shadowViewRaster(graph, staticIdentity, undefined, staticTarget);
   registerShadowPreparation(
     graph,
     identity,
     (frame) =>
       raster.reasonFor(
         frame,
-        staticRaster.reasonFor(frame) === 'graph-compiled' ? 'static-layer-changed' : undefined,
+        staticLayerEmptied(staticRaster.reasonFor(frame)) ? 'static-layer-changed' : undefined,
       ) !== undefined,
   );
+  const encodeStatic: ShadowPassEncoder = (pass, frame) =>
+    encodeStaticShadowPass(frame as never, pass, identity, undefined, reuseAdjacentShadow);
+  const staticAccesses = projectionAccesses(staticProjection);
+  let merged = false;
+  // Frames since the pool last reported this view moving; a light that pauses
+  // briefly keeps merging instead of rebuilding the layer it just discarded.
+  let sinceMoved = MERGED_STATIC_HYSTERESIS_FRAMES;
   // A pool-proven content miss re-rasters only its dirty regions over the
   // retained layer; any other miss clears it.
   const staticAdded = recordShadowPass(
@@ -426,13 +503,28 @@ function recordStaticLayeredShadowPass(
     `${name}.static`,
     staticLayer.value,
     {
-      executeIf: (frame) =>
-        staticRaster.executeIf(frame) && staticRaster.dirtyRects() === undefined,
+      executeIf: (frame) => {
+        const rebuild = staticRaster.executeIf(frame) && staticRaster.dirtyRects() === undefined;
+        // The pool's view verdict, not the layer's: a layer this path skipped
+        // last frame reports no depth, yet a still-moving view stays merged.
+        const moving =
+          shadowViewCacheMiss(frame, staticIdentity) === 'view-changed' &&
+          raster.reasonFor(frame) !== undefined;
+        sinceMoved = moving ? 0 : Math.min(sinceMoved + 1, MERGED_STATIC_HYSTERESIS_FRAMES);
+        // Within the window a view merged last frame stays merged: its
+        // stale depth would otherwise force a static rebuild, a copy and the
+        // final raster on the first frame the light holds still.
+        merged =
+          singlePass &&
+          rebuild &&
+          (moving || (merged && sinceMoved < MERGED_STATIC_HYSTERESIS_FRAMES));
+        if (merged) staticTarget.discard();
+        return rebuild && !merged;
+      },
       encode: staticRaster.encode,
     },
-    (pass, frame) =>
-      encodeStaticShadowPass(frame as never, pass, identity, undefined, reuseAdjacentShadow),
-    projectionAccesses(staticProjection),
+    encodeStatic,
+    staticAccesses,
   );
   if (!staticAdded.ok) return staticAdded;
   const partialAdded = recordShadowPass(
@@ -451,7 +543,7 @@ function recordStaticLayeredShadowPass(
         },
         reuseAdjacentShadow,
       ),
-    projectionAccesses(staticProjection),
+    staticAccesses,
     'load',
   );
   if (!partialAdded.ok) return partialAdded;
@@ -466,11 +558,11 @@ function recordStaticLayeredShadowPass(
     executeIf: (frame) => {
       rasterFinal = raster.executeIf(
         frame,
-        staticRaster.reason() === 'graph-compiled' ? 'static-layer-changed' : undefined,
+        staticLayerEmptied(staticRaster.reason()) ? 'static-layer-changed' : undefined,
       );
-      return rasterFinal;
+      return rasterFinal && !merged;
     },
-    encode: ({ encoder, resources }) => {
+    encodeDirect: (encoder, _graphframe, resources) => {
       const source = resources.texture(staticArray.texture);
       if (!source.ok) throw source.error;
       const destination = resources.texture(target.texture);
@@ -483,11 +575,29 @@ function recordStaticLayeredShadowPass(
     },
   });
   if (!copied.ok) return copied;
+  const single = recordShadowPass(
+    graph,
+    `${name}.single`,
+    target,
+    // Each view's ledger slot counts its own casters in the shared pass.
+    { executeIf: () => rasterFinal && merged, encode: (_frame, pass, both) => both(pass) },
+    (pass, frame, resources) => {
+      staticRaster.encode(
+        frame,
+        pass,
+        (counted) => encodeStatic(counted, frame, resources),
+        `${name}.static`,
+      );
+      raster.encode(frame, pass, (counted) => encode(counted, frame, resources), name);
+    },
+    [...staticAccesses, ...extraAccesses],
+  );
+  if (!single.ok) return single;
   const recorded = recordShadowPass(
     graph,
     name,
     target,
-    { executeIf: () => rasterFinal, encode: raster.encode },
+    { executeIf: () => rasterFinal && !merged, encode: raster.encode },
     encode,
     extraAccesses,
     'load',
@@ -531,7 +641,33 @@ function retainedShadowLayer(
   return {
     retained: () => layers.retained(label, layer),
     rastered: () => layers.rastered(label, layer),
+    discard: () => layers.discard(label, layer),
   };
+}
+
+/**
+ * A static layer that can be skipped for a frame. Once skipped it reports no
+ * retained depth, so the next decision rebuilds it from a cleared target even
+ * when the view pool proves a hit; a graph-owned layer starts that way.
+ */
+function skippableStaticLayer(inner: RetainedShadowTarget | undefined) {
+  let stale = inner === undefined;
+  // Set while the merged single pass, not a graph compile, left the layer empty.
+  let skipped = false;
+  return {
+    retained: () => !stale && (inner?.retained() ?? true),
+    rastered: () => {
+      stale = false;
+      skipped = false;
+      inner?.rastered();
+    },
+    discard: () => {
+      stale = true;
+      skipped = true;
+      inner?.discard?.();
+    },
+    emptyReason: () => (skipped ? 'merged-static-layer' : undefined),
+  } satisfies RetainedShadowTarget;
 }
 
 function featureShadowEncoder(
@@ -576,9 +712,10 @@ function addDirectionalCascadePass(
   cascade: number,
   variance: VarianceShadowView[],
   varianceDirectional: boolean,
+  staticLayerShared: boolean,
 ): Result<DirectionalCascadeWork, RenderGraphError> {
   const { projectGpuDrivenShadow, shadowFeatures, reuseAdjacentShadow } = options;
-  const identity = Object.freeze({ kind: 'directional' as const, index: cascade });
+  const identity = directionalShadowViewIdentity(cascade);
   const shadowProjection = projectGpuDrivenShadow?.(identity, options.cameraPyramid);
   if (shadowProjection !== undefined && !shadowProjection.ok) return shadowProjection;
   const layer = shadowLayerTarget(
@@ -629,6 +766,8 @@ function addDirectionalCascadePass(
           encode,
           accesses,
           reuseAdjacentShadow,
+          // Terrain receiver families copy this static layer.
+          !staticLayerShared,
         )
       : recordShadowPass(graph, `shadowCascade${cascade}`, layer.value, raster, encode, accesses);
   if (!added.ok) return added;
@@ -691,7 +830,7 @@ function addTerrainReceiverCascadePass(
       rasterFinal = raster.executeIf(frame, staticChanged ? 'static-layer-changed' : undefined);
       return rasterFinal;
     },
-    encode: ({ encoder, resources }) => {
+    encodeDirect: (encoder, _graphframe, resources) => {
       const source = resources.texture(directionalStatic.texture);
       if (!source.ok) throw source.error;
       const target = resources.texture(directionalTarget.texture);
@@ -721,7 +860,7 @@ function addDirectionalShadowObservation(
 ): Result<void, RenderGraphError> {
   return graph.addCopyPass('directional-shadow-observation', {
     accesses: [{ resource: directionalTarget.view, usage: 'copy-src' }],
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       const internal = frame as _InternalRenderPipelineContext;
       const texture = resources.texture(directionalTarget.texture);
       if (!texture.ok) throw texture.error;
@@ -769,6 +908,7 @@ function addDirectionalShadowPasses(
       cascade,
       variance,
       varianceDirectional,
+      terrainReceivers.length > 0,
     );
     if (!added.ok) return added;
     cascadeWork.push(added.value);
@@ -835,7 +975,7 @@ function addPointShadowFacePass(
     face,
   });
   if (shadowProjection !== undefined && !shadowProjection.ok) return shadowProjection;
-  const identity = Object.freeze({ kind: 'point' as const, index: pointIndex, face });
+  const identity = captureShadowViewIdentity({ kind: 'point', index: pointIndex, face });
   const faceView = graph.view(atlas, {
     label: `point-shadow-${pointIndex}-${face}`,
     dimension: '2d',
@@ -939,7 +1079,7 @@ function addSpotShadowPass(
   variance: VarianceShadowView[],
 ): Result<void | ShadowViewRaster, RenderGraphError> {
   const { projectGpuDrivenShadow, shadowFeatures, reuseAdjacentShadow } = options;
-  const identity = Object.freeze({ kind: 'spot' as const, index: spotIndex });
+  const identity = captureShadowViewIdentity({ kind: 'spot', index: spotIndex });
   const shadowProjection = projectGpuDrivenShadow?.(identity, options.cameraPyramid);
   if (shadowProjection !== undefined && !shadowProjection.ok) return shadowProjection;
   const layer = shadowLayerTarget(graph, spot, `spot-shadow-layer-${spotIndex}`, spotIndex);

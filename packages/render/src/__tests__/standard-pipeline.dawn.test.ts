@@ -4,6 +4,7 @@ import type { RhiDevice } from '@forgeax/engine-rhi';
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { producerKeepsLight } from '../cluster-binner';
 import { createRenderSurfaceError } from '../errors/render';
 import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import {
@@ -15,16 +16,25 @@ import {
 } from '../gpu-usage';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { STANDARD_CLUSTER_MEMBERSHIP_WGSL, standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
+import { pipelineBuildOf } from '../record/typed-frame-graph';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import {
+  packTestClusterUniform,
+  selectTestStandardClusterTransport as selectStandardClusterTransport,
+} from './cluster-test-abi';
 
 function topology(device: RhiDevice): RenderPipelineTopology {
   return {
     pipelineId: STANDARD_PIPELINE_ID,
-    standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'deferred', lightCount: 256 },
-    config: { ssao: { enabled: true } },
+    standardProfile: {
+      ...DEFAULT_STANDARD_PROFILE,
+      renderPath: 'deferred',
+      lightCount: 256,
+      ssao: { algorithm: 'gtao' },
+    },
+    config: { ssao: { enabled: true, algorithm: 'gtao' } },
     surface: {
       width: 1,
       height: 1,
@@ -48,6 +58,7 @@ function topology(device: RhiDevice): RenderPipelineTopology {
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'deferred', lateOcclusion: true },
   };
 }
 
@@ -102,7 +113,12 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       })
     ).unwrap();
     const graph = new RenderGraphBuilder<RenderPipelineFrame>();
-    const built = standardPipeline.build(
+    const build = pipelineBuildOf(
+      { build: standardPipeline.build } as Parameters<typeof pipelineBuildOf>[0],
+      true,
+      'compute',
+    );
+    const built = build(
       {
         graph,
         standardLighting: clusteredStandardLighting(),
@@ -116,11 +132,14 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     const compiled = graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
     expect(compiled.ok).toBe(true);
     if (compiled.ok) {
-      expect(compiled.value.inspect().passes.map((pass) => pass.kind)).toContain('compute');
+      const passes = compiled.value.inspect().passes;
+      expect(passes.map((pass) => pass.kind)).toContain('compute');
+      expect(passes.map((pass) => pass.name)).toContain('gtao-calc-compute');
+      expect(passes.map((pass) => pass.name)).not.toContain('ssao-calc');
     }
   });
 
-  it('reads back GPU membership and proves equality with the Prepared canonical list', async () => {
+  it('reads back GPU membership and proves equality with the exact CPU mirror of the Prepared list', async () => {
     const adapter = (await rhi.requestAdapter()).unwrap();
     const device: RhiDevice = (await adapter.requestDevice()).unwrap();
     const frame = {
@@ -152,7 +171,7 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     const bindGroupLayout = device.createBindGroupLayout({
       label: 'standard-cluster-membership-readback-bgl',
       entries: [
-        { binding: 0, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 0, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'storage' } },
         { binding: 1, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'storage' } },
         { binding: 2, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPU_SHADER_STAGE_COMPUTE, buffer: { type: 'read-only-storage' } },
@@ -177,7 +196,7 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     const clusterGridBuffer = device.createBuffer({
       label: 'standard-cluster-readback-grid',
       size: layout.clusterGridU32Length * 4,
-      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
+      usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST | GPU_BUFFER_USAGE_COPY_SRC,
     });
     const lightIndexBuffer = device.createBuffer({
       label: 'standard-cluster-readback-list',
@@ -189,12 +208,21 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       size: lightBounds.byteLength,
       usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_DST,
     });
+    const uniformData = new Uint8Array(
+      packTestClusterUniform({
+        grid: layout.grid,
+        near: frame.near,
+        far: frame.far,
+        ssaoIntensity: 0,
+        lightCount: frame.local.length,
+      }),
+    );
     const uniformBuffer = device.createBuffer({
       label: 'standard-cluster-readback-uniform',
-      size: 32,
+      size: uniformData.byteLength,
       usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
     });
-    const readbackSize = Math.max(4, membershipEntryCount * 4);
+    const readbackSize = Math.max(4, membershipEntryCount * 4) + layout.clusterGridU32Length * 4;
     const readbackBuffer = device.createBuffer({
       label: 'standard-cluster-membership-readback-copy',
       size: readbackSize,
@@ -216,19 +244,6 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     )
       return;
 
-    const uniformData = new ArrayBuffer(32);
-    new Uint32Array(uniformData, 0, 4).set([
-      layout.grid.x,
-      layout.grid.y,
-      layout.grid.z,
-      frame.local.length,
-    ]);
-    new Float32Array(uniformData, 16, 4).set([
-      frame.near,
-      frame.far,
-      Math.log(frame.far / frame.near),
-      0,
-    ]);
     expect(device.queue.writeBuffer(clusterGridBuffer.value, 0, clusterGrid)).toMatchObject({
       ok: true,
     });
@@ -263,7 +278,14 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
       0,
       readbackBuffer.value,
       0,
-      readbackSize,
+      Math.max(4, membershipEntryCount * 4),
+    );
+    encoder.value.copyBufferToBuffer(
+      clusterGridBuffer.value,
+      0,
+      readbackBuffer.value,
+      Math.max(4, membershipEntryCount * 4),
+      layout.clusterGridU32Length * 4,
     );
     const finished = encoder.value.finish();
     expect(finished.ok).toBe(true);
@@ -276,8 +298,54 @@ describe('forgeax::standard graph on a real WebGPU device', () => {
     const range = mapped.value.getMappedRange();
     expect(range.ok).toBe(true);
     if (!range.ok) return;
+    const listBytes = Math.max(4, membershipEntryCount * 4);
     const gpuList = new Uint32Array(range.value.slice(0, membershipEntryCount * 4));
-    expect(Array.from(gpuList)).toEqual(Array.from(lightIndexList.slice(0, membershipEntryCount)));
+    const gpuGrid = new Uint32Array(
+      range.value.slice(listBytes, listBytes + layout.clusterGridU32Length * 4),
+    );
+    expectMirroredMembership(
+      layout,
+      clusterGrid,
+      lightIndexList,
+      lightBounds,
+      gpuGrid,
+      gpuList,
+      frame,
+    );
     mapped.value.unmap();
   }, 30_000);
 });
+
+interface MirrorLayout {
+  readonly grid: { readonly x: number; readonly y: number; readonly z: number };
+  readonly clusterCount: number;
+  readonly clusterGridStrideU32: number;
+  readonly clusterGridCountWordOffsetU32: number;
+}
+
+/** Each GPU cell list must equal the CPU box list filtered by the exact producer mirror. */
+function expectMirroredMembership(
+  layout: MirrorLayout,
+  clusterGrid: Uint32Array,
+  lightIndexList: Uint32Array,
+  lightBounds: Int32Array,
+  gpuGrid: Uint32Array,
+  gpuList: Uint32Array,
+  frame: { readonly near: number; readonly far: number },
+): void {
+  const stride = layout.clusterGridStrideU32;
+  const countWord = layout.clusterGridCountWordOffsetU32;
+  for (let cell = 0; cell < layout.clusterCount; cell++) {
+    const offset = clusterGrid[cell * stride] ?? 0;
+    const boxCount = clusterGrid[cell * stride + countWord] ?? 0;
+    const cx = cell % layout.grid.x;
+    const cy = Math.floor(cell / layout.grid.x) % layout.grid.y;
+    const cz = Math.floor(cell / (layout.grid.x * layout.grid.y));
+    const expected = Array.from(lightIndexList.slice(offset, offset + boxCount)).filter((light) =>
+      producerKeepsLight(lightBounds, light, cx, cy, cz, layout.grid, frame.near, frame.far),
+    );
+    expect(gpuGrid[cell * stride]).toBe(offset);
+    expect(gpuGrid[cell * stride + countWord]).toBe(expected.length);
+    expect(Array.from(gpuList.slice(offset, offset + expected.length))).toEqual(expected);
+  }
+}

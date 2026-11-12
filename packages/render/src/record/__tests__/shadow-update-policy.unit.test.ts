@@ -5,7 +5,7 @@ import { createShadowUpdatePolicy, shadowUpdatePolicy } from '../shadow-update-p
 
 describe('recording-owned shadow policies', () => {
   it('shares directional policies across cascades and layers, and observes the next recording', () => {
-    const config = { shadowRevision: 1, shadowRadius: 2 };
+    const config = { shadowRevision: 1, shadowRadius: 2, shadowBiasMode: 0 };
     const lights = {
       directional: { entity: 7, worldId: 0 },
       directionalCsmConfig: config,
@@ -18,9 +18,13 @@ describe('recording-owned shadow policies', () => {
     const first = read(identity);
     expect(first).toEqual(shadowUpdatePolicy(identity, lights, worlds, 1024, 512, undefined));
     expect(read({ kind: 'directional', index: 3, layer: 'static' })).toBe(first);
+    expect(first?.constantBias).toBe(false);
     config.shadowRevision = 2;
+    config.shadowBiasMode = 1;
     const next = createShadowUpdatePolicy(lights, worlds, 2048, 512, () => undefined)(identity);
     expect(next?.revision.revision).toBe(2);
+    expect(next?.constantBias).toBe(true);
+    expect(first?.constantBias).toBe(false);
     expect(next?.viewport).toEqual([2048, 2048]);
     expect(first?.revision.revision).toBe(1);
   });

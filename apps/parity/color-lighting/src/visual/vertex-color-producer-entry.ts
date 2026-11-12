@@ -133,7 +133,7 @@ export async function runVertexColorProducerEntry(
       if (forgeaxBundler === undefined) {
         throw new Error(JSON.stringify({
           code: 'producer-entry-missing',
-          detail: 'ForgeaX bundler options were not injected into the capture entry',
+          detail: 'ForgeAX bundler options were not injected into the capture entry',
           recovery: 'run a producer entry with an injected shader manifest (Browser adapter or Dawn data URL)',
         }));
       }

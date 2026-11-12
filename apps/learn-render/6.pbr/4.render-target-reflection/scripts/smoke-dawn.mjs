@@ -456,8 +456,11 @@ if (!started.ok) {
   process.exit(1);
 }
 let frames = 0;
+let cubeFaceSubmissions = 0;
 const reflectionPassNames = new Set();
-for (; frames < MIN_FRAMES; frames += 1) {
+const readyDeadline = Date.now() + 60_000;
+while (frames < MIN_FRAMES) {
+  if (Date.now() >= readyDeadline) throw new Error('cube reflection did not complete its ready-frame budget');
   const item = rafQueue.shift();
   if (item === undefined) break;
   now += 16.67;
@@ -465,8 +468,28 @@ for (; frames < MIN_FRAMES; frames += 1) {
   item.callback(now);
   if (latestDrawReceipt === undefined) throw new Error('smoke frame did not submit a draw');
   (await latestDrawReceipt.completed).unwrap();
-  if (REFLECTION_EVIDENCE) {
-    for (const passName of renderer.inspect().perFramePassNames) reflectionPassNames.add(passName);
+  // Completed preparation barriers do not prove a captured cube exists yet.
+  if (latestDrawReceipt.presentation === 'ready') frames += 1;
+  for (const passName of renderer.inspect().perFramePassNames) {
+    if (passName.startsWith('cube-capture-face.')) cubeFaceSubmissions++;
+    if (REFLECTION_EVIDENCE) reflectionPassNames.add(passName);
+  }
+  await delay(0);
+}
+// Main-camera readiness does not imply that all progressive cube views have
+// submitted. Keep the readback tickets outside that preparation window.
+const cubeDeadline = Date.now() + 15_000;
+while (cubeFaceSubmissions < CUBE_CAMERA_FACE_ORDER.length) {
+  if (Date.now() >= cubeDeadline) throw new Error(`cube capture incomplete: ${cubeFaceSubmissions}/6 faces`);
+  world.update(1 / 60).unwrap();
+  await drawReadyFrame(renderer, {
+    leases: [attached.value],
+    camera: { lease: attached.value },
+    environment: { lease: attached.value },
+  });
+  for (const passName of renderer.inspect().perFramePassNames) {
+    if (passName.startsWith('cube-capture-face.')) cubeFaceSubmissions++;
+    if (REFLECTION_EVIDENCE) reflectionPassNames.add(passName);
   }
   await delay(0);
 }

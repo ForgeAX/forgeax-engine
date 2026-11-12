@@ -26,7 +26,7 @@ async function setup(compute = true) {
   const scoped = compute
     ? device
     : (Object.create(device, {
-        caps: { get: () => ({ ...caps, compute: false }) },
+        caps: { get: () => ({ ...caps, compute: false, storageBuffer: false }) },
       }) as RhiDevice);
   const box = createBoxGeometry(1, 1, 1).unwrap();
   const positions = box.attributes.position as Float32Array;
@@ -150,6 +150,51 @@ describe('MorphGeometry', () => {
     }
     store.dispose(input.reportError);
     writes.mockRestore();
+  });
+
+  it('deforms normal and tangent deltas without requiring a storage buffer on the CPU lane', async () => {
+    const { input, mesh, base, morph, vertexCount } = await setup(false);
+    const target: MeshAsset = {
+      ...mesh,
+      morphTargets: [
+        {
+          normal: Float32Array.from({ length: vertexCount * 3 }, (_, i) => (i % 3 === 0 ? 0.4 : 0)),
+          tangent: Float32Array.from({ length: vertexCount * 4 }, (_, i) =>
+            i % 4 === 1 ? 0.6 : 0,
+          ),
+        },
+      ],
+    };
+    const writes = vi.spyOn(input.device.queue, 'writeBuffer');
+    const allocations = vi.spyOn(input.device, 'createBuffer');
+    const store = new MorphGeometry();
+    const handles = store.resolve(input, 1, base, morph(0.5), () => target);
+    expect(handles).toBeDefined();
+    const usage = allocations.mock.calls[0]?.[0].usage;
+    if (usage === undefined) throw new Error('Missing CPU Morph allocation usage');
+    expect(usage & 0x80).toBe(0);
+    const written = writes.mock.calls.at(-1)?.[2] as Float32Array;
+    const stride = base.layoutProjection.arrayStride / 4;
+    const offset = (key: string) => {
+      const attribute = base.layoutProjection.attributes.find((a) => a.key === key);
+      if (attribute === undefined) throw new Error(`missing ${key} fixture attribute`);
+      return attribute.offset / 4;
+    };
+    const normal = offset('normal');
+    const tangent = offset('tangent');
+    for (let vertex = 0; vertex < vertexCount; vertex++) {
+      const at = vertex * stride;
+      expect(written[at]).toBe(target.vertices[at]);
+      expect(written[at + normal]).toBeCloseTo((target.vertices[at + normal] as number) + 0.2, 6);
+      expect(written[at + tangent + 1]).toBeCloseTo(
+        (target.vertices[at + tangent + 1] as number) + 0.3,
+        6,
+      );
+      expect(written[at + tangent + 3]).toBe(target.vertices[at + tangent + 3]);
+    }
+    store.dispose(input.reportError);
+    writes.mockRestore();
+    allocations.mockRestore();
   });
 
   it('retires rows no draw resolved and recreates rows whose Mesh handles changed', async () => {

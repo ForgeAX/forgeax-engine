@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-debug-draw
 description: >-
-  ForgeaX immediate-mode debug geometry. Use when visualizing positions, colliders,
+  ForgeAX immediate-mode debug geometry. Use when visualizing positions, colliders,
   frustums, axes, or radii without creating ECS entities.
 ---
 
@@ -24,7 +24,7 @@ Runtime users use automatic `app.debugDraw.*`; low-level RHI scripts use `create
 
 | Package | Dependencies | Purpose |
 |:--|:--|:--|
-| `engine-math` | No ForgeaX dependencies | Vec / Mat / Quat / Color / frustum reconstruction. |
+| `engine-math` | No ForgeAX dependencies | Vec / Mat / Quat / Color / frustum reconstruction. |
 | `engine-debug-draw` | rhi + math + types | Wire overlay collection and GPU flush. |
 | `engine-runtime` | debug-draw (thin glue) | Attach `app.debugDraw` during createApp. |
 
@@ -47,13 +47,14 @@ app.debugDraw.frustum(cameraViewProj, [1, 1, 0, 1]);        // yellow frustum
 app.debugDraw.arrow([0, 0, 0], [0, 2, 0], [1, 1, 1, 1]);    // arrow (body + head); tipLength optional
 app.debugDraw.axes(transform.world, 1);                     // local frame: X=red / Y=green / Z=blue arrows
 
-// No manual flush -- runtime appends a DebugOverlay pass at the end of the
-// URP/HDRP render graph (after tonemap), and auto-flushes every frame.
+// No manual flush -- runtime appends a DebugOverlay pass to the render graph
+// and draws the staged vertices every frame.
 ```
 
 - `createApp` attaches `app.debugDraw` through the `debug-draw-glue.ts` hook.
 - Call shapes from update systems or other code; vertices accumulate and clear automatically at frame end.
-- Runtime owns flush and destruction.
+- Runtime owns the GPU overlay: `app.debugDraw` is a CPU source the Renderer takes once per frame and draws in every view; update-only or non-drawing frames discard its geometry.
+- An overlay failure skips the overlay and fires one `debug-overlay-failed` error per reason (`overlay-source-failed`, `overlay-upload-failed`, `overlay-pipeline-failed`); the scene frame continues. Read `renderer.inspect().debugOverlay` for the latest outcome.
 
 ### Low-level path (custom RHI and graph)
 

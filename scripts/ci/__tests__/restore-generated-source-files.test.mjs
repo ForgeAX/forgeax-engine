@@ -16,7 +16,7 @@ const createFixture = () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-restore-generated-source-'));
   runGit(root, ['init', '--quiet']);
   runGit(root, ['config', 'user.email', 'ci@example.invalid']);
-  runGit(root, ['config', 'user.name', 'ForgeaX CI']);
+  runGit(root, ['config', 'user.name', 'ForgeAX CI']);
 
   for (const [path, content] of [
     [generatedPath, 'stable-visual-cases\n'],

@@ -58,15 +58,18 @@ export function createViewCompositor(internals: RenderSystemInternals) {
     | undefined;
   type Frame = { encoder: RhiCommandEncoder; views: readonly CompositeView[]; output: Texture };
   let compiled: CompiledRenderGraph<Frame> | undefined;
+  const variants = new Map<boolean, CompiledRenderGraph<Frame>>();
+  const retireGraphs = () => {
+    for (const graph of variants.values()) void graph.retire();
+    variants.clear();
+    compiled = undefined;
+  };
   let key = '';
   return {
     get generation() {
       return compiled?.inspect().generation ?? 0;
     },
-    dispose() {
-      void compiled?.retire();
-      compiled = undefined;
-    },
+    dispose: retireGraphs,
     encode(
       encoder: RhiCommandEncoder,
       views: readonly CompositeView[],
@@ -79,6 +82,11 @@ export function createViewCompositor(internals: RenderSystemInternals) {
       const width = target?.width ?? internals.canvas.width;
       const height = target?.height ?? internals.canvas.height;
       const format = target?.format ?? base.format;
+      const { observeDisplay, observeRawDisplay, displayUsage } = displayObservationRoute(
+        internals,
+        target,
+        base.surfaceProfile,
+      );
       const value = <T>(
         result: import('@forgeax/engine-rhi').Result<T, import('@forgeax/engine-rhi').RhiError>,
       ): T => {
@@ -132,7 +140,14 @@ export function createViewCompositor(internals: RenderSystemInternals) {
         format,
         views.map((v) => [v.viewport.renderWidth, v.viewport.renderHeight, v.channels ?? 'all']),
       ]);
-      if (compiled === undefined || key !== nextKey) {
+      if (key !== nextKey) {
+        retireGraphs();
+        key = nextKey;
+      }
+      // Observation demand has only two raw-surface routes. Retain both so
+      // diagnostic frames do not repeatedly compile and retire identical graphs.
+      compiled = variants.get(observeRawDisplay);
+      if (compiled === undefined) {
         const graph = new RenderGraphBuilder<Frame>();
         const unwrap = <T>(r: { ok: true; value: T } | { ok: false; error: unknown }): T => {
           if (!r.ok) throw r.error;
@@ -144,12 +159,26 @@ export function createViewCompositor(internals: RenderSystemInternals) {
             {
               format,
               size: 'surface',
-              usage: 0x10 | (target === undefined || target.readback ? 0x01 : 0),
+              usage: displayUsage,
             },
             (frame) => frame.output,
           ),
         );
         const colorView = unwrap(graph.view(color, { format }));
+        // Raw-only swapchains are render-only. Demand a copyable encoded
+        // endpoint only for observations; ordinary composition stays direct.
+        const observedColor = observeRawDisplay
+          ? unwrap(
+              graph.createTexture('observed-display', {
+                format,
+                size: 'surface',
+                usage: 0x10 | 0x04 | 0x01,
+              }),
+            )
+          : color;
+        const observedView = observeRawDisplay
+          ? unwrap(graph.view(observedColor, { format }))
+          : colorView;
         const inputs = views.map((v, index) => {
           const texture = unwrap(
             graph.importTexture(
@@ -182,17 +211,17 @@ export function createViewCompositor(internals: RenderSystemInternals) {
           graph.addRasterPass('camera-view-composite', {
             accesses: [
               ...inputs.map((resource) => ({ resource, usage: 'sampled-read' as const })),
-              { resource: colorView, usage: 'color-attachment' },
+              { resource: observedView, usage: 'color-attachment' },
             ],
             colorAttachments: [
               {
-                view: colorView,
+                view: observedView,
                 loadOp: 'clear',
                 storeOp: 'store',
                 clearValue: { r: 0, g: 0, b: 0, a: 1 },
               },
             ],
-            encode: ({ pass, frame, resources: resolved }) => {
+            encodeDirect: (pass, frame, resolved) => {
               frame.views.forEach((view, index) => {
                 const input = inputs[index];
                 const pipeline = viewPipelines[index];
@@ -218,13 +247,47 @@ export function createViewCompositor(internals: RenderSystemInternals) {
             },
           }),
         );
-        if (target === undefined)
+        if (observeRawDisplay)
+          unwrap(
+            graph.addRasterPass('camera-view-present', {
+              accesses: [
+                { resource: observedView, usage: 'sampled-read' },
+                { resource: colorView, usage: 'color-attachment' },
+              ],
+              colorAttachments: [{ view: colorView, loadOp: 'clear', storeOp: 'store' }],
+              encodeDirect(pass, _frame, resolved) {
+                pass.setPipeline(pipelineFor('all'));
+                pass.setBindGroup(
+                  0,
+                  value(
+                    device.createBindGroup({
+                      layout: ready.layout,
+                      entries: [
+                        {
+                          binding: 0,
+                          resource: {
+                            kind: 'textureView',
+                            value: unwrap(resolved.textureView(observedView)),
+                          },
+                        },
+                        { binding: 1, resource: { kind: 'sampler', value: ready.sampler } },
+                      ],
+                    }),
+                  ),
+                );
+                pass.setViewport(0, 0, width, height, 0, 1);
+                pass.setScissorRect(0, 0, width, height);
+                pass.draw(3);
+              },
+            }),
+          );
+        if (observeDisplay)
           unwrap(
             graph.addCopyPass('final-display-observation', {
-              accesses: [{ resource: colorView, usage: 'copy-src' }],
-              encode: ({ encoder, frame }) =>
+              accesses: [{ resource: observedView, usage: 'copy-src' }],
+              encodeDirect: (encoder, _frame, resolved) =>
                 encodeFrameObservationCapture(internals, encoder, {
-                  texture: frame.output,
+                  texture: unwrap(resolved.texture(observedColor)),
                   domain: 'final-display',
                   format: base.format,
                   width: internals.canvas.width,
@@ -240,9 +303,8 @@ export function createViewCompositor(internals: RenderSystemInternals) {
             surfaceSize: { width, height },
           }),
         );
-        void compiled?.retire();
         compiled = next;
-        key = nextKey;
+        variants.set(observeRawDisplay, next);
       }
       const capture = internals.gpuPassTimingCapture;
       const executed = compiled.execute(
@@ -256,5 +318,29 @@ export function createViewCompositor(internals: RenderSystemInternals) {
         internals.observationGraphGeneration = compiled.inspect().generation;
       return true;
     },
+  };
+}
+
+/** Native copyable surfaces retain their stable copy pass; only raw-only
+ * surfaces need a distinct observation route and encoded intermediate. */
+function displayObservationRoute(
+  internals: Pick<
+    RenderSystemInternals,
+    'deferFinalDisplayObservation' | 'observationCaptureDomains'
+  >,
+  target: RenderTargetDescriptor | undefined,
+  surfaceProfile: 'dual-view' | 'raw-only' | undefined,
+) {
+  const requestedDisplay =
+    target === undefined &&
+    internals.deferFinalDisplayObservation !== true &&
+    internals.observationCaptureDomains?.includes('final-display') === true;
+  const observeRawDisplay = requestedDisplay && surfaceProfile === 'raw-only';
+  const observeDisplay =
+    target === undefined && (surfaceProfile !== 'raw-only' || observeRawDisplay);
+  return {
+    observeDisplay,
+    observeRawDisplay,
+    displayUsage: 0x10 | ((observeDisplay && !observeRawDisplay) || target?.readback ? 0x01 : 0),
   };
 }

@@ -46,6 +46,7 @@ import type { ReflectionProbeGraphWork } from '../record/typed-frame-graph';
 import { REFLECTION_PROBE_VIEW_SLOT_BASE, VIEW_UNIFORM_SLOT_STRIDE } from '../record/view-ubo';
 import type { CameraSnapshot } from '../render-contract';
 import type { SkyboxSnapshot, SkylightSnapshot } from '../render-system-extract';
+import { recordContext } from '../world/view-record-context';
 import { createProbeBackgroundResources, type ProbeBackgroundResources } from './background';
 import {
   advanceProbeFilter,
@@ -122,8 +123,13 @@ type PendingFallback = {
 };
 
 function hasNonNeutralFallback(tickets: ReadonlyMap<string, PendingFallback>): boolean {
-  for (const ticket of tickets.values()) if (ticket.projection.source !== 'neutral') return true;
+  for (const ticket of tickets.values())
+    if (nonNeutralFallbackSource(ticket.projection.source)) return true;
   return false;
+}
+
+function nonNeutralFallbackSource(source: ReflectionFallbackProjection['source']): boolean {
+  return source !== 'neutral';
 }
 
 const NEUTRAL_FRAME_PROJECTION: ReflectionFallbackProjection = Object.freeze({
@@ -247,14 +253,14 @@ export class ReflectionProbeRecordOwner {
     state: ReflectionFallbackReceipt['state'],
   ): ReflectionFallbackReceipt {
     return Object.freeze({
-      rendererId: this.internals.deviceScope.owner,
+      rendererId: recordContext(this.internals).deviceScope.owner,
       producerId: REFLECTION_PROBE_PRODUCER_ID,
       ...(this.internals.ssrIdentity === undefined ? {} : { identity: this.internals.ssrIdentity }),
       source: 'neutral',
       sourceKey: 'neutral',
       sourceGeneration: 0,
       projectionGeneration: 0,
-      deviceGeneration: this.internals.deviceScope.generation,
+      deviceGeneration: recordContext(this.internals).deviceScope.generation,
       state,
       candidateVisible: false,
       coverage: 0,
@@ -318,7 +324,7 @@ export class ReflectionProbeRecordOwner {
         stage: 'prepare',
         code: 'reflection-fallback-format-unavailable',
         expected: 'rgba16float render attachment capability on the current device generation',
-        detail: { deviceGeneration: this.internals.deviceScope.generation },
+        detail: { deviceGeneration: recordContext(this.internals).deviceScope.generation },
       });
     } else if (!previous) {
       this.clearFallbackFailure();
@@ -352,7 +358,7 @@ export class ReflectionProbeRecordOwner {
     this.pipelineWarmupAttempts = attempt;
     const device = this.internals.device;
     const warmup = createIblPipelines(
-      this.internals.deviceScope,
+      recordContext(this.internals).deviceScope,
       this.internals.device,
       (device, descriptor) => {
         const labeled = {
@@ -400,6 +406,61 @@ export class ReflectionProbeRecordOwner {
         );
       });
     this.pipelineWarmup = warmup;
+  }
+
+  /** The current producer receipt, without building the diagnostic resource census. */
+  pipelineFallbackReceipt(): ReflectionFallbackReceipt {
+    return this.fallbackReceipt;
+  }
+
+  /** Read the same fallback source demand without advancing capture/filter work or tickets. */
+  pipelineFallbackDemand(
+    facts: readonly ReflectionProbeFact[],
+    selections: ReadonlyMap<string, ReflectionProbeSelectionResult>,
+    skylight: SkylightSnapshot | undefined,
+  ): boolean {
+    if (!this.internals.device.caps.rgba16floatRenderable) return false;
+    if (facts.length === 0 && skylight === undefined) return false;
+    let acceptedCount = 0;
+    let acceptedBytes = 0;
+    const accepted = new Map<
+      string,
+      { readonly fact: ReflectionProbeFact; readonly ready: boolean }
+    >();
+    for (const fact of facts
+      .slice()
+      .sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey)) {
+      const admission = admitReflectionProbe(
+        fact,
+        { acceptedCount, acceptedBytes },
+        DEFAULT_REFLECTION_PROBE_LIMITS,
+      );
+      if (!admission.ok) continue;
+      const key = `${fact.worldId}:${fact.entityKey}`;
+      const resource = this.resources.get(key);
+      if (resource === undefined) continue;
+      acceptedCount += 1;
+      acceptedBytes = admission.acceptedBytes;
+      accepted.set(key, {
+        fact,
+        ready:
+          resource.active !== undefined &&
+          resource.activeFact?.center.every((v, i) => v === fact.center[i]) === true,
+      });
+    }
+    for (const selection of selections.values()) {
+      const probe =
+        selection.kind === 'probe'
+          ? accepted.get(`${selection.worldId}:${selection.entityKey}`)
+          : undefined;
+      if (
+        nonNeutralFallbackSource(
+          resolveReflectionFallbackSource(selection, probe?.ready === true, skylight !== undefined),
+        )
+      )
+        return true;
+    }
+    return false;
   }
 
   prepare(
@@ -518,7 +579,7 @@ export class ReflectionProbeRecordOwner {
       resource: ProbeGpuResource;
       pending: NonNullable<ProbeGpuResource['pending']>;
     }> = [];
-    const deviceGeneration = this.internals.deviceScope.generation;
+    const deviceGeneration = recordContext(this.internals).deviceScope.generation;
     for (let offset = 0; offset < candidates.length; offset++) {
       const candidateIndex = (this.workCursor + offset) % candidates.length;
       const resource = candidates[candidateIndex];
@@ -662,7 +723,7 @@ export class ReflectionProbeRecordOwner {
       resource: ProbeGpuResource;
       pending: NonNullable<ProbeGpuResource['pending']>;
     }[] = [],
-    deviceGeneration = this.internals.deviceScope.generation,
+    deviceGeneration = recordContext(this.internals).deviceScope.generation,
     submittedFrame = this.currentFrame,
   ): Promise<void> {
     let completionFailure: ReflectionFallbackFailureInput | undefined;
@@ -685,7 +746,7 @@ export class ReflectionProbeRecordOwner {
         fallbackOutput,
         completionFailure,
       );
-    if (deviceGeneration !== this.internals.deviceScope.generation) return;
+    if (deviceGeneration !== recordContext(this.internals).deviceScope.generation) return;
     for (const { resource, pending } of captureTickets) {
       if (
         resource.pending !== pending ||
@@ -788,7 +849,7 @@ export class ReflectionProbeRecordOwner {
     const pending: PendingFallback = {
       ticket: ++this.nextFallbackTicket,
       frameId,
-      deviceGeneration: this.internals.deviceScope.generation,
+      deviceGeneration: recordContext(this.internals).deviceScope.generation,
       projection: NEUTRAL_FRAME_PROJECTION,
       signature: NEUTRAL_FRAME_SIGNATURE,
     };
@@ -861,7 +922,7 @@ export class ReflectionProbeRecordOwner {
     const pending: PendingFallback = {
       ticket: ++this.nextFallbackTicket,
       frameId,
-      deviceGeneration: this.internals.deviceScope.generation,
+      deviceGeneration: recordContext(this.internals).deviceScope.generation,
       projection: projection.value,
       signature,
     };
@@ -920,7 +981,7 @@ export class ReflectionProbeRecordOwner {
       if (
         pending.projection.source === 'neutral' &&
         this.latestFallbackTickets.get(renderableKey) === pending &&
-        pending.deviceGeneration === this.internals.deviceScope.generation
+        pending.deviceGeneration === recordContext(this.internals).deviceScope.generation
       ) {
         this.commitFallbackProjection(renderableKey, pending, 'neutral');
         committed += 1;
@@ -945,7 +1006,7 @@ export class ReflectionProbeRecordOwner {
     const { linearHdr: _referencePixel, ...projection } = pending.projection;
     const receipt = Object.freeze({
       ...projection,
-      rendererId: this.internals.deviceScope.owner,
+      rendererId: recordContext(this.internals).deviceScope.owner,
       producerId: REFLECTION_PROBE_PRODUCER_ID,
       ...(this.internals.ssrIdentity === undefined ? {} : { identity: this.internals.ssrIdentity }),
       frameId: pending.frameId,
@@ -1122,7 +1183,7 @@ export class ReflectionProbeRecordOwner {
         latest === undefined ||
         latest.signature !== pending.signature ||
         pending.frameId !== fallbackOutput.frameId ||
-        pending.deviceGeneration !== this.internals.deviceScope.generation ||
+        pending.deviceGeneration !== recordContext(this.internals).deviceScope.generation ||
         (retiredAt !== undefined && pending.frameId < retiredAt) ||
         (committedFrame !== undefined && pending.frameId <= committedFrame)
       ) {
@@ -1152,10 +1213,10 @@ export class ReflectionProbeRecordOwner {
       (previousReadback === undefined || fallbackOutput.frameId >= previousReadback.frameId)
     ) {
       this.fallbackReadback = Object.freeze({
-        rendererId: this.internals.deviceScope.owner,
+        rendererId: recordContext(this.internals).deviceScope.owner,
         producerId: REFLECTION_PROBE_PRODUCER_ID,
         frameId: fallbackOutput.frameId,
-        deviceGeneration: this.internals.deviceScope.generation,
+        deviceGeneration: recordContext(this.internals).deviceScope.generation,
         graphGeneration: readback.graphGeneration,
         textureIdentity: readback.textureIdentity,
         format: fallbackOutput.format,
@@ -1444,7 +1505,7 @@ export class ReflectionProbeRecordOwner {
       addressModeV: 'clamp-to-edge',
       addressModeW: 'clamp-to-edge',
     });
-    const cache = getOrCreateIblCache(this.internals.deviceScope);
+    const cache = getOrCreateIblCache(recordContext(this.internals).deviceScope);
     if (
       !sampler.ok ||
       cache.prefilterGroup1Bgl === undefined ||

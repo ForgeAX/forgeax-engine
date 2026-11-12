@@ -50,3 +50,13 @@ it.each([
     expect(compiled.value.wgsl.includes('sceneMaterialRows')).toBe(false);
   }
 }, 30_000);
+
+it('keeps the unconditional Terrain discards instead of the Standard discard-source axes', async () => {
+  const engine = await loadEngineShaderEntries();
+  const color = engine.terrain.filter((file) => !file.id.endsWith('-shadow'));
+  expect(color).toHaveLength(2);
+  for (const file of color) {
+    expect(file.source).not.toMatch(/^#pragma variant_axis (LOD_DITHER|CLIPPING_PLANES)\s*$/m);
+    expect(file.defines).toMatchObject({ LOD_DITHER: true, CLIPPING_PLANES: true });
+  }
+});

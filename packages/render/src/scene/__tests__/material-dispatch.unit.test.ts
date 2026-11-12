@@ -3,7 +3,7 @@ import { expect, it, vi } from 'vitest';
 import { GpuDrivenMaterialProgramProjection } from '../../gpu-driven/material-artifacts';
 import { MaterialResource } from '../../material-resource';
 import type { MaterialSnapshot, RenderableSnapshot } from '../../render-system-extract';
-import { MaterialDispatch, MaterialFrame } from '../material-dispatch';
+import { dispatchPassWork, MaterialDispatch, MaterialFrame } from '../material-dispatch';
 import type { MeshFrame } from '../mesh-frame';
 import type { RenderSceneSlot } from '../render-scene-types';
 import { type SceneSlotFrame, SceneSlots } from '../scene-slots';
@@ -246,6 +246,88 @@ it('reuses completed draw order after scalar adoption without rereading member t
   }
 });
 
+it('keeps complete nested walks independent when an outer forEach throws', () => {
+  const owner = new MaterialDispatch();
+  const resource = new MaterialResource(material(1, 2000, true));
+  const rows = Array.from({ length: 8 }, (_, index) => slot(index, resource));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const frame = query(owner, fixedSlots(rows));
+  const expected = Array.from({ length: frame.length }, (_, index) => frame.at(index));
+  const failure = new Error('consumer stopped');
+  expect(() =>
+    frame.forEach((_entry, index) => {
+      if (index === 2) throw failure;
+    }),
+  ).toThrow(failure);
+  const afterFailure: unknown[] = [];
+  frame.forEach((entry, index) => {
+    expect(index).toBe(afterFailure.length);
+    afterFailure.push(entry);
+  });
+  expect(afterFailure).toEqual(expected);
+  const changed = { ...resource.snapshot, roughness: 0.7 };
+  resource.adopt(changed);
+  owner.adopt(resource);
+  const current = query(owner, fixedSlots(rows));
+  const nested: unknown[] = [];
+  expect(() =>
+    current.forEach((_entry, index) => {
+      if (index !== 1) return;
+      current.forEach((entry) => {
+        nested.push(entry);
+      });
+      throw failure;
+    }),
+  ).toThrow(failure);
+  expect(nested).toHaveLength(current.length);
+  const subsequent: unknown[] = [];
+  current.forEach((entry) => {
+    subsequent.push(entry);
+  });
+  expect(subsequent).toEqual(nested);
+  expect([...frame]).toEqual(expected);
+});
+
+it('observes one custom iterator lookup with its receiver and closes on callback failure', () => {
+  const owner = new MaterialDispatch();
+  const resource = new MaterialResource(material(1));
+  const row = slot(1, resource);
+  owner.bind(row.slot, row.snapshot);
+  const frame = query(owner, fixedSlots([row]));
+  const entry = frame.at(0);
+  if (entry === undefined) throw new Error('missing custom iterator value');
+  let reads = 0;
+  let closed = 0;
+  Object.defineProperty(frame, Symbol.iterator, {
+    get() {
+      reads++;
+      return function* (this: typeof frame) {
+        expect(this).toBe(frame);
+        try {
+          yield entry;
+          yield entry;
+        } finally {
+          closed++;
+        }
+      };
+    },
+  });
+  const failure = new Error('custom consumer stopped');
+  expect(() =>
+    frame.forEach(() => {
+      throw failure;
+    }),
+  ).toThrow(failure);
+  expect([reads, closed]).toEqual([1, 1]);
+  const indices: number[] = [];
+  frame.forEach((value, index) => {
+    expect(value).toBe(entry);
+    indices.push(index);
+  });
+  expect(indices).toEqual([0, 1]);
+  expect([reads, closed]).toEqual([2, 2]);
+});
+
 it('retains hidden material versions and earlier frames after removal and rebinding', () => {
   const owner = new MaterialDispatch();
   const resource = new MaterialResource(material(1));
@@ -376,16 +458,22 @@ it('keeps group ordering, rank lookup and retired membership consistent through 
     expect(entries.map((entry) => entry.entityIndex).sort((a, b) => a - b)).toEqual(
       slots.map((row) => row.entityKey),
     );
+    const violations: string[] = [];
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       if (entry === undefined) throw new Error('missing dispatch');
-      expect(frame.at(i)).toBe(entry);
-      expect(slots[entry.renderableIndex]?.entityKey).toBe(entry.entityIndex);
-      expect(entry.queue).toBe(
-        slots[entry.renderableIndex]?.snapshot.material.snapshot.passes[0]?.renderState?.queue,
-      );
-      if (i > 0) expect(entry.queue).toBeGreaterThanOrEqual(entries[i - 1]?.queue ?? 0);
+      if (frame.at(i) !== entry) violations.push(`entry ${i}: rank identity`);
+      if (slots[entry.renderableIndex]?.entityKey !== entry.entityIndex)
+        violations.push(`entry ${i}: renderable identity`);
+      if (
+        entry.queue !==
+        slots[entry.renderableIndex]?.snapshot.material.snapshot.passes[0]?.renderState?.queue
+      )
+        violations.push(`entry ${i}: material queue`);
+      if (i > 0 && !(entry.queue >= (entries[i - 1]?.queue ?? 0)))
+        violations.push(`entry ${i}: queue ordering`);
     }
+    expect(violations, `mixed edit ${step}`).toEqual([]);
     if (step % 100 === 0) retained.push({ frame, entries: entries.map(key) });
   }
   for (const prior of retained) expect(prior.frame.map(key)).toEqual(prior.entries);
@@ -885,6 +973,7 @@ it('keeps dispatch entries only while consecutive queries read them; bindings ow
   const slots = fixedSlots(rows);
   const cold = [...owner.query(slots)];
   expect(cold).toHaveLength(128);
+  for (const entry of cold) Object.freeze(entry);
   // A consecutive reader shares the identities the previous query read.
   const warm = [...owner.query(slots)];
   expect(warm.every((entry, index) => entry === cold[index])).toBe(true);
@@ -957,4 +1046,175 @@ it('bulk binding appends member pages instead of copying one roster page per mem
   expect(casters.map((entry) => entry.entityIndex)).toEqual(
     slots.filter((row) => row.slot % 2 === 0).map((row) => row.entityKey),
   );
+});
+
+it('admits the implicit default only when effective Mesh slots actually consume it', async () => {
+  const { createPrimitiveMesh } = await import('@forgeax/engine-geometry');
+  const { MeshFrame } = await import('../mesh-frame');
+  const { defaultMeshMaterial } = await import('../mesh-materials');
+  const owned = new MaterialResource({ ...material(201), immutableValues: true });
+  const owner = new MaterialDispatch();
+  const original = slot(0, owned);
+  const row = {
+    ...original,
+    snapshot: { ...original.snapshot, materialOverrides: [owned] },
+  };
+  owner.bind(0, row.snapshot);
+  const meshes = new MeshFrame().with(0, 1, createPrimitiveMesh('cube').unwrap());
+  const complete = query(owner, fixedSlots([row]), meshes);
+  const captured = owner.materials();
+  expect([...complete]).toHaveLength(1);
+  expect(captured.get(owned)?.bindings).toBe(1);
+  expect(captured.get(defaultMeshMaterial)).toBeUndefined();
+  expect(captured.hasBorrowedValues).toBe(false);
+
+  const fallback = { ...row, snapshot: { ...row.snapshot, materialOverrides: [] } };
+  owner.bind(0, fallback.snapshot);
+  const usedDefault = query(owner, fixedSlots([fallback]), meshes);
+  expect(usedDefault.some((entry) => entry.materialHandle === 0)).toBe(true);
+  expect(owner.materials().get(defaultMeshMaterial)?.bindings).toBe(1);
+  expect(owner.materials().hasBorrowedValues).toBe(true);
+  expect(captured.get(defaultMeshMaterial)).toBeUndefined();
+  expect(captured.hasBorrowedValues).toBe(false);
+
+  owner.bind(0, row.snapshot);
+  query(owner, fixedSlots([row]), meshes);
+  expect(owner.materials().get(defaultMeshMaterial)).toBeUndefined();
+  expect(owner.materials().hasBorrowedValues).toBe(false);
+});
+
+it('captures actual owned Sprite folding demand, including zero-binding accepted entries', () => {
+  const sprite = new MaterialResource({
+    ...material(77),
+    transparent: true,
+    immutableValues: true,
+    passes: [{ name: 'Forward', program: { module: 'forgeax::sprite' } }],
+  });
+  const empty = new MaterialFrame(undefined);
+  const accepted = empty.with(sprite, 0);
+  expect(empty.hasFoldableSprites).toBe(false);
+  expect(accepted.hasFoldableSprites).toBe(true);
+  expect(
+    accepted.withAccepted(accepted.get(sprite) as NonNullable<ReturnType<MaterialFrame['get']>>, 4)
+      .hasFoldableSprites,
+  ).toBe(true);
+  const opaque = accepted.with(sprite, 0, { ...sprite.snapshot, transparent: false });
+  expect(opaque.hasFoldableSprites).toBe(false);
+  expect(accepted.hasFoldableSprites).toBe(true);
+  expect(accepted.without(sprite).hasFoldableSprites).toBe(false);
+  const { immutableValues: _owned, ...borrowedSnapshot } = sprite.snapshot;
+  const borrowed = accepted.with(sprite, 0, borrowedSnapshot);
+  expect(borrowed.hasBorrowedValues).toBe(true);
+  expect(borrowed.hasFoldableSprites).toBe(false);
+});
+
+it('reads a consumed work rank without starting another generator', () => {
+  const owner = new MaterialDispatch();
+  const resource = new MaterialResource(material(1));
+  const rows = Array.from({ length: 64 }, (_, index) => slot(index, resource));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const frame = query(owner, fixedSlots(rows));
+  const consumed = [...frame];
+  const generator = (function* () {})();
+  const prototype = Object.getPrototypeOf(Object.getPrototypeOf(generator));
+  const next = vi.spyOn(prototype, 'next');
+  try {
+    for (let index = 0; index < frame.length; index++)
+      expect(frame.at(index)).toBe(consumed[index]);
+    expect(frame.at(-1)).toBe(consumed[consumed.length - 1]);
+    expect(next).not.toHaveBeenCalled();
+  } finally {
+    next.mockRestore();
+  }
+});
+
+it('walks consumed binding membership without a second generator result per member', () => {
+  const owner = new MaterialDispatch();
+  const resource = new MaterialResource(material(1));
+  const rows = Array.from({ length: 64 }, (_, index) => slot(index, resource));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const expected = [...query(owner, slots)].map((entry) => entry.entityIndex);
+  const frame = query(owner, slots);
+  const generator = (function* () {})();
+  const prototype = Object.getPrototypeOf(Object.getPrototypeOf(generator));
+  const next = vi.spyOn(prototype, 'next');
+  let actual: number[], steps: number;
+  try {
+    actual = frame.flatMap((entry) => entry.entityIndex);
+    steps = next.mock.calls.length;
+  } finally {
+    next.mockRestore();
+  }
+  expect(actual).toEqual(expected);
+  // The public frame and fixed work tree still yield. Membership itself is a
+  // private reused-result walk, independent of the number of members.
+  expect(steps).toBeLessThanOrEqual(frame.length + 8);
+});
+
+it('keeps consumed member walks independent when another reader stops early', () => {
+  const owner = new MaterialDispatch();
+  const resource = new MaterialResource(material(1));
+  const rows = Array.from({ length: 8 }, (_, index) => slot(index, resource));
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const frame = query(owner, fixedSlots(rows));
+  const expected = [...frame];
+  const pass = dispatchPassWork(frame)?.work[Symbol.iterator]().next().value;
+  if (pass === undefined) throw new Error('Expected actual Pass work');
+  const first = pass.entries()[Symbol.iterator](),
+    second = pass.entries()[Symbol.iterator]();
+  expect(first.next().value).toBe(expected[0]);
+  expect(first.next().value).toBe(expected[1]);
+  expect(second.next().value).toBe(expected[0]);
+  first.return?.();
+  const remaining = [];
+  for (let step = second.next(); !step.done; step = second.next()) remaining.push(step.value);
+  expect(remaining).toEqual(expected.slice(1));
+  expect([...pass.entries()]).toEqual(expected);
+  expect(frame.slice(2, 5)).toEqual(expected.slice(2, 5));
+});
+
+it('keeps nested dispatch cursors independent and a closed partial walk cannot resume', () => {
+  const resource = new MaterialResource(material(177, 2000, true));
+  const rows = Array.from({ length: 8 }, (_, index) => slot(index, resource));
+  const owner = new MaterialDispatch();
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const frame = owner.query(fixedSlots(rows));
+  const partial = frame[Symbol.iterator]();
+  const first = partial.next().value;
+  expect(first).toBeDefined();
+  const nested = [...frame];
+  expect(nested).toHaveLength(16);
+  expect(first).toBe(nested[0]);
+  partial.return?.();
+  expect(partial.next().done).toBe(true);
+  expect([...frame]).toEqual(nested);
+  const held = nested.map((entry) => ({ ...entry }));
+  owner.query(fixedSlots(rows));
+  owner.query(fixedSlots(rows));
+  expect([...frame]).toEqual(held);
+  expect(nested).toEqual(held);
+});
+
+it('does not publish a partial dispatch after a rank failure and recovers on the next walk', () => {
+  const resource = new MaterialResource(material(178, 2000, true));
+  const rows = Array.from({ length: 8 }, (_, index) => slot(index, resource));
+  const owner = new MaterialDispatch();
+  for (const row of rows) owner.bind(row.slot, row.snapshot);
+  const slots = fixedSlots(rows);
+  const frame = owner.query(slots);
+  const original = slots.indexOfSlot.bind(slots);
+  const rank = vi.spyOn(slots, 'indexOfSlot');
+  let calls = 0;
+  rank.mockImplementation((slot) => {
+    if (++calls === 3) throw new Error('rank failed');
+    return original(slot);
+  });
+  const cursor = frame[Symbol.iterator]();
+  expect(cursor.next().done).toBe(false);
+  expect(cursor.next().done).toBe(false);
+  expect(() => cursor.next()).toThrow('rank failed');
+  expect(cursor.next().done).toBe(true);
+  rank.mockRestore();
+  expect([...frame]).toHaveLength(16);
 });

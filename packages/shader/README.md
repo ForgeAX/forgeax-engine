@@ -1,6 +1,32 @@
 # @forgeax/engine-shader
 
+## Physical atmosphere tables
+
+`atmosphere-table-kernels.wgsl` owns transmittance, multiple-scattering and Sky
+View texel arithmetic. Compute and fragment entry points wrap those same functions;
+only invocation addressing and storage/render-target I/O differ. The shader plugin
+publishes both bundles. Full Atmosphere uses native compute volumes or fragment
+producers with half-packed RGB aerial transport in the existing integer Cluster
+texture. Both preserve the same optical integration budget, distant illumination
+and surface transport. The explicit background-only option remains separate;
+runtime selects a published plan without compiling or rewriting shader source.
+See the [render contract](../render/README.md#atmosphere-and-aerial-perspective).
+
 ## Public shader input boundary
+
+Directional PCSS uses one bounded loop with ordered blocker and comparison
+phases, sharing disk addressing instead of duplicating it in native pipeline
+compilation. The comparison phase starts only after blocker accumulation and
+preserves the disk order, receiver-plane correction and cascade blend.
+
+Medium retains 8 raw plus 16 comparison taps; high retains 16 plus 32. Read-only
+disk points are one module `const` table indexed at the single tap site; a
+`var<private>` table would be initialized by every Standard fragment, including
+those whose profile never reaches PCSS.
+
+Direct text admission compacts fragments and computes its complete source identity
+once. Equal content reuses the Registry's canonical source; device forks borrow
+that admitted source without rehashing it. No expanded body is memoized.
 
 The build manifest is the single published shader input catalog. The plugin
 composes engine WGSL modules and material rows once; runtime resolves the
@@ -15,12 +41,20 @@ references and shared ABI receipt and entry-read tables. Equal entry-read arrays
 are published once; direct entries, materials and variants retain their exact
 `entryPointsIndex`. Missing facts remain distinct from an empty read set. The
 reader validates every reference and owns one immutable copy per table row.
+After detaching reflection facts, admission shares structurally equal immutable
+subtrees within that publication. The temporary pool is discarded after admission;
+separate publications remain independent. Complete values, own field order,
+optional absence, array multiplicity and signed zero remain distinct. Non-plain
+or cyclic extension data retains the ordinary detached-copy route. This changes
+neither the wire format nor reference/variant validation.
 The ordered-fragment source digest remains v4 because source identity is unchanged. `ShaderRegistry.loadManifest()`
 hashes each pooled UTF-8 fragment once, then checks each source's domain-separated
 digest of its ordered fragment hashes before validating every entry, variant and
 receipt for atomic admission. It never joins complete sources for verification;
 composed strings are borrowed only when a consumer requests them. Selected sources
-share immutable fragment owners without memoizing expanded bodies; ABI receipts are shared immutable facts.
+share one publication-local lazy owner per digest without memoizing expanded bodies.
+Rows retain detached enumerable getter capabilities; source ownership does not retain
+other selected sources through a publication-wide closure. ABI receipts are shared immutable facts.
 Failed validation leaves the registry unchanged. The runtime does not compile
 WGSL. Digest verification runs in bounded batches and never skips unselected
 sources. Older compact profiles must be rebuilt by their producer.
@@ -126,6 +160,14 @@ schemas retain their own ShaderRegistry admission.
 registered entry or `undefined` for an ordinary optional miss, without constructing
 a failure diagnostic. It observes later registrations directly. Required lookups
 retain `findMaterialArtifact(identifier)` and its structured Result/error.
+
+Manifest publication admission snapshots and recursively freezes each pooled ABI
+receipt once before source verification yields. All variants referring to that
+receipt share its immutable type facts; caller edits and later publications
+remain independent. Material keys do not clone the same reflected type tree.
+Freshly parsed owned reflection tables share identical immutable subtrees at
+admission while each selected row retains its deferred schema validation. The
+short-lived sharing pool does not survive admission or join publications.
 
 Material registration owns a detached, recursively frozen ABI receipt alongside
 the admitted schema and program. `installMaterialArtifactsFrom(sourceRegistry)`
@@ -246,6 +288,7 @@ Changes to the engine-owned input ABI require re-cooking authored materials.
 | 6 | `occlusion: f32` | Ambient occlusion factor |
 | 7 | `opacity: f32` | Surface opacity |
 | 8 | `alphaClipThreshold: f32` | Alpha-test threshold |
+| 9 | `reactive: f32` | Temporal responsiveness in [0, 1] (Responsive AA); 0 keeps the default history. Read on the deferred G-buffer lane |
 
 ```wgsl
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
@@ -253,7 +296,7 @@ Changes to the engine-owned input ABI require re-cooking authored materials.
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   return SurfaceData(
     vec3<f32>(0.45, 0.18, 0.06), input.vertexNormalWS, 0.8, 0.42,
-    vec3<f32>(0.0), 1.0, 1.0, 0.5,
+    vec3<f32>(0.0), 1.0, 1.0, 0.5, 0.0,
   );
 }
 ```
@@ -284,7 +327,7 @@ const rustedIron = Materials.standard({
 ```
 
 For the complete source-to-runtime example, see the
-[`game-3d` rusted-iron fixture](../../templates/game-3d/README.md#import-first-surface-material-example).
+[`game-3d` rusted-iron fixture](../../templates/game-3d/docs/guide.md#import-first-surface-material-example).
 
 > [!CAUTION]
 > Surface is a base-facts function only. Do not add `clearcoat`,
@@ -381,13 +424,34 @@ not import this accessor. The canonical source is `src/standard-cluster.wgsl`;
 all Standard lit variants compose this one module, so there is no second
 implementation to maintain.
 
+Object-level shadow receiving uses the shared Mesh flag encoding. Storage variants
+read temporal flags; uniform fallback reads the no-receive bit in `Mesh.surface.w`.
+The same word's bit 0 independently selects a draw-local Sprite atlas rectangle;
+Sprite consumers mask that bit explicitly. Both rigid and skinned Standard
+receivers honor the flag; shadow casting remains a separate source decision.
+
+Shadow reception is a per-draw value, not a pipeline constant: there is no
+reception override, and receiving and non-receiving draws share one pipeline. The
+flag does not change shadow casting, bind-group layouts or material values.
+
 When storage buffers are unavailable, the same 96-byte light records, grid
 offset/count pairs and complete membership list use one `rgba32uint` texture at
-View binding 3. Its width is 1024 texels; four consecutive words form each texel,
-with the 256 light records preceding the grid and index list. Binding 6 retains
-the cluster uniforms. The shader decodes float rows with `bitcast` and preserves
-integer metadata and lighting channels; the lighting and membership semantics
-are identical to the storage-buffer transport.
+`@group(2) @binding(3)`. Its width is 1024 texels; four consecutive words form
+each texel, with the 256 light records preceding the grid and index list.
+`@group(2) @binding(6)` holds six `vec4` rows in the 96-byte Cluster uniform.
+When AO is active, a row-aligned visibility region
+is appended after the complete Cluster payload, with its base word, logical
+extent and packed row stride in that uniform. Packing recovers the filtered
+UNORM8 byte before integer expansion, keeping identical Cluster words across
+normalized texture decoders with different f32 rounding. The eight visibility
+bits and neutral-white padding are unchanged. Forward PBR samples that region
+through the same integer texture binding, so authored material maps keep their
+full binding budget. The uniform's direct-light strength lane applies
+`mix(1, visibility, directLightingStrength)` to Forward direct illumination;
+zero preserves direct light, while the environment visibility path and material
+occlusion remain independent. The shader decodes light floats with `bitcast`
+and preserves integer metadata and lighting channels; membership and BRDF
+semantics match storage-buffer transport.
 
 `src/standard-surface.wgsl` owns the Standard material/fragment evaluation shared
 by ordinary Mesh and the VFX Mesh vertex adapter. Geometry adapters supply world
@@ -398,13 +462,18 @@ surface factors make fragment control flow non-uniform.
 
 Geometric specular anti-aliasing is part of that shared evaluation, not a material
 parameter or render setting. `src/specular-aa.wgsl`
-(`forgeax_pbr::specular_aa`) widens GGX roughness by the pixel's interpolated-normal
-spread: the three.js `getGeometryRoughness` measure at half weight (UE
+(`forgeax_pbr::specular_aa`) widens GGX roughness by the pixel's normal spread: the
+three.js `getGeometryRoughness` measure at half weight (UE
 `NormalCurvatureToRoughness` and Tokuyoshi-Kaplanyan filter the same screen
-derivatives). Forward direct and IBL lighting, clearcoat, and the roughness
+derivatives), taken on both the interpolated normal and the material's shading
+normal and keeping the larger. The shading term is what catches normal maps and
+procedural normals on flat receivers, where the interpolated normal has no spread
+and a glossy lobe under a punctual light otherwise turns single pixels into
+fireflies. Forward direct and IBL lighting, clearcoat, and the roughness
 packed into the Deferred G-buffer all consume the filtered value, so both render
 paths agree. The spread is sampled at the top of each fragment entry because
-derivatives need uniform control flow. Flat surfaces are unchanged bit for bit.
+derivatives need uniform control flow. Flat surfaces without a perturbed shading
+normal are unchanged bit for bit.
 `packages/runtime/src/__tests__/specular-aa.dawn.test.ts` gates the effect against
 an 8x supersampled truth rendered without the filter. It also replays the captured
 Deferred G-buffer on a fresh device with and without the filter.
@@ -425,6 +494,10 @@ retain the same contract. `src/__tests__/ibl-prefilter.dawn.test.ts` compares th
 shipped entry to the frozen 1024-sample predecessor over all six cube faces,
 oblique directions, camera-cube orientation and roughness endpoints on a real
 GPU. A one-sample falsifier at nonzero roughness must fail that radiance oracle.
+
+The fixed 256-square, 1024-sample BRDF bake evaluates Schlick's fifth power with
+products and reuses its view/half-vector dot product and pixel roughness squared.
+Its sample domain and binding contract stay with `src/ibl-brdf-lut.wgsl`.
 
 Specular IBL conserves rough-metal energy with the table-free multiple-scattering
 term of Fdez-Aguera (JCGT 2019), the same form as three.js
@@ -624,6 +697,7 @@ code-specific `detail` and `hint`:
 | `material-surface-slot-missing` | Standard pass has no `surface` module slot | Add the slot to the authored pass and re-cook |
 | `material-surface-abi-mismatch` | Surface export does not match the ABI required by the selected material model | Repair the producer-reported expected signature and re-cook; Standard uses `surface_v1`, while single-layer medium uses `single_layer_medium_surface_v1` |
 | `material-surface-forbidden-interface` | Surface declares a stage, resource, or vertex mutation | Remove the forbidden interface and re-cook |
+| `material-parallax-contract-invalid` | `displacementMode` parallax lacks `normalTexture` or sets an independent `metallicTexture` (`detail.field`) | Provide `normalTexture`, or use packed `metallicRoughnessTexture`; see the `displacementMode` constraint list |
 | `material-physical-contract-invalid` | A root physical layer is incomplete or unsupported | Repair the root parameter fragment before composing or cooking |
 
 Single-layer medium frame resources use the same declared shader ABI at 1x and
@@ -746,7 +820,7 @@ a binding-contract change so runtime and shader layouts agree.
 
 ## Surface authoring checklist
 
-- [x] Import `forgeax_material::surface_v1` and return the eight-field `SurfaceData`.
+- [x] Import `forgeax_material::surface_v1` and return the nine-field `SurfaceData`.
 - [x] Read generated material parameters through `forgeax_material::parameters`.
 - [x] Keep vertex, light, BRDF, pass, binding, and output ownership in Engine modules.
 - [x] Let the root parameter contract determine physical layers and pass admission.
@@ -788,8 +862,8 @@ for attachment formats, packing, resource limits and SSR outputs.
 
 `forgeax_clipping::planes` owns `clippedByPlanes`, `applyLocalClipping`, and
 `applyViewClipping`. World-space negative signed distance is discarded. View
-coefficients occupy the shared View ABI from byte 1024; atmosphere and
-atmosphere lanes complete the 1280-byte View bound range. Local lights use the complete Cluster transport selected from device capabilities.
+coefficients occupy the shared View ABI from byte 1024; fog, atmosphere and
+sky-fog lanes complete the 1296-byte View bound range. Local lights use the complete Cluster transport selected from device capabilities.
 Color, shadow and temporal geometry must use
 the same transformed world position. Material presence is derived from the root
 parameter declaration during cook; runtime does not add feature defines.
@@ -811,7 +885,8 @@ declaration. Canonical Engine Standard schemas retain it. An explicit
 `staticSwitches.alphaClipping: false` removes the field and supplies zero
 cutoff to Standard Surface and temporal coverage. With alpha hash and
 displacement also explicitly disabled, the known Standard shadow selects
-opaque position-only coverage; view/local clipping and LOD remain active.
+opaque coverage with position and vertex-normal bias inputs; material maps,
+view/local clipping and LOD retain their selected contracts.
 
 See [Alpha Hash authoring and verification](../render/README.md#alpha-hash).
 
@@ -846,6 +921,10 @@ entries call the same level-zero sampling kernel. The existing Standard
 parameter schema owns `displacementTexture`, `displacementScale` and
 `displacementBias`; texture coordinates remain per-slot. Material
 specialization constants apply to both vertex and fragment stages.
+Caster slope bias uses the transformed source vertex normal before material
+position displacement, matching UE WPO ordering. Displaced triangle normals are
+reconstructed in fragments for lighting. The depth oracle retains source normals;
+the independent face-normal oracle remains the lighting reference.
 
 See [Standard vertex displacement](../render/README.md#standard-vertex-displacement)
 for authoring, density and bounds behavior. Pack cooking validates both rigid
@@ -945,9 +1024,16 @@ units scaled by local luminance, so mathematically equal endpoints terminate
 consistently across axes and backends. Output encoding belongs to the graph.
 
 `hdrp-ssao.wgsl` defaults to GTAO through the Render parameter owner: three slices,
-six steps per side, radius 0.25, thickness 1 and linear radial sampling. It applies
-visibility intensity before the existing depth/normal bilateral filter. The
-verified cosine integral, projected-normal correction, orthographic rays and
+six steps per side, radius 0.25, thickness 1 and linear radial sampling. A shared
+raw visibility kernel serves the fragment and compute entries; the prepared
+Renderer graph selects an eligible entry, then uses the same spatial filter and
+lighting consumer. Forward input preserves the selected material's evaluated
+normal and coverage. Visibility intensity is applied before the existing
+depth/normal bilateral filter. Its cosine-weighted slice integral covers the full
+`cos(theta - normal) * abs(sin(theta))` interval, splitting the analytic primitive
+at `-pi`, `0` and `pi` so tilted normals remain correct when horizons stay on
+one side of zero or cross either pi boundary. Fragment and compute use this same
+function. The verified projected-normal correction, orthographic rays and
 background/normal-plane rejection remain intentional differences from Three.
 
 Vogel PCF samples the original UV footprint with sampler edge clamping; receiver
@@ -963,3 +1049,56 @@ padding), making its host size 80 bytes. Forward and Deferred share the same
 Lambert conversion and diffuse material response, before occlusion and physical
 layer composition. Probe-mode uniforms retain this independent global input.
 The default is zero and Unlit/data shaders do not consume it.
+
+## Shadow caster projection
+
+Standard, Unlit and mesh-particle casters share
+`forgeax_shadow::surface::projectShadowPosition(worldPosition, worldNormal)`.
+Automatic orthographic CSM clamps Reverse-Z near depth before applying a
+bounded, texel-sized caster bias. Host culling admits upstream blockers while
+retaining side/far planes. Point/spot perspective views and explicit shadow
+matrices keep ordinary clipping. The existing header carries the per-view policy
+without changing its byte layout or invariant vertex-position contract.
+
+`forgeax_view::common::directionalShadowCasterBias` owns the automatic budget.
+The half-texel constant grows by two texels per unit of actual tangent slope,
+then caps at 6.25 texels. It does not saturate at 45 degrees: that excessive
+intermediate-angle displacement erased centimeter-scale blockers.
+Directional receivers compensate authored-normal overlap and apply bounded,
+one-sided plane correction at each filtered texel. PCF quality and authored
+radius remain separate. Directional variance moments retain native Reverse-Z depth through
+both RG16F passes and comparison; perspective spots and constant-bias cameras retain forward-depth moments.
+The existing raw-depth capability selects point loads for per-texel comparisons;
+other profiles use the comparison-sampler fallback with the same references.
+See the Render README for units and acceptance.
+
+Surface cascade blending uses one filter call site in a uniform loop bounded
+to two layers. This preserves the current/next samples and blend weight while
+avoiding duplicated native filter code that crashes Metal compilation in
+composed single-layer medium shaders. The Surface Browser and isolated Dawn
+runtime tests retain their original pixel oracles for this path.
+
+## Portable multi-stage utility programs
+
+Hi-Z and SSR share package-owned WGSL evaluation functions between finite compute
+and `PORTABLE_FRAGMENT` variants. Native barriers/storage declarations never enter
+the fragment module. Fragment variants have distinct publication IDs even when
+they originate in the same source file. Their selected entry bindings and MRT
+outputs remain reflected facts of that exact composed variant.
+Standard Forward generates the additional unit-radiance reflection response only
+when `REFLECTION_FALLBACK_AVAILABLE` admits the SSR outputs, including clearcoat
+response sampling. Ordinary material variants omit that response work.
+
+Auto exposure keeps its public native source export and adds the fragment source.
+Both embed `auto-exposure-common.wgsl` at build time; native and fragment entry
+files own only transport and execution. Shared classification and adaptation retain
+the V1 histogram semantics. Raw WGSL files are embedded by the package build;
+runtime imports neither a file loader nor the build-time compiler.
+
+TSR embeds package-owned analysis and reconstruction functions into both compute
+and fragment programs. Compute keeps its cooperative tile caches and exact row
+reductions; fragment gathers the same neighborhoods directly and returns three
+MRT outputs. One reconstruction coordinate tuple feeds both cache population and
+evaluation, including f32 phase boundaries. No workgroup memory, barriers, atomics
+or storage-texture declarations enter the fragment modules. Runtime selects the
+execution lane without interpreting macros or importing a compiler.

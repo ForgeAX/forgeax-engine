@@ -1,4 +1,4 @@
-# ForgeaX Game 3D
+# ForgeAX Game 3D
 
 Compact third-person reference: pointer-locked camera, camera-relative movement, Rapier character
 collision, a fantasy PBR showcase, a procedural low-poly armored scout, and one UiAsset.
@@ -227,7 +227,7 @@ camera and collisions.
 
 ## Coordinate contract
 
-ForgeaX uses a right-handed world with `+Y` up. This template sets yaw `0` to camera-forward `-Z`
+ForgeAX uses a right-handed world with `+Y` up. This template sets yaw `0` to camera-forward `-Z`
 and camera-right `+X`. Mouse-right turns the view right; mouse-down looks down and mouse-up looks
 up. WASD is projected onto the camera's horizontal forward/right axes, then the character turns to
 that resolved world-space movement. Pitch never adds vertical movement; Rapier remains the only

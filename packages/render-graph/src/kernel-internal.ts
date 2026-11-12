@@ -265,9 +265,8 @@ export function snapshotPass<FrameCtx extends RenderGraphFrame>(
       return {
         kind: 'copy',
         descriptor: Object.freeze({
-          ...descriptor,
+          ...snapshotEncoding(descriptor),
           accesses,
-          encode: descriptor.encode.bind(descriptor),
           executeIf: descriptor.executeIf?.bind(descriptor),
         }),
       };
@@ -277,9 +276,8 @@ export function snapshotPass<FrameCtx extends RenderGraphFrame>(
       return {
         kind: 'compute',
         descriptor: Object.freeze({
-          ...descriptor,
+          ...snapshotEncoding(descriptor),
           accesses,
-          encode: descriptor.encode.bind(descriptor),
           executeIf: descriptor.executeIf?.bind(descriptor),
           begin: descriptor.begin?.bind(descriptor),
           onBeginError: descriptor.onBeginError?.bind(descriptor),
@@ -293,9 +291,8 @@ export function snapshotPass<FrameCtx extends RenderGraphFrame>(
       return {
         kind: 'raster',
         descriptor: Object.freeze({
-          ...descriptor,
+          ...snapshotEncoding(descriptor),
           accesses,
-          encode: descriptor.encode.bind(descriptor),
           executeIf: descriptor.executeIf?.bind(descriptor),
           occlusionQuerySet: typeof querySet === 'function' ? querySet.bind(descriptor) : querySet,
           colorAttachments: Object.freeze(
@@ -327,4 +324,21 @@ function snapshotColor(color: GPUColor): GPUColor {
   const copy = Array.isArray(color) ? [...color] : { ...color };
   Object.freeze(copy);
   return copy;
+}
+
+function snapshotEncoding<
+  T extends {
+    readonly encode?: (...args: never[]) => unknown;
+    readonly encodeDirect?: (...args: never[]) => unknown;
+  },
+>(descriptor: T): T {
+  const captured = { ...descriptor };
+  const direct = descriptor.encodeDirect;
+  if (typeof direct === 'function')
+    Object.assign(captured, { encodeDirect: direct.bind(descriptor) });
+  else if (direct === undefined) {
+    const encode = descriptor.encode;
+    if (typeof encode === 'function') Object.assign(captured, { encode: encode.bind(descriptor) });
+  }
+  return captured;
 }

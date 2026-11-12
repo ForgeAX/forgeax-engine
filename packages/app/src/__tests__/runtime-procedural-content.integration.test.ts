@@ -18,6 +18,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import type { AssetHandle } from '@forgeax/engine-types';
 import { expect, it } from 'vitest';
+import { renderLifecycleManifestUrl } from '../../../render/src/__tests__/shader-manifest-fixture';
 
 interface Spawned {
   readonly mesh: AssetHandle<'mesh'>;
@@ -57,9 +58,6 @@ function debrisPlugin(spawned: (value: Spawned) => void): Plugin.Object {
 }
 
 it('creates, binds, edits and retires code-created assets across the Worker publication boundary', async () => {
-  const { renderLifecycleManifestUrl } = await import(
-    new URL('../../../render/src/__tests__/shader-manifest-fixture.ts', import.meta.url).href
-  );
   const identity = { source: 'runtime-procedural-content', epoch: 1 };
   const constructed = await constructRuntimeRendererHost(
     { width: 64, height: 64, getContext: () => null },

@@ -3,13 +3,12 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { CLOUD_LAYER_FEATURE_IDENTITY } from '../cloud/feature';
 import { createRenderSurfaceError, type RenderSurfaceExpectedError } from '../errors/render';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import {
@@ -19,13 +18,15 @@ import {
 } from '../pipeline/standard-profile';
 import type { FrameObservationDomain } from '../render-contract';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
-import type { SurfaceProfile } from '../render-system';
 import { admitSsrSpatial } from '../ssr/admission';
 import {
   SUBSURFACE_ATTACHMENT_BYTES,
   SUBSURFACE_DEFERRED_COLOR_FORMATS,
 } from '../standard-attachments';
 import { addTypedFullscreenPass } from '../typed-render-graph-primitives';
+import { type OpaquePassPlan, planOpaque } from '../world/pass-plan-systems';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
+import type { SurfaceProfile } from './render-system-driver';
 
 const rawOnlyProfile: SurfaceProfile = {
   kind: 'raw-only',
@@ -52,7 +53,7 @@ function topology(
   overrides: TopologyOverrides = {},
 ): RenderPipelineTopology {
   const { camera: cameraOverride, ...rest } = overrides;
-  return {
+  const planned: Omit<RenderPipelineTopology, 'opaque'> & { opaque?: OpaquePassPlan } = {
     pipelineId: STANDARD_PIPELINE_ID,
     standardProfile: profile,
     config: profile.ssao ? { ssao: { enabled: true } } : undefined,
@@ -86,6 +87,17 @@ function topology(
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
     ...rest,
+  };
+  // Fixtures plan the opaque lane exactly as the view's RenderQueue does.
+  return {
+    ...planned,
+    opaque:
+      rest.opaque ??
+      planOpaque({
+        renderPath: (planned.standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
+        gpuOcclusion: planned.config?.gpuOcclusion,
+        clearOnly: planned.clearOnly === true,
+      }),
   };
 }
 
@@ -140,6 +152,7 @@ async function build(
   lateOcclusion = false,
   cloudShadowResolution?: number,
   localLights = true,
+  postSceneWriter = false,
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const resolvedTopology = topology(profile, overrides);
@@ -156,7 +169,11 @@ async function build(
     throw new Error('standard output test resources could not be declared');
   if (overrides?.output?.autoExposure === true) {
     const parametersInit = graph.addComputePass('standard-auto-exposure-parameters-init', {
-      accesses: [{ resource: parameters.value, usage: 'storage-write' }],
+      // Production imports initialized previous state and authored parameters.
+      accesses: [
+        { resource: parameters.value, usage: 'storage-write' },
+        { resource: state.value, usage: 'storage-write' },
+      ],
       encode: () => undefined,
     });
     if (!parametersInit.ok) throw parametersInit.error;
@@ -243,7 +260,16 @@ async function build(
             cloudShadowResolution,
             hasFeatureRasterWork: (identity: string) => identity === CLOUD_LAYER_FEATURE_IDENTITY,
           }),
-      contributeFeatures: ({ namedTargets = {}, include, passNames }) => {
+      contributeFeatures: ({ targets, placement, namedTargets = {}, include, passNames }) => {
+        if (postSceneWriter && placement !== 'scene' && Object.keys(namedTargets).length === 0) {
+          const color = targets.find((target) => target.kind === 'scene-color');
+          if (color === undefined) throw new Error('post scene writer lost its color target');
+          return graph.addRasterPass('test-post-scene-writer', {
+            accesses: [{ resource: color.view, usage: 'color-attachment' }],
+            colorAttachments: [{ view: color.view, loadOp: 'load', storeOp: 'store' }],
+            encode: () => undefined,
+          });
+        }
         // Stand-in CloudLayer producers: the shadow before opaque receivers and
         // the composite into the lane's cloud scene target.
         const cloudOutput = passNames?.includes('cloud-layer-shadow')
@@ -292,7 +318,10 @@ async function build(
 }
 
 function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
-  const target = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+  const target = (
+    label: string,
+    format: 'rgba16float' | 'r8unorm' | 'rgba8unorm' = 'rgba16float',
+  ) => {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
@@ -319,6 +348,8 @@ function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     previousTemporal: target('taa-history-previous-temporal'),
     currentStability: target('taa-history-current-stability', 'r8unorm'),
     previousStability: target('taa-history-previous-stability', 'r8unorm'),
+    currentFlicker: target('taa-history-current-flicker', 'rgba8unorm'),
+    previousFlicker: target('taa-history-previous-flicker', 'rgba8unorm'),
   };
 }
 
@@ -447,6 +478,54 @@ async function buildTaa(profile: StandardProfile, overrides?: TopologyOverrides)
   if (!built.ok) return built;
   return graph.compile({ device, surfaceSize: { width: 1, height: 1 } });
 }
+
+describe('scene observation writer ordering', () => {
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('captures the %s scene after generic feature writers and before output', async (renderPath) => {
+    const built = await build(
+      { ...DEFAULT_STANDARD_PROFILE, renderPath },
+      { camera: { tonemap: 'none', antialias: 'none', bloom: 'off' } },
+      ['linear-hdr'],
+      false,
+      undefined,
+      false,
+      true,
+    );
+    expect(built.ok, built.ok ? '' : JSON.stringify(built.error)).toBe(true);
+    if (!built.ok) return;
+    try {
+      const passes = built.value.inspect().passes;
+      const names = passes.map((pass) => pass.name);
+      const writer = names.indexOf('test-post-scene-writer');
+      const observation = names.indexOf('linear-hdr-observation');
+      expect(writer).toBeGreaterThanOrEqual(0);
+      expect(
+        observation,
+        JSON.stringify(
+          passes.filter((pass) =>
+            ['test-post-scene-writer', 'linear-hdr-observation', 'output-transform'].includes(
+              pass.name,
+            ),
+          ),
+        ),
+      ).toBeGreaterThan(writer);
+      expect(passes[observation]?.dependencies).toContain('test-post-scene-writer');
+      expect(observation).toBeLessThan(names.indexOf('output-transform'));
+      const written = passes[writer]?.accesses.find(
+        (access) => access.usage === 'color-attachment',
+      );
+      expect(written).toBeDefined();
+      expect(passes[observation]?.accesses).toContainEqual({
+        resource: written?.resource,
+        usage: 'copy-src',
+      });
+    } finally {
+      (await built.value.retire()).unwrap();
+    }
+  });
+});
 
 describe('scene fullscreen temporal placement', () => {
   it.each([
@@ -862,6 +941,39 @@ describe('forgeax::standard graph', () => {
       ).toMatchObject({ descriptor: { size: { width: size, height: size } } });
     }
     (await result.value.retire()).unwrap();
+  });
+
+  it('samples Forward SSR depth through a depth-only view of the shared stencil attachment', async () => {
+    const views = vi.spyOn(RenderGraphBuilder.prototype, 'view');
+    try {
+      const result = await build(DEFAULT_STANDARD_PROFILE, {
+        reflectionFallback: { enabled: true },
+        ssr: {
+          status: 'admitted',
+          lane: 'forward',
+          config: { maxDistance: 1, thickness: 0.1, maxRoughness: 1 },
+          viewRange: 100,
+          work: {
+            attachmentCount: 3,
+            passCount: 4,
+            bindingCount: 4,
+            resourceCount: 3,
+            historyCount: 0,
+            temporalDemand: 0,
+          },
+        },
+      });
+      expect(result.ok).toBe(true);
+      expect(
+        views.mock.calls.some(
+          ([, descriptor]) =>
+            descriptor?.label === 'ssr-forward-depth' && descriptor.aspect === 'depth-only',
+        ),
+      ).toBe(true);
+      if (result.ok) (await result.value.retire()).unwrap();
+    } finally {
+      views.mockRestore();
+    }
   });
 
   it('resolves deferred lighting from sampled depth without replaying geometry', async () => {

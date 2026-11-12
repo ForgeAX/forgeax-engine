@@ -14,8 +14,9 @@ import {
   standardSurfaceParameters,
 } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { compileShader } from '../compile.js';
 import { cookMaterialAsset } from '../material/cook.js';
-import { createMaterialPackCooker } from '../material/pack-cooker.js';
+import { collectMaterialSources, createMaterialPackCooker } from '../material/pack-cooker.js';
 import { buildMaterialSourceCatalog } from '../material/source-catalog.js';
 
 const source = `#define_import_path game::pulse
@@ -191,6 +192,55 @@ describe('cookMaterialAsset', () => {
     expect(edited.receipt.identity.materialPublicationIdentity).not.toBe(
       record.receipt.identity.materialPublicationIdentity,
     );
+  });
+
+  it('compiles the Standard alpha test only into materials that can cut out', {
+    timeout: 60_000,
+  }, async () => {
+    // The in-process cooker reads the live Engine sources, so this checks the
+    // define and the projected discard without a stale shader package build.
+    const engineRoot = fileURLToPath(new URL('../../../shader/src', import.meta.url));
+    const catalog = buildMaterialSourceCatalog(
+      await collectMaterialSources([engineRoot], [engineRoot]),
+    );
+    expect(catalog.ok).toBe(true);
+    if (!catalog.ok) return;
+    const cookForward = async (staticSwitches: MaterialAsset['staticSwitches']) => {
+      const seen: Array<Readonly<Record<string, boolean>>> = [];
+      const result = await cookMaterialAsset(
+        {
+          material: 'root',
+          table: {
+            root: {
+              kind: 'material',
+              parameters: standardSurfaceParameters(
+                standardMaterialParameters(new Set(['baseColor', 'metallic', 'roughness'])),
+              ),
+              passes: [{ name: 'Forward', program: { module: 'forgeax_material::standard' } }],
+              ...(staticSwitches === undefined ? {} : { staticSwitches }),
+            },
+          },
+          sources: catalog.value,
+        },
+        (source, options) => {
+          seen.push(options?.defines ?? {});
+          return compileShader(source, options);
+        },
+      );
+      expect(result.ok, result.ok ? '' : result.error.message).toBe(true);
+      if (!result.ok) throw new Error('cook failed');
+      const wgsl = result.value.passes[0]?.compile.manifestEntry.wgsl ?? '';
+      const alphaTest = /fn alphaTestSurface\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(wgsl)?.[1] ?? '';
+      return { defines: seen, alphaTest };
+    };
+    // Standard keeps alphaCutoff/alphaHash unless the author switches both off,
+    // so the default stays an alpha-mask program and opaque is an opt-in.
+    const masked = await cookForward(undefined);
+    const opaque = await cookForward({ alphaClipping: false, alphaHash: false });
+    expect(opaque.defines.every((defines) => defines.ALPHA_MASK === false)).toBe(true);
+    expect(masked.defines.every((defines) => defines.ALPHA_MASK === true)).toBe(true);
+    expect(opaque.alphaTest).not.toMatch(/\bdiscard\b/);
+    expect(masked.alphaTest).toMatch(/\bdiscard\b/);
   });
 
   it('does not infer Standard physical defines for a custom program', async () => {
@@ -400,7 +450,7 @@ fn fs_main() -> @location(0) vec4<f32> {
       `#define_import_path game::alias-surface
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(vec3<f32>(0.6), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(0.6), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`,
     );
     try {

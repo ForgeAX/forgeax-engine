@@ -106,19 +106,99 @@ it('keeps absent, Standard fallback and authored output contracts distinct and r
     expect(lookup).toHaveBeenCalledTimes(3);
     expect(lookup.mock.calls.map((args) => args[17])).toEqual([
       undefined,
-      ['r32uint'],
+      ['rg16float'],
       ['rg16float'],
     ]);
     expect(f.receipts.map(({ entity }) => entity)).toEqual([1, 2, 3]);
     Object.assign(f.c, { reflectionFallbackColorFormat: 'rgba16float' });
     record(['rgba8unorm', 'rg16float']);
-    expect(lookup.mock.calls[4]?.[17]).toEqual(['rgba16float']);
+    expect(lookup.mock.calls[4]?.[17]).toEqual(['rg16float']);
     expect(lookup.mock.calls[5]?.[17]).toEqual(['rg16float']);
     // Sharing a pass signature never admits a material whose declared targets
     // disagree with the graph's ordered attachment ABI.
     expect(() => record(['rg16float', 'rgba8unorm'])).toThrow(
       'material outputs match the graph attachments in location order',
     );
+    expect(f.errors).toEqual([]);
+  } finally {
+    lookup.mockRestore();
+    f.dispose();
+  }
+});
+
+it.each([
+  'forgeax::default-standard-pbr',
+  'forgeax::pbr-skin',
+  'forgeax::default-standard-pbr-skin',
+])('passes the complete Forward SSR fallback and response MRT for %s', async (materialShaderId) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  const standard = f.add({ entity: 1, submeshes: 1 });
+  standard.source.material.adopt({
+    ...standard.source.material.snapshot,
+    materialShaderId,
+  });
+  Object.assign(f.c, { reflectionFallbackColorFormat: 'rgba16float' });
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+  try {
+    f.acceptMaterials();
+    recordGeometryDraws(
+      f.c,
+      pass,
+      null,
+      [[0], [0], [0]],
+      1,
+      f.meshGroup,
+      f.meshGroup,
+      () => f.materialGroup,
+      'forward',
+      undefined,
+      ['rgba16float', 'rgba16float', 'rgba16float'],
+    );
+    expect(lookup.mock.calls[0]?.[17]).toEqual(['rgba16float', 'rgba16float']);
+    expect(lookup.mock.calls[0]?.[5]).toContain('REFLECTION_FALLBACK_AVAILABLE=true');
+  } finally {
+    pass.end();
+    lookup.mockRestore();
+    f.dispose();
+  }
+});
+
+it('requests a colorless PSO only when the forward pass binds no color target', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const module = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuSetupFixture(device, module);
+  f.add({ entity: 1, submeshes: 1 });
+  const lookup = vi.spyOn(f.c.runtime, 'getMaterialShaderPipelineEntry');
+  const record = (formats: readonly GPUTextureFormat[]) => {
+    f.acceptMaterials();
+    const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+    try {
+      recordGeometryDraws(
+        f.c,
+        pass,
+        null,
+        [[0]],
+        1,
+        f.meshGroup,
+        f.meshGroup,
+        () => f.materialGroup,
+        'forward',
+        undefined,
+        formats,
+      );
+    } finally {
+      pass.end();
+    }
+  };
+  try {
+    // Sprite transparent sub-passes record into the color target and must say so.
+    record(['rgba16float']);
+    expect(lookup.mock.calls.at(-1)?.[9]).not.toBeNull();
+    record([]);
+    expect(lookup.mock.calls.at(-1)?.[9]).toBeNull();
     expect(f.errors).toEqual([]);
   } finally {
     lookup.mockRestore();

@@ -13,6 +13,7 @@ export type EnvironmentCandidate =
 
 /** Immutable extracted atmosphere facts; groundOrigin derives from Transform. */
 export interface AtmosphereParameters {
+  readonly backgroundOnly: boolean;
   readonly planetRadius: number;
   readonly atmosphereHeight: number;
   readonly groundOrigin: readonly [number, number, number];
@@ -35,7 +36,7 @@ export interface AtmosphereParameters {
 
 /** One validation vocabulary for extraction and published frame inputs. */
 export const ATMOSPHERE_PARAMETER_RANGES: Readonly<
-  Record<keyof AtmosphereParameters, AtmosphereParameterRange>
+  Record<Exclude<keyof AtmosphereParameters, 'backgroundOnly'>, AtmosphereParameterRange>
 > = Object.freeze({
   planetRadius: { min: 1, max: 1e9 },
   atmosphereHeight: { min: 1, max: 1e8 },
@@ -69,6 +70,8 @@ export interface FogCandidate {
   readonly near: number;
   /** Linear-mode full-fog depth (world units). */
   readonly far: number;
+  /** Scale of the fog opacity on background pixels under an Atmosphere, in [0, 1]. */
+  readonly skyOpacity: number;
 }
 
 export type EnvironmentSource =
@@ -181,6 +184,17 @@ function validateFogScalars(candidate: FogCandidate): FogParameterIssue | undefi
       expected: 'a finite number in [0, 1]',
     };
   }
+  if (
+    !Number.isFinite(candidate.skyOpacity) ||
+    candidate.skyOpacity < 0 ||
+    candidate.skyOpacity > 1
+  ) {
+    return {
+      field: 'skyOpacity',
+      value: candidate.skyOpacity,
+      expected: 'a finite number in [0, 1]',
+    };
+  }
   return undefined;
 }
 
@@ -233,7 +247,11 @@ export function freezeAtmosphere(parameters: AtmosphereParameters): AtmospherePa
 export function validateAtmosphereParameters(
   parameters: AtmosphereParameters,
 ): AtmosphereInvalidParameterError | undefined {
-  for (const field of Object.keys(ATMOSPHERE_PARAMETER_RANGES) as (keyof AtmosphereParameters)[]) {
+  if (typeof parameters.backgroundOnly !== 'boolean')
+    return new AtmosphereInvalidParameterError('backgroundOnly', Number.NaN, { min: 0, max: 1 });
+  for (const field of Object.keys(
+    ATMOSPHERE_PARAMETER_RANGES,
+  ) as (keyof typeof ATMOSPHERE_PARAMETER_RANGES)[]) {
     const value = parameters[field];
     const range = ATMOSPHERE_PARAMETER_RANGES[field];
     const channels = typeof value === 'number' ? [value] : value;

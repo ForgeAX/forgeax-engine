@@ -67,6 +67,30 @@ integrity checks; it does not infer an executing compiler identity from disk
 metadata alone. Build consumers use the Naga wrapper's Result form. A failed
 verification or initialization exposes no identity and remains retryable.
 
+Node-hosted loader tests select the browser branch by hiding only
+`process.versions.node`. They retain the Node process and its `nextTick` transport
+while asynchronous fetch and Vitest RPC callbacks are pending; the same tests
+still verify raw glue, both embedded manifest encodings and tamper rejection.
+
+Browser bundles may inline the provenance manifest as a data URL. The loader
+decodes its embedded bytes directly, including base64 and percent encoding,
+without requiring `connect-src data:`. External manifests still use fetch, and
+both transports retain the same WASM, glue and compiler-fingerprint checks.
+The package build copies `pkg/wgpu_wasm.js` byte-for-byte to
+`dist/wgpu_wasm_glue.bytes`; browser and Node loaders verify those bytes against
+the published glue digest. Browser bundlers may emit this resource as a data URL
+or a static asset, and the loader reads either form without parsing a transformed
+JavaScript module response.
+The production CSP browser regression builds both forms and initializes the
+real WASM in a Worker while the host policy rejects data-URL fetches.
+
+The production fixture closes its Vite Preview owner before removing output.
+This also destroys unfinished HTTP connections and releases Preview hooks;
+closing only the underlying Node server can wait for browser connections to
+expire. A real unfinished-request regression bounds cleanup to two seconds in
+the existing CI contract job. Both real Worker transport cases retain their
+original initialization and test deadlines.
+
 合并的工程理由（research F-3）：两侧底层共享 wgpu 与 naga（Cargo dedup 保证同版本 naga 唯一实例），合并后单 wasm 体积估算 0.66–0.9 MB gzip，相对独立两包总和小 10–15%。AI 引擎用户在主路径（`navigator.gpu` 探测成功）下根本不下载这份 wasm（rhi-webgpu thin shim 直传 navigator.gpu），lazy-load 仅在非浏览器场景或显式 escape hatch 触发。
 
 ## 不向 AI 用户暴露的理由
@@ -188,7 +212,7 @@ bash packages/wgpu-wasm/build.sh            # 或 pnpm -F @forgeax/engine-wgpu-w
 pnpm -F @forgeax/engine-wgpu-wasm fetch-wasm
 ```
 
-路径 A 需 Rust ≥ 1.93 + `wasm32-unknown-unknown` target + `wasm-pack`（详见 [CONTRIBUTING.md](../../CONTRIBUTING.md) §Rust toolchain）。`rust-toolchain.toml` 在本目录 pin 1.93，rustup 通常自动应用；若未生效，跑 `rustup show` 检查。
+路径 A 需 Rust ≥ 1.93 + `wasm32-unknown-unknown` target + `wasm-pack`（详见 CONTRIBUTING.md §Rust toolchain）。`rust-toolchain.toml` 在本目录 pin 1.93，rustup 通常自动应用；若未生效，跑 `rustup show` 检查。
 
 路径 B 由根 `postinstall` 在 `pkg/` 缺失时**非致命**自动执行（离线 / 私仓无 `GITHUB_TOKEN` / bundle 未发布时仅告警，不阻断 `pnpm install`）。共享下载器先用 Node `fetch`，握手失败时依次尝试 `gh` 和平台原生 `curl`（Windows 为 `curl.exe`）；所有路径仍锁定当前仓库、`wasm-artifacts` tag 和 content-keyed asset。release 资产按内容 hash 命名（`scripts/content-key.mjs` 覆盖 `src/**/*.rs` + `Cargo.{toml,lock}` + `rust-toolchain.toml` + `build.sh`），CI `publish-wgpu-wasm-release` job 在 main push 时打包发布——源码改一次，asset 名随之变，**旧 stale `pkg/` 无从被服务**（根治 `.d.ts` 与 `rhi.rs` 漂移）。
 

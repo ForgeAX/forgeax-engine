@@ -54,7 +54,12 @@ function recoveryFixture({ staleShared = false, failShard = false, corruptCore =
   const shared = (target: string, fingerprint = 'current') =>
     write(join(target, 'shared-app-inputs/manifest.json'), { inputFingerprint: fingerprint });
   const runCommand = vi.fn(async (command: string[]) => {
-    const args = command.slice(1);
+    const scriptIndex = command.findIndex((argument) => /^(?:scripts|packages)\//.test(argument));
+    expect(scriptIndex).toBeGreaterThan(0);
+    const args = command.slice(scriptIndex);
+    expect(command.slice(1, scriptIndex)).toEqual(
+      args[0] === 'scripts/ci/build-shared-app-inputs.mjs' ? ['--max-old-space-size=4096'] : [],
+    );
     calls.push(args);
     switch (args[0]) {
       case 'scripts/ci/download-artifact-with-retry.mjs': {

@@ -10,7 +10,7 @@
 - **Camera bloom columns**: `bloom`, `bloomThreshold`, `bloomIntensity`, `bloomSmoothWidth`, and `bloomRadius` configured per-Camera alongside `tonemap`/`antialias`.
 - **Zero-overhead default**: bloom=0 (BLOOM_DISABLED) allocates no Bloom textures, binds no Bloom pipelines, and performs no Bloom uploads or encodes.
 - **Runtime toggle**: Space-key press-edge system swaps Camera.bloom between BLOOM_ENABLED and BLOOM_DISABLED via world.set. DOM HUD overlay mirrors state as text; the carrier smoke verifies on -> off -> resize -> on surface reconfiguration.
-- **HDR+Reinhard pipeline**: This scene explicitly selects Reinhard-Extended and threshold 1.0. Bloom also works with NoToneMapping; its engine defaults are threshold 1, smooth width 0.01, intensity 0.5, and radius 0.
+- **HDR+Reinhard pipeline**: This scene explicitly selects Reinhard-Extended and threshold 1.0. Bloom also works with NoToneMapping; its engine defaults are threshold -1 (none), smooth width 0.01, intensity 0.5, and radius 0.
 
 Game-facing imports use the public umbrella route:
 
@@ -33,7 +33,7 @@ pnpm --filter @forgeax/hello-bloom smoke:falsify # expected red Bloom contributi
 pnpm --filter @forgeax/hello-bloom smoke:all # complete Dawn + Browser carrier gate
 ```
 
-Ordinary CI retains the initial 60-frame lifecycle receipt and every resize/recovery pixel check, but uses eight post-resize frames with `FORGEAX_DAWN_LIGHTWEIGHT=1` or `FORGEAX_BROWSER_CI_LIGHTWEIGHT=1`. GPU timing mode and full local runs retain sixty post-resize frames.
+Ordinary Browser CI awaits sixty successfully completed ready receipts before its first picture; submitted preparation frames do not qualify. Ordinary CI retains every resize/recovery pixel check, but uses eight post-resize frames with `FORGEAX_DAWN_LIGHTWEIGHT=1` or `FORGEAX_BROWSER_CI_LIGHTWEIGHT=1`. GPU timing mode and full local runs retain sixty post-resize frames.
 
 The standalone extraction and quality Dawn carriers destroy their device, drain
 completion callbacks, verify the destruction notification and release their GPU

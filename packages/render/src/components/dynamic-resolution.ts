@@ -6,6 +6,7 @@ import {
   DynamicResolutionRequiresTaaError,
 } from '../errors/render';
 import type { Antialias } from './camera';
+import { isTemporalAntialias } from './camera';
 
 /** Optional Camera companion that enables fixed or adaptive internal scaling. */
 export const DynamicResolution = defineComponent('DynamicResolution', {
@@ -61,7 +62,7 @@ export function validateDynamicResolutionCamera(
   if (input === undefined) return ok(undefined);
   const parameters = validateDynamicResolutionParameters(input);
   if (!parameters.ok) return parameters;
-  if (antialias !== 'taa') {
+  if (!isTemporalAntialias(antialias)) {
     return err(new DynamicResolutionRequiresTaaError({ antialias }));
   }
   return parameters;

@@ -11,8 +11,15 @@ function collectWgsl(directory: string, files: string[]): void {
   }
 }
 
+// Compiled profile membership also depends on the engine manifest producer,
+// not only on the bytes of individual WGSL files. Bump this revision whenever
+// source-entry selection/composition changes so an older publication cannot
+// pass provenance checks while omitting a newly admitted renderer entry.
+const ENGINE_SHADER_INPUTS_REVISION = 4;
+
 /**
- * SHA-256 over Engine and package-owned WGSL plus their program declarations.
+ * SHA-256 over the engine input recipe, Engine and package-owned WGSL, and
+ * their program declarations.
  * Paths stay relative so producer and consumer checkouts agree. `undefined`
  * when `root` holds no WGSL, i.e. there is no source to compare against.
  */
@@ -25,6 +32,7 @@ export function engineShaderSourceDigest(root: string): string | undefined {
   }
   if (files.length === 0) return undefined;
   const hash = createHash('sha256');
+  hash.update(`forgeax-engine-shader-inputs-v${ENGINE_SHADER_INPUTS_REVISION}\0`);
   const rows = files.map((path) => [relative(root, path).split(sep).join('/'), path] as const);
   rows.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   for (const [name, path] of rows) {

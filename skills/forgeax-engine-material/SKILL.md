@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-material
-description: ForgeaX MaterialAsset authoring and visibility route. Use when creating, loading, or debugging materials, textures, lighting response, or material readiness.
+description: ForgeAX MaterialAsset authoring and visibility route. Use when creating, loading, or debugging materials, textures, lighting response, or material readiness.
 ---
 
 # forgeax-engine-material
@@ -39,9 +39,18 @@ and can erase an overhead occluder. Start from the component defaults, then
 verify both the occluded surface and a directly lit control for self-shadow acne.
 See [directional shadow units](../../packages/render/README.md#directional-shadow-quality-author--inspect--recover).
 
+Generated Standard/Unlit casters preserve authored culling (`back` by default),
+so their maps retain the light-facing entry depth. Exit-face-only maps can
+misclassify receiver/filter samples inside a touching solid as lit. Keep
+double-sided materials and explicit custom ShadowCaster state as authored;
+point-face projection winding has a separate correction. Run the shared
+`cube-plane-shadow-contact` Browser/Dawn regression for a contact-gap change: it
+checks the central contact band and exposed ground/top controls in both render
+paths, rather than accepting a single dark pixel or zero bias.
+
 ## Color-lighting parity handoff
 
-For a direct-light material issue, use the [color-lighting parity entry](../../apps/parity/color-lighting/README.md), then follow its status recovery map. The `SceneCase` and `CaseReport` schemas are the report contract; repair the named material or producer owner and rerun the same case. Do not turn a missing producer capture into a material pass.
+For a direct-light material issue, use the [color-lighting parity entry](../../apps/parity/color-lighting/README.md), then follow its status recovery map. The `SceneCase` and `CaseReport` schemas are the report contract; repair the named material or producer owner and rerun the same case. Record a missing producer capture as missing, not as a material pass.
 
 ## Direct-light parity entry
 
@@ -114,11 +123,11 @@ Back-lit thin surfaces use `diffuseTransmission` (0..1) and `diffuseTransmission
 
 The factor is a split, not an extra term: reflected `(1 - factor) · baseColor`, transmitted
 `factor · tint`, so a white leaf in a white sky stays at 1 on both sides. `factor = 1` is a lossless
-frosted diffuser, never glass; use `transmission` for see-through. Leaves sit near 0.3-0.6. Unreal
+frosted diffuser (glass is not this); use `transmission` for see-through. Leaves sit near 0.3-0.6. Unreal
 two-sided foliage adds `SubsurfaceColor` on top of full diffuse (about 2x in a white furnace); convert
 with `S = max(1, |Base| + |Sub|)`, `factor = |Sub| / (|Base| + |Sub|)`,
 `baseColor = Base / (S · (1 - factor))`, `tint = Sub / (S · factor)` (`|c|` = largest channel), which
-matches Unreal's path-traced balance, and do not port its GGX back-scatter peak (render README
+matches Unreal's path-traced balance, and leave out its GGX back-scatter peak (render README
 §Factor semantics).
 
 1. Author values with `Materials.standard({ diffuseTransmission, diffuseTransmissionColor, ... })` and
@@ -126,7 +135,7 @@ matches Unreal's path-traced balance, and do not port its GGX back-scatter peak 
 2. Bind it to a cooked Standard alias root: module id containing `::standard-`, the five canonical
    user-region textures, and the diffuse-transmission parameter names. The built-in
    `forgeax::default-standard-pbr` root is layer-free, so values alone stay inert.
-3. The layer is Forward-only; do not expect it in a Deferred GBuffer. Authored alias roots currently
+3. The layer is Forward-only; expect it in Forward only, absent from a Deferred GBuffer. Authored alias roots currently
    draw on the per-entity CPU lane and compile out clustered and rect-area lights (render README
    §Diffuse transmission); budget dense foliage accordingly.
 4. Verify with the back-lit falsifier pattern in `apps/hello/foliage-transmission` (opaque control
@@ -168,6 +177,10 @@ an API description is not a measured quality, performance or complete-CI receipt
 |:--|:--|
 | Texture without usable UVs (rocks, terrain, kitbash) | `Materials.standard({ ..., triplanar: { space: 'world' \| 'object', scale, sharpness } })` |
 | Baked object-space normal map | `Materials.standard({ normalTexture, normalMapSpace: 'object' })` |
+| Height relief on a flat polygon (trim bakes, grout, panel lines) | `Materials.standard({ normalTexture, displacementTexture, displacementScale, displacementBias, displacementMode: 'parallax' })`; geometry, shadows and bounds stay at the base mesh. Parallax constraints: needs `normalTexture` (`bumpTexture` ignored); no independent `metallicTexture` (use `metallicRoughnessTexture`); with transmission below the dedicated budget it falls back to normal mapping, reported in the material sampled-texture budget |
+| Mirror/polished floor reflecting the scene | Pack-cooked `Materials.standard({ ..., planarReflection: true })` plus Camera `PlanarReflection` on the same plane; leave `target` unset for a Renderer-owned mirror sized by `resolutionScale` (render README §Planar reflection capture) |
+| Glossy / brushed floor with a blurred reflection | Same, with `PlanarReflection.generateMipmaps: true`: roughness picks the mirror mip (`roughness × (levels − 1)`) instead of fading it out |
+| Wet ground / rain puddles (ripple-distorted reflection) | Custom Standard Surface with `planarReflection: true`: ripple `normalWS` from `frameTime`, per-pixel `roughness` for wetness; set `PlanarReflection.distortion` (normal distortion radius in world units) on the camera |
 | Diffuse only, no highlight | `Materials.lambert({ baseColor, ... })` |
 | Lit look without lights (sculpt, preview) | `Materials.matcap({ texture, sampler })` |
 | Debug the shading normal | `Materials.normal()` |
@@ -175,7 +188,10 @@ an API description is not a measured quality, performance or complete-CI receipt
 `space: 'object'` keeps the texture on a moving mesh; `'world'` keeps it in the
 world. Triplanar refuses alpha masking and the slots it cannot project, and
 object-space normals refuse `bumpTexture`, with `material-authoring-contract-invalid`
-(`detail.parameter` names the option). Neither reaches the ray reference
+(`detail.parameter` names the option). Object-space normals also need a blue
+channel: an RG-only normal texture (`rg8unorm`, `bc5-rg-unorm`, `eac-rg11unorm`,
+Basis RG) fails readiness with `asset-invalid-value`
+(`detail.reason: 'normal-texture-lacks-blue'`); keep RG normals in tangent space. Neither reaches the ray reference
 (`ray-material-unsupported`). Matcap and Normal are unlit: no lights, no
 shadow receipt. Evidence and falsifiers live in `apps/hello/material-projection`
 (render README §Projection and the non-PBR material family).
@@ -184,8 +200,7 @@ shadow receipt. Evidence and falsifiers live in `apps/hello/material-projection`
 
 Transparent draws composite in back-to-front sorted order by default. For
 interpenetrating or cyclic transparent layers, set the view's
-`Camera.transparency` to `TRANSPARENCY_WEIGHTED_BLENDED`. Do not reorder
-entities or split meshes in the app. There is no per-material opt-in.
+`Camera.transparency` to `TRANSPARENCY_WEIGHTED_BLENDED`. Leave entity order and meshes as authored. There is no per-material opt-in.
 
 A draw accumulates only when all of these hold:
 - its blend is straight over (`src-alpha / one-minus-src-alpha`) or
@@ -206,7 +221,7 @@ the exact over-operator for overlapping layers. See the
 ## Mental model
 
 The recovery route is structured error inspection followed by source or cook
-repair; it never adds a parallel material surface.
+repair; it keeps one material surface.
 
 `MaterialAsset` owns `passes`, `parameters`, `values`, and optional `parent`.
 The root owns the effective contract. A child inherits the root and supplies
@@ -237,6 +252,21 @@ capture. Probe sampling uses the
 renderer-owned selected probe, roughness mip, local box projection, and
 Skylight irradiance fallback. Read pixels only after the matching
 `FrameReceipt.completed` promise resolves.
+
+A Three `VideoTexture` on a mesh maps to a `VideoAsset` bound as the material
+texture (`baseColorTexture`, emissive or a `texture_external` root param) on a
+renderable that also carries `VideoPlayer` (`playing`, `loop`). Import the clip
+with `forgeax asset add assets/clip.mp4` (`.mp4`/`.m4v`/`.webm`/`.ogv`; the
+container is streamed, never inlined) or create `{ kind: 'video', url }` at
+runtime. In a DOM realm call `installDomVideoSourceProvider(world)` from
+`@forgeax/engine/graphics-extras`; it creates the muted inline `<video>` and
+follows `VideoPlayer`. In the default Engine Worker App already installed
+`installWorkerVideoSourceProvider`: the page owns the `<video>` (the Three
+`VideoTexture` element) and transfers each new frame as a `VideoFrame`, one in
+flight per consumer. Do not call the DOM installer there (it returns
+`video-dom-unavailable`); read `provider.status(entity, clip)` for
+`video-autoplay-blocked` / `video-load-failed` and call `provider.resume()` from
+a gesture.
 
 A caller `GPUTexture` or a video uses `renderer.importTexture({ kind:
 'gpu-texture' | 'video', ... })`. Bind `{ source: importedHandle.source }`
@@ -300,8 +330,8 @@ asset and material owners:
    `Lines.cap` selects `butt` (default) or `round` ends and joins. Points read
    the mesh `color` stream as a per-point tint and `uv1.x` as a size scale.
 3. Select `Materials.unlit`; its render state supplies blending and depth
-   writes and its base-colour texture maps across each point sprite. Do not
-   author a replacement shader or mesh.
+   writes and its base-colour texture maps across each point sprite. Use it as-is
+   with no replacement shader or mesh.
 4. Let Standard extract, prepare, and record the retained expansion.
 5. Use `renderer.inspect` and the RHI debug capture when source, derived,
    binding, or draw evidence is needed.
@@ -340,8 +370,8 @@ primitive has fewer sets than the material requires.
 | `gltf-material-uv-set-missing` | slot and available sets | Add the source UV set and re-import |
 
 Read `.code`, `.expected`, `.hint`, and the narrowed `.detail`; this is the
-recovery route, and it never parses a diagnostic message or silently replaces
-an engine resource.
+recovery route, and it reads the structured fields and keeps the
+engine resource.
 
 ## Routing
 
@@ -369,7 +399,7 @@ const snapshot = resolveVisibility(world);
 | Why did a material fail? | Material/shader structured errors | Repair the cooked contract and retry |
 | Why is the count unexpected? | `renderer.inspect().visibilityStats` | Inspect the renderer candidate path |
 
-Do not replace a missing material, mesh, camera, or visibility path with a
+Fix a missing material, mesh, camera, or visibility path at its owner instead of a
 demo-side stand-in. Visibility does not own camera, picking, lifecycle, assets,
 or VFX shadow behavior. Those are out of scope for this material skill.
 ## Custom multiple outputs
@@ -410,7 +440,7 @@ ACES, large emissive surfaces above about 1.5 clip toward white and lose hue;
 use 0.8-1.5 for panels and windows and 3-10 only for small bloom sources
 (SDK runtime-light-emissive).
 Glow meshes (beams, light pillars) add light: emission-only Surface (`return surfaceEmissionOnly(input, color, opacity)` from `forgeax_material::surface_v1`: the template still lights an additive Surface, the helper zeroes sun Fresnel glare and sky reflection), `one / one`
-colour blend, `zero / one` alpha, peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
+colour blend, `zero / one` alpha (`ADDITIVE_BLEND` from `@forgeax/engine-render/authoring`, UE `BLEND_Additive`; `Materials.unlit(color, { blendMode: 'additive' })` also turns off depth writes, uses the Transparent queue and premultiplies colour by opacity), peak under the bloom threshold, `renderState.fog: false` to skip scene fog (any forward draw; deferred opaque still fogs), alpha fading with
 height on an open tapered mesh (SDK beam-pillar).
 
 A Surface defines material properties only; it gets no sun, sky or camera. For a sea use the stock `model: 'single-layer-medium'` (sun glint, Skylight environment reflection, fog; render README "Sea sun and sky").
@@ -422,3 +452,13 @@ outside the frustum. The default spot has a 60-degree outer and 0-degree inner
 half-angle (falloff across the whole cone); `outerConeDeg` alone narrows it.
 Equal angles give a hard cone; they are valid with shadows on or off and use a defined hard step in
 surface and volume shaders. Spot shadow farPlane remains its own range.
+
+## Capture faces
+
+Which Features record into capture faces (planar mirror now; probe and cube are
+a follow-up) is set per Feature by `RenderFeature.capture`: `'display-only'`
+(default), `'all'`, or `{ faces: ['planar' | 'probe' | 'cube'] }`. GPU particles
+declare `'all'`: they draw again in each recorded face, costing one extra
+particle draw per face at the face resolution. Opt out with
+`createGpuParticleFeature({ capture: 'display-only' })`. Post effects stay
+display-only. See `packages/vfx-render/README.md`.

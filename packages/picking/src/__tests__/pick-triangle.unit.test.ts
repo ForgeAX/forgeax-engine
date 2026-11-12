@@ -262,6 +262,46 @@ describe('pickTriangle', () => {
   });
 });
 
+describe('pickTriangle submesh identity', () => {
+  it('reports the hit submesh index of a multi-submesh indexed mesh', () => {
+    const scene = makeScene();
+    // Submesh 0 is off-axis; submesh 1 covers the screen centre.
+    const position = new Float32Array([4, 4, 0, 5, 4, 0, 4, 5, 0, -1, -1, 0, 1, -1, 0, 0, 1, 0]);
+    const mesh = scene.assets
+      .create({
+        kind: 'mesh',
+        vertices: position,
+        indices: new Uint16Array([0, 1, 2, 3, 4, 5]),
+        attributes: { position },
+        submeshes: [
+          {
+            indexOffset: 0,
+            indexCount: 3,
+            vertexCount: 6,
+            topology: 'triangle-list',
+            materialSlot: 1,
+          },
+          {
+            indexOffset: 3,
+            indexCount: 3,
+            vertexCount: 6,
+            topology: 'triangle-list',
+            materialSlot: 0,
+          },
+        ],
+        materialSlots: [{ slotName: 'Glow' }, { slotName: 'Body' }],
+      })
+      .unwrap() as AssetHandle<'mesh'>;
+    spawnMesh(scene, mesh);
+
+    const result = query(scene);
+    expect(result.status).toBe('hit');
+    if (result.status !== 'hit') return;
+    expect(result.hit.submeshIndex).toBe(1);
+    expect(result.hit.triangleIndex).toBe(1);
+  });
+});
+
 describe('current skin triangle pose', () => {
   it('hits a posed triangle outside its rest bounds and ignores the mesh node transform', () => {
     const scene = makeScene();

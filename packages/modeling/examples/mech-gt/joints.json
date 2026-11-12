@@ -1,0 +1,33 @@
+{
+  "schema": "forgeax.mech-gt.joints/1",
+  "form": "mech",
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "axes": "Y up, the mech faces +Z, its left side is +X; dof rotate about parent-space axes",
+  "height": 5.64,
+  "headsPerBody": 8.46,
+  "rationale": "legs lengthened by two-stage telescopes (0.6 m per leg bone, shut in car form) for a hero leg share, which puts the height at 5.64 m; the head keeps the 0.667 m of the former 5 m, 7.5-head figure, so the figure is 8.46 heads tall",
+  "joints": [
+    {"name":"root","parent":null,"position":[0,3.172083,0],"dof":[]},
+    {"name":"spine","parent":"root","position":[0,3.572083,0],"dof":[{"axis":"x","min":-30,"max":45},{"axis":"y","min":-45,"max":45},{"axis":"z","min":-25,"max":25}]},
+    {"name":"chest","parent":"spine","position":[0,4.106083,0],"dof":[{"axis":"x","min":-20,"max":30},{"axis":"y","min":-30,"max":30},{"axis":"z","min":-15,"max":15}]},
+    {"name":"neck","parent":"chest","position":[0,4.706083,0],"dof":[{"axis":"x","min":-40,"max":40},{"axis":"y","min":-70,"max":70},{"axis":"z","min":-30,"max":30}]},
+    {"name":"head","parent":"neck","position":[0,4.906083,0],"dof":[{"axis":"x","min":-30,"max":30},{"axis":"y","min":-45,"max":45}]},
+    {"name":"shoulder-l","parent":"chest","position":[0.833,4.539083,0],"dof":[{"axis":"x","min":-170,"max":60},{"axis":"y","min":-90,"max":90},{"axis":"z","min":-10,"max":180}]},
+    {"name":"elbow-l","parent":"shoulder-l","position":[0.967,3.672083,0.033],"dof":[{"axis":"x","min":-150,"max":0},{"axis":"y","min":-90,"max":90}]},
+    {"name":"wrist-l","parent":"elbow-l","position":[1.033,2.906083,0.067],"dof":[{"axis":"x","min":-70,"max":70},{"axis":"z","min":-30,"max":30}]},
+    {"name":"hip-l","parent":"root","position":[0.367,3.039083,0],"dof":[{"axis":"x","min":-120,"max":30},{"axis":"y","min":-45,"max":45},{"axis":"z","min":-15,"max":60}]},
+    {"name":"knee-l","parent":"hip-l","position":[0.40988,1.652629,0.068868],"dof":[{"axis":"x","min":0,"max":150}]},
+    {"name":"ankle-l","parent":"knee-l","position":[0.40988,0.233,0.000468],"dof":[{"axis":"x","min":-40,"max":40},{"axis":"z","min":-20,"max":20}]},
+    {"name":"toe-l","parent":"ankle-l","position":[0.40988,0.067,0.500468],"dof":[{"axis":"x","min":-20,"max":40}]},
+    {"name":"shoulder-r","parent":"chest","position":[-0.833,4.539083,0],"dof":[{"axis":"x","min":-170,"max":60},{"axis":"y","min":-90,"max":90},{"axis":"z","min":-180,"max":10}]},
+    {"name":"elbow-r","parent":"shoulder-r","position":[-0.967,3.672083,0.033],"dof":[{"axis":"x","min":-150,"max":0},{"axis":"y","min":-90,"max":90}]},
+    {"name":"wrist-r","parent":"elbow-r","position":[-1.033,2.906083,0.067],"dof":[{"axis":"x","min":-70,"max":70},{"axis":"z","min":-30,"max":30}]},
+    {"name":"hip-r","parent":"root","position":[-0.367,3.039083,0],"dof":[{"axis":"x","min":-120,"max":30},{"axis":"y","min":-45,"max":45},{"axis":"z","min":-60,"max":15}]},
+    {"name":"knee-r","parent":"hip-r","position":[-0.40988,1.652629,0.068868],"dof":[{"axis":"x","min":0,"max":150}]},
+    {"name":"ankle-r","parent":"knee-r","position":[-0.40988,0.233,0.000468],"dof":[{"axis":"x","min":-40,"max":40},{"axis":"z","min":-20,"max":20}]},
+    {"name":"toe-r","parent":"ankle-r","position":[-0.40988,0.067,0.500468],"dof":[{"axis":"x","min":-20,"max":40}]}
+  ]
+}

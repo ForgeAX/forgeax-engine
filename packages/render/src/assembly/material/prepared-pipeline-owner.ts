@@ -1,5 +1,6 @@
 import {
   err,
+  ok,
   type PipelineLayout,
   type PipelineRecipeState,
   type RenderPipeline,
@@ -18,11 +19,14 @@ type Flight = {
   readonly vertex?: ShaderModule;
   readonly fragment?: ShaderModule;
   result?: Result<RenderPipeline, RhiError>;
+  completion?: Promise<Result<void, RhiError>>;
 };
 
 /** Only a completed backend result can be consumed by the existing PSO publication owner. */
 export class PreparedRenderPipelineOwner {
   private readonly flights = new Map<string, Flight>();
+  #settled = 0;
+  #pendingAnswers = 0;
   private readonly pending = err(
     new RhiError({
       code: 'rhi-not-available',
@@ -41,6 +45,32 @@ export class PreparedRenderPipelineOwner {
     return result === this.pending;
   }
 
+  /** Borrow only the existing generation-owned compilation flights. */
+  pendingCompletion(): Promise<Result<void, RhiError>> | undefined {
+    const pending = [...this.flights.values()].flatMap((flight) =>
+      flight.result === undefined && flight.completion !== undefined ? [flight.completion] : [],
+    );
+    if (pending.length === 0) return undefined;
+    return Promise.all(pending).then(
+      (results) => results.find((result) => !result.ok) ?? ok(undefined),
+    );
+  }
+
+  /** Advances whenever a flight publishes its result or every flight is dropped. */
+  get settled(): number {
+    return this.#settled;
+  }
+
+  /** Advances whenever a request is answered with the pending sentinel. */
+  get pendingAnswers(): number {
+    return this.#pendingAnswers;
+  }
+
+  private answerPending(): Result<RenderPipeline, RhiError> {
+    this.#pendingAnswers++;
+    return this.pending;
+  }
+
   has(key: string): boolean {
     return this.flights.has(key);
   }
@@ -51,12 +81,12 @@ export class PreparedRenderPipelineOwner {
     layout: RenderPipelineDescriptor['layout'],
   ): Result<RenderPipeline, RhiError> | undefined {
     if (!this.isAlive()) {
-      this.flights.clear();
-      return this.pending;
+      this.drop();
+      return this.answerPending();
     }
     const previous = this.flights.get(key);
     return previous !== undefined && previous.source === source && previous.layout === layout
-      ? (previous.result ?? this.pending)
+      ? (previous.result ?? this.answerPending())
       : undefined;
   }
 
@@ -68,8 +98,8 @@ export class PreparedRenderPipelineOwner {
     materialize: () => RenderPipelineDescriptor,
   ): Result<RenderPipeline, RhiError> {
     if (!this.isAlive()) {
-      this.flights.clear();
-      return this.pending;
+      this.drop();
+      return this.answerPending();
     }
     const previous = this.flights.get(key);
     if (
@@ -80,7 +110,7 @@ export class PreparedRenderPipelineOwner {
       previous.vertex === dependencies.vertex &&
       previous.fragment === dependencies.fragment
     )
-      return this.isAlive() ? (previous.result ?? this.pending) : this.pending;
+      return this.isAlive() ? (previous.result ?? this.answerPending()) : this.answerPending();
     this.flights.delete(key);
     const selected = this.device.pipelineLibrary?.selectRender?.(state, dependencies, true);
     if (selected === undefined)
@@ -105,6 +135,12 @@ export class PreparedRenderPipelineOwner {
     );
   }
 
+  private drop(): void {
+    if (this.flights.size === 0) return;
+    this.flights.clear();
+    this.#settled++;
+  }
+
   private requestStateMiss(
     key: string,
     source: string | ShaderSource,
@@ -112,7 +148,7 @@ export class PreparedRenderPipelineOwner {
     dependencies: { layout: PipelineLayout; vertex: ShaderModule; fragment?: ShaderModule },
     materialize: () => RenderPipelineDescriptor,
   ): Result<RenderPipeline, RhiError> {
-    if (!this.isAlive()) return this.pending;
+    if (!this.isAlive()) return this.answerPending();
     const result = this.request(key, source, materialize());
     const flight = this.flights.get(key);
     if (flight !== undefined)
@@ -157,17 +193,25 @@ export class PreparedRenderPipelineOwner {
     };
     this.flights.set(key, flight);
     const complete = (result: Result<RenderPipeline, RhiError>): void => {
-      if (this.isAlive() && this.flights.get(key) === flight) flight.result = result;
+      if (this.isAlive() && this.flights.get(key) === flight) {
+        flight.result = result;
+        this.#settled++;
+      }
+      delete flight.completion;
     };
     try {
       // forgeax-async-whitelist: dom-native - backend pipeline compilation completion.
       if ('ok' in completion) {
         complete(completion);
-        return flight.result ?? this.pending;
+        return flight.result ?? this.answerPending();
       }
-      void completion.then(complete, (cause: unknown) =>
-        complete(
-          err(
+      flight.completion = completion.then(
+        (result) => {
+          complete(result);
+          return result.ok ? ok(undefined) : err(result.error);
+        },
+        (cause: unknown) => {
+          const result = err(
             cause instanceof RhiError
               ? cause
               : new RhiError({
@@ -175,8 +219,10 @@ export class PreparedRenderPipelineOwner {
                   expected: 'backend pipeline compilation to complete',
                   hint: cause instanceof Error ? cause.message : String(cause),
                 }),
-          ),
-        ),
+          );
+          complete(result);
+          return result;
+        },
       );
     } catch (cause) {
       complete(
@@ -191,7 +237,7 @@ export class PreparedRenderPipelineOwner {
         ),
       );
     }
-    return this.pending;
+    return this.answerPending();
   }
 }
 

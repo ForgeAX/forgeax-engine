@@ -106,6 +106,8 @@ const entry: ExecutionBootstrapEntry = (data) => {
                 observation.ok
                   ? {
                       frameId: result.value.frameId,
+                      presentation: result.value.presentation,
+                      presentationPendingReason: result.value.presentationPendingReason,
                       views,
                       cut,
                       observation: observation.value.observations?.find(

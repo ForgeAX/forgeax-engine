@@ -83,12 +83,13 @@ const COMMON_BROWSER_WEBGPU_ARGS = Object.freeze([
  * Metal on a non-macOS host receives a setup error instead of an unrelated
  * backend being substituted.
  *
- * @param {{ platform?: string, backend?: string }} [options]
+ * @param {{ platform?: string, backend?: string, ci?: boolean }} [options]
  * @returns {{ requestedBackend: string, selectedBackend: 'metal'|'swiftshader-vulkan', comparisonMode: string, args: string[] }}
  */
 export function resolveBrowserWebGpuLaunch({
   platform = process.platform,
   backend = process.env.FORGEAX_BROWSER_BACKEND ?? 'auto',
+  ci = Boolean(process.env.CI),
 } = {}) {
   const requestedBackend = String(backend).trim().toLowerCase() || 'auto';
   if (!['auto', 'metal', 'swiftshader-vulkan'].includes(requestedBackend)) {
@@ -127,6 +128,9 @@ export function resolveBrowserWebGpuLaunch({
     comparisonMode,
     args: [
       ...COMMON_BROWSER_WEBGPU_ARGS,
+      // Match the software Vitest carrier: cold CI compilation is bounded by
+      // the original gate deadline, not Chromium's shorter native watchdog.
+      ...(ci ? ['--disable-gpu-watchdog'] : []),
       ...(platform === 'win32' ? ['--use-webgpu-adapter=swiftshader'] : [
         '--enable-features=Vulkan,UseSkiaRenderer,SharedArrayBuffer',
         '--use-vulkan=swiftshader',
@@ -407,6 +411,40 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
   };
 }
 
+/** Wait on the App's generation-bound completed-picture signal before recording. */
+export function waitForReadyAppFrame({ canvas = document.querySelector('#app'), timeoutMs = 90_000 } = {}) {
+  if (canvas === null) throw new Error('app-scene-preparation requires the App canvas');
+  return new Promise((resolve, reject) => {
+    let timeout;
+    const cleanup = () => {
+      clearTimeout(timeout);
+      canvas.removeEventListener('forgeax:frame-completed', check);
+    };
+    const check = () => {
+      const { submitted, completed } = canvas.forgeaxFrameProgress ?? {};
+      if (completed?.presentation !== 'ready' || submitted === undefined ||
+          (completed.frameId !== submitted.frameId &&
+            !(completed.frameId < submitted.frameId && submitted.receipt?.presentation === 'ready')) ||
+          completed.deviceGeneration !== submitted.deviceGeneration ||
+          completed.worldIdentity !== submitted.worldIdentity) return;
+      cleanup();
+      resolve(completed);
+    };
+    canvas.addEventListener('forgeax:frame-completed', check);
+    timeout = setTimeout(() => {
+      cleanup();
+      const progress = canvas.forgeaxFrameProgress;
+      reject(new Error(`app-scene-preparation timed out after ${timeoutMs}ms: ${JSON.stringify({
+        submittedFrame: progress?.submitted?.frameId,
+        completedFrame: progress?.completed?.frameId,
+        presentation: progress?.completed?.presentation,
+      })}`));
+    }, timeoutMs);
+    // Subscribe before reading the existing producer-owned baseline.
+    check();
+  });
+}
+
 /**
  * @typedef {Object} VerifyOptions
  * @property {string} pkg           pnpm package name, e.g. '@forgeax/learn-render-2-1-colors'
@@ -442,6 +480,7 @@ export async function runCaptureLiveUploadTransaction(input, injected) {
  * @property {boolean} [waitForPackIndex] wait for a Pack dev session to publish its
  *                                  catalog before navigating (useful for image-heavy demos)
  * @property {number} [packReadinessTimeoutMs] bounded Pack catalog startup wait
+ * @property {boolean} [waitForAppScene] require the current completed App picture before recorder admission
  * @property {number} [warmupMs]    rAF warmup before capture (default 3000)
  * @property {number} [hookReadyTimeoutMs] bounded wait for declared capture hooks (default 90000)
  * @property {'networkidle'|'domcontentloaded'} [navigationWaitUntil] page navigation
@@ -545,6 +584,7 @@ function resolveVerifyOptions(opts) {
     waitForPackIndex = false,
     packReadinessTimeoutMs = VITE_READINESS_TIMEOUT_MS,
     warmupMs = 3000,
+    waitForAppScene = false,
     hookReadyTimeoutMs = 90000,
     navigationWaitUntil = 'networkidle',
     urlSuffix = '',
@@ -560,6 +600,7 @@ function resolveVerifyOptions(opts) {
     waitForPackIndex,
     packReadinessTimeoutMs,
     warmupMs,
+    waitForAppScene,
     hookReadyTimeoutMs,
     navigationWaitUntil,
     urlSuffix,
@@ -716,11 +757,13 @@ async function captureFromPage(options, browserLaunch, portUrl, session) {
   // Vite's HTTP-ready response can precede a large cooked shader transform.
   // Runtime admission below owns the separate hook deadline.
   await page.goto(captureUrl, { waitUntil: options.navigationWaitUntil, timeout: 120_000 });
-  await page.waitForTimeout(options.warmupMs);
+  if (options.warmupMs > 0) await page.waitForTimeout(options.warmupMs);
 
   await requireCaptureFrameHook(page, options, collectDiagnostics);
   const browserWebGpuReport = await probeAlignedBrowserWebGpu(page, label, browserLaunch);
   await waitForCaptureHooks(page, options, requiredHooks, collectDiagnostics);
+  if (options.waitForAppScene)
+    await page.evaluate(waitForReadyAppFrame, { timeoutMs: options.hookReadyTimeoutMs });
   const capture = await captureLiveFrame(page, options, collectDiagnostics);
   reportBrowserCaptureMessages(label, capture.captured, observed);
   return { ...capture, browserWebGpuReport };

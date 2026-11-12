@@ -20,6 +20,7 @@ import {
 } from './single-html.js';
 import { installedProjectSkillDirectories } from './skill-install.js';
 
+export { assetGuidCommand } from './asset-guid.js';
 export {
   assetAddCommand,
   assetInspectCommand,

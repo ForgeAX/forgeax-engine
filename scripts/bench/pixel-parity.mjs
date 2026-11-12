@@ -8,7 +8,7 @@
 //   3. chromium.launch({ args: ['--enable-unsafe-webgpu', ...] }).
 //   4. browser.newContext + one page; two captures via window.__captureLeft
 //      and window.__captureRight from the same frame (D-1 / D-3: single
-//      ForgeaX render provides both hooks — self-consistency check).
+//      ForgeAX render provides both hooks — self-consistency check).
 //   5. Evaluate parity inline (Node-side mirror of
 //      apps/parity/forgeax/src/evaluate-parity.ts; semantics SSOT'd in
 //      TS — see that file's tests for the 9-case contract). The .ts
@@ -498,14 +498,16 @@ async function captureBothFromSinglePage(targetConfig) {
       '--enable-features=Vulkan',
       '--use-vulkan=swiftshader',
       '--use-angle=swiftshader',
+      ...(process.env.CI ? ['--disable-gpu-watchdog'] : []),
       '--ignore-gpu-blocklist',
       '--disable-gpu-driver-bug-workarounds',
     ],
     chromiumSandbox: true,
   });
+  let page;
   try {
     const ctx = await browser.newContext({ viewport: { width: CANVAS_W, height: CANVAS_H } });
-    const page = await ctx.newPage();
+    page = await ctx.newPage();
     page.on('console', (msg) => {
       process.stderr.write(`[forgeax.console.${msg.type()}] ${msg.text()}\n`);
     });
@@ -513,7 +515,7 @@ async function captureBothFromSinglePage(targetConfig) {
       process.stderr.write(`[forgeax.pageerror] ${err.message}\n`);
     });
     await page.goto(forgeaxUrl, { waitUntil: 'load' });
-    // D-1 / D-3: single ForgeaX preview provides both __captureLeft and
+    // D-1 / D-3: single ForgeAX preview provides both __captureLeft and
     // __captureRight hooks. Wait for both to be installed (they share the
     // same assignment in declare_capture_hook, so either probe works, but
     // checking both is defense-in-depth).
@@ -530,6 +532,18 @@ async function captureBothFromSinglePage(targetConfig) {
     const leftArray = await page.evaluate(async () => Array.from(await window.__captureLeft()));
     const rightArray = await page.evaluate(async () => Array.from(await window.__captureRight()));
     return { left: new Uint8Array(leftArray), right: new Uint8Array(rightArray) };
+  } catch (error) {
+    try {
+      mkdirSync(REPORT_DIR, { recursive: true });
+      await page?.screenshot({
+        path: resolve(REPORT_DIR, targetConfig.reportFile.replace(/\.json$/, '-failure.png')),
+        timeout: 5000,
+      });
+    } catch (captureError) {
+      console.warn('[bench:pixel-parity] failure screenshot unavailable:', String(captureError));
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`pixel-readback: ${message}`, { cause: error });
   } finally {
     await browser.close();
   }
@@ -540,8 +554,10 @@ async function captureBothFromSinglePage(targetConfig) {
 // (pnpm build / wait-on preview / chromium.launch). Returns one of the
 // ParityCaptureDetail.stage literals so the catch path can route the
 // failure through the structured dispatchAndExit channel.
-function inferPreEvalStage(message) {
+export function inferPreEvalStage(message) {
   const m = String(message);
+  if (/^pixel-readback:|page\.waitForFunction|__captureLeft|__captureRight/.test(m))
+    return 'pixel-readback';
   if (/build\b|pnpm\s+--filter|rolldown|vite\s+build/i.test(m)) return 'vite-preview';
   if (/wait-on|tcp:|preview/i.test(m)) return 'vite-preview';
   if (/chromium|playwright|browser|launch/i.test(m)) return 'chromium-launch';

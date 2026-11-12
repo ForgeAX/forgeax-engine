@@ -10,8 +10,8 @@ const LENS = {
   vignetteRadius: 0.35,
   vignetteSoftness: 0.4,
   vignetteColor: [0.35, 0, 0],
-  chromaticAberration: 14,
-  chromaticAberrationAngle: 0,
+  chromaticAberration: 5,
+  chromaticAberrationStartOffset: 0,
   grainIntensity: 0.35,
   grainSize: 1.5,
 } as const;
@@ -21,9 +21,9 @@ export default defineFeature({
   catalog: 'Lens effects',
   kind: 'visual',
   summary:
-    'A LensEffects Camera companion adds vignette, radial chromatic aberration and film grain in one output pass; all three intensities at zero schedule no pass.',
+    'A LensEffects Camera companion adds vignette, radial chromatic aberration and film grain (the fringe before Bloom and tone mapping, as UE); all three intensities at zero schedule no pass.',
   expect:
-    'ON: the frame edges fall off into a dark red vignette, white bars show red/blue color fringes toward the corners, and fine grain covers the image. OFF: clean, evenly lit checkerboard with sharp white bars.',
+    'ON: the frame edges fall off into a dark red vignette, white bars show red/green color fringes growing toward the corners, and fine grain covers the image. OFF: clean, evenly lit checkerboard with sharp white bars.',
   setup({ app, world, frames }) {
     const primitiveAssets = world.assets;
     if (!(primitiveAssets instanceof AssetRegistry))
@@ -56,7 +56,10 @@ export default defineFeature({
       },
       async checks() {
         await frames(3);
-        return passChecks(app.renderer.inspect().perFramePassNames, ['lens-effects']);
+        return passChecks(app.renderer.inspect().perFramePassNames, [
+          'chromatic-aberration',
+          'lens-effects',
+        ]);
       },
     };
   },

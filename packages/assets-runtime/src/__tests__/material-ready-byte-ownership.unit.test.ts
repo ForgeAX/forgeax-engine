@@ -2,7 +2,6 @@ import { MaterialArtifactRegistry, ShaderRegistry } from '@forgeax/engine-shader
 import { ShaderSource } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
 import { AssetRegistry } from '../asset-registry';
-import { runtimeAssetReference } from '../internal';
 import { shareVerifiedArtifactBytes } from '../internal/shared-immutable';
 import { createMaterialLoader } from '../material/loader';
 import { installMaterialReadyShaders } from '../material/runtime-shader';
@@ -49,7 +48,7 @@ it('keeps unused cooked programs as bytes through admission and device adoption'
 });
 
 describe('actual material-ready caller byte ownership work', () => {
-  it('keeps duplicate registrations on distinct buffers through preflight and publication', async () => {
+  it('admits a repeated program by its digest without registering or comparing its bytes again', async () => {
     const shaders = new ShaderRegistry({ manifestUrl: undefined }),
       owner = new AssetRegistry({ shaderRegistry: shaders });
     const original = MaterialArtifactRegistry.prototype.register;
@@ -84,19 +83,20 @@ describe('actual material-ready caller byte ownership work', () => {
         const adopted = (await loadMaterialFixture(owner, loaded.record)).unwrap();
         expect(adopted.projection).toBeDefined();
       }
+      // Six materials share one cooked program: one registration, no byte comparison.
       expect(stats).toMatchObject({
-        registrations: 17,
-        equalComparisons: 10,
+        registrations: 1,
+        equalComparisons: 0,
         sameView: 0,
         sameRegion: 0,
       });
-      expect(stats.comparedBytes).toBeGreaterThan(5120);
+      expect(stats.comparedBytes).toBe(0);
     } finally {
       spy.mockRestore();
     }
   });
 
-  it('revalidates caller-mutated retained bytes after the shader preflight callback', async () => {
+  it('never serves caller-mutated retained bytes for a program admitted by digest', async () => {
     const shaders = new ShaderRegistry({ manifestUrl: undefined }),
       owner = new AssetRegistry({ shaderRegistry: shaders });
     const first = await ready(1);
@@ -105,29 +105,26 @@ describe('actual material-ready caller byte ownership work', () => {
     if (key === undefined) throw Error('Missing program');
     const existing = owner.getMaterialArtifact(key);
     if (existing === undefined) throw Error('Missing retained artifact');
+    if (shaders.materialArtifactDeclaration(key)?.kind !== 'bytes')
+      throw Error('Program decoded before first use');
+    existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
+    // A repeat with the admitted digest is identified by address, not reread.
     const second = await ready(2);
-    const original = shaders.validateMaterialArtifactBytes.bind(shaders);
-    const spy = vi
-      .spyOn(shaders, 'validateMaterialArtifactBytes')
-      .mockImplementation((identifier, entry) => {
-        existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
-        return original(identifier, entry);
-      });
+    (await loadMaterialFixture(owner, second.record)).unwrap();
+    // The shader owner may be another live view of this verified content (the
+    // realm-wide owner per digest); either way altered bytes are never served.
+    const original = new TextDecoder().decode(
+      existing.bytes.map((byte, index) => (index === 120 ? byte ^ 128 : byte)),
+    );
+    let served: string | undefined;
     try {
-      let thrown: unknown;
-      try {
-        (await loadMaterialFixture(owner, second.record)).unwrap();
-      } catch (error) {
-        thrown = error;
-      }
-      expect(thrown).toMatchObject({
-        code: 'material-artifact-conflict',
-        detail: { dimension: 'bytes' },
-      });
-      expect(runtimeAssetReference(owner, second.record.guid)).toBeUndefined();
-    } finally {
-      spy.mockRestore();
+      served = shaders.findMaterialArtifact(key).unwrap().source;
+    } catch (error) {
+      expect(String(error)).toContain('bytes changed after admission');
     }
+    if (served !== undefined) expect(served).toBe(original);
+    existing.bytes[120] = (existing.bytes[120] ?? 0) ^ 128;
+    expect(shaders.findMaterialArtifact(key).unwrap().source).toBe(original);
   });
 });
 

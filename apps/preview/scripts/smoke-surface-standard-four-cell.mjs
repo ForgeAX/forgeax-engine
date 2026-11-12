@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { once } from 'node:events';
 // Capture the four imported Standard Surface cells through the real Preview
-// Pack/Catalog/cook/loadByGuid and ForgeaX WebGL2 renderer path.
+// Pack/Catalog/cook/loadByGuid and ForgeAX WebGL2 renderer path.
 import { createServer as createNetServer } from 'node:net';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';

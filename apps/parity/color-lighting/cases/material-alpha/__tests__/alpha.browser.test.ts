@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 describe('material alpha browser final-display readback', () => {
-  it('keeps the explicit MASK frame visible through ForgeaX and Three', async () => {
+  it('keeps the explicit MASK frame visible through ForgeAX and Three', async () => {
     document.body.innerHTML = '<canvas id="forgeax"></canvas><canvas id="three"></canvas>';
     const forgeax = await window.__colorLightingParitySingle?.(explicitCase.caseId);
     expect(forgeax?.error).toBeUndefined();

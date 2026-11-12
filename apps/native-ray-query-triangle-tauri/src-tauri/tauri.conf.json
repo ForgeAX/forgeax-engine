@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ForgeaX Native Ray Query Triangle",
+  "productName": "ForgeAX Native Ray Query Triangle",
   "version": "0.0.0",
   "identifier": "com.forgeax.native-ray-query-triangle",
   "build": {
@@ -10,7 +10,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ForgeaX Native Ray Query",
+        "title": "ForgeAX Native Ray Query",
         "width": 640,
         "height": 420,
         "resizable": true

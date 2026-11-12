@@ -3,6 +3,7 @@ import {
   ManagedPhysicsError,
   type ManagedPhysicsFailure,
   type PhysicsContactManifold,
+  type PhysicsContactNeighborsSnapshot,
   type PhysicsContactNormalFilter,
   type PhysicsVector,
 } from '@forgeax/engine-physics';
@@ -285,4 +286,102 @@ export function queryContactNeighbors(
     },
   );
   return [...result];
+}
+
+/** One synchronous completed-step batch shares owner validation, never across mutations. */
+export function readContactNeighborsBatch(
+  requests: readonly {
+    readonly entity: number;
+    readonly filterMask?: number;
+    readonly normalFilter?: PhysicsContactNormalFilter;
+  }[],
+  world: World,
+  resolveOwner: ResolveOwner,
+  resolveBody: (entity: number) => RigidBody | undefined,
+  available: () => boolean,
+  fixedStep: number,
+  deltaTime: number,
+): Result<readonly PhysicsContactNeighborsSnapshot[], ManagedPhysicsFailure> {
+  if (requests.length > 4096)
+    return err(
+      new ManagedPhysicsError('managed-physics-unavailable', {
+        reason: 'current contact batch exceeds 4096 requests',
+      }),
+    );
+  if (!available())
+    return err(
+      new ManagedPhysicsError('managed-physics-unavailable', {
+        reason: 'current contacts require a healthy completed physics step after all mutations',
+      }),
+    );
+  try {
+    // Consume caller-owned configuration before retaining any owner evidence.
+    const inputs = requests.map((request) => ({
+      entity: request.entity,
+      filterMask: request.filterMask,
+      normalFilter:
+        request.normalFilter === undefined
+          ? undefined
+          : {
+              direction: [...request.normalFilter.direction] as [number, number, number],
+              minimumDot: request.normalFilter.minimumDot,
+            },
+    }));
+    const owners = new Map<number, ReturnType<typeof resolveOwner>>();
+    const owner: typeof resolveOwner = (collider, parent) => {
+      if (owners.has(collider)) return owners.get(collider);
+      const value = resolveOwner(collider, parent);
+      owners.set(collider, value);
+      return value;
+    };
+    const snapshots: PhysicsContactNeighborsSnapshot[] = [];
+    for (const input of inputs) {
+      const result = readContactQuery(
+        available(),
+        input.entity,
+        () => resolveBody(input.entity),
+        (body) => ({
+          fixedStep: fixedStep,
+          deltaTime: deltaTime,
+          entities: queryContactNeighbors(
+            world,
+            body,
+            owner,
+            input.entity,
+            input.filterMask,
+            input.normalFilter,
+          ),
+        }),
+      );
+      if (!result.ok) return result;
+      snapshots.push(result.value);
+    }
+    return ok(snapshots);
+  } catch (cause) {
+    return err(
+      cause instanceof ManagedPhysicsError
+        ? cause
+        : new ManagedPhysicsError('managed-physics-unavailable', {
+            reason: `current contact batch failed: ${String(cause)}`,
+          }),
+    );
+  }
+}
+
+export function readContactNeighborSnapshot(
+  available: boolean,
+  entity: number,
+  resolveBody: () => RigidBody | undefined,
+  world: World,
+  owner: ResolveOwner,
+  fixedStep: number,
+  deltaTime: number,
+  filterMask?: number,
+  normalFilter?: PhysicsContactNormalFilter,
+): Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure> {
+  return readContactQuery(available, entity, resolveBody, (body) => ({
+    fixedStep,
+    deltaTime,
+    entities: queryContactNeighbors(world, body, owner, entity, filterMask, normalFilter),
+  }));
 }

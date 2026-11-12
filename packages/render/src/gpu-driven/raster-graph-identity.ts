@@ -16,6 +16,25 @@ interface Publication {
   builtRecording: ReadonlySet<string>;
 }
 
+function sameRawClasses(previous: Publication | undefined, classes: ReadonlySet<string>): boolean {
+  return (
+    previous !== undefined &&
+    previous.rawClasses.length === classes.size &&
+    previous.rawClasses.every((key) => classes.has(key))
+  );
+}
+
+function coversRecordingClasses(
+  previous: Publication | undefined,
+  classes: ReadonlySet<string>,
+): boolean {
+  if (previous === undefined) return false;
+  for (const key of classes) {
+    if (!previous.builtRecording.has(key)) return false;
+  }
+  return true;
+}
+
 /** One raster publication, with the original and stock-recorder dependency projections. */
 export class RasterGraphIdentity {
   private current: Publication | undefined;
@@ -55,22 +74,28 @@ export class RasterGraphIdentity {
       raw.add(batch.classKey);
       recording.add(batch.recordingClassKey);
     }
-    const rawClasses = [...raw].sort(),
-      recordingClasses = [...recording].sort();
+    // Class sets are compared unsorted: the common frame republishes the same
+    // classes, and only a replaced publication needs the sorted arrays.
+    const sameRaw = sameRawClasses(old, raw);
     // A stock-recorder graph projects classes first seen after compilation
     // from the live frame (residency-owned meshes are bound outside the
     // graph), so its identity no longer depends on the class set. Count the
     // classes it had to admit late for diagnostics only.
-    const covered =
-      old !== undefined && recordingClasses.every((key) => old.builtRecording.has(key));
+    const covered = coversRecordingClasses(old, recording);
     const recordingIdentity = sameResources ? old.recording : {};
     if (old !== undefined && !covered) this.count('lateRecordingClasses');
-    const builtRecording =
-      old !== undefined && recordingIdentity === old.recording
+    let recordingClasses: string[] | undefined;
+    let builtRecording: ReadonlySet<string>;
+    if (sameResources && covered) {
+      builtRecording = old.builtRecording;
+    } else {
+      recordingClasses = [...recording].sort();
+      builtRecording = sameResources
         ? new Set([...old.builtRecording, ...recordingClasses])
         : new Set(recordingClasses);
-    if (old !== undefined && !same(old.rawClasses, rawClasses)) this.count('rawClasses');
-    if (sameResources && same(old.rawClasses, rawClasses)) {
+    }
+    if (old !== undefined && !sameRaw) this.count('rawClasses');
+    if (sameResources && sameRaw) {
       old.source = source;
       old.recording = recordingIdentity;
       old.builtRecording = builtRecording;
@@ -78,6 +103,8 @@ export class RasterGraphIdentity {
       old.skinBindings = skinBindings;
       return old;
     }
+    const rawClasses = [...raw].sort();
+    recordingClasses ??= [...recording].sort();
     this.current = {
       source,
       sceneIdentity,
@@ -105,8 +132,4 @@ export class RasterGraphIdentity {
   clear(): void {
     this.current = undefined;
   }
-}
-
-function same(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

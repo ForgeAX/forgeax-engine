@@ -1,4 +1,4 @@
-import { type AssetHandle, err, ok, type Result } from '@forgeax/engine-types';
+import { type AssetHandle, err, ok, type Result, WGSL_NUMERIC_LAYOUT } from '@forgeax/engine-types';
 import type {
   ParticleCodeSourceError,
   ParticleEmitterSourceBase,
@@ -6,6 +6,7 @@ import type {
   ParticleSoftParticleSource,
   ParticleTextureSheetSource,
 } from './code-source.js';
+import { type VfxValue, type VfxValueType, vfxValueMatches } from './effect-contract.js';
 import { type VfxForceField, validateVfxForceFields } from './force-fields.js';
 import type { VfxParticleCoreAttribute } from './particle-layout.js';
 
@@ -119,9 +120,62 @@ export interface ParticleEmitterSourceV3 extends ParticleEmitterSourceBase {
   readonly forceFields?: readonly VfxForceField[];
 }
 
+/** One effect-declared, per-Player overridable parameter (typed uniform field). */
+export interface ParticleEffectParameterSourceV3 {
+  readonly type: VfxValueType;
+  /** Value used when a Player does not override it; zero when omitted. */
+  readonly default?: VfxValue;
+}
+
 export interface ParticleEffectSourceV3 {
   readonly schemaVersion: 3;
+  /**
+   * Typed user parameters, readable in every emitter's `.vfx.wgsl` through
+   * `vfx_parameters().<name>` and overridable per `ParticleEffectPlayer`.
+   * The compiler synthesizes the `VfxParameters` struct from this table.
+   */
+  readonly parameters?: Readonly<Record<string, ParticleEffectParameterSourceV3>>;
   readonly emitters: readonly ParticleEmitterSourceV3[];
+}
+
+/** Parameter names are WGSL identifiers outside the reserved `forgeax_` namespace. */
+export const VFX_PARAMETER_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
+export const VFX_PARAMETER_MAX = 32;
+
+/** Material-style spellings `vec2`/`vec3`/`vec4` mean the f32 vectors. */
+function normalizeParameterType(type: string): string {
+  return /^vec[234]$/.test(type) ? `${type}<f32>` : type;
+}
+
+function parseParameters(
+  value: unknown,
+): Result<ParticleEffectSourceV3['parameters'], ParticleCodeSourceError> {
+  if (value === undefined) return ok(undefined);
+  if (!record(value)) return fail('parameters', 'an object of name -> { type, default? }');
+  const names = Object.keys(value);
+  if (names.length > VFX_PARAMETER_MAX)
+    return fail('parameters', `at most ${VFX_PARAMETER_MAX} parameters`);
+  const types = Object.keys(WGSL_NUMERIC_LAYOUT).join(', ');
+  const parsed: Record<string, ParticleEffectParameterSourceV3> = {};
+  for (const name of names) {
+    const path = `parameters.${name}`;
+    if (!VFX_PARAMETER_NAME.test(name) || name.toLowerCase().startsWith('forgeax'))
+      return fail(path, 'a WGSL identifier that does not start with forgeax');
+    const entry = value[name];
+    if (!record(entry)) return fail(path, '{ type, default? }');
+    const extra = unknownField(entry, ['type', 'default']);
+    if (extra !== undefined) return fail(`${path}.${extra}`, 'type and default only');
+    const type = typeof entry.type === 'string' ? normalizeParameterType(entry.type) : entry.type;
+    if (typeof type !== 'string' || !Object.hasOwn(WGSL_NUMERIC_LAYOUT, type))
+      return fail(`${path}.type`, `one of ${types}`);
+    if (entry.default !== undefined && !vfxValueMatches(type as VfxValueType, entry.default))
+      return fail(`${path}.default`, `a finite default matching ${type}`);
+    parsed[name] =
+      entry.default === undefined
+        ? { type: type as VfxValueType }
+        : { type: type as VfxValueType, default: entry.default as VfxValue };
+  }
+  return ok(Object.freeze(parsed));
 }
 
 /**
@@ -943,8 +997,11 @@ export function parseParticleEffectSourceV3(
       detail: { path: 'schemaVersion' },
     });
   }
-  const rootExtra = unknownField(value, ['schemaVersion', 'emitters']);
-  if (rootExtra !== undefined) return fail(rootExtra, 'schemaVersion and emitters only');
+  const rootExtra = unknownField(value, ['schemaVersion', 'parameters', 'emitters']);
+  if (rootExtra !== undefined)
+    return fail(rootExtra, 'schemaVersion, parameters and emitters only');
+  const parameters = parseParameters(value.parameters);
+  if (!parameters.ok) return parameters;
   if (!Array.isArray(value.emitters) || value.emitters.length === 0)
     return fail('emitters', 'at least one Program v3 emitter');
   const ids = new Set<string>();
@@ -978,6 +1035,7 @@ export function parseParticleEffectSourceV3(
   return ok(
     Object.freeze({
       schemaVersion: 3,
+      ...(parameters.value === undefined ? {} : { parameters: parameters.value }),
       emitters: Object.freeze(emitters),
     }),
   );

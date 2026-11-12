@@ -47,6 +47,8 @@ export interface PipelineLibraryManifest {
 }
 
 export interface PipelineLibraryInspection {
+  /** Portable recipes omitted by explicit render-target compatibility selection. */
+  readonly skippedRenderTargetRecipes?: number;
   readonly state: 'active' | 'disposed';
   readonly shaders: number;
   readonly renderPipelines: number;
@@ -152,6 +154,9 @@ export interface PipelineLibraryInspection {
 }
 
 export interface PipelineLibraryPrepareOptions {
+  /** Omit only recipes exceeding this device's color attachment count/byte budget.
+   * Other descriptor validation failures remain errors; default preparation is strict. */
+  readonly renderTargetPolicy?: 'device-compatible';
   /** Existing generation/roster owner; retention ends with this object. */
   readonly owner?: object;
   readonly inputLimits?: PipelineLibraryLimits;
@@ -168,6 +173,9 @@ export interface PipelineLibraryPrepareOptions {
  * prepare before drawing, and a background prepare may run after readiness.
  */
 export interface PipelineLibrary {
+  /** @internal Snapshot real outstanding runtime-demanded native compilations.
+   * Later requests and undemanded background warmup do not extend this signal. */
+  pendingRuntimeCompilation?(): Promise<Result<void, RhiError>> | undefined;
   /** Diagnostic route scope: retain the current graph and subsequent records until disposal. */
   collect?(): { dispose(): void };
   /** @internal Borrow a previously admitted state using a lazy final-state projection. */

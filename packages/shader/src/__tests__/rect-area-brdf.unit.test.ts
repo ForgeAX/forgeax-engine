@@ -41,7 +41,7 @@ describe('RectAreaLight LTC BRDF shader contract', () => {
     // Diffuse uses the widest footprint; specular sharpens with GGX alpha so
     // mirror-like receivers reflect the image instead of its blurred mean.
     expect(source).toMatch(/ltc\.direction,[\s\S]*?1\.0,?\s*\)/);
-    expect(source).toMatch(/specular\.direction,[\s\S]*?alphaSq,?\s*\)/);
+    expect(source).toMatch(/specular\.direction,[\s\S]*?directAlpha,?\s*\)/);
     expect(source).toContain('textureSampleLevel(cookieTexture, spotModifierSampler');
   });
 

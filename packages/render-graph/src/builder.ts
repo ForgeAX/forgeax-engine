@@ -630,8 +630,29 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       const valid = this.validateAccessHandle(name, access);
       if (valid !== undefined) return err(valid);
     }
+    const captured = snapshotPass(pass);
+    if (captured.kind !== 'subgraph') {
+      const { encode, encodeDirect } = captured.descriptor;
+      if (
+        (encode !== undefined && typeof encode !== 'function') ||
+        (encodeDirect !== undefined && typeof encodeDirect !== 'function') ||
+        (typeof encode === 'function') === (typeof encodeDirect === 'function')
+      )
+        return err(
+          new RenderGraphError({
+            code: 'resource-descriptor-invalid',
+            expected: 'exactly one encode or encodeDirect callback',
+            hint: 'choose the context form or direct encoder/frame/resources arguments',
+            detail: {
+              resourceLabel: name,
+              field: 'encode',
+              expected: 'exactly one encoding callback',
+            },
+          }),
+        );
+    }
     this.passNames.add(name);
-    this.passes.push({ id: this.passes.length, name, pass: snapshotPass(pass) });
+    this.passes.push({ id: this.passes.length, name, pass: captured });
     return ok(undefined);
   }
 
@@ -857,7 +878,9 @@ export class RenderGraphBuilder<FrameCtx extends RenderGraphFrame> {
       const attachment = pass.pass.descriptor.colorAttachments.find(
         (candidate) => candidate.view === access.resource,
       );
-      return attachment?.loadOp === 'load' ? READ_WRITE_ACCESS_MODE : base;
+      return attachment?.loadOp === 'load' || typeof attachment?.loadOp === 'function'
+        ? READ_WRITE_ACCESS_MODE
+        : base;
     }
     if (access.usage === 'depth-stencil-write') {
       const attachment = pass.pass.descriptor.depthStencilAttachment;

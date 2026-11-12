@@ -4,7 +4,42 @@ import { cameraLensProjection, jitterCameraProjection } from '../camera-projecti
 import { perspective } from '../components/camera';
 import { activeFrustum, occlusionCamera } from '../gpu-driven/production-raster-camera';
 import type { CameraSnapshot } from '../render-contract';
+import { featureCameraSelection } from '../render-system-projections';
 import { projectTemporalView } from '../temporal/temporal-view';
+
+it.each([
+  'perspective',
+  'orthographic',
+] as const)('keeps held Feature camera outputs independent across %s view changes', (projection) => {
+  const source = camera(projection);
+  source.position[1] = -0;
+  const first = featureCameraSelection(source);
+  const selected = first.selectedView;
+  expect(selected).toBeDefined();
+  if (selected === undefined) throw new Error('Expected a selected camera view');
+  const before = {
+    position: [...selected.position],
+    right: [...selected.right],
+    up: [...selected.up],
+    viewProjection: [...selected.viewProjection],
+  };
+  expect(Object.is(selected.position[1], -0)).toBe(true);
+  source.position[0] = 99;
+  source.world[0] = -2;
+  const next = featureCameraSelection(source).selectedView;
+  expect(next?.position[0]).toBe(99);
+  expect(next?.right[0]).toBe(-2);
+  expect(selected.position).toEqual(new Float32Array(before.position));
+  expect(selected.right).toEqual(new Float32Array(before.right));
+  expect(selected.up).toEqual(new Float32Array(before.up));
+  expect(selected.viewProjection).toEqual(new Float32Array(before.viewProjection));
+  selected.position.fill(17);
+  expect(selected.right).toEqual(new Float32Array(before.right));
+  expect(selected.up).toEqual(new Float32Array(before.up));
+  expect(selected.viewProjection).toEqual(new Float32Array(before.viewProjection));
+  expect(next?.position[0]).toBe(99);
+  expect(featureCameraSelection(undefined)).toEqual({});
+});
 
 it.each([
   0,

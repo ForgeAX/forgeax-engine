@@ -54,6 +54,34 @@ it.each([
   assets.dispose();
 });
 
+it.each([
+  [{ bc: true, astc: true, etc2: true }, 'rg', 'bc5-rg-unorm', 368],
+  [{ bc: false, astc: true, etc2: true }, 'rg', 'eac-rg11unorm', 368],
+  [{ bc: false, astc: true, etc2: false }, 'rg', 'rg8unorm', 682],
+  // Falsifier: the same pixels without the DFD RRRG id stay a color source.
+  [{ bc: true, astc: true, etc2: true }, 'rgba', 'bc7-rgba-unorm', 368],
+] as const)('derives the transcode arm from the source DFD channels: %o %s', async (caps, channels, format, bytes) => {
+  const source = await encodedTexture(127, false, channels);
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const store = new GpuResidencyCache();
+  store.configureGpuDevice(device, undefined, {
+    ...device.caps,
+    textureCompressionBc: caps.bc,
+    textureCompressionAstc: caps.astc,
+    textureCompressionEtc2: caps.etc2,
+  });
+  const assets = new AssetRegistry(),
+    world = new World({ assets });
+  const handle = assets.create(source).unwrap();
+  const pod = () => runtimeAssets(assets).borrow<TextureAsset>(handle).unwrap();
+  store.ensureResident(handle, pod(), worldRenderResources(world));
+  await store.waitTextureData(handle, worldRenderResources(world));
+  const ready = store.ensureResident(handle, pod(), worldRenderResources(world)).unwrap();
+  expect(ready.receipt).toMatchObject({ format, mipLevelCount: 5, bytes });
+  store.destroyAll();
+  assets.dispose();
+});
+
 it('keeps a private pending source, replaces only its version, and feeds exact RGBA image pages', async () => {
   const first = await encodedTexture(32),
     next = await encodedTexture(192);

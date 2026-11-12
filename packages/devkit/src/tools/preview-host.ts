@@ -143,7 +143,7 @@ export const runPreviewHost: PreviewHostRunner = async (request, context) => {
         if (request.projectRoot === undefined) {
           return carrierRouteFailure(
             'tool-preview-project-root-missing',
-            'the Browser Host to receive a real ForgeaX project root',
+            'the Browser Host to receive a real ForgeAX project root',
             'Create the ToolClient with projectRoot or pass projectRoot in the preview request.',
             { phase: 'project-authority' },
           );

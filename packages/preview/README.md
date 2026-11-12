@@ -140,7 +140,7 @@ source is redistributed in this change.
 
 ### Behavior and fit
 
-| UE behavior and source authority | ForgeaX decision |
+| UE behavior and source authority | ForgeAX decision |
 | --- | --- |
 | Commands declares independent R/G/B/A toggles. Toolkit `GetColourChannelBlendMode` automatically desaturates a single selected color channel. The preview shader applies channel weights before display gamma. | Independent RGBA buttons; a single color channel or alpha alone is grayscale. RGB with alpha enabled composites over the selected background. All channels off is black. Changes affect the preview only. |
 | Toolkit `GetMipLevel` returns a fixed level or -1 for automatic selection; the 2D shader uses explicit `SampleLevel` for fixed levels. `GetUseSpecifiedMip` disables selection for a one-level texture. | Explicit selection from the real `TextureAsset.mips` chain; dimensions derived by the Types layout owner. Generated mips are produced by Renderer. No CPU resize substitutes for a mip. One-level controls are disabled. |
@@ -149,7 +149,7 @@ source is redistributed in this change.
 | Viewport selects cubemap-specific sampling, 2D long-lat unwrap or 3D orientation, and explicit DDS-order faces +X/-X/+Y/-Y/+Z/-Z. | `EquirectAsset` opens in an environment view. It also offers source panorama, six-face cross and individual faces. Direction-to-source UV uses Renderer shader's existing `sampleSphericalMap`, preserving Skybox orientation. |
 | Toolkit offers array layer/slice selection. Viewport selects 2D-array or volume sampling and volume trace versus depth slices. | Existing `2d-array` layers and `3d` depth slices are inspected at their actual selected mip. Volume ray marching is omitted: it introduces transfer/opacity policy beyond texture slice inspection. |
 | The shader handles normal-map decode, grayscale replication, virtual textures and UDIM page-table sampling; Toolkit exposes platform compression, streaming/LOD, reimport and recompression. | View remains read-only. It shows sampled stored channels without inventing normal-map semantics. Import/compression belongs to asset producers. Virtual texture/UDIM and platform-specific editing do not map to the current public sampled texture contract. |
-| Render-target and cube-array UTexture subclasses share UE's editor. | ForgeaX has no public catalogued CubeTextureAsset: it was replaced by EquirectAsset. Runtime RenderTargets and internal IBL cubes are not misrepresented as editable source assets. |
+| Render-target and cube-array UTexture subclasses share UE's editor. | ForgeAX has no public catalogued CubeTextureAsset: it was replaced by EquirectAsset. Runtime RenderTargets and internal IBL cubes are not misrepresented as editable source assets. |
 
 ### Environment identity
 

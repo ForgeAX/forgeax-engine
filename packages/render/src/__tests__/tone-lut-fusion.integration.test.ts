@@ -92,7 +92,10 @@ async function fixture() {
             format: 'rgba16float',
           }).unwrap()
         : undefined;
-    const historyTarget = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+    const historyTarget = (
+      label: string,
+      format: 'rgba16float' | 'r8unorm' | 'rgba8unorm' = 'rgba16float',
+    ) => {
       const texture = graph
         .importTexture(
           label,
@@ -115,6 +118,8 @@ async function fixture() {
             previousTemporal: historyTarget('taa-previous-temporal'),
             currentStability: historyTarget('taa-current-stability', 'r8unorm'),
             previousStability: historyTarget('taa-previous-stability', 'r8unorm'),
+            currentFlicker: historyTarget('taa-current-flicker', 'rgba8unorm'),
+            previousFlicker: historyTarget('taa-previous-flicker', 'rgba8unorm'),
           };
     graph
       .addRasterPass('input', {

@@ -172,6 +172,25 @@ describe('f32ToF16Bytes', () => {
     expect(view.getUint16(0, true)).toBe(0xfc00);
   });
 
+  it('clampFinite clamps out-of-range finite values to +-65504 (0x7bff / 0xfbff)', () => {
+    const f32 = new Float32Array([77312, -1e9, 65504, 1]);
+    const dst = halfFloat.f32ToF16Bytes(new Uint8Array(f32.buffer), { clampFinite: true });
+    const view = new DataView(dst.buffer, dst.byteOffset, dst.byteLength);
+    expect(view.getUint16(0, true)).toBe(0x7bff);
+    expect(view.getUint16(2, true)).toBe(0xfbff);
+    expect(view.getUint16(4, true)).toBe(0x7bff);
+    expect(view.getUint16(6, true)).toBe(0x3c00);
+    expect(halfFloat.F16_MAX).toBe(65504);
+  });
+
+  it('clampFinite still passes infinities and NaN through', () => {
+    const f32 = new Float32Array([Infinity, Number.NaN]);
+    const dst = halfFloat.f32ToF16Bytes(new Uint8Array(f32.buffer), { clampFinite: true });
+    const view = new DataView(dst.buffer, dst.byteOffset, dst.byteLength);
+    expect(view.getUint16(0, true)).toBe(0x7c00);
+    expect(view.getUint16(2, true)).toBe(0x7e00);
+  });
+
   // --- Multiple pixels (RGBA interleaved) ---
 
   it('produces output half the byte length of input (4 f32 -> 4 f16)', () => {

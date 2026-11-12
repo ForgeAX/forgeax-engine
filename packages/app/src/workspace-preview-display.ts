@@ -1,5 +1,6 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
 import {
+  createMeshBuilder,
   createWireframeGeometry,
   deriveVertexCount,
   deriveVertexLayoutProjection,
@@ -16,6 +17,7 @@ import {
   EngineWorkspaceError,
   type EngineWorkspacePreview,
   type EngineWorkspacePreviewDisplay,
+  type EngineWorkspacePreviewOverlay,
 } from './workspace';
 import { workspaceMeshTriangles } from './workspace-asset-facts';
 
@@ -26,6 +28,45 @@ declare module '@forgeax/engine-plugin' {
   interface EngineContextServices {
     engineWorkspacePreviewDisplay?: Display;
   }
+}
+
+/** Bounds for caller overlays; the transport is JSON, so keep each request small. */
+export const PREVIEW_OVERLAY_LIMITS = { keys: 16, vertices: 200_000 } as const;
+const OVERLAY_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+function overlayMesh(key: string, value: EngineWorkspacePreviewOverlay): MeshAsset {
+  const perPrimitive =
+    value.topology === 'line-list' ? 2 : value.topology === 'triangle-list' ? 3 : 0;
+  if (perPrimitive === 0)
+    throw new TypeError(`Overlay ${key} topology must be triangle-list or line-list`);
+  const positions = value.positions;
+  if (
+    !Array.isArray(positions) ||
+    positions.length === 0 ||
+    positions.length % (3 * perPrimitive) !== 0
+  )
+    throw new TypeError(`Overlay ${key} positions must hold whole ${value.topology} primitives`);
+  const count = positions.length / 3;
+  if (count > PREVIEW_OVERLAY_LIMITS.vertices)
+    throw new TypeError(`Overlay ${key} exceeds ${PREVIEW_OVERLAY_LIMITS.vertices} vertices`);
+  const colors = value.colors ?? new Array<number>(count * 4).fill(1);
+  if (!Array.isArray(colors) || colors.length !== count * 4)
+    throw new TypeError(`Overlay ${key} colors must hold one RGBA per vertex`);
+  if (![...positions, ...colors].every((n) => typeof n === 'number' && Number.isFinite(n)))
+    throw new TypeError(`Overlay ${key} values must be finite numbers`);
+  return createMeshBuilder({
+    attributes: {
+      position: new Float32Array(positions),
+      normal: new Float32Array(count * 3),
+      uv: new Float32Array(count * 2),
+      tangent: new Float32Array(count * 4),
+      color: new Float32Array(colors),
+    },
+    submeshes: [{ topology: value.topology, materialSlot: 0 }],
+    materialSlots: [{ slotName: 'Overlay' }],
+  })
+    .build()
+    .unwrap();
 }
 
 function wireframe(mesh: MeshAsset): MeshAsset {
@@ -118,6 +159,7 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
       mode: 'material',
       collision: false,
       bounds: false,
+      overlays: [],
       uv: { channels: uvChannels },
       capabilities: {
         wireframe:
@@ -170,6 +212,16 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
       const value = { mesh: geometryRef, material };
       carriers.set(key, value);
       return value;
+    };
+    const releaseCarrier = (key: string) => {
+      const existing = carriers.get(key);
+      if (!existing) return;
+      carriers.delete(key);
+      for (const handle of [existing.mesh, existing.material]) {
+        const index = handles.lastIndexOf(handle);
+        if (index >= 0) handles.splice(index, 1);
+        assets.release(handle).unwrap();
+      }
     };
     const overlay = (key: string, show: boolean, value?: ReturnType<typeof carrier>) => {
       const current = overlays.get(key);
@@ -261,6 +313,26 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
           throw new TypeError('Display mode must be material or wireframe');
         if (typeof next.collision !== 'boolean' || typeof next.bounds !== 'boolean')
           throw new TypeError('Display overlays require booleans');
+        const prepareUserOverlays = () => {
+          const requested = Object.entries(input.overlays ?? {});
+          for (const [key] of requested)
+            if (!OVERLAY_KEY.test(key))
+              throw new TypeError(`Overlay key ${key} must match ${OVERLAY_KEY}`);
+          const shown = new Set(state.overlays);
+          for (const [key, value] of requested) {
+            if (value === null) shown.delete(key);
+            else shown.add(key);
+          }
+          if (shown.size > PREVIEW_OVERLAY_LIMITS.keys)
+            throw new TypeError(`At most ${PREVIEW_OVERLAY_LIMITS.keys} overlays may be shown`);
+          // Build every replacement before changing any visible state.
+          const prepared = requested.map(
+            ([key, value]) => [key, value === null ? null : overlayMesh(key, value)] as const,
+          );
+
+          return { prepared, shown };
+        };
+        const { prepared, shown } = prepareUserOverlays();
         for (const key of ['wireframe', 'collision', 'bounds'] as const)
           if (
             (key === 'wireframe' ? next.mode === 'wireframe' : next[key]) &&
@@ -323,7 +395,22 @@ export const workspaceMeshDisplayPlugin: Plugin.Object<Options> = {
           .unwrap();
         overlay('collision', next.collision, collision);
         overlay('bounds', next.bounds, bounds);
-        state = { ...next, capabilities: state.capabilities, uv: { channels: uvChannels } };
+        for (const [key, geometry] of prepared) {
+          overlay(`user:${key}`, false);
+          releaseCarrier(`user:${key}`);
+          if (geometry !== null)
+            overlay(
+              `user:${key}`,
+              true,
+              carrier(`user:${key}`, () => geometry, [1, 1, 1, 1]),
+            );
+        }
+        state = {
+          ...next,
+          overlays: [...shown].sort(),
+          capabilities: state.capabilities,
+          uv: { channels: uvChannels },
+        };
         return structuredClone(state);
       },
     });

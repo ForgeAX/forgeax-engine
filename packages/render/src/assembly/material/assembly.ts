@@ -106,6 +106,11 @@ export interface MaterialShaderArtifactRequest {
   readonly probeBlend?: boolean;
   readonly reflectionFallback?: boolean;
   readonly visibleSurface?: boolean;
+  /**
+   * Material admission lane: alpha-cutout (alphaCutoff/alphaHash) materials
+   * select the ALPHA_MASK variant; opaque ones compile a discard-free program.
+   */
+  readonly alphaMask?: boolean;
   readonly variantSet?: string;
   /** Submission address requested by the consumer; GPU-driven uses scene-index. */
   readonly address?: MaterialProgramAddress;
@@ -207,6 +212,13 @@ function selectPublishedVariant(
     ['PROBE_BLEND_AVAILABLE', options.probeBlend],
     ['REFLECTION_FALLBACK_AVAILABLE', options.reflectionFallback],
     ['VISIBLE_SURFACE_AVAILABLE', options.visibleSurface ?? false],
+    // Opaque is the default lane; only an alpha-cutout request reaches discard.
+    // An explicit variant set that names the axis keeps its own value.
+    [
+      'ALPHA_MASK',
+      options.alphaMask ??
+        (options.variantSet?.includes('ALPHA_MASK=') === true ? undefined : false),
+    ],
     [
       'GPU_DRIVEN_SCENE_INDEX_AVAILABLE',
       options.address === undefined ? undefined : options.address === 'scene-index',
@@ -251,7 +263,10 @@ function selectPublishedVariant(
         (variant.defines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE === true ? 4 : 0) +
         (variant.defines.CLUSTER_FORWARD_AVAILABLE === false ? 2 : 0) +
         (variant.defines.PROBE_BLEND_AVAILABLE === false ? 1 : 0) +
-        (variant.defines.TRANSMISSION_AVAILABLE === false ? 1 : 0),
+        (variant.defines.TRANSMISSION_AVAILABLE === false ? 1 : 0) +
+        // Discard-free is the default lane; the discard program is requested by variantSet.
+        (variant.defines.LOD_DITHER === false ? 0.5 : 0) +
+        (variant.defines.CLIPPING_PLANES === false ? 0.25 : 0),
     }))
     .sort(
       (left, right) =>
@@ -285,7 +300,8 @@ function materialArtifactRequestFlags(options: MaterialShaderArtifactRequest): n
     (optionalBooleanKey(options.clustered) << 2) |
     (optionalBooleanKey(options.probeBlend) << 4) |
     (optionalBooleanKey(options.reflectionFallback) << 6) |
-    (optionalBooleanKey(options.visibleSurface) << 8)
+    (optionalBooleanKey(options.visibleSurface) << 8) |
+    (optionalBooleanKey(options.alphaMask) << 16)
   );
 }
 

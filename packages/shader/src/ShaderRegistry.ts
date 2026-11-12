@@ -1,7 +1,10 @@
 import { decodeDocumentText } from '@forgeax/engine-codec';
 import {
   isMaterialProgramAbi,
+  isShaderCompilerProfile,
   isShaderEntryPointReads,
+  isShaderProgramContract,
+  isShaderReflection,
   type MaterialProgramAbi,
   type ShaderEntryPointReads,
   ShaderSource,
@@ -53,8 +56,9 @@ import {
 } from './errors.js';
 import {
   digestShaderBytes,
+  hasDeferredReflection,
   manifestShaderSource,
-  readShaderManifestPublication,
+  readOwnedShaderManifestPublication,
 } from './manifest-publication.js';
 import {
   equalMaterialArtifactBytes,
@@ -64,17 +68,75 @@ import {
   type MaterialByteSource,
   readMaterialByteSource,
   retainMaterialByteSource,
+  verifyMaterialByteSource,
 } from './material/byte-source.js';
 import type { MaterialShaderManifestEntry } from './types.js';
 
 interface AdmittedManifest {
-  readonly textDigest: string;
+  // Reuse key only. A first admission computes it after load, off the startup path.
+  readonly textDigest: Promise<string>;
   readonly manifest: unknown;
 }
 
 // The cache needs complete content identity, not a second retained wire copy.
 // Native SHA hashes fixed 256 KiB UTF-16 chunks, preserving unpaired surrogates
 // without copying the complete wire text. The root binds their ordered digests.
+// First admission needs no digest to decide anything; compute the reuse key once the page
+// is idle so it never sits on the startup path. A failure yields a key that matches nothing.
+function manifestKeyWhenIdle(key: () => Promise<string>): Promise<string> {
+  const idle = (globalThis as { requestIdleCallback?: (cb: () => void, o?: object) => number })
+    .requestIdleCallback;
+  // Without an idle scheduler (Node, workers) hash now: a deferred closure would keep the
+  // whole decoded manifest text reachable until its timer fires.
+  if (typeof idle !== 'function') return settleManifestKey(key());
+  return deferManifestKey(idle, key);
+}
+
+// Kept apart from any closure that sees `key`: a handler sharing that context would
+// keep the decoded manifest text alive for as long as the native digest is pending.
+function settleManifestKey(pending: Promise<string>): Promise<string> {
+  return pending.catch(() => '');
+}
+
+function deferManifestKey(
+  idle: (cb: () => void, o?: object) => number,
+  key: () => Promise<string>,
+): Promise<string> {
+  return new Promise<string>((resolve) => {
+    idle.call(
+      globalThis,
+      () => {
+        key().then(resolve, () => resolve(''));
+      },
+      { timeout: 3000 },
+    );
+  });
+}
+
+// A fetched manifest is keyed by its wire bytes (1.7 MB zstd): one native digest.
+// Equal bytes decode to equal text, so a reuse hit is always correct; different
+// bytes that decode to the same text are merely not shared. Text read through a
+// host `readText` has no wire bytes and keeps the text digest above.
+async function manifestWireDigest(bytes: Uint8Array): Promise<string> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return `wire:${bytesToHex(await digestShaderBytes(copy))}`;
+}
+
+// Each key closure captures only what it hashes, so a wire-keyed admission never
+// holds the decoded manifest text through its pending digest.
+function manifestReuseKey(text: string, wire: Uint8Array | undefined): () => Promise<string> {
+  return wire === undefined ? textManifestKey(text) : wireManifestKey(wire);
+}
+
+function wireManifestKey(wire: Uint8Array): () => Promise<string> {
+  return () => manifestWireDigest(wire);
+}
+
+function textManifestKey(text: string): () => Promise<string> {
+  return () => manifestTextDigest(text);
+}
+
 async function manifestTextDigest(text: string): Promise<string> {
   const digest = sha256.create();
   const characters = new Uint16Array(Math.min(131_072, text.length));
@@ -207,7 +269,12 @@ export interface MaterialShaderByteEntry
 }
 
 type MaterialRegistration =
-  | { readonly kind: 'ready'; readonly publication: ResultOk<RegisteredMaterialShaderEntry> }
+  | {
+      readonly kind: 'ready';
+      readonly publication: ResultOk<RegisteredMaterialShaderEntry>;
+      /** Content address of the admitted program bytes; absent for a program installed as text. */
+      readonly digest?: string;
+    }
   | {
       readonly kind: 'bytes';
       readonly owner: MaterialByteSource;
@@ -286,9 +353,15 @@ function markShaderManifestStage(
  * §S-10).
  */
 function materialEntrySource(entry: MaterialShaderEntry, source: string): ShaderSource {
-  const suppliedSource = new ShaderSource([source]);
   if (entry.sourceReference !== undefined && !ShaderSource.is(entry.sourceReference))
     throw new Error('ShaderRegistry: unadmitted source reference');
+  if (entry.sourceReference?.hasPublishedIdentity) {
+    // Published identity already binds the verified bytes; compare text, do not rehash.
+    if (!entry.sourceReference.matches(source))
+      throw new Error('ShaderRegistry: source reference does not match material source');
+    return entry.sourceReference;
+  }
+  const suppliedSource = new ShaderSource([source]);
   const sourceReference = entry.sourceReference ?? suppliedSource;
   if (sourceReference.identity !== suppliedSource.identity)
     throw new Error('ShaderRegistry: source reference does not match material source');
@@ -339,6 +412,59 @@ export class ShaderRegistry {
     return candidate;
   }
 
+  /** Fetch (or host-read) the manifest document; `wire` is set when the bytes came over fetch. */
+  async #fetchManifestText(
+    url: string,
+  ): Promise<ShaderResult<{ raw: string; wire: Uint8Array | undefined }, ShaderError>> {
+    let raw: string;
+    let wire: Uint8Array | undefined;
+    markShaderManifestStage('shader-manifest-fetch-start', { url: url });
+    try {
+      if (this.#readText !== undefined) {
+        raw = await this.#readText(url);
+      } else {
+        const response = await fetch(url);
+        markShaderManifestStage('shader-manifest-response', {
+          url: url,
+          status: response.status,
+          responseUrl: response.url,
+        });
+        if (!response.ok) {
+          markShaderManifestStage('shader-manifest-http-failed', {
+            url: url,
+            status: response.status,
+            responseUrl: response.url,
+            error: `HTTP ${response.status} ${response.statusText}`,
+          });
+          return err(
+            manifestMalformed({
+              message: `ShaderRegistry: manifest request returned HTTP ${response.status}`,
+              hint: 'verify the dev manifest middleware or production manifest asset is reachable',
+              reason: `${response.statusText || 'HTTP error'} at ${url}`,
+            }),
+          );
+        }
+        wire = new Uint8Array(await response.arrayBuffer());
+        const text = await decodeDocumentText(wire);
+        if (!text.ok) throw new Error(`shader manifest decode failed: ${text.error.code}`);
+        raw = text.value;
+      }
+    } catch (e) {
+      markShaderManifestStage('shader-manifest-fetch-failed', {
+        url: url,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return err(
+        manifestMalformed({
+          message: `ShaderRegistry: failed to fetch manifest at ${url}`,
+          hint: 'verify manifest URL is reachable; check bundler emitFile output path',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    }
+    return ok({ raw, wire });
+  }
+
   /**
    * Loads manifest.json and populates the hash → ManifestEntry index.
    *
@@ -371,66 +497,31 @@ export class ShaderRegistry {
       return ok(undefined);
     }
 
-    let raw: string;
-    markShaderManifestStage('shader-manifest-fetch-start', { url: this.#manifestUrl });
-    try {
-      if (this.#readText !== undefined) {
-        raw = await this.#readText(this.#manifestUrl);
-      } else {
-        const response = await fetch(this.#manifestUrl);
-        markShaderManifestStage('shader-manifest-response', {
-          url: this.#manifestUrl,
-          status: response.status,
-          responseUrl: response.url,
-        });
-        if (!response.ok) {
-          markShaderManifestStage('shader-manifest-http-failed', {
-            url: this.#manifestUrl,
-            status: response.status,
-            responseUrl: response.url,
-            error: `HTTP ${response.status} ${response.statusText}`,
-          });
-          return err(
-            manifestMalformed({
-              message: `ShaderRegistry: manifest request returned HTTP ${response.status}`,
-              hint: 'verify the dev manifest middleware or production manifest asset is reachable',
-              reason: `${response.statusText || 'HTTP error'} at ${this.#manifestUrl}`,
-            }),
-          );
-        }
-        const text = await decodeDocumentText(new Uint8Array(await response.arrayBuffer()));
-        if (!text.ok) throw new Error(`shader manifest decode failed: ${text.error.code}`);
-        raw = text.value;
-      }
-    } catch (e) {
-      markShaderManifestStage('shader-manifest-fetch-failed', {
-        url: this.#manifestUrl,
-        error: e instanceof Error ? e.message : String(e),
-      });
-      return err(
-        manifestMalformed({
-          message: `ShaderRegistry: failed to fetch manifest at ${this.#manifestUrl}`,
-          hint: 'verify manifest URL is reachable; check bundler emitFile output path',
-          reason: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    }
+    const fetched = await this.#fetchManifestText(this.#manifestUrl);
+    if (!fetched.ok) return err(fetched.error);
+    const { raw, wire } = fetched.value;
 
     const url = this.#manifestUrl;
-    let textDigest: string;
-    try {
-      textDigest = await manifestTextDigest(raw);
-    } catch (e) {
-      return err(
-        manifestMalformed({
-          message: 'ShaderRegistry: manifest content digest failed',
-          hint: 'verify the host crypto service is available',
-          reason: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    }
     let admitted = admittedManifests.get(url)?.deref();
-    if (admitted?.textDigest !== textDigest) {
+    if (admitted !== undefined) {
+      // A prior admission exists: the content key decides whether it can be shared.
+      let textDigest: string;
+      try {
+        textDigest = await (wire === undefined
+          ? manifestTextDigest(raw)
+          : manifestWireDigest(wire));
+      } catch (e) {
+        return err(
+          manifestMalformed({
+            message: 'ShaderRegistry: manifest content digest failed',
+            hint: 'verify the host crypto service is available',
+            reason: e instanceof Error ? e.message : String(e),
+          }),
+        );
+      }
+      if ((await admitted.textDigest) !== textDigest) admitted = undefined;
+    }
+    if (admitted === undefined) {
       let parsed: unknown;
       try {
         parsed = JSON.parse(raw);
@@ -442,13 +533,13 @@ export class ShaderRegistry {
         return err(
           manifestMalformed({
             message: 'ShaderRegistry: manifest JSON parse failed',
-            hint: 'manifest.json must be valid JSON; rebuild via @forgeax/engine-vite-plugin-shader generateBundle',
+            hint: 'manifest.json must be valid JSON; rebuild the project shader manifest with its configured producer',
             reason: e instanceof Error ? e.message : String(e),
           }),
         );
       }
       try {
-        parsed = await readShaderManifestPublication(parsed);
+        parsed = await readOwnedShaderManifestPublication(parsed);
       } catch (e) {
         markShaderManifestStage('shader-manifest-publication-failed', {
           url: this.#manifestUrl,
@@ -462,7 +553,10 @@ export class ShaderRegistry {
           }),
         );
       }
-      admitted = { textDigest, manifest: parsed };
+      admitted = {
+        textDigest: manifestKeyWhenIdle(manifestReuseKey(raw, wire)),
+        manifest: parsed,
+      };
       const reference = new WeakRef(admitted);
       admittedManifests.set(url, reference);
       admittedManifestCleanup.register(admitted, { url, reference });
@@ -874,6 +968,7 @@ export class ShaderRegistry {
       this.#materialPrograms.set(program.sourceReference.identity, program);
       this.#materialShaders.set(identifier, {
         kind: 'ready',
+        ...(registration.digest === undefined ? {} : { digest: registration.digest }),
         publication: Object.freeze(
           ok(
             Object.freeze({
@@ -891,62 +986,96 @@ export class ShaderRegistry {
     }
   }
 
+  /**
+   * Establish byte digest evidence off the calling thread before admission. Hold
+   * the result until the bytes are validated or installed; those steps then compare
+   * the bytes instead of hashing them. An unverified input is hashed there as usual.
+   */
+  static verifyMaterialArtifactBytes(
+    bytes: Uint8Array,
+    digest: string,
+  ): Promise<object | undefined> {
+    return verifyMaterialByteSource(bytes, digest);
+  }
+
   /** Preflight immutable byte/schema/receipt conflicts without preparing WGSL. */
   validateMaterialArtifactBytes(
     identifier: string,
     entry: MaterialShaderByteEntry,
   ): Result<boolean, MaterialArtifactConflictError> {
+    const admitted = this.#preflightMaterialArtifactBytes(identifier, entry);
+    return admitted.ok ? ok(admitted.value === undefined) : admitted;
+  }
+
+  /**
+   * A program key admitted from bytes is identified by its content digest, as
+   * a shader library resolves code by its hash alone. Only content new to the
+   * key is verified: retention hashes it once, or compares it with live bytes
+   * that already passed that hash. Later admissions of the same key and digest
+   * check metadata only. Returns the verified owner for a new key, or
+   * undefined when the key already holds this program.
+   */
+  #preflightMaterialArtifactBytes(
+    identifier: string,
+    entry: MaterialShaderByteEntry,
+  ): Result<MaterialByteSource | undefined, MaterialArtifactConflictError> {
     validateMaterialByteMetadata(entry);
-    if (retainMaterialByteSource(entry.bytes, entry.digest) === undefined)
+    const registration = this.#materialShaders.get(identifier);
+    const admittedDigest =
+      registration === undefined
+        ? undefined
+        : registration.kind === 'bytes'
+          ? registration.owner.digest
+          : registration.digest;
+    const retained =
+      admittedDigest === undefined
+        ? retainMaterialByteSource(entry.bytes, entry.digest)
+        : undefined;
+    if (admittedDigest === undefined && retained === undefined)
       return err({
         code: 'material-artifact-conflict',
         expected: 'shader bytes matching their published digest',
         hint: 're-cook the conflicting program',
         detail: { key: identifier, dimension: 'bytes' },
       });
-    const registration = this.#materialShaders.get(identifier);
-    const prior = registration?.kind === 'ready' ? registration.publication.value : undefined;
-    const schema =
-      prior?.paramSchema ??
-      (registration?.kind === 'bytes'
-        ? registration.paramSchemaProjection.schema
-        : this.#paramSchemaProjectionOwner.get(identifier, 1)?.schema);
-    const receipt =
-      prior?.receipt ?? (registration?.kind === 'bytes' ? registration.receipt : undefined);
-    const previousBytes =
-      registration?.kind === 'bytes'
-        ? registration.owner.bytes
-        : prior === undefined
-          ? undefined
-          : new TextEncoder().encode(prior.source);
-    const conflictingReads =
-      registration !== undefined &&
-      !sameMaterialShaderEntryPoints(
-        materialRegistrationReads(registration),
-        entry.entryPoints ?? entry.receipt?.entryPoints,
-      );
+    if (registration === undefined) return ok(retained);
     const dimension =
-      previousBytes !== undefined && !equalMaterialArtifactBytes(previousBytes, entry.bytes)
-        ? 'bytes'
-        : schema !== undefined && JSON.stringify(schema) !== JSON.stringify(entry.paramSchema)
-          ? 'param-schema'
-          : registration !== undefined &&
-              (conflictingReads || JSON.stringify(receipt) !== JSON.stringify(entry.receipt))
-            ? 'receipt'
-            : undefined;
+      admittedDigest === undefined
+        ? textProgramDiffers(registration, retained, entry.bytes)
+          ? 'bytes'
+          : materialMetadataConflict(
+              this.#paramSchemaProjectionOwner,
+              identifier,
+              registration,
+              entry,
+            )
+        : admittedDigest !== entry.digest
+          ? 'bytes'
+          : materialMetadataConflict(
+              this.#paramSchemaProjectionOwner,
+              identifier,
+              registration,
+              entry,
+            );
     if (dimension !== undefined)
       return err({
         code: 'material-artifact-conflict',
         expected: 'one immutable source, interface, and ABI receipt per program key',
         hint: 're-cook the conflicting program',
-        detail: { key: identifier, dimension },
+        detail: {
+          key: identifier,
+          dimension,
+          ...(admittedDigest === undefined ? {} : { existingDigest: admittedDigest }),
+          incomingDigest: entry.digest,
+        },
       });
-    return ok(registration !== undefined);
+    return ok(undefined);
   }
 
   /** Admit complete byte evidence now; source-dependent preparation occurs on lookup. */
   installMaterialArtifactBytes(identifier: string, entry: MaterialShaderByteEntry): void {
-    if (this.validateMaterialArtifactBytes(identifier, entry).unwrap()) return;
+    const owner = this.#preflightMaterialArtifactBytes(identifier, entry).unwrap();
+    if (owner === undefined) return;
     if (entry.bytes.length === 0) throw new Error('ShaderRegistry: empty material program');
     const projection = this.#paramSchemaProjectionOwner.admit({
       ownerId: identifier,
@@ -954,9 +1083,6 @@ export class ShaderRegistry {
       schema: entry.paramSchema,
     });
     const receipt = entry.receipt === undefined ? undefined : ownMaterialReceipt(entry.receipt);
-    const owner = retainMaterialByteSource(entry.bytes, entry.digest);
-    if (owner === undefined)
-      throw new Error('ShaderRegistry: program bytes changed during admission');
     this.#materialShaders.set(identifier, {
       kind: 'bytes',
       owner,
@@ -990,7 +1116,11 @@ export class ShaderRegistry {
     );
     registration.owner.program = publication.value.program;
     registration.owner.source = publication.value.program.sourceReference;
-    this.#materialShaders.set(identifier, { kind: 'ready', publication });
+    this.#materialShaders.set(identifier, {
+      kind: 'ready',
+      publication,
+      digest: registration.owner.digest,
+    });
     return publication;
   }
 
@@ -1104,42 +1234,103 @@ function isValidManifestEntry(value: unknown): value is ManifestEntry {
   const v = value as Record<string, unknown>;
   if (typeof v.hash !== 'string') return false;
   if (!hasStringSource(v, 'wgsl')) return false;
-  // glsl allows string | undefined | null (manifest.json may serialize null as
-  // 'glsl: null').
-  if (v.glsl !== undefined && v.glsl !== null && typeof v.glsl !== 'string') return false;
-  if (typeof v.bindings !== 'string') return false;
-  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
-  return true;
+  return (
+    typeof v.bindings === 'string' &&
+    isValidManifestEntryOptions(v) &&
+    isValidOptionalShaderFacts(v)
+  );
 }
 
 function isValidMaterialShaderManifestEntry(value: unknown): value is MaterialShaderManifestEntry {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (typeof v.identifier !== 'string') return false;
-  if (typeof v.sourcePath !== 'string') return false;
-  if (!hasStringSource(v, 'composedWgsl')) return false;
-  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
-  if (typeof v.paramSchema !== 'string') return false;
+  if (!isValidMaterialManifestRoot(v)) return false;
+  if (!isValidOptionalNonEmptyHash(v.hash)) return false;
+  if (!isValidOptionalShaderFacts(v)) return false;
   if (!Array.isArray(v.variants)) return false;
-  if (!v.variants.every(isValidMaterialShaderManifestVariant)) return false;
-  return (
-    (v.receipt === undefined || isMaterialProgramAbi(v.receipt)) &&
-    (v.uvSetCount === undefined || typeof v.uvSetCount === 'number')
-  );
+  return v.variants.every(isValidMaterialShaderManifestVariant) && isValidOptionalMaterialFacts(v);
 }
 
 function isValidMaterialShaderManifestVariant(value: unknown): boolean {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Record<string, unknown>;
-  if (typeof v.definesKey !== 'string') return false;
-  if (!hasStringSource(v, 'composedWgsl')) return false;
-  if (v.entryPoints !== undefined && !isShaderEntryPointReads(v.entryPoints)) return false;
-  if (typeof v.defines !== 'object' || v.defines === null || Array.isArray(v.defines)) {
-    return false;
-  }
   return (
-    Object.values(v.defines).every((define) => typeof define === 'boolean') &&
+    typeof v.definesKey === 'string' &&
+    hasStringSource(v, 'composedWgsl') &&
+    isValidOptionalNonEmptyHash(v.hash) &&
+    isValidOptionalShaderFacts(v) &&
+    isValidBooleanDefines(v.defines) &&
     (v.receipt === undefined || isMaterialProgramAbi(v.receipt))
+  );
+}
+
+function isValidManifestEntryOptions(v: Record<string, unknown>): boolean {
+  // glsl allows string | undefined | null (manifest.json may serialize null as
+  // 'glsl: null').
+  if (v.glsl !== undefined && v.glsl !== null && typeof v.glsl !== 'string') return false;
+  if (v.identifier !== undefined && (typeof v.identifier !== 'string' || v.identifier.length === 0))
+    return false;
+  return (
+    (v.defines === undefined || isValidBooleanDefines(v.defines)) &&
+    (v.programContract === undefined || isShaderProgramContract(v.programContract))
+  );
+}
+
+function isValidBooleanDefines(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.values(value).every((define) => typeof define === 'boolean');
+}
+
+function isValidOptionalShaderFacts(v: Record<string, unknown>): boolean {
+  return isValidOptionalEntryPoints(v.entryPoints) && isValidOptionalArtifactFacts(v);
+}
+
+function isValidOptionalEntryPoints(value: unknown): boolean {
+  return value === undefined || isShaderEntryPointReads(value);
+}
+
+function isValidOptionalArtifactFacts(v: Record<string, unknown>): boolean {
+  return (
+    isValidOptionalHash(v.hash) &&
+    isValidOptionalSourceDigest(v.sourceDigest) &&
+    isValidOptionalCompilerProfile(v.compilerProfile) &&
+    (hasDeferredReflection(v) || isValidOptionalReflection(v.reflection))
+  );
+}
+
+function isValidOptionalHash(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
+}
+
+function isValidOptionalNonEmptyHash(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length > 0);
+}
+
+function isValidOptionalSourceDigest(value: unknown): boolean {
+  return value === undefined || /^[a-f0-9]{64}$/.test(String(value));
+}
+
+function isValidOptionalCompilerProfile(value: unknown): boolean {
+  return value === undefined || isShaderCompilerProfile(value);
+}
+
+function isValidOptionalReflection(value: unknown): boolean {
+  return value === undefined || isShaderReflection(value);
+}
+
+function isValidMaterialManifestRoot(v: Record<string, unknown>): boolean {
+  return (
+    typeof v.identifier === 'string' &&
+    typeof v.sourcePath === 'string' &&
+    hasStringSource(v, 'composedWgsl') &&
+    typeof v.paramSchema === 'string'
+  );
+}
+
+function isValidOptionalMaterialFacts(v: Record<string, unknown>): boolean {
+  return (
+    (v.receipt === undefined || isMaterialProgramAbi(v.receipt)) &&
+    (v.uvSetCount === undefined || typeof v.uvSetCount === 'number')
   );
 }
 
@@ -1162,6 +1353,51 @@ function validateMaterialByteMetadata(entry: MaterialShaderByteEntry): void {
     !sameMaterialShaderEntryPoints(entry.entryPoints, entry.receipt.entryPoints)
   )
     throw new Error('ShaderRegistry: conflicting shader entry read contract for immutable source');
+}
+
+/**
+ * A program installed as text has no content digest, so incoming bytes (already
+ * verified against their own digest) are compared with its source. A program
+ * decoded from that same retained owner needs no comparison.
+ */
+function textProgramDiffers(
+  registration: MaterialRegistration,
+  retained: MaterialByteSource | undefined,
+  bytes: Uint8Array,
+): boolean {
+  if (registration.kind !== 'ready') return true;
+  const prior = registration.publication.value;
+  if (retained?.source !== undefined && prior.program.sourceReference === retained.source)
+    return false;
+  return !equalMaterialArtifactBytes(new TextEncoder().encode(prior.source), bytes);
+}
+
+/** Schema, ABI receipt, and entry read conflicts for a key that already holds this program. */
+function materialMetadataConflict(
+  schemas: ParamSchemaProjectionOwner,
+  identifier: string,
+  registration: MaterialRegistration,
+  entry: MaterialShaderByteEntry,
+): 'param-schema' | 'receipt' | undefined {
+  const prior = registration.kind === 'ready' ? registration.publication.value : undefined;
+  const schema =
+    prior?.paramSchema ??
+    (registration.kind === 'bytes'
+      ? registration.paramSchemaProjection.schema
+      : schemas.get(identifier, 1)?.schema);
+  if (schema !== undefined && JSON.stringify(schema) !== JSON.stringify(entry.paramSchema))
+    return 'param-schema';
+  const receipt =
+    prior?.receipt ?? (registration.kind === 'bytes' ? registration.receipt : undefined);
+  if (
+    !sameMaterialShaderEntryPoints(
+      materialRegistrationReads(registration),
+      entry.entryPoints ?? entry.receipt?.entryPoints,
+    ) ||
+    JSON.stringify(receipt) !== JSON.stringify(entry.receipt)
+  )
+    return 'receipt';
+  return undefined;
 }
 
 function materialRegistrationReads(

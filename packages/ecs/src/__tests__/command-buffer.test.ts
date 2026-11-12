@@ -81,10 +81,7 @@ describe('CommandBuffer terminal lifecycle', () => {
   it('preflights same-batch duplicate component mutations without partial writes', () => {
     const world = new World();
     const entity = world.spawn({ component: CommandPosition, data: { x: 1 } }).unwrap();
-    const buffer = createCommandBuffer(world, {
-      systemName: 'duplicate',
-      scheduleName: Update.name,
-    });
+    const buffer = createCommandBuffer(world, 'duplicate', Update.name);
     buffer.addComponent(entity, { component: CommandVelocity, data: { x: 2 } });
     buffer.addComponent(entity, { component: CommandVelocity, data: { x: 3 } });
 
@@ -98,7 +95,7 @@ describe('CommandBuffer terminal lifecycle', () => {
     const root = world.spawn().unwrap();
     const child = world.spawn({ component: CommandChildOf, data: { parent: root } }).unwrap();
     const grandchild = world.spawn({ component: CommandChildOf, data: { parent: child } }).unwrap();
-    const buffer = createCommandBuffer(world, { systemName: 'cycle', scheduleName: Update.name });
+    const buffer = createCommandBuffer(world, 'cycle', Update.name);
     buffer.addComponent(root, { component: CommandChildOf, data: { parent: grandchild } });
 
     expect(() => flushCommands(buffer, world)).toThrow(CommandFailedError);
@@ -113,10 +110,7 @@ describe('CommandBuffer terminal lifecycle', () => {
     const first = world.spawn().unwrap();
     const second = world.spawn().unwrap();
     const child = world.spawn({ component: CommandChildOf, data: { parent: first } }).unwrap();
-    const buffer = createCommandBuffer(world, {
-      systemName: 'reparent',
-      scheduleName: Update.name,
-    });
+    const buffer = createCommandBuffer(world, 'reparent', Update.name);
     buffer.addComponent(child, { component: CommandChildOf, data: { parent: second } });
 
     expect(() => flushCommands(buffer, world)).not.toThrow();
@@ -133,10 +127,7 @@ describe('CommandBuffer terminal lifecycle', () => {
     const world = new World();
     const a = world.spawn().unwrap();
     const b = world.spawn().unwrap();
-    const buffer = createCommandBuffer(world, {
-      systemName: 'batch-cycle',
-      scheduleName: Update.name,
-    });
+    const buffer = createCommandBuffer(world, 'batch-cycle', Update.name);
     buffer.addComponent(a, { component: CommandChildOf, data: { parent: b } });
     buffer.addComponent(b, { component: CommandChildOf, data: { parent: a } });
 
@@ -175,7 +166,7 @@ describe('CommandBuffer terminal lifecycle', () => {
     const world = new World();
     const first = world.spawn().unwrap();
     const second = world.spawn().unwrap();
-    const buffer = createCommandBuffer(world, { systemName: 'flush', scheduleName: Update.name });
+    const buffer = createCommandBuffer(world, 'flush', Update.name);
     buffer.despawn(first);
     buffer.despawn(second);
     const original = world.despawn.bind(world);
@@ -200,7 +191,7 @@ describe('CommandBuffer terminal lifecycle', () => {
 
   it('poisons on a first-command materialization failure without reclaiming its row', () => {
     const world = new World();
-    const buffer = createCommandBuffer(world, { systemName: 'flush', scheduleName: Update.name });
+    const buffer = createCommandBuffer(world, 'flush', Update.name);
     const pending = buffer.spawn({ component: CommandPosition, data: { x: 7 } });
     const injected = new SharedKernelFailureError(
       'World.materializeEntity',

@@ -10,11 +10,14 @@ import type {
 } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { ok, type Result, shaderSourceDescriptor } from '@forgeax/engine-types';
+import type { StandardClusterGraphBuffers } from '../pipeline/standard-lighting/graph';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame, RenderPipelineTarget } from '../render-pipeline';
 import { addAtmosphereIbl, type GraphEnvironment } from './ibl';
 import { addAtmosphereLuts } from './luts';
+import { addAtmospherePackedLuts } from './packed-tables';
+import { addAtmosphereSkyLuts } from './sky-tables';
 import { atmosphereStorage, stageAtmospherePublish } from './storage';
 import { writeAtmosphereUniform } from './uniform';
 import {
@@ -82,7 +85,14 @@ export function addAtmosphereBackground(
   graph: RenderGraphBuilder<RenderPipelineFrame>,
   color: RenderPipelineTarget,
   visibility: AtmosphereVisibility = {},
+  options:
+    | {
+        readonly mode: 'full';
+        readonly clusters?: StandardClusterGraphBuffers | null | undefined;
+      }
+    | { readonly mode: 'sky' } = { mode: 'full' },
 ): Result<GraphEnvironment, RenderGraphError> {
+  const mode = options.mode;
   const cube = graph.importTexture(
     'atmosphere-sky',
     {
@@ -126,6 +136,7 @@ export function addAtmosphereBackground(
     | undefined;
   const frameOf = (frame: RenderPipelineFrame) => frame as _InternalRenderPipelineContext;
   const dirty = (frame: RenderPipelineFrame) =>
+    (mode === 'full' || frameOf(frame).skylight !== undefined) &&
     frameOf(frame).frameState.environmentFrame?.environmentSignature !==
       atmosphereStorage(frame).submittedSignature &&
     atmosphereStorage(frame).recordedEncoder !== frame.encoder;
@@ -135,7 +146,7 @@ export function addAtmosphereBackground(
       { resource: vertices.value, usage: 'copy-dst' },
     ],
     executeIf: dirty,
-    encode: ({ frame, resources }) => {
+    encodeDirect: (_graphencoder, frame, resources) => {
       const environment = frameOf(frame).frameState.environmentFrame;
       const sun = environment?.sun;
       if (environment?.source.kind !== 'atmosphere' || sun === undefined) {
@@ -170,7 +181,14 @@ export function addAtmosphereBackground(
     },
   });
   if (!upload.ok) return upload;
-  const tables = addAtmosphereLuts(graph, params.value, dirty, visibility);
+  const full =
+    options.mode === 'full'
+      ? options.clusters?.kind === 'texture'
+        ? addAtmospherePackedLuts(graph, options.clusters, params.value, dirty, visibility)
+        : addAtmosphereLuts(graph, params.value, dirty, visibility)
+      : undefined;
+  if (full !== undefined && !full.ok) return full;
+  const tables = full ?? addAtmosphereSkyLuts(graph, { parameters: params.value, dirty });
   if (!tables.ok) return tables;
   const ensureState = (frame: RenderPipelineFrame) => {
     if (state !== undefined) return state;
@@ -266,7 +284,7 @@ export function addAtmosphereBackground(
       ],
       colorAttachments: [{ view: faceView.value, loadOp: 'clear', storeOp: 'store' }],
       executeIf: dirty,
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         const current = ensureState(frame);
         current.cubeGroup = frame.runtime.device
           .createBindGroup({
@@ -323,7 +341,7 @@ export function addAtmosphereBackground(
     // uses the normal scene depth authority, so alpha blending sees the sky
     // and no later background pass can overwrite a transparent foreground.
     colorAttachments: [{ view: color.view, loadOp: 'clear', storeOp: 'store' }],
-    encode: ({ pass, frame, resources }) => {
+    encodeDirect: (pass, frame, resources) => {
       const current = ensureState(frame);
       current.backgroundGroup = createAtmosphereBackgroundGroup(
         frame.runtime.device,
@@ -356,5 +374,7 @@ export function addAtmosphereBackground(
       pass.draw(3);
     },
   });
-  return background.ok ? ok({ ...ibl.value, atmosphere: tables.value }) : background;
+  return background.ok
+    ? ok({ ...ibl.value, ...(full === undefined ? {} : { atmosphere: full.value }) })
+    : background;
 }

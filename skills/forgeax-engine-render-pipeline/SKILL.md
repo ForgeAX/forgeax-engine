@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-render-pipeline
-description: ForgeaX render pipelines, post-processing, and typed RenderGraph ownership. Use when configuring camera effects, authoring pipelines/features, or tracing compute, raster, and graph resources.
+description: ForgeAX render pipelines, post-processing, and typed RenderGraph ownership. Use when configuring camera effects, authoring pipelines/features, or tracing compute, raster, and graph resources.
 ---
 
 # forgeax-engine-render-pipeline
@@ -15,6 +15,12 @@ coverage gap. The frame reason is only its first producer blocker. Preparation
 barriers must not acquire an unwritten canvas texture. A pending receipt does
 not establish that gameplay rendering continues.
 
+A multi-view preparation barrier belongs to the complete physical frame. One
+pending view holds capture, scene, compositor and Surface UI encoding; ready
+siblings cannot publish a partial picture. Inspect the pending receipt and
+actual tape before changing pipeline/shader work. See
+[preparation semantics](../../packages/render/README.md#preparing-hidden-loadout-pipelines).
+
 ## Quick contract
 
 Covers making a game scene visible; stop here unless a task needs a section below.
@@ -24,7 +30,7 @@ Import components from `@forgeax/engine/render` and `Transform` from
 | Entity | Components and defaults | Limits |
 |:--|:--|:--|
 | Camera | `Transform` + `Camera { fov }` (vertical radians strictly in `(0, Math.PI)`; convert degrees with `degrees * Math.PI / 180`; `near` 0.1, `far` 2000, aspect follows the canvas) | One active `Camera` per World; extra cameras raise `render-system-multi-camera` (use `CameraView` for simultaneous views) |
-| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | At most one: the first is used and others are dropped with a `render-system-multi-light` warning; no `Transform` needed. `Atmosphere` needs exactly one |
+| Sun | `DirectionalLight { direction, intensity, castShadow }`; `direction` is required, `intensity` is lux (default 1), `castShadow` defaults false | Any number: the first owns CSM shadows and the View sun lane; later ones are unshadowed Cluster lights (Three.js semantics) that count toward the local-light budget; no `Transform` needed. `Atmosphere` needs exactly one |
 | Local lights | `Transform` + `PointLight` / `SpotLight` (`intensity` candela, `range` Infinity, Point `decay` 2; Spot `direction`, `innerConeDeg`/`outerConeDeg` 60) | Up to 256 local lights share one cluster path; point shadows need `PointLightShadow` plus the shader entry noted in the shadow section |
 | Ambient | `Skylight { color, intensity }` (or an `equirect` for IBL); `groundColor` adds a Three-style hemisphere | With no light and no Skylight, Standard surfaces render black |
 | Sky | Generate a linear HDR `EquirectAsset` in a Pack; bind it to `SkyboxBackground` and `Skylight` | One asset supplies the background and IBL. Use `Atmosphere` for physical air. |
@@ -35,23 +41,68 @@ Import components from `@forgeax/engine/render` and `Transform` from
   numeric tuples linear. Textures, WGSL and budgets: `forgeax-engine-material`.
 - Camera output: `tonemap` defaults to `TONEMAP_NONE`; set `TONEMAP_ACES_FILMIC` with
   `exposure` about 1.1 for games (`TONEMAP_AGX` is the desaturated base curve, only for a
-  muted grade; presets in the SDK effects/lighting.md). `antialias`
+  muted grade; presets in the SDK effects/lighting.md). `exposure` is Three's
+  `toneMappingExposure` under every curve; Three WebGPU ignores `material.toneMapped`
+  (see render README "Three material.toneMapped"). `antialias`
   (`ANTIALIAS_FXAA`/`_MSAA`/`_TAA`/`_SMAA`, default none) and `bloom: BLOOM_ENABLED`
   are Camera fields; see [Camera and built-in pipelines](#camera-and-built-in-pipelines).
 - Shadows: set `castShadow: true` on the light, then choose
   `shadowFilter: DirectionalShadowFilterValue.<label>`; opt entities out with
   `ShadowParticipation`. See [Directional shadow entry](#directional-shadow-entry).
-- The Standard profile's `renderPath` defaults to `'forward'`; contact shadows,
-  `CapsuleShadow` and diffuse GI need `'deferred'`.
+- The Standard profile's `renderPath` defaults to `'forward'`. Set `'auto'` for
+  a device-based default: storage buffers, six MRTs and the base Deferred
+  attachment byte budget select Deferred; otherwise Forward. Camera/effect
+  changes do not choose this default. Recovery reselects on the new device;
+  `renderer.inspect().profile.renderPath` reports the concrete choice. Explicit
+  `'forward'`/`'deferred'` retain existing admission.
+  Diffuse GI needs Deferred capabilities. `CapsuleShadow` also supports Forward
+  on WebGL2 through its cooked screen-data consumer. Deferred retains
+  its later pass for Forward-only opaque materials. Stock Deferred AO uses the
+  GBuffer before those writers; full-scene SceneData consumers still require
+  complete producer coverage.
 - Fog, atmosphere, volumetrics and custom passes are optional sections below. A black or
   wrong frame you cannot explain goes to `forgeax-engine-rhi-debug` first.
 
 > [!IMPORTANT]
 > RenderPipeline.build declares typed graph topology only. Renderer exclusively owns compile, last-known-good replacement, execution, retirement, finish(), and one queue.submit() per frame.
 
+## WebGL2 Forward coverage and instances
+
+Select `Camera.antialias: ANTIALIAS_MSAA` for four-sample coverage. WebGL2
+must complete its real per-device HDR/depth resolve probe; inspect structured
+capability errors rather than falling back to a retained single-sample graph.
+AO, SSR, decals and screen shadows use independent single-sample surface data.
+See [MSAA readiness](../../packages/render/README.md#msaa-on-webgl2).
+
+Author instance transforms and Mesh LODs normally. Opaque uniform-only CPU
+collections batch each 128-instance page by resident level. Preserve source
+ordinals and transparent ordering; do not sort authored transform arrays.
+See [LOD routes](../../packages/render/README.md) for cache and fallback limits.
+
+## Native Terrain
+
+Use `Terrain` from `@forgeax/engine/terrain` with one managed heightfield asset
+and ordinary Transform. Author source heights, ordered material handles and
+weights through the asset owner; painting uses `assets.update` on that same
+handle. Render derives section draws and channel arrays. Capable devices use
+compute; WebGL2 writes selected array layers through four raster attachments.
+Both use the same WGSL arithmetic and retained input generations. Source bounds,
+material encodings and lifecycle live in the [Terrain contract](../../packages/terrain/README.md).
+Do not replace this path with hand-built meshes or per-fragment layer registries.
+
 ## Sky atmosphere and aerial perspective
 
-Use one `Atmosphere` and one `DirectionalLight` for outdoor air. Author distance
+For a portable physical display sky, explicitly set `Atmosphere.backgroundOnly:
+true`. It reuses the shared optics through raster LUTs on WebGPU and WebGL2, but
+supplies no aerial perspective or surface solar attenuation. Add `Skylight` without
+an equirect for physical sky IBL; its Transform fixes the capture origin.
+Cube, planar and environment captures require full Atmosphere. Verify both real
+Browser backends with `atmosphere-background.browser.test.ts` and every LUT channel
+with `atmosphere-tables.browser.test.ts`; use `physical-sky-ibl` Browser/Dawn
+fixtures for isolated diffuse/specular response and cube/filter coherence. Retain
+native optical quality gates.
+
+Use one default `Atmosphere` and one `DirectionalLight` for full outdoor air. Author distance
 in metres, coefficients in inverse metres, and solar intensity as outer-space
 lux. Atmosphere Transform defines the ground reference; Skylight Transform
 selects its independent capture position. Ordinary haze comes from Rayleigh/Mie
@@ -64,6 +115,15 @@ view; medium tables and pinned capture generations belong to Renderer. Verify
 fixed-exposure AP on/off, sun sweeps and colour ROIs against high-sample transport,
 then inspect real RHI Debug work/resources and GPU timings. Single-sample depth
 and the declared device texture budget are required; unavailable is explicit.
+Default full Atmosphere on WebGL2 Forward uses fragment LUT production and the
+existing integer Cluster binding for RGB transport; keep compute/storage caps
+unchanged. Require filterable/renderable RGBA16F, sixteen sampled textures and a
+1024-wide Cluster texture. Run `atmosphere-full-webgl2.browser.test.ts` through
+Browser Focus: its singleton exclusive owner compares actual WebGPU/WebGL2,
+opaque/blended/Sprite AP, Fog/AO, retained cube/planar HDR captures and real WebGL
+loss/recovery. Keep all sixty-frame controls and original image/deadline bounds.
+Desktop evidence does not qualify mobile hardware or FPS; retain native optics,
+ray, transport and 512-step quality owners.
 
 ## Local volumetric fog
 
@@ -154,6 +214,12 @@ picking, so cast interaction rays from the mono Camera. Contract:
 | RHI backend / capability | `forgeax-engine-rhi` |
 | Frame capture/replay | forgeax-engine-rhi-debug |
 
+Pending readback tickets retain their requested format, mip extent, layer and device
+generation. Resize may still read the matching accepted image. If no physical target
+matches, `observe` returns `render-target-operation-failed` without an invalid copy;
+request a new ticket for the replacement extent. Submitted copies keep their original
+receipt. See [target lifecycle](../../packages/render/README.md#target-and-probe-lifecycle-index).
+
 ## Directional shadow entry
 
 Enable `DirectionalLight.castShadow: true` before choosing a shadow filter;
@@ -170,17 +236,46 @@ a finite integer in [1, 64]. Other CSM fields, units, and defaults live in the
 Directional shadow quality table in
 [`packages/render/README.md`](../../packages/render/README.md); do not duplicate the schema here.
 
+For detached directional shadows, inspect the actual frame before increasing
+bias. Native CSM shares a bounded caster/receiver budget and uses one-sided
+per-texel receiver correction;
+`normalBias` is an optional world-unit offset and can move a query above a small
+caster. See the owning README for defaults and units. Automatic CSM admits
+upstream blockers and pancakes their near depth in the shared caster VS;
+explicit shadow matrices and point/spot views keep ordinary clipping. Contact
+shadow tests must also pass with screen-space contact shadows disabled. The
+CSM Browser capture gate validates the active near-clamp policy in the caster
+header together with cascade selection; the policy lane is not padding.
+The complete cube/plane contact matrix shares one renderer and World, resetting scene
+entities through `despawnAll()` per case. The contact and curved Browser owners use singleton/exclusive processes; preserve
+all cases and pixel thresholds when changing scheduling. Dawn runs both owners
+in `shadow-quality`; see the CI guide.
+
 For small-scale contact occlusion below cascade resolution (grass, foliage,
 feet), set DirectionalLight.contactShadowLength in meters (default 0, off;
-typical 0.1-0.5). It is an inline depth march in the Deferred lighting pass and
-does not add a pass. Forward ignores it, so pair it with
-`renderPath: 'deferred'`. It is independent of castShadow. See Screen-space
-contact shadows in the render README.
+typical 0.1-0.5). Deferred marches inline; Forward rasterizes the same visibility
+from semantic depth/normal, including WebGL2. It respects `ShadowParticipation.receive`
+and changes only directional lighting. It is independent of castShadow. See
+Screen-space contact shadows in the render README.
+
+Use `ProjectedDecal` for ordered color/normal/roughness projection onto opaque
+Standard surfaces in Forward or Deferred with single-sample depth. Forward
+updates the AO/SSR normal surface and modifies the material before BRDF evaluation;
+Forward MSAA uses separate single-sample surface inputs; Deferred MSAA remains
+an explicit `projected-decal-invalid` request. See render README
+"Projected decals" for material, display-camera and projector limits.
+
+`DirectionalLight.sourceAngle` (degrees, finite, >= 0, default 0.5357 = the
+sun's apparent diameter) gives the sun an angular size for direct specular: a
+smooth surface shows a sun-sized highlight instead of a sub-pixel glint (Unreal
+SphereMaxNoH + energy normalization). `0` restores the old point-light lobe
+bit-identically; diffuse and shadows are unchanged. Direct lighting also floors
+roughness at 0.02 (Unreal View.MinRoughness); environment reflections are not.
 
 For skinned characters, add the `CapsuleShadow` tag component to cast the
 directional shadow from `SkeletonAsset.shadowCapsules` (fitted at glTF/FBX
-import) instead of re-rasterizing the mesh into every cascade. It needs
-`renderPath: 'deferred'` and a `castShadow` DirectionalLight; read
+import) instead of re-rasterizing the mesh into every cascade. Use Forward
+(including WebGL2) or Deferred with a `castShadow` DirectionalLight; read
 `renderer.inspect().capsuleShadow.fallbacks` when an entity is not admitted.
 See Capsule character shadows in the render README.
 
@@ -188,7 +283,7 @@ Per-entity opt-out is `ShadowParticipation { cast, receive }` (Bevy
 `NotShadowCaster` / `NotShadowReceiver`; absent means both true, except that a
 mesh whose every material blends casts nothing unless the component is authored). `cast: false`
 leaves every shadow map, and `receive: false` skips all shadow sampling on that
-surface. The WebGL2 fallback always receives. `PointLightShadow` bias uses
+surface, including the WebGL2 uniform fallback. `PointLightShadow` bias uses
 Bevy units: `depthBias` in world meters (default 0.08), `normalBias` in cube
 texels (default 0.6). Point sampling is hardware 2x2 and needs
 `forgeaxShader({ engineEntries: { pointShadows: true } })`; a DevKit game project
@@ -202,9 +297,12 @@ POD uses the same field names as Render/Runtime READMEs: requested, effective,
 `status`, `fallbackReason`, `lastKnownGood`, `pixelEvidence`,
 `cascadeCount`, `mapSize`, `shadowMapBytes`, `writerPasses`, `blockerTaps`,
 filterTapUpperBound, seamTapUpperBound, deviceGeneration, and
-graphGeneration. effective is not an echo of the request: WebGL2 PCSS requests
-produce explicit PCF fallback; RhiNull produces rhi-null-structural. Neither
-is PCSS pixel evidence. not-run must remain not-run.
+graphGeneration. WebGL2 admits PCSS through the cooked no-storage variant:
+raw blocker reads and bilinear shader comparisons share one depth binding.
+Native variants retain hardware comparisons. Both keep the same Medium/High
+blocker, penumbra, bias and cascade policy. Inspect effective and candidate
+status; a requested label alone is not pixel evidence. RhiNull remains
+rhi-null-structural. not-run must remain not-run.
 
 For shadow cost, read renderer.inspect().shadowRaster: `passCount`, `drawCount`,
 and per-view `cache` plus `invalidationReason`. A static scene that keeps
@@ -798,9 +896,26 @@ check actual light/receiver carriers and matching shader work.
 radius is 0.25, thickness 1, distanceExponent 1, distanceFallOff 1 and
 resolutionScale 1. High quality searches 36 depth candidates. Use
 `resolutionScale: 0.5` for less pixel work; select `algorithm: 'ssao'` explicitly
-for hemisphere sampling. Raw intensity is applied before the existing bilateral
-filter. See the [AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
-for retained mathematical differences and direct-light composition.
+for hemisphere sampling. Eligible WebGPU and `wgpu-WebGL2` devices support AO
+through Forward input as well as the existing Deferred route; AO alone does not
+force a Deferred profile. WebGPU uses the production raster route and exercises
+compute through the internal Renderer acceptance override. WebGL2 uses fragment
+passes and co-locates visibility with Cluster data in one integer texture to
+preserve the full material texture budget. Raw intensity is applied before the
+existing bilateral filter. `directLightingStrength` defaults to zero and
+independently controls AO attenuation of direct lighting in both render paths.
+See the [AO contract](../../packages/render/README.md#screen-space-ambient-occlusion)
+for input eligibility, budgets and retained mathematical differences.
+
+For runtime diagnosis, read `renderer.inspect().standardLighting.ambientOcclusion`
+after a submitted frame. Its passes and graph generation describe the accepted
+graph; requested-but-unavailable state includes the missing active-graph stage
+and retry/rebuild recovery. It also reports the material-normal/depth SceneData
+schema, numerical settings, known allocation bytes and raw/filter work budgets.
+Treat omitted byte sizes as unknown and the work counts as declared workload
+budgets, not measured GPU time. A disabled request owns no AO passes, Cluster
+region, history or per-frame upload. Public camera setup and `ssao-*` recovery
+examples live in the [render README](../../packages/render/README.md#screen-space-ambient-occlusion).
 
 Binding `Camera.colorLut` applies it with default strength 1; explicit strength 0
 disables it. No LUT creates no LUT work. FXAA follows Three GPU r184's six-step
@@ -808,14 +923,20 @@ search, relative threshold 0.063 and subpixel blend 1. The public
 [comparison page](../../apps/parity/color-lighting/render-defaults.html) and its
 verification script use production shaders and the pinned Three dependency.
 
-Bloom is opt-in and independent of tone mapping. Defaults bloom only
-highlights: threshold 1, intensity 0.5, smooth width 0.01, radius 0 (WebGPU
-BloomNode uses threshold 0 and intensity 1, which blooms the whole frame). Use
+Bloom is opt-in and independent of tone mapping. Defaults follow Unreal:
+threshold -1 (no threshold, every pixel scatters by its energy), intensity 0.5,
+smooth width 0.01, radius 0; a positive threshold blooms only highlights (WebGPU
+BloomNode uses threshold 0 and intensity 1). Use
 `bloomSmoothWidth` and `bloomRadius`; the old soft-knee/scatter fields are removed.
+`bloomThreshold < 0` (range `[-1, 65504]`, Unreal's `-1` = no BloomSetup) disables
+thresholding. Each level downsamples with Unreal's 4-tap HIGH (4x4) filter and the
+threshold reads that filtered half-res colour, so sub-pixel specular glints do not
+toggle the bloom frame to frame.
 The five Gaussian levels and their weighted composite share one Renderer graph.
 SSR is opt-in, full internal resolution, maxDistance 1, thickness 0.1 and
-maxRoughness 1; 1080p temporal admission needs about 111 MiB. TAA motion uses
+maxRoughness 1; 1080p temporal descriptors need about 182 MiB in Deferred compute or 261 MiB in portable Forward, within the 320 MiB per-view cap. TAA motion uses
 input pixels / 128, with default current weights 0.05 (TAA) and 0.025 (TAAU).
+TAA flickering analysis (UE TSR port, `Camera.taaFlickering`, default on, 0 = off) widens the luma clip box where a 2-frame oscillation is detected; reactive/moving pixels still update. Costs an extra rgba8unorm history (TAA history 42 B/px).
 Point/Spot shadow near/far defaults are 0.5/500; a positive finite light range
 replaces far. RectAreaLight defaults to 10x10 with unlimited range.
 Directional/Spot shadow maps default off; set `castShadow: true` explicitly, as
@@ -823,3 +944,40 @@ the game template does. Mesh participation stays on unless ShadowParticipation
 opts out; Point lights require PointLightShadow. No renderer-wide gate is needed.
 The game-3d template inherits projection/CSM defaults while retaining its
 explicit artistic ACES/FXAA, light color and intensity choices.
+
+## Portable Hi-Z, SSR and exposure
+
+Use the Standard pipeline's admitted execution plan; do not select backends in
+game shaders. Compute retains native workgroup algorithms. Fragment Hi-Z uses
+independent attachments and legal mip publication; SSR uses its shared SceneData,
+material response MRT and completion-fenced history. Forward SSR requires built-in
+Standard materials and single sampling; Deferred keeps its own admission contract.
+Auto exposure preserves the weighted 256-bin histogram with integer reductions,
+never mean luminance. Read the [portable contract](../../packages/render/README.md#portable-hi-z-ssr-and-histogram-exposure)
+for capacity, format receipts, physical pass inspection and real GPU gates.
+The public WebGL2 World/Camera owner is
+`packages/runtime/src/__tests__/standard-effects-webgl2.browser.test.ts`: exposure,
+SSR and their GTAO combination retain 60 completed frames, actual fragment work,
+paired pixels and disable-to-baseline recovery. AO admits opaque/masked Unlit
+surface inputs; Forward SSR still requires built-in Standard receivers. Standard
+Morph and Skin+Morph surface inputs consume the same position/normal/tangent
+deformation as color, with Morph before Skin. Do not clear Morph weights or
+substitute bind-pose geometry to admit an effect. GPU VFX
+retains its independent compute/indirect capability gate; route CPU-updated
+particle sprites through `Points` rather than treating them as GPU VFX fallback.
+
+Render benchmark evidence contracts under `bench/*/__tests__/*.test.mjs` use
+`node:test`; run them with the CI guide's bounded Node command. Keep them out of
+the package Vitest collector without dropping their CI owner.
+
+## Portable temporal antialiasing
+
+Use `ANTIALIAS_TAA` at native input size for TAA, or attach `DynamicResolution`
+for TAAU. `ANTIALIAS_TSR` selects the separate 1x-history TSR resolver at either
+native or reduced input size. TSR uses compute/storage textures when available
+and fragment/MRT on HDR devices with at least three color attachments, including
+WebGL2. It never silently changes algorithms. History, jitter, DRS changes,
+CameraView isolation and successful-submit advancement share one temporal owner.
+Inspect `renderer.inspect().temporal` and each view's temporal projection; a
+Browser test using WebGPU alone does not qualify the WebGL lane. See the
+TSR guide.

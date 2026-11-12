@@ -25,6 +25,8 @@ const title = value('--title');
 const notesFile = value('--notes-file');
 const expectedCommit = value('--commit');
 const assetPaths = values('--asset');
+const makeLatest = value('--make-latest') ?? (/-(?:dev|rc)\./.test(tag) ? 'false' : 'true');
+if (!['true', 'false'].includes(makeLatest)) throw new Error('sdk-release-make-latest-invalid');
 if (
   !tag ||
   !title ||
@@ -105,7 +107,7 @@ async function createOrReadRelease() {
         name: title,
         body: await readFile(notesFile, 'utf8'),
         prerelease: /-(?:dev|rc)\./.test(tag),
-        make_latest: /-(?:dev|rc)\./.test(tag) ? 'false' : 'true',
+        make_latest: makeLatest,
       }),
     }).then((response) => response.json());
   } catch (cause) {

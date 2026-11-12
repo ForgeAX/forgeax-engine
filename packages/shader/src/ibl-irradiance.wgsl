@@ -4,22 +4,25 @@
 // (feat-20260520-skylight-ibl-cubemap M3 / t44).
 //
 // Diffuse irradiance convolution. Per LearnOpenGL §6.2.2: a bounded
-// hemisphere Riemann sum (sampleDelta = 0.05) integrates the env cubemap to
+// hemisphere Riemann sum (sampleDelta = 0.05) integrates the environment to
 // produce the convolved irradiance cubemap consumed by sampleIblDiffuse() at
-// runtime. The budget is deliberately bounded for the rgba16float bake target
+// runtime. The sum reads a band-limited PMREM level, never the full
+// resolution cube: point samples on a 2.9 degree grid alias a small, very
+// bright source (an HDR sun disc) into blocky per-texel speckles, because
+// neighbouring irradiance texels hit or miss it. three.js avoids the same
+// problem by reading its PMREM at roughness 1 for diffuse. The budget is deliberately bounded for the rgba16float bake target
 // so every backend completes the fragment without overflowing its shader
 // work budget.
 //
 // @group(0) = per-face viewProj uniform.
-// @group(1) = env cubemap (texture_cube<f32>) + sampler. This is the same
-//             slot the prefilter module uses for its env cube, BUT because
-//             round-2 keeps each ibl-* module physically separate, the WGSL
-//             (group, binding) global-uniqueness rule applies per module
-//             rather than across the family.
+// @group(1) = finished PMREM atlas (texture_2d<f32>) + sampler. The
+//             precompute runs the prefilter before this pass so the atlas
+//             is complete when it is bound here.
 //
 // Entries: cubemap_vs + irradianceConvolve_fs.
 
 #import forgeax_pbr::ibl_shared::{PI}
+#import forgeax_pbr::pmrem::{samplePmremLevel}
 
 struct CubemapVsIn {
   @location(0) pos: vec3<f32>,
@@ -35,10 +38,15 @@ struct CubemapFaceUniforms {
 
 @group(0) @binding(0) var<uniform> faceUniforms: CubemapFaceUniforms;
 
-@group(1) @binding(0) var envCube: texture_cube<f32>;
+@group(1) @binding(0) var envPmrem: texture_2d<f32>;
 @group(1) @binding(1) var envSamplerS: sampler;
 
 const IRRADIANCE_SAMPLE_DELTA: f32 = 0.05;
+// Logical PMREM mip read by the sum: 16-pixel faces (about 6.4 degrees per
+// texel), so the 2.9 degree sample grid over-samples bilinear texels whose
+// content the prefilter chain has already low-passed. The cosine lobe is 90
+// degrees wide, so this pre-blur leaves smooth environments unchanged.
+const IRRADIANCE_SOURCE_MIP: f32 = 4.0;
 
 // The bake target is rgba16float, so a sample is admissible only when all of
 // its lanes can be represented by that format. Equality catches NaN while
@@ -93,9 +101,9 @@ fn irradianceConvolve_fs(in0: CubemapVsOut) -> @location(0) vec4<f32> {
                       tangentSample.y * up +
                       tangentSample.z * N;
 
-      let sampleColor = textureSampleLevel(
-        envCube, envSamplerS, sampleVec, 0.0,
-      ).rgb;
+      let sampleColor = samplePmremLevel(
+        envPmrem, envSamplerS, sampleVec, IRRADIANCE_SOURCE_MIP,
+      );
       // A malformed direction or backend sample must not poison the whole
       // irradiance face. Skip only non-finite samples and keep the
       // normalization count in lockstep with the accumulated radiance.

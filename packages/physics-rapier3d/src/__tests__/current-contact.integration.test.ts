@@ -692,3 +692,50 @@ it('retains a Body pair until its last sensor contact stops', async () => {
     physics.dispose();
   }
 });
+
+it('batches exact per-request neighbor filters atomically without retaining owners past a read phase', async () => {
+  const { physics } = await fixture();
+  try {
+    const requests = [
+      { entity: 2 },
+      { entity: 1 },
+      { entity: 2, filterMask: 0 },
+      {
+        entity: 2,
+        normalFilter: { direction: [0, -1, 0] as [number, number, number], minimumDot: 0.5 },
+      },
+      {
+        entity: 2,
+        normalFilter: { direction: [0, 1, 0] as [number, number, number], minimumDot: 0.5 },
+      },
+    ];
+    expect(physics.getCurrentContactNeighborsBatch(requests).ok).toBe(false);
+    for (let step = 0; step < 180; step++) physics.step(1 / 60);
+    const expected = requests.map((r) =>
+      physics.getCurrentContactNeighbors(r.entity, r.filterMask, r.normalFilter).unwrap(),
+    );
+    const result = physics.getCurrentContactNeighborsBatch(requests).unwrap();
+    expect(result).toEqual(expected);
+    expect(physics.getCurrentContactNeighborsBatch([...requests, { entity: 999 }])).toMatchObject({
+      ok: false,
+      error: { code: 'managed-body-missing' },
+    });
+    expect(
+      physics.getCurrentContactNeighborsBatch([
+        { entity: 2, normalFilter: { direction: [NaN, 0, 0], minimumDot: 0.5 } },
+      ]).ok,
+    ).toBe(false);
+    const first = result[0];
+    if (first === undefined) throw Error('Missing first batch result');
+    first.entities.length = 0;
+    expect(physics.getCurrentContactNeighborsBatch(requests).unwrap()).toEqual(expected);
+    physics.wakeBody(2).unwrap();
+    expect(physics.getCurrentContactNeighborsBatch(requests).ok).toBe(false);
+    physics.step(1 / 60);
+    expect(physics.getCurrentContactNeighborsBatch(requests).unwrap()[0]?.fixedStep).toBe(181);
+    physics.removeEntity(1);
+    expect(physics.getCurrentContactNeighborsBatch(requests).ok).toBe(false);
+  } finally {
+    physics.dispose();
+  }
+});

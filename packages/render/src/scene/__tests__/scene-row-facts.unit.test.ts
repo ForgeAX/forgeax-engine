@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import type { RenderableSnapshot } from '../../render-system-extract';
 import { lodCandidateCountOf, RetainedFrameProjection, sparseRowsOf } from '../frame-list';
 import type { RenderSceneSlot } from '../render-scene-types';
@@ -15,6 +15,8 @@ interface Row {
   readonly overrides: boolean;
   readonly terrain: boolean;
   readonly capsule: boolean;
+  readonly pointsLines?: boolean;
+  readonly skin?: boolean;
 }
 
 function slotOf(slot: number, row: Row): RenderSceneSlot {
@@ -26,6 +28,8 @@ function slotOf(slot: number, row: Row): RenderSceneSlot {
     ...(row.overrides ? { materialOverrides: [] } : {}),
     ...(row.terrain ? { terrain: {} } : {}),
     ...(row.capsule ? { capsuleShadowRequested: true } : {}),
+    ...(row.pointsLines === true ? { pointsLines: {} } : {}),
+    ...(row.skin === true ? { skinBinding: {} } : {}),
   } as unknown as RenderableSnapshot;
   return {
     slot,
@@ -69,6 +73,8 @@ it('maintains the LOD candidate count and sparse indexes equal to full recomputa
         overrides: random(4) !== 0,
         terrain: random(10) === 0,
         capsule: random(6) === 0,
+        pointsLines: random(5) === 0,
+        skin: random(7) === 0,
       };
       rows.set(slot, row);
       setSceneRow(slots, slot, slotOf(slot, row));
@@ -86,11 +92,17 @@ it('maintains the LOD candidate count and sparse indexes equal to full recomputa
     if (step % 97 === 0) {
       expect(slots.lodCandidateCount).toBe(reference(rows, meshes));
       const sorted = [...rows.entries()].sort((a, b) => a[0] - b[0]);
-      expect(slots.indexedSlots('terrain')).toEqual(
+      expect([...slots.indexedSlots('terrain')]).toEqual(
         sorted.filter(([, row]) => row.terrain).map(([slot]) => slot),
       );
-      expect(slots.indexedSlots('capsule')).toEqual(
+      expect([...slots.indexedSlots('capsule')]).toEqual(
         sorted.filter(([, row]) => row.capsule).map(([slot]) => slot),
+      );
+      expect([...slots.indexedSlots('pointsLines')]).toEqual(
+        sorted.filter(([, row]) => row.pointsLines === true).map(([slot]) => slot),
+      );
+      expect([...slots.indexedSlots('skin')]).toEqual(
+        sorted.filter(([, row]) => row.skin === true).map(([slot]) => slot),
       );
     }
   }
@@ -143,4 +155,61 @@ it('reads retained row facts through projections and falls back to walking plain
   expect(lodCandidateCountOf(list)).toBe(1);
   expect([...sparseRowsOf(list, 'terrain')]).toHaveLength(2);
   expect(plain).toHaveLength(2);
+});
+
+it.each([16, 4096])('edits a sparse index without sorting its %i retained members', (count) => {
+  const slots = new SceneSlots();
+  const row: Row = {
+    worldId: 0,
+    entityKey: 0,
+    assetHandle: 1,
+    lods: false,
+    overrides: false,
+    terrain: false,
+    capsule: true,
+  };
+  for (let slot = 0; slot < count; slot++)
+    setSceneRow(slots, slot, slotOf(slot, { ...row, entityKey: slot }));
+  const before = slots.indexedSlots('capsule');
+  setSceneRow(slots, 0, slotOf(0, { ...row, capsule: false }));
+  const sort = vi.spyOn(Array.prototype, 'sort');
+  let after: Iterable<number>;
+  try {
+    after = slots.indexedSlots('capsule');
+    expect(sort).not.toHaveBeenCalled();
+  } finally {
+    sort.mockRestore();
+  }
+  expect([...before]).toHaveLength(count);
+  expect([...after]).toEqual(Array.from({ length: count - 1 }, (_, index) => index + 1));
+  // Last edit wins; old facts remain fixed through removal and source-slot reuse.
+  setSceneRow(slots, count, slotOf(count, { ...row, entityKey: count }));
+  setSceneRow(slots, count, undefined);
+  setSceneRow(slots, count, slotOf(count, { ...row, entityKey: count + 1 }));
+  expect([...slots.indexedSlots('capsule')]).toHaveLength(count);
+  expect([...after]).toHaveLength(count - 1);
+});
+
+it('captures sparse membership on its exact row root across later edits and clear', () => {
+  const slots = new SceneSlots();
+  const row: Row = {
+    worldId: 0,
+    entityKey: 0,
+    assetHandle: 1,
+    lods: false,
+    overrides: false,
+    terrain: false,
+    capsule: false,
+    skin: true,
+  };
+  setSceneRow(slots, 0, slotOf(0, row));
+  const first = slots.capture();
+  expect([...(first.indexedSlots('skin') ?? [])]).toEqual([0]);
+  setSceneRow(slots, 1, slotOf(1, { ...row, entityKey: 1, skin: false }));
+  const unrelated = slots.capture();
+  expect(unrelated.indexedSlots('skin')).toBe(first.indexedSlots('skin'));
+  setSceneRow(slots, 0, slotOf(0, { ...row, skin: false }));
+  expect([...(slots.capture().indexedSlots('skin') ?? [])]).toEqual([]);
+  slots.clear();
+  expect([...(first.indexedSlots('skin') ?? [])]).toEqual([0]);
 });

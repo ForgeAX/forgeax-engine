@@ -1,5 +1,9 @@
 import { vec3 } from '@forgeax/engine-math';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  capturedGpuMaterialLayout,
+  captureGpuMaterialBindings,
+} from '../../gpu-driven/captured-material-bindings';
 import { MaterialResource } from '../../material-resource';
 import type { RenderResourceScope } from '../../publication/resource-scope';
 import type { DispatchList, MaterialSnapshot } from '../../render-system-extract';
@@ -53,7 +57,86 @@ function ceiling(meshSlotCount: number, materialSlotCount = meshSlotCount) {
   } as never;
 }
 
+it('consumes producer material slots while keeping values and World scopes specific to each frame', () => {
+  const a = material();
+  const b = material();
+  const sources = [
+    { batch: { binding: { material: a, worldId: 1 } }, materialBindingClass: 'probe:2' },
+    { batch: { binding: { material: a, worldId: 0 } }, materialBindingClass: 'probe:2' },
+    { batch: { binding: { material: b, worldId: 0 } }, materialBindingClass: '' },
+    { batch: { binding: { material: a, worldId: 0 } }, materialBindingClass: '' },
+  ];
+  const bindings = captureGpuMaterialBindings(sources as never);
+  const layout = capturedGpuMaterialLayout(bindings);
+  expect(capturedGpuMaterialLayout(Object.freeze([...bindings]))).toBeUndefined();
+  // A prepared descriptor may later be replaced or edited; the capture owns its facts.
+  const firstSource = sources[0] as (typeof sources)[number];
+  firstSource.batch.binding.worldId = 0;
+  const oldScope = row(0).world;
+  const nextScope = row(1).world;
+  let worlds = [oldScope, oldScope];
+  let frame = new MaterialFrame(undefined).with(a).with(b);
+  const before = frame.get(a)?.snapshot;
+  const prepare = () =>
+    buildDispatchPlan(ceiling(0, 3), [], [], [], [], undefined, false, {
+      bindings,
+      worlds,
+      frame,
+    });
+  const first = prepare();
+  const repeated = prepare();
+  expect(layout?.layout?.unique).toHaveLength(3);
+  expect(first.materialBindingSlots).toBe(layout?.layout?.slots);
+  expect(repeated.materialBindingSlots).toBe(first.materialBindingSlots);
+  expect(first.materialBindings.map((binding) => binding.resourceClass)).toEqual([
+    'probe:2',
+    '',
+    '',
+  ]);
+  frame = frame.with(a, 1, { ...a.snapshot, roughness: 0.125 });
+  worlds = [oldScope, nextScope];
+  const next = prepare();
+  expect(next.materialBindings[0]?.world).toBe(nextScope);
+  expect(next.materialBindings[2]?.world).toBe(oldScope);
+  expect(next.materialSlots[0]?.roughness).toBe(0.125);
+  expect(first.materialSlots[0]).toBe(before);
+  expect(first.materialBindings[0]?.world).toBe(oldScope);
+  expect(next.materialBindings).not.toBe(first.materialBindings);
+  expect(next.materialSlots).not.toBe(first.materialSlots);
+  expect(() => prepare()).not.toThrow();
+  worlds = [oldScope];
+  expect(prepare).toThrow('the asset scope for every shared material');
+  worlds = [oldScope, nextScope];
+  expect(prepare().materialBindingSlots).toBe(first.materialBindingSlots);
+
+  // Mixed CPU demand keeps the ordinary merged slot order and must not edit the capture.
+  const mixed = buildDispatchPlan(ceiling(1, 4), [row(0, b)], [], [], [], undefined, false, {
+    bindings,
+    worlds,
+    frame,
+  });
+  expect(mixed.materialBindingSlots.get(b)?.get('')).toBe(0);
+  expect(mixed.materialBindingSlots.get(a)?.get('probe:2')).toBe(1);
+  expect(layout?.layout?.slots.get(b)?.get('')).toBe(1);
+  expect(prepare().materialBindingSlots).toBe(first.materialBindingSlots);
+});
+
 describe('material slot identity and scope', () => {
+  it('bounds singleton slot vectors by actual bindings while observing every owner', () => {
+    const a = material();
+    const owners: number[] = [];
+    const groups = Array.from({ length: 10000 }, () => [a]);
+    const plan = buildMaterialSlotPlan(groups, (_material, owner) => {
+      owners.push(owner);
+      return owner % 2 === 0 ? '' : 'probe:1';
+    });
+    expect(owners).toEqual(Array.from({ length: groups.length }, (_, index) => index));
+    expect(plan.slots).toEqual([a, a]);
+    expect(plan.slotOwners).toEqual([0, 1]);
+    expect(new Set(plan.slotIndices).size).toBe(2);
+    expect(plan.slotIndices.every((slots, owner) => slots[0] === owner % 2)).toBe(true);
+  });
+
   it('interns identities and resource classes independently of draw count', () => {
     const a = material();
     const b = material();
@@ -79,6 +162,24 @@ describe('material slot identity and scope', () => {
     expect(plan.slotIndices[0]?.[2]).toBe(0);
     expect(1 in plan.slotIndices).toBe(false);
     expect(1 in (plan.slotIndices[0] ?? [])).toBe(false);
+  });
+
+  it('observes singleton accessors and retains custom array mapping', () => {
+    const a = material();
+    const reads = vi.fn(() => a);
+    const ordinary = [a];
+    Object.defineProperty(ordinary, 0, { get: reads });
+    const custom = [a];
+    const map = vi.spyOn(custom, 'map');
+    const sparse: MaterialResource[] = new Array(1);
+    const plan = buildMaterialSlotPlan([ordinary, [a], custom, sparse]);
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(map).toHaveBeenCalledTimes(1);
+    expect(plan.slotIndices[0]).toBe(plan.slotIndices[1]);
+    expect(Object.isFrozen(plan.slotIndices[0])).toBe(true);
+    expect(plan.slotIndices[2]).toEqual([0]);
+    expect(plan.slotIndices[3]).toHaveLength(1);
+    expect(0 in (plan.slotIndices[3] ?? [])).toBe(false);
   });
 
   it('keeps material resource scope without retaining its representative mesh row', () => {
@@ -257,6 +358,33 @@ describe('shared GPU materials without CPU geometry', () => {
       },
     );
     expect(plan.materialBindings).toHaveLength(2);
+  });
+
+  it('identifies the source of an unfixed direct material without borrowing live values', () => {
+    const resource = material();
+    const direct = row(73, resource);
+    expect(() =>
+      buildDispatchPlan(ceiling(8), [direct], [], [], [], undefined, false, {
+        bindings: [],
+        worlds: [direct.world],
+        frame: new MaterialFrame(undefined),
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'rhi-descriptor-invalid',
+        detail: expect.objectContaining({
+          error: expect.objectContaining({
+            detail: expect.objectContaining({
+              worldId: 0,
+              entityKey: 73,
+              primaryMaterial: true,
+              materialIdentity: expect.any(Number),
+              materialFrameIdentity: expect.any(Number),
+            }),
+          }),
+        }),
+      }),
+    );
   });
 
   it('rejects an unfixed shared material instead of borrowing its current value', () => {

@@ -9,7 +9,7 @@ import { createOutputColorSpaceState } from '../output-color-space';
 import type { RendererOptions } from '../render-contract';
 import type { RhiBackendPack } from './backend-contract';
 import type { BundlerOptions } from './bundler-contract';
-import { deviceOptionsForAdapter } from './device-feature-admission';
+import { deviceOptionsForAdapter, rendererDeviceAdmission } from './device-feature-admission';
 import type { RendererAssemblyImplementation } from './host-contract';
 import { attachDeviceLostFanout } from './recovery/device-loss-fanout';
 import type { WebGPUOutcome, WebGPURendererInternals } from './webgpu-renderer-contract';
@@ -46,6 +46,11 @@ export async function tryCreateRendererFromBackend(
   const result = await adapter.requestDevice(deviceOpts);
   if (!result.ok) return { kind: 'rhi-err', error: result.error };
   const device: RhiDevice = result.value;
+  const admission = rendererDeviceAdmission(device);
+  if (admission !== undefined) {
+    pack.disposeDevice?.(device);
+    return { kind: 'rhi-err', error: admission };
+  }
   const ctxResult = pack.rhi.acquireCanvasContext(canvas);
   if (!ctxResult.ok) return { kind: 'rhi-err', error: ctxResult.error };
   const context: RhiCanvasContext = ctxResult.value;

@@ -4,7 +4,7 @@ import type {
   MaterialRenderProjection,
 } from '@forgeax/engine-assets-runtime';
 import type { VertexLayoutProjection } from '@forgeax/engine-geometry';
-import type { Profiler } from '@forgeax/engine-profiler';
+import type { Profiler, RecorderSession } from '@forgeax/engine-profiler';
 import type { CompiledRenderGraphInfo } from '@forgeax/engine-render-graph';
 import type {
   BindGroup,
@@ -70,7 +70,6 @@ import {
 import type { StandardTopologyInputValue } from '../pipeline/standard-lighting/topology';
 import type { StandardProfile } from '../pipeline/standard-profile';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
-import type { PointsLinesInspection } from '../points-lines/inspection';
 import type { PointsLinesRecordPlan } from '../points-lines/record';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { ReflectionProbeTable } from '../reflection/gpu-table';
@@ -140,6 +139,7 @@ import type {
   AtmosphereShaderSources,
   DepthPyramidShaderSources,
   RenderDebugOverlay,
+  RenderPhase,
   RenderPipelineContext,
   RenderRecordPhase,
   SsrShaderSources,
@@ -164,18 +164,31 @@ import type {
 import type { FoldDispatchPlan } from './mesh-ssbo';
 
 export interface RenderSystemRuntime {
+  /** Naga-derived Standard Cluster layouts published with the engine shader fleet. */
+  readonly standardClusterAbi?:
+    | import('../light-buffer-layout').StandardClusterReflectedAbi
+    | undefined;
+  /** Shared Render World, including synchronous record-stage scratch. */
+  readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
+  /** Component-owned scope and binding facts for a composed or capture view. */
+  readonly viewContext?: import('../world/view-record-context').ViewRecordContextState | undefined;
   readonly demandCapsuleShadow?:
     | ((
         source: import('../render-system-extract').RenderableSnapshot,
       ) => import('../capsule-shadow/world-capsules').CapsuleShadowSnapshot | undefined)
     | undefined;
-  /** Actual CPU draw demand; unavailable current poses produce no draw. */
-  readonly demandSkinTask?:
+  /**
+   * The CPU Skin task `render-skin-demand` composed for this row before
+   * recording; an unavailable pose, or a row outside the demand (reported as
+   * `skin-demand-missing`), produces no draw.
+   */
+  readonly skinTask?:
     | ((
         source: Pick<
           import('../render-system-extract').RenderableSnapshot,
           'worldId' | 'entityKey'
         >,
+        pass: 'main' | 'shadow',
       ) => import('./skin-tasks').SkinTaskBinding | undefined)
     | undefined;
   readonly growMeshSsbo?: MeshSsboGrowController['growMeshSsbo'] | undefined;
@@ -184,8 +197,8 @@ export interface RenderSystemRuntime {
   readonly shaderRegistry?: import('@forgeax/engine-shader').ShaderRegistry;
   /** Final display observations wait for the screen UI composition. */
   deferFinalDisplayObservation?: boolean;
-  standardDeferredShaders?:
-    | import('../pipeline/standard-deferred-lighting').StandardDeferredShaderSources
+  standardSceneShaders?:
+    | import('../pipeline/standard-deferred-lighting').StandardSceneShaderSources
     | undefined;
   readonly device: RhiDevice;
   /** Current renderer device generation used to fence receipt-bound captures. */
@@ -225,6 +238,8 @@ export interface RenderSystemRuntime {
           readonly deformation?: 'rigid' | 'skin';
           readonly variantSet?: string;
           readonly clustered?: boolean;
+          /** Material admission for the compile-time ALPHA_MASK axis. */
+          readonly alphaMask?: boolean;
           readonly probeBlend?: boolean;
           readonly reflectionFallback?: boolean;
           readonly pass?: 'forward' | 'shadow' | 'depth';
@@ -238,7 +253,10 @@ export interface RenderSystemRuntime {
     readonly keyCharacters: number;
   };
   /** Candidate-only failure boundary; native PSO errors cannot poison the live frame. */
-  readonly withPipelinePreparationErrors?: (action: () => void) => void;
+  /** Exact ordinary preparation request lookup; misses must not compile or allocate a PSO. */
+  readonly lookupMaterialShaderPipeline?: RenderSystemInternals['getMaterialShaderPipeline'];
+  readonly lookupMaterialShaderPipelineEntry?: RenderSystemInternals['getMaterialShaderPipelineEntry'];
+  readonly withPipelinePreparationErrors?: (action: () => void, onPending?: () => void) => void;
   readonly prepareMaterialShaderPipeline?: RenderSystemRuntime['getMaterialShaderPipeline'];
   readonly prepareMaterialShaderPipelineEntry?: RenderSystemRuntime['getMaterialShaderPipelineEntry'];
   readonly getMaterialShaderPipeline?: (
@@ -251,7 +269,8 @@ export interface RenderSystemRuntime {
     passKind?: PassKind,
     meshAttributes?: VertexAttributeMap,
     sampleCount?: number,
-    colorFormatOverride?: GPUTextureFormat,
+    /** `null` selects a colorless pipeline (depth-only scene prepass). */
+    colorFormatOverride?: GPUTextureFormat | null,
     shaderUvSetCount?: number,
     depthFormatOverride?: GPUTextureFormat | null,
     vertexLayout?: string,
@@ -270,7 +289,8 @@ export interface RenderSystemRuntime {
     vertexEntryPoint?: string,
     additionalColorFormats?: readonly GPUTextureFormat[],
     vertexEntry?: string,
-    fragmentEntry?: string,
+    /** `null` selects a vertex-only depth pipeline; omitted keeps the program default. */
+    fragmentEntry?: string | null,
     particleInputLanes?: number,
     constants?: Readonly<Record<string, number>>,
   ) => RhiRenderPipeline | null;
@@ -328,16 +348,12 @@ export interface RenderSystemRuntime {
     | undefined;
 }
 
-/** Renderer-owned bridge from retained Points/Lines facts into main geometry. */
-export interface PointsLinesRecordOwner {
-  prepare(
-    entry: Pick<ValidatedRenderable, 'source'>,
-    clustered: boolean,
-  ): PointsLinesRecordSubmission | undefined;
-  beginFrame(): void;
-  track(completed: Promise<unknown>): void;
-  resetForDeviceLoss(): void;
-  inspections(): readonly PointsLinesInspection[];
+/** The Points/Lines rows a view prepared in RenderPrepare; main geometry reads, never prepares. */
+export interface PointsLinesPreparedRows {
+  /** The row's prepared draw, or undefined when its admission refused it. */
+  submission(entry: Pick<ValidatedRenderable, 'source'>): PointsLinesRecordSubmission | undefined;
+  /** The prepared row's address in the view's Points/Lines parameter buffer. */
+  slot(entry: Pick<ValidatedRenderable, 'source'>): number;
 }
 
 export interface PerPassResources {
@@ -372,6 +388,10 @@ export interface PerPassResources {
   ssaoCalcPipeline: RhiRenderPipeline | null;
   ssaoBlurPipeline: RhiRenderPipeline | null;
   ssaoBgl: BindGroupLayout | null;
+  ssaoClusterPackPipeline: RhiRenderPipeline | null;
+  ssaoClusterPackBgl: BindGroupLayout | null;
+  gtaoComputePipeline?: ComputePipeline | null;
+  gtaoComputeBgl?: BindGroupLayout | null;
   ssaoFilteringSampler: Sampler | null;
   ssaoDepthSampler: Sampler | null;
   ssaoFallbackRawView: TextureView | null;
@@ -398,6 +418,8 @@ export interface BloomPersistentBundle {
 }
 
 export interface PipelineState {
+  /** Physical producer's fixed shadow ABI; borrowed states omit this authority. */
+  readonly shadowViewResources?: import('./shadow-view-resources').ShadowViewResources;
   /** Device that owns every opaque handle in this pipeline state. */
   readonly device: RhiDevice;
   readonly format: TextureFormat;
@@ -426,6 +448,10 @@ export interface PipelineState {
   readonly unlitPipeline: RhiRenderPipeline | null;
   /** Producer-resolved Standard PBR UV ABI count for geometry projection. */
   readonly standardPbrShaderUvSetCount: number;
+  /** Reflection-derived Cluster slot/uniform ABI selected during device preparation. */
+  readonly standardClusterAbi?:
+    | import('../light-buffer-layout').StandardClusterReflectedAbi
+    | undefined;
   readonly unlitPipelineMsaa: RhiRenderPipeline | null;
   readonly unlitPipelineHdrMsaa: RhiRenderPipeline | null;
   readonly pbrPipelineLayout: PipelineLayout | null;
@@ -488,10 +514,14 @@ export interface PipelineState {
 }
 
 export interface RenderSystemInternals extends RenderSystemRuntime {
-  /** The Renderer's one Render World; its entities are the composed camera views. */
-  readonly renderWorld?: import('@forgeax/engine-ecs').World | undefined;
+  /** The Render World view entity this system records; its attempts write `ViewSubmission`. */
+  viewEntity?: import('@forgeax/engine-ecs').EntityHandle | undefined;
+  /** The owner bag `createRendererState` builds for this view; per-view systems and the view driver read it here. */
+  viewOwner?: import('../world/view-settlement').ViewSettlementOwner | undefined;
   /** Renderer-shared instance projections of published rows, prepared once at acceptance. */
   readonly instanceCollections?: import('../instances').InstanceProjectionStore | undefined;
+  /** @internal Opt-in bounded trace for one RenderFeature's graph projection. */
+  featureGraphConformanceTrace?: import('../features/feature-graph-conformance-trace').FeatureGraphConformanceTraceState;
   /** Renderer-owned screen UI is encoded after all views, before the one submit. */
   encodePresentation?: (encoder: RhiCommandEncoder) => void;
   /** Optional final display target; private camera selection remains with viewOutput. */
@@ -567,6 +597,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
   gpuPassTimingFrameIdentity?: GpuPassTimingFrameIdentity | undefined;
   gpuPassTimingBeginReason?: GpuPassTimingError | undefined;
   readonly getRenderTargetPhysical?: (target: RenderTarget) => RenderTargetPhysical | undefined;
+  /** Lifecycle for Renderer-owned targets, such as a targetless PlanarReflection's mirror. */
+  readonly ownedRenderTargets?: import('../capture/planar-target').PlanarTargetHost | undefined;
   readonly markRenderTargetSubmitted?: (
     target: RenderTarget,
     physical: RenderTargetPhysical,
@@ -591,6 +623,8 @@ export interface RenderSystemInternals extends RenderSystemRuntime {
 }
 
 export interface _StandardForwardSceneView {
+  /** This view's `render-ssr-admission` demand for the reflection fallback lane. */
+  readonly reflectionFallbackDemand?: boolean;
   readonly capturedAtmosphere?: import('../environment/storage').AtmosphereStorage | undefined;
   readonly visibleSurface?: import('../raytracing/visible-surface').VisibleSurfaceProjection;
   readonly environmentIbl?: { readonly irradiance: TextureView; readonly prefilter: TextureView };
@@ -614,6 +648,10 @@ export interface _StandardForwardSceneView {
   readonly viewBindGroup: BindGroup | null;
   /** Dynamic View-UBO slot used by auxiliary cube/probe face cameras. */
   readonly viewBindGroupDynamicOffset?: number;
+  /** Analytic fog or finite atmosphere can affect this View; absence stays conservative. */
+  readonly viewFog?: boolean | undefined;
+  /** Proven Forward WebGL2 shadow demand; absent keeps the shader's per-draw reception. */
+  readonly viewShadows?: boolean | undefined;
   /** Bind the translucent View copy matching each blended draw's composition. */
   readonly translucentFog?: boolean;
   readonly meshBindGroup: BindGroup | null;
@@ -630,6 +668,7 @@ export interface _StandardForwardSceneView {
   ) =>
     | {
         readonly blur?: { readonly radius: number; readonly samples: number };
+        readonly constantBias?: boolean;
         readonly channels?: number;
         readonly auto: boolean;
         readonly revision: import('./shadow-raster-ledger').ShadowUpdateRevision;
@@ -655,8 +694,12 @@ export interface _StandardForwardSceneView {
   readonly hdrpClusterMembershipBindGroup: BindGroup | null;
   /** Prepared Standard lighting declaration accepted by this graph frame. */
   readonly standardLighting?: StandardTopologyInputValue;
+  /** One Vogel-PCF cascade, no blend: Standard pipelines fold the general receiver away. */
+  readonly directionalShadowSimple?: boolean;
+  /** Independent per-frame proof that no extended light modifiers are needed. */
+  readonly leanLighting?: boolean;
   readonly foldDispatchPlan: FoldDispatchPlan | null;
-  readonly materialSlotIndices: readonly (readonly number[])[];
+  readonly materialSlotIndices: FrameList<readonly number[]>;
   readonly materialSlots: readonly MaterialSnapshot[];
   readonly materialBindings: readonly import('./fold-buckets').MaterialBinding[];
   /** Absent for a direct helper caller that has not prepared a native table. */
@@ -681,7 +724,7 @@ export interface _StandardForwardSceneView {
   ) => { readonly slot: number; readonly generation: number } | undefined;
   /** Per-shadow-view frusta shared by GPU compaction and CPU draw routing. */
   readonly shadowViewPlanesByView?: ReadonlyMap<string, Float32Array>;
-  /** Capsule-ready casters leave the directional cascades (Deferred lane only). */
+  /** Capsule-ready casters leave directional cascades when this lane has its consumer. */
   readonly capsuleShadowDirectional?: boolean;
   /** Shading light for capsule shadows; present when admitted casters left the cascades. */
   readonly capsuleShadowLight?: {
@@ -693,6 +736,9 @@ export interface _StandardForwardSceneView {
   /** Record-owned finalized dispatch facts shared by capture and shadow graph views. */
   /** Same-frame stock material admission shared by graph predicates and record passes. */
   readonly mainPassMaterialSelection?: import('./main-pass').MainPassMaterialSelectionOwner;
+  readonly geometryMaterialPasses?:
+    | import('./material-pass-groups').PreparedGeometryMaterialPasses
+    | undefined;
   /** Complete retained ShadowCaster rows, including camera-culled casters. */
   readonly shadowValidatedOrdered?: readonly ValidatedRenderable[];
   /** Dispatch entries remapped to the complete retained ShadowCaster rows. */
@@ -702,7 +748,7 @@ export interface _StandardForwardSceneView {
   /** Renderer-stable world keys used by ShadowCaster ownership identities. */
   readonly shadowCasterWorldKeys?: readonly number[];
   readonly shadowCasterBounds?: PersistentShadowCasterProjection['worldBoundsOf'];
-  readonly pointsLines: PointsLinesRecordOwner | undefined;
+  readonly pointsLines: PointsLinesPreparedRows | undefined;
   readonly materialBgAssemblyCache: MaterialBgAssemblyCache;
   /** Record-stage proof callback; invoked only after a real draw command is encoded. */
   readonly onRenderableDraw?: (
@@ -725,6 +771,58 @@ export function runRecordProfilePhase<T>(
   action: () => T,
 ): T {
   return runner === undefined ? action() : runner(phase, action);
+}
+
+/** Run `action` inside a `render` profiler phase; profiler failures never alter rendering. */
+export function runProfiledRenderPhase<T>(
+  session: RecorderSession | undefined,
+  phase: RenderPhase,
+  action: () => T,
+): T {
+  let opened = false;
+  try {
+    opened = session?.beginPhase('render', phase).ok === true;
+  } catch {
+    // Profiler failures never alter rendering.
+  }
+  try {
+    return action();
+  } finally {
+    if (opened) {
+      try {
+        session?.endPhase();
+      } catch {
+        // Profiler failures never alter rendering.
+      }
+    }
+  }
+}
+
+/**
+ * The record-phase runner of a profile session. `passes` deliberately keeps
+ * only the graph-pass boundary plus once-per-record owners (GPU-driven
+ * prepare). The same runner is also called by geometry/material helpers;
+ * invoking those wrappers would turn a pass probe into the high-overhead
+ * per-draw `nested` probe.
+ */
+export function recordProfileRunner(
+  profileSession: RecorderSession | undefined,
+): RecordProfileRunner | undefined {
+  if (profileSession === undefined || profileSession.detail === 'owner') return undefined;
+  return function recordProfilePhase<T>(phase: RenderRecordPhase, action: () => T): T {
+    if (profileSession.detail === 'passes' && !isPassProfilePhase(phase)) return action();
+    return runProfiledRenderPhase(profileSession, phase, action);
+  };
+}
+
+/** Graph-pass boundaries and once-per-record GPU-driven owners under `passes` detail. */
+export function isPassProfilePhase(phase: RenderRecordPhase): boolean {
+  if (phase.startsWith('record/gpu-driven-prepare') && !phase.endsWith('/groups/key')) return true;
+  if (phase === 'record/graph-execute') return true;
+  if (!phase.startsWith('record/graph-execute/')) return false;
+  return (
+    !phase.slice('record/graph-execute/'.length).includes('/') || phase.endsWith('/geometry-loop')
+  );
 }
 
 export const STANDARD_PBR_UBO_SIZE = derive(DEFAULT_STANDARD_PBR_PARAM_SCHEMA).uboLayout.totalBytes;

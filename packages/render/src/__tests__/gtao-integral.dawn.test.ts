@@ -1,28 +1,34 @@
 import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
-
-// Independent midpoint quadrature of the rendering equation on a slice.
-// This oracle contains neither the shader antiderivative nor a copied GTAO implementation.
-function quadrature(n: number, lo: number, hi: number): number {
-  const count = 16384;
-  const step = (hi - lo) / count;
-  let value = 0;
-  for (let i = 0; i < count; i++) {
-    const theta = lo + (i + 0.5) * step;
-    value += Math.max(0, Math.cos(theta - n)) * Math.abs(Math.sin(theta)) * step;
-  }
-  return value;
-}
+import { cosineWeightedSliceQuadrature } from './gtao-reference';
 
 it('production GTAO slice integral matches independent cosine-weighted numerical integration', async () => {
   const source = readFileSync('packages/shader/src/hdrp-ssao.wgsl', 'utf8');
   const integral = source.match(/fn gtaoSliceIntegral\([\s\S]*?\n\}/)?.[0];
   if (!integral) throw new Error('Production GTAO integral is missing');
-  const cases = [-1.4, -0.8, -0.2, 0, 0.2, 0.8, 1.4].flatMap((n) =>
-    [0, 0.2, 0.7, 1].flatMap((left) =>
-      [0, 0.2, 0.7, 1].map((right) => [n, (n - Math.PI / 2) * left, (n + Math.PI / 2) * right]),
-    ),
-  );
+  const edgeCases = [
+    [Math.PI, Math.PI / 2, (3 * Math.PI) / 2],
+    [-Math.PI, (-3 * Math.PI) / 2, -Math.PI / 2],
+    [0, 0.25, 1.2],
+    [0, -1.2, -0.25],
+    [Math.PI / 2 - 0.0001, 0.00001, Math.PI - 0.0002],
+    [-Math.PI / 2 + 0.0001, -Math.PI + 0.0002, -0.00001],
+    [2, 0.6, 1.4],
+    [-2, -1.4, -0.6],
+    [2.9, 2.5, 3.5],
+    [-2.9, -3.5, -2.5],
+    [0.7, 1.1, 1.1],
+    [1.2, 0.2, 1.9],
+    [-1.2, -1.9, -0.2],
+    [0.4, -0.3, 0.9],
+  ] as const;
+  const cases = [-1.4, -0.8, -0.2, 0, 0.2, 0.8, 1.4]
+    .flatMap((n) =>
+      [0, 0.2, 0.7, 1].flatMap((left) =>
+        [0, 0.2, 0.7, 1].map((right) => [n, (n - Math.PI / 2) * left, (n + Math.PI / 2) * right]),
+      ),
+    )
+    .concat(edgeCases.map((value) => [...value]));
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Dawn adapter unavailable');
   const device = await adapter.requestDevice();
@@ -60,7 +66,7 @@ it('production GTAO slice integral matches independent cosine-weighted numerical
     for (const [i, c] of cases.entries()) {
       const [n, lo, hi] = c as [number, number, number];
       expect(
-        Math.abs((values[i] ?? NaN) - quadrature(n, lo, hi)),
+        Math.abs((values[i] ?? NaN) - cosineWeightedSliceQuadrature(n, lo, hi)),
         `slice ${n}, ${lo}, ${hi}`,
       ).toBeLessThan(0.000002);
     }

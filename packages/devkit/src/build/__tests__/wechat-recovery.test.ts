@@ -10,6 +10,7 @@ import type { BlitzUi, BlitzUiOptions } from '@forgeax/engine-ui-blitz';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createVfxRuntimeHost } from '../../../../vfx-render/src/index.js';
 import { gameVfxSource } from '../../game-vfx-source.js';
+import type { StartupUiOptions } from '../../host/startup-ui.js';
 import { prepareWechatBuild } from '../wechat.js';
 
 const { inspectUi } = (await import(
@@ -62,7 +63,7 @@ type Modal = {
   success?: (result: { confirm: boolean }) => void;
 };
 
-async function generatedHost() {
+async function generatedHost(startupUi: StartupUiOptions = {}) {
   const directory = await mkdtemp(resolve(tmpdir(), 'forgeax-wechat-recovery-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   await prepareWechatBuild(
@@ -83,6 +84,7 @@ async function generatedHost() {
       sourceSnapshot: createScriptablePackSourceSnapshot(),
       filesystemInputs: undefined,
     },
+    { startupUi },
   );
   const [hostSource, entrySource] = await Promise.all([
     readFile(resolve(directory, 'wechat-main.ts'), 'utf8'),
@@ -467,7 +469,7 @@ it('keeps an entered game available after native keyboard transport failure and 
   expect(host.inspect()).toMatchObject({ phase: 'ready' });
   expect(host.inspect()?.startupError).toBeUndefined();
   expect(host.scope.console.warn).toHaveBeenCalledWith(
-    'ForgeaX native input failed',
+    'ForgeAX native input failed',
     expect.objectContaining({ detail: { operation: 'wx.showKeyboard', cause } }),
   );
   expect(field.value).toBe(value);
@@ -727,4 +729,21 @@ it('offers native Reload after early bootstrap failures and reuses the generated
   expect(host.inspect()).toMatchObject({ generation: 4, completed: 0, presented: 0 });
   expect(host.createdCanvases).toHaveLength(1);
   expect(host.scope.createWechatWasmHost).toHaveBeenCalledOnce();
+});
+
+it.each([
+  'none',
+  'custom',
+] as const)('keeps early native failures silent with %s failure presentation', async (mode) => {
+  const host = await generatedHost({
+    loading: 'none',
+    failure: mode === 'none' ? 'none' : { html: '' },
+  });
+  host.fault('wgpu', new Error('Native adapter initialization rejected'));
+  host.startEntry();
+  await vi.waitFor(() =>
+    expect(host.diagnostic()).toMatchObject({ message: 'Native adapter initialization rejected' }),
+  );
+  await vi.waitFor(() => expect(host.errors.length).toBeGreaterThan(0));
+  expect(host.modals).toEqual([]);
 });

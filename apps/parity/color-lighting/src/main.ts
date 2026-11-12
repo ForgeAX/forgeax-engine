@@ -61,6 +61,7 @@ import {
   TONEMAP_NONE,
   TONEMAP_REINHARD,
   TONEMAP_REINHARD_EXTENDED,
+  TONEMAP_UE_FILMIC,
   type Tonemap,
   type FrameReceipt,
   type Renderer,
@@ -173,6 +174,7 @@ function tonemapToU32(mode: Tonemap): number {
     case 'aces-filmic': return TONEMAP_ACES_FILMIC;
     case 'agx': return TONEMAP_AGX;
     case 'neutral': return TONEMAP_NEUTRAL;
+    case 'ue-filmic': return TONEMAP_UE_FILMIC;
   }
 }
 
@@ -372,7 +374,7 @@ async function captureDirectEvidence(
   renderErrors: readonly string[],
 ): Promise<{ readonly evidence: AttachmentEvidence; readonly metadata: DirectProducerMetadata }> {
   if (renderErrors.length !== 0) {
-    throw new Error(`ForgeaX direct-light producer errors: ${renderErrors.join(' | ')}`);
+    throw new Error(`ForgeAX direct-light producer errors: ${renderErrors.join(' | ')}`);
   }
   const observationResult = await legacyHost.observeCurrentFrame({
     semantic: 'linear-hdr',
@@ -380,12 +382,12 @@ async function captureDirectEvidence(
   });
   if (!observationResult.ok) {
     throw new Error(
-      `ForgeaX linear HDR observation failed: ${observationResult.error.code} reason=${observationResult.error.detail.reason} recovery=${observationResult.error.detail.recovery} hint=${observationResult.error.hint} health=${JSON.stringify(legacyHost.health())} renderErrors=${renderErrors.join(' | ') || 'none'}`,
+      `ForgeAX linear HDR observation failed: ${observationResult.error.code} reason=${observationResult.error.detail.reason} recovery=${observationResult.error.detail.recovery} hint=${observationResult.error.hint} health=${JSON.stringify(legacyHost.health())} renderErrors=${renderErrors.join(' | ') || 'none'}`,
     );
   }
   const linear = observationResult.value;
   if (linear.metadata.pipelineId !== 'forgeax::standard') {
-    throw new Error(`ForgeaX producer identity mismatch: ${linear.metadata.pipelineId}`);
+    throw new Error(`ForgeAX producer identity mismatch: ${linear.metadata.pipelineId}`);
   }
   const pipelineId = 'forgeax::standard' as const;
   const finalBytes = new Uint8Array(pixels);
@@ -428,7 +430,7 @@ async function createForgeaxCaptureContext(
   const canvas = rendererKind === 'webgl'
     ? document.createElement('canvas')
     : document.querySelector<HTMLCanvasElement>('#forgeax');
-  if (canvas === null) throw new Error('missing ForgeaX canvas');
+  if (canvas === null) throw new Error('missing ForgeAX canvas');
   canvas.width = initialSceneCase.scene.width;
   canvas.height = initialSceneCase.scene.height;
   const useWebkitCompositorReadback = rendererKind === 'webgl'
@@ -440,7 +442,10 @@ async function createForgeaxCaptureContext(
       : `position:fixed;left:-10000px;top:-10000px;width:${cssSize};height:${canvas.height}px`;
     document.body.append(canvas);
   }
-  const constructed = await constructRuntimeRendererHost(canvas, {}, forgeaxBundlerAdapter() as never);
+  const options = rendererKind === 'webgpu' && isSingleDirectLightReceiver(initialSceneCase)
+    ? { standardProfile: { ...DEFAULT_STANDARD_PROFILE, gpuOcclusion: false } }
+    : {};
+  const constructed = await constructRuntimeRendererHost(canvas, options, forgeaxBundlerAdapter() as never);
   if (!constructed.ok) {
     const error = constructed.error;
     const code = 'code' in error ? error.code : 'engine-environment-error';
@@ -458,7 +463,7 @@ async function createForgeaxCaptureContext(
   }
   const { renderer, debugDrawHost } = constructed.value;
   const legacyHost = debugDrawHost as unknown as RendererLegacyHostAdapter;
-  // The parity fixture compares ForgeaX lighting and tone output against an
+  // The parity fixture compares ForgeAX lighting and tone output against an
   // independent Three.js capture.  Keep the producer policy identical by
   // disabling the production-only final-output dither in this test context;
   // the pipeline asset default remains enabled for real game renderers.
@@ -702,14 +707,28 @@ function isIblCaptureCase(sceneCase: SceneCase): boolean {
   return sceneCase.caseId === constantEnvironment.caseId;
 }
 
-function ensureCaptureRenderPath(
+function isSingleDirectLightReceiver(sceneCase: SceneCase): boolean {
+  return m4DirectLightCasesById.has(sceneCase.caseId)
+    && spotShadowSceneFor(sceneCase.caseId) === undefined;
+}
+
+function ensureCaptureProfile(
   renderer: Renderer,
   sceneCase: SceneCase,
   expectedRenderPath: Parameters<Renderer['setProfile']>[0]['renderPath'],
+  rendererKind: 'webgpu' | 'webgl',
 ): void {
-  if (renderer.inspect().profile.renderPath === expectedRenderPath) return;
-  const profileResult = renderer.setProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: expectedRenderPath });
-  if (!profileResult.ok) throw new Error(`ForgeaX ${sceneCase.caseId} profile failed: ${profileResult.error.code}`);
+  // Single-plane lighting receivers have no occluders. Keep GPU visibility and
+  // indirect draws without a depth pyramid; shadow fixtures retain occlusion.
+  const gpuOcclusion = !isSingleDirectLightReceiver(sceneCase);
+  const current = renderer.inspect().profile;
+  if (current.renderPath === expectedRenderPath && (rendererKind === 'webgl' || (current.gpuOcclusion !== false) === gpuOcclusion)) return;
+  const profileResult = renderer.setProfile({
+    ...DEFAULT_STANDARD_PROFILE,
+    renderPath: expectedRenderPath,
+    ...(rendererKind === 'webgpu' ? { gpuOcclusion } : {}),
+  });
+  if (!profileResult.ok) throw new Error(`ForgeAX ${sceneCase.caseId} profile failed: ${profileResult.error.code}`);
 }
 
 function captureCameraTone(sceneCase: SceneCase, rendererKind: 'webgpu' | 'webgl') {
@@ -807,7 +826,7 @@ function recordDrawDiagnostics(
 
 async function awaitCaptureCompletion(sceneCase: SceneCase, receipt: FrameReceipt): Promise<void> {
   const completed = await receipt.completed;
-  if (!completed.ok) throw new Error(`ForgeaX ${sceneCase.caseId} completion failed: ${completed.error.code}`);
+  if (!completed.ok) throw new Error(`ForgeAX ${sceneCase.caseId} completion failed: ${completed.error.code}`);
 }
 
 async function recordLinearHdrDiagnostics(
@@ -850,7 +869,7 @@ async function settleCaptureFrames(
       world,
       lease,
       Math.max(0, spotShadowCaptureFrames - 1),
-      `ForgeaX ${sceneCase.caseId} warmup`,
+      `ForgeAX ${sceneCase.caseId} warmup`,
     );
   }
   if (context.rendererKind === 'webgl') {
@@ -859,17 +878,17 @@ async function settleCaptureFrames(
     await waitForAnimationFrameOrTimeout();
     world.update().unwrap();
     const warmedDraw = context.renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-    if (!warmedDraw.ok) throw new Error(`ForgeaX warmed draw failed: ${warmedDraw.error.code}`);
+    if (!warmedDraw.ok) throw new Error(`ForgeAX warmed draw failed: ${warmedDraw.error.code}`);
     await waitForAnimationFrameOrTimeout();
   }
 }
 
 function assertNoCaseRenderErrors(sceneCase: SceneCase, renderErrors: readonly string[]): void {
   if (m2AlphaCasesById.has(sceneCase.caseId) && renderErrors.length > 0) {
-    throw new Error(`ForgeaX M2 render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
+    throw new Error(`ForgeAX M2 render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
   }
   if (isIblCaptureCase(sceneCase) && renderErrors.length > 0) {
-    throw new Error(`ForgeaX IBL visual render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
+    throw new Error(`ForgeAX IBL visual render errors for ${sceneCase.caseId}: ${renderErrors.join(' | ')}`);
   }
 }
 
@@ -940,7 +959,7 @@ async function captureForgeaxInContext(
   canvas.height = sceneCase.scene.height;
   const directCase = m4DirectLightCasesById.get(sceneCase.caseId);
   const expectedRenderPath = directCase?.pipeline?.renderPath ?? DEFAULT_STANDARD_PROFILE.renderPath;
-  ensureCaptureRenderPath(renderer, sceneCase, expectedRenderPath);
+  ensureCaptureProfile(renderer, sceneCase, expectedRenderPath, rendererKind);
   const renderErrors: string[] = [];
   const events: Array<Record<string, unknown>> = [];
   const removeRenderErrorListener = renderer.subscribe((event) => {
@@ -957,13 +976,13 @@ async function captureForgeaxInContext(
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     attachedLease = worldAttachment1.value;
     if (renderer.inspect().profile.renderPath !== expectedRenderPath) {
-      throw new Error(`ForgeaX ${sceneCase.caseId} selected ${renderer.inspect().profile.renderPath} instead of ${expectedRenderPath}`);
+      throw new Error(`ForgeAX ${sceneCase.caseId} selected ${renderer.inspect().profile.renderPath} instead of ${expectedRenderPath}`);
     }
     await spawnCaptureScene(world, sceneCase, rendererKind, spotShadowFalsifier, spotShadowReceiver);
     const lease = worldAttachment1.value;
     const drawResult = await drawFirstCaptureFrame(context, world, lease);
     recordDrawDiagnostics(renderer, drawResult, diagnostics);
-    if (!drawResult.ok) throw new Error(`ForgeaX draw failed: ${drawResult.error.code}`);
+    if (!drawResult.ok) throw new Error(`ForgeAX draw failed: ${drawResult.error.code}`);
     await settleCaptureFrames(context, sceneCase, world, lease, drawResult.value, spotShadowCaptureFrames, diagnostics);
     assertNoCaseRenderErrors(sceneCase, renderErrors);
     const pixels = await readCaptureCanvas(context, sceneCase, diagnostics);
@@ -1018,7 +1037,7 @@ export async function createForgeaxCaptureSession(initialSceneCase: SceneCase) {
       spotShadowReceiver: SpotShadowReceiverVariant = 'base',
       spotShadowCaptureFrames = SPOT_SHADOW_CAPTURE_FRAMES,
     ) {
-      if (disposed) throw new Error('ForgeaX capture session is disposed');
+      if (disposed) throw new Error('ForgeAX capture session is disposed');
       // SharedRef handles remain scoped to each fresh World. Reuse the
       // backend renderer/device and shader projection while capture-level
       // detachScene cleanup removes every World-owned projection before the
@@ -1817,7 +1836,7 @@ async function runSurfaceStandardChromiumParity(invocationId = 'surface-standard
     blocker: {
       code: 'surface-webgl2-engine-producer-unavailable',
       stage: 'producer',
-      detail: 'The parity page has no ForgeaX WebGL2 surface producer; sentinel WebGL2 channel health is not Surface acceptance evidence.',
+      detail: 'The parity page has no ForgeAX WebGL2 surface producer; sentinel WebGL2 channel health is not Surface acceptance evidence.',
       sourceSha: EVIDENCE_SOURCE_SHA,
       buildId: 'parity-color-lighting-chromium-webgl2',
       closure: SURFACE_CLOSURE,

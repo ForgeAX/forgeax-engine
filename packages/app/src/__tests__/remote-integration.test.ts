@@ -8,11 +8,7 @@ import { testPlatform } from './platform-fixture';
 //   as RemoteHandle lands in @forgeax/engine-types (w17) + App.remote in
 //   types.ts (same commit).
 //
-// w19 (integration): canvas-form createApp(canvas) wires remote in dev mode
-//   (port > 0, usable through in-process/WS client.eval), production mode
-//   app.remote === undefined, headless/dawn-node default undefined.
-//   TDD red — these tests fail until w20 wires createAppFromCanvas with
-//   dynamic import of @forgeax/engine-remote/server.
+// Assemble hosts opt into the Node remote server through `remoteServe`.
 //
 // charter P3 explicit failure: assertions read structured properties
 //   (port / close / ok/error Result shapes), not prose message strings.
@@ -20,7 +16,7 @@ import { testPlatform } from './platform-fixture';
 import { World } from '@forgeax/engine-ecs';
 import { startServer } from '@forgeax/engine-remote/server';
 import type { Renderer } from '@forgeax/engine-render';
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import { createApp } from '../create-app';
 import type { App } from '../types';
@@ -89,15 +85,8 @@ describe('remote-integration w18 — type inference', () => {
 });
 
 // ---------------------------------------------------------------------------
-// w19: Integration tests — canvas-form createApp wires remote in dev mode,
-//      production mode app.remote === undefined, headless/dawn-node default
-//      undefined (unless FORGEAX_ENGINE_REMOTE_SERVE=1 opt-in).
-//
-// RED phase: the canvas-form test fails because createAppFromCanvas does not
-// yet dynamically import @forgeax/engine-remote/server or construct
-// app.remote. w20 supplies the implementation and turns them green.
-
-describe('remote-integration w19 — createApp wiring (RED)', () => {
+// Assemble hosts opt into remote service startup explicitly.
+describe('remote-integration — explicit host assembly', () => {
   // Server start/stop round-trip validates the remote machinery outside of
   // createApp — useful as a baseline for the w20 integration.
   it('startServer creates a server with port > 0 and close() tears it down', async () => {
@@ -133,10 +122,7 @@ describe('remote-integration w19 — createApp wiring (RED)', () => {
     }
   });
 
-  // w19-RED: canvas-form createApp in dev mode wires remote.
-  // This test will FAIL until w20 adds the dynamic import of
-  // @forgeax/engine-remote/server to createAppFromCanvas.
-  it('createApp(canvas) in dev mode wires app.remote with port > 0 (RED — w20 impl pending)', async () => {
+  it('assemble createApp leaves remote service disabled without an explicit host fact', async () => {
     // Use the assemble form as a proxy: verify that the App type carries
     // remote, but createApp does not yet populate it. After w20, we extend
     // this test to canvas-form (or exercise via the flag resolver).
@@ -147,23 +133,12 @@ describe('remote-integration w19 — createApp wiring (RED)', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const app = result.value;
-      // w20 will make this defined in dev mode; currently undefined.
-      // The test documents the expected behaviour — it will flip from
-      // RED (undefined) to GREEN (non-undefined with port > 0) when
-      // w20 lands. For now, we assert undefined to keep CI green before
-      // w20 impl.
-      //
-      // After w20: this assertion changes to:
-      //   expect(app.remote).toBeDefined();
-      //   expect(app.remote!.port).toBeGreaterThan(0);
       expect(app.remote).toBeUndefined();
     }
   });
 
   it('headless/dawn-node default: app.remote is undefined without explicit opt-in', async () => {
-    // The assemble form is the headless path — remote is not auto-wired
-    // unless FORGEAX_ENGINE_REMOTE_SERVE=1 is set. After w20, the canvas
-    // form respects the same env var via the remote-serve-flag resolver.
+    // Assemble startup remains disabled unless the host passes `remoteServe: true`.
     const world = new World();
     const result = await createApp({
       platform: testPlatform(),
@@ -173,6 +148,21 @@ describe('remote-integration w19 — createApp wiring (RED)', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.remote).toBeUndefined();
+    }
+  });
+
+  it('ignores ambient remote-serve environment and requires the host assembly fact', async () => {
+    vi.stubEnv('FORGEAX_ENGINE_REMOTE_SERVE', '1');
+    try {
+      const result = await createApp({
+        platform: testPlatform(),
+        renderer: makeRendererStub(),
+        world: new World(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.value.remote).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 

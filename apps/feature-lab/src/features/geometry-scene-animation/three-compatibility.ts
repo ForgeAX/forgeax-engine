@@ -7,7 +7,7 @@ export default defineFeature({
   catalog: 'Three.js compatibility',
   kind: 'probe',
   summary:
-    'Ordinary Three.js r184 scene objects render through ForgeaX. This probe owns and retires an independent renderer; the package example provides interactive controls.',
+    'Ordinary Three.js r184 scene objects render through ForgeAX. This probe owns and retires an independent renderer; the package example provides interactive controls.',
   expect:
     'At least 60 ready GPU frames complete, a captured green cube has real colored pixels, and changing the same material to red changes the captured output. This is bounded compatibility, not full Three conformance.',
   setup() {

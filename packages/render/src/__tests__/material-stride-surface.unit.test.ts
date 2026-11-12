@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { MATERIAL_PER_ENTITY_STRIDE } from '../render-system';
+import { MATERIAL_PER_ENTITY_STRIDE } from './render-system-driver';
 
 const ownerSource = readFileSync(new URL('../record/render-context.ts', import.meta.url), 'utf8');
 const rendererFactorySource = readFileSync(

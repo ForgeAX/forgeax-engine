@@ -4,7 +4,7 @@ import { runVertexColorProducerEntry, vertexColorProducerIsScheduled } from '../
 
 const VERTEX_COLOR_BATCH_TIMEOUT_MS = 120_000;
 
-it.skipIf(!vertexColorProducerIsScheduled())('runs the ForgeaX Browser WebGPU vertex-color producer', () => {
+it.skipIf(!vertexColorProducerIsScheduled())('runs the ForgeAX Browser WebGPU vertex-color producer', () => {
   globalThis.__forgeaxVertexColorPublish = async (path, output) => {
     const urls = JSON.parse(import.meta.env.VITE_FORGEAX_VERTEX_COLOR_OUTPUT_URLS ?? '{}') as Record<string, string>;
     const falsifierUrls = JSON.parse(import.meta.env.VITE_FORGEAX_VERTEX_COLOR_FALSIFIER_OUTPUT_URLS ?? '{}') as Record<string, string>;

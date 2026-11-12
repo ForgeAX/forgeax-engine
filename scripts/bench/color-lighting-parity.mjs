@@ -372,7 +372,7 @@ async function persistVisualEvidence(result) {
       input.provenance.three.renderer !== 'webgpu'
     ) {
       throw new Error(
-        `${caseId}: visual provenance is not an independent ForgeaX/Three WebGPU pair`,
+        `${caseId}: visual provenance is not an independent ForgeAX/Three WebGPU pair`,
       );
     }
     const width = input.width;
@@ -393,8 +393,8 @@ async function persistVisualEvidence(result) {
       {
         kind: 'forgeax-final',
         pixels: forgeax,
-        expected: 'ForgeaX final color capture uses this SceneCase framing, size, and background.',
-        observed: `ForgeaX final PNG retained; raw RGBA hash=${hashBytes(forgeax)}.`,
+        expected: 'ForgeAX final color capture uses this SceneCase framing, size, and background.',
+        observed: `ForgeAX final PNG retained; raw RGBA hash=${hashBytes(forgeax)}.`,
         verdict: input.status === 'complete' && input.verdict === 'passed' ? 'pass' : 'unknown',
       },
       {

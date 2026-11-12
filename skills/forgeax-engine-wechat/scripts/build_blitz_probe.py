@@ -78,7 +78,7 @@ await build({ entryPoints: [entry], outfile, bundle: true, platform: 'neutral', 
         "subpackages": [{"name": "ui", "root": "ui/"}]}))
     config = project / "project.config.json"
     config.write_text(json.dumps({"appid": args.appid, "compileType": "game",
-        "projectname": "ForgeaX Blitz Kernel Contract", "libVersion": "latest",
+        "projectname": "ForgeAX Blitz Kernel Contract", "libVersion": "latest",
         "setting": {"es6": False, "minified": False}}))
     config.chmod(0o600)
     def fact(path):

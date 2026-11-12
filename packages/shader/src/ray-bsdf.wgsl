@@ -1,5 +1,5 @@
 #define_import_path forgeax_pbr::ray_bsdf
-#import forgeax_pbr::brdf::{standardOpaqueBrdf, d_ggx}
+#import forgeax_pbr::brdf::{standardOpaqueBrdf, d_ggx, halfVectorTerms}
 #import forgeax_material::ray_abi::{RayMaterialSurface}
 
 struct RayBsdfSample { direction: vec3f, pdf: f32, weight: vec3f, valid: u32 }
@@ -20,10 +20,11 @@ fn rayBsdfValue(surface: RayMaterialSurface, outgoing: vec3f, incoming: vec3f,
   let nv = dot(n, outgoing); let nl = dot(n, incoming);
   if (nv <= 0.0 || nl <= 0.0 || dot(surface.geometricNormal.xyz,outgoing)<=0.0 || dot(surface.geometricNormal.xyz,incoming)<=0.0) { return vec3f(0); }
   if (surface.status.y == RAY_BSDF_LAMBERT) { return surface.albedoOpacity.rgb / 3.14159265359; }
-  let h = normalize(outgoing + incoming);
+  // Unreal BRDF.ush:24-31: N.H / V.H from dot products, no normalised half vector.
+  let halfTerms = halfVectorTerms(nl, nv, dot(outgoing, incoming));
   return standardOpaqueBrdf(surface.albedoOpacity.rgb, surface.emissionMetallic.w,
     surface.normalRoughness.w * surface.normalRoughness.w, surface.f0Occlusion.xyz,
-    max(nv, 1e-5), nl, max(dot(n,h),0.0), max(dot(outgoing,h),0.0),
+    max(nv, 1e-5), nl, halfTerms.x, halfTerms.y,
     surface.status.z != 0u,
 #ifdef DIRECT_DFG_LUT_AVAILABLE
     directDfgLut, directDfgSampler,

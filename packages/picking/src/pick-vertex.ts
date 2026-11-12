@@ -1,6 +1,7 @@
 import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { box3, mat4, ray, type Vec3Like, vec2, vec3 } from '@forgeax/engine-math';
 import { Instances } from '@forgeax/engine-render';
+import { ok } from '@forgeax/engine-types';
 import { currentMeshPositions } from './current-positions';
 import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
 import { computeScreenRay, type ScreenRay, visitMeshBoundsCorners } from './pick-core';
@@ -85,6 +86,22 @@ function collectVertexHits(
   viewportHeight: number,
   entity: EntityHandle,
 ): VertexHit[] {
+  if (!world.frameArena.isActive)
+    return world
+      .withFrameArena(() =>
+        ok(
+          collectVertexHits(
+            world,
+            screenRay,
+            screenX,
+            screenY,
+            viewportWidth,
+            viewportHeight,
+            entity,
+          ),
+        ),
+      )
+      .unwrap();
   const { ray: r, view, proj } = screenRay;
 
   // ── viewProj = proj * view (precompute for worldToScreen calls) ──
@@ -105,7 +122,7 @@ function collectVertexHits(
 
   // VertexHit has no instance ordinal; explicit instances are untestable here.
   if (world.hasComponent(entity, Instances)) return [];
-  const pose = currentMeshPositions(world, entity, mesh);
+  const pose = currentMeshPositions(world, entity, mesh, world.frameArena);
   if ('reason' in pose) return [];
   const { positions, bounds, deformed, worldSpace } = pose;
   const entityWorld = queryMeshMatrix(world, entity, screenRay);

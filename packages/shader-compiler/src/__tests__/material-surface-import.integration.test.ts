@@ -11,7 +11,7 @@ it('cooks selective helpers with transitive calls from a complete reusable Surfa
     const body = `#import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   return SurfaceData(vec3<f32>(sharedValue(input.positionOS.x)), input.vertexNormalWS,
-    0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+    0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`;
     await writeFile(
       join(root, 'helper.wgsl'),

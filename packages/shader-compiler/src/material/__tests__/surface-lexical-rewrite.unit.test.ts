@@ -21,7 +21,7 @@ fn sample(input: SurfaceInput) -> SurfaceData { return ${name}(input); }`;
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   // helperShade remains in this comment.
   let value = helperShade(input.frameTime);
-  return SurfaceData(vec3<f32>(value), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(value), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`;
   const helper = `#define_import_path game::lexical_helper
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}

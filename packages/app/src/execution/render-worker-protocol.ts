@@ -215,8 +215,16 @@ export type RenderWorkerOutput =
       readonly frame: ExecutionFrameCompletion;
       readonly revision: number;
       readonly buffers: ArrayBuffer[];
-      readonly gpuPassTiming?: GpuPassTimingObservation;
       readonly meshConsumption?: CompletedMeshConsumption;
+    }
+  | {
+      /** Receipt timing, posted when its readback resolves, after the frame's completion. */
+      readonly kind: 'gpu-pass-timing';
+      readonly frameId: number;
+      readonly deviceGeneration: number;
+      readonly gpuPassTiming: GpuPassTimingObservation;
+      /** Frames this session rendered untimed because every timing slot was in flight. */
+      readonly skippedFrames: number;
     }
   | {
       readonly kind: 'disposed';

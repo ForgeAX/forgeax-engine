@@ -48,6 +48,7 @@ test('SDK source contract keeps the source root and prebuilt WASM closure explic
     'third_party/wgpu/.github',
     'third_party/blitz/.github',
     'tools/view/.github',
+    'packages/modeling/.github',
   ]);
   assert.equal(SDK_SOURCE_ROOT, 'source/engine');
   assert.deepEqual(SDK_TEMPLATES, discoverSdkTemplates());
@@ -150,6 +151,15 @@ test('SDK package inventory admits the embedded View tool at its shipped path', 
   };
   assert.equal(validate(tool), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ...tool, root: 'tools/unknown' }), false);
+});
+
+test('SDK source schema admits the complete exporter exclusion inventory', async () => {
+  const schema = JSON.parse(
+    await readFile(new URL('../../schemas/sdk-manifest.schema.json', import.meta.url), 'utf8'),
+  );
+  const validate = new Ajv2020().compile(schema.$defs.source.properties.excluded);
+  assert.equal(validate([...SDK_SOURCE_EXCLUDED_PATHS]), true, JSON.stringify(validate.errors));
+  assert.equal(validate([...SDK_SOURCE_EXCLUDED_PATHS, 'packages/unknown']), false);
 });
 
 test('SDK source schema admits every expanded maintained dependency', async () => {

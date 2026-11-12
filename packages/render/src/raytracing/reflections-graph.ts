@@ -42,7 +42,7 @@ export function addRayReflectionPasses(
       { resource: sample, usage: 'uniform-read' },
       { resource: rays, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       if (shared.fence.currentGeneration() !== shared.generation)
         throw new Error('stale Lite reflections graph; prepare the current scene');
       prepared.writeSample();
@@ -101,7 +101,7 @@ export function addRayReflectionPasses(
       { view: target.scene.view, loadOp: 'load', storeOp: 'store' },
       { view: reflection.fallback.view, loadOp: 'load', storeOp: 'store' },
     ],
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       prepared.composite
         .record(
           pass,

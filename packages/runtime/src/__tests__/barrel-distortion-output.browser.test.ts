@@ -20,6 +20,7 @@ import { registerPropagateTransforms, Transform } from '@forgeax/engine-scene';
 import type { AssetHandle, TextureAsset } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it } from 'vitest';
 import { page } from 'vitest/browser';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { pickDisplay } from '../../../picking/src/display-picking';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
@@ -369,7 +370,7 @@ function spawnScene(
         .unwrap();
 }
 
-async function drawFrame(world: World) {
+async function drawFrame(world: World, domains?: readonly ObservationDomain[]) {
   if (renderer === undefined) throw new Error('barrel browser renderer is not initialized');
   releaseLease?.();
   releaseLease = undefined;
@@ -378,15 +379,15 @@ async function drawFrame(world: World) {
   releaseLease = () => attached.value.dispose();
   const updated = world.update(1 / 60);
   if (!updated.ok) throw updated.error;
-  const drawn = renderer.draw({
-    leases: [attached.value],
-    camera: { lease: attached.value },
-    environment: { lease: attached.value },
-  });
-  if (!drawn.ok) throw drawn.error;
-  const completed = await drawn.value.completed;
-  if (!completed.ok) throw completed.error;
-  return drawn.value;
+  return drawReadyFrame(
+    renderer,
+    {
+      leases: [attached.value],
+      camera: { lease: attached.value },
+      environment: { lease: attached.value },
+    },
+    domains,
+  );
 }
 
 // Reusing a renderer can retain its accepted graph while a new fullscreen
@@ -420,19 +421,9 @@ async function drawObservedFrame(
   >['value'];
 }> {
   if (renderer === undefined) throw new Error('barrel browser renderer is not initialized');
-  let armed: ReturnType<NonNullable<Renderer['requestObservation']>> | undefined;
-  try {
-    armed = renderer.requestObservation?.(domains);
-  } catch (cause) {
-    throw browserRendererError('request-observation-throw', cause);
-  }
-  if (armed === undefined) {
-    throw browserRendererError('request-observation', 'renderer has no observation owner');
-  }
-  if (!armed.ok) throw browserRendererError('request-observation', armed.error);
   let receipt: Awaited<ReturnType<typeof drawFrame>>;
   try {
-    receipt = await drawFrame(world);
+    receipt = await drawFrame(world, domains);
   } catch (cause) {
     throw browserRendererError('draw-observed-frame', cause);
   }
@@ -735,9 +726,10 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     expect(hdrCenter[1]).toBeGreaterThan(0.3);
     expect(hdrCenter[2]).toBeGreaterThan(0.1);
     expect(hdrCenter[3]).toBeCloseTo(0.5, 2);
-    // The channel-swap LUT is deliberately enabled for this frame, so the
-    // linear-LDR sample is [0, 0.5, 1] rather than the pre-LUT HDR ordering.
-    expect(ldrCenter[0]).toBeLessThan(0.05);
+    // The channel-swap LUT is deliberately enabled for this frame. It is indexed in
+    // sRGB at texel centres, so the 2x2x2 cube is an exact swap: clamped tone [1, 0.5, 0.25] becomes [0.25, 0.5, 1].
+    expect(ldrCenter[0]).toBeGreaterThan(0.2);
+    expect(ldrCenter[0]).toBeLessThan(0.3);
     expect(ldrCenter[1]).toBeGreaterThan(0.45);
     expect(ldrCenter[1]).toBeLessThan(0.55);
     expect(ldrCenter[2]).toBeGreaterThan(0.95);
@@ -959,18 +951,15 @@ describe('barrel distortion real output in Browser WebGPU', () => {
     let fog: EntityHandle | undefined;
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
+    const volumeRenderer = renderer;
     const drawVolumeFrame = async () => {
       const updated = world.update(1 / 60);
       if (!updated.ok) throw updated.error;
-      const drawn = renderer?.draw({
+      return drawReadyFrame(volumeRenderer, {
         leases: [attached.value],
         camera: { lease: attached.value },
         environment: { lease: attached.value },
       });
-      if (drawn === undefined || !drawn.ok) throw drawn?.error;
-      const completed = await drawn.value.completed;
-      if (!completed.ok) throw completed.error;
-      return drawn.value;
     };
     try {
       const baseline = await drawVolumeFrame();

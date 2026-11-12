@@ -78,7 +78,7 @@ describe('worktree bootstrap plans', () => {
       git(
         [
           '-c',
-          'user.name=ForgeaX Test',
+          'user.name=ForgeAX Test',
           '-c',
           'user.email=forgeax-test@example.invalid',
           'commit',

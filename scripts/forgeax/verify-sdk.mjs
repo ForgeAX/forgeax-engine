@@ -11,7 +11,9 @@ import {
   artifact,
   assertNoRetiredPackageFiles,
   filesUnder,
+  ignoresProjectState,
   isPnpmSqliteStoreArtifact,
+  mapConcurrent,
   SDK_CAPABILITIES,
   SDK_MANIFEST_VERSION,
   SDK_SOURCE_EXCLUDED_PATHS,
@@ -27,6 +29,7 @@ import { verifyProjectIdentityReconcile } from './sdk-project-identity.mjs';
 import { assertSourceDependencyInventory } from './sdk-source.mjs';
 import { sdkGpuStage, sdkStage } from './sdk-stage.mjs';
 import { buildCacheEntries } from './sdk-template-cache.mjs';
+import { verifySdkModeling } from './verify-sdk-modeling.mjs';
 import { createSdkVerifierProcess, readSdkProjectDocument } from './verify-sdk-process.mjs';
 import { verifySdkSourceEdit } from './verify-sdk-source-edit.mjs';
 
@@ -84,11 +87,14 @@ if (!validate(manifest)) throw new Error(`sdk-manifest-schema: ${JSON.stringify(
 if (manifest.schemaVersion !== SDK_MANIFEST_VERSION) throw new Error('sdk-manifest-version');
 if (JSON.stringify(manifest.capabilities) !== JSON.stringify(SDK_CAPABILITIES))
   throw new Error('sdk-capability-closure');
-for (const expected of manifest.artifacts) {
-  const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
-  if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
-    throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
-}
+await sdkStage('verifySdkArtifactInventory', () =>
+  mapConcurrent(manifest.artifacts, async (expected) => {
+    const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
+    if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+      throw new Error(`sdk-artifact-mismatch: ${expected.path}`);
+  }),
+);
+
 const files = await filesUnder(sdkRoot);
 if (files.length !== manifest.artifacts.length + 1) throw new Error('sdk-unmanifested-artifact');
 if ((await filesUnder(resolve(sdkRoot, 'packages'))).some((path) => path.endsWith('.tgz')))
@@ -304,6 +310,10 @@ for (const { id: template } of SDK_TEMPLATES) {
   await readFile(resolve(templateRoot, 'tsconfig.json'));
   await readFile(resolve(templateRoot, 'README.md'));
   await readFile(resolve(templateRoot, 'docs', 'feedback.md'));
+  // A new project must not commit DevKit caches and run records.
+  if (!ignoresProjectState(await readFile(resolve(templateRoot, '.gitignore'), 'utf8'))) {
+    throw new Error(`sdk-template-state-not-ignored: ${template}`);
+  }
 }
 
 for (const path of [
@@ -407,7 +417,9 @@ if (selected('source')) {
     });
     await sourceBuildPnpm(['build:engine']);
     await sourceBuildPnpm(['build:tools']);
-    await sourceBuildPnpm(['build:app', 'preview']);
+    // Source Preview starts Vite from source; its template journey never reads
+    // apps/preview/dist. Keep the clean Engine/tools proof and let both real
+    // source consumers use its independently produced shared inputs.
   });
 }
 const initializedSdk = await execFileAsync(
@@ -1688,6 +1700,11 @@ if (selected('source')) {
           FORGEAX_VIEW_ENGINE_PACKAGE: resolve(sourceRoot, 'packages/engine'),
           FORGEAX_VIEW_TEMPLATE_ROOT: resolve(sourceRoot, 'templates/game-3d'),
           FORGEAX_VIEW_EVIDENCE_ROOT: resolve(dirname(archive), 'view-source'),
+          FORGEAX_SHARED_APP_INPUTS_MANIFEST: resolve(
+            sourceRoot,
+            'shared-build-inputs/manifest.json',
+          ),
+          DEBUG: [sourceEnv.DEBUG, 'pw:browser'].filter(Boolean).join(','),
         },
         maxBuffer: 64 * 1024 * 1024,
       },
@@ -1774,16 +1791,30 @@ if (selected('project')) {
   );
 }
 
-for (const expected of manifest.artifacts.filter((entry) => entry.path.startsWith('store/'))) {
-  // pnpm's SQLite index and journal sidecars are mutable runtime cache. A
-  // consumer install can checkpoint or remove the WAL while preserving the
-  // same package files and integrity records.
-  if (isPnpmSqliteStoreArtifact(expected.path)) continue;
-  const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
-  if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256) {
-    throw new Error(`sdk-consumer-mutated-store: ${expected.path}`);
-  }
+if (selected('project') && process.platform === 'linux') {
+  projectEvidence.modeling = await sdkGpuStage('verifyInstalledModelingCli', () =>
+    verifySdkModeling({
+      sdkRoot,
+      project,
+      evidenceRoot: resolve(dirname(archive), 'modeling-sdk', basename(unpackRoot)),
+      env: offlineEnv,
+      run: execFileAsync,
+    }),
+  );
 }
+
+await sdkStage('verifyImmutableSdkStore', () =>
+  mapConcurrent(
+    manifest.artifacts.filter((entry) => entry.path.startsWith('store/')),
+    async (expected) => {
+      // SQLite index/journal sidecars remain the existing mutable-cache exclusion.
+      if (isPnpmSqliteStoreArtifact(expected.path)) return;
+      const actual = await artifact(sdkRoot, resolve(sdkRoot, expected.path));
+      if (actual.bytes !== expected.bytes || actual.sha256 !== expected.sha256)
+        throw new Error(`sdk-consumer-mutated-store: ${expected.path}`);
+    },
+  ),
+);
 
 const result = {
   ok: true,

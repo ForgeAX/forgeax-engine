@@ -1,0 +1,82 @@
+{
+  "name": "@forgeax/engine-modeling",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "description": "Editable n-gon mesh modeling kernel for ForgeaX: selectors, topology operators and exact export to MeshAsset.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "node": "./dist/tools/index.mjs",
+      "default": null
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "!dist/.tsbuildinfo",
+    "src",
+    "!src/**/__tests__/**",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@forgeax/engine-animation": "workspace:*",
+    "@forgeax/engine-codec": "workspace:*",
+    "@forgeax/engine-geometry": "workspace:*",
+    "@forgeax/engine-image": "workspace:*",
+    "@forgeax/engine-pack": "workspace:*",
+    "@forgeax/engine-render": "workspace:*",
+    "@forgeax/engine-tool-runtime": "workspace:*",
+    "@forgeax/engine-types": "workspace:*"
+  },
+  "forgeax": {
+    "metrics": {
+      "bundle-size": {
+        "enabled": true,
+        "path": "dist/index.mjs",
+        "compression": "gzip"
+      },
+      "fps": {
+        "enabled": false,
+        "reason": "build-time and authoring-time modeling kernel without a runtime canvas; rendering is proved by the feature-lab modeling feature"
+      },
+      "bench": {
+        "enabled": false,
+        "reason": "tier budgets are absolute, not a relative baseline: the perf-tiers unit test gates each case (reports/perf-tiers.md)"
+      },
+      "gate": {
+        "enabled": true,
+        "command": "pnpm test",
+        "cwd": "packages/modeling"
+      },
+      "spike-report": {
+        "enabled": false,
+        "reason": "not a spike package"
+      }
+    }
+  },
+  "devDependencies": {
+    "@forgeax/engine-assets-runtime": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
+    "@forgeax/engine-import": "workspace:*",
+    "@forgeax/engine-runtime": "workspace:*",
+    "@forgeax/engine-scene": "workspace:*",
+    "@forgeax/engine-shader-compiler": "workspace:*",
+    "@forgeax/engine-skinning": "workspace:*",
+    "@forgeax/engine-vite-plugin-shader": "workspace:*",
+    "@types/node": "^20.14.0"
+  }
+}

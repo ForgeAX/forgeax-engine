@@ -13,6 +13,7 @@ import {
 } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import { RenderFeatureComputeGraphProjection } from '../features/render-graph-compute';
+import { submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 function plan(a = true, b = false): RenderFeatureWorkPlan {
@@ -134,7 +135,7 @@ it('records exactly the live ordered copies through one retained real host/graph
             copy.size,
           ]),
       );
-      frame.onSubmitted();
+      submitFeatureFrame(host);
     }
   } finally {
     await graph?.unwrap().retire();
@@ -221,7 +222,7 @@ it.each([
           ]),
       );
       expect(copy).toHaveBeenCalledTimes(3);
-      frame.onSubmitted();
+      submitFeatureFrame(host);
     } finally {
       await graph.retire();
     }

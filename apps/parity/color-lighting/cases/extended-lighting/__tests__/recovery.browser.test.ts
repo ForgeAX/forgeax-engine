@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { EXTENDED_LIGHTING_REQUIRED_SAMPLED_TEXTURES } from '@forgeax/engine-render/internal';
 import fixture from '../recovery.json' with { type: 'json' };
 import { validateSceneCase } from '../../../src/contracts/validate-scene-case';
@@ -6,9 +6,19 @@ import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler';
 import { runExtendedLightingCarrier } from '../../../src/compare/extended-case-carrier';
 import type { SceneCase } from '../../../src/contracts/types';
 
+function phaseClock() {
+  try {
+    return { status: 'available' as const, now: performance.now(), timeOrigin: performance.timeOrigin };
+  } catch {
+    return { status: 'unavailable' as const };
+  }
+}
+
 describe('extended-lighting recovery browser carrier', () => {
   // Includes initialization plus three complete device rebuilds on software WebGPU.
   it('rebuilds the live Browser carrier through three device generations', async () => {
+    const observationScope = new AbortController();
+    onTestFinished(() => observationScope.abort());
     const validation = validateSceneCase(fixture);
     expect(validation.ok).toBe(true);
     expect(navigator.gpu).toBeDefined();
@@ -20,6 +30,11 @@ describe('extended-lighting recovery browser carrier', () => {
       fixture: fixture as unknown as SceneCase,
       exactProductHead: 'browser-exact-head',
       bundler: forgeaxBundlerAdapter() as never,
+      recoveryObservationSignal: observationScope.signal,
+      onRecoveryPhase: (event) => {
+        if (!observationScope.signal.aborted)
+          console.info('[extended-lighting-recovery-phase]', JSON.stringify({ ...event, browserClock: phaseClock() }));
+      },
     });
     if (adapterSupportsExtendedLighting) {
       expect(receipt.status).toBe('recovered');

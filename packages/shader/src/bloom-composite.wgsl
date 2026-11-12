@@ -1,5 +1,7 @@
 #define_import_path forgeax_view::bloom_composite
-// Three r184 five-level weighting. Preserve scene alpha and encode only at output.
+// Three r184 five-level weighting, normalised so bloomIntensity is the fraction of above-threshold
+// light scattered back as glow (the five weights sum to 3 for every bloomRadius). Preserve scene
+// alpha and encode only at output.
 // Content marker: bloomComposite
 #import forgeax_view::common::{FullscreenOutput, clampLinearHdr, fullscreen_triangle}
 struct BloomCompositeParams { intensity : f32, radius : f32, pad1 : f32, pad2 : f32 };
@@ -22,5 +24,5 @@ fn bloomWeight(factor : f32) -> f32 { return mix(factor, 1.2 - factor, params.ra
     + textureSampleLevel(bloom2, samp, in.uv, 0.0).rgb * bloomWeight(0.6)
     + textureSampleLevel(bloom3, samp, in.uv, 0.0).rgb * bloomWeight(0.4)
     + textureSampleLevel(bloom4, samp, in.uv, 0.0).rgb * bloomWeight(0.2);
-  return vec4<f32>(clampLinearHdr(scene.rgb + params.intensity * bloom), scene.a);
+  return vec4<f32>(clampLinearHdr(scene.rgb + params.intensity / 3.0 * bloom), scene.a);
 }

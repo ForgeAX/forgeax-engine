@@ -1,5 +1,5 @@
 import type { FSWatcher } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -36,6 +36,9 @@ describe('dev watcher and HMR intake', () => {
     roots.push(root);
     const source = join(root, 'scene.gltf');
     await writeFile(source, '{"version":1}');
+    // The observer compares stat facts; make the next same-size write observable
+    // even when both writes would otherwise share one filesystem clock tick.
+    await utimes(source, 0, 0);
     let change: DevWatchListener | undefined;
     let closed = false;
     const errors: Array<{ error: unknown; phase: string; root?: string }> = [];

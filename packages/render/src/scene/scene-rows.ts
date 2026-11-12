@@ -1,5 +1,7 @@
+import type { World } from '@forgeax/engine-ecs';
 import { type box3, mat4 } from '@forgeax/engine-math';
 import type { MeshAsset } from '@forgeax/engine-types';
+import { ok } from '@forgeax/engine-types';
 import { fingerprintNumericArray, InstanceBoundsCache } from '../instances-derived-bounds';
 import { expandPointsLinesBounds } from '../points-lines/bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
@@ -30,7 +32,8 @@ import type {
 } from './render-scene-types';
 import type { RowContent } from './row-contents';
 import { RowContents } from './row-contents';
-import { type SceneSlotFrame, SceneSlots } from './scene-slots';
+import { scenePoseChunk, scenePoseOffset, stageScenePoses } from './scene-pose-admission';
+import { reflectedPose, type SceneSlotFrame, SceneSlots } from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
 
 /**
@@ -91,10 +94,6 @@ class RowBounds {
     if (slot < this.versions.length) this.versions[slot] = 0;
   }
 
-  clear(): void {
-    this.versions.fill(0);
-  }
-
   private ensure(slot: number): void {
     if (slot < this.known.length) return;
     let capacity = this.known.length;
@@ -135,6 +134,8 @@ export interface WorldTransformSpan {
   readonly worldId: number;
   readonly entities: Readonly<Uint32Array>;
   readonly worlds: Readonly<Float32Array>;
+  /** Selected physical rows, consumed synchronously before publication buffers recycle. */
+  readonly rows?: readonly number[];
 }
 
 const EMPTY_APPLY: RenderSceneApplyResult = Object.freeze({
@@ -153,19 +154,6 @@ const EMPTY_APPLY: RenderSceneApplyResult = Object.freeze({
   resynced: 0,
 });
 
-function reflected(pose: ArrayLike<number>, offset: number): boolean {
-  const a = pose[offset] ?? 0,
-    b = pose[offset + 1] ?? 0,
-    c = pose[offset + 2] ?? 0;
-  const d = pose[offset + 4] ?? 0,
-    e = pose[offset + 5] ?? 0,
-    f = pose[offset + 6] ?? 0;
-  const g = pose[offset + 8] ?? 0,
-    h = pose[offset + 9] ?? 0,
-    i = pose[offset + 10] ?? 0;
-  return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g) < 0;
-}
-
 /**
  * The shared retained rows of one ingest owner: the single store of row facts.
  *
@@ -183,14 +171,15 @@ export class SceneRows {
   private preparation = new FrameSet();
   private slots = new SceneSlots();
   private readonly contents = new RowContents();
-  private readonly bounds = new RowBounds();
+  private bounds = new RowBounds();
   private readonly instanceBoundsCache = new InstanceBoundsCache();
   private skinBoundsScratch:
     | { matrix: ReturnType<typeof mat4.create>; inverse: ReturnType<typeof mat4.create> }
     | undefined;
   private revisionValue = 0;
   /** Commit-local pending identities by live slot; emptied when each commit ends. */
-  private readonly pendingBySlot: (PendingIdentity | undefined)[] = [];
+  private readonly pendingBySlot: (PendingIdentity | number | undefined)[] = [];
+  private committing = false;
 
   constructor(private sources: readonly RenderResourceScope[] = []) {}
 
@@ -310,8 +299,6 @@ export class SceneRows {
     spans: readonly WorldTransformSpan[] = [],
     owned = false,
   ): RenderSceneApplyResult {
-    // Each ingest batch starts a read generation for materialized row views.
-    this.slots.rotateViews();
     if (operations.length === 0 && spans.length === 0) return EMPTY_APPLY;
 
     // Prepare every potentially fallible payload copy before mutating retained
@@ -340,7 +327,73 @@ export class SceneRows {
     return this.commit(preparedOperations, spans);
   }
 
+  /** Validated receiver spans only: source windows remain owned until this call returns. */
+  applyOwnedTransforms(spans: readonly WorldTransformSpan[], world: World): RenderSceneApplyResult {
+    if (spans.length === 0) return EMPTY_APPLY;
+    // Tiny admissions cost less as ordinary records than a scope plus numeric chunks.
+    let demand = 0;
+    for (const span of spans) {
+      demand += span.rows?.length ?? span.entities.length;
+      if (demand > 64) break;
+    }
+    if (demand <= 64) return this.apply([], spans, true);
+    if (this.committing) throw new Error('Scene commit cannot reenter');
+    this.committing = true;
+    try {
+      return world
+        .withFrameArena(() => {
+          const staged = stageScenePoses(this.slots, spans, world.frameArena, this.pendingBySlot);
+          if (!staged.ok) return staged;
+          const { initial, chunks, ignored } = staged.value;
+          if (initial.length === 0)
+            return ok(
+              ignored === 0 ? EMPTY_APPLY : { ...EMPTY_APPLY, ignoredLateUpdates: ignored },
+            );
+          const updatedSlots: RenderSceneSlot[] = [];
+          const contentUpdatedSlots: RenderSceneSlot[] = [];
+          const previous = new Map<RenderSceneSlot, RenderSceneSlot>();
+          for (let index = 0; index < initial.length; index++) {
+            const before = initial[index] as RenderSceneSlot;
+            const chunk = scenePoseChunk(chunks, index);
+            const base = scenePoseOffset(index);
+            const span = spans[chunk[base] as number] as WorldTransformSpan;
+            const after = this.slots.writePose(before.slot, span.worlds, chunk[base + 1] as number);
+            this.bounds.invalidate(before.slot);
+            updatedSlots.push(after);
+            previous.set(after, before);
+            if (chunk[base + 2] === 1) contentUpdatedSlots.push(after);
+          }
+          this.revisionValue++;
+          return ok({
+            ...EMPTY_APPLY,
+            updated: updatedSlots.length,
+            ignoredLateUpdates: ignored,
+            updatedSlots,
+            contentUpdatedSlots,
+            previous,
+            journal: this.slots.journal,
+          });
+        })
+        .unwrap();
+    } finally {
+      this.committing = false;
+    }
+  }
+
   private commit(
+    preparedOperations: readonly RenderSceneOperation[],
+    spans: readonly WorldTransformSpan[],
+  ): RenderSceneApplyResult {
+    if (this.committing) throw new Error('Scene commit cannot reenter');
+    this.committing = true;
+    try {
+      return this.commitOperations(preparedOperations, spans);
+    } finally {
+      this.committing = false;
+    }
+  }
+
+  private commitOperations(
     preparedOperations: readonly RenderSceneOperation[],
     spans: readonly WorldTransformSpan[],
   ): RenderSceneApplyResult {
@@ -350,12 +403,18 @@ export class SceneRows {
     const pendingByWorld = new Map<number, Map<number, PendingIdentity>>();
     const pendingOrder: PendingIdentity[] = [];
 
-    const pendingFor = (worldId: number, entityKey: number): PendingIdentity => {
-      const slot = this.slots.slotOf(worldId, entityKey);
+    const pendingFor = (
+      worldId: number,
+      entityKey: number,
+      knownSlot?: number,
+    ): PendingIdentity => {
+      const slot = knownSlot ?? this.slots.slotOf(worldId, entityKey);
       let pending: PendingIdentity | undefined;
       let entities: Map<number, PendingIdentity> | undefined;
       if (slot !== undefined) {
-        pending = pendingBySlot[slot];
+        const staged = pendingBySlot[slot];
+        if (typeof staged === 'number') throw new Error('Scene pose staging is already active');
+        pending = staged;
         if (pending !== undefined) return pending;
       } else {
         entities = pendingByWorld.get(worldId);
@@ -412,7 +471,7 @@ export class SceneRows {
         pending.poseOffset = offset;
         pending.transformChanged = true;
         // Only a parity change moves this source into another raster batch.
-        if (reflected(target, targetOffset) !== reflected(source, offset))
+        if (reflectedPose(target, targetOffset) !== reflectedPose(source, offset))
           pending.contentChanged = true;
         return;
       }
@@ -440,20 +499,7 @@ export class SceneRows {
       }
       if (operation.world !== undefined) updateWorld(pending, operation.world, 0);
     }
-    // The same pending identity merges column updates with all other source
-    // edits. There is one publication and one consumer delta per entity.
-    for (const span of spans) {
-      for (let row = 0; row < span.entities.length; row += 1) {
-        const entity = span.entities[row];
-        if (entity === undefined) continue;
-        const pending = pendingFor(span.worldId, entity);
-        if (pending.current === undefined) {
-          ignoredLateUpdates += 1;
-          continue;
-        }
-        updateWorld(pending, span.worlds, row * 16);
-      }
-    }
+    ignoredLateUpdates += this.stageTransformSpans(spans, pendingFor, updateWorld);
 
     let created = 0;
     let updated = 0;
@@ -491,25 +537,7 @@ export class SceneRows {
       if (!pending.contentChanged && !pending.instanceChanged && !pending.transformChanged)
         continue;
       const slot = pending.initial.slot;
-      let updatedSlot: RenderSceneSlot;
-      if (current !== pending.initial.snapshot) {
-        const before = this.slots.content(slot);
-        const content = this.contents.acquire(current);
-        if (before?.assetHandle !== content.assetHandle) {
-          this.releaseMesh(pending.worldId, before?.assetHandle);
-          this.acquireMesh(pending.worldId, content.assetHandle);
-        }
-        updatedSlot = this.slots.write(slot, {
-          worldId: pending.worldId,
-          entityKey: pending.entityKey,
-          generation: pending.initial.generation,
-          content,
-          pose: pending.pose ?? current.transform.world,
-          poseOffset: pending.pose === undefined ? 0 : pending.poseOffset,
-        });
-        if (before !== undefined) this.contents.release(before);
-        this.updatePreparation(slot, content);
-      } else updatedSlot = this.slots.writePose(slot, pending.pose ?? [], pending.poseOffset);
+      const updatedSlot = this.writePending(pending, current, pending.initial);
       this.bounds.invalidate(slot);
       updatedSlots.push(updatedSlot);
       previous.set(updatedSlot, pending.initial);
@@ -534,7 +562,76 @@ export class SceneRows {
       recreatedSlots,
       previous,
       resynced: 0,
+      journal: this.slots.journal,
     };
+  }
+
+  /** Compare canonical pose columns before hydrating unchanged row observations. */
+  private stageTransformSpans(
+    spans: readonly WorldTransformSpan[],
+    pendingFor: (worldId: number, entityKey: number, knownSlot?: number) => PendingIdentity,
+    updateWorld: (pending: PendingIdentity, source: ArrayLike<number>, offset: number) => void,
+  ): number {
+    let ignored = 0;
+    for (const span of spans) {
+      const count = span.rows?.length ?? span.entities.length;
+      for (let cursor = 0; cursor < count; cursor++) {
+        const row = span.rows?.[cursor] ?? cursor;
+        const entity = span.entities[row];
+        if (entity === undefined) continue;
+        const slot = this.slots.slotOf(span.worldId, entity);
+        // Earlier operations/spans own their staged pose, not the current columns.
+        const staged = slot === undefined ? undefined : this.pendingBySlot[slot];
+        if (typeof staged === 'number') throw new Error('Scene pose staging is already active');
+        let pending = slot === undefined ? pendingFor(span.worldId, entity) : staged;
+        if (pending !== undefined && pending.current === undefined) {
+          ignored++;
+          continue;
+        }
+        const worlds = span.worlds;
+        const change =
+          slot !== undefined && pending === undefined
+            ? this.slots.comparePose(slot, worlds, row * 16)
+            : undefined;
+        if (change === 'unchanged') continue;
+        pending ??= pendingFor(span.worldId, entity, slot);
+        if (change === 'pose' || change === 'parity') {
+          pending.pose = worlds;
+          pending.poseOffset = row * 16;
+          pending.transformChanged = true;
+          pending.contentChanged ||= change === 'parity';
+        } else updateWorld(pending, worlds, row * 16);
+      }
+    }
+    return ignored;
+  }
+
+  private writePending(
+    pending: PendingIdentity,
+    current: RenderableSnapshot,
+    initial: RenderSceneSlot,
+  ): RenderSceneSlot {
+    const slot = initial.slot;
+    let updatedSlot: RenderSceneSlot;
+    if (current !== initial.snapshot) {
+      const before = this.slots.content(slot);
+      const content = this.contents.acquire(current);
+      if (before?.assetHandle !== content.assetHandle) {
+        this.releaseMesh(pending.worldId, before?.assetHandle);
+        this.acquireMesh(pending.worldId, content.assetHandle);
+      }
+      updatedSlot = this.slots.write(slot, {
+        worldId: pending.worldId,
+        entityKey: pending.entityKey,
+        generation: initial.generation,
+        content,
+        pose: pending.pose ?? current.transform.world,
+        poseOffset: pending.pose === undefined ? 0 : pending.poseOffset,
+      });
+      if (before !== undefined) this.contents.release(before);
+      this.updatePreparation(slot, content);
+    } else updatedSlot = this.slots.writePose(slot, pending.pose ?? [], pending.poseOffset);
+    return updatedSlot;
   }
 
   /** Rebind positional World indices while retaining stable slots. */
@@ -601,7 +698,10 @@ export class SceneRows {
   dispose(): void {
     this.slots.clear();
     this.contents.clear();
-    this.bounds.clear();
+    this.bounds = new RowBounds();
+    this.instanceBoundsCache.invalidate();
+    this.skinBoundsScratch = undefined;
+    this.pendingBySlot.length = 0;
     this.meshes = new MeshFrame();
     this.meshHolders.clear();
     this.preparation = new FrameSet();
@@ -649,13 +749,22 @@ export class SceneRows {
   ): RetainedRowFacts<RenderableSnapshot> {
     const lodCandidateCount = this.slots.lodCandidateCount;
     const indexes = {
-      terrain: this.slots.indexedSlots('terrain'),
-      capsule: this.slots.indexedSlots('capsule'),
+      terrain: current.indexedSlots('terrain') ?? this.slots.indexedSlots('terrain'),
+      capsule: current.indexedSlots('capsule') ?? this.slots.indexedSlots('capsule'),
+      pointsLines: current.indexedSlots('pointsLines') ?? this.slots.indexedSlots('pointsLines'),
+      skin: current.indexedSlots('skin') ?? this.slots.indexedSlots('skin'),
+      raster: current.indexedSlots('raster'),
     };
     return {
       lodCandidateCount,
+      rasterRowCount: indexes.raster?.size,
       *sparseRows(kind) {
-        for (const slot of indexes[kind]) {
+        const index = indexes[kind];
+        if (index === undefined) {
+          for (const record of current) yield project(record);
+          return;
+        }
+        for (const slot of index.borrowKeys()) {
           const record = current.slotAt(slot);
           if (record !== undefined) yield project(record);
         }

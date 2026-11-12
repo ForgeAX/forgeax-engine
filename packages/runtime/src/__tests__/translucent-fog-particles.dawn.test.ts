@@ -3,7 +3,6 @@ import { World } from '@forgeax/engine-ecs';
 import { AssetGuid } from '@forgeax/engine-pack';
 import type { Renderer } from '@forgeax/engine-render';
 import {
-  attachRecorder,
   buildFrameModel,
   decodeTape,
   type EncodedTape,
@@ -46,6 +45,12 @@ import {
   TRANSLUCENT_FOG_WALL_DISTANCE,
   uniformFogOpacity,
 } from './translucent-fog.fixture';
+import {
+  createVfxEvidenceBackend,
+  saveVfxFailureFrame,
+  snapshotVfxFailureState,
+} from './vfx-failure-evidence.fixture';
+import { vfxNativeLoaderEvidence } from './vfx-native-loader.fixture';
 
 const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
 const directory = 'artifacts/translucent-fog/dawn';
@@ -161,6 +166,8 @@ interface BillboardScene {
   readonly renderer: Renderer;
   readonly recorder: RecorderAttachment;
   readonly world: World;
+  readonly vfx: ReturnType<typeof createVfxRuntimeHost>;
+  readonly backend: () => unknown;
 }
 
 /** One GPU billboard over the unfogged wall, drawn through a recording RHI. */
@@ -170,7 +177,8 @@ async function withBillboard(
   run: (scene: BillboardScene) => Promise<void>,
 ): Promise<void> {
   const target = offscreenCanvas(TRANSLUCENT_FOG_SIZE);
-  const recorder = attachRecorder(webgpu).unwrap();
+  const backend = createVfxEvidenceBackend(vfxNativeLoaderEvidence());
+  const recorder = backend.recorder;
   const vfx = createVfxRuntimeHost({
     camera: {
       read: () => ({
@@ -209,7 +217,7 @@ async function withBillboard(
         },
       })
       .unwrap();
-    await run({ renderer, recorder, world });
+    await run({ renderer, recorder, world, vfx, backend: backend.metadata });
   } finally {
     renderer.dispose();
     target.destroy();
@@ -227,11 +235,25 @@ it.each([
   },
   async (blend, composition: TranslucentFogComposition) => {
     mkdirSync(directory, { recursive: true });
-    await withBillboard(blend, 0.6, async ({ renderer, recorder, world }) => {
+    await withBillboard(blend, 0.6, async ({ renderer, recorder, world, vfx, backend }) => {
       const unfoggedImage = await renderFogFrames(renderer, world, {
         path: 'forward',
         domain: 'linear-hdr',
         frames: 30,
+        recorder,
+        async evidence({ receipt, observation, tape }) {
+          await saveVfxFailureFrame({
+            name: `${directory}/particle-${blend}-unfogged`,
+            write: (name, bytes) => {
+              writeFileSync(name, bytes);
+            },
+            receipt,
+            observation,
+            tape,
+            backend: backend(),
+            state: snapshotVfxFailureState(world, renderer, vfx),
+          });
+        },
       });
       const runtime = world.getResource<VfxGpuRuntime>(VFX_GPU_RUNTIME_RESOURCE_KEY);
       expect(
@@ -334,11 +356,26 @@ it('shades a GPU billboard point-symmetrically about its center', {
   // The billboard shading is radial; any term keyed on the quad's corner UVs
   // (such as a fract() over uv.x + uv.y) shows up as a seam across the sprite
   // diagonal and breaks the point reflection through the screen center.
-  await withBillboard('alpha', 1.4, async ({ renderer, world }) => {
+  mkdirSync(directory, { recursive: true });
+  await withBillboard('alpha', 1.4, async ({ renderer, recorder, world, vfx, backend }) => {
     const image = await renderFogFrames(renderer, world, {
       path: 'forward',
       domain: 'linear-hdr',
       frames: 30,
+      recorder,
+      async evidence({ receipt, observation, tape }) {
+        await saveVfxFailureFrame({
+          name: `${directory}/particle-symmetry-unfogged`,
+          write: (name, bytes) => {
+            writeFileSync(name, bytes);
+          },
+          receipt,
+          observation,
+          tape,
+          backend: backend(),
+          state: snapshotVfxFailureState(world, renderer, vfx),
+        });
+      },
     });
     const center = readRgba(image, PANE_PIXEL[0], PANE_PIXEL[1]);
     expect(center[0], JSON.stringify(center)).toBeGreaterThan(0.2);

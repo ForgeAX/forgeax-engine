@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   characterizeMaterialWgslProfile,
@@ -17,6 +18,14 @@ describe('forgeax-material-wgsl-v1 profile characterization', () => {
     expect(MATERIAL_WGSL_PROFILE.profileVersion).toMatch(/^1\./);
     expect(MATERIAL_WGSL_PROFILE.adapterVersion).toMatch(/^[0-9]/);
     expect(MATERIAL_WGSL_PROFILE.compilerVersion).toMatch(/^[0-9]/);
+  });
+
+  it('matches the maintained Naga and Naga Oil provenance artifact', async () => {
+    const provenance = JSON.parse(
+      await readFile(new URL('../../../wgpu-wasm/pkg/provenance.json', import.meta.url), 'utf8'),
+    ) as { readonly dependencies: { readonly naga: string; readonly nagaOil: string } };
+    expect(MATERIAL_WGSL_PROFILE.nagaVersion).toBe(provenance.dependencies.naga);
+    expect(MATERIAL_WGSL_PROFILE.compilerVersion).toBe(provenance.dependencies.nagaOil);
   });
 
   it('records the supported definition and composition capabilities', () => {

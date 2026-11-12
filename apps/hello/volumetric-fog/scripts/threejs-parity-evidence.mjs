@@ -101,17 +101,17 @@ async function runPairedEvidence() {
   const threePath = option('--threejs');
   const output = option('--output');
   try {
-    if (manifestPath === undefined || forgeaxPath === undefined || threePath === undefined) throw new Error('manifest, ForgeaX raw PNG, and Three.js raw PNG are required');
+    if (manifestPath === undefined || forgeaxPath === undefined || threePath === undefined) throw new Error('manifest, ForgeAX raw PNG, and Three.js raw PNG are required');
     const manifest = await readJson(manifestPath, 'manifest');
     if (manifest.oracle?.commit !== 'ad005397bbd15b0a9fcd5159c782eba56e1cba2a') throw new Error('pinned Three.js oracle commit is required');
     if (manifest.evidence?.requiredBackend !== 'headed-webgpu' || manifest.evidence?.pairedRawPng !== true) throw new Error('manifest must require headed raw WebGPU evidence');
-    const [forgeax, threejs, forgeaxMeta, threeMeta] = await Promise.all([readPng(forgeaxPath), readPng(threePath), readJson(option('--forgeax-meta'), 'ForgeaX'), readJson(option('--threejs-meta'), 'Three.js')]);
+    const [forgeax, threejs, forgeaxMeta, threeMeta] = await Promise.all([readPng(forgeaxPath), readPng(threePath), readJson(option('--forgeax-meta'), 'ForgeAX'), readJson(option('--threejs-meta'), 'Three.js')]);
     requireCaptureIdentity(forgeaxMeta, 'forgeax', manifest);
     requireCaptureIdentity(threeMeta, 'threejs', manifest);
     for (const key of ['adapter', 'compositor', 'dpr', 'cssWidth', 'cssHeight', 'colorSpace', 'frozenTime', 'settleFrames', 'normalizedFrame', 'history']) {
       if (forgeaxMeta[key] !== threeMeta[key]) throw new Error(`paired capture identity mismatch: ${key}`);
     }
-    if (forgeax.width !== manifest.evidence.width || forgeax.height !== manifest.evidence.height) throw new Error('ForgeaX raw PNG dimensions do not match the manifest');
+    if (forgeax.width !== manifest.evidence.width || forgeax.height !== manifest.evidence.height) throw new Error('ForgeAX raw PNG dimensions do not match the manifest');
     if (threejs.width !== manifest.evidence.width || threejs.height !== manifest.evidence.height) throw new Error('Three.js raw PNG dimensions do not match the manifest');
     const forgeaxVariantDir = option('--forgeax-variant-dir');
     const threejsVariantDir = option('--threejs-variant-dir');

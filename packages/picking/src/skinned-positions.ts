@@ -1,10 +1,15 @@
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 
-import type { EntityHandle, World } from '@forgeax/engine-ecs';
+import type { EntityHandle, FrameArena, World } from '@forgeax/engine-ecs';
 import { mat4 } from '@forgeax/engine-math';
 import { GlobalTransform } from '@forgeax/engine-scene';
 import { Skin, skinVertexPosition } from '@forgeax/engine-skinning';
 import type { MeshAsset, SkeletonAsset } from '@forgeax/engine-types';
+
+/** Shared storage policy: standalone geometry is owned; query geometry is borrowed. */
+export function deformationStorage(count: number, arena?: FrameArena): Float32Array {
+  return arena ? arena.alloc(Float32Array, count).unwrap() : new Float32Array(count);
+}
 
 /** Query-local world vertices: no retained pose, GPU readback or World mutation. */
 export function skinnedPositions(
@@ -13,6 +18,7 @@ export function skinnedPositions(
   mesh: MeshAsset,
   positions: Float32Array,
   out: Float32Array,
+  arena?: FrameArena,
 ): { positions: Float32Array; bounds: Float32Array } | undefined {
   const skin = world.get(entity, Skin);
   if (!skin.ok) return undefined;
@@ -36,7 +42,7 @@ export function skinnedPositions(
   )
     return undefined;
 
-  const palette = new Float32Array(jointCount * 16);
+  const palette = deformationStorage(jointCount * 16, arena);
   const matrix = mat4.create();
   for (let joint = 0; joint < jointCount; joint++) {
     const jointWorld = world.get(joints[joint] as EntityHandle, GlobalTransform);

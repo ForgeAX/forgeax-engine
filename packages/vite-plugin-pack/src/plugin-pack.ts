@@ -6,9 +6,12 @@ import { createAcceptedPublicationStore, DdcLifecycle, resolveDdcRoot } from '@f
 import {
   canonicalScriptableSourcePath,
   commitImportPublication,
+  createSourcePackageBuildDdc,
   ImporterRegistry,
+  type ImportPublicationInput,
   type ImportRunnerFs,
   type RunImportMeta,
+  readImportPublication,
   restoreImportPublication,
   type StagedImportPublication,
   stageImportPublication,
@@ -24,6 +27,8 @@ import { decodeMaterialProgramWire, validatePluginAsset } from '@forgeax/engine-
 import { declaredPackAssets, type ScanSourceDeclaration } from '@forgeax/engine-pack/scanner';
 import { projectDirectPackJson } from '@forgeax/engine-pack/source';
 import {
+  type AssetPublicationEnvelope,
+  type CatalogEntry,
   type PackIndexEntry,
   RUNTIME_CATALOG_SNAPSHOT_SCHEMA,
   type RuntimeAssetBinding,
@@ -38,6 +43,7 @@ import {
 } from './build/asset-bindings.js';
 import { createPluginBuild } from './build/plugin-build.js';
 import { projectPackIndexUrl, resolvePackBuildInputs } from './build-inputs.js';
+import { shareArtifactBodies } from './dev/artifact-bodies.js';
 import { publishAuthoredDevPacks as publishAuthoredDevPacksOwner } from './dev/authored-pack-publication.js';
 import { startMetaImport as startMetaImportOwner } from './dev/meta-import.js';
 import {
@@ -61,6 +67,8 @@ import { structuredPluginError } from './structured-plugin-error.js';
 function packBodyText(body: string | Uint8Array | undefined): string | undefined {
   return body instanceof Uint8Array ? new TextDecoder().decode(body) : body;
 }
+
+const DEV_PACK_PREFIX = '/__forgeax-ddc/';
 
 const COOKED_CURRENT_PROJECTION = currentProjectionFor('imported-output', 'cooked');
 
@@ -131,6 +139,72 @@ export function reloadAssetHost(): AssetHostRefreshPolicy {
   return (server) => server.ws?.send({ type: 'full-reload' });
 }
 
+async function measureGenerationCommit<T>(
+  stage: string,
+  run: () => Promise<T>,
+  subject?: string,
+): Promise<T> {
+  if (process.env.FORGEAX_WORKSPACE_TIMING !== '1') return run();
+  const startedAt = performance.now();
+  try {
+    return await run();
+  } finally {
+    console.error(
+      '[forgeax.pack-commit.timing]',
+      JSON.stringify({ stage, elapsedMs: Math.round(performance.now() - startedAt), subject }),
+    );
+  }
+}
+
+/** Install only this Meta's accepted rows into the still-private complete generation. */
+function adoptImportCatalog(
+  candidate: PluginServerProjectionState,
+  input: ImportPublicationInput,
+  catalog: readonly CatalogEntry[],
+): void {
+  const publishedGuids = new Set(input.publishedGuids.map((guid) => guid.toLowerCase()));
+  const acceptedRows = new Map(
+    catalog
+      .filter((row) => publishedGuids.has(row.guid.toLowerCase()))
+      .map((row) => [row.guid.toLowerCase(), row]),
+  );
+  candidate.catalogProjection = {
+    ...candidate.catalogProjection,
+    entries: candidate.catalogProjection.entries.map(
+      (row) => acceptedRows.get(row.guid.toLowerCase()) ?? row,
+    ),
+  };
+}
+
+async function restoreImportPublications(
+  candidate: PluginServerProjectionState,
+  assertOpen: () => void,
+): Promise<void> {
+  for (const [subject, input] of candidate.pendingImportPublications) {
+    assertOpen();
+    const restored = await measureGenerationCommit(
+      'meta-restore',
+      () => readImportPublication(input),
+      subject,
+    );
+    assertOpen();
+    if (restored !== undefined) {
+      candidate.metaPackBodies.set(
+        `${DEV_PACK_PREFIX}${input.guid.toLowerCase()}.pack.json`,
+        JSON.stringify(restored.pack),
+      );
+      for (const [path, artifact] of Object.entries(restored.artifacts)) {
+        candidate.devArtifactBodies.set(`${DEV_PACK_PREFIX}${path}`, {
+          bytes: artifact.bytes,
+          mimeType: artifact.mediaType,
+        });
+      }
+      adoptImportCatalog(candidate, input, restored.catalog);
+      candidate.pendingImportPublications.delete(subject);
+    }
+  }
+}
+
 /** @internal Inspect the complete delivered artifact closure before exposing a DDC body. */
 export function persistedArtifactPaths(pack: unknown): readonly string[] | undefined {
   const decoded = decodeMaterialProgramWire(pack);
@@ -198,7 +272,6 @@ export function createPluginPackInternal(
       readonly promise: Promise<PackIndexEntry[]>;
     }
   >();
-  const DEV_PACK_PREFIX = '/__forgeax-ddc/';
 
   function devPackGuidForUrl(url: string): string | undefined {
     if (!url.startsWith(DEV_PACK_PREFIX) || !url.endsWith('.pack.json')) return undefined;
@@ -233,6 +306,29 @@ export function createPluginPackInternal(
           : { failure: { ...scoped.publication.failure, sourcePath } }),
       },
     };
+  }
+  function scopedCatalogEntries(
+    binding: RuntimeAssetBinding,
+    entries: readonly PackIndexEntry[],
+  ): PackIndexEntry[] {
+    // Scope projection must preserve a producer's shared publication identity.
+    // Otherwise wire-table validation and serialization walk its complete output
+    // closure once per row. Keep sharing local to this exact catalog response;
+    // different source paths retain distinct publication and receipt identities.
+    const publications = new Map<AssetPublicationEnvelope, Map<string, AssetPublicationEnvelope>>();
+    return entries.map((entry) => {
+      const scoped = scopedCatalogEntry(binding, entry);
+      if (entry.publication === undefined || scoped.publication === undefined) return scoped;
+      let paths = publications.get(entry.publication);
+      if (paths === undefined) {
+        paths = new Map();
+        publications.set(entry.publication, paths);
+      }
+      const publication = paths.get(scoped.sourcePath);
+      if (publication !== undefined) return { ...scoped, publication };
+      paths.set(scoped.sourcePath, scoped.publication);
+      return scoped;
+    });
   }
   function resetDevState(): void {
     state.catalogProjection = emptyCatalogProjection();
@@ -356,7 +452,7 @@ export function createPluginPackInternal(
         scopeId: binding.scopeId,
         generation: binding.generation,
         authority: binding.authority === 'degraded' ? ('degraded' as const) : projection.authority,
-        entries: projection.entries.map((entry) => scopedCatalogEntry(binding, entry)),
+        entries: scopedCatalogEntries(binding, projection.entries),
         diagnostics:
           binding.authority === 'degraded'
             ? (binding.diagnostics ?? projectRuntimeDiagnostics(projection.diagnostics))
@@ -407,6 +503,14 @@ export function createPluginPackInternal(
         devArtifactBodies: state.devArtifactBodies,
         pendingImportPublications: undefined,
       };
+      // Each production attempt admits current native cooker identities. A
+      // long-lived dev owner must not freeze them across material source edits.
+      const productDdc = await createSourcePackageBuildDdc({
+        root: opts.ddc?.buildCacheRoot,
+        identityRoot: opts.ddc?.identityRoot ?? process.cwd(),
+        producerIdentity: opts.producerIdentity,
+        cookers: opts.cookers,
+      }).catch(() => undefined);
       return startMetaImportOwner(metaPath, {
         ddcRoot: (_cwd, binding) => runtimeDdcRoot(projectDdcRoot, binding),
         ...(runtimeBinding === undefined ? {} : { runtimeBinding }),
@@ -420,6 +524,7 @@ export function createPluginPackInternal(
         importerRegistry,
         cookers: opts.cookers,
         fsForImport,
+        ...(productDdc === undefined ? {} : { sourcePackageDdc: productDdc }),
         publishCatalogDelta,
         cookedProjection: COOKED_CURRENT_PROJECTION,
         ...(target.pendingImportPublications === undefined
@@ -708,11 +813,28 @@ export function createPluginPackInternal(
         };
         try {
           assertOpen();
-          await state.artifactCompression?.prepare(candidate.devArtifactBodies.values());
+          await restoreImportPublications(candidate, assertOpen);
+          assertOpen();
+          await measureGenerationCommit('artifact-body-sharing', async () => {
+            shareArtifactBodies(candidate.devArtifactBodies);
+          });
+          assertOpen();
+          // Prepare the exact privately owned bodies that this generation will serve.
+          await measureGenerationCommit('http-compression', async () => {
+            await state.artifactCompression?.prepare(candidate.devArtifactBodies.values());
+          });
           assertOpen();
           for (const [subject, input] of candidate.pendingImportPublications) {
             assertOpen();
-            const staged = await stageImportPublication(input);
+            const staged = await measureGenerationCommit(
+              'meta-stage',
+              () =>
+                stageImportPublication({
+                  ...input,
+                  traceTiming: process.env.FORGEAX_WORKSPACE_TIMING === '1',
+                }),
+              subject,
+            );
             if (!staged.ok)
               throw structuredPluginError({
                 code: 'commit-failed',
@@ -723,7 +845,11 @@ export function createPluginPackInternal(
               });
             const publication = staged.candidate;
             committedImports.push(publication);
-            const result = await commitImportPublication(publication);
+            const result = await measureGenerationCommit(
+              'meta-commit',
+              () => commitImportPublication(publication),
+              subject,
+            );
             if (!result.ok) {
               // A newer generation may have superseded this lease while the
               // DDC commit was in flight.  Keep the strict DDC CAS outcome,
@@ -740,18 +866,7 @@ export function createPluginPackInternal(
             }
             // DDC owns the accepted revision. Install its rows into the private
             // complete generation, retaining later sources' prepared outputs.
-            const publishedGuids = new Set(input.publishedGuids.map((guid) => guid.toLowerCase()));
-            const acceptedRows = new Map(
-              result.catalog
-                .filter((row) => publishedGuids.has(row.guid.toLowerCase()))
-                .map((row) => [row.guid.toLowerCase(), row]),
-            );
-            candidate.catalogProjection = {
-              ...candidate.catalogProjection,
-              entries: candidate.catalogProjection.entries.map(
-                (row) => acceptedRows.get(row.guid.toLowerCase()) ?? row,
-              ),
-            };
+            adoptImportCatalog(candidate, input, result.catalog);
             if (!result.transportPersisted) {
               for (const guid of publication.input.publishedGuids) {
                 candidate.importedGuids.delete(guid.toLowerCase());
@@ -765,10 +880,10 @@ export function createPluginPackInternal(
           }
           for (const [sourcePath, publication] of candidate.publicationCandidates) {
             assertOpen();
-            const result = await publicationStore.commit(
+            const result = await measureGenerationCommit(
+              'authored-commit',
+              () => publicationStore.commit(sourcePath, { envelope: publication }, () => undefined),
               sourcePath,
-              { envelope: publication },
-              () => undefined,
             );
             if (!result.ok) {
               assertOpen();

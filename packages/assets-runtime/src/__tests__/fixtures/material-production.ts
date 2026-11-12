@@ -1,10 +1,14 @@
-import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, posix, resolve } from 'node:path';
 import {
   type BuildProductionFile,
   ImporterRegistry,
   produceBuildAssets,
 } from '@forgeax/engine-import';
 import { serializeCookedMaterialRecord } from '@forgeax/engine-pack';
+import { planAssetBundles } from '../../../../devkit/src/delivery-bundles';
 import { materialRecordFixture } from './material-publication.js';
 
 export async function materialProductionFixture(external = true, record = materialRecordFixture()) {
@@ -109,4 +113,47 @@ export async function materialProductionFixture(external = true, record = materi
     pack: JSON.parse(emitted),
     emitted,
   };
+}
+
+/** Import emits loose artifacts; DevKit owns the actual player Bundle projection. */
+export async function bundleMaterialFixture(
+  fixture: Awaited<ReturnType<typeof materialProductionFixture>>,
+) {
+  const root = await mkdtemp(resolve(tmpdir(), 'forgeax-material-bundle-'));
+  try {
+    const artifacts = new Map();
+    for (const [path, file] of fixture.files) {
+      const bytes = typeof file.source === 'string' ? Buffer.from(file.source) : file.source;
+      await mkdir(dirname(resolve(root, path)), { recursive: true });
+      await writeFile(resolve(root, path), bytes);
+      artifacts.set(path, {
+        path,
+        bytes: bytes.byteLength,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        mediaType: path.endsWith('.json') ? 'application/json' : 'text/wgsl',
+      });
+    }
+    const output = await planAssetBundles({
+      sourceRoot: root,
+      outputRoot: root,
+      artifacts,
+      catalog: fixture.entries,
+      packIndexPath: 'pack-index.json',
+      delivery: {},
+      pathOf: (url, from) =>
+        url.startsWith('/') ? url.slice(1) : posix.join(posix.dirname(from), url),
+    });
+    for (const file of output.written)
+      fixture.files.set(file.path, {
+        type: 'asset',
+        fileName: file.path,
+        source: await readFile(resolve(root, file.path)),
+      });
+    fixture.pack = JSON.parse(
+      await readFile(resolve(root, fixture.entry.packageUrl.slice(1)), 'utf8'),
+    );
+    return output.report;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 }

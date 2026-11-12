@@ -37,6 +37,29 @@ function fixture({ exitLeader = true } = {}) {
   `;
 }
 
+function timeoutFixture() {
+  const descendant = `
+    trap "" TERM
+    printf 'ready=%s\\n' "$$"
+    exec sleep 60 >/dev/null 2>&1
+  `;
+  return `
+    const { spawn } = require('node:child_process');
+    const child = spawn('/bin/sh', ['-c', ${JSON.stringify(descendant)}], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    let ready = '';
+    child.stdout.on('data', chunk => {
+      ready += chunk;
+      const line = ready.match(/^ready=(\\d+)\\n/);
+      if (!line || Number(line[1]) !== child.pid) return;
+      child.stdout.removeAllListeners('data');
+      console.log('leader=' + process.pid + ' descendant=' + line[1]);
+      setInterval(() => {}, 1000);
+    });
+  `;
+}
+
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -77,7 +100,7 @@ test('timeout escalates even after the leader exits and closes its pipes', {
   skip: process.platform === 'win32',
   timeout: 5000,
 }, async () => {
-  const result = await runBrowserCommand([process.execPath, '-e', fixture({ exitLeader: false })], {
+  const result = await runBrowserCommand([process.execPath, '-e', timeoutFixture()], {
     timeoutMs: 1500,
     timeoutGraceMs: 100,
   });

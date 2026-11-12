@@ -126,7 +126,7 @@ var<private> forgeax_vfx_batch_bases1: vec4<u32>;
   return {
     source: source + abi + wrappers.join('\n'),
     entries,
-    jobBytes: 336,
+    jobBytes: 352,
     maxWaves: 4,
     bindings: buffers.map((e) => e.binding).concat(12),
     storageBufferCount: 8,
@@ -142,7 +142,7 @@ export function createVfxInstanceComputeProgram(
     const batch = createBatchProgram(emitter);
     return {
       format: 'forgeax-vfx-instance-compute-1',
-      jobBytes: 336,
+      jobBytes: 352,
       wgsl: batch.source,
       bindings: emitter.reflection.bindings.map((group) => ({
         ...group,

@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ExecutionReport } from '@forgeax/engine-app';
+import type { BrowserFrameCompleted, ExecutionReport } from '@forgeax/engine-app';
 import { parseImage } from '@forgeax/engine-image/parse-image';
 import { vitePluginRhiDebug } from '@forgeax/engine-vite-plugin-rhi-debug';
 import { type Browser, chromium, type Page } from 'playwright';
@@ -199,19 +199,26 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
       const NativeWorker = Worker;
       globalThis.__forgeaxWorkerEvents = [];
       globalThis.__forgeaxWorkerPresentation = { readyCount: 0 };
+      // Render completion can arrive on a dedicated MessagePort, beyond Worker events.
+      window.addEventListener(
+        'forgeax:frame-completed',
+        (event) => {
+          const frame = (event as CustomEvent<BrowserFrameCompleted>).detail;
+          const presentation = globalThis.__forgeaxWorkerPresentation;
+          if (frame === undefined || presentation === undefined) return;
+          presentation.latestCompleted = { atMs: performance.now(), frame };
+          if (frame.presentation === 'ready') {
+            presentation.readyCount++;
+            presentation.firstReadyAtMs ??= performance.now();
+          }
+        },
+        true,
+      );
       globalThis.Worker = class extends NativeWorker {
         constructor(...args: ConstructorParameters<typeof NativeWorker>) {
           super(...args);
           this.addEventListener('message', (event) => {
             const kind = event.data?.kind;
-            const presentation = globalThis.__forgeaxWorkerPresentation;
-            if (kind === 'render-complete' && presentation) {
-              presentation.latestCompleted = { atMs: performance.now(), message: event.data };
-              if (event.data.frame?.presentation === 'ready') {
-                presentation.readyCount++;
-                presentation.firstReadyAtMs ??= performance.now();
-              }
-            }
             if (
               ![
                 'render-ready',
@@ -288,6 +295,9 @@ it('new game-3d defaults to combined workers with visible UI, input, physics and
         getComputedStyle(loading).display === 'none'
       );
     });
+    expect(
+      await page.evaluate(() => globalThis.__forgeaxWorkerPresentation?.readyCount ?? 0),
+    ).toBeGreaterThan(0);
     const ui = page.locator('#game-ui [data-ui-slot="lock"]');
     expect(await ui.textContent()).toContain('Click to lock camera');
     expect(await page.locator('#game-ui > *').count()).toBe(1);

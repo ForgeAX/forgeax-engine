@@ -42,6 +42,7 @@ const dataFields = [
   ['occlusion', 'f32'],
   ['opacity', 'f32'],
   ['alphaClipThreshold', 'f32'],
+  ['reactive', 'f32'],
 ] as const;
 
 function assertOrderedFields(source: string, fields: readonly (readonly [string, string])[]) {
@@ -76,7 +77,7 @@ describe('surface_v1 ABI', () => {
     const authoredSource = `
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
-  return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }
 `;
     expect(authoredSource).toMatch(
@@ -85,6 +86,16 @@ fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
     expect(authoredSource.match(/fn\s+evaluate_surface\s*\(/g)).toHaveLength(1);
     expect(authoredSource).not.toMatch(/@(fragment|vertex|compute)|@(group|binding)\s*\(/);
     expect(surfaceSource).not.toMatch(/@(fragment|vertex|compute)|@(group|binding)\s*\(/);
+  });
+
+  it('appends reactive last and leaves the built-in Surfaces at the default history', () => {
+    const body = /struct\s+SurfaceData\s*\{([\s\S]*?)\}/.exec(surfaceSource)?.[1] ?? '';
+    const fields = [...body.matchAll(/^\s*(\w+)\s*:/gm)].map((match) => match[1]);
+    expect(fields).toEqual(dataFields.map(([name]) => name));
+    expect(surfaceSource).toContain(
+      'SurfaceData(vec3<f32>(0.0), input.viewDirectionWS, 0.0, 1.0, emissive, 0.0, opacity, 0.0, 0.0)',
+    );
+    expect(defaultSource).toMatch(/alphaClipThreshold,\s*0\.0,\s*\);/);
   });
 
   it('keeps the default evaluator in the same Surface ABI family', () => {

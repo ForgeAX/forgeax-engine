@@ -94,7 +94,6 @@ const STANDARD_PBR_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.PROBE_BLEND_AVAILABLE === false &&
     defines.EXTENDED_LIGHTING_AVAILABLE === false &&
     defines.TRANSMISSION_AVAILABLE === false &&
-    defines.DIRECTIONAL_PCSS_AVAILABLE === false &&
     defines.PROJECTOR_AVAILABLE === false,
 );
 const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
@@ -108,7 +107,6 @@ const STANDARD_PBR_COLORED_GPU_VARIANT = STANDARD_PBR_PRODUCER?.variants.find(
     defines.PROBE_BLEND_AVAILABLE === false &&
     defines.EXTENDED_LIGHTING_AVAILABLE === false &&
     defines.TRANSMISSION_AVAILABLE === false &&
-    defines.DIRECTIONAL_PCSS_AVAILABLE === false &&
     defines.PROJECTOR_AVAILABLE === false,
 );
 const STANDARD_PBR_COLORED_RECEIPT = createStandardPbrArtifactReceipt(false, true);
@@ -565,6 +563,9 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
     .createTextureView(pointShadowTexture, { dimension: 'cube-array' })
     .unwrap();
   const comparisonSampler = device.createSampler({ compare: 'less' }).unwrap();
+  const filteringSampler = device
+    .createSampler({ minFilter: 'linear', magFilter: 'linear' })
+    .unwrap();
   const viewBindGroup = device
     .createBindGroup({
       layout: viewLayout,
@@ -572,6 +573,7 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
         { binding: 0, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
         { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
+        { binding: 17, resource: { kind: 'sampler', value: filteringSampler } },
         { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
         { binding: 6, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
         { binding: 7, resource: { kind: 'buffer', value: { buffer: viewUniform, size: 4096 } } },
@@ -591,6 +593,7 @@ function createAlphaMaskViews(device: RhiDevice, viewLayout: BindGroupLayout) {
           },
           { binding: 3, resource: { kind: 'textureView', value: viewDepth } },
           { binding: 4, resource: { kind: 'sampler', value: comparisonSampler } },
+          { binding: 17, resource: { kind: 'sampler', value: filteringSampler } },
           { binding: 5, resource: { kind: 'textureView', value: pointShadowDepth } },
           {
             binding: 6,
@@ -1180,12 +1183,9 @@ function expectAlphaMaskPasses(compiled: CompiledRenderGraph<RenderPipelineFrame
       'gpu-driven.view-reset',
       'gpu-driven.frustum-compact',
       'gpu-driven.finalize-indirect',
-      'gpu-driven.shadow.directional-cascade-0.static.view-reset',
-      'gpu-driven.shadow.directional-cascade-0.static.finalize-indirect',
-      'gpu-driven.shadow.point-cube-face-0-0.static.view-reset',
-      'gpu-driven.shadow.point-cube-face-0-0.static.finalize-indirect',
-      'gpu-driven.shadow.spot-atlas-0.static.view-reset',
-      'gpu-driven.shadow.spot-atlas-0.static.finalize-indirect',
+      'gpu-driven.shadow.directional-cascade-0.static.view-selection',
+      'gpu-driven.shadow.point-cube.view-selection',
+      'gpu-driven.shadow.spot-atlas-0.static.view-selection',
       'gpu-driven.alpha-mask.opaque',
       'gpu-driven.alpha-mask.discarded',
     ]),

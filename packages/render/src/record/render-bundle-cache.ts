@@ -103,6 +103,19 @@ function equalArgs(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
+function equalOffsetSlice(
+  previous: readonly number[],
+  offsets: readonly number[] | Uint32Array | undefined,
+  first: number,
+  count: number,
+): boolean {
+  if (previous.length !== count) return false;
+  for (let index = 0; index < count; index++) {
+    if (previous[index] !== offsets?.[first + index]) return false;
+  }
+  return true;
+}
+
 function overwrittenPrelude(segment: Segment, index: number): boolean {
   if (index >= segment.preludeLength) return false;
   const inherited = segment.commands[index];
@@ -497,11 +510,7 @@ export class RenderBundleCache {
         const old = open ? retained?.commands[cursor] : undefined;
         const previous = old?.method === 'setBindGroup' ? old.args[2] : undefined;
         let selected: number[];
-        if (
-          Array.isArray(previous) &&
-          previous.length === count &&
-          previous.every((n, i) => n === offsets?.[first + i])
-        ) {
+        if (Array.isArray(previous) && equalOffsetSlice(previous, offsets, first, count)) {
           selected = previous;
         } else {
           selected = [];

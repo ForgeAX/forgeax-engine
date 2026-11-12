@@ -1,8 +1,9 @@
+import { isTemporalAntialias } from '../components/camera';
+import { recordContext } from '../world/view-record-context';
 // Display-frame temporal state: the sample clock, the TAA / Motion Blur
 // temporal view with its reset reason, and the camera-owned post-process
 // parameters projected from that view at record time.
 
-import { mat4 } from '@forgeax/engine-math';
 import { TONEMAP_PARAMS_LAYOUT } from '@forgeax/engine-shader';
 import { BARREL_DISTORTION_POST_PROCESS_ID } from '../features/barrel-distortion';
 import {
@@ -10,7 +11,12 @@ import {
   DEPTH_OF_FIELD_POST_PROCESS_IDS,
 } from '../features/depth-of-field/depth-of-field-feature';
 import { packDepthOfFieldParams } from '../features/depth-of-field/depth-of-field-params';
-import { LENS_EFFECTS_POST_PROCESS_ID, packLensEffectsParams } from '../features/lens-effects';
+import {
+  CHROMATIC_ABERRATION_POST_PROCESS_ID,
+  LENS_EFFECTS_POST_PROCESS_ID,
+  packChromaticAberrationParams,
+  packLensEffectsParams,
+} from '../features/lens-effects';
 import { LENS_FLARE_PROGRAMS, packLensFlareParams } from '../features/lens-flare';
 import {
   effectiveMotionBlurSampleCount,
@@ -34,7 +40,6 @@ import {
   type resolveSubmittedBarrelMapping,
 } from './barrel-distortion-frame';
 import type { RenderFrameState } from './frame-snapshot';
-import { computeViewProjectionMatrix } from './helpers';
 import type { RenderSystemInternals } from './render-context';
 
 export interface FrameClockSample {
@@ -106,7 +111,7 @@ function motionBlurFirstFrame(
 ): boolean {
   return (
     motionBlurDemand &&
-    camera.antialias !== 'taa' &&
+    !isTemporalAntialias(camera.antialias) &&
     (previous === undefined ||
       (previous.mode === 'off' && !previous.historyValid && previous.resetReason === undefined))
   );
@@ -135,7 +140,7 @@ function temporalCandidateFor(
     viewIdentity: `camera:${camera.entityKey ?? 0}`,
     environmentSignature,
     fogSignature,
-    deviceGeneration: internals.deviceScope?.generation ?? 0,
+    deviceGeneration: recordContext(internals).deviceScope?.generation ?? 0,
     cameraCut: false,
     historyValid: false,
     currentUnjitteredViewProjection,
@@ -178,9 +183,9 @@ function pendingTemporalCommitFor(
   environmentReady: boolean,
   view: TemporalView,
 ): TemporalCommitOutcome {
-  if (cameraCount === 0 || !environmentReady || internals.deviceScope === undefined)
+  if (cameraCount === 0 || !environmentReady || recordContext(internals).deviceScope === undefined)
     return { kind: 'none' };
-  return view.mode === 'taa' ? { kind: 'taa', view } : { kind: 'off', view };
+  return { kind: view.mode, view };
 }
 
 /** Resolve this frame's temporal view and stage its pending commit. */
@@ -198,6 +203,7 @@ export function resolveFrameTemporal(
   fogSignature: string,
   environmentReady: boolean,
   temporalReset: boolean,
+  currentUnjitteredViewProjection: Float32Array,
 ) {
   const previous = frameState.temporalView.accepted;
   const motionBlurDemand = motionBlurDemandFor(camera);
@@ -211,7 +217,6 @@ export function resolveFrameTemporal(
           clock.deltaSeconds,
         );
   const intervalValid = isMotionBlurIntervalValid(deltaSeconds);
-  const currentUnjitteredViewProjection = computeViewProjectionMatrix(camera, mat4.create());
   const candidate = temporalCandidateFor(
     internals,
     frameState,
@@ -255,7 +260,7 @@ export function resolveFrameTemporal(
   return {
     view,
     previous,
-    recordCamera: view.mode === 'taa' ? { ...camera, temporal: view } : camera,
+    recordCamera: view.mode !== 'off' ? { ...camera, temporal: view } : camera,
     deltaSeconds,
     motionBlurDemand,
     continuousGeometry:
@@ -276,7 +281,8 @@ function stampOutputGamut(
   extracted: ReadonlyMap<string, Uint8Array>,
   params: Map<string, Uint8Array>,
 ): void {
-  const outputGamut = OUTPUT_GAMUT_CODE[internals.outputColorSpace?.report.effective ?? 'srgb'];
+  const outputGamut =
+    OUTPUT_GAMUT_CODE[recordContext(internals).outputColorSpace?.report.effective ?? 'srgb'];
   if (outputGamut === 0) return;
   const extractedTonemap = extracted.get(STANDARD_OUTPUT_TRANSFORM_FEATURE_ID);
   const tonemap = new Uint8Array(TONEMAP_PARAMS_LAYOUT.byteSize);
@@ -321,7 +327,7 @@ function setDepthOfFieldParams(
     outputHeight: targetH,
     near: camera.near,
     far: camera.far,
-    useTemporalDepth: camera.antialias === 'taa',
+    useTemporalDepth: isTemporalAntialias(camera.antialias),
   });
   for (const id of [...DEPTH_OF_FIELD_POST_PROCESS_IDS, ...DEPTH_OF_FIELD_MSAA_POST_PROCESS_IDS]) {
     params.set(id, dofParams);
@@ -362,6 +368,10 @@ export function buildFramePostProcessParams(
     params.set(
       LENS_EFFECTS_POST_PROCESS_ID,
       packLensEffectsParams(camera.lensEffects, frameState.frameNumber),
+    );
+    params.set(
+      CHROMATIC_ABERRATION_POST_PROCESS_ID,
+      packChromaticAberrationParams(camera.lensEffects),
     );
   }
   if (camera.lensFlare !== undefined) {

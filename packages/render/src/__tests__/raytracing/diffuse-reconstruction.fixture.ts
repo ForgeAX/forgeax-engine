@@ -8,6 +8,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   createDiffuseReconstruction,
   DIFFUSE_HISTORY_BYTES,
@@ -229,7 +230,9 @@ export async function verifyDiffuseReconstruction(
     const b = new Float32Array(bounded.history.buffer);
     expect(b[probe * 24 + 3]).toBe(4);
     expect(b[probe * 24 + 7]).toBeGreaterThan(4);
-    expect(await readBuffer(device, d, pixels * 80)).toEqual(new Uint8Array(rawValues));
+    expect(equalBytes(await readBuffer(device, d, pixels * 80), new Uint8Array(rawValues))).toBe(
+      true,
+    );
     // Fully invalid motion remains a valid current sample with no history.
     motionValue = [0, 0, 1, 2];
     const invalidMotion = await run(true, true, false);
@@ -337,7 +340,7 @@ export async function verifyDiffuseReconstruction(
       const pixels = (
         await replay.readResourceAtWork(resource.resourceId, work.workIndex)
       ).unwrap();
-      expect(pixels.bytes).toEqual(captured.signal);
+      expect(equalBytes(pixels.bytes, captured.signal)).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       gpu._internal_getRawDevice(fresh)?.destroy();
@@ -367,7 +370,7 @@ export async function verifyDiffuseReconstruction(
       const pixels = (
         await missingReplay.readResourceAtWork(resource.resourceId, work.workIndex)
       ).unwrap();
-      expect(pixels.bytes).not.toEqual(captured.signal);
+      expect(equalBytes(pixels.bytes, captured.signal)).toBe(false);
     } finally {
       (await missingReplay.dispose()).unwrap();
       gpu._internal_getRawDevice(missingDevice)?.destroy();

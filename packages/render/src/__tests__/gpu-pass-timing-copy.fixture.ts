@@ -1,6 +1,7 @@
 import { attachRecorder, decodeTape } from '@forgeax/engine-rhi-debug';
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { summarizeGpuPassTimingIntervals } from '../record/gpu-pass-timing/parser';
 import {
   createGpuPassTimingSession,
@@ -53,7 +54,9 @@ export async function verifyCopyTimingMarkers(): Promise<void> {
       capture.markSubmitted(device.queue.onSubmittedWorkDone());
       const observed = (await capture.observe()).unwrap();
       const mapped = (await readback.mapAsync(0x01)).unwrap();
-      expect(new Uint8Array(mapped.getMappedRange().unwrap())).toEqual(expectedBytes);
+      expect(equalBytes(new Uint8Array(mapped.getMappedRange().unwrap()), expectedBytes)).toBe(
+        true,
+      );
       mapped.unmap();
       const coverage = summarizeGpuPassTimingIntervals(
         observed.passes,

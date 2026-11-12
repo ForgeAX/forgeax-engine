@@ -59,6 +59,7 @@ fn height_fog_with_source(v: View, worldPos: vec3<f32>, source:vec3<f32>) -> Fog
 }
 
 fn height_fog(v:View, worldPos:vec3<f32>)->FogSample {
+  if v.fogHeightOpacity.y==0.0 {return FogSample(vec3<f32>(0.0),1.0);}
   var source=v.fogColorDensity.xyz;
   if v.atmosphereControl.w>0.5 {
     // A fixed source preserves the analytic height integral. Ground solar

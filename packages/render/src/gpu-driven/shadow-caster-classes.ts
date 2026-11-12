@@ -1,3 +1,4 @@
+import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import type { FrameList } from '../scene/frame-list';
 import { FrameSet } from '../scene/frame-set';
 /** Frames without a change before a changed caster settles into the static layer. */
@@ -58,8 +59,8 @@ interface ShadowCasterSlot {
 }
 
 interface ShadowCasterScene {
-  readonly contentRevision: number;
-  changedSlotsSince(revision: number): readonly number[] | undefined;
+  readonly contentCursor: SceneContentCursor;
+  changedSlotsSince(since: SceneContentCursor): readonly number[] | undefined;
 }
 
 const DECLARED = 1;
@@ -150,7 +151,7 @@ class SlotClass {
  */
 export class ShadowCasterClassifier {
   private frame = 0;
-  private revision: number | undefined;
+  private content: SceneContentCursor | undefined;
   private readonly rows = new CasterColumns();
   private readonly timers = new Map<number, Set<number>>();
   private readonly staticSlots = new SlotClass();
@@ -180,9 +181,9 @@ export class ShadowCasterClassifier {
   ): ShadowCasterClasses {
     this.frame++;
     this.flips = 0;
-    const previous = this.revision;
+    const previous = this.content;
     const changed = previous === undefined ? undefined : scene.changedSlotsSince(previous);
-    this.revision = scene.contentRevision;
+    this.content = scene.contentCursor;
     const rows = this.rows;
     if (changed === undefined) {
       if (previous !== undefined) this.historyGaps++;
@@ -395,6 +396,11 @@ export class ShadowCasterClassifier {
 export class ShadowSlotSelection implements Iterable<number> {
   #members: readonly FrameSet[];
   #allowed: FrameSet | ShadowSlotSelection | undefined;
+  /** A fixed upper bound, derived once from the existing source membership. */
+  readonly #boundSize: number;
+  readonly #memberSize: number;
+  readonly #domain: FrameSet | ShadowSlotSelection | undefined;
+  #size: number | undefined;
   constructor(members: FrameSet | readonly FrameSet[], allowed?: FrameSet | ShadowSlotSelection) {
     const roots = FrameSet.isFixed(members) ? [members] : [...members];
     if (
@@ -405,6 +411,17 @@ export class ShadowSlotSelection implements Iterable<number> {
       throw new TypeError('Shadow selection requires intrinsic fixed numeric roots');
     this.#members = Object.freeze(roots);
     this.#allowed = allowed;
+    let memberSize = 0;
+    for (const root of roots) memberSize += root.size;
+    const allowedBound =
+      allowed === undefined
+        ? memberSize
+        : FrameSet.isFixed(allowed)
+          ? allowed.size
+          : allowed.#boundSize;
+    this.#memberSize = memberSize;
+    this.#boundSize = Math.min(memberSize, allowedBound);
+    this.#domain = allowedBound < memberSize ? allowed : undefined;
     Object.freeze(this);
   }
   static isFixed(value: unknown): value is ShadowSlotSelection {
@@ -456,31 +473,47 @@ export class ShadowSlotSelection implements Iterable<number> {
     return this.#member(slot) && (this.#allowed === undefined || this.#allowed.has(slot));
   }
   get size(): number {
-    if (this.#allowed === undefined) {
-      let size = 0;
-      for (const root of this.#members) size += root.size;
-      return size;
-    }
+    if (this.#allowed === undefined) return this.#memberSize;
+    if (this.#boundSize === 0) return 0;
+    if (this.#size !== undefined) return this.#size;
     let size = 0;
     for (const _slot of this) size++;
+    this.#size = size;
     return size;
   }
-  /** Admitted slots in ascending order, merged across the disjoint roots. */
+  /** Admitted slots in ascending order, starting at the smaller fixed domain. */
   *[Symbol.iterator](): Iterator<number> {
-    const iterators = this.#members.map((root) => root.values());
-    const heads = iterators.map((iterator) => iterator.next());
-    const allowed = this.#allowed;
-    for (;;) {
-      let lowest = -1;
-      for (let index = 0; index < heads.length; index++) {
-        const head = heads[index] as IteratorResult<number>;
-        if (head.done !== true && (lowest < 0 || head.value < (heads[lowest]?.value as number)))
-          lowest = index;
+    if (this.#boundSize === 0) return;
+    const domain = this.#domain;
+    if (domain !== undefined) {
+      const keys = FrameSet.isFixed(domain) ? domain.borrowKeys() : domain;
+      let previous = -1;
+      for (const slot of keys) {
+        if (slot === previous) continue;
+        previous = slot;
+        // Restriction membership is boolean; preserve the members' multiplicity.
+        for (const root of this.#members) if (root.has(slot)) yield slot;
       }
-      if (lowest < 0) return;
-      const slot = (heads[lowest] as IteratorYieldResult<number>).value;
-      heads[lowest] = (iterators[lowest] as Iterator<number>).next();
-      if (allowed === undefined || allowed.has(slot)) yield slot;
+      return;
+    }
+    const iterators = this.#members.map((root) => root.borrowKeys());
+    try {
+      const heads = iterators.map((iterator) => iterator.next());
+      const allowed = this.#allowed;
+      for (;;) {
+        let lowest = -1;
+        for (let index = 0; index < heads.length; index++) {
+          const head = heads[index] as IteratorResult<number>;
+          if (head.done !== true && (lowest < 0 || head.value < (heads[lowest]?.value as number)))
+            lowest = index;
+        }
+        if (lowest < 0) return;
+        const slot = (heads[lowest] as IteratorYieldResult<number>).value;
+        heads[lowest] = (iterators[lowest] as Iterator<number>).next();
+        if (allowed === undefined || allowed.has(slot)) yield slot;
+      }
+    } finally {
+      for (const iterator of iterators) iterator.return?.();
     }
   }
   /**

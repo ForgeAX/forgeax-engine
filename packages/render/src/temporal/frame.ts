@@ -182,7 +182,7 @@ export function resetTemporalHistory(
 export type TemporalCommitOutcome =
   | { readonly kind: 'none' }
   | { readonly kind: 'off'; readonly view: TemporalView }
-  | { readonly kind: 'taa'; readonly view: TemporalView };
+  | { readonly kind: 'taa' | 'tsr'; readonly view: TemporalView };
 
 const NO_TEMPORAL_COMMIT: TemporalCommitOutcome = Object.freeze({ kind: 'none' });
 
@@ -202,7 +202,7 @@ export class TemporalViewHistory {
 
   /** Submitted TAA frames in the accepted run; an `off` frame or reset restarts it. */
   get frameIndex(): number {
-    return this.acceptedOutcome.kind === 'taa'
+    return this.acceptedOutcome.kind === 'taa' || this.acceptedOutcome.kind === 'tsr'
       ? this.acceptedOutcome.view.temporalFrameIndex + 1
       : 0;
   }

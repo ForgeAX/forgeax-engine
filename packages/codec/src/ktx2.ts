@@ -7,8 +7,10 @@
  * scheme=2 (Zstandard) level decode reuses decompressZstd (AC-04 single implementation).
  */
 
-import type { CodecResult } from './errors.js';
+import type { TranscodedMip, TranscodedTexture } from './basis-transcoder.js';
+import type { CodecError, CodecResult, Ktx2NativeRejection } from './errors.js';
 import { codecError } from './errors.js';
+import type { TranscodeChannels } from './transcode.js';
 import { decompressZstd } from './zstd.js';
 
 /**
@@ -84,7 +86,7 @@ export interface Ktx2KvEntry {
 export interface Ktx2Parsed {
   readonly header: Ktx2Header;
   readonly index: Ktx2Index;
-  /** Level index entries, stored smallest-first per KTX2 spec section 8. */
+  /** Level index entries, base level first; payload bytes are stored smallest-first. */
   readonly levelIndex: readonly Ktx2LevelEntry[];
   readonly dfd: Ktx2Dfd | null;
   readonly kvEntries: readonly Ktx2KvEntry[];
@@ -110,6 +112,31 @@ export function ktx2ColorSpace(parsed: Ktx2Parsed): 'srgb' | 'linear' | undefine
     default:
       return undefined;
   }
+}
+
+const DFD_MODEL_ETC1S = 163;
+const DFD_MODEL_UASTC = 166;
+
+/**
+ * Project the DFD sample channel ids into the transcode channel arm and the RGBA
+ * decode lanes that carry each channel (KTX 2.0 section 3.10.2). Basis reads the
+ * two BC5 / EAC RG11 channels from R and A, so a two-channel UASTC source is
+ * `RRRG` (luminance-alpha) and an ETC1S one `RRR` + `GGG` (color and alpha
+ * slices). UASTC `RG` keeps its second channel in G, where BC5 cannot reach it, so
+ * it stays a color source. Every other descriptor is a color source.
+ */
+export function ktx2ChannelLanes(parsed: Ktx2Parsed): {
+  readonly channels: TranscodeChannels;
+  readonly lanes: readonly number[];
+} {
+  const ids = parsed.dfd?.samples.map((sample) => sample.channelType) ?? [];
+  const uastc = parsed.dfd?.colorModel === DFD_MODEL_UASTC && ids.length === 1;
+  const etc1s = parsed.dfd?.colorModel === DFD_MODEL_ETC1S;
+  if ((uastc && ids[0] === 5) || (etc1s && ids.length === 2 && ids[0] === 3 && ids[1] === 4))
+    return { channels: 'rg', lanes: [0, 3] };
+  if ((uastc && ids[0] === 4) || (etc1s && ids.length === 1 && ids[0] === 3))
+    return { channels: 'r', lanes: [0] };
+  return { channels: 'rgba', lanes: [0, 1, 2, 3] };
 }
 
 // ---------------------------------------------------------------------------
@@ -196,11 +223,13 @@ function parseDfd(bytes: Uint8Array): Ktx2Dfd {
     const sw2 = readU32(bytes, so + 8);
     const sw3 = readU32(bytes, so + 12);
 
+    // Khronos Data Format 1.3 section 5.17: bitOffset 0-15, bitLength - 1 16-23,
+    // channelType 24-27, qualifiers 28-31.
     samples.push({
-      qualifiers: sw0 & 0xf,
-      channelType: (sw0 >>> 4) & 0xff,
-      bitLength: ((sw0 >>> 12) & 0xfff) + 1, // stored as actual-1 per spec
-      bitOffset: (sw0 >>> 24) & 0xff,
+      bitOffset: sw0 & 0xffff,
+      bitLength: ((sw0 >>> 16) & 0xff) + 1,
+      channelType: (sw0 >>> 24) & 0xf,
+      qualifiers: (sw0 >>> 28) & 0xf,
       samplePosition: [
         sw1 & 0xff,
         (sw1 >>> 8) & 0xff,
@@ -403,19 +432,12 @@ export function parseKtx2(bytes: Uint8Array): CodecResult<Ktx2Parsed> {
 // ---------------------------------------------------------------------------
 
 /**
- * Map a mip level number to the levelIndex entry.
- *
- * KTX2 stores mip levels smallest-first in both the level index and payload
- * section (spec section 8): levelIndex[0] = smallest (level N-1),
- * levelIndex[N-1] = base (level 0).
- *
- * So mip level 0 (base/largest) maps to levelIndex[N-1],
- * mip level 1 maps to levelIndex[N-2], etc.
+ * Map a mip level number to its levelIndex entry. The level index is ordered
+ * base level first (KTX 2.0 section 3.9: `levels[0]` describes mip 0); only
+ * the level payloads themselves are laid out smallest-first in the file.
  */
 function levelIndexForMip(totalLevels: number, mipLevel: number): number {
-  const entryIdx = totalLevels - 1 - mipLevel;
-  if (entryIdx < 0 || entryIdx >= totalLevels) return -1;
-  return entryIdx;
+  return mipLevel >= 0 && mipLevel < totalLevels ? mipLevel : -1;
 }
 
 /**
@@ -472,4 +494,213 @@ export async function ktx2LevelsToRGBA(
   return codecError('ktx2-unsupported-scheme', {
     scheme: parsed.header.supercompressionScheme,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Non-Basis two-channel payloads (RG8 / BC5 tangent-space normal maps)
+// ---------------------------------------------------------------------------
+
+/** GPU format of an admitted non-Basis KTX2 payload, keyed by its vkFormat. */
+export type Ktx2NativeFormat = 'rg8unorm' | 'bc5-rg-unorm';
+
+const NATIVE_FORMATS: Readonly<Record<number, Ktx2NativeFormat>> = {
+  16: 'rg8unorm',
+  141: 'bc5-rg-unorm',
+};
+
+/** Shape facts of an admitted non-Basis KTX2 payload. */
+export interface Ktx2NativeInspection {
+  readonly format: Ktx2NativeFormat;
+  readonly width: number;
+  readonly height: number;
+  readonly levelCount: number;
+}
+
+const NATIVE_EXPECTED: Readonly<Record<Ktx2NativeRejection, string>> = {
+  format: 'vkFormat 16 (R8G8_UNORM) or 141 (BC5_UNORM_BLOCK); vkFormat 0 is Basis',
+  'srgb-transfer': 'a linear DFD transfer function; two-channel normal data has no sRGB form',
+  'transfer-function': 'a DFD declaring the linear transfer function',
+  shape: 'a 2D, single-layer, single-face texture with at most a complete mip chain',
+  scheme: 'supercompression scheme 0 (none) or 2 (Zstandard)',
+  'level-length': 'every level to hold exactly its texel or block bytes',
+};
+
+function nativeError(vkFormat: number, reason: Ktx2NativeRejection): CodecError {
+  const failure = codecError('ktx2-native-unsupported', { vkFormat, reason });
+  return { ...failure, error: { ...failure.error, expected: NATIVE_EXPECTED[reason] } };
+}
+
+const VK_FORMAT_ASTC_4X4_SFLOAT = 1000066000;
+
+/** True for a payload that is not Basis: Basis is vkFormat 0, or ASTC 4x4 SFLOAT for UASTC HDR. */
+export function ktx2IsNative(parsed: Ktx2Parsed): boolean {
+  const { vkFormat } = parsed.header;
+  return vkFormat !== 0 && vkFormat !== VK_FORMAT_ASTC_4X4_SFLOAT;
+}
+
+/** The non-Basis format of `parsed`, or `undefined` for Basis (vkFormat 0) and others. */
+export function ktx2NativeFormat(parsed: Ktx2Parsed): Ktx2NativeFormat | undefined {
+  return NATIVE_FORMATS[parsed.header.vkFormat];
+}
+
+function nativeLevelBytes(format: Ktx2NativeFormat, width: number, height: number): number {
+  return format === 'rg8unorm'
+    ? width * height * 2
+    : Math.ceil(width / 4) * Math.ceil(height / 4) * 16;
+}
+
+/**
+ * Validate a non-Basis RG8 / BC5 KTX2 without touching level payloads beyond
+ * their declared lengths. Pure and synchronous: importers and runtime source
+ * admission share this one contract.
+ */
+export function inspectKtx2Native(parsed: Ktx2Parsed): CodecResult<Ktx2NativeInspection> {
+  const { header, levelIndex } = parsed;
+  const format = ktx2NativeFormat(parsed);
+  if (format === undefined) return nativeError(header.vkFormat, 'format');
+  const color = ktx2ColorSpace(parsed);
+  if (color === 'srgb') return nativeError(header.vkFormat, 'srgb-transfer');
+  if (color === undefined) return nativeError(header.vkFormat, 'transfer-function');
+  const width = header.pixelWidth;
+  const height = header.pixelHeight;
+  const levelCount = levelIndex.length;
+  if (
+    width === 0 ||
+    height === 0 ||
+    header.pixelDepth !== 0 ||
+    header.layerCount > 1 ||
+    header.faceCount !== 1 ||
+    levelCount > Math.floor(Math.log2(Math.max(width, height))) + 1
+  )
+    return nativeError(header.vkFormat, 'shape');
+  const scheme = header.supercompressionScheme;
+  if (scheme !== 0 && scheme !== 2) return nativeError(header.vkFormat, 'scheme');
+  for (let level = 0; level < levelCount; level++) {
+    const entry = levelIndex[levelIndexForMip(levelCount, level)];
+    const expected = nativeLevelBytes(
+      format,
+      Math.max(1, width >> level),
+      Math.max(1, height >> level),
+    );
+    if (
+      entry === undefined ||
+      (scheme === 0 ? entry.byteLength : entry.uncompressedByteLength) !== expected
+    )
+      return nativeError(header.vkFormat, 'level-length');
+  }
+  return { ok: true, value: { format, width, height, levelCount } };
+}
+
+/**
+ * Admit encoded KTX2 bytes declared as a BC5 TextureAsset source: the container
+ * must be a valid linear BC5 payload whose shape and complete mip count equal
+ * the declared metadata. Returns the failed expectation, or `undefined` when
+ * admitted. Runtime source admission and Pack output production share this.
+ */
+export function ktx2Bc5SourceMismatch(
+  bytes: Uint8Array,
+  declared: { readonly width: number; readonly height: number; readonly levelCount: number },
+): string | undefined {
+  const parsed = parseKtx2(bytes);
+  if (!parsed.ok) return parsed.error.expected;
+  const native = inspectKtx2Native(parsed.value);
+  if (!native.ok) return native.error.expected;
+  const { format, width, height, levelCount } = native.value;
+  return format === 'bc5-rg-unorm' &&
+    width === declared.width &&
+    height === declared.height &&
+    levelCount === declared.levelCount
+    ? undefined
+    : 'a BC5 KTX2 source whose shape and complete mip count match its metadata';
+}
+
+function bc4Channel(block: Uint8Array, offset: number, out: Uint8Array, lane: number): void {
+  const r0 = block[offset] ?? 0;
+  const r1 = block[offset + 1] ?? 0;
+  const palette = [r0, r1, 0, 0, 0, 0, 0, 0];
+  for (let i = 2; i < 8; i++) {
+    palette[i] =
+      r0 > r1
+        ? Math.round(((8 - i) * r0 + (i - 1) * r1) / 7)
+        : i < 6
+          ? Math.round(((6 - i) * r0 + (i - 1) * r1) / 5)
+          : i === 6
+            ? 0
+            : 255;
+  }
+  let bits = 0;
+  let count = 0;
+  let cursor = offset + 2;
+  for (let texel = 0; texel < 16; texel++) {
+    if (count < 3) {
+      bits |= (block[cursor++] ?? 0) << count;
+      count += 8;
+    }
+    out[texel * 2 + lane] = palette[bits & 7] ?? 0;
+    bits >>>= 3;
+    count -= 3;
+  }
+}
+
+/** Decode one BC5 level into tight RG8 texels (two BC4 channel blocks per 4x4 block). */
+export function decodeBc5ToRg8(blocks: Uint8Array, width: number, height: number): Uint8Array {
+  const out = new Uint8Array(width * height * 2);
+  const tile = new Uint8Array(32);
+  const columns = Math.ceil(width / 4);
+  for (let by = 0; by < Math.ceil(height / 4); by++) {
+    for (let bx = 0; bx < columns; bx++) {
+      const offset = (by * columns + bx) * 16;
+      bc4Channel(blocks, offset, tile, 0);
+      bc4Channel(blocks, offset + 8, tile, 1);
+      for (let y = 0; y < 4 && by * 4 + y < height; y++) {
+        for (let x = 0; x < 4 && bx * 4 + x < width; x++) {
+          const source = (y * 4 + x) * 2;
+          const target = ((by * 4 + y) * width + bx * 4 + x) * 2;
+          out[target] = tile[source] ?? 0;
+          out[target + 1] = tile[source + 1] ?? 0;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Unwrap every level of an admitted RG8 / BC5 KTX2 (base level first), Zstd
+ * levels included. `target` defaults to the payload format; a BC5 payload can
+ * also produce RG8 for devices without BC, and either payload can produce
+ * RGBA8 `(r, g, 0, 255)` for CPU image consumers.
+ */
+export async function ktx2NativeTexture(
+  parsed: Ktx2Parsed,
+  target?: GPUTextureFormat,
+): Promise<CodecResult<TranscodedTexture>> {
+  const inspected = inspectKtx2Native(parsed);
+  if (!inspected.ok) return inspected;
+  const { format, width, height, levelCount } = inspected.value;
+  const output = target ?? format;
+  if (output !== format && output !== 'rg8unorm' && output !== 'rgba8unorm')
+    return codecError('transcode-failed', { sourceFormat: format, targetFormat: output });
+  const mips: TranscodedMip[] = [];
+  for (let level = 0; level < levelCount; level++) {
+    const bytes = await ktx2LevelsToRGBA(parsed, level);
+    if (!bytes.ok) return bytes;
+    const w = Math.max(1, width >> level);
+    const h = Math.max(1, height >> level);
+    if (bytes.value.byteLength !== nativeLevelBytes(format, w, h))
+      return nativeError(parsed.header.vkFormat, 'level-length');
+    let data = bytes.value;
+    if (output !== format && format === 'bc5-rg-unorm') data = decodeBc5ToRg8(data, w, h);
+    if (output === 'rgba8unorm') {
+      const rgba = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) {
+        rgba[i * 4] = data[i * 2] ?? 0;
+        rgba[i * 4 + 1] = data[i * 2 + 1] ?? 0;
+        rgba[i * 4 + 3] = 255;
+      }
+      data = rgba;
+    }
+    mips.push({ level, width: w, height: h, data });
+  }
+  return { ok: true, value: { format: output, width, height, mips } };
 }

@@ -71,8 +71,8 @@ interface Entry {
   lifetime: AbortController;
   released: boolean;
   reported: ExternalTextureStateInvalidReason | undefined;
-  /** Copy-path keys: ordinary slots flip to UV-up, texture_external slots keep source orientation. */
-  readonly copyKeys: { readonly flipped: object; readonly direct: object };
+  /** Copy-path key; every slot samples the copy in the source's top-left orientation. */
+  readonly copyKey: object;
 }
 
 interface ExternalTextureHost extends ExternalTextureBinder {
@@ -378,10 +378,9 @@ export function createExternalTextureHost(
   const copyVideo = (
     entry: Entry,
     source: HTMLVideoElement | VideoFrame,
-    slotExternal: boolean,
   ): RhiBindingResource | undefined => {
     const store = options.getDynamicTextureStore();
-    const key = slotExternal ? entry.copyKeys.direct : entry.copyKeys.flipped;
+    const key = entry.copyKey;
     const extent = videoSourceExtent(source);
     if (extent === undefined) {
       const lkg = store.getView(key);
@@ -390,7 +389,7 @@ export function createExternalTextureHost(
     const uploaded = store.uploadFrame(key, source, extent.width, extent.height, {
       version: isVideoFrame(source) ? entry.version : undefined,
       signal: entry.lifetime.signal,
-      flipY: !slotExternal,
+      flipY: false,
     });
     if (uploaded !== undefined && !uploaded.ok) options.onError(uploaded.error);
     const view = uploaded?.ok ? uploaded.value : store.getView(key);
@@ -410,7 +409,7 @@ export function createExternalTextureHost(
         lifetime: new AbortController(),
         released: false,
         reported: undefined,
-        copyKeys: { flipped: {}, direct: {} },
+        copyKey: {},
       };
       entries.set(entry.source.id, entry);
       return { ok: true, value: handleFor(entry) };
@@ -483,7 +482,7 @@ export function createExternalTextureHost(
           return undefined;
         }
       }
-      return copyVideo(entry, input.source, slotExternal);
+      return copyVideo(entry, input.source);
     },
     importVideoFrame,
     beginFrame() {

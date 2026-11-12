@@ -5,7 +5,9 @@ import type {
   Renderer,
   RenderFrameInput,
   RenderResult,
+  RenderWorldLease,
 } from '@forgeax/engine-render';
+import { drawSceneFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 
 const consume = async (renderer: Renderer, request: RenderFrameInput): Promise<boolean> => {
   const drawn: RenderResult<FrameReceipt, RenderError> = renderer.draw(request);
@@ -16,3 +18,10 @@ const consume = async (renderer: Renderer, request: RenderFrameInput): Promise<b
   return observed.ok;
 };
 void consume;
+
+const consumeScene = (renderer: Renderer, scene: RenderWorldLease): Promise<FrameReceipt> => {
+  // @ts-expect-error Scene acceptance requires an admitted lease.
+  void drawSceneFrame(renderer, {});
+  return drawSceneFrame(renderer, scene);
+};
+void consumeScene;

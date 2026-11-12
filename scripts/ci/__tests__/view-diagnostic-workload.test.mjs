@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { cp, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -23,6 +24,105 @@ const prepare = runInNewContext(`${source.slice(start, end)}; prepareDiagnosticG
   resolve,
 });
 const template = resolve('templates/game-3d');
+const viewIntegration = resolve('scripts/ci/run-view-integration.mjs');
+const viewPlan = (...args) =>
+  JSON.parse(
+    execFileSync(process.execPath, [viewIntegration, '--candidate', ...args], {
+      encoding: 'utf8',
+    }),
+  );
+test('complete View owner receipts retain setup headroom inside four original jobs', async () => {
+  const receipts = [
+    JSON.parse(
+      await readFile(
+        new URL('./fixtures/view-completed-42130885413.json', import.meta.url),
+        'utf8',
+      ),
+    ),
+    JSON.parse(
+      await readFile(new URL('./fixtures/view-partial-42955764870.json', import.meta.url), 'utf8'),
+    ),
+  ];
+  const [complete, partial] = receipts;
+  assert.equal(Object.hasOwn(complete.completedOwnerSeconds, 'modeling'), false);
+  assert.deepEqual(partial.uncompletedOwners, ['modeling']);
+  const full = viewPlan('--dry-run').filter(([owner]) => owner !== 'prepare');
+  const shards = Array.from({ length: 4 }, (_value, index) =>
+    viewPlan('--shard', String(index), '--dry-run').filter(([owner]) => owner !== 'prepare'),
+  );
+  assert.deepEqual(shards.flat().map(JSON.stringify).sort(), full.map(JSON.stringify).sort());
+  const owners = shards.map((steps) => [...new Set(steps.map(([owner]) => owner))]);
+  assert.equal(new Set(owners.flat()).size, owners.flat().length);
+  for (const owner of owners.flat())
+    assert.ok(
+      receipts.some(
+        (receipt) =>
+          Object.hasOwn(receipt.completedOwnerSeconds, owner) ||
+          Object.hasOwn(receipt.retainedOwnerSeconds, owner),
+      ),
+      `complete owner requires a measured or retained forecast: ${owner}`,
+    );
+  const ownerSeconds = (owner) =>
+    Math.max(
+      ...receipts.flatMap((receipt) => [
+        receipt.completedOwnerSeconds?.[owner] ?? 0,
+        receipt.retainedOwnerSeconds?.[owner] ?? 0,
+      ]),
+    );
+  const finishes = owners.map(
+    (groups) =>
+      groups.reduce((sum, owner) => sum + ownerSeconds(owner), 0) +
+      Math.max(...receipts.map((receipt) => receipt.prepareSeconds)) +
+      Math.max(...receipts.map((receipt) => receipt.setupAndTransferReserveSeconds)),
+  );
+  const jobBudgetSeconds = Math.min(...receipts.map((receipt) => receipt.jobBudgetSeconds));
+  assert.ok(
+    Math.max(...finishes) <= jobBudgetSeconds,
+    `complete owners must fit the unchanged 30-minute jobs: ${finishes}`,
+  );
+});
+
+test('the RHI diagnostic runs first while Modeling keeps its complete GPU owner', () => {
+  const shards = Array.from({ length: 4 }, (_value, index) =>
+    viewPlan('--shard', String(index), '--dry-run'),
+  );
+  const groupOwner = (file) =>
+    shards.flatMap((steps, shard) =>
+      steps.filter(([, , args]) => args[0] === file).map(([owner]) => ({ owner, shard })),
+    );
+  assert.deepEqual(groupOwner('tools/view/scripts/verify-diagnostic-pages-integration.mjs'), [
+    { owner: 'diagnostics', shard: 3 },
+  ]);
+  assert.deepEqual(groupOwner('tools/view-plugins/integration/verify-modeling.mjs'), [
+    { owner: 'modeling', shard: 3 },
+  ]);
+  assert.equal(
+    shards[3].filter(([owner]) => owner === 'diagnostics')[0][2][0],
+    'tools/view/scripts/verify-diagnostic-pages-integration.mjs',
+    'the live RHI replay must start before the other GPU diagnostic owners',
+  );
+  assert.deepEqual(
+    shards[2].filter(([owner]) => owner !== 'prepare').map(([owner]) => owner),
+    ['game3d', 'game3d'],
+    'the complete Game 3D chain stays contiguous',
+  );
+  assert.equal(
+    shards[3].at(-1)[0],
+    'modeling',
+    'Modeling runs after the complete diagnostic replay',
+  );
+  assert.deepEqual(
+    [
+      ...new Set(
+        shards[0].filter(([owner]) => owner.startsWith('runtime-')).map(([owner]) => owner),
+      ),
+    ].sort(),
+    ['runtime-js', 'runtime-ts'],
+    'both complete publication chains share the balanced contract/plugin shard',
+  );
+  assert.ok(viewPlan('--list-groups').includes('modeling'));
+  assert.deepEqual(viewPlan('--list-shards'), [0, 1, 2, 3]);
+});
 for (const viewport of [
   { width: 860, height: 660 },
   { width: 1440, height: 900 },

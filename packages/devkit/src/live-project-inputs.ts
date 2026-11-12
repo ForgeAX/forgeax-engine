@@ -338,7 +338,10 @@ export async function readLiveProjectInputs(
   const referenceFiles = authorFiles.filter(
     (file) => isReferenceSource(file.path) && !isTestSource(file.path),
   );
-  for (let offset = 0; offset < referenceFiles.length; offset += 32) {
+  // A dynamic loader already admits every document. Further reference scans
+  // cannot widen that set; retain all file identity checks above without
+  // decoding the rest of a potentially large asset/evidence tree.
+  scanReferences: for (let offset = 0; offset < referenceFiles.length; offset += 32) {
     const rows = await Promise.all(
       referenceFiles.slice(offset, offset + 32).map(async (file) => {
         try {
@@ -352,15 +355,18 @@ export async function readLiveProjectInputs(
       }),
     );
     for (const { file, source } of rows) {
-      if (hasDynamicDocumentationDependency(source)) includeAllDocumentation = true;
+      if (hasDynamicDocumentationDependency(source)) {
+        includeAllDocumentation = true;
+        break scanReferences;
+      }
       for (const { path, base } of documentationReferences(source)) {
         if (path.includes('*')) {
           includeAllDocumentation = true;
-          continue;
+          break scanReferences;
         }
         if (base === 'unknown') {
           includeAllDocumentation = true;
-          continue;
+          break scanReferences;
         }
         const resolved = resolveDocumentationReference(projectRoot, file.path, path, base);
         if (resolved !== undefined) referenced.add(resolved);

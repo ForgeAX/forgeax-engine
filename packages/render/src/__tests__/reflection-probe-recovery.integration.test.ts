@@ -14,28 +14,31 @@ describe('ReflectionProbe recovery integration', () => {
       { worldId: 3, entityKey: 200, center: [4, 0, 0] },
     ]);
     const snapshot = projection.update(
-      [
-        {
-          worldId: 9,
-          entityKey: 4,
-          center: [0, 0, 0],
-          halfExtents: [2, 2, 2],
-          priority: 1,
-          intensity: 1,
-          resolution: 64,
-          revision: 1,
-        },
-        {
-          worldId: 3,
-          entityKey: 8,
-          center: [0, 0, 0],
-          halfExtents: [2, 2, 2],
-          priority: 1,
-          intensity: 1,
-          resolution: 64,
-          revision: 1,
-        },
-      ],
+      {
+        revision: 1,
+        facts: [
+          {
+            worldId: 3,
+            entityKey: 8,
+            center: [0, 0, 0],
+            halfExtents: [2, 2, 2],
+            priority: 1,
+            intensity: 1,
+            resolution: 64,
+            revision: 1,
+          },
+          {
+            worldId: 9,
+            entityKey: 4,
+            center: [0, 0, 0],
+            halfExtents: [2, 2, 2],
+            priority: 1,
+            intensity: 1,
+            resolution: 64,
+            revision: 1,
+          },
+        ],
+      },
       scene.rows(),
       scene.centerOf,
     );
@@ -78,17 +81,19 @@ describe('ReflectionProbe recovery integration', () => {
       })),
     );
     const projection = new ReflectionProbeProjection();
-    expect(projection.update(facts, scene.rows(), scene.centerOf).scannedPrimitives).toBe(N);
+    expect(
+      projection.update({ facts, revision: 1 }, scene.rows(), scene.centerOf).scannedPrimitives,
+    ).toBe(N);
     const D = 8;
     for (let index = 0; index < D; index++) scene.move(index * 101, [50, 0, 0]);
-    const steady = projection.update(facts, scene.rows(), scene.centerOf);
+    const steady = projection.update({ facts, revision: 1 }, scene.rows(), scene.centerOf);
     expect(steady.scannedPrimitives).toBe(D);
     expect(projection.selection(0, 101)).toEqual({ kind: 'skylight' });
     expect(projection.selection(0, 1)).toMatchObject({ kind: 'probe' });
     const selected = new Map(steady.selected);
 
     const recovered = new ReflectionProbeProjection();
-    const cold = recovered.update(facts, scene.rows(), scene.centerOf);
+    const cold = recovered.update({ facts, revision: 1 }, scene.rows(), scene.centerOf);
     expect(cold.scannedPrimitives).toBe(N);
     expect(new Map(cold.selected)).toEqual(selected);
   });

@@ -93,9 +93,9 @@ await writeFile(
     appid: values.appid,
     compileType: 'game',
     projectname: {
-      dom: 'ForgeaX Persistent UI Contract',
-      guide: 'ForgeaX Full Guide UI Contract',
-      settings: 'ForgeaX Actual Settings Controls',
+      dom: 'ForgeAX Persistent UI Contract',
+      guide: 'ForgeAX Full Guide UI Contract',
+      settings: 'ForgeAX Actual Settings Controls',
     }[values.scene],
     libVersion: 'latest',
     setting: { es6: false, minified: false },

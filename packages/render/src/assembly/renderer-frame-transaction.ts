@@ -1,5 +1,5 @@
 import { err, ok } from '@forgeax/engine-rhi';
-import { RendererOperationError } from '../errors/render';
+import { type RendererOperationCause, RendererOperationError } from '../errors/render';
 import type { FrameReceipt, RenderInspection } from '../render-contract';
 import { structuredRendererCause } from './renderer-facade';
 
@@ -86,6 +86,7 @@ export interface RendererFrameTransactionSteps<T> {
 export interface RendererGenerationFence {
   readonly capturedGeneration: number;
   readonly currentGeneration: () => number;
+  readonly rejectionCause?: () => RendererOperationCause | undefined;
 }
 
 type ContinuationKind = 'readback' | 'query' | 'mapAsync' | 'queue-completion';

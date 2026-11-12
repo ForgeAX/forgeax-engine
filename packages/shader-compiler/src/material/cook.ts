@@ -3,6 +3,7 @@ import { materialProgramContextForPass } from '@forgeax/engine-pack/material-coo
 import {
   createMaterialProgramArtifactReceipt,
   GPU_DRIVEN_MATERIAL_ROW_BYTES,
+  standardParallaxSelectable,
 } from '@forgeax/engine-shader';
 import type {
   MaterialParameter,
@@ -44,7 +45,11 @@ import {
   type SurfaceCompositionRequest,
 } from './compose.js';
 import { ENGINE_MODULE_ALIASES } from './engine-module-aliases.js';
-import { lowerStandardContract, lowerStandardPhysicalBindings } from './lower-standard-contract.js';
+import {
+  lowerStandardContract,
+  lowerStandardPhysicalBindings,
+  standardStaticSwitchDefines,
+} from './lower-standard-contract.js';
 import { validateMaterialProgramBindings } from './resource-contract.js';
 import { lowerSceneMaterialAddresses } from './scene-material-address.js';
 import type { MaterialSourceCatalog, MaterialSourceRecord } from './source-catalog.js';
@@ -897,7 +902,10 @@ export async function cookMaterialAsset(
     derived,
     sceneRowStride: Math.max(16, derived.totalBytes),
     generatedModule: generateParameterModule(schema),
-    contractDefines: loweredContract.value.defines,
+    contractDefines: {
+      ...loweredContract.value.defines,
+      ...standardStaticSwitchDefines(resolvedAsset.staticSwitches, passes),
+    },
     materialHasSceneIndex: materialDeclaresSceneIndex(passes ?? [], request.sources),
     mediumSurface: resolved.value.asset.surface?.model === 'single-layer-medium',
   };
@@ -1370,18 +1378,21 @@ function stockSurfaceInputDefines(
   context: MaterialVariantContext,
 ): Readonly<Record<string, boolean>> {
   const parameterNames = new Set(schema.map((entry) => entry.name));
+  const parallaxSelectable = standardParallaxSelectable((name) => parameterNames.has(name));
   return {
     STANDARD_UV_INPUT_UNUSED: stockSurface && !schema.some((entry) => entry.type === 'texture2d'),
     STANDARD_TANGENT_INPUT_UNUSED:
       stockSurface &&
       !parameterNames.has('normalTexture') &&
       !parameterNames.has('clearcoatNormalTexture') &&
-      !parameterNames.has('anisotropyStrength'),
+      !parameterNames.has('anisotropyStrength') &&
+      !parallaxSelectable,
     STANDARD_OBJECT_BASIS_UNUSED:
       stockSurface &&
       !parameterNames.has('triplanarSpace') &&
       !parameterNames.has('normalMapSpace') &&
-      !parameterNames.has('transmission'),
+      !parameterNames.has('transmission') &&
+      !parallaxSelectable,
     STANDARD_VERTEX_MATERIAL_UNUSED:
       stockSurface && context.geometry !== 'terrain' && !parameterNames.has('displacementTexture'),
     STANDARD_OBJECT_POSITION_UNUSED:
@@ -1399,6 +1410,12 @@ function passCompileDefines(
   return {
     ALPHA_HASH_DISABLED: !parameterNames.has('alphaHash'),
     ALPHA_CLIPPING_DISABLED: !parameterNames.has('alphaCutoff'),
+    // Alpha test is a compile-time variant in the Standard and shadow roots.
+    // A cooked material that can cut out keeps the discard; one without
+    // cutoff or hash parameters compiles a discard-free (HSR-safe) program.
+    ALPHA_MASK:
+      surfaceModule !== 'forgeax_material::opaque_surface' &&
+      (parameterNames.has('alphaCutoff') || parameterNames.has('alphaHash')),
     ...stockSurfaceInputDefines(stockSurface, unit.schema, context),
     STANDARD_STOCK_SURFACE_AVAILABLE: stockSurface,
     ...lowerMaterialVariantContext(context),

@@ -21,7 +21,12 @@ import { GPU_SHADER_STAGE_COMPUTE } from '../gpu-stage';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import type { SsrSpatialAdmission } from './admission';
-import { createSsrSpatialResources, type SsrSpatialResources } from './resources';
+import { addSsrFragmentStages } from './raster';
+import {
+  createSsrSpatialResources,
+  estimateSsrSpatialMemory,
+  type SsrSpatialResources,
+} from './resources';
 
 const SSR_TRACE_COARSE_STEPS = 48 as const;
 const SSR_TRACE_REFINE_STEPS = 5 as const;
@@ -40,7 +45,8 @@ export function buildSsrTracePlan(): SsrTracePlan {
   });
 }
 
-interface SsrSpatialGraphInputs {
+export interface SsrSpatialGraphInputs {
+  readonly execution?: 'compute' | 'fragment';
   readonly admission: SsrSpatialAdmission;
   readonly width: number;
   readonly height: number;
@@ -121,6 +127,60 @@ function addPass<FrameCtx extends RenderGraphFrame>(
  * transient views and dependencies; this module never creates an encoder,
  * queue submission, public handle, or second renderer.
  */
+function requiredSsrInputs(input: SsrSpatialGraphInputs) {
+  const depth = input.depth;
+  const normal = input.normal;
+  const scene = input.scene;
+  const fallback = input.fallback;
+  if (depth === undefined) return missingInput('depth');
+  if (normal === undefined) return missingInput('normal');
+  if (scene === undefined) return missingInput('scene');
+  if (fallback === undefined) return missingInput('fallback');
+  const currentTemporal = input.currentTemporal;
+  if (currentTemporal === undefined) return missingInput('currentTemporal');
+  const depthPyramid = input.depthPyramid;
+  if (depthPyramid === undefined) return missingInput('depthPyramid');
+
+  return ok({ depth, normal, scene, fallback, currentTemporal, depthPyramid });
+}
+
+function admitSsrDescriptorCapacity(input: SsrSpatialGraphInputs) {
+  const memory = estimateSsrSpatialMemory(input, {
+    temporal: input.temporal !== undefined,
+    execution: input.execution ?? 'compute',
+    forward: input.admission.lane === 'forward' || input.admission.lane === 'cpu-webgl2',
+  });
+  if (!memory.withinBudget)
+    return err(
+      new RenderGraphError({
+        code: 'resource-descriptor-invalid',
+        expected: 'SSR descriptors fit the 320 MiB per-view budget',
+        hint: 'reduce the internal render extent before requesting SSR',
+        detail: {
+          resourceLabel: 'forgeax::ssr',
+          field: 'descriptorBytes',
+          expected: `<=${memory.budgetBytes}`,
+          actual: String(memory.ssrOwnedBytes),
+        },
+      }),
+    );
+  return ok(undefined);
+}
+
+function resolvedSsrResources(
+  base: SsrSpatialResources,
+  resolved: SsrSpatialResources['resolved'],
+  radiancePyramid: GraphTextureView | undefined,
+  mipLevelCount: number,
+): SsrSpatialResources {
+  return {
+    ...base,
+    mipLevelCount,
+    ...(resolved === undefined ? {} : { resolved }),
+    ...(radiancePyramid === undefined ? {} : { radiancePyramid }),
+  };
+}
+
 export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   graph: RenderGraphBuilder<FrameCtx>,
   input: SsrSpatialGraphInputs,
@@ -135,20 +195,12 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
       reactivitySurface: undefined,
     });
   }
-  const depth = input.depth;
-  const normal = input.normal;
-  const scene = input.scene;
-  const fallback = input.fallback;
+  const required = requiredSsrInputs(input);
+  if (!required.ok) return required;
+  const { depth, normal, scene, fallback, currentTemporal, depthPyramid } = required.value;
   const temporal = input.temporal;
-  if (depth === undefined) return missingInput('depth');
-  if (normal === undefined) return missingInput('normal');
-  if (scene === undefined) return missingInput('scene');
-  if (fallback === undefined) return missingInput('fallback');
-  const currentTemporal = input.currentTemporal;
-  if (currentTemporal === undefined) return missingInput('currentTemporal');
-  const depthPyramid = input.depthPyramid;
-  if (depthPyramid === undefined) return missingInput('depthPyramid');
-
+  const capacity = admitSsrDescriptorCapacity(input);
+  if (!capacity.ok) return capacity;
   const resources = createSsrSpatialResources(graph, {
     width: input.width,
     height: input.height,
@@ -205,6 +257,33 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   let traceState: ComputeState | undefined;
   let temporalState: ComputeState | undefined;
   let reflectionMipState: ComputeState | undefined;
+  if (input.execution === 'fragment') {
+    const added = addSsrFragmentStages(
+      graph,
+      { ...input, depth, normal, scene, fallback, currentTemporal, depthPyramid },
+      resources.value,
+      resolved,
+      reflectionLevels,
+    );
+    if (!added.ok) return added;
+    return ok({
+      enabled: true,
+      passNames: added.value,
+      resources: resolvedSsrResources(
+        resources.value,
+        resolved,
+        radiancePyramid,
+        Math.max(1, reflectionLevels.length),
+      ),
+      trace: buildSsrTracePlan(),
+      reactivity,
+      reactivitySurface: {
+        width: input.width,
+        height: input.height,
+        format: temporal === undefined ? 'r32float' : 'rgba8unorm',
+      },
+    });
+  }
   const computeEntries = {
     trace: [
       {
@@ -592,11 +671,12 @@ export function addSsrSpatialPasses<FrameCtx extends RenderGraphFrame>(
   return ok({
     enabled: true,
     passNames: Object.freeze(passNames),
-    resources: {
-      ...resources.value,
-      ...(resolved === undefined ? {} : { resolved }),
-      ...(radiancePyramid === undefined ? {} : { radiancePyramid }),
-    },
+    resources: resolvedSsrResources(
+      resources.value,
+      resolved,
+      radiancePyramid,
+      Math.max(1, reflectionLevels.length),
+    ),
     trace: buildSsrTracePlan(),
     reactivity,
     reactivitySurface: {

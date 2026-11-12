@@ -29,6 +29,7 @@ export function shadowUpdatePolicy(
   const size =
     (identity.kind === 'directional' ? effectiveShadowMapSize : effectiveSpotShadowMapSize) ?? 1;
   return {
+    constantBias: policy.shadowBiasMode === 1,
     blur: {
       radius:
         'shadowRadius' in policy

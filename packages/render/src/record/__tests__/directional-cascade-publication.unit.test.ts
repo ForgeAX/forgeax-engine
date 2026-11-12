@@ -1,11 +1,11 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { Time, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
-import type { RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
 import { describe, expect, it } from 'vitest';
-import { recordFrameTransaction } from '../../assembly/frame-recording';
+import { recordFrameTransaction } from '../../__tests__/frame-recording-driver';
+
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer } from '../../components';
 import { MeshChanges, type ShadowMeshReads } from '../../device/mesh-changes';
 import { createRenderPublisher } from '../../publication/publisher';
@@ -30,7 +30,8 @@ const lightOwner = renderLightsOf(createRenderWorld());
 const recordingView = {};
 /** The lights a display view of `frame` records with. */
 function viewLightsOf(frame: ExtractedFrame) {
-  return lightOwner.viewLights(recordingView, lightOwner.sync(frame.lights), {
+  lightOwner.adopt(frame.lights);
+  return lightOwner.viewLights(recordingView, lightOwner.roster, {
     camera: frame.cameras[0],
   });
 }
@@ -365,10 +366,7 @@ describe('accepted publication CPU shadow authority', () => {
           },
         },
         {
-          // The generator does not call either device/encoder: this fixture
-          // exercises its real publication fence, not a physical submission.
-          encoder: {} as RhiCommandEncoder,
-          device: {} as RhiDevice,
+          // This fixture exercises the real publication fence, not a physical submission.
           reportError: () => {
             throw new Error('unexpected encoder error');
           },

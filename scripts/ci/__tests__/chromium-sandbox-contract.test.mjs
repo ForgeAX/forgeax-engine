@@ -80,6 +80,10 @@ test('shared Playwright browser configs enable Chromium sandboxing', () => {
   const browserLaunch = JSON.parse(readFileSync('scripts/ci/browser-launch.json', 'utf8'));
   const cliConfig = JSON.parse(readFileSync('playwright-cli.config.json', 'utf8'));
   assert.equal(browserLaunch.chromiumSandbox, true);
+  assert.ok(
+    browserLaunch.args.includes('--disable-gpu-watchdog'),
+    'shared software GPU hosts, including View replay, retain test-owned deadlines',
+  );
   assert.equal(cliConfig.browser.launchOptions.chromiumSandbox, true);
   assert.match(readFileSync('vitest.config.ts', 'utf8'), /chromiumSandbox:\s*true/);
 });

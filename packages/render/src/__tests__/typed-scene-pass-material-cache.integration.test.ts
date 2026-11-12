@@ -2,21 +2,18 @@ import { RenderGraphBuilder } from '@forgeax/engine-render-graph';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { describe, expect, it, vi } from 'vitest';
 import { GpuDrawSelection } from '../gpu-driven/draw-selection';
+import * as mainPass from '../record/main-pass';
 import { createMainPassMaterialSelectionOwner } from '../record/main-pass';
 import { type ScenePassRequest, scenePassRequests } from '../record/scene-pass-work';
 import type { RenderPipelineFrame } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 
-const { encodeMainPass, buildPerFrameBindGroups } = vi.hoisted(() => ({
-  encodeMainPass: vi.fn(),
+const { buildPerFrameBindGroups } = vi.hoisted(() => ({
   buildPerFrameBindGroups: vi.fn(),
 }));
 
-vi.mock('../record/main-pass', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../record/main-pass')>()),
-  encodeMainPass,
-}));
+const encodeMainPass = vi.spyOn(mainPass, 'encodeMainPass').mockImplementation(() => undefined);
 vi.mock('../record/frame-lighting', () => ({ buildPerFrameBindGroups }));
 
 function frameFor(
@@ -92,6 +89,7 @@ describe('loaded temporal supplement eligibility', () => {
       expect(encodeMainPass).toHaveBeenCalledTimes(execute ? 1 : 0);
       if (execute) {
         const recorded = encodeMainPass.mock.calls[0]?.[0];
+        if (recorded === undefined) throw new Error('Scene pass did not encode its main work');
         expect(recorded).not.toBe(frame);
         expect(recorded.gpuDrivenSelection).toBeUndefined();
         expect(Reflect.get(frame, 'gpuDrivenSelection')).toBe(selection);
@@ -170,6 +168,7 @@ describe('loaded temporal supplement eligibility', () => {
       expect(hasWork).toHaveBeenCalledWith(surfaces, 'fs_temporal');
     if (count > 0) {
       const recorded = encodeMainPass.mock.calls[0]?.[0];
+      if (recorded === undefined) throw new Error('Scene pass did not encode its main work');
       expect(recorded).not.toBe(frame);
       expect(recorded.gpuDrivenSelection).toBe(selection);
       expect(Reflect.get(frame, 'gpuDrivenSelection')).toBe(selection);

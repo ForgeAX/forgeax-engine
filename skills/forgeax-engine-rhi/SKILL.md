@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-rhi
 description: >-
-  ForgeaX spec-aligned rendering hardware interface. Use when implementing or debugging
+  ForgeAX spec-aligned rendering hardware interface. Use when implementing or debugging
   a backend, capability gate, resource lifetime, descriptor, or backend-selection path.
 ---
 
@@ -80,6 +80,19 @@ reject fixture re-baselining. Separate producer Naga CPU results from physical
   A wgpu pin change triggers the `build/windows-dx12-desktop` producer; wait for
   its new source-bound artifact rather than reusing the previous pin's results.
 
+For WebGL2 device loss, use the backend-owned `device.lost` signal and existing
+Renderer recovery. Restore a retained browser context before `renderer.recover()`;
+App's split Render Worker path replaces its realm/canvas. Keep actual GL loss,
+host-injected loss and operating-system resets distinct. Native canvases without
+DOM events prove active-queue detection only; see the
+[backend contract](../../packages/rhi-wgpu/README.md#device-loss).
+
+When a Rust-owner PR changes WASM, stable/WebKit compatibility consumers use the
+existing source-qualified preparation action. A missing main-only release asset
+is not a GPU failure; verify or build the current source instead of reusing stale
+bytes. Follow [CI preparation](../../scripts/ci/README.md#pinned-webgpu-compatibility)
+and retain each carrier's original assertions and deadlines.
+
 ## Core API quick reference
 
 | Name | Package | Form | Purpose |
@@ -92,7 +105,7 @@ reject fixture re-baselining. Separate producer Naga CPU results from physical
 | `RhiErrorCode` | rhi | Closed union; read source | Structured failures; exhaustive switch without default. |
 
 > [!IMPORTANT]
-> Full handles, interfaces, and descriptor signatures live in `packages/rhi/README.md`; error members live in `packages/rhi/src/errors.ts`. Do not copy these inventories. Consumer `compilerOptions.types` must include `"@webgpu/types"`.
+> Full handles, interfaces, and descriptor signatures live in `packages/rhi/README.md`; error members live in `packages/rhi/src/errors.ts`. Do not copy these inventories. Published RHI declarations load their declared `@webgpu/types` dependency, including for consumers with an explicit `compilerOptions.types` list.
 
 ## Backend selection and dependencies
 
@@ -203,11 +216,11 @@ compatibility; a real GPU or Dawn remains the rendering authority.
 ## Vertex layout aliases: multi-UV clamp-to-last
 
 > [!IMPORTANT]
-> WebGPU allows multiple vertex attributes to share a buffer offset with distinct shaderLocation values. ForgeaX uses this for clamp-to-last: when a mesh has n UV sets and a shader declares m>n, attributes in `[n,m)` point to set n-1's offset on the actual draw path.
+> WebGPU allows multiple vertex attributes to share a buffer offset with distinct shaderLocation values. ForgeAX uses this for clamp-to-last: when a mesh has n UV sets and a shader declares m>n, attributes in `[n,m)` point to set n-1's offset on the actual draw path.
 
 ### WebGPU behavior
 
-ValidateVertexAttribute has no byte-range overlap check; shared offsets are intentional and legal when shaderLocation values differ. setBindGroup overlap restrictions do not apply to vertex attributes. This supports ForgeaX's D-1 decision.
+ValidateVertexAttribute has no byte-range overlap check; shared offsets are intentional and legal when shaderLocation values differ. setBindGroup overlap restrictions do not apply to vertex attributes. This supports ForgeAX's D-1 decision.
 
 ```ts
 // Legal: vertex attributes share a buffer offset.
@@ -368,7 +381,7 @@ GpuResource uses one destruction owner without refcounts or shared ownership.
 
 - **Raw GPU access through handles**: opaque brands reject internal GPU field access at compile time. Use RHI methods.
 - **Assuming native features**: capabilities differ by backend; gate through device.caps before use.
-- **Missing WebGPU types**: consumer compilerOptions.types must include @webgpu/types for descriptor alignment.
+- **Missing WebGPU types**: verify the emitted RHI type reference and its resolved `@webgpu/types` dependency; keep native descriptor declarations source-owned.
 - **Importing naga into runtime shader**: physical-isolation grep gates reject it; naga belongs only to the build-time shader-compiler chain.
 - **Repeated resource destruction**: destroy-after-destroy is intentional. Handle it exhaustively or check the runtime wrapper's isDestroyed before calling when idempotence is needed.
 - **Destroying the whole device**: public paths avoid Chromium adapter-pool poisoning. Use resource destruction; raw device diagnostics require the internal escape hatch.
@@ -449,3 +462,44 @@ timing is not generic accepted evidence.
 - Declarative RHI-pure graph: [`forgeax-engine-render-pipeline`](../forgeax-engine-render-pipeline/SKILL.md); RenderGraphErrorCode: `packages/render-graph/src/errors.ts`.
 - createBindGroupLayout accepts variable-length entries. Material group-1 layouts derive from each shader's paramSchema upstream; RHI only creates the assembled descriptor. Sampler-first layout rules: [`forgeax-engine-shader`](../forgeax-engine-shader/SKILL.md).
 - Rendering/RHI diagnosis: [`forgeax-engine-rhi-debug`](../forgeax-engine-rhi-debug/SKILL.md), then [`forgeax-engine-debug`](../forgeax-engine-debug/SKILL.md) for owner-specific symptoms.
+
+## Capture faces
+
+Which Features record into capture faces (planar mirror now; probe and cube are
+a follow-up) is set per Feature by `RenderFeature.capture`: `'display-only'`
+(default), `'all'`, or `{ faces: ['planar' | 'probe' | 'cube'] }`. GPU particles
+declare `'all'`: they draw again in each recorded face, costing one extra
+particle draw per face at the face resolution. Opt out with
+`createGpuParticleFeature({ capture: 'display-only' })`. Post effects stay
+display-only. A capture face compiles one graph that includes the Feature passes after its scene passes; `rhi capture` shows them as extra passes before the display passes.
+
+## WebGPU compatibility changes
+
+Read [the CI compatibility contract](../../scripts/ci/README.md#pinned-webgpu-compatibility)
+when changing native calls, RHI input forms, descriptors/enums, optional behavior,
+WGSL or record/replay conversions. Run the surface diff before explicitly updating
+its baseline with the review decision. It is a review tripwire, not execution
+proof. Use owning red/green regressions and actual byte/pixel results. Preserve
+TypedArray element units, DataView/ArrayBuffer byte units, source subviews and
+explicit zero; reuse `bufferWriteRange` instead of repeating range arithmetic.
+The four Ubuntu lanes cover native Chrome and Linux WebKit fallback. Keep
+Android/iOS certification separate; never infer it from UA, launch, typecheck,
+Null or CPU-provider success.
+
+Use `node scripts/ci/run-webgpu-compatibility.mjs` on the pinned Ubuntu carrier
+for compatibility changes. The software Vulkan carrier also selects software
+ANGLE for swap-chain interoperability. Diagnose SharedImage backing failures at
+the carrier before shader edits; keep sandboxing and the full scene assertions. Stable additionally executes the native minimum,
+actual Compatibility Mode and a changing Renderer scene with fresh-device
+pipeline-archive import. WebKit executes the supported WebGL2 scene. Keep the
+four-job placement and ten-minute browser-execution budget; report preparation
+and GPU queue time separately. Do not restore diagnostic limit/driver overrides
+to make the policy phase pass. `featureLevel` is a standard adapter request hint;
+only the actual device feature set establishes which mode executed.
+
+`depthTextureLoad` is a separate operation capability. Stock Renderer startup and
+recovery admit it before canvas acquisition and retire a rejected device. RHI-only
+Compatibility Mode work remains valid; Runtime's automatic backend may fall back
+to WebGL2, while explicit backend injection retains the error. Do not count a
+successful RHI mode probe as stock Renderer support. Honor explicit zero in the
+native graphics-stage storage limits instead of using only the general limit.

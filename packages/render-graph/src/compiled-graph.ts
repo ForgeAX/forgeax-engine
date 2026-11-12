@@ -30,7 +30,9 @@ import type {
   GraphBuffer,
   GraphResourceResolver,
   GraphTexture,
+  GraphTextureDescriptor,
   GraphTextureView,
+  RasterColorAttachment,
   RasterDepthStencilAttachment,
   RenderGraphFrame,
   RenderGraphPassExecution,
@@ -54,6 +56,52 @@ function okOf<T extends object>(value: T): Result<T, never> {
     okResults.set(value, result);
   }
   return result;
+}
+
+/** Resolve one pass's color attachments into its retained native descriptor. */
+function resolveRasterColors<FrameCtx>(
+  attachments: readonly RasterColorAttachment<FrameCtx>[],
+  frame: FrameCtx,
+  resolver: GraphResourceResolver,
+  retained: RenderPassDescriptor['colorAttachments'] | undefined,
+): Result<Writable<RenderPassColorAttachment>[], RenderGraphError> {
+  const colorAttachments = (retained ?? []) as Writable<RenderPassColorAttachment>[];
+  let colorIndex = 0;
+  for (const attachment of attachments) {
+    const view = resolver.textureView(attachment.view);
+    if (!view.ok) {
+      return view;
+    }
+    const resolveTarget =
+      attachment.resolveTarget === undefined
+        ? undefined
+        : resolver.textureView(attachment.resolveTarget);
+    if (resolveTarget !== undefined && !resolveTarget.ok) {
+      return resolveTarget;
+    }
+    const clearValue =
+      typeof attachment.clearValue === 'function'
+        ? attachment.clearValue(frame)
+        : attachment.clearValue;
+    const loadOp =
+      typeof attachment.loadOp === 'function' ? attachment.loadOp(frame) : attachment.loadOp;
+    // Optional members are assigned, not spread: spreads allocate a
+    // temporary object per member on every executed pass.
+    const color: Writable<RenderPassColorAttachment> = colorAttachments[colorIndex] ?? {
+      view: view.value,
+      loadOp,
+      storeOp: attachment.storeOp,
+    };
+    color.view = view.value;
+    color.loadOp = loadOp;
+    if (resolveTarget !== undefined) color.resolveTarget = resolveTarget.value;
+    if (clearValue === undefined) delete color.clearValue;
+    else color.clearValue = clearValue;
+    if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
+    colorAttachments[colorIndex++] = color;
+  }
+  colorAttachments.length = colorIndex;
+  return okOf(colorAttachments);
 }
 
 /** Resolve the current depth view and attachment aspects without copying native storage. */
@@ -276,6 +324,7 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   implements CompiledRenderGraph<FrameCtx>
 {
   private retired = false;
+  private resolving = false;
   private retireResult: Promise<Result<void, RenderGraphError>> | undefined;
   private readonly allocationLedger: RenderGraphAllocationLedger;
   private inspection: CompiledRenderGraphInfo | undefined;
@@ -296,6 +345,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     }
   >();
   private readonly importedViews = new Map<number, { texture: Texture; view: TextureView }>();
+  /** The compiler owns fixed membership; mutable resolution values stay with their records. */
+  private readonly resourceOrder: readonly CompiledResource<FrameCtx>[];
+  private readonly viewOrder: readonly CompiledView<FrameCtx>[];
 
   constructor(
     private readonly generation: number,
@@ -308,6 +360,8 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
     private readonly colorTargetDescriptors: ReadonlyMap<string, ResolvedColorTargetDescriptor>,
   ) {
     compiledGraphs.add(this);
+    this.resourceOrder = [...resources.values()];
+    this.viewOrder = [...views.values()];
     const infoByLabel = new Map(info.resources.map((resource) => [resource.label, resource]));
     const entries: AllocationEntry[] = [];
     let importedResourceCount = 0;
@@ -404,20 +458,40 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   getColorTargetView(name: string): TextureView | undefined {
     for (const view of this.views.values()) {
       const resource = this.resources.get(view.record.textureId);
-      if (resource?.record.label === name) return view.view;
+      if (resource?.record.label === name) {
+        return view.view ?? this.frameResources.views.get(view.record.id);
+      }
     }
     return undefined;
   }
 
   getColorTargetTexture(name: string): Texture | undefined {
     for (const resource of this.resources.values()) {
-      if (resource.record.label === name) return resource.texture;
+      if (resource.record.label === name) {
+        return resource.texture ?? this.frameResources.textures.get(resource.record.id);
+      }
     }
     return undefined;
   }
 
   getColorTargetDescriptor(name: string): ResolvedColorTargetDescriptor | undefined {
-    return this.colorTargetDescriptors.get(name);
+    const known = this.colorTargetDescriptors.get(name);
+    if (known !== undefined) return known;
+    for (const resource of this.resources.values()) {
+      if (resource.record.label !== name || resource.record.kind !== 'texture') continue;
+      const texture = resource.texture ?? this.frameResources.textures.get(resource.record.id);
+      const descriptor = resource.textureDescriptor;
+      if (texture === undefined || descriptor === undefined) return undefined;
+      const declared = resource.record.descriptor as GraphTextureDescriptor;
+      return {
+        texture,
+        format: declared.format,
+        size: { width: descriptor.size.width, height: descriptor.size.height },
+        usage: descriptor.usage ?? resource.usage,
+        sample: descriptor.sampleCount ?? 1,
+      };
+    }
+    return undefined;
   }
 
   execute(
@@ -558,40 +632,14 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
         // their independent descriptors for observer ownership.
         const context = this.resolvers.get(pass);
         const retained = scope === undefined ? context?.raster : undefined;
-        const colorAttachments = (retained?.colorAttachments ??
-          []) as Writable<RenderPassColorAttachment>[];
-        let colorIndex = 0;
-        for (const attachment of descriptor.colorAttachments) {
-          const view = resolver.textureView(attachment.view);
-          if (!view.ok) {
-            return view;
-          }
-          const resolveTarget =
-            attachment.resolveTarget === undefined
-              ? undefined
-              : resolver.textureView(attachment.resolveTarget);
-          if (resolveTarget !== undefined && !resolveTarget.ok) {
-            return resolveTarget;
-          }
-          const clearValue =
-            typeof attachment.clearValue === 'function'
-              ? attachment.clearValue(frame)
-              : attachment.clearValue;
-          // Optional members are assigned, not spread: spreads allocate a
-          // temporary object per member on every executed pass.
-          const color: Writable<RenderPassColorAttachment> = colorAttachments[colorIndex] ?? {
-            view: view.value,
-            loadOp: attachment.loadOp,
-            storeOp: attachment.storeOp,
-          };
-          color.view = view.value;
-          if (resolveTarget !== undefined) color.resolveTarget = resolveTarget.value;
-          if (clearValue === undefined) delete color.clearValue;
-          else color.clearValue = clearValue;
-          if (attachment.depthSlice !== undefined) color.depthSlice = attachment.depthSlice;
-          colorAttachments[colorIndex++] = color;
-        }
-        colorAttachments.length = colorIndex;
+        const colors = resolveRasterColors(
+          descriptor.colorAttachments,
+          frame,
+          resolver,
+          retained?.colorAttachments,
+        );
+        if (!colors.ok) return colors;
+        const colorAttachments = colors.value;
         const depth = resolveRasterDepth(
           descriptor.depthStencilAttachment,
           resolver,
@@ -616,7 +664,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           scope?.renderPassDescriptor?.(baseDescriptor) ?? baseDescriptor;
         const encoder = frame.encoder.beginRenderPass(instrumentedDescriptor);
         try {
-          descriptor.encode({ pass: encoder, frame, resources: resolver });
+          if (descriptor.encodeDirect !== undefined)
+            descriptor.encodeDirect(encoder, frame, resolver);
+          else descriptor.encode({ pass: encoder, frame, resources: resolver });
         } finally {
           encoder.end();
         }
@@ -635,7 +685,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
           throw cause;
         }
         try {
-          pass.pass.descriptor.encode({ pass: encoder, frame, resources: resolver });
+          if (pass.pass.descriptor.encodeDirect !== undefined)
+            pass.pass.descriptor.encodeDirect(encoder, frame, resolver);
+          else pass.pass.descriptor.encode({ pass: encoder, frame, resources: resolver });
         } finally {
           encoder.end();
         }
@@ -645,11 +697,9 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       case 'copy':
         scope?.beforeCopy?.(frame.encoder);
         try {
-          pass.pass.descriptor.encode({
-            encoder: frame.encoder,
-            frame,
-            resources: resolver,
-          });
+          if (pass.pass.descriptor.encodeDirect !== undefined)
+            pass.pass.descriptor.encodeDirect(frame.encoder, frame, resolver);
+          else pass.pass.descriptor.encode({ encoder: frame.encoder, frame, resources: resolver });
         } finally {
           scope?.afterCopy?.(frame.encoder);
         }
@@ -923,13 +973,25 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
   }
 
   private resolveFrameResources(frame: FrameCtx): Result<FrameResources, RenderGraphError> {
+    if (this.retired || this.resolving || executingGraphs.has(this))
+      return this.subgraphError('execution', 'a live, non-recursive compiled graph');
+    this.resolving = true;
+    try {
+      return this.resolveFrameResourceValues(frame);
+    } finally {
+      this.resolving = false;
+    }
+  }
+
+  private resolveFrameResourceValues(frame: FrameCtx): Result<FrameResources, RenderGraphError> {
     const frameResources = this.frameResources;
     // Keys are the compiled graph's static resolved-resource ids, so each
     // frame overwrites the same entries; clearing would shrink and regrow the
     // hash tables every frame.
     const { buffers, textures, views, accelerationStructures } = frameResources;
 
-    for (const compiled of this.resources.values()) {
+    for (let index = 0; index < this.resourceOrder.length; index++) {
+      const compiled = this.resourceOrder[index] as CompiledResource<FrameCtx>;
       if (!isResolved(compiled)) continue;
       try {
         if (compiled.record.kind === 'texture') {
@@ -952,7 +1014,8 @@ export class CompiledRenderGraphImpl<FrameCtx extends RenderGraphFrame>
       }
     }
 
-    for (const compiledView of this.views.values()) {
+    for (let index = 0; index < this.viewOrder.length; index++) {
+      const compiledView = this.viewOrder[index] as CompiledView<FrameCtx>;
       if (this.resources.get(compiledView.record.textureId)?.usage === 0) continue;
       if (compiledView.record.resolve !== undefined) {
         try {

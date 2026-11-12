@@ -130,12 +130,26 @@ describe('ProbeBlendRecord renderer lane', () => {
     });
     const extended = buildPbrViewBglEntries({ storageBuffer: true, extendedLighting: true });
 
-    expect(base.map((entry) => entry.binding)).toEqual([0, 3, 4, 5, 6, 7, 8, 10]);
+    expect(base.map((entry) => entry.binding)).toEqual([0, 3, 4, 5, 6, 7, 8, 10, 17]);
     expect(base.some((entry) => [9, 11, 12, 13, 14].includes(entry.binding))).toBe(false);
     expect(extended.map((entry) => entry.binding)).toEqual(
       expect.arrayContaining([9, 11, 12, 13, 14, 15]),
     );
     expect(extended).toHaveLength(17);
+  });
+
+  it('keeps the shared medium sampler without a cloud map on the uniform layout', () => {
+    const entries = buildPbrViewBglEntries({
+      storageBuffer: false,
+      extendedLighting: false,
+      projectorAvailable: false,
+    });
+    expect(entries.find((entry) => entry.binding === 17)).toEqual({
+      binding: 17,
+      visibility: 2,
+      sampler: { type: 'filtering' },
+    });
+    expect(entries.some((entry) => entry.binding === 16)).toBe(false);
   });
 
   it('keeps no-probe instances at binding(0) and adds binding(1) only for probe variants', () => {

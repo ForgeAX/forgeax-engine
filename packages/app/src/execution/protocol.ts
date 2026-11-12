@@ -7,6 +7,7 @@ import type { AppError } from '../errors';
 import type { CanvasDrawingBufferSize } from '../types';
 import type {
   ExecutionAssetCatalog,
+  ExecutionDiagnosticsOptions,
   ExecutionFault,
   ExecutionFrameInspection,
   ExecutionRenderCapabilities,
@@ -77,6 +78,20 @@ export interface ExecutionFrameSubmitted
 
 export type FrameCompletionDisposition = 'accepted' | 'duplicate' | 'stale-world' | 'late';
 
+/**
+ * Split rendering is a three-stage pipeline: Engine Worker simulation, Render
+ * Worker preparation and GPU execution. One sealed publication per stage keeps
+ * every stage fed; two leave the GPU idle while the next picture is simulated
+ * and prepared. Host, Source publisher and Render Worker share this bound.
+ */
+export const DEFAULT_RENDER_PIPELINE_CAPACITY = 3;
+
+export function renderPipelineCapacityOf(
+  capacity: ExecutionDiagnosticsOptions['renderPipelineCapacity'],
+): 2 | 3 | 4 {
+  return capacity === 2 || capacity === 4 ? capacity : DEFAULT_RENDER_PIPELINE_CAPACITY;
+}
+
 export class FrameCreditLedger {
   private nextFrameId = 1;
   private inFlight: number | null = null;
@@ -144,16 +159,40 @@ export class FrameCreditLedger {
   get hasCreditInFlight(): boolean {
     return this.inFlight !== null;
   }
+
+  /** A due Host tick waited for simulation or render-pipeline credit. */
+  recordThrottledTick(): void {
+    this.throttledTicks += 1;
+  }
+
+  /**
+   * Admitted frames still owned by any stage, including split-render pictures
+   * whose simulation credit has already returned. Never below `inFlight`.
+   */
+  observeDepth(depth: number): void {
+    this.highWater = Math.max(this.highWater, depth);
+  }
 }
 
 export interface ExecutionInitMessage {
   readonly kind: 'init';
   /** App-owned startup policy also bounds Renderer realm creation and replacement. */
   readonly startupTimeoutMs: number | null;
+  /**
+   * App frame deadline (omitted: the App's 2 s default; null: none). The Render Worker's
+   * GPU completion watchdog never fires before it, nor before 30 s.
+   */
+  readonly frameTimeoutMs?: number | null;
   readonly canvas: OffscreenCanvas;
   readonly bootstrapUrl: string;
   readonly bootstrapData?: import('./types').ExecutionBootstrapValue;
   readonly bootstrapPort?: MessagePort;
+  /**
+   * Worker end of the page video bridge. The page keeps the other end and
+   * serves `<video>` frames for VideoAsset materials (graphics-extras
+   * `createVideoFrameHost` / `installWorkerVideoSourceProvider`).
+   */
+  readonly videoPort?: MessagePort;
   /** Realm-serializable asset catalog configuration. */
   readonly assetCatalog?: ExecutionAssetCatalog;
   readonly shaderManifestUrl?: string;
@@ -360,6 +399,12 @@ export type EngineToHostMessage =
       readonly kind: 'render-complete';
       readonly epoch: number;
       readonly frame: ExecutionFrameCompletion;
+    }
+  | {
+      readonly kind: 'frame-admission';
+      readonly worldIdentity: string;
+      readonly frameId: number;
+      readonly phase: 'render-wait' | 'source';
     }
   | ExecutionReadyMessage
   | ExecutionFrameSubmitted

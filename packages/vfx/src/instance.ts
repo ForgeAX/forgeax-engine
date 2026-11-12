@@ -116,19 +116,40 @@ function normalizeValue(type: VfxValueType, value: VfxValue): VfxValue {
   return typeof value === 'number' ? normalize(value) : value.map(normalize);
 }
 
+// Canonical field order is fixed by the immutable contract reflection.
+const canonicalFieldOrders = new WeakMap<
+  VfxEffectContract<VfxValueMap>,
+  readonly { readonly name: string; readonly type: VfxValueType }[]
+>();
+const canonicalEncoder = new TextEncoder();
+
+function canonicalFieldOrder<Values extends VfxValueMap>(
+  contract: VfxEffectContract<Values>,
+): readonly { readonly name: string; readonly type: VfxValueType }[] {
+  const key = contract as unknown as VfxEffectContract<VfxValueMap>;
+  let order = canonicalFieldOrders.get(key);
+  if (order === undefined) {
+    order = allFields(contract)
+      .map((field) => ({ name: field.name, type: field.type }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    canonicalFieldOrders.set(key, order);
+  }
+  return order;
+}
+
 function canonicalBytes<Values extends VfxValueMap>(
   contract: VfxEffectContract<Values>,
   values: Values,
 ): Uint8Array {
-  const fields = allFields(contract)
-    .map((field) => ({ name: field.name, type: field.type, value: values[field.name] }))
-    .sort((left, right) => left.name.localeCompare(right.name))
-    .map((field) => ({
+  const fields = canonicalFieldOrder(contract).map((field) => {
+    const value = values[field.name];
+    return {
       name: field.name,
       type: field.type,
-      value: field.value === undefined ? undefined : normalizeValue(field.type, field.value),
-    }));
-  return new TextEncoder().encode(JSON.stringify({ fields }));
+      value: value === undefined ? undefined : normalizeValue(field.type, value),
+    };
+  });
+  return canonicalEncoder.encode(JSON.stringify({ fields }));
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {

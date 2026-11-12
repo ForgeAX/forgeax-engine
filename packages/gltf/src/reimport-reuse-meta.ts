@@ -1,7 +1,7 @@
 // Reimport preserves GUIDs by semantic sourceKey, then by (kind, sourceIndex).
 // Validate the complete output set before minting any new identity.
 
-import { AssetGuid } from '@forgeax/engine-pack/guid';
+import { AssetGuid, TEXTURE_CONTENT_SOURCE_KEY_PREFIX } from '@forgeax/engine-pack/guid';
 import type { ImportSubAsset } from '@forgeax/engine-types';
 import { err, ok, type Result } from './errors.js';
 import { deriveGltfSourceKeys, type GltfSourceKeyError } from './source-key.js';
@@ -24,6 +24,10 @@ export interface GltfMetaJson {
     readonly defaultSceneIndex: number;
     readonly standardMaterialGuid?: string;
     readonly downscaleMaxDimension?: number;
+    /** `'content'` derives each texture GUID from its bytes and decode settings. */
+    readonly textureIdentity?: 'content';
+    readonly mipmap?: unknown;
+    readonly compressionMode?: unknown;
     readonly diagnostics: {
       readonly nodeNames: readonly string[];
       readonly unsupportedExtensions: readonly string[];
@@ -57,6 +61,9 @@ export function reimportReuseMeta(
   const stage2Index = new Map<string, ImportSubAsset>();
   if (existingMeta !== undefined) {
     for (const entry of existingMeta.subAssets) {
+      // A content identity belongs to the bytes, not to this source slot; the
+      // producer derives it again or mints a fresh source identity.
+      if (entry.sourceKey?.startsWith(TEXTURE_CONTENT_SOURCE_KEY_PREFIX) === true) continue;
       // Source names are display metadata, not identity. Semantic sourceKey
       // remains the stage-1 identity and (kind, sourceIndex) remains the
       // stage-2 locator fallback.

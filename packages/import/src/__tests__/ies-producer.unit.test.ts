@@ -31,7 +31,7 @@ function context(source: string): ImportContext {
 
 function fixture(): string {
   return `IESNA:LM-63-2002
-[TEST] ForgeaX Type C fixture
+[TEST] ForgeAX Type C fixture
 TILT=NONE
 1 1000 1 3 3 1 1 1 1 1
 1 1 20

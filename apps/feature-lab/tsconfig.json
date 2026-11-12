@@ -2,8 +2,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "../..",
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "emitDeclarationOnly": false,
     "types": ["@webgpu/types", "vite/client"]
   },

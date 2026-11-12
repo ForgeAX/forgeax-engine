@@ -1,5 +1,6 @@
 import type { Buffer, RhiDevice } from '@forgeax/engine-rhi';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { GpuScene } from '../gpu-scene';
 import { GPU_SCENE_LAYOUTS, gpuSceneFieldOffset } from '../gpu-scene-schema';
 import { MaterialResource } from '../material-resource';
@@ -63,9 +64,11 @@ it('grows distinct material storage and reconstructs its bytes on a replacement 
     const initial = scene.materialBuffer;
     const firstPrimitive = scene.primitiveIndexForSlot(0);
     scene.sync(projection.apply(updates.slice(1))).unwrap();
-    expect(scene.materialBuffer).not.toBe(initial);
+    expect(Object.is(scene.materialBuffer, initial)).toBe(false);
     expect(scene.primitiveIndexForSlot(0)).toBe(firstPrimitive);
-    expect(await readBuffer(original.device, scene.materialBuffer, 16)).toEqual(accepted);
+    expect(equalBytes(await readBuffer(original.device, scene.materialBuffer, 16), accepted)).toBe(
+      true,
+    );
     const byteLength = scene.inspect().tables.material.bytes;
     expect(byteLength).toBeGreaterThanOrEqual(sources.length * 16);
     expect(byteLength).toBeLessThan(sources.length * 32);
@@ -91,7 +94,9 @@ it('grows distinct material storage and reconstructs its bytes on a replacement 
     const recoveredProjection = new RenderScene();
     rebuilt.sync(recoveredProjection.apply(updates)).unwrap();
     expect(rebuilt.inspect().tables.material.bytes).toBe(byteLength);
-    expect(await readBuffer(replacement.device, rebuilt.materialBuffer, byteLength)).toEqual(bytes);
+    expect(
+      equalBytes(await readBuffer(replacement.device, rebuilt.materialBuffer, byteLength), bytes),
+    ).toBe(true);
     expect(await original.native.popErrorScope()).toBeNull();
     expect(await replacement.native.popErrorScope()).toBeNull();
   } finally {

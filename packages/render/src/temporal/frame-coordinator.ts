@@ -1,5 +1,6 @@
 import { err, ok, type Result } from '@forgeax/engine-types';
 import type { Antialias } from '../components/camera';
+import { isTemporalAntialias } from '../components/camera';
 import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
 import type { CameraSnapshot } from '../render-contract';
 import { classifySceneDataCoverage, type SceneDataContributor } from './coverage';
@@ -144,7 +145,9 @@ export class TemporalFrameCoordinator<T = unknown> {
   begin(input: TemporalFrameBeginInput<T>): Result<TemporalFrameCandidate<T>, TemporalFrameError> {
     const consumerIds = Object.freeze([...(input.consumerIds ?? [])]);
     const demanded =
-      input.antialias === 'taa' || input.temporalDemand === true || consumerIds.length > 0;
+      isTemporalAntialias(input.antialias) ||
+      input.temporalDemand === true ||
+      consumerIds.length > 0;
     if (!demanded) {
       return ok({
         epoch: this.epoch,
@@ -180,12 +183,12 @@ export class TemporalFrameCoordinator<T = unknown> {
       consumerIds,
       ...(input.temporalView === undefined ? {} : { temporalView: input.temporalView }),
     };
-    if (input.antialias === 'taa') {
+    if (isTemporalAntialias(input.antialias)) {
       this.historyAttempts.set(candidate, this.historyStore.begin());
     }
     this.active = candidate;
     this.attempt = 'active';
-    this.historyAttempt = input.antialias === 'taa' ? 'active' : 'none';
+    this.historyAttempt = isTemporalAntialias(input.antialias) ? 'active' : 'none';
     this.lastFailure = undefined;
     return ok(candidate);
   }
@@ -243,7 +246,7 @@ export class TemporalFrameCoordinator<T = unknown> {
     if (!started.ok) return started;
     const candidate = started.value;
     if (
-      input.antialias !== 'taa' &&
+      !isTemporalAntialias(input.antialias) &&
       input.temporalDemand !== true &&
       (input.consumerIds?.length ?? 0) === 0
     ) {
@@ -290,7 +293,7 @@ export class TemporalFrameCoordinator<T = unknown> {
     surfaceHeight: number,
   ): TemporalView | undefined {
     const demanded =
-      camera.antialias === 'taa' ||
+      isTemporalAntialias(camera.antialias) ||
       (camera.motionBlur !== undefined &&
         motionBlurTemporalDemand({
           shutterAngle: camera.motionBlur.shutterAngle,

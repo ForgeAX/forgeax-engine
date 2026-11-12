@@ -3,7 +3,10 @@ import { afterAll } from 'vitest';
 import { constructRuntimeRendererHost } from '../renderer-host';
 
 /** Reuse only assembly for serial pixel cases that do not test cold start or loss. */
-export function browserRendererFixture(size: number) {
+export function browserRendererFixture(
+  size: number,
+  backend?: Parameters<typeof constructRuntimeRendererHost>[1],
+) {
   let prepared:
     | Promise<{
         canvas: HTMLCanvasElement;
@@ -25,7 +28,7 @@ export function browserRendererFixture(size: number) {
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = size;
       document.body.append(canvas);
-      const result = await constructRuntimeRendererHost(canvas);
+      const result = await constructRuntimeRendererHost(canvas, backend);
       if (!result.ok) {
         canvas.remove();
         throw result.error;

@@ -51,7 +51,7 @@ export function addReflectionProbePmremPasses(
           clearValue: { r: 0, g: 0, b: 0, a: 1 },
         },
       ],
-      encode: ({ pass }) => {
+      encodeDirect: (pass, _graphframe, _graphresources) => {
         if (work.filterGroup0 === undefined) return;
         pass.setPipeline(work.filterPipeline);
         pass.setBindGroup(1, work.filterGroup1);
@@ -75,7 +75,7 @@ export function addReflectionProbePmremPasses(
         { resource: filteredAtlas, usage: 'copy-src' },
         { resource: scratchView.value, usage: 'copy-dst' },
       ],
-      encode: ({ encoder, resources }) => {
+      encodeDirect: (encoder, _graphframe, resources) => {
         for (let offset = 0; offset < PMREM_FACES_PER_STEP; offset++) {
           const viewport = pmremViewport(work.filteredSize, step.mipLevel, step.faceIndex + offset);
           encoder.copyTextureToTexture(

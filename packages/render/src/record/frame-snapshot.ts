@@ -5,7 +5,7 @@ import type { FramePresentationPendingReason } from '../render-contract';
 import type { RenderSceneSlot } from '../scene/render-scene-types';
 import type { CpuLodSelection } from './cpu-lod';
 import type { MaterialBgAssemblyCache } from './material-bg-assembly-cache';
-// @forgeax/engine-runtime - RenderSystem record stage: frame-snapshot.
+// @forgeax/engine-runtime - RendererState record stage: frame-snapshot.
 // Extracted from render-system-record.ts (feat-20260704 M3/w17, pure move).
 
 import type { RenderReadVersion } from '@forgeax/engine-ecs/projection';
@@ -33,6 +33,7 @@ import type { MotionBlurExecutionReceipt } from '../inspection-types';
 import type { InstanceProjectionStore } from '../instances';
 import type { IblBindingInspection } from '../mesh-material-bindings';
 import type { StandardLightingInspection } from '../pipeline/standard-lighting/inspection';
+import type { StandardClusterMembershipOwner } from '../pipeline/standard-lighting/membership-owner';
 import type { AutoExposureGpuResources } from '../pipeline/standard-output/auto-exposure/gpu';
 import type { AutoExposureState } from '../pipeline/standard-output/auto-exposure/state';
 import type { StandardLutGpuResources } from '../pipeline/standard-output/lut-gpu';
@@ -126,6 +127,12 @@ export interface MaterialBgAssemblyCacheEntry {
   readonly materialBuffer: Buffer;
   readonly sceneMaterialBuffer?: Buffer;
   readonly skylightResources: SkylightBindGroupResources;
+  /**
+   * Only planar-mirroring materials: the capture view and projection buffer this
+   * binding was built with. Captures bind their own capture-view buffer, which
+   * retires with its view.
+   */
+  readonly planarReflection?: { readonly view: TextureView | undefined; readonly uniform: Buffer };
   readonly bindGroup: BindGroup;
 }
 
@@ -183,7 +190,8 @@ export interface CurrentGraphTarget {
   /** Stable opaque identity for this RHI handle during the renderer lifetime. */
   readonly textureIdentity: number;
   readonly descriptor: ResolvedColorTargetDescriptor;
-  readonly frameId: number;
+  /** RenderSystem-local recording number for the last encoded target frame. */
+  readonly recordFrameNumber: number;
   /** Monotonic identity of the compiled graph that owns this texture. */
   readonly graphGeneration: number;
 }
@@ -312,7 +320,7 @@ export type GraphTargetCaptureRequest =
         /** Optional caller binding; when present it is checked at copy time. */
         readonly identity?: {
           readonly graphGeneration: number;
-          readonly frameId: number;
+          readonly recordFrameNumber: number;
           readonly textureIdentity: number;
         };
       };
@@ -349,6 +357,11 @@ export interface ReflectionFallbackReadbackRequest {
   };
   encoded: boolean;
 }
+/** The cameras a recording uses: the authored ones, else the stable fallback. */
+export function activeFrameCameras(cameras: CameraSnapshot[]): CameraSnapshot[] {
+  return cameras.length === 0 ? [makeZeroCameraFallbackSnapshot()] : cameras;
+}
+
 /** Stable internal parameters for clear/UI frames with no authored camera. */
 export function makeZeroCameraFallbackSnapshot(): CameraSnapshot {
   // Identity world mat4 so `mat4.invert(world)` yields identity view.
@@ -483,9 +496,9 @@ export interface InstalledFrameGraph {
 }
 
 /**
- * Per-RenderSystem mutable frame state.
+ * Per-RendererState mutable frame state.
  *
- * Owned by the `createRenderSystem` closure; advanced once per
+ * Owned by the `createRendererState` closure; advanced once per
  * `recordFrame` invocation. The `instanceBuffers` map holds the per-entity
  * GPU storage buffers for Instances-bearing entities (cache key = the
  * renderer-owned collection id, with the packed Entity u32 retained only for
@@ -497,14 +510,18 @@ export interface InstalledFrameGraph {
  * fires when the world contains a StandardMaterial entity but zero
  * DirectionalLight entries — once latched the next 100 frames suppress
  * the warning so the AI user is not flooded with repeated noise (charter
- * P3 silent failure -> explicit warning at most once per RenderSystem
+ * P3 silent failure -> explicit warning at most once per RendererState
  * lifetime).
  */
 export interface RenderFrameState {
+  /** Graph-owned light-texture preparation queued by this view for its shared frame encoder. */
+  pendingLightTextureResamples?: import('../prepare/extended-lighting/light-texture-resample').ScheduledLightTextureResample[];
   /** A required non-drawing pipeline request has not completed this record. */
   pipelinePreparationPending?: boolean;
   pipelinePreparationPendingReason?: FramePresentationPendingReason;
   candidatePipelinePreparations?: import('./candidate-pipeline-preparation').CandidatePipelinePreparationOwner;
+  /** This view's retained direct-draw phases (bins and transparent order), by consumer. */
+  drawPhases?: import('./direct-draw-phase').ViewDrawPhases;
   frameNumber: number;
   materialUboCounters?: {
     -readonly [K in keyof import('../inspection-types').MaterialUniformCacheInspection]: import('../inspection-types').MaterialUniformCacheInspection[K];
@@ -514,8 +531,6 @@ export interface RenderFrameState {
   /** Physical scene commands survive unrelated feature-graph replacement. */
   renderBundleCaches?: import('./render-bundle-cache').SceneRenderBundleState['renderBundleCaches'];
   dynamicResolution?: import('../pipeline/dynamic-resolution').DynamicResolutionController;
-  /** Visible-surface addresses kept current from retained row changes. */
-  visibleSurfaceRows?: import('../raytracing/visible-surface').VisibleSurfaceRows | undefined;
   rayDiffuse?: import('../raytracing/renderer-diffuse').RendererRayDiffuse | undefined;
   irradianceField?:
     | import('../raytracing/renderer-irradiance-field').RendererIrradianceField
@@ -534,12 +549,32 @@ export interface RenderFrameState {
     | undefined;
   /** Last successful Motion Blur compute execution; failed submits retain the prior receipt. */
   motionBlurExecution?: MotionBlurExecutionReceipt;
+  /** This frame's Motion Blur receipt, staged for RenderCommit; `receipt: undefined` clears the last one. */
+  stagedMotionBlurExecution?: { readonly receipt: MotionBlurExecutionReceipt | undefined };
   /** Final-submit Standard IBL binding-chain receipt for this frame. */
   iblBindingInspection?: IblBindingInspection;
+  /** Physical AO region requested inside the no-storage Cluster texture. */
+  standardClusterTextureExtent?:
+    | import('../pipeline/standard-lighting/texture').StandardClusterTextureExtent
+    | undefined;
+  /** Renderer-internal conformance selection; never populated from authored pipeline data. */
+  gtaoExecutionOverride?: 'fragment' | 'compute' | undefined;
+  /** Current selected view's Standard surface producer admission for stock graph validation. */
+  standardSceneSurfaceAdmission?:
+    | import('../temporal/scene-data').StandardSceneSurfaceAdmission
+    | undefined;
+  /** One-shot internal candidate-preparation fault, scoped to the arming device generation. */
+  gtaoCandidatePreparationFailureGeneration?: number | undefined;
+  /** Default-off scalar Cluster write receipt for AO conformance measurements. */
+  standardClusterWorkConformance?:
+    | import('./cluster-work-conformance').ClusterWorkConformanceState
+    | undefined;
   /** Demand for the frame-local Standard fallback MRT. */
   reflectionFallbackDemand?: boolean;
   /** Whether the active camera explicitly requested SSR this frame. */
   ssrRequested?: boolean | undefined;
+  /** The reflection-fallback projection generation SSR history last admitted. */
+  ssrFallbackGeneration?: number | undefined;
   /** Current renderer-owned SSR spatial admission projection. */
   ssrSpatialAdmission?: SsrSpatialAdmission | undefined;
   /** Persistent SSR history owner; its `candidate` is promoted only after submit. */
@@ -560,10 +595,14 @@ export interface RenderFrameState {
   directionalShadowCache: DirectionalShadowCache | null;
   /** Latest actual Direct-shadow LOD query; independent of accepted depth. */
   directionalShadowLod?: CpuLodSelection | undefined;
-  /** Last submitted projection; guard-band retention shares it with every shadow consumer. */
-  directionalShadowProjection?: readonly Float32Array[] | undefined;
   /** Projection/stale evidence promoted only by the last submitted CPU frame. */
   directionalCascadeCadence?: DirectionalCascadeCadenceState | undefined;
+  /**
+   * The shadow state this frame's recording staged: the submitted cascade
+   * cadence and depth-cache candidate, and the mesh lease it still owns. The
+   * Render World light systems commit or release it.
+   */
+  shadowCandidate?: StagedShadowCandidate | undefined;
   /** Last successfully submitted camera post-process mode. */
   lastSuccessfulBloom: 'off' | 'on';
   /** Bloom record receipts staged by this frame; cleared on abort. */
@@ -611,6 +650,8 @@ export interface RenderFrameState {
   /** Last candidate/accepted volume projection exposed through inspect(). */
   volumetricFogInspection: VolumetricFogInspection;
   /** Accepted volume POD/context retained while a later candidate degrades. */
+  /** The submitted fog candidate; the Render World environment systems promote or drop it. */
+  volumetricFogCandidate?: import('./volumetric-fog-commit').StagedVolumetricFog | undefined;
   volumetricFogAccepted: import('../render-system-extract').ExtractedVolumetricFog | undefined;
   volumetricFogAcceptedContext: VolumetricFogFrameContext | undefined;
   /** Accepted graph identity and ping-pong slot for temporal volume history. */
@@ -660,9 +701,18 @@ export interface RenderFrameState {
   readonly temporalView: TemporalViewHistory;
   /** Staged environment generation is promoted only after queue.submit succeeds. */
   environmentGeneration: EnvironmentGeneration | undefined;
+  /** The prepared GPU-driven frame of this attempt; the Render World scene-row systems commit or abort it. */
+  gpuDrivenFrame?: StagedGpuDrivenFrame | undefined;
+  /** The stage at which this frame's submission was rejected; cleared by the Render World cleanup. */
+  /** Current compile provenance; only the successful graph encoder stages its consumption. */
+  featureGraphReceipt?: import('../features/graph-receipt').RenderFeatureGraphReceipt | undefined;
+  /** Graph execution products owned by the Render World submission systems. */
+  displaySubmission?: import('../world/display-submission-systems').DisplaySubmission | undefined;
+  graphSubmission?: import('../world/graph-submission-systems').GraphSubmission | undefined;
+  rejectedStage?: import('../assembly/renderer-frame-transaction').RendererFrameStage | undefined;
   environmentFrame?: import('../environment/frame').SelectedEnvironmentFrame | undefined;
   pendingAtmospherePublish?: (() => void) | undefined;
-  readonly environmentLifecycle: EnvironmentLifecycle | undefined;
+  readonly environmentLifecycle: EnvironmentLifecycle;
   readonly instanceBuffers: Map<number, InstanceBufferCacheEntry>;
   /** Renderer-private World projection receiving record-stage residency facts. */
   readonly instanceCollections?: InstanceProjectionStore;
@@ -680,9 +730,8 @@ export interface RenderFrameState {
     readonly buffer: GpuBuffer | undefined;
   };
   readonly hdrpClusterBinScratch: ClusterBinScratch;
-  /** Reusable HDRP cluster output buffers; sized once and grown only if the grid/cap changes. */
-  hdrpClusterGridScratch: Uint32Array | null;
-  hdrpLightIndexListScratch: Uint32Array | null;
+  /** Immutable stock Cluster membership retained by this view until its numeric inputs change. */
+  readonly standardClusterMembership: StandardClusterMembershipOwner;
   /** Device-owned membership binding; layout and device must match the active pipeline. */
   hdrpClusterMembership: {
     readonly device: RhiDevice;
@@ -706,19 +755,15 @@ export interface RenderFrameState {
   transientInstanceBuffers: InstanceBufferCacheEntry[];
   warnedZeroLightStandard: boolean;
   /**
-   * feat-20260608-multi-light-warn-once M3: once-warn latch for the
-   * single-directional authoring constraint. Standard local lights use the
-   * unified Cluster budget; there is no per-kind local-light cap.
-   */
-  warnedMultiLightDirectional: boolean;
-  /**
    * feat-20260630-equirect-kind-internalized-ibl-declarative-skyligh M3 / w19:
    * once-warn latches for >1 Skylight / >1 SkyboxBackground entity. Fire at most
-   * once per RenderSystem lifetime so the multi-entity warn (which names the
+   * once per RendererState lifetime so the multi-entity warn (which names the
    * winning entity handle, F-8) does not flood the console every frame.
    */
   warnedMultiSkylight: boolean;
   warnedMultiSkybox: boolean;
+  /** Once-warn latch for castShadow DirectionalLights beyond the CSM owner. */
+  warnedIgnoredDirectionalShadow: boolean;
   /** feat-20260531-skybox-env-background M3 / w20: once-warn when camera
    * tonemap is 'none' but a SkyboxBackground entity exists. Skybox needs
    * the HDR render target allocated by the tonemap path; without it the
@@ -732,7 +777,7 @@ export interface RenderFrameState {
    * it to PBR/skin so GLB textures that fail to reach the GPU no longer render
    * silently flat). A `Set<number>` keyed by the raw Handle<TextureAsset> id -
    * the writer fires `console.warn` exactly once per missing texture handle per
-   * RenderSystem lifetime so AI users see a single actionable message without
+   * RendererState lifetime so AI users see a single actionable message without
    * per-frame log flooding. The set lives across frames so the second frame on
    * the same missing handle stays silent (charter P3 explicit failure:
    * warn-once preserves signal / noise floor while structured RhiError below
@@ -742,7 +787,7 @@ export interface RenderFrameState {
    * Handle values are numeric brand u32s (not object references), so
    * WeakSet<object> is not applicable; Set<number> gives identical
    * warn-once-per-handle semantics at zero additional cost (charter F1
-   * minimal surface; the per-RenderSystem lifetime cap is the upper
+   * minimal surface; the per-RendererState lifetime cap is the upper
    * bound).
    */
   readonly warnedMissingBaseColorTextureHandles: Set<number>;
@@ -751,7 +796,7 @@ export interface RenderFrameState {
    * renderable guard for the `nineslice.scale-too-small` metric increment.
    * Keyed by `renderableIndex` so the second frame on the same mis-scaled
    * entity does NOT keep bumping the counter — AI users see one counter
-   * tick per offending entity per RenderSystem lifetime, matching the
+   * tick per offending entity per RendererState lifetime, matching the
    * single-event semantics of the structured fail-fast (charter P3:
    * machine-readable signal, not a per-frame inflation). M4 retired the
    * placeholder console.warn; the increment lands on the per-Renderer
@@ -763,7 +808,7 @@ export interface RenderFrameState {
    * per-handle fire-once anchor for the lazy equirect-to-cubemap projection
    * failure. A `Set<number>` keyed by the raw Handle<EquirectAsset> id - the
    * record arm fires the structured `EquirectProjectionFailedError` exactly
-   * once per failed source per RenderSystem lifetime (the store records
+   * once per failed source per RendererState lifetime (the store records
    * `status:'failed'` permanently and never retries, R-2 / AC-09; without this
    * latch the record arm would re-fire the error every frame). The set lives
    * across frames so the second frame on the same failed handle stays silent
@@ -850,6 +895,19 @@ export interface RenderFrameState {
   /** Effective Standard profile for this private view; never renderer author state. */
   cameraStandardProfile?: StandardProfile | undefined;
   /**
+   * The view's Standard install authority. `configured` is the install-time
+   * config each camera configuration derives from; `built` the
+   * `installedPipelineHandle` whose Feature graph state the view contributed;
+   * `cameraSignature` the last admitted camera configuration (render path,
+   * SSAO) and `cameraFailure` its last reported failure, reported once.
+   */
+  readonly standardInstall: {
+    configured: RenderPipelineAsset['config'];
+    built: number;
+    cameraSignature: string;
+    cameraFailure: string;
+  };
+  /**
    * feat-20260608-cluster-lighting M5 / w20 + M6 / w23 + M5 / w22:
    * once-per-frame fire dedup set for Standard per-frame fail-soft errors
    * (`standard-light-budget-exceeded`, `standard-cluster-index-overflow`). Cleared
@@ -859,7 +917,7 @@ export interface RenderFrameState {
   standardOncePerFrameFired: Set<string>;
   /**
    * feat-20260612-point-light-shadows-urp-hdrp M3 / T-M3-2 (plan-strategy §D-1).
-   * Lazily-allocated cube_array shadow atlas owned by the RenderSystem
+   * Lazily-allocated cube_array shadow atlas owned by the RendererState
    * lifetime. `null` until the first frame whose `lights.pointShadow` is
    * non-empty (zero-shadow scenes never allocate; AC-09). The atlas is
    * disposed by the renderer dispose path; subsequent frames with a non-empty
@@ -898,6 +956,12 @@ export interface RenderFrameState {
    */
   spotShadowSnapshots: readonly SpotLightSnapshot[];
   /**
+   * Shadow views whose light emits zero radiance this frame (point atlas
+   * layers, spot tiles). Their casters are not rastered while dark; the view
+   * re-rasters in full on the first frame it emits again.
+   */
+  darkShadowViews?: { readonly point: ReadonlySet<number>; readonly spot: ReadonlySet<number> };
+  /**
    * The shadow params buffer and the retained light roster arrays its last
    * accepted write came from; an unchanged roster skips the rewrite.
    */
@@ -910,7 +974,7 @@ export interface RenderFrameState {
 
 /**
  * feat-20260518-pbr-direct-lighting-mvp M5 / w22.11 (D-2 + D-10 + AC-06):
- * mutable per-frame dispatch counter object owned by `createRenderSystem`
+ * mutable per-frame dispatch counter object owned by `createRendererState`
  * and bumped here at the actual `pass.setPipeline(...)` call site (the
  * only point with both `mat.materialShaderId` and `mesh.layoutProjection` in scope).
  * Unlit / custom shader pipeline dispatch tracked here.
@@ -956,6 +1020,8 @@ export interface BloomFrameReceipts {
  * without a dynamic type escape (was a recordFrame-local interface before F-4).
  */
 export interface ValidatedRenderable {
+  /** Per-camera hard LOD ranges in original instance order; residency remains source-owned. */
+  readonly cpuInstanceLods?: readonly import('./cpu-lod').CpuInstanceLodRun[];
   /** Physical source-transform slot, independent of this pass's row index. */
   readonly meshSlot: number;
   /** A fold head writes identity here; captures continue to use meshSlot. */
@@ -1031,4 +1097,22 @@ export interface DirectionalShadowCache {
 export interface DirectionalShadowWorldState {
   readonly worldIdentity: string;
   readonly version: RenderReadVersion;
+}
+
+/** Shadow history a recording staged for the Render World light systems. */
+export interface StagedShadowCandidate {
+  readonly cadence?: DirectionalCascadeCadenceState | undefined;
+  readonly cache?: ReturnType<
+    typeof import('./directional-shadow-cache').prepareDirectionalShadowCache
+  >;
+  readonly lease?: import('./directional-shadow-cache').ShadowMeshInput | undefined;
+}
+
+/** A prepared GPU-driven frame and, once display recording reached submission, what its commit applies. */
+export interface StagedGpuDrivenFrame {
+  readonly prepared: import('../gpu-driven/production-raster').PreparedGpuDrivenFrame;
+  readonly commit?: {
+    readonly shadowGraphGeneration: number | undefined;
+    readonly frameNumber: number;
+  };
 }

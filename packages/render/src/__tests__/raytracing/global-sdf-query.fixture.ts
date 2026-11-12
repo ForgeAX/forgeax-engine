@@ -1,6 +1,7 @@
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createGlobalSdfComposition, type GlobalSdfComposition } from '../../raytracing/global-sdf';
 import {
   createGlobalSdfQuery,
@@ -223,7 +224,7 @@ export async function verifyGlobalSdfQuery(
       const id = work.bindings.find((b) => b.binding === 3)?.resourceId;
       assert(id);
       const actual = (await replay.readResourceAtWork(id, plan.workIndex)).unwrap().bytes;
-      expect(actual).toEqual(outputs[i]);
+      expect(equalBytes(actual, outputs[i])).toBe(true);
     }
   } finally {
     (await replay.dispose()).unwrap();

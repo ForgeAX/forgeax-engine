@@ -78,7 +78,6 @@ export {
   type AnimationError,
 } from './solver-errors';
 export {
-  _resetAnimationWarnsForTests,
   ADVANCE_ANIMATION_PLAYER_SYSTEM,
   AdvanceAnimationPlayer,
   AnimationSet,

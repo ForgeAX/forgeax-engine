@@ -345,9 +345,21 @@ test('merges compact app shader deltas with the shared engine manifest', async (
     const merged = JSON.parse(
       readFileSync(join(appRoot, 'dist', 'shaders', 'manifest.json'), 'utf8'),
     );
+    const sourceDigest = (text) =>
+      createHash('sha256')
+        .update(shaderSourceDigestInput([createHash('sha256').update(text).digest()]))
+        .digest('hex');
+    const materialIdentity = (row) => ({
+      ...row,
+      sourceDigest: sourceDigest(row.composedWgsl),
+      ...(row.variants === undefined ? {} : { variants: row.variants.map(materialIdentity) }),
+    });
     assert.deepEqual(await readShaderManifestPublication(merged), {
-      entries: [engineEntry, appEntry],
-      materialShaders: [engineMaterial, appMaterial],
+      entries: [engineEntry, appEntry].map((row) => ({
+        ...row,
+        sourceDigest: sourceDigest(row.wgsl),
+      })),
+      materialShaders: [engineMaterial, appMaterial].map(materialIdentity),
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

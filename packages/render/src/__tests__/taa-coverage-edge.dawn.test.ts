@@ -52,7 +52,7 @@ async function resolveCoverage(source: string, edge: boolean) {
   const age = upload(repeat([0, 0, 0, 0]));
   const sampler = device.createSampler({ magFilter: 'nearest', minFilter: 'nearest' }).unwrap();
   const params = device
-    .createBuffer({ size: 32, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
+    .createBuffer({ size: 48, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST })
     .unwrap();
   const output = device
     .createBuffer({ size: 48, usage: GPU_BUFFER_USAGE_STORAGE | GPU_BUFFER_USAGE_COPY_SRC })
@@ -86,7 +86,7 @@ async function resolveCoverage(source: string, edge: boolean) {
             visibility: GPU_SHADER_STAGE_COMPUTE,
             texture: { sampleType: 'float' as const, viewDimension: '2d' as const },
           })),
-          ...[6, 10, 12].map((binding) => ({
+          ...[6, 10, 12, 13].map((binding) => ({
             binding,
             visibility: GPU_SHADER_STAGE_COMPUTE,
             texture: { sampleType: 'unfilterable-float' as const, viewDimension: '2d' as const },
@@ -143,6 +143,7 @@ async function resolveCoverage(source: string, edge: boolean) {
           { binding: 10, resource: { kind: 'textureView', value: age.view } },
           { binding: 11, resource: { kind: 'textureView', value: currentTemporal.view } },
           { binding: 12, resource: { kind: 'textureView', value: age.view } },
+          { binding: 13, resource: { kind: 'textureView', value: age.view } },
         ],
       })
       .unwrap();
@@ -164,7 +165,11 @@ async function resolveCoverage(source: string, edge: boolean) {
         )
         .unwrap();
       device.queue
-        .writeBuffer(params, 0, new Uint32Array([0, 0, mode === 'reset' ? 0 : 1, 200, 0, 0, 0, 0]))
+        .writeBuffer(
+          params,
+          0,
+          new Uint32Array([0, 0, mode === 'reset' ? 0 : 1, 200, 0, 0, 0, 0, 0, 0, 0, 0]),
+        )
         .unwrap();
       const encoder = device.createCommandEncoder().unwrap();
       const pass = encoder.beginComputePass();

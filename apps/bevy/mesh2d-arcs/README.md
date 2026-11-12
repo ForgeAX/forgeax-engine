@@ -1,6 +1,6 @@
 # mesh2d_arcs
 
-This focused app reproduces the Bevy `mesh2d_arcs` geometry lesson through ForgeaX's
+This focused app reproduces the Bevy `mesh2d_arcs` geometry lesson through ForgeAX's
 public `Shape2d` path. It renders eight circular sectors and eight circular segments
 with one reusable unlit `MaterialAsset`, a generated alpha texture, circular-mask UVs,
 an orthographic camera, and `compute2dBounds` debug overlays.

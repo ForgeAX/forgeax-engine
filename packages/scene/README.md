@@ -41,6 +41,15 @@ branch on `error.code` and repair a diagnosable stale edge, mirror mismatch, or
 cycle through `World.set`/`World.removeComponent` (or the owning structural
 command) before retrying while the World is healthy.
 
+## Numeric workspace ownership
+
+Scene topology uses the World's synchronous FrameArena for temporary numeric
+indegree/visited buffers and returns an independently owned order. Direct
+instantiation opens its own scope; instantiation inside an active World execution
+joins that scope. Propagation's persistent hierarchy markers use `world.buffers`
+and are released with their last propagation registration. Their semantic dirty
+state remains Scene-owned; no per-frame mirror or extra ECS entities are added.
+
 ## Affine authoring
 
 `Transform` stores one authored local transform: `pos`, `quat`, `scale`, and
@@ -67,6 +76,7 @@ into Physics or animation. Update propagation runs after the fixed block.
 | `TransformInterpolation` | Transient marker opting local TRS into fixed sampling; RigidBody and AnimationTargetId require it |
 | `GlobalTransform.world` | Exact hierarchy for simulation, physics sync and gameplay queries |
 | `readPresentationWorldMatrix(world, entity)` | Borrowed world matrix for camera following and every render consumer; descendants inherit the sampled parent |
+| `setTransformLookAt(world, entity, eye, target, up?)` | Camera-style write: position at `eye`, -Z toward `target`; writes (and marks changed) only when the stored f32 pose differs |
 | `resetTransformInterpolation(world, entity)` | Reset history after an explicit fixed-tick teleport or discontinuity |
 
 Before Update propagation, the reader samples the same hierarchy prospectively.
@@ -77,12 +87,14 @@ root. Rotation uses shortest-arc quaternion interpolation. Reparenting, missed
 catch-up intervals and explicit resets discard unrelated history. Removing the
 last propagation lease retires the sampler and its World-local history.
 
-The synchronous sampler borrows current TRS and Children storage while computing
-matrices. These views never enter presentation history or escape the traversal;
-history still owns copied fixed poses. Reading a moving subtree therefore avoids
-materializing full component objects for joints and detached Children snapshots.
-TRS views returned by public World.get already borrow their current column bytes;
-this optimization does not claim to remove a byte copy from those TRS fields.
+The synchronous sampler copies current TRS directly into its existing pose scratch
+through the ECS read capability and borrows Children storage while computing
+matrices. A World-local matrix scratch compares the previous publication without
+creating another row view. History still owns copied fixed poses; no per-entity
+view cache is added. Numeric traversal paths retain capacity between reads and
+use explicit active lengths; structure changes discard that capacity.
+Moving-subtree reads avoid component wrappers, transient TRS
+views and detached Children snapshots while resolving the entity's current row.
 
 Continuously moving fixed histories reuse the previous pose settled by
 before-capture. After-capture reads the final source pose without copying the
@@ -91,6 +103,11 @@ same previous pose again; a stopped writer still receives its final settlement.
 ```sh
 node packages/scene/bench/presentation.mjs
 ```
+
+`bench/presentation-allocation.mjs` accepts a built Scene entry and a private
+output path under `node --expose-gc`. It measures the complete capture/propagation
+owner with sparse, dense, idle and catch-up workloads, keeping ordinary thread
+CPU separate from allocation sampling and checking moving/stopped child poses.
 
 > [!NOTE]
 > This opt-in CPU benchmark requires `process.threadCpuUsage` and verifies four

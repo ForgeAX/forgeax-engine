@@ -1,4 +1,4 @@
-import type { GraphAccess } from '@forgeax/engine-render-graph';
+import type { GraphAccess, GraphTextureView } from '@forgeax/engine-render-graph';
 import type { RenderPipelineTarget } from '../render-pipeline';
 import type { TypedShadowTargets } from '../typed-shadow-passes';
 
@@ -20,9 +20,11 @@ export interface StandardForwardReceiverInputs {
 export function standardForwardReceiverInputs(input: {
   readonly shadows: TypedShadowTargets;
   readonly cloudShadow: RenderPipelineTarget | undefined;
-  /** Only the deferred lane produces screen-space AO for forward receivers. */
+  /** The native lane shares AO and Forward surface data through this sampled binding. */
   readonly ssao?: RenderPipelineTarget | undefined;
   readonly clusterReads: readonly GraphAccess[];
+  /** The display's PlanarReflection capture, sampled by mirroring receivers. */
+  readonly planarReflection?: GraphTextureView | undefined;
 }): StandardForwardReceiverInputs {
   const { directional, spot, point, moments } = input.shadows;
   const { cloudShadow, ssao } = input;
@@ -35,7 +37,10 @@ export function standardForwardReceiverInputs(input: {
     ...(moments === undefined ? {} : { shadowMoments: moments }),
     ...(cloudShadow === undefined ? {} : { cloudShadow }),
     ...(ssao === undefined ? {} : { ssao }),
-    extraAccesses: input.clusterReads,
+    extraAccesses:
+      input.planarReflection === undefined
+        ? input.clusterReads
+        : [...input.clusterReads, { resource: input.planarReflection, usage: 'sampled-read' }],
   };
 }
 

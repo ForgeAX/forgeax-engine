@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@12.15.0",
   "type": "module",
-  "description": "ForgeaX 最小工程模板",
+  "description": "ForgeAX 最小工程模板",
   "license": "Apache-2.0",
   "scripts": {
     "test": "vitest run",

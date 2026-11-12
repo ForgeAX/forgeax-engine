@@ -30,7 +30,27 @@ import {
 import { ResourceTable } from './resources';
 import { retainedReplayHandles } from './retention';
 import { seedDepthInitialData } from './seed-depth';
-import { type FrameTiming, timeReplayPasses } from './timing';
+import { type FrameTiming, type TimingHost, timeReplayPasses } from './timing';
+import {
+  benchmarkReplayPasses,
+  type ReplayBenchmark,
+  type ReplayBenchmarkOptions,
+} from './timing-bench';
+import {
+  compareReplays,
+  type ReplayComparison,
+  type ReplayComparisonOptions,
+  registerTimingHost,
+} from './timing-compare';
+import {
+  destroySteadySnapshot,
+  restoreSteadyState,
+  type SteadySnapshot,
+  snapshotSteadyState,
+  steadyBlocker,
+  steadyRetainedHandles,
+  withSteadyCopyUsage,
+} from './timing-steady';
 
 export interface ReplayBackend {
   readonly device: RhiDevice;
@@ -113,6 +133,24 @@ export interface ReplaySession {
    * replay device and do not restate the capture device's frame time.
    */
   timePasses(signal?: AbortSignal): Promise<Result<FrameTiming, RhiDebugError>>;
+  /**
+   * Replay the frame `warmup + repeat` times and report per-pass and
+   * whole-frame (sum, union, envelope) GPU time over the measured replays,
+   * optionally isolated per pass or with work skipped for a cost estimate.
+   */
+  benchmarkPasses(
+    options?: ReplayBenchmarkOptions,
+    signal?: AbortSignal,
+  ): Promise<Result<ReplayBenchmark, RhiDebugError>>;
+  /**
+   * Time this session's tape (the baseline) against `candidate`, another open
+   * session, in alternating chunks; see `compareReplays`.
+   */
+  compareWith(
+    candidate: ReplaySession,
+    options?: ReplayComparisonOptions,
+    signal?: AbortSignal,
+  ): Promise<Result<ReplayComparison, RhiDebugError>>;
   dispose(): Promise<Result<void, RhiDebugError>>;
 }
 
@@ -137,6 +175,9 @@ export async function openReplay(
   const table = new ResourceTable(backend.device, 0);
   let disposed = false;
   let prepared = false;
+  // Steady replay keeps every bootstrap resource and restores mutable bytes by GPU copy.
+  let kept: Set<string> | undefined;
+  let steady: SteadySnapshot | undefined;
 
   const context: ReplayExecutionContext = {
     device: backend.device,
@@ -147,10 +188,19 @@ export async function openReplay(
   };
 
   const reset = async (): Promise<Result<void, RhiDebugError>> => {
-    const cleared = table.reset(retained);
+    const cleared = table.reset(kept ?? retained);
     if (!cleared.ok) return cleared;
     prepared = false;
     return ok(undefined);
+  };
+
+  const leaveSteady = (): Result<void, RhiDebugError> => {
+    if (steady !== undefined) destroySteadySnapshot(backend.device, steady);
+    steady = undefined;
+    kept = undefined;
+    prepared = false;
+    // Drop the copy-usage variants so later reads replay the recorded descriptors.
+    return table.reset(retained);
   };
 
   const prepare = async (): Promise<Result<void, RhiDebugError>> => {
@@ -158,8 +208,9 @@ export async function openReplay(
     for (let index = 0; index < tape.bootstrap.length; index++) {
       const resource = tape.bootstrap[index];
       if (resource === undefined) continue;
-      if (retained.has(resource.handleId) && table.get(resource.handleId) !== undefined) continue;
-      const created = await executeBootstrapResource(context, resource, index);
+      if ((kept ?? retained).has(resource.handleId) && table.get(resource.handleId) !== undefined)
+        continue;
+      const created = await executeBootstrapResource(context, resource, index, kept !== undefined);
       if (!created.ok) return created;
       const seeded = await seedBootstrapResource(context, resource, index);
       if (!seeded.ok) return seeded;
@@ -168,13 +219,42 @@ export async function openReplay(
     return ok(undefined);
   };
 
-  const host = {
+  const host: TimingHost = {
     context,
     index,
-    retained,
+    get retained() {
+      return kept ?? retained;
+    },
     reset: async (): Promise<Result<void, RhiDebugError>> => {
       const cleared = await reset();
-      return cleared.ok ? prepare() : cleared;
+      if (!cleared.ok) return cleared;
+      if (steady === undefined) return prepare();
+      return restoreSteadyState(backend.device, table, steady);
+    },
+    async enterSteady() {
+      if (steady !== undefined) return ok({ steady: true, summary: steady.summary });
+      const blocker = steadyBlocker(tape, retained);
+      if (blocker !== undefined) return ok({ steady: false, reason: blocker });
+      const cleared = table.reset(retained);
+      if (!cleared.ok) return cleared;
+      kept = steadyRetainedHandles(tape, retained);
+      prepared = false;
+      const bootstrapped = await prepare();
+      if (!bootstrapped.ok) {
+        leaveSteady();
+        return bootstrapped;
+      }
+      const snapshot = snapshotSteadyState(backend.device, table, tape, retained);
+      if (!snapshot.ok) {
+        leaveSteady();
+        return snapshot;
+      }
+      steady = snapshot.value;
+      return ok({ steady: true, summary: steady.summary });
+    },
+    leaveSteady,
+    keep(handleId) {
+      kept?.add(handleId);
     },
   };
 
@@ -313,8 +393,18 @@ export async function openReplay(
       if (disposed) return positionError(-1, index.works.length);
       return timeReplayPasses(host, signal);
     },
+    async benchmarkPasses(options, signal) {
+      if (disposed) return positionError(-1, index.works.length);
+      return benchmarkReplayPasses(host, options, signal);
+    },
+    async compareWith(candidate, options, signal) {
+      if (disposed) return positionError(-1, index.works.length);
+      return compareReplays(session, candidate, options, signal);
+    },
     async dispose() {
       if (disposed) return ok(undefined);
+      if (steady !== undefined) destroySteadySnapshot(backend.device, steady);
+      steady = undefined;
       const result = table.dispose();
       disposed = true;
       prepared = false;
@@ -322,6 +412,7 @@ export async function openReplay(
     },
   };
 
+  registerTimingHost(session, host);
   return ok(session);
 }
 
@@ -418,8 +509,10 @@ async function executeBootstrapResource(
   context: ReplayExecutionContext,
   resource: BootstrapResource,
   bootstrapIndex: number,
+  steadyUsage = false,
 ): Promise<Result<void, RhiDebugError>> {
-  const event = resource.create as unknown as RhiCallEvent;
+  const recorded = resource.create as unknown as RhiCallEvent;
+  const event = steadyUsage ? withSteadyCopyUsage(recorded) : recorded;
   // Captured GPU-written buffers need not allow COPY_DST. Restore their
   // initial bytes through creation mapping, which is legal for every usage
   // (including MAP_WRITE, where adding COPY_DST would itself be invalid).
@@ -679,4 +772,35 @@ export type {
   ReplayReadbackResult,
   TextureSubresource,
 } from './readback';
-export type { FrameTiming, PassTiming } from './timing';
+export type { FrameTiming, MissingTimestampReason, PassTiming } from './timing';
+export type {
+  BenchmarkConvergence,
+  FrameBenchmark,
+  MissingPassTimestamps,
+  PassBenchmark,
+  ReplayAblation,
+  ReplayBenchmark,
+  ReplayBenchmarkOptions,
+  ReplayRestore,
+  ReplayRestoreMode,
+  ReplayVariantBenchmark,
+  TimestampCoverage,
+} from './timing-bench';
+export type {
+  ComparedPass,
+  ComparedReplay,
+  ReplayComparison,
+  ReplayComparisonOptions,
+} from './timing-compare';
+export {
+  bootstrapMedianInterval,
+  type ConfidenceInterval,
+  type DriftStats,
+  driftStats,
+  medianInterval,
+  type PairedDeltaVerdict,
+  pairedDeltaVerdict,
+} from './timing-confidence';
+export type { ReplaySkip } from './timing-plan';
+export type { FrameTimes, TimingStats } from './timing-stats';
+export type { SteadyRestoreSummary } from './timing-steady';

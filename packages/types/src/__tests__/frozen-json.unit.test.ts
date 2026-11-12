@@ -20,6 +20,14 @@ describe('isDeepFrozenJson', () => {
     expect(isDeepFrozenJson(Object.freeze({ a: { b: 1 } }))).toBe(false);
   });
 
+  it('rejects frozen cycles while accepting repeated immutable children', () => {
+    const child = Object.freeze({ value: 1 });
+    expect(isDeepFrozenJson(Object.freeze({ left: child, right: child }))).toBe(true);
+    const cyclic: { self?: object } = {};
+    cyclic.self = cyclic;
+    expect(isDeepFrozenJson(Object.freeze(cyclic))).toBe(false);
+  });
+
   it('rejects accessors, hidden or symbol keys, foreign prototypes, functions and views', () => {
     const rejected: object[] = [
       Object.defineProperty({}, 'a', { get: () => 1, enumerable: true }),

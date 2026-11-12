@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { initBasisTranscoder } from '@forgeax/engine-codec';
 import { basisEncode } from '@forgeax/engine-codec/encode';
 import { ImportError } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
@@ -7,7 +8,7 @@ import type {
   BasisEncoderModule,
   BasisModuleFactory,
 } from '../../../codec/src/wasm/basis-types.js';
-import { imageImporter } from '../image-importer.js';
+import { decodeImageForImport, imageImporter } from '../image-importer.js';
 
 const TRANSCODER_GLUE = new URL('../../../codec/pkg/basis_transcoder.mjs', import.meta.url);
 const ENCODER_GLUE = new URL('../../../codec/pkg/encode/basis_encoder.mjs', import.meta.url);
@@ -83,6 +84,33 @@ function context(source: string, bytes: Uint8Array) {
   };
 }
 
+/** Count `delete()` calls on the transcoder singleton's file classes while `run` executes. */
+async function countFileDeletes(run: () => Promise<void>): Promise<Record<FileClass, number>> {
+  const mod = (await initBasisTranscoder()) as unknown as Record<
+    FileClass,
+    { prototype: { delete(): void } }
+  >;
+  const deletes: Record<FileClass, number> = { KTX2File: 0, BasisFile: 0 };
+  const originals = {
+    KTX2File: mod.KTX2File.prototype.delete,
+    BasisFile: mod.BasisFile.prototype.delete,
+  };
+  for (const name of FILE_CLASSES) {
+    mod[name].prototype.delete = function (this: unknown) {
+      deletes[name]++;
+      originals[name].call(this);
+    };
+  }
+  try {
+    await run();
+  } finally {
+    for (const name of FILE_CLASSES) mod[name].prototype.delete = originals[name];
+  }
+  return deletes;
+}
+const FILE_CLASSES = ['KTX2File', 'BasisFile'] as const;
+type FileClass = (typeof FILE_CLASSES)[number];
+
 describe.skipIf(!pkgBuilt)('KTX2/Basis source importer', () => {
   it('rejects an unsupported precompressed extension before image decoding', async () => {
     await expect(imageImporter.import(context('fixture.dds', new Uint8Array()))).rejects.toThrow(
@@ -121,5 +149,66 @@ describe.skipIf(!pkgBuilt)('KTX2/Basis source importer', () => {
       container: 'basis',
       profile: 'uastc-ldr',
     });
+  });
+
+  it('passes embedded KTX2 (glTF KHR_texture_basisu) through the decode seam compressed', async () => {
+    const bytes = await makeKtx2();
+    const result = await decodeImageForImport(bytes, 'image/ktx2', {
+      colorSpace: 'linear',
+      mipmap: true,
+      compressionMode: 'etc1s',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.texture).toMatchObject({
+      shape: { viewDimension: '2d', extent: { width: 4, height: 4 } },
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      mips: { kind: 'none' },
+    });
+    // No re-encode or transcode: the authored container is the artifact.
+    expect(result.value.bytes).toBe(bytes);
+    expect(result.value.texture.data).toBe(bytes);
+    expect(result.value.mediaType).toBe('image/ktx2');
+    expect(result.value.assetCodec).toEqual({
+      name: 'basis',
+      container: 'ktx2',
+      profile: 'uastc-ldr',
+      version: '1',
+    });
+  });
+
+  it('rejects embedded KTX2 whose DFD transfer function contradicts the slot color space', async () => {
+    const result = await decodeImageForImport(await makeKtx2(), 'image/ktx2', {
+      colorSpace: 'srgb',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('image-decode-failed');
+    expect(result.error.detail).toMatchObject({
+      reason: expect.stringContaining('ktx2-color-space-conflict'),
+    });
+  });
+
+  it('rejects embedded bytes that are not a KTX2 container', async () => {
+    const result = await decodeImageForImport(new Uint8Array(16), 'image/ktx2', {
+      colorSpace: 'linear',
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.detail).toMatchObject({
+      reason: expect.stringContaining('ktx2-parse'),
+    });
+  });
+
+  it('deletes every transcoder file it opens', async () => {
+    const ktx2 = await makeKtx2();
+    const basis = await makeBasis();
+    const deletes = await countFileDeletes(async () => {
+      expect((await imageImporter.import(context('fixture.ktx2', ktx2))).ok).toBe(true);
+      expect((await imageImporter.import(context('fixture.basis', basis))).ok).toBe(true);
+    });
+    expect(deletes.KTX2File).toBeGreaterThan(0);
+    expect(deletes.BasisFile).toBeGreaterThan(0);
   });
 });

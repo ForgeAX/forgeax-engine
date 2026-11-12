@@ -34,7 +34,11 @@ import {
   normalizeDevProgramUrl,
   withDevProgramSession,
 } from './dev-program-url.js';
-import { engineCapabilityMeta } from './execution-workers.js';
+import {
+  type ExecutionWorkerEntriesApi,
+  engineCapabilityMeta,
+  executionWorkerEntriesName,
+} from './execution-workers.js';
 import { runtimeProgramIdentity } from './pack-program-imports.js';
 import {
   assertPluginSourceInputs,
@@ -474,6 +478,7 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
     ? `.programs-${encodeURIComponent(options.namespace)}.json`
     : '.programs.json';
   let engineIdentity = '';
+  let facades: ReadonlySet<string> = new Set();
   let session = '';
   const sessionModules = new Set<string>();
   const hasRoots = options.roots.engine !== undefined || options.roots.frontend !== undefined;
@@ -499,6 +504,8 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
     },
     configResolved(config) {
       command = config.command;
+      const workers = config.plugins.find((plugin) => plugin.name === executionWorkerEntriesName);
+      facades = (workers?.api as ExecutionWorkerEntriesApi | undefined)?.facadeModules ?? new Set();
       // A restarted standalone Vite Host can reuse its root. Its previous
       // frozen graph must retire, while all namespaces share the current Host.
       const identity = devProgramSessions.get(config) ?? randomUUID();
@@ -803,7 +810,7 @@ export function pluginProgramsBuild(options: PluginProgramBuildOptions): Plugin 
       // One complete walk over the final graph keeps membership exact even if
       // a module's parse facts were refined after its own moduleParsed hook.
       if (!error && command === 'build') archive.preserveModules(this);
-      if (!error) archive.prepareGroups(this);
+      if (!error) archive.prepareGroups(this, facades);
       if (!error && command === 'build' && archive.entries.size) {
         const engineManifest = await this.resolve('@forgeax/engine/package.json', undefined, {
           skipSelf: true,

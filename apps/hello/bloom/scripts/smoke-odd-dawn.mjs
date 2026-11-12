@@ -111,6 +111,19 @@ function sampleSource(values, width, height, u, v) {
   return [0, 1, 2].map(c => (at(ix, iy, c) * (1 - tx) + at(ix + 1, iy, c) * tx) * (1 - ty) + (at(ix, iy + 1, c) * (1 - tx) + at(ix + 1, iy + 1, c) * tx) * ty);
 }
 
+// Unreal DownsampleCommon (HIGH): four bilinear taps at +-1 source texel, each uv
+// clamped to the bilinear-safe viewport (independent oracle of bloom-horizontal.wgsl).
+function downsample4x4(values, width, height, u, v) {
+  const tx = 1 / width, ty = 1 / height;
+  const clampU = (value) => Math.max(0.5 * tx, Math.min(1 - 0.5 * tx, value));
+  const clampV = (value) => Math.max(0.5 * ty, Math.min(1 - 0.5 * ty, value));
+  const sum = [0, 0, 0];
+  for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    sampleSource(values, width, height, clampU(u + dx * tx), clampV(v + dy * ty)).forEach((value, channel) => { sum[channel] += value; });
+  }
+  return sum.map((value) => Math.max(value * 0.25, 0));
+}
+
 async function readTarget(texture, width, height) {
   const bytesPerRow = 256;
   const buffer = device.createBuffer({
@@ -206,8 +219,8 @@ async function runCase(testCase) {
     const x = index % testCase.targetWidth, y = Math.floor(index / testCase.targetWidth);
     const color = [0, 0, 0];
     for (let offset = -5; offset <= 5; offset++) {
-      const u = Math.max(0.5 / testCase.targetWidth, Math.min(1 - 0.5 / testCase.targetWidth, (x + 0.5 + offset) / testCase.targetWidth));
-      const sample = extractBloom(sampleSource(decoded, testCase.sourceWidth, testCase.sourceHeight, u, (y + 0.5) / testCase.targetHeight), threshold, smoothWidth);
+      const u = (x + 0.5 + offset) / testCase.targetWidth;
+      const sample = extractBloom(downsample4x4(decoded, testCase.sourceWidth, testCase.sourceHeight, u, (y + 0.5) / testCase.targetHeight), threshold, smoothWidth);
       const weight = 0.39894 / 2 * Math.exp(-0.5 * (offset / 2) ** 2);
       sample.forEach((value, channel) => { color[channel] += value * weight; });
     }

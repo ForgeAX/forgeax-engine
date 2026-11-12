@@ -157,7 +157,7 @@ describe('B1: _realDevice RAW_DEVICE_MAP contract (M4 fix-up)', () => {
     const buf = (bufRes as any).value;
 
     debugInst.arm(1);
-    proxyDevice.queue.writeBuffer(buf, 0, new Uint8Array([1]));
+    proxyDevice.queue.writeBuffer(buf, 0, new Uint8Array([1, 2, 3, 4]));
     debugInst.onFrameEnd();
 
     const tape = debugInst.getTape() as any;

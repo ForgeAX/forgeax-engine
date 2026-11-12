@@ -124,7 +124,7 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
     expect(b1.bucketSize).toBe(2);
   });
 
-  it('2 material runs interleaved (M1, M2, M1, M2) -> 4 separate singleton buckets (no string-bucket bug)', () => {
+  it('2 material runs interleaved (M1, M2, M1, M2) -> no fold buckets (no string-bucket bug)', () => {
     // The fold operator walks consecutive runs only; non-consecutive
     // entries of the same material must NOT be merged into one bucket
     // (would re-order draws, breaking transparent-sort stability).
@@ -143,11 +143,8 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    // 4 singleton buckets — consecutive-run fold preserves stable ordering.
-    expect(buckets).toHaveLength(4);
-    for (const b of buckets) {
-      expect(b.bucketSize).toBe(1);
-    }
+    // 4 direct draws — consecutive-run fold preserves stable ordering.
+    expect(buckets).toEqual([]);
   });
 
   it('two-material run with material key as bucket discriminator: distinct material -> never merged', () => {
@@ -165,16 +162,7 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    expect(buckets).toHaveLength(2);
-    const b0 = buckets[0];
-    const b1 = buckets[1];
-    expect(b0).toBeDefined();
-    expect(b1).toBeDefined();
-    if (b0 === undefined || b1 === undefined) return;
-    expect(b0.materialHandle).toBe(100);
-    expect(b1.materialHandle).toBe(200);
-    expect(b0.bucketSize).toBe(1);
-    expect(b1.bucketSize).toBe(1);
+    expect(buckets).toEqual([]);
   });
 
   it('same material with per-entity region snapshots -> one bucket per distinct snapshot', () => {
@@ -199,12 +187,12 @@ describe('foldDispatchBuckets — AC-10 multi-material boundary (w2)', () => {
 
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Z, renderables);
 
-    expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([2, 1, 1]);
+    expect(buckets.map((bucket) => bucket.bucketSize)).toEqual([2]);
     expect(
       buckets.map(
         (bucket) => renderables[bucket.entries.at(0)?.renderableIndex ?? -1]?.spriteRegion,
       ),
-    ).toEqual([shared.region, red.region, green.region]);
+    ).toEqual([shared.region]);
   });
 
   it('equal region values in distinct snapshot objects still fold into one bucket', () => {

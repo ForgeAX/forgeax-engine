@@ -2,7 +2,11 @@ import type { RhiCanvasContext, RhiDevice } from '@forgeax/engine-rhi';
 import { ok, RhiError } from '@forgeax/engine-rhi';
 import { describe, expect, it, vi } from 'vitest';
 import { createRenderSurfaceError, type RenderSurfaceFailureDetail } from '../errors/render';
-import { configureSurface, resolveSurfaceProfile, selectSwapChainFormat } from '../render-system';
+import {
+  configureSurface,
+  resolveSurfaceProfile,
+  selectSwapChainFormat,
+} from './render-system-driver';
 
 function device(backendKind: 'webgpu' | 'wgpu-webgl2', storageBuffer = false): RhiDevice {
   return {

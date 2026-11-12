@@ -5,8 +5,10 @@ import { BatchTopology } from '../gpu-driven/batch-topology';
 import { ShadowViewStatePool, shadowViewIdentityKey } from '../gpu-driven/shadow-views';
 import { GpuScene } from '../gpu-scene';
 import type { LightRoster, SpotLightSnapshot } from '../render-system-extract';
+import { registerLightSystems } from '../world/light-systems';
 import { renderLightsOf } from '../world/render-lights';
-import { createRenderWorld } from '../world/render-world';
+import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
+import { RenderLightInput } from '../world/scene-systems';
 import { updateShadowView } from './helpers/gpu-input-read-domain';
 
 function spot(entity: number): SpotLightSnapshot {
@@ -58,10 +60,17 @@ describe('light entity shadow cache identity', () => {
       shaderModuleFactory: { createShaderModule: () => ok(shader) },
     }).unwrap();
     const sourcePlan = new BatchTopology().sourcePlan();
-    const lights = renderLightsOf(createRenderWorld());
+    const renderWorld = createRenderWorld();
+    const input: { roster: LightRoster | undefined } = { roster: undefined };
+    renderWorld.insertResource(RenderLightInput, input);
+    registerLightSystems(renderWorld);
+    const lights = renderLightsOf(renderWorld);
+    let frames = 0;
     /** One prepared and committed frame; returns each view's cache decision by key. */
     const frame = (entities: readonly number[]) => {
-      lights.sync(spots(entities));
+      input.roster = spots(entities);
+      beginRenderFrame(renderWorld, ++frames);
+      endRenderFrame(renderWorld);
       const decisions = Object.fromEntries(
         lights.shadowViews.map((view) => [
           shadowViewIdentityKey(view.identity),

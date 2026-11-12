@@ -10,6 +10,13 @@ export interface PrimitiveAllocation<Mesh, Ranges> {
   readonly transformStart: number;
   readonly instanceTransformStart: number;
   readonly instanceTransformCount: number;
+  /**
+   * Rows reserved at `instanceStart` (and, for explicit instances, at
+   * `instanceTransformStart`); at least `instanceCount`. Rows past the count
+   * are unreferenced: no primitive row addresses them, and they keep the
+   * bytes last uploaded for them, so the CPU mirror still equals the GPU.
+   */
+  readonly instanceCapacity: number;
   readonly materialRanges: Ranges;
 }
 
@@ -21,7 +28,8 @@ const INSTANCE_TRANSFORM_START = 4;
 const INSTANCE_TRANSFORM_COUNT = 5;
 /** Change stamp: a replaced allocation differs from the one it replaced. */
 const STAMP = 6;
-const WIDTH = 7;
+const INSTANCE_CAPACITY = 7;
+const WIDTH = 8;
 
 /**
  * Slot-indexed GPU Scene allocations as numeric columns plus two shared
@@ -70,6 +78,25 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     return this.present[slot] === 1 ? (this.columns[slot * WIDTH + INSTANCE_COUNT] as number) : 0;
   }
 
+  /** Direct numeric columns for consumers that do not need a detached allocation view. */
+  transformStart(slot: number): number | undefined {
+    return this.present[slot] === 1
+      ? (this.columns[slot * WIDTH + TRANSFORM_START] as number)
+      : undefined;
+  }
+
+  instanceTransformStart(slot: number): number | undefined {
+    return this.present[slot] === 1
+      ? (this.columns[slot * WIDTH + INSTANCE_TRANSFORM_START] as number)
+      : undefined;
+  }
+
+  instanceTransformCount(slot: number): number | undefined {
+    return this.present[slot] === 1
+      ? (this.columns[slot * WIDTH + INSTANCE_TRANSFORM_COUNT] as number)
+      : undefined;
+  }
+
   get(slot: number): PrimitiveAllocation<Mesh, Ranges> | undefined {
     if (this.present[slot] !== 1) return undefined;
     const base = slot * WIDTH;
@@ -82,6 +109,7 @@ export class PrimitiveAllocations<Mesh, Ranges> {
       transformStart: columns[base + TRANSFORM_START] as number,
       instanceTransformStart: columns[base + INSTANCE_TRANSFORM_START] as number,
       instanceTransformCount: columns[base + INSTANCE_TRANSFORM_COUNT] as number,
+      instanceCapacity: columns[base + INSTANCE_CAPACITY] as number,
       materialRanges: this.ranges[slot] as Ranges,
     };
   }
@@ -98,12 +126,28 @@ export class PrimitiveAllocations<Mesh, Ranges> {
     columns[base + TRANSFORM_START] = allocation.transformStart;
     columns[base + INSTANCE_TRANSFORM_START] = allocation.instanceTransformStart;
     columns[base + INSTANCE_TRANSFORM_COUNT] = allocation.instanceTransformCount;
+    columns[base + INSTANCE_CAPACITY] = allocation.instanceCapacity;
     this.stamps = (this.stamps % 0xfffffffe) + 1;
     columns[base + STAMP] = this.stamps;
     this.meshes[slot] = allocation.mesh;
     this.ranges[slot] = allocation.materialRanges;
     if (this.present[slot] !== 1) this.count++;
     this.present[slot] = 1;
+  }
+
+  /**
+   * Change a live allocation's instance counts within its reserved capacity.
+   * The rows keep their addresses, so the stamp does not change: the slot is
+   * not a replaced allocation and its retained rows keep their history.
+   */
+  resizeInstances(slot: number, instanceCount: number, instanceTransformCount: number): void {
+    if (this.present[slot] !== 1) throw new RangeError('GPU Scene allocation unavailable');
+    const base = slot * WIDTH;
+    const capacity = this.columns[base + INSTANCE_CAPACITY] as number;
+    if (instanceCount > capacity || instanceTransformCount > capacity)
+      throw new RangeError('GPU Scene instance resize exceeds the reserved capacity');
+    this.columns[base + INSTANCE_COUNT] = instanceCount;
+    this.columns[base + INSTANCE_TRANSFORM_COUNT] = instanceTransformCount;
   }
 
   delete(slot: number): void {

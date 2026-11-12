@@ -1,0 +1,35 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "erasableSyntaxOnly": true,
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "references": [
+    {
+      "path": "../geometry"
+    },
+    {
+      "path": "../pack"
+    },
+    {
+      "path": "../tool-runtime"
+    },
+    {
+      "path": "../types"
+    }
+  ],
+  "exclude": [
+    "src/**/__tests__/**/*.ts"
+  ]
+}

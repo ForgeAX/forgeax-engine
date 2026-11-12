@@ -41,6 +41,7 @@ function topology(): RenderPipelineTopology {
     },
     featureTopologySignature: 'shadow-view-test',
     gpuDrivenTopologySignature: 'shadow-view-test',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 

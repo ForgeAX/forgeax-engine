@@ -98,9 +98,11 @@ it.each([
   }
   expect(drain).toHaveBeenCalledTimes(1);
   expect(create.mock.calls).toEqual(
-    Array.from({ length: mode === 'single' ? 1 : 4 }, () => [{ size: 256, usage: 9 }]),
+    Array.from({ length: mode === 'single' ? 1 : 2 }, () => [
+      { size: mode === 'single' ? 256 : 512, usage: 9 },
+    ]),
   );
-  expect(destroy).toHaveBeenCalledTimes(mode === 'single' ? 1 : 4);
+  expect(destroy).toHaveBeenCalledTimes(mode === 'single' ? 1 : 2);
   for (const staging of create.mock.results)
     expect(destroy).toHaveBeenCalledWith(staging.value.unwrap());
 });

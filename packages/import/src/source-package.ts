@@ -1,5 +1,6 @@
 import { type NativeCooker, NativeCookerRegistry } from '@forgeax/engine-pack/native-cooker';
 import type {
+  CookProduct,
   ImportError,
   ImportErrorDetail,
   ImportedAsset,
@@ -9,9 +10,15 @@ import type {
   Result,
 } from '@forgeax/engine-types';
 import { err, ok } from '@forgeax/engine-types';
+import type { TerminalImportProduct } from './import-product.js';
 import type { ImportRunnerFs, RunImportMeta } from './import-runner.js';
 import { runImport } from './import-runner.js';
 import type { ImporterRegistry } from './importer-registry.js';
+import {
+  persistSourcePackageBuildProduct,
+  prepareSourcePackageBuildProduct,
+  type SourcePackageBuildDdc,
+} from './source-package-build-product.js';
 
 export type ProducerReadiness = 'before-consume' | 'on-demand';
 
@@ -46,6 +53,7 @@ export interface SourcePackageProducerInput {
   readonly registry: ImporterRegistry;
   readonly fs: ImportRunnerFs;
   readonly cookers?: readonly NativeCooker[];
+  readonly ddc?: SourcePackageBuildDdc;
 }
 
 export interface SourcePackageClosureDetail {
@@ -141,18 +149,60 @@ function producedGuidsFromImportFailure(
   return [];
 }
 
+type SourcePackageImportResult =
+  | {
+      readonly ok: true;
+      readonly value:
+        | { readonly skipped: 'shader' }
+        | {
+            readonly product: TerminalImportProduct;
+            readonly cookProducts?: readonly CookProduct[];
+          };
+    }
+  | { readonly ok: false; readonly error: ImportError };
+
+/** Share product admission; only consumers needing publication receipts reconstruct cached CookProducts. */
+export async function runSourcePackageImport(
+  input: SourcePackageProducerInput,
+): Promise<SourcePackageImportResult> {
+  const cookers = new NativeCookerRegistry();
+  for (const cooker of input.cookers ?? []) cookers.register(cooker);
+  const prepared =
+    input.ddc === undefined
+      ? undefined
+      : await prepareSourcePackageBuildProduct(input.meta, input.fs, input.ddc).catch(
+          () => undefined,
+        );
+  const cached =
+    prepared === undefined
+      ? undefined
+      : await input.ddc?.products.read(prepared.subject).catch(() => undefined);
+  if (cached !== undefined && (await input.ddc?.isCurrent?.().catch(() => false)) !== false)
+    return ok({ product: cached.product });
+  const result = await runImport(
+    { ...(prepared?.meta ?? input.meta), buildPack: false },
+    input.registry,
+    prepared?.fs ?? input.fs,
+    cookers,
+  );
+  if (result.ok && !('skipped' in result.value)) {
+    const declared = new Set(input.meta.subAssets.map((asset) => asset.guid.toLowerCase()));
+    const assets = result.value.product.assets;
+    if (
+      assets.length === declared.size &&
+      new Set(assets.map((asset) => asset.guid.toLowerCase())).size === declared.size &&
+      assets.every((asset) => declared.has(asset.guid.toLowerCase()))
+    )
+      await persistSourcePackageBuildProduct(input.ddc, prepared, result.value.product);
+  }
+  return result;
+}
+
 export async function produceSourcePackage(
   input: SourcePackageProducerInput,
 ): Promise<SourcePackageProducerResult> {
   const declaredGuids = input.meta.subAssets.map((asset) => asset.guid);
-  const cookers = new NativeCookerRegistry();
-  for (const cooker of input.cookers ?? []) cookers.register(cooker);
-  const result = await runImport(
-    { ...input.meta, buildPack: false },
-    input.registry,
-    input.fs,
-    cookers,
-  );
+  const result = await runSourcePackageImport(input);
   if (!result.ok) {
     // Only output-topology failures describe GUID closure. Preserve the owning
     // import error for missing modules, unreadable sources and conversion failures.

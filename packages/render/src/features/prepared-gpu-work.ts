@@ -26,7 +26,11 @@ import {
 import { type RenderError, RenderFeaturePreparationFailedError } from '../errors/render';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { sameValue } from '../same-value';
-import type { SceneDataTarget } from '../temporal/scene-data';
+import {
+  isSceneDataTarget,
+  type SceneDataTarget,
+  sceneDataTargetOwner,
+} from '../temporal/scene-data';
 import type {
   RenderFeaturePassDeclaration,
   RenderFeaturePlan,
@@ -463,6 +467,12 @@ function stable(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+function stableTarget(value: unknown): string {
+  return isSceneDataTarget(value)
+    ? `${stable(value)}:${stable(sceneDataTargetOwner(value))}`
+    : stable(value);
 }
 
 type ComputeAccessSummary = Omit<RenderFeatureResolvedGpuComputePass, 'dispatches'>;
@@ -1710,7 +1720,7 @@ function createRenderFeatureGpuWorkSession(input: {
     if (
       prior !== undefined &&
       prior.resource === resource &&
-      stable(prior.logicalTarget) === stable(logicalTarget)
+      stableTarget(prior.logicalTarget) === stableTarget(logicalTarget)
     ) {
       touchTextureView(prior);
       return ok(prior.reference);

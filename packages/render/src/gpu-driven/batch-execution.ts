@@ -13,6 +13,7 @@ import {
 } from '@forgeax/engine-types';
 import type { MeshGpuHandles } from '../device/gpu-residency';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
+import { materialAlphaMask } from '../material-alpha-mask';
 import { supportsGpuShadowRenderState } from '../material-render-state';
 import { isCanonicalStandardPbrMaterialShader, SHADOW_CASTER_SHADER_ID } from '../pbr-pipeline';
 import type { MaterialSnapshot } from '../render-system-extract';
@@ -82,6 +83,8 @@ export type BatchArtifactResolver = (
     readonly deformation: 'rigid' | 'skin';
     readonly pass: BatchPass['kind'];
     readonly address: 'scene-index';
+    /** Compile-time alpha-test lane; opaque programs contain no discard. */
+    readonly alphaMask: boolean;
   },
 ) => MaterialShaderArtifact | undefined;
 
@@ -101,15 +104,11 @@ export type BatchExecution =
       readonly prepared: PreparedGpuDrivenDraw;
     };
 
-/**
- * Standard-family and scene-index specialized programs prepare their GPU-lane
- * pipelines asynchronously and hold the picture pending meanwhile. Other
- * programs (opaque Unlit) were presentable on the direct lane before joining
- * the GPU lane, so their GPU-lane pipelines keep that synchronous readiness.
- */
+/** Builtin and specialized programs prepare before graph recording can encode their draws. */
 export function gpuLanePreparesAsynchronously(artifact: MaterialShaderArtifact): boolean {
   return (
     artifact.specializationKey !== undefined ||
+    artifact.material === 'forgeax::default-unlit' ||
     artifact.material === SHADOW_CASTER_SHADER_ID ||
     isCanonicalStandardPbrMaterialShader(artifact.material)
   );
@@ -152,6 +151,7 @@ export function prepareBatchExecution(
     deformation: geometry.deformation,
     pass: pass.kind,
     address: 'scene-index',
+    alphaMask: materialAlphaMask(material.paramSnapshot),
   });
   if (artifact?.receipt?.sceneIndexEntry === undefined) {
     if (!required) return direct();

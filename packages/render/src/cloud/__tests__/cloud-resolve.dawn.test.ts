@@ -23,7 +23,7 @@ it('preserves scene coverage while independently compositing cloud radiance and 
     cloudDepth = texture('rgba16float', 6);
   const depth = texture('depth32float', 20),
     output = texture('rgba16float', 17);
-  const view = buffer(1280, 72),
+  const view = buffer(1296, 72),
     parameters = buffer(176, 72),
     readback = buffer(256, 9);
   const sampler = device.createSampler({ minFilter: 'linear', magFilter: 'linear' });
@@ -37,7 +37,7 @@ it('preserves scene coverage while independently compositing cloud radiance and 
     );
   fill(radiance, [0.25, 0.25, 0.25, 1]);
   fill(cloudDepth, [0, 0, 0.25, 1]);
-  const v = new Float32Array(320);
+  const v = new Float32Array(324);
   for (const offset of [0, 44, 252]) for (let i = 0; i < 4; i++) v[offset + i * 5] = 1;
   device.queue.writeBuffer(view, 0, v);
   device.queue.writeBuffer(parameters, 0, new Float32Array(44));

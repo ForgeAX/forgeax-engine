@@ -1,6 +1,7 @@
 import type { MaterialProgramAbi, ParamSchemaEntry } from '@forgeax/engine-types';
 import {
   ParamSchemaProjectionOwner,
+  STANDARD_DISPLACEMENT_MODES,
   STANDARD_MATERIAL_PARAM_SCHEMA,
   STANDARD_PHYSICAL_TEXTURE_FIELDS,
 } from '@forgeax/engine-types';
@@ -14,18 +15,32 @@ export const STANDARD_PBR_ALPHA_CUTOFF_DEFAULT = 0;
 /** Shared material contract for the standard PBR and skinned PBR shaders. */
 export const DEFAULT_STANDARD_PBR_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
   STANDARD_MATERIAL_PARAM_SCHEMA.filter(
-    (entry) => entry.name !== 'directMultiscatteringLut' && entry.name !== 'flatShading',
+    (entry) =>
+      entry.name !== 'directMultiscatteringLut' &&
+      entry.name !== 'planarReflection' &&
+      entry.name !== 'flatShading',
   );
 
 /** Numeric WGSL override ID, stable across Naga symbol mangling. */
 export const STANDARD_TEXTURE_MASK_OVERRIDE = '64000';
 
 /**
- * Numeric WGSL override ID of the Standard template's surface discard gates.
- * Each set bit keeps one fragment discard; the default keeps both. A static
- * discard defeats hidden-surface removal on tile GPUs even when it never fires.
+ * Pipeline-request key that carries the surface discard facts (bit set below)
+ * from the raster class to the shader spec. It is no longer a WGSL override:
+ * the spec turns a nonzero mask into the compile-time SURFACE_DISCARD axis, so
+ * the default opaque program holds no discard at all.
  */
 export const STANDARD_SURFACE_DISCARDS_OVERRIDE = '64001';
+/**
+ * View-level shadow reception. Zero only for a proven shadow-free Forward
+ * WebGL2 View; it is never per draw, so receiver and nonreceiver draws of one
+ * program keep sharing a PSO (per-draw reception rides the Mesh / material lane).
+ */
+export const STANDARD_SHADOW_RECEPTION_OVERRIDE = '64002';
+/** The compile-time source macro axis that keeps LOD-fade and view-clipping discards. */
+export const STANDARD_SURFACE_DISCARD_LOD_AXIS = 'LOD_DITHER';
+/** Compile-time axis for camera view clipping planes. */
+export const STANDARD_SURFACE_DISCARD_CLIPPING_AXIS = 'CLIPPING_PLANES';
 /** The visible item may carry a nonzero dithered LOD crossfade. */
 export const STANDARD_SURFACE_DISCARD_LOD_COVERAGE = 1;
 /** The view may carry world-space camera clipping planes. */
@@ -38,47 +53,111 @@ export const STANDARD_PHYSICAL_BINDING_START = 48;
 export const STANDARD_DIRECT_DFG_LUT_BINDING =
   STANDARD_PHYSICAL_BINDING_START + STANDARD_PHYSICAL_TEXTURE_FIELDS.length * 2;
 
+/** The optional PlanarReflection target and its projection uniform follow the DFG texture. */
+export const STANDARD_PLANAR_REFLECTION_TEXTURE_BINDING = STANDARD_DIRECT_DFG_LUT_BINDING + 1;
+export const STANDARD_PLANAR_REFLECTION_UNIFORM_BINDING = STANDARD_DIRECT_DFG_LUT_BINDING + 2;
+
 const standardTextureBits: ReadonlyMap<string, number> = new Map(
   DEFAULT_STANDARD_PBR_PARAM_SCHEMA.filter((entry) => entry.type === 'texture2d').map(
     (entry, index) => [entry.name, 2 ** index],
   ),
 );
 
-/** Earlier Standard samples that an independent scalar map may reuse. */
-export const STANDARD_SAMPLE_REUSE = [
-  {
-    target: 'metallicTexture',
-    shift: standardTextureBits.size,
-    sources: ['baseColorTexture', 'metallicRoughnessTexture'],
-  },
+const STANDARD_SAMPLE_REUSE_SOURCES = [
+  { target: 'metallicTexture', sources: ['metallicRoughnessTexture'] },
   {
     target: 'roughnessTexture',
-    shift: standardTextureBits.size + 2,
     sources: ['baseColorTexture', 'metallicRoughnessTexture', 'metallicTexture'],
   },
   {
     target: 'alphaTexture',
-    shift: standardTextureBits.size + 4,
-    sources: [
-      'baseColorTexture',
-      'metallicRoughnessTexture',
-      'metallicTexture',
-      'roughnessTexture',
-    ],
+    sources: ['baseColorTexture', 'metallicRoughnessTexture', 'metallicTexture'],
   },
 ] as const;
 
 /**
- * The minimum-limit Standard transmission variant has no dedicated lanes for
- * its transmission, thickness, and screen backdrop textures. It rebinds them
- * into the split scalar-map pairs, so the fixed low-limit layout is unchanged
- * and a material may use transmission only while those scalar maps are absent.
+ * Earlier Standard samples that an independent scalar map may reuse. The
+ * source lists are bounded so presence, selectors and projection bits fit the
+ * u32 pipeline override: a pair without an entry (metallic from base color,
+ * alpha from roughness) simply samples separately. Each
+ * selector stores `sourceIndex + 1` (0 = no reuse), so it is `width` bits wide
+ * and starts where the previous field ended, after the texture presence bits.
  */
-export const STANDARD_SHARED_TRANSMISSION_SLOTS = [
-  { resource: 'transmissionTexture', sampler: 'transmissionSampler', host: 'metallicTexture' },
-  { resource: 'thicknessTexture', sampler: 'thicknessSampler', host: 'roughnessTexture' },
-  { resource: 'transmissionBackdropTexture', host: 'alphaTexture' },
+export const STANDARD_SAMPLE_REUSE = (() => {
+  let shift = standardTextureBits.size;
+  return STANDARD_SAMPLE_REUSE_SOURCES.map((entry) => {
+    const width = Math.ceil(Math.log2(entry.sources.length + 1));
+    const field = { ...entry, shift, width };
+    shift += width;
+    return field;
+  });
+})();
+
+const standardReuseEnd = STANDARD_SAMPLE_REUSE.reduce(
+  (end, entry) => Math.max(end, entry.shift + entry.width),
+  standardTextureBits.size,
+);
+
+/**
+ * Standard derived layout projections. In one mode a split scalar-map pair
+ * (`host`) of the fixed Standard layout carries another author fact's resource,
+ * so no layout grows, no BGL is added and no author fact is renamed. A material
+ * may use a mode only while its host map is absent. Both the WGSL lowering and
+ * the bind-group builders read this table.
+ *
+ * - `shared-transmission`: the minimum-limit transmission variant has no
+ *   dedicated lanes for transmission, thickness and the screen backdrop.
+ * - `parallax`: the fragment march of `displacementMode: 'parallax'` reads
+ *   `displacementTexture` (its own view and sampler) through the metallic pair;
+ *   the vertex displacement pair stays vertex-only.
+ */
+export const STANDARD_DERIVED_LAYOUT_PROJECTIONS = [
+  {
+    mode: 'shared-transmission',
+    resource: 'transmissionTexture',
+    sampler: 'transmissionSampler',
+    host: 'metallicTexture',
+  },
+  {
+    mode: 'shared-transmission',
+    resource: 'thicknessTexture',
+    sampler: 'thicknessSampler',
+    host: 'roughnessTexture',
+  },
+  { mode: 'shared-transmission', resource: 'transmissionBackdropTexture', host: 'alphaTexture' },
+  { mode: 'parallax', resource: 'displacementTexture', host: 'metallicTexture' },
 ] as const;
+
+type StandardDerivedLayoutProjection = (typeof STANDARD_DERIVED_LAYOUT_PROJECTIONS)[number];
+
+export const STANDARD_SHARED_TRANSMISSION_SLOTS = STANDARD_DERIVED_LAYOUT_PROJECTIONS.filter(
+  (pair): pair is Extract<StandardDerivedLayoutProjection, { mode: 'shared-transmission' }> =>
+    pair.mode === 'shared-transmission',
+);
+
+/** The derived fragment height binding of `displacementMode: 'parallax'`. */
+export const STANDARD_PARALLAX_HEIGHT_PAIR = STANDARD_DERIVED_LAYOUT_PROJECTIONS.find(
+  (pair): pair is Extract<StandardDerivedLayoutProjection, { mode: 'parallax' }> =>
+    pair.mode === 'parallax',
+) as Extract<StandardDerivedLayoutProjection, { mode: 'parallax' }>;
+
+/**
+ * A root can march parallax only when it declares the height, its closed mode,
+ * the normal map it fades to and the metallic host pair of the derived
+ * projection. The canonical root declares all four; a sparse cooked root
+ * without the host keeps plain normal mapping.
+ */
+export function standardParallaxSelectable(declares: (name: string) => boolean): boolean {
+  return (
+    declares('displacementTexture') &&
+    declares('displacementMode') &&
+    declares('normalTexture') &&
+    declares(STANDARD_PARALLAX_HEIGHT_PAIR.host)
+  );
+}
+
+/** Compile define of an available fragment height binding; shared transmission withdraws it. */
+export const STANDARD_PARALLAX_HEIGHT_DEFINE = 'PARALLAX_HEIGHT_FRAGMENT_AVAILABLE';
 
 export const STANDARD_SHARED_TRANSMISSION_DEFINE = 'TRANSMISSION_SHARED_SLOTS';
 
@@ -104,6 +183,8 @@ export function standardSharedTransmissionDefines(
   const overrides: Record<string, boolean> = { [STANDARD_SHARED_TRANSMISSION_DEFINE]: true };
   for (const slot of STANDARD_SHARED_TRANSMISSION_SLOTS)
     overrides[standardAvailableDefine(slot.host)] = false;
+  // The parallax host now carries transmission: parallax evaluates as plain normal mapping.
+  overrides[STANDARD_PARALLAX_HEIGHT_DEFINE] = false;
   return overrides;
 }
 
@@ -132,16 +213,35 @@ export function standardTextureMask(schema: readonly ParamSchemaEntry[]): number
  * Projection selectors above the sample-reuse selectors. They specialize the
  * pipeline from authored values, so slot sampling never branches per row.
  */
-export const STANDARD_TRIPLANAR_PROJECTION_BIT = 2 ** 29;
-export const STANDARD_OBJECT_SPACE_NORMAL_BIT = 2 ** 30;
+export const STANDARD_TRIPLANAR_PROJECTION_BIT = 2 ** standardReuseEnd;
+export const STANDARD_OBJECT_SPACE_NORMAL_BIT = 2 ** (standardReuseEnd + 1);
+/** `displacementMode` parallax: the height map offsets fragment UVs instead of vertices. */
+export const STANDARD_PARALLAX_DISPLACEMENT_BIT = 2 ** (standardReuseEnd + 2);
 
-/** Derive projection selectors from effective `triplanarSpace` / `normalMapSpace` values. */
+if (standardReuseEnd + 3 > 32) {
+  throw new Error(
+    `Standard pipeline override mask needs ${standardReuseEnd + 3} bits; the WGSL override is u32`,
+  );
+}
+
+/**
+ * Read one mask bit as unsigned. The mask may exceed 2**31, where `&` would
+ * go through a signed int32; division keeps the full u32 range exact.
+ */
+export function standardMaskHasBit(mask: number, bit: number): boolean {
+  return Math.floor(mask / bit) % 2 === 1;
+}
+
+/** Derive projection selectors from effective `triplanarSpace` / `normalMapSpace` / `displacementMode` values. */
 export function standardProjectionMask(value: (name: string) => unknown): number {
   const triplanar = value('triplanarSpace');
   const normalSpace = value('normalMapSpace');
   return (
     (typeof triplanar === 'number' && triplanar > 0.5 ? STANDARD_TRIPLANAR_PROJECTION_BIT : 0) +
-    (typeof normalSpace === 'number' && normalSpace > 0.5 ? STANDARD_OBJECT_SPACE_NORMAL_BIT : 0)
+    (typeof normalSpace === 'number' && normalSpace > 0.5 ? STANDARD_OBJECT_SPACE_NORMAL_BIT : 0) +
+    (value('displacementMode') === STANDARD_DISPLACEMENT_MODES.parallax
+      ? STANDARD_PARALLAX_DISPLACEMENT_BIT
+      : 0)
   );
 }
 

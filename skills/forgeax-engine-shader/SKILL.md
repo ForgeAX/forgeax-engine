@@ -1,6 +1,6 @@
 ---
 name: forgeax-engine-shader
-description: ForgeaX WGSL composition, reflection, and cooked shader contracts. Use when authoring or debugging custom shaders, parameter schemas, bindings, or shader readiness.
+description: ForgeAX WGSL composition, reflection, and cooked shader contracts. Use when authoring or debugging custom shaders, parameter schemas, bindings, or shader readiness.
 ---
 
 # forgeax-engine-shader
@@ -17,10 +17,22 @@ compiles, cooks, or interprets feature macros.
 > [!IMPORTANT]
 > The authoring route is WGSL source plus one MaterialAsset contract. Build-time composition and reflection publish a module manifest entry; material cook publishes the artifact and receipt; runtime resolves both through the catalog. App code never installs or duplicates a shader artifact. The recovery route is source or cook repair.
 
+CI manifest transport loads the publication TypeScript source directly in native
+Node. Keep that source boundary natively resolvable and verify it without a
+bundler; bundled package tests alone do not exercise this route.
+
 Publication shares source fragments and ABI receipts. Registry admission verifies
 every source and variant before atomic adoption, but retains composed WGSL only
 when consumed. Rebuild obsolete prepared/shared profiles with the source producer;
 do not skip digest checks or prune capability variants to make a manifest smaller.
+For repeated prepared-build publication cost, inspect pooled-fact serialization.
+Intern immutable object identity only inside one publication; retain canonical
+value deduplication, every variant, exact output bytes and fresh later-build facts.
+
+Detached reflection facts may share equal immutable subtrees within one
+publication. Keep the pool local to admission, preserve complete value/order
+semantics and measure cold admission cost as well as retained storage. Borrowed
+mutable descriptors must never enter an identity-based reuse path.
 
 ## Color-lighting parity handoff
 
@@ -89,8 +101,9 @@ MaterialAsset shader. Its public mode IDs are exported as
 `@forgeax/engine-render` consume that typed binding contract.
 
 The named curves are `linear`, `reinhard`, `cineon`, `aces-filmic`, `agx`, and
-`neutral`, matching Three r184. `reinhard-extended` is the separate ForgeaX
-luminance-domain curve. Every active mode receives linear HDR color and
+`neutral`, matching Three r184. `reinhard-extended` is the separate ForgeAX
+luminance-domain curve; `ue-filmic` is Unreal's default Filmic curve and
+settings. Every active mode receives linear HDR color and
 exposure, writes linear LDR color, and relies on the display attachment for the
 final encoded output. The WGSL formulas live in
 [`src/tonemap.wgsl`](../../packages/shader/src/tonemap.wgsl); do not copy them
@@ -115,6 +128,12 @@ cull; the material only applies its published coverage.
 > probe identity with `sceneIndexDraw(visible.x)` from
 > `forgeax_view::common`, and pass `bitcast<f32>(visible.w)` to
 > `applyLodCoverage`.
+
+Scene-index Morph uses the common module's position, normal and tangent accessors
+before world transformation or skinning. Its compact target records and channel
+mask come from the Render producer; do not assume position-only target strides.
+Canonical tangent deltas have four components; imported glTF deltas have zero W
+and preserve handedness. Never read the four-component stream with an XYZ stride.
 
 ## Contract and reflection
 

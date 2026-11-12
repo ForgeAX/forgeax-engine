@@ -21,6 +21,7 @@ import type { RenderTarget } from '../targets/contracts';
 import { createRenderTargetPhysical, destroyRenderTargetPhysical } from '../targets/physical';
 import type { ViewLights } from '../world/render-lights';
 import { earthAtmosphere } from './atmosphere-fixture';
+import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
 const lights = {
   directionalCount: 0,
@@ -43,6 +44,7 @@ async function device() {
 
 function pipeline(device: RhiDevice): PipelineState {
   return {
+    pbrPipelineLayout: null,
     hdrpClusterMembershipPipeline: null,
     hdrpClusterMembershipBindGroupLayout: null,
     pointsLinesViewBuffer: device
@@ -55,6 +57,7 @@ async function fixture() {
   const gpu = await device();
   const runtime = {
     device: gpu,
+    standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     errorRegistry: {
       fire: (error: unknown) => {
         throw error;
@@ -98,6 +101,9 @@ describe('target capture lighting ownership', () => {
         normal: new Float32Array([0, 1, 0]),
         distance: 0,
         clipBias: 0,
+        distortion: 0,
+        resolutionScale: 1,
+        generateMipmaps: false,
         updateIntervalFrames: 4,
         requestVersion: 0,
       },
@@ -111,7 +117,8 @@ describe('target capture lighting ownership', () => {
     const completion = new Promise<void>((resolve) => {
       finishCapture = resolve;
     });
-    oldPlanar.submit(true, completion);
+    oldPlanar.stage(true, completion);
+    oldPlanar.settle(true);
     let finishFence!: (value: undefined) => void;
     const fence = new Promise<undefined>((resolve) => {
       finishFence = resolve;
@@ -291,7 +298,20 @@ describe('target capture lighting ownership', () => {
     const f = await fixture();
     const first = f.prepare(0);
     const second = f.prepare(1);
-    const write = vi.spyOn(f.gpu.queue, 'writeBuffer');
+    const payloads: Uint8Array[] = [];
+    const upload = f.gpu.queue.writeBuffer.bind(f.gpu.queue);
+    const write = vi.spyOn(f.gpu.queue, 'writeBuffer').mockImplementation((...args) => {
+      // Queue writes consume their source synchronously; inspect those bytes,
+      // rather than retaining a borrowed staging view after the call returns.
+      const data = args[2];
+      payloads.push(
+        (ArrayBuffer.isView(data)
+          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+          : new Uint8Array(data)
+        ).slice(),
+      );
+      return upload(...args);
+    });
     for (const capture of [first, second])
       writePointsLinesViewUbo(
         f.gpu.queue,
@@ -306,7 +326,8 @@ describe('target capture lighting ownership', () => {
     expect(b?.[0]).not.toBe(f.basePipeline.pointsLinesViewBuffer);
     expect(a?.[1]).toBe(0);
     expect(b?.[1]).toBe(0);
-    expect(a?.[2]).not.toEqual(b?.[2]);
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).not.toEqual(payloads[1]);
     expect(f.prepare(0).pipeline.pointsLinesViewBuffer).toBe(first.pipeline.pointsLinesViewBuffer);
     disposeTargetCaptureLighting(f.owner);
     await Promise.resolve();
@@ -334,6 +355,7 @@ it('uses current Fog while retaining the captured atmosphere and sun', async () 
     mode: 'exp' as const,
     near: 0,
     far: 100,
+    skyOpacity: 1,
   };
   f.state.environmentFrame = selectEnvironment({
     environments: [

@@ -16,12 +16,12 @@ import {
   ReflectionProbe,
   type Renderer,
 } from '@forgeax/engine-render';
-
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { Skin } from '@forgeax/engine-skinning';
 import type { MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import { expect } from 'vitest';
 import { withFoliageMaterialModule } from '../../../../apps/hello/foliage-transmission/src/material-contract';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { testAssets } from './helpers/runtime-assets';
@@ -276,7 +276,7 @@ export async function verifySubsurface(
     const baseline = await sample(0, 1),
       disabled = await sample(6, 0),
       active = await sample(6, 1);
-    expect(disabled.bytes).toEqual(baseline.bytes);
+    expect(equalBytes(disabled.bytes, baseline.bytes)).toBe(true);
     expect(baseline.passes).not.toContain('subsurface-diffusion');
     expect(active.passes).toContain('subsurface-diffusion');
     let spread = 0;
@@ -302,7 +302,7 @@ export async function verifySubsurface(
       spread,
       'ordinary material must diffuse the step, not merely add transmission',
     ).toBeGreaterThan(0.01);
-    expect((await sample(0, 1)).bytes).toEqual(baseline.bytes);
+    expect(equalBytes((await sample(0, 1)).bytes, baseline.bytes)).toBe(true);
     if (kind === 'rigid') {
       transmissionOnly = true;
       renderValue(renderer.setProfile({ ...original, renderPath: 'forward' }));

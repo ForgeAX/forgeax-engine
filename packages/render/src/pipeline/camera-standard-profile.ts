@@ -3,8 +3,8 @@ import {
   type AmbientOcclusionData,
   ambientOcclusionParameters,
 } from '../components/ambient-occlusion';
-import { DEFERRED_COLOR_FORMATS } from '../pipeline-spec';
 import type { PostProcessError } from '../post-process-errors';
+import { supportsStandardDeferred } from './standard-deferred-capability';
 import type { StandardProfile } from './standard-profile';
 
 interface CameraStandardDemand {
@@ -17,7 +17,11 @@ export function deriveCameraStandardConfiguration(
   profile: StandardProfile | undefined,
   config: RenderPipelineAsset['config'],
   camera: CameraStandardDemand | undefined,
-  lane: { readonly storageBuffer: boolean; readonly maxColorAttachments: number },
+  lane: {
+    readonly storageBuffer: boolean;
+    readonly maxColorAttachments: number;
+    readonly maxColorAttachmentBytesPerSample?: number | undefined;
+  },
 ): Result<
   {
     readonly profile: StandardProfile | undefined;
@@ -25,21 +29,24 @@ export function deriveCameraStandardConfiguration(
   },
   PostProcessError
 > {
-  if (
-    profile === undefined ||
-    (camera?.ambientOcclusion === undefined && camera?.screenSpaceReflection === undefined) ||
-    !lane.storageBuffer ||
-    lane.maxColorAttachments < DEFERRED_COLOR_FORMATS.length
-  ) {
-    return ok({ profile, config });
+  if (profile === undefined || camera === undefined) return ok({ profile, config });
+  const aoRequested = camera.ambientOcclusion !== undefined;
+  const deferredEligible = supportsStandardDeferred(lane, lane.maxColorAttachmentBytesPerSample);
+  if (!aoRequested && camera.screenSpaceReflection === undefined) return ok({ profile, config });
+
+  let selectedProfile = profile;
+  let selectedConfig = config;
+  if (aoRequested) {
+    const parameters = ambientOcclusionParameters(camera.ambientOcclusion);
+    if (!parameters.ok) return err(parameters.error);
+    // AO is a view-local lighting input and does not require the Deferred
+    // GBuffer. Its own SceneData producer admits Forward on no-storage lanes.
+    selectedProfile = { ...selectedProfile, ssao: parameters.value };
+    selectedConfig = { ...selectedConfig, ssao: { enabled: true, ...parameters.value } };
   }
-  if (camera.ambientOcclusion === undefined) {
-    return ok({ profile: { ...profile, renderPath: 'deferred' }, config });
-  }
-  const parameters = ambientOcclusionParameters(camera.ambientOcclusion);
-  if (!parameters.ok) return err(parameters.error);
-  return ok({
-    profile: { ...profile, renderPath: 'deferred', ssao: parameters.value },
-    config: { ...config, ssao: { enabled: true, ...parameters.value } },
-  });
+  // SSR retains its independent storage/MRT admission policy. When AO is also
+  // requested on an ineligible device, keep Forward and still honor AO.
+  if (camera.screenSpaceReflection !== undefined && deferredEligible)
+    selectedProfile = { ...selectedProfile, renderPath: 'deferred' };
+  return ok({ profile: selectedProfile, config: selectedConfig });
 }

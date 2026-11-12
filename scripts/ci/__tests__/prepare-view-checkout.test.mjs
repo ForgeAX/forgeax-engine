@@ -12,9 +12,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { parse } from 'yaml';
 import { isGlobalWorkspaceInstall } from '../workspace-install-scope.mjs';
 
-const action = readFileSync('.github/actions/prepare-view-checkout/action.yml', 'utf8');
+const action = readFileSync('.github/actions/prepare-source-checkouts/action.yml', 'utf8');
 const scalar = (source, name) =>
   source
     .match(new RegExp(`^\\s*(?:- )?${name}:\\s*(.*?)\\s*$`, 'm'))?.[1]
@@ -22,59 +23,70 @@ const scalar = (source, name) =>
 const rootDirectory = (directory) =>
   directory === undefined || ['.', './', '${{ github.workspace }}'].includes(directory);
 
+function preparationCoversInstall(prepared, condition) {
+  return prepared === true || (typeof prepared === 'string' && prepared === condition);
+}
+
+function checkoutPreparation(step, pins) {
+  if (!step.uses?.startsWith('actions/checkout@')) return undefined;
+  const input = step.with ?? {};
+  const unconditional = step.if === undefined;
+  if (
+    (input.repository === undefined || input.repository === 'ForgeAX/forgeax-engine') &&
+    rootDirectory(input.path)
+  ) {
+    pins.clear();
+    return unconditional && [true, 'true', 'recursive'].includes(input.submodules);
+  }
+  if (input.repository !== 'ForgeAX/forgeax-view' || !unconditional) return undefined;
+  const pin = input.ref?.match(/^\$\{\{ steps\.([\w-]+)\.outputs\.sha \}\}$/)?.[1];
+  return (
+    input.path === 'tools/view' &&
+    pins.has(pin) &&
+    input.token !== undefined &&
+    [false, 'false'].includes(input['persist-credentials'])
+  );
+}
+
+function resolvesCurrentViewPin(step) {
+  const run = step.run ?? '';
+  return (
+    step.if === undefined &&
+    (/echo ["']sha=\$\(git rev-parse HEAD:tools\/view\)/.test(run) ||
+      /sha=\$\(git rev-parse HEAD:tools\/view\)[\s\S]*?echo ["']sha=\$sha["']/.test(run))
+  );
+}
+
 function missingViewSources(workflow) {
-  const jobs = workflow
-    .slice(workflow.indexOf('\njobs:'))
-    .split(/\n(?= {2}[\w-]+:\r?\n)/)
-    .slice(1);
   const failures = [];
-  for (const job of jobs) {
-    const [header, ...steps] = job.split(/^ {6}- /m);
-    const name = header.match(/^ {2}([\w-]+):/)?.[1];
+  for (const [name, job] of Object.entries(parse(workflow).jobs ?? {})) {
     let ready = false;
     const pins = new Set();
-    for (const step of steps) {
-      const uses = scalar(step, 'uses') ?? step.match(/^uses: (.*)/)?.[1];
-      const unconditional = scalar(step, 'if') === undefined;
-      if (uses?.startsWith('actions/checkout@')) {
-        const repository = scalar(step, 'repository');
-        if (
-          (repository === undefined || repository === 'ForgeaX-Games/forgeax-engine') &&
-          rootDirectory(scalar(step, 'path'))
-        ) {
-          ready = unconditional && ['true', 'recursive'].includes(scalar(step, 'submodules'));
-          pins.clear();
-        } else if (repository === 'ForgeaX-Games/forgeax-view' && unconditional) {
-          const pin = scalar(step, 'ref')?.match(
-            /^\$\{\{ steps\.([\w-]+)\.outputs\.sha \}\}$/,
-          )?.[1];
-          ready =
-            scalar(step, 'path') === 'tools/view' &&
-            pins.has(pin) &&
-            scalar(step, 'token') !== undefined &&
-            scalar(step, 'persist-credentials') === 'false';
-        }
-      }
-      if (
-        unconditional &&
-        (/echo ["']sha=\$\(git rev-parse HEAD:tools\/view\)/.test(step) ||
-          /sha=\$\(git rev-parse HEAD:tools\/view\)[\s\S]*?echo ["']sha=\$sha["']/.test(step))
-      )
-        pins.add(scalar(step, 'id'));
-      if (uses === './.github/actions/prepare-view-checkout') {
-        ready = unconditional && scalar(step, 'token') !== undefined;
-      }
-      if (!rootDirectory(scalar(step, 'working-directory') ?? scalar(header, 'working-directory')))
+    for (const step of job.steps ?? []) {
+      const uses = step.uses;
+      const input = step.with ?? {};
+      const run = step.run ?? '';
+      const checkout = checkoutPreparation(step, pins);
+      if (checkout !== undefined) ready = checkout;
+      if (resolvesCurrentViewPin(step)) pins.add(step.id);
+      if (uses === './.github/actions/prepare-source-checkouts')
+        ready = input.token !== undefined && (step.if ?? true);
+      if (!rootDirectory(step['working-directory'] ?? job.defaults?.run?.['working-directory']))
         continue;
       let cwd = '.';
-      for (const line of step.split('\n')) {
-        const command = line.trim().replace(/^run:\s*/, '');
+      for (const line of run.split('\n')) {
+        const command = line.trim();
         if (/^cd\s+/.test(command))
           cwd = command
             .slice(3)
             .trim()
             .replace(/^['"]|['"]$/g, '');
-        if (rootDirectory(cwd) && isGlobalWorkspaceInstall(command) && !ready) failures.push(name);
+        if (
+          rootDirectory(cwd) &&
+          isGlobalWorkspaceInstall(command) &&
+          !preparationCoversInstall(ready, step.if)
+        )
+          failures.push(name);
       }
     }
   }
@@ -100,10 +112,10 @@ test('every global workspace installer materializes View from its current Engine
 const workflow = (steps) => `name: fixture\njobs:\n  consumer:\n    steps:\n${steps}`;
 const checkout = '      - uses: actions/checkout@v5\n        with:\n          submodules: false\n';
 const prepare =
-  '      - uses: ./.github/actions/prepare-view-checkout\n        with:\n          token: ${{ secrets.GHA }}\n';
+  '      - uses: ./.github/actions/prepare-source-checkouts\n        with:\n          token: ${{ secrets.GHA }}\n';
 const install = '      - run: pnpm install --frozen-lockfile\n';
 const literal =
-  '      - name: Resolve View\n        id: view-pin\n        run: echo "sha=$(git rev-parse HEAD:tools/view)" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v5\n        with:\n          repository: ForgeaX-Games/forgeax-view\n          ref: ${{ steps.view-pin.outputs.sha }}\n          path: tools/view\n          token: ${{ secrets.GHA }}\n          persist-credentials: false\n';
+  '      - name: Resolve View\n        id: view-pin\n        run: echo "sha=$(git rev-parse HEAD:tools/view)" >> "$GITHUB_OUTPUT"\n      - uses: actions/checkout@v5\n        with:\n          repository: ForgeAX/forgeax-view\n          ref: ${{ steps.view-pin.outputs.sha }}\n          path: tools/view\n          token: ${{ secrets.GHA }}\n          persist-credentials: false\n';
 
 test('source admission rejects missing, late, conditional, unauthenticated and stale View preparation', () => {
   for (const steps of [
@@ -159,6 +171,20 @@ test('source admission rejects missing, late, conditional, unauthenticated and s
   );
 });
 
+test('a repair guard covers only an installer with the same execution condition', () => {
+  const guard = "steps.ci-repair.outputs.reused != 'true'";
+  const prepared = prepare.replace('        with:', `        if: ${guard}\n        with:`);
+  const installed = install.replace('\n', `\n        if: ${guard}\n`);
+  assert.deepEqual(missingViewSources(workflow(checkout + prepared + installed)), []);
+  for (const steps of [
+    checkout + prepared + install,
+    checkout + prepared + installed.replace(guard, 'matrix.ubuntu'),
+    checkout + prepared + checkout + installed,
+    checkout + installed + prepared,
+  ])
+    assert.deepEqual(missingViewSources(workflow(steps)), ['consumer']);
+});
+
 test('a secondary Engine checkout neither retires nor supplies root View preparation', () => {
   const controller = checkout.replace(
     '          submodules:',
@@ -191,7 +217,7 @@ test('the shared action resolves the parent gitlink, authenticates the exact chi
   const [resolveStep, child, verification] = action.split('    - name: ').slice(1);
   assert.match(resolveStep, /id: view-pin[\s\S]*?shell: bash/);
   assert.match(child, /uses: actions\/checkout@v5/);
-  assert.equal(scalar(child, 'repository'), 'ForgeaX-Games/forgeax-view');
+  assert.equal(scalar(child, 'repository'), 'ForgeAX/forgeax-view');
   assert.equal(scalar(child, 'ref'), '${{ steps.view-pin.outputs.sha }}');
   assert.equal(scalar(child, 'path'), 'tools/view');
   assert.equal(scalar(child, 'token'), '${{ inputs.token }}');

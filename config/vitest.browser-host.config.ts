@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig, defineProject } from 'vitest/config';
 import { pcmRangeFixture } from '../packages/audio-webaudio/src/__tests__/support/pcm-range-fixture';
 import { websocketListenerCommands } from '../packages/net-websocket/__tests__/support/ws-listener-commands';
+import { selectBrowserExecutable } from '../scripts/ci/browser-executable.mjs';
 import hostFiles from '../scripts/ci/browser-host-files.json' with { type: 'json' };
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../scripts/ci/browser-process-cache.mjs';
@@ -49,7 +50,10 @@ const project = defineProject({
       ui: false,
       commands: websocketListenerCommands,
       provider: playwrightWithBackgroundPages({
-        launchOptions: { ...browserLaunch, args: [...browserLaunch.args, '--disable-gpu'] },
+        launchOptions: {
+          ...selectBrowserExecutable(browserLaunch),
+          args: [...browserLaunch.args, '--disable-gpu'],
+        },
       }),
       instances: [{ browser: 'chromium' }],
       headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0' && !!process.env.CI,

@@ -16,9 +16,9 @@
 //     graph resource key that the per-pass resolve context cannot resolve (typo /
 //     an unregistered colorTarget / mis-ordered color-target declaration vs the typed fullscreen pass).
 //   - 'ssao-radius-non-positive' (runtime path, feat-20260612-hdrp-ssao M2 / w10) ->
-//     SSAO radius parameter <= 0; fires when config.ssao.radius value is non-positive.
+//     AO radius parameter <= 0 from a camera companion or Standard profile.
 //   - 'ssao-bias-negative' (runtime path, feat-20260612-hdrp-ssao M2 / w10) ->
-//     SSAO bias parameter < 0; fires when config.ssao.bias value is negative.
+//     AO bias parameter < 0 from a camera companion or Standard profile.
 //
 // D-1: a NEW independent union rather than folding into the render / skin /
 // shadow domain unions; a separate union
@@ -46,8 +46,8 @@
  * | `'post-process-already-registered'` | throw | a second fullscreen effect registration under an already-registered `id` |
  * | `'post-process-not-found'` | throw / `Result.err` | a typed fullscreen plan whose `shader` id resolves to no registered post-process |
  * | `'fullscreen-input-not-found'` | throw | a typed fullscreen plan whose `reads` key is not a graph-declared color target, or a depth key missing TEXTURE_BINDING (D-4) |
- * | `'ssao-radius-non-positive'` | throw | SSAO `radius <= 0` |
- * | `'ssao-bias-negative'` | throw | SSAO `bias < 0` |
+ * | `'ssao-radius-non-positive'` | throw | camera AO or profile `radius <= 0` |
+ * | `'ssao-bias-negative'` | throw | camera AO or profile `bias < 0` |
  * | `'params-size-mismatch'` | throw | a fullscreen effect declaration with `params.byteSize < 16` or `defaultValue.length !== byteSize` (feat-20260621 M-A4 / D-4) |
  * | `'params-update-size-mismatch'` | throw | per-frame data-driven write where `PostProcessParams.data` byteLength !== registered `params.byteSize` (feat-20260621 M-A4 / D-4) |
  */
@@ -194,7 +194,7 @@ const POST_PROCESS_POLICY = {
     expected:
       'valid AO algorithm, quality, finite non-negative thickness/exponent/intensity, falloff in [0, 1] and resolutionScale in [0.25, 1]',
     hint: () =>
-      'Inspect detail.paramName; use algorithm gtao or ssao, quality low/medium/high, non-negative finite intensity/thickness/distanceExponent, distanceFallOff in [0, 1], resolutionScale in [0.25, 1].',
+      'Inspect detail.paramName; use algorithm gtao or ssao, quality low/medium/high, non-negative finite intensity/thickness/distanceExponent, distanceFallOff in [0, 1], resolutionScale in [0.25, 1]. For a camera companion, use the AMBIENT_OCCLUSION_* constants or remove AmbientOcclusion; for a Standard profile, correct config.ssao.<paramName> or disable AO with config.ssao = false.',
   },
   'ssao-radius-non-positive': {
     expected: 'SSAO radius must be > 0',
@@ -202,7 +202,7 @@ const POST_PROCESS_POLICY = {
       const d = detail as SsaoRadiusNonPositiveDetail;
       return (
         `SSAO parameter '${d.paramName}' is ${d.value}, must be greater than 0. ` +
-        `Set config.ssao.${d.paramName} to a positive value (default 0.25) or disable SSAO with config.ssao.enabled = false.`
+        `Set AmbientOcclusion.${d.paramName} or config.ssao.${d.paramName} to a positive value (default 0.25); remove AmbientOcclusion or set config.ssao = false to disable AO.`
       );
     },
   },
@@ -212,7 +212,7 @@ const POST_PROCESS_POLICY = {
       const d = detail as SsaoBiasNegativeDetail;
       return (
         `SSAO parameter '${d.paramName}' is ${d.value}, must be >= 0. ` +
-        `Set config.ssao.${d.paramName} to a non-negative value (default 0) or disable SSAO.`
+        `Set AmbientOcclusion.${d.paramName} or config.ssao.${d.paramName} to a non-negative value (default 0); remove AmbientOcclusion or set config.ssao = false to disable AO.`
       );
     },
   },

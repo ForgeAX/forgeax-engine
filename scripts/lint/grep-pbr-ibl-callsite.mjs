@@ -55,7 +55,13 @@ for (const entry of [
   'standard-deferred-lighting.wgsl',
 ]) {
   const source = readFileSync(resolve(shaderRoot, entry), 'utf8');
-  for (const helper of ['evaluateStandardEnvironment', 'evaluateStandardDirect']) {
+  // Deferred lighting needs split diffuse/specular, so it calls the shared
+  // evaluateStandardDirectSplit; Forward entries call evaluateStandardDirect.
+  const direct =
+    entry === 'standard-deferred-lighting.wgsl'
+      ? 'evaluateStandardDirectSplit'
+      : 'evaluateStandardDirect';
+  for (const helper of ['evaluateStandardEnvironment', direct]) {
     if (
       !source.includes('#import forgeax_pbr::standard_lighting::') ||
       countCallSites(source, helper) !== 1 ||

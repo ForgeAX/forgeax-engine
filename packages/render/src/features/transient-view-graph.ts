@@ -19,6 +19,7 @@ import { visitRenderFeatureComputeSequence } from './render-graph-compute';
 import { projectRenderFeaturePlans } from './render-graph-contribution';
 import { RenderFeatureRasterGraphProjection } from './render-graph-raster';
 import { isRenderFeatureTargetHandle } from './targets';
+import { isStandardFeatureStagePass } from './vocabulary';
 
 export interface TransientViewGraphInspection {
   readonly selectedPlans: number;
@@ -77,9 +78,10 @@ function standardTarget(target: unknown): boolean {
   );
 }
 
-/** Reject cross-stage work; the ordinary exact plan remains the fallback. */
+/** Scene and post commands borrow only the current Standard contribution's ports. */
 export function transientViewExecutionEligible(execution: RenderFeaturePlanExecution): boolean {
-  if (!execution.scope?.startsWith('view:') || (execution.placement ?? 'post') !== 'post')
+  const placement = execution.placement ?? 'post';
+  if (!execution.scope?.startsWith('view:') || (placement !== 'scene' && placement !== 'post'))
     return false;
   return execution.passes.every((pass) => {
     if (pass.shadowCaster) return false;
@@ -204,6 +206,8 @@ export function selectTransientViewPlans(
         planned.plan.resources.every((resource) => transientResourceKinds.has(resource.kind)) &&
         execution !== undefined &&
         execution.scope === `view:${planned.scope.view}` &&
+        (execution.placement ?? 'post') === (planned.placement ?? 'post') &&
+        !execution.passes.some((pass) => isStandardFeatureStagePass(pass.name)) &&
         transientViewExecutionEligible(execution)
       )
         identities.add(planned.featureIdentity);
@@ -243,6 +247,10 @@ function portFailure(): RenderGraphError {
   });
 }
 
+function standardStageFilter(names: ReadonlySet<string> | undefined): boolean {
+  return names !== undefined && [...names].every(isStandardFeatureStagePass);
+}
+
 /** Preserve each feature's ordered insertion, including empty-to-active transitions. */
 export function projectTransientViewPlans<F extends RenderGraphFrame>(
   builder: RenderGraphBuilder<F>,
@@ -266,13 +274,15 @@ export function projectTransientViewPlans<F extends RenderGraphFrame>(
     return result;
   };
   for (const execution of executions) {
+    const placement = execution.placement ?? 'post';
+    if (options.placement !== undefined && placement !== options.placement) continue;
     if (!selected.has(execution.featureIdentity)) {
       ordinary.push(execution);
       continue;
     }
     const projectedOrdinary = flush();
     if (!projectedOrdinary.ok) return projectedOrdinary;
-    const key = `${execution.featureIdentity}:${execution.scope}`;
+    const key = `${execution.featureIdentity}:${execution.scope}:${placement}`;
     const slot = context.slots.get(key);
     if (slot?.complete) continue;
     const excluded = new Set(slot?.names);
@@ -285,6 +295,11 @@ export function projectTransientViewPlans<F extends RenderGraphFrame>(
     if (names?.size === 0) continue;
     const selectedPass = (pass: import('./host').RenderFeaturePlanExecutionPass) =>
       !excluded.has(pass.name) && (names === undefined || names.has(pass.name));
+    // A different feature's pre-opaque Standard segment has no current work
+    // here. Keep it out of the graph until its targets have been initialized.
+    // If this feature later supplies a Standard named stage, selection restores
+    // its ordinary signature/prepared-key path instead of hiding that change.
+    if (standardStageFilter(options.passNames) && !execution.passes.some(selectedPass)) continue;
     const added = builder.addSubgraphPass(
       `feature-view:${key}:${names === undefined ? 'rest' : `part-${excluded.size}`}`,
       {
@@ -294,7 +309,8 @@ export function projectTransientViewPlans<F extends RenderGraphFrame>(
             (row) =>
               row.featureIdentity === execution.featureIdentity &&
               row.scope === execution.scope &&
-              row.order === execution.order,
+              row.order === execution.order &&
+              (row.placement ?? 'post') === placement,
           );
           if (current === undefined || !transientViewExecutionEligible(current))
             throw new RenderFeatureStageFailedError(

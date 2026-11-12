@@ -238,10 +238,13 @@ it('captures the RectAreaLight source texture upload, slot metadata and lit pixe
       if (live === undefined) throw new Error('missing live HDR pixels');
       const tape = decodeTape((await pending).unwrap().bytes).unwrap();
       const model = buildFrameModel(tape);
-      const lighting = model.works.filter((work) =>
-        work.pipeline.shaders.some((shader) =>
-          shader.source?.includes('rectSourceTextureRadiance'),
-        ),
+      // The depth prepass shares the material module, so keep the draws that shade colour.
+      const lighting = model.works.filter(
+        (work) =>
+          work.attachments?.colorViewHandleIds.length !== 0 &&
+          work.pipeline.shaders.some((shader) =>
+            shader.source?.includes('rectSourceTextureRadiance'),
+          ),
       );
       expect(lighting.length).toBeGreaterThan(0);
       return { tape, model, work: lighting[0] as WorkEntry, live };

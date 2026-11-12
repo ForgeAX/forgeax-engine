@@ -182,10 +182,11 @@ const SMOKE: &str = r#"(() => {
       .then(() => errors.push('undeclared native window permission was admitted'), error => { permissionDenied = String(error); });
     const observation = globalThis.__forgeaxGameInspection?.renderer();
     const completed = observation?.execution?.frame?.completed ?? 0;
-    if (document.querySelector('#forgeax-loading')?.style.display === 'none' && enteredAt === undefined) enteredAt = completed;
+    if (document.documentElement.dataset.forgeaxInput === 'open' && enteredAt === undefined) enteredAt = completed;
     const presented = enteredAt === undefined ? 0 : completed - enteredAt;
     const ready = observation?.state === 'alive' && presented >= 60;
-    const fatal = document.querySelector('#forgeax-fatal-details')?.textContent;
+    const startup = globalThis.__forgeaxStartup?.inspect?.();
+    const fatal = startup?.phase === 'failed' && startup.recovery !== 'retrying' ? startup.diagnostics || startup.message : undefined;
     if (fatal && errors.length === 0) errors.push(fatal);
     if (!ready && errors.length === 0 && performance.now() - started < 90000) return;
     clearInterval(timer);
@@ -200,7 +201,7 @@ const SMOKE: &str = r#"(() => {
       url: location.href, secureContext: isSecureContext,
       viewport: { innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio,
         document: document.documentElement.getBoundingClientRect().toJSON(), body: document.body.getBoundingClientRect().toJSON() },
-      startup: { text: document.querySelector('#forgeax-loading')?.textContent, fatal: document.querySelector('#forgeax-fatal-details')?.textContent,
+      startup: { text: document.querySelector('#forgeax-loading')?.textContent, fatal: globalThis.__forgeaxStartup?.inspect?.().diagnostics,
         scripts: [...document.scripts].map(script => ({ src: script.src, type: script.type })), inspection: typeof globalThis.__forgeaxGameInspection },
       canvas: [...document.querySelectorAll('canvas')].map(canvas => ({ width: canvas.width, height: canvas.height })),
       ui: { count: document.querySelectorAll('#game-ui > *').length, text: uiText(document.querySelector('#game-ui') ?? document) },
@@ -239,7 +240,7 @@ fn main() {
         })
         .setup(move |app| {
             save(&app.state::<HostState>())?;
-            let title = app.config().product_name.clone().unwrap_or_else(|| "ForgeaX".into());
+            let title = app.config().product_name.clone().unwrap_or_else(|| "ForgeAX".into());
             let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
                 .title(title).inner_size(1280.0, 800.0);
             if let Some(source) = &probe { builder = builder.initialization_script(source); }
@@ -253,7 +254,7 @@ fn main() {
                     let state = handle.state::<HostState>();
                     if !state.closing.swap(true, Ordering::SeqCst) {
                         if let Some(window) = handle.get_webview_window("main") {
-                            if let Err(error) = window.eval(CLOSE) { eprintln!("ForgeaX Host close failed: {error}"); handle.exit(1); }
+                            if let Err(error) = window.eval(CLOSE) { eprintln!("ForgeAX Host close failed: {error}"); handle.exit(1); }
                         }
                     }
                 }

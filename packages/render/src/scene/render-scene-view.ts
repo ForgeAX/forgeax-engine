@@ -4,6 +4,7 @@ import type { InstanceBoundsCache } from '../instances-derived-bounds';
 import type { PointsLinesRetainedSnapshot } from '../points-lines/snapshot';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import { MeshDrawSlots } from '../record/mesh-draw-slots';
+import { NativeDrawRosterOwner } from '../record/native-draw-roster';
 import type { RenderableSnapshot, RenderableTemporalSnapshot } from '../render-system-extract';
 import { type FrameList, FrameProjection, RetainedFrameProjection } from './frame-list';
 import type { FrameSet } from './frame-set';
@@ -25,12 +26,79 @@ import type {
   RenderSceneBounds,
   RenderSceneInspection,
   RenderSceneOperation,
+  RenderSceneRecord,
   RenderSceneResyncReason,
   RenderSceneSlot,
 } from './render-scene-types';
+import type { RowContent } from './row-contents';
 import { SceneRows, type WorldTransformSpan } from './scene-rows';
 import { SceneSlotFrame } from './scene-slots';
 import type { SkinSceneFrame } from './skin-scene-inputs';
+
+/** Captured native columns; this delegates to existing Mesh binding ownership, never a row cache. */
+class SceneSurfaceRows {
+  constructor(
+    readonly source: SceneSlotFrame,
+    private readonly meshes: MeshFrame,
+    private readonly materials?: MaterialFrame,
+    private readonly unavailable?: FrameSet,
+  ) {
+    Object.freeze(this);
+  }
+
+  /**
+   * Whether `read` hands every index the same identity, content and materials
+   * as `other` and raises the same material judgement; poses are not compared.
+   */
+  readsSameContent(other: SceneSurfaceRows): boolean {
+    return (
+      this.source.contentEpoch !== undefined &&
+      this.source.contentEpoch === other.source.contentEpoch &&
+      this.source.identities === other.source.identities &&
+      this.meshes === other.meshes &&
+      this.materials === other.materials &&
+      this.unavailable === other.unavailable
+    );
+  }
+
+  read<T>(
+    index: number,
+    read: (
+      worldId: number,
+      entityKey: number,
+      content: RowContent | undefined,
+      materials: Pick<RenderableSnapshot, 'material' | 'materials'> | undefined,
+    ) => T,
+  ): T {
+    let found = false;
+    const result = this.source.readContentAt(index, (content, worldId, entityKey, slot) => {
+      found = true;
+      const pending = this.unavailable?.has(slot) === true;
+      const materials = pending ? content : meshDrawMaterials(content, this.meshes, worldId);
+      // The old temporal projector validates accepted materials before judging a contributor.
+      if (!pending && this.materials !== undefined && content.authorVisible !== false)
+        hasDisplacementSource(materials, this.materials);
+      return read(worldId, entityKey, content, materials);
+    });
+    return found ? (result as T) : read(-1, -1, undefined, undefined);
+  }
+}
+
+// Producer projection ownership only; no row, contributor, or result is cached here.
+const surfaceProjectionOwners = new WeakMap<FrameList<RenderableSnapshot>, SceneSurfaceRows>();
+
+/** Custom/overridden indexed projections retain their exact ordinary at call. */
+export function sceneSurfaceRowsOf(
+  list: FrameList<RenderableSnapshot>,
+  at: unknown,
+): SceneSurfaceRows | undefined {
+  const reader = FrameProjection.rowReaderOf(list, at);
+  return reader instanceof SceneSurfaceRows &&
+    surfaceProjectionOwners.get(list) === reader &&
+    SceneSlotFrame.hasNativeAt(reader.source)
+    ? reader
+    : undefined;
+}
 
 /** One view's prepared submission: its rows revision and the slots it drew visible. */
 export interface RenderSceneSubmissionCapture {
@@ -57,6 +125,7 @@ export class RenderScene {
   private meshes: MeshFrame;
   private preparation: FrameSet;
   private readonly meshDrawSlots = new MeshDrawSlots();
+  private readonly nativeDrawRoster = new NativeDrawRosterOwner();
   private temporalTracking = false;
   private history = SubmittedHistory.cut();
   private materialized:
@@ -107,6 +176,8 @@ export class RenderScene {
   /** Release owned rows; borrowed rows stay with their owner. */
   dispose(): void {
     if (this.ownsRows) this.rows.dispose();
+    this.meshDrawSlots.clear();
+    this.nativeDrawRoster.clear();
     this.pin();
   }
 
@@ -136,12 +207,14 @@ export class RenderScene {
     return this.preparation;
   }
 
-  beginMeshDrawFrame(sources?: FrameList<RenderableSnapshot>): void {
+  beginMeshDrawFrame(sources?: Iterable<RenderableSnapshot>): void {
     const scene = this;
-    this.meshDrawSlots.beginFrame(
+    const draws =
       sources === undefined
         ? undefined
         : (function* () {
+            // beginFrame consumes each pair before advancing this private iterator.
+            let draw: { record: RenderSceneRecord; key: string } | undefined;
             for (const source of sources) {
               const key =
                 source.nativeDraw?.key ??
@@ -151,9 +224,16 @@ export class RenderScene {
               if (key === undefined) continue;
               const record = scene.lookup(source.worldId, source.entityKey);
               if (record === undefined) throw new Error('A draw must belong to the retained Scene');
-              yield { record, key };
+              if (draw === undefined) draw = { record, key };
+              else {
+                draw.record = record;
+                draw.key = key;
+              }
+              yield draw;
             }
-          })(),
+          })();
+    this.meshDrawSlots.beginFrame(
+      draws === undefined ? undefined : this.nativeDrawRoster.capture(draws),
     );
   }
 
@@ -315,15 +395,19 @@ export class RenderScene {
   materialize(): FrameList<RenderableSnapshot> {
     const current = this.frame,
       meshes = this.meshes;
-    if (this.materialized?.value.source !== current || this.materialized.meshes !== meshes)
+    if (this.materialized?.value.source !== current || this.materialized.meshes !== meshes) {
+      const reader = new SceneSurfaceRows(current, meshes);
       this.materialized = {
         meshes,
         value: new RetainedFrameProjection(
           current,
           (record) => meshDrawSnapshot(record.snapshot, meshes),
           this.rows.rowFacts(current, meshes),
+          reader,
         ),
       };
+      surfaceProjectionOwners.set(this.materialized.value, reader);
+    }
     return this.materialized.value;
   }
 
@@ -368,18 +452,14 @@ export class RenderScene {
     const history = this.history;
     const temporal = this.temporalTracking;
     const memo = this.temporalBySlot;
-    // Several Scene Passes read the same slots in one recording; resolve each once.
-    const resolved = new Map<number, RenderableSnapshot | undefined>();
+    // Mesh and temporal owners already memoize immutable row versions. A
+    // frame-local slot map would register every consumed row again each frame.
     return (slot) => {
-      if (resolved.has(slot)) return resolved.get(slot);
       const record = current.slotAt(slot);
       const source = record === undefined ? undefined : meshDrawSnapshot(record.snapshot, meshes);
-      const value =
-        source === undefined || !temporal
-          ? source
-          : temporalDrawSnapshot(source, counters, current, history, materials, memo);
-      resolved.set(slot, value);
-      return value;
+      return source === undefined || !temporal
+        ? source
+        : temporalDrawSnapshot(source, counters, current, history, materials, memo);
     };
   }
 
@@ -427,14 +507,17 @@ export class RenderScene {
     };
     // The temporal row keeps its draw projection's LOD levels, so the Scene's
     // maintained facts hold; sparse rows yield the same temporal projection.
+    const reader = new SceneSurfaceRows(current, meshes, materials, unavailable);
     const value =
       unavailable === undefined
         ? new RetainedFrameProjection(
             current,
             project,
             this.rows.rowFacts(current, meshes, project),
+            reader,
           )
-        : new FrameProjection(current, project);
+        : new FrameProjection(current, project, reader);
+    surfaceProjectionOwners.set(value, reader);
     this.temporalMaterialized = {
       current,
       history,
@@ -568,7 +651,9 @@ export class RenderScene {
   private temporalSnapshot(
     slot: RenderSceneSlot,
     resetHistory = false,
-    displacementSource = hasDisplacementSource(meshDrawMaterials(slot.snapshot, this.meshes)),
+    displacementSource = hasDisplacementSource(
+      meshDrawMaterials(slot.snapshot, this.meshes, slot.worldId),
+    ),
   ): RenderableTemporalSnapshot {
     return createTemporalSnapshot(slot, resetHistory, this.frame, this.history, displacementSource);
   }
@@ -618,7 +703,9 @@ export function sceneRow(
 }
 
 export function sceneSnapshotDelta(slots: FrameList<RenderSceneSlot>): RenderSceneApplyResult {
+  const journal = slots instanceof SceneSlotFrame ? slots.journal : undefined;
   return {
+    ...(journal === undefined ? {} : { journal }),
     created: slots.length,
     updated: 0,
     removed: 0,

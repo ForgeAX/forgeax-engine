@@ -87,8 +87,26 @@ interface ReadbackRecord {
   readonly target: RenderTarget;
   readonly request: RenderTargetReadbackRequest;
   readonly ticket: InternalReadbackTicket;
-  readonly allocation?: { readonly device: RhiDevice; readonly buffer: Buffer };
-  status: 'pending' | 'encoded' | 'submitted';
+  readonly format: RenderTargetDescriptor['format'];
+  allocation?: { readonly device: RhiDevice; readonly buffer: Buffer };
+  state:
+    | { readonly kind: 'pending' | 'encoded' | 'submitted' }
+    | { readonly kind: 'failed'; readonly error: RenderError };
+}
+
+/** A ticket keeps the format and footprint it requested, including across resize. */
+function readbackMatchesPhysical(record: ReadbackRecord, physical: RenderTargetPhysical): boolean {
+  const ticket = record.ticket,
+    descriptor = physical.descriptor;
+  if (
+    physical.generation !== ticket.deviceGeneration ||
+    descriptor.format !== record.format ||
+    ticket.mipLevel >= renderTargetMipCount(descriptor) ||
+    (ticket.layer ?? 0) >= renderTargetLayerCount(descriptor)
+  )
+    return false;
+  const extent = resolveRenderTargetMipExtent(descriptor, ticket.mipLevel);
+  return extent.width === ticket.width && extent.height === ticket.height;
 }
 
 export interface RenderTargetHost
@@ -191,6 +209,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
     try {
       const destroyed = record.allocation.device.destroyBuffer(record.allocation.buffer);
       if (!destroyed.ok) throw destroyed.error;
+      delete record.allocation;
     } catch (cause) {
       failures.push(
         new RenderTargetOperationFailedError({
@@ -202,6 +221,66 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
         }),
       );
     }
+  };
+  const encodeReadback = (
+    record: ReadbackRecord,
+    encoder: RhiCommandEncoder,
+    written?: readonly RenderTargetLayerWrite[],
+  ): void => {
+    if (record.state.kind !== 'pending' || record.allocation === undefined) return;
+    const layer = record.ticket.layer ?? 0;
+    const writtenHere =
+      record.ticket.layer !== undefined &&
+      (written?.some((write) => write.target === record.target && write.layer === layer) ?? false);
+    const candidate = writtenHere ? candidatePhysical.get(record.target as object) : undefined;
+    // A resize candidate cannot satisfy a ticket for the still-accepted extent.
+    const physical =
+      candidate !== undefined && readbackMatchesPhysical(record, candidate)
+        ? candidate
+        : (activePhysical.get(record.target as object) ?? candidate);
+    if (physical === undefined) return;
+    if (!readbackMatchesPhysical(record, physical)) {
+      const error = new RenderTargetOperationFailedError({
+        operation: 'readback',
+        stage: 'copy',
+        generation: record.ticket.deviceGeneration,
+        cause: new RenderTargetDescriptorInvalidError({
+          field: 'readback',
+          value: {
+            requested: {
+              width: record.ticket.width,
+              height: record.ticket.height,
+              mipLevel: record.ticket.mipLevel,
+              layer,
+              format: record.format,
+            },
+            actual: physical.descriptor,
+          },
+          expected:
+            'a physical target matching the requested readback format, extent, layer and generation',
+        }),
+        recovery: 'retry',
+      });
+      record.state = { kind: 'failed', error };
+      const failures: RenderError[] = [];
+      releaseReadback(record, failures);
+      for (const failure of failures) report(failure);
+      return;
+    }
+    encoder.copyTextureToBuffer(
+      {
+        texture: physical.resolveTexture ?? physical.texture,
+        mipLevel: record.ticket.mipLevel,
+        origin: { x: 0, y: 0, z: layer },
+      },
+      {
+        buffer: record.allocation.buffer,
+        bytesPerRow: record.ticket.bytesPerRow,
+        rowsPerImage: record.ticket.height,
+      },
+      [record.ticket.width, record.ticket.height, 1],
+    );
+    record.state = { kind: 'encoded' };
   };
   const releaseTarget = (target: RenderTarget): RenderError[] => {
     const failures: RenderError[] = [];
@@ -245,6 +324,8 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       device,
       stagedTarget.value.descriptor,
       stagedTarget.value.generation,
+      // A sampled 2D target (a planar mirror) lets Features read its scene depth.
+      stagedTarget.value.descriptor.sampled && stagedTarget.value.descriptor.shape === '2d',
     );
     const previous = candidatePhysical.get(target);
     candidatePhysical.delete(target);
@@ -459,7 +540,8 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
         ...(buffer === undefined || device === undefined
           ? {}
           : { allocation: { device, buffer: buffer.value } }),
-        status: 'pending',
+        format: inspected.value.descriptor.format,
+        state: { kind: 'pending' },
       } satisfies ReadbackRecord;
       readbacks.set(ticket, record);
       return { ok: true, value: ticket };
@@ -482,9 +564,13 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
             }),
           };
         }
+        if (record.state.kind === 'failed') {
+          readbacks.delete(publicTicket);
+          return { ok: false, error: record.state.error };
+        }
         const inspected = owner.inspect(record.target);
         if (!inspected.ok) return inspected;
-        if (activePhysical.get(record.target) === undefined || record.status !== 'submitted') {
+        if (activePhysical.get(record.target) === undefined || record.state.kind !== 'submitted') {
           return {
             ok: false,
             error: new RenderTargetStateInvalidError({
@@ -582,7 +668,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       frameWriters.clear();
       snapshots.beginFrame();
       for (const record of readbacks.values())
-        if (record.status === 'encoded') record.status = 'pending';
+        if (record.state.kind === 'encoded') record.state = { kind: 'pending' };
       for (const target of targets) {
         const inspected = owner.inspect(target);
         if (
@@ -604,13 +690,13 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       if (receipt !== undefined) snapshots.onFrameSubmitted(receipt, completed);
       if (receipt !== undefined) {
         for (const record of readbacks.values()) {
-          if (record.status !== 'encoded') continue;
+          if (record.state.kind !== 'encoded') continue;
           const bound = bindRenderTargetReadbackTicket(record.ticket, receipt);
           if (!bound.ok) {
             report(bound.error);
             continue;
           }
-          record.status = 'submitted';
+          record.state = { kind: 'submitted' };
           submittedReadbacks.push(record);
         }
       }
@@ -627,12 +713,12 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
         if (!result.ok) {
           for (const record of submittedReadbacks) {
             if (
-              record.status !== 'submitted' ||
+              record.state.kind !== 'submitted' ||
               record.ticket.frameId !== receipt?.frameId ||
               record.ticket.consumed
             )
               continue;
-            record.status = 'pending';
+            record.state = { kind: 'pending' };
             record.ticket.frameId = undefined;
           }
         }
@@ -706,37 +792,7 @@ export function createRenderTargetHost(options: RenderTargetHostOptions = {}): R
       encoder: RhiCommandEncoder,
       written?: readonly RenderTargetLayerWrite[],
     ): void {
-      for (const record of readbacks.values()) {
-        if (record.status !== 'pending' || record.allocation === undefined) continue;
-        const layer = record.ticket.layer ?? 0;
-        const writtenHere =
-          record.ticket.layer !== undefined &&
-          (written?.some((write) => write.target === record.target && write.layer === layer) ??
-            false);
-        // A newly written face may use its candidate; every other face reads
-        // the accepted complete target while progressive capture continues.
-        const candidate = candidatePhysical.get(record.target as object);
-        const physical =
-          writtenHere && candidate !== undefined
-            ? candidate
-            : activePhysical.get(record.target as object);
-        if (physical === undefined) continue;
-        const source = physical.resolveTexture ?? physical.texture;
-        encoder.copyTextureToBuffer(
-          {
-            texture: source,
-            mipLevel: record.ticket.mipLevel,
-            origin: { x: 0, y: 0, z: layer },
-          },
-          {
-            buffer: record.allocation.buffer,
-            bytesPerRow: record.ticket.bytesPerRow,
-            rowsPerImage: record.ticket.height,
-          },
-          [record.ticket.width, record.ticket.height, 1],
-        );
-        record.status = 'encoded';
-      }
+      for (const record of readbacks.values()) encodeReadback(record, encoder, written);
     },
     recover(): void {
       if (disposed) return;

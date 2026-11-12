@@ -23,8 +23,31 @@ export function addSsrCompositionPass(
     readonly response: GraphTextureView;
     readonly normal: GraphTextureView;
     readonly view: GraphBuffer;
+    readonly execution?: 'compute' | 'fragment';
+    readonly mipLevelCount?: number;
   },
 ) {
+  const fragment = input.execution === 'fragment';
+  const createdMips = fragment
+    ? graph.createBuffer('ssr-compose-mip-count', { size: 16 })
+    : undefined;
+  if (createdMips !== undefined && !createdMips.ok) return createdMips;
+  const mipBuffer = createdMips?.ok ? createdMips.value : undefined;
+  if (mipBuffer !== undefined) {
+    const initialized = new WeakSet<import('@forgeax/engine-rhi').Buffer>();
+    const uploaded = graph.addCopyPass('ssr-compose-mip-metadata', {
+      accesses: [{ resource: mipBuffer, usage: 'copy-dst' }],
+      encodeDirect: (_encoder, frame, resources) => {
+        const buffer = resources.buffer(mipBuffer).unwrap();
+        if (initialized.has(buffer)) return;
+        frame.runtime.device.queue
+          .writeBuffer(buffer, 0, new Uint32Array([Math.max(1, input.mipLevelCount ?? 1), 0, 0, 0]))
+          .unwrap();
+        initialized.add(buffer);
+      },
+    });
+    if (!uploaded.ok) return uploaded;
+  }
   let state:
     | {
         pipeline: RenderPipeline;
@@ -38,11 +61,12 @@ export function addSsrCompositionPass(
     accesses: [
       ...views.map((resource) => ({ resource, usage: 'sampled-read' as const })),
       { resource: input.view, usage: 'uniform-read' },
+      ...(mipBuffer === undefined ? [] : [{ resource: mipBuffer, usage: 'uniform-read' as const }]),
       { resource: input.scene.view, usage: 'color-attachment' },
     ],
     colorAttachments: [{ view: input.scene.view, loadOp: 'load', storeOp: 'store' }],
-    encode: ({ pass, frame, resources }) => {
-      const source = frame.ssrShaders?.compose;
+    encodeDirect: (pass, frame, resources) => {
+      const source = fragment ? frame.ssrShaders?.composeFragment : frame.ssrShaders?.compose;
       if (source === undefined) return;
       const device = frame.runtime.device;
       if (state === undefined) {
@@ -54,11 +78,22 @@ export function addSsrCompositionPass(
             hint: 'construct the renderer through a backend pack with shader module support',
           });
         const module = factory
-          .createShaderModule(shaderSourceDescriptor(source, 'ssr_compose'))
+          .createShaderModule(
+            shaderSourceDescriptor(source, fragment ? 'ssr_compose_fragment' : 'ssr_compose'),
+          )
           .unwrap();
         const layout = device
           .createBindGroupLayout({
             entries: [
+              ...(fragment
+                ? [
+                    {
+                      binding: 6,
+                      visibility: GPU_SHADER_STAGE_FRAGMENT,
+                      buffer: { type: 'uniform' as const },
+                    },
+                  ]
+                : []),
               ...views.map((_, binding) => ({
                 binding,
                 visibility: GPU_SHADER_STAGE_FRAGMENT,
@@ -90,10 +125,14 @@ export function addSsrCompositionPass(
           .createRenderPipeline({
             label: 'ssr_compose',
             layout: pipelineLayout,
-            vertex: { module, entryPoint: 'vs_ssr_compose', buffers: [] },
+            vertex: {
+              module,
+              entryPoint: fragment ? 'vs_ssr_compose_fragment' : 'vs_ssr_compose',
+              buffers: [],
+            },
             fragment: {
               module,
-              entryPoint: 'fs_ssr_compose',
+              entryPoint: fragment ? 'fs_ssr_compose_fragment' : 'fs_ssr_compose',
               targets: [
                 {
                   format: input.scene.format,
@@ -120,17 +159,27 @@ export function addSsrCompositionPass(
       }
       const textures = views.map((view) => resources.textureView(view).unwrap());
       const viewBuffer = resources.buffer(input.view).unwrap();
+      const countBuffer =
+        mipBuffer === undefined ? undefined : resources.buffer(mipBuffer).unwrap();
       const layout = state.layout;
       const sampler = state.sampler;
       const group = getOrCreateFromChain(
         state.groups,
-        [...textures, sampler, viewBuffer],
+        [...textures, sampler, viewBuffer, ...(countBuffer === undefined ? [] : [countBuffer])],
         'ssr-compose',
         () =>
           device
             .createBindGroup({
               layout,
               entries: [
+                ...(countBuffer === undefined
+                  ? []
+                  : [
+                      {
+                        binding: 6,
+                        resource: { kind: 'buffer' as const, value: { buffer: countBuffer } },
+                      },
+                    ]),
                 ...textures.map((value, binding) => ({
                   binding,
                   resource: { kind: 'textureView' as const, value },

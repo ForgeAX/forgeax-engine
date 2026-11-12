@@ -6,6 +6,7 @@ import type { RendererGenerationFence } from '../assembly/renderer-frame-transac
 import { ResidencyLifetime } from '../device/residency-lifetime';
 import type { StandardBakedDiffuseGi } from '../pipeline/standard-profile';
 import type { RenderSystemInternals } from '../record/render-context';
+import { recordContext } from '../world/view-record-context';
 import { createRayDiffuseComposite } from './diffuse-composite';
 import {
   createIrradianceFieldViewKernels,
@@ -134,7 +135,7 @@ export class RendererBakedField {
     const input = this.#input;
     if (input === undefined) return '';
     return JSON.stringify([
-      input.runtime.deviceScope.generation,
+      recordContext(input.runtime).deviceScope.generation,
       this.#source === undefined
         ? undefined
         : runtimeAssets(this.#source.assets).version(this.#source.handle).unwrap(),

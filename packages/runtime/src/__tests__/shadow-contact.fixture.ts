@@ -5,13 +5,14 @@ import {
   Camera,
   DirectionalLight,
   DirectionalShadowFilterValue,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
   Skylight,
 } from '@forgeax/engine-render';
 import { propagateTransforms, scenePlugin, Transform } from '@forgeax/engine-scene';
-import { assert, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { page } from 'vitest/browser';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { browserRendererFixture } from './browser-renderer.fixture';
@@ -20,9 +21,13 @@ import { renderValue } from './standard-gbuffer-replay.fixture';
 
 const filters = ['pcf1', 'pcf3', 'pcf5', 'pcssHigh'] as const;
 
-export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSize: 1024 | 2048) {
+export function registerShadowContactCases(
+  scene: 'column' | 'centimeter',
+  mapSize: 1024 | 2048,
+  backend?: Parameters<typeof browserRendererFixture>[1],
+) {
   const canvasSize = 640;
-  const rendererFor = browserRendererFixture(canvasSize);
+  const rendererFor = browserRendererFixture(canvasSize, backend);
   it.each(
     filters.map((filter) => ({ filter, scene, mapSize })),
   )('keeps $scene $filter/$mapSize shadows attached without shadowing unobstructed ground', async ({
@@ -38,8 +43,6 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
     // tie in Chrome/lavapipe. Keep the near-field sweep asymmetric so the
     // oracle exercises camera motion without depending on that raster boundary.
     const cameraPositions = small ? ([1.2, 1.03, 0.8] as const) : ([14, 12, 10] as const);
-    // Snapshot the full backing store. Chromium's direct canvas copy can read
-    // a stale presented surface; the synchronous PNG snapshot is authoritative.
     const { canvas, renderer } = await rendererFor();
     canvas.style.width = `${canvasSize}px`;
     canvas.style.height = `${canvasSize}px`;
@@ -102,28 +105,39 @@ export function registerShadowContactCases(scene: 'column' | 'centimeter', mapSi
       )
       .unwrap();
     const lease = renderValue(renderer.attach(world));
-    const output = new OffscreenCanvas(canvasSize, canvasSize);
-    const ctx = output.getContext('2d', { willReadFrequently: true });
-    assert(ctx);
-    const capture = async (_label: string) => {
+    const capture = async (label: string) => {
+      let receipt: FrameReceipt | undefined;
       for (let frame = 0; frame < 3; frame++) {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        await drawReadyFrame(renderer, {
-          leases: [lease],
-          camera: { lease },
-          environment: { lease },
-          fixedStep: world.getResource(FixedTime).tick,
-        });
+        receipt = await drawReadyFrame(
+          renderer,
+          {
+            leases: [lease],
+            camera: { lease },
+            environment: { lease },
+            fixedStep: world.getResource(FixedTime).tick,
+          },
+          frame === 2 ? ['final-display'] : undefined,
+        );
       }
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      const dataUrl = canvas.toDataURL('image/png');
-      const bytes = Uint8Array.from(atob(dataUrl.split(',', 2)[1] ?? ''), (c) => c.charCodeAt(0));
-      const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
-      ctx.clearRect(0, 0, output.width, output.height);
-      ctx.drawImage(bitmap, 0, 0);
-      bitmap.close();
-      return ctx.getImageData(0, 0, output.width, output.height);
+      if (receipt === undefined) throw new Error(`missing shadow contact receipt ${label}`);
+      const observation = renderValue(
+        await renderer.observe(receipt, { include: ['final-display'] }),
+      ).observations?.find((image) => image.domain === 'final-display');
+      if (observation === undefined) throw new Error(`missing shadow contact display ${label}`);
+      // A WebGL drawing buffer can be cleared at presentation. Read the actual
+      // completed attachment through its receipt, retaining the encoded oracle.
+      const pixels = new Uint8ClampedArray(canvasSize * canvasSize * 4);
+      for (let row = 0; row < canvasSize; row++)
+        pixels.set(
+          observation.bytes.subarray(
+            row * observation.metadata.bytesPerRow,
+            row * observation.metadata.bytesPerRow + canvasSize * 4,
+          ),
+          row * canvasSize * 4,
+        );
+      return new ImageData(pixels, canvasSize, canvasSize);
     };
     const projectReceiver = (data: ImageData, x: number, z: number, cameraZ: number) => {
       // Fixed identity camera: project the known y=0 receiver points, not a guessed screen crop.

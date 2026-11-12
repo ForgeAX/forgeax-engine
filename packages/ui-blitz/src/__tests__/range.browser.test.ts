@@ -330,6 +330,18 @@ it('mounts the actual settings UiAsset and matches pointer, keyboard and cancele
       // low-level drag bypasses Playwright's ordinary actionability checks.
       await userEvent.hover(nativeField);
       const rect = nativeField.getBoundingClientRect();
+      const events: unknown[] = [];
+      for (const kind of ['pointerdown', 'pointermove', 'pointerup', 'input', 'change'])
+        nativeField.addEventListener(kind, (event) => {
+          const pointer = event as PointerEvent;
+          events.push({
+            kind,
+            trusted: event.isTrusted,
+            x: pointer.clientX,
+            y: pointer.clientY,
+            value: nativeField.value,
+          });
+        });
       // Send the same acknowledged pointer phases as Blitz below. The combined
       // drag action left Chromium unchanged in the failing CI event trace.
       for (const type of ['mousePressed', 'mouseMoved', 'mouseReleased'] as const)
@@ -341,7 +353,15 @@ it('mounts the actual settings UiAsset and matches pointer, keyboard and cancele
           buttons: type === 'mouseReleased' ? 0 : 1,
           clickCount: 1,
         });
-      expect(nativeField.value).toBe('99');
+      expect(
+        nativeField.value,
+        JSON.stringify({
+          rect: rect.toJSON(),
+          frame: window.frameElement?.getBoundingClientRect().toJSON(),
+          metrics: await cdp().send('Page.getLayoutMetrics'),
+          events,
+        }),
+      ).toBe('99');
     },
   );
   const blitzField = required(fields[1]);

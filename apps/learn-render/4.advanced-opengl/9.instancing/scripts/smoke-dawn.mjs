@@ -33,6 +33,7 @@
 //   - `[smoke] pixelSamples=<json>`
 //   - `[smoke] PASS - 4 criteria GREEN: ...`
 
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -357,13 +358,7 @@ const frameStart = Date.now();
 let framesObserved = 0;
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
+  await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
   framesObserved++;
 }
 const device = sharedDevice;
@@ -432,7 +427,6 @@ console.log(`[smoke] pixelSamples=${JSON.stringify(pixelSamples)}`);
 
 const distance = (a, b) =>
   Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
-const CLEAR_COLOR = [0.2, 0.3, 0.3];
 // Verdict relies on the planetCenter probe being non-clear (the
 // instanced ring may project off-screen for low ASTEROID_COUNT, so the
 // gate is "at least 1 of the 3 belt sites is non-clear").
@@ -441,7 +435,12 @@ let meshedRenderCount = 0;
 const perSiteDistance = {};
 for (const name of meshSiteNames) {
   const site = pixelSamples[name];
-  const dist = distance(site, CLEAR_COLOR);
+  // Compare against actual background pixels: a missing scene must fail even
+  // when the target was never cleared to the configured linear clear color.
+  const dist = Math.min(
+    distance(site, pixelSamples.cornerTL),
+    distance(site, pixelSamples.cornerBR),
+  );
   perSiteDistance[name] = dist.toFixed(4);
   if (dist > SMOKE_PIXEL_THRESHOLD) meshedRenderCount++;
 }

@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { World } from '@forgeax/engine-ecs';
 import { packInterleavedVertexAttributes } from '@forgeax/engine-geometry';
 import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/renderer-host';
@@ -7,6 +8,7 @@ import type {
 } from '@forgeax/engine-render/internal/construct-renderer';
 import {
   Camera,
+  type FrameReceipt,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -14,7 +16,6 @@ import {
   perspective,
 } from '@forgeax/engine-render';
 import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
-import { acquireCanvasContext } from '@forgeax/engine-rhi-webgpu';
 import { Transform } from '@forgeax/engine-scene';
 import { err, ok, type MeshAsset, type VertexAttributeMap } from '@forgeax/engine-types';
 import {
@@ -427,18 +428,11 @@ async function copyForgeaxObservation(
     },
   });
   if (!observation.ok) {
-    throw new Error(`ForgeaX copyTextureToBuffer readback unavailable: ${observation.error.code}`);
+    throw new Error(`ForgeAX copyTextureToBuffer readback unavailable: ${observation.error.code}`);
   }
   return observation.value.bytes;
 }
 
-async function copyForgeaxSurface(device: RhiDevice, canvas: HTMLCanvasElement): Promise<Uint8Array> {
-  const context = acquireCanvasContext(canvas);
-  if (!context.ok) throw new Error('ForgeaX display surface context is unavailable');
-  const texture = context.value.getCurrentTexture();
-  if (!texture.ok) throw texture.error;
-  return copyTextureBytes(device, texture.value, WIDTH, HEIGHT, 4);
-}
 
 function setupWorld(assets: AssetRegistry, fixture: VertexColorSemanticFixture, forceWhite = false): World {
   const world = new World({ assets });
@@ -482,7 +476,6 @@ function setupWorld(assets: AssetRegistry, fixture: VertexColorSemanticFixture, 
 
 async function captureForgeaxWithAssembly(
   assembly: RendererHostAssembly,
-  surface: CaptureCanvas,
   { fixture, backend, sourceSha, vertexColorFalsifier }: VertexCaptureOptions,
 ): Promise<VertexColorCaptureOutput> {
   const { renderer, debugDrawHost } = assembly;
@@ -494,22 +487,31 @@ async function captureForgeaxWithAssembly(
     const attached = renderer.attach(world);
     if (!attached.ok) throw attached.error;
     const lease = attached.value;
+    let finalReceipt: FrameReceipt | undefined;
     for (let frame = 0; frame < FRAME_COUNT; frame += 1) {
       world.update().unwrap();
-      const draw = renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } });
-      if (!draw.ok) throw new Error(`ForgeaX frame ${frame} failed: ${draw.error.code}`);
-      if (frame === 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      }
+      finalReceipt = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        frame === FRAME_COUNT - 1 ? ['final-display'] : undefined,
+      );
     }
-    const finalBytes = normalizeCanvasReadbackBytes(
-      await copyForgeaxSurface(device, surface.canvas),
-      (globalThis as { __forgeaxSwapChainFormat?: GPUTextureFormat }).__forgeaxSwapChainFormat,
-    );
-    // Acquire the browser swap-chain texture before the observation copy. A
-    // completed copy submission can advance a browser surface to its next
-    // texture; reading getCurrentTexture() afterward would capture a valid but
-    // untouched zeroed frame while the linear attachment remains populated.
+    if (finalReceipt === undefined) throw new Error('Vertex-color producer completed no frames');
+    const observed = await renderer.observe(finalReceipt, { include: ['final-display'] });
+    if (!observed.ok) throw observed.error;
+    const display = observed.value.observations?.find((entry) => entry.domain === 'final-display');
+    if (display === undefined) throw new Error('Vertex-color final display observation is unavailable');
+    const { width, height, bytesPerRow, format } = display.metadata;
+    if (width !== WIDTH || height !== HEIGHT) throw new Error('Vertex-color display extent changed');
+    if (format !== 'rgba8unorm' && format !== 'rgba8unorm-srgb' &&
+        format !== 'bgra8unorm' && format !== 'bgra8unorm-srgb')
+      throw new Error(`Vertex-color display requires RGBA8 or BGRA8, received ${format}`);
+    const packed = new Uint8Array(WIDTH * HEIGHT * 4);
+    for (let row = 0; row < HEIGHT; row++)
+      packed.set(display.bytes.subarray(row * bytesPerRow, row * bytesPerRow + WIDTH * 4), row * WIDTH * 4);
+    const finalBytes = normalizeCanvasReadbackBytes(packed, format);
+    // The receipt owns a real GPU display copy before canvas retirement. HDR
+    // remains an independent native attachment read from the same scene frame.
     const bytes = await copyForgeaxObservation(legacyHost, device);
     const sourceFixtureHash = VERTEX_COLOR_REQUIRED_CASES.find((entry) => entry.caseId === fixture.caseId)?.sourceFixtureHash;
     if (sourceFixtureHash === undefined) throw new Error(`missing fixture hash for ${fixture.caseId}`);
@@ -543,13 +545,13 @@ export async function createForgeaxVertexColorCaptureSession(
     surface.destroy();
     const error = constructed.error;
     const code = 'code' in error ? error.code : 'engine-environment-error';
-    throw new Error(`ForgeaX renderer unavailable: ${code}`);
+    throw new Error(`ForgeAX renderer unavailable: ${code}`);
   }
   let disposed = false;
   return {
     capture(options) {
-      if (disposed) return Promise.reject(new Error('ForgeaX vertex-color capture session is disposed'));
-      return captureForgeaxWithAssembly(constructed.value, surface, options);
+      if (disposed) return Promise.reject(new Error('ForgeAX vertex-color capture session is disposed'));
+      return captureForgeaxWithAssembly(constructed.value, options);
     },
     async dispose() {
       if (disposed) return;
@@ -567,7 +569,7 @@ export async function captureForgeaxVertexColor(options: VertexCaptureOptions): 
   if (options.forgeaxBundler === undefined) {
     throw new Error(JSON.stringify({
       code: 'producer-entry-missing',
-      detail: 'ForgeaX bundler options were not injected into the capture entry',
+      detail: 'ForgeAX bundler options were not injected into the capture entry',
       recovery: 'run a producer entry with an injected shader manifest (Browser adapter or Dawn data URL)',
     }));
   }

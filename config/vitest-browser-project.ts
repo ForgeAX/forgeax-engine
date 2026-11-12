@@ -26,9 +26,12 @@ import { vfxMeshLightingCommands } from '../packages/runtime/src/__tests__/vfx-m
 import { createMaterialPackCooker } from '../packages/shader-compiler/src/index';
 import { fixedFieldCommands } from '../packages/vfx-render/src/__tests__/force-fields-fixed-ticks.server';
 import { nativeBindingCommands } from '../packages/wgpu-wasm/scripts/__tests__/native-binding.commands.mjs';
+import { productionCspCommands } from '../packages/wgpu-wasm/scripts/__tests__/production-csp.commands.mjs';
+import { selectBrowserExecutable } from '../scripts/ci/browser-executable.mjs';
 import { browserFixtureInputs } from '../scripts/ci/browser-fixture-inputs.mjs';
 import browserLaunch from '../scripts/ci/browser-launch.json' with { type: 'json' };
 import { browserProcessCacheDir } from '../scripts/ci/browser-process-cache.mjs';
+import { browserStartupDiagnostics } from '../scripts/ci/browser-startup-diagnostics.mjs';
 import materialContractInventory from '../scripts/material-contract-inventory.json' with {
   type: 'json',
 };
@@ -131,6 +134,29 @@ const previewExternalRoots = [
   submoduleSpriteAtlasDir,
 ];
 
+function browserLaunchOptions() {
+  const selectedLaunch = selectBrowserExecutable(browserLaunch);
+  return {
+    ...selectedLaunch,
+    args: [
+      ...selectedLaunch.args.flatMap((argument) => {
+        if (process.platform !== 'win32') return [argument];
+        if (argument.startsWith('--enable-features=Vulkan')) return [];
+        if (argument === '--use-vulkan=swiftshader') return ['--use-webgpu-adapter=swiftshader'];
+        return [argument];
+      }),
+      // CI deliberately selects software. Cold submissions can exceed
+      // Chromium's GPU watchdog; the unchanged test deadlines bound them.
+      ...(process.env.CI
+        ? [
+            ...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader']),
+            '--disable-gpu-watchdog',
+          ]
+        : []),
+    ],
+  };
+}
+
 export function createBrowserProject() {
   const runEntityVisibilityBrowserTest = process.env.FORGEAX_BROWSER_ENTITY_VISIBILITY === '1';
   // Vitest's Browser server calls globTestFiles without CLI filters when
@@ -171,8 +197,10 @@ export function createBrowserProject() {
     ['packages/runtime/src/__tests__/vfx-mesh-lighting-publication.browser.test.ts', []],
     ['packages/runtime/src/__tests__/optional-pipeline-library.browser.test.ts', []],
     ['packages/render/src/__tests__/gpu-driven-stable-command-addresses.browser.test.ts', []],
+    ['packages/render/src/__tests__/transient-scene-taa.browser.test.ts', []],
     ['packages/render/src/record/__tests__/indirect-bundle-retirement.browser.test.ts', []],
     ['packages/app/__tests__/engine-worker-asset-loss.browser.test.ts', []],
+    ['packages/app/src/__tests__/auto-exposure-webgl2.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/browser-extension.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/dom.browser.test.ts', []],
     ['packages/ui-blitz/src/__tests__/game-guide-keyboard.browser.test.ts', []],
@@ -273,7 +301,10 @@ export function createBrowserProject() {
     },
     // File-only discovery uses this project's actual include/exclude rules;
     // it must not initialize renderer or asset publications.
-    plugins: process.argv.includes('list') && process.argv.includes('--filesOnly') ? [] : plugins,
+    plugins:
+      process.argv.includes('list') && process.argv.includes('--filesOnly')
+        ? []
+        : [...browserStartupDiagnostics('browser'), ...plugins],
     server: {
       // Loop state is not a browser source; test discovery exclusions do not filter Vite watches.
       watch: { ignored: ['**/.forgeax-harness/**'] },
@@ -333,6 +364,7 @@ export function createBrowserProject() {
         ui: false,
         commands: {
           ...nativeBindingCommands,
+          ...productionCspCommands,
           ...fixedFieldCommands,
           ...renderWorkerCommands,
           ...websocketListenerCommands,
@@ -344,26 +376,7 @@ export function createBrowserProject() {
           ...diffuseGiCommands,
         },
         provider: playwrightWithBackgroundPages({
-          launchOptions: {
-            ...browserLaunch,
-            args: [
-              ...browserLaunch.args.flatMap((argument) => {
-                if (process.platform !== 'win32') return [argument];
-                if (argument.startsWith('--enable-features=Vulkan')) return [];
-                if (argument === '--use-vulkan=swiftshader')
-                  return ['--use-webgpu-adapter=swiftshader'];
-                return [argument];
-              }),
-              // CI deliberately selects software. Cold submissions can exceed
-              // Chromium's GPU watchdog; the unchanged test deadlines bound them.
-              ...(process.env.CI
-                ? [
-                    ...(process.platform === 'win32' ? [] : ['--use-angle=swiftshader']),
-                    '--disable-gpu-watchdog',
-                  ]
-                : []),
-            ],
-          },
+          launchOptions: browserLaunchOptions(),
         }),
         instances: [{ browser: 'chromium' }],
         headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0' && !!process.env.CI,

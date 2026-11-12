@@ -1,3 +1,4 @@
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 /// <reference types="@webgpu/types" />
 
 import type { RhiInstance } from '@forgeax/engine-rhi';
@@ -262,7 +263,9 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
       })
     ).unwrap();
     try {
-      expect((await replay.readResource('buffer:seed')).unwrap().bytes).toEqual(expected);
+      expect(equalBytes((await replay.readResource('buffer:seed')).unwrap().bytes, expected)).toBe(
+        true,
+      );
       expect(tape.bootstrap[0]?.create.desc).toEqual({ size: expected.length, usage });
     } finally {
       (await replay.dispose()).unwrap();
@@ -288,7 +291,9 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
     ).toBe(true);
     if (!baseline.ok) throw new Error(baseline.error.hint);
     expect(baseline.value.attachment?.bytes.byteLength).toBe(WIDTH * HEIGHT * 4);
-    expect(baseline.value.attachment?.bytes.slice(0, 4)).toEqual(new Uint8Array([23, 23, 23, 23]));
+    expect(
+      equalBytes(baseline.value.attachment?.bytes.slice(0, 4), new Uint8Array([23, 23, 23, 23])),
+    ).toBe(true);
     expect(baseline.value.attachment?.provenance.resourceId).toBe('texture-view:rt');
     expect(baseline.value.attachment?.provenance.selectedWorkIndex).toBe(0);
     expect(baseline.value.attachment?.provenance.subresource).toBeNull();
@@ -300,11 +305,11 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
     ).toBe(true);
     if (!selected.ok) throw new Error(selected.error.hint);
     expect(selected.value.provenance.selectedWorkIndex).toBe(0);
-    expect(selected.value.bytes).toEqual(baseline.value.attachment?.bytes);
+    expect(equalBytes(selected.value.bytes, baseline.value.attachment?.bytes)).toBe(true);
     const bootstrap = await first.value.readResource('texture-view:rt');
     if (!bootstrap.ok) throw new Error(bootstrap.error.hint);
     expect(bootstrap.value.provenance.selectedWorkIndex).toBeUndefined();
-    expect(selected.value.bytes).not.toEqual(bootstrap.value.bytes);
+    expect(equalBytes(selected.value.bytes, bootstrap.value.bytes)).toBe(false);
 
     const second = await openReplay(tape, {
       device: await freshDevice(pack),
@@ -315,7 +320,7 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
     const replay = await second.value.inspectWork(0, ['pixels']);
     expect(replay.ok).toBe(true);
     if (!replay.ok) throw new Error(replay.error.hint);
-    expect(replay.value.attachment?.bytes).toEqual(baseline.value.attachment?.bytes);
+    expect(equalBytes(replay.value.attachment?.bytes, baseline.value.attachment?.bytes)).toBe(true);
     expect((await first.value.dispose()).ok).toBe(true);
     expect((await second.value.dispose()).ok).toBe(true);
   }, 60_000);
@@ -364,9 +369,11 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
       const inspected = (await replay.inspectWork(0, ['pixels'])).unwrap();
       const bytes = inspected.attachment?.bytes;
       // The uncovered corner carries the earlier-submitted clear, not the seed.
-      expect(bytes?.slice(0, 4)).toEqual(new Uint8Array([255, 0, 255, 255]));
+      expect(equalBytes(bytes?.slice(0, 4), new Uint8Array([255, 0, 255, 255]))).toBe(true);
       const center = ((HEIGHT / 2) * WIDTH + WIDTH / 2) * 4;
-      expect(bytes?.slice(center, center + 4)).toEqual(new Uint8Array([255, 0, 0, 255]));
+      expect(equalBytes(bytes?.slice(center, center + 4), new Uint8Array([255, 0, 0, 255]))).toBe(
+        true,
+      );
     } finally {
       (await replay.dispose()).unwrap();
     }
@@ -393,14 +400,17 @@ describe.skipIf(SKIP_DAWN)('ReplaySession Dawn contract', () => {
       expect(attachment?.provenance.selectedWorkIndex).toBe(0);
       expect(attachment?.provenance.subresource).toBeNull();
       const centerOffset = (Math.floor(HEIGHT / 2) * WIDTH + Math.floor(WIDTH / 2)) * 4;
-      expect(attachment?.bytes.slice(centerOffset, centerOffset + 4)).toEqual(
-        new Uint8Array([255, 0, 0, 255]),
-      );
+      expect(
+        equalBytes(
+          attachment?.bytes.slice(centerOffset, centerOffset + 4),
+          new Uint8Array([255, 0, 0, 255]),
+        ),
+      ).toBe(true);
 
       const repeated = await replayResult.value.inspectWork(0, ['pixels']);
       expect(repeated.ok).toBe(true);
       if (!repeated.ok) throw new Error(repeated.error.hint);
-      expect(repeated.value.attachment?.bytes).toEqual(attachment?.bytes);
+      expect(equalBytes(repeated.value.attachment?.bytes, attachment?.bytes)).toBe(true);
       expect(repeated.value.attachment?.provenance.resourceId).toBe('texture-view:resolve');
       expect(repeated.value.attachment?.provenance.selectedWorkIndex).toBe(0);
       expect(repeated.value.attachment?.provenance.subresource).toBeNull();

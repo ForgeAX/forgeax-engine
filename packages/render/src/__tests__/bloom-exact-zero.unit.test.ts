@@ -8,11 +8,11 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { standardBloomAdmitted } from '../bloom-admission';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { inspectStandardBloomGraph } from '../pipeline/standard-post';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 
 let device: RhiDevice;
 
@@ -56,6 +56,7 @@ function topology(bloom: 'off' | 'on', bloomIntensity = 1): RenderPipelineTopolo
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 

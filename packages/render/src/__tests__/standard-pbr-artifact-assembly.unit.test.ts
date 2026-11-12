@@ -353,6 +353,39 @@ describe('Standard PBR artifact assembly', () => {
     );
   });
 
+  it('selects the discard-free variant for opaque materials and the alpha test for masked ones', () => {
+    const receipt = createStandardPbrArtifactReceipt();
+    const entry = {
+      program: createMaterialShaderProgram(source),
+      source,
+      paramSchema: [],
+      receipt,
+    };
+    const variants = [false, true].map((alphaMask) => ({
+      definesKey: `ALPHA_MASK=${alphaMask}`,
+      defines: { ALPHA_MASK: alphaMask },
+      composedWgsl: alphaMask ? `${source}\nfn alphaTest() { discard; }` : source,
+      receipt,
+    }));
+    const registry = {
+      findMaterialArtifact: () => ({ ok: true, value: entry }),
+      materialProgram: createMaterialShaderProgram,
+      materialShaderManifestEntry: manifestLookup([{ identifier: 'authored', variants }]),
+    } as unknown as Parameters<typeof resolveMaterialShaderArtifact>[1];
+    const opaque = resolveMaterialShaderArtifact('authored', registry, { alphaMask: false });
+    const masked = resolveMaterialShaderArtifact('authored', registry, { alphaMask: true });
+    // An unspecified request is opaque: alpha test is opt-in by material.
+    expect(resolveMaterialShaderArtifact('authored', registry, {})?.program.source).toBe(
+      opaque?.program.source,
+    );
+    expect(resolveMaterialShaderArtifact('authored', registry, { alphaMask: false })).toBe(opaque);
+    expect(opaque?.program.source).not.toContain('discard');
+    expect(masked?.program.source).toContain('discard');
+    expect(masked).not.toBe(opaque);
+    expect(opaque?.variantSet).toBe('ALPHA_MASK=false');
+    expect(masked?.variantSet).toBe('ALPHA_MASK=true');
+  });
+
   it('records the selected fallback output even when the all-true variant key is empty', () => {
     const receipt = createStandardPbrArtifactReceipt();
     const entry = {

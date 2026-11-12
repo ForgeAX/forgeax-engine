@@ -32,12 +32,14 @@ import {
   compileFailed,
   compileShader,
   generateParameterModule,
+  type CompileResult as ShaderCompileResult,
 } from '@forgeax/engine-shader-compiler';
 import {
   type MaterialProgramAbi,
   projectMaterialParameterSchema,
   TERRAIN_MATERIAL_PARAMETERS,
 } from '@forgeax/engine-types';
+import { type Plugin, build as viteBuild } from 'vite';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readShaderManifestPublication } from '../../../shader/src/manifest-publication.js';
 import { loadEngineImportsMap } from '../engine-imports-map.js';
@@ -77,15 +79,15 @@ const ENGINE_SHADER_DEFAULT_DEFINES: Record<string, boolean> = {
 };
 
 const STANDARD_NON_CLUSTER_VARIANT_KEY =
-  'ATMOSPHERE_AVAILABLE=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_PCSS_AVAILABLE=true+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
 const STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY =
-  'ATMOSPHERE_AVAILABLE=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_PCSS_AVAILABLE=true+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=false+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=false+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=false+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=false+PROJECTOR_AVAILABLE=false+REFLECTION_FALLBACK_AVAILABLE=false+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=false+VISIBLE_SURFACE_AVAILABLE=false';
 const STANDARD_SHARED_TRANSMISSION_VARIANT_KEY = STANDARD_EXTENDED_LIGHTING_OFF_VARIANT_KEY.replace(
   'TRANSMISSION_AVAILABLE=false',
   'TRANSMISSION_AVAILABLE=true',
 );
 const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
-  'ATMOSPHERE_AVAILABLE=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_PCSS_AVAILABLE=true+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
+  'ALPHA_MASK=false+ATMOSPHERE_AVAILABLE=false+CLIPPING_PLANES=false+CLUSTER_FORWARD_AVAILABLE=true+COVERAGE_ONLY=false+DIRECTIONAL_SHADOW_SIMPLE=false+EXTENDED_LIGHTING_AVAILABLE=true+GPU_DRIVEN_SCENE_INDEX_AVAILABLE=true+LEAN_LIGHTING=false+LOD_DITHER=false+PROBE_BLEND_AVAILABLE=true+PROJECTOR_AVAILABLE=true+REFLECTION_FALLBACK_AVAILABLE=true+STORAGE_BUFFER_AVAILABLE=true+TRANSMISSION_AVAILABLE=false+VERTEX_COLOR_AVAILABLE=true+VISIBLE_SURFACE_AVAILABLE=false';
 
 {
   describe('shared-engine-inputs.test.ts', () => {
@@ -1483,8 +1485,8 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
       // engine identifier needed now that shadow_caster is a material shader).
       expect(
         manifest.materialShaders.length,
-        'materialShaders[] must contain exactly 35 named engine shader entries',
-      ).toBe(35);
+        'materialShaders[] must contain exactly 45 named engine shader entries',
+      ).toBe(45);
 
       const diffusion = manifest.materialShaders.find(
         (entry) => entry.identifier === 'forgeax::engine-subsurface-diffusion',
@@ -1607,8 +1609,15 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::default-shadow-caster',
         'forgeax::default-standard-pbr',
         'forgeax::default-unlit',
+        'forgeax::depth-pyramid-reduce-fragment',
+        'forgeax::depth-pyramid-seed-fragment',
         'forgeax::engine-decal-apply',
         'forgeax::engine-decal-project',
+        'forgeax::engine-forward-contact-shadow',
+        'forgeax::engine-forward-screen-compose',
+        'forgeax::engine-forward-screen-pack',
+        'forgeax::engine-light-texture-resample-compute',
+        'forgeax::engine-light-texture-resample-fragment',
         'forgeax::engine-ray-path-tracer',
         'forgeax::engine-shadow-variance',
         'forgeax::engine-standard-deferred-lighting',
@@ -1618,6 +1627,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
         'forgeax::points-lines',
         'forgeax::sprite',
         'forgeax::sprite-lit',
+        'forgeax::ssr-compose-fragment',
+        'forgeax::ssr-temporal-fragment',
+        'forgeax::ssr-trace-fragment',
         'forgeax::standard-terrain',
         'forgeax::standard-terrain-ids',
         'forgeax::standard-terrain-ids-shadow',
@@ -1760,8 +1772,15 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::default-shadow-caster',
           'forgeax::default-standard-pbr',
           'forgeax::default-unlit',
+          'forgeax::depth-pyramid-reduce-fragment',
+          'forgeax::depth-pyramid-seed-fragment',
           'forgeax::engine-decal-apply',
           'forgeax::engine-decal-project',
+          'forgeax::engine-forward-contact-shadow',
+          'forgeax::engine-forward-screen-compose',
+          'forgeax::engine-forward-screen-pack',
+          'forgeax::engine-light-texture-resample-compute',
+          'forgeax::engine-light-texture-resample-fragment',
           'forgeax::engine-ray-path-tracer',
           'forgeax::engine-shadow-variance',
           'forgeax::engine-standard-deferred-lighting',
@@ -1771,6 +1790,9 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
           'forgeax::points-lines',
           'forgeax::sprite',
           'forgeax::sprite-lit',
+          'forgeax::ssr-compose-fragment',
+          'forgeax::ssr-temporal-fragment',
+          'forgeax::ssr-trace-fragment',
           'forgeax::standard-terrain',
           'forgeax::standard-terrain-ids',
           'forgeax::standard-terrain-ids-shadow',
@@ -2187,7 +2209,7 @@ const STANDARD_CLUSTER_POINT_SHADOW_VARIANT_KEY =
     });
 
     it('(c) empty defines (undefined/default) is treated as no-defines', () => {
-      // The default ForgeaXShaderOptions omits defines entirely — this is
+      // The default ForgeAXShaderOptions omits defines entirely — this is
       // the normal path for regular .wgsl files.
       const plugin = forgeaxShader();
       expect(plugin.name).toBe('forgeax:shader');
@@ -2396,10 +2418,7 @@ ${MINIMAL_WGSL.trim()}
   interface NodeUrl {
     fileURLToPath: (u: string) => string;
   }
-  interface CompileResultValue {
-    wgsl: string;
-    bindings?: readonly { entries: readonly { binding: number }[] }[];
-  }
+  type CompileResultValue = ShaderCompileResult;
   interface CompileResultOk {
     ok: true;
     readonly value: CompileResultValue;
@@ -2551,7 +2570,45 @@ ${MINIMAL_WGSL.trim()}
         CLUSTER_FORWARD_AVAILABLE: true,
       });
       expect(r.ok, r.ok ? '' : r.error.message).toBe(true);
-      if (r.ok) expect(r.value.wgsl.length).toBeGreaterThan(0);
+      if (!r.ok) return;
+      expect(r.value.wgsl.length).toBeGreaterThan(0);
+      const lightData = r.value.reflection.boundGlobals.find(
+        (global) => global.group === 2 && global.binding === 3,
+      );
+      expect(lightData).toMatchObject({
+        resourceKind: 'storage-buffer',
+        addressSpace: 'storage',
+        elementStride: 96,
+        span: 96,
+      });
+      expect(lightData?.members?.map(({ name, offset, type }) => ({ name, offset, type }))).toEqual(
+        [
+          { name: 'position', offset: 0, type: 'vec4<f32>' },
+          { name: 'colorTimesIntensity', offset: 16, type: 'vec4<f32>' },
+          { name: 'direction', offset: 32, type: 'vec4<f32>' },
+          { name: 'auxiliary', offset: 48, type: 'vec4<f32>' },
+          { name: 'metadata', offset: 64, type: 'vec4<u32>' },
+          { name: 'channels', offset: 80, type: 'vec4<u32>' },
+        ],
+      );
+      const clusterUniform = r.value.reflection.boundGlobals.find(
+        (global) => global.group === 2 && global.binding === 6,
+      );
+      expect(clusterUniform).toMatchObject({
+        resourceKind: 'buffer',
+        addressSpace: 'uniform',
+        span: 96,
+      });
+      expect(
+        clusterUniform?.members?.map(({ name, offset, type }) => ({ name, offset, type })),
+      ).toEqual([
+        { name: 'grid', offset: 0, type: 'vec4<u32>' },
+        { name: 'near_far_log', offset: 16, type: 'vec4<f32>' },
+        { name: 'ao', offset: 32, type: 'vec4<u32>' },
+        { name: 'direct_ao', offset: 48, type: 'vec4<f32>' },
+        { name: 'texture', offset: 64, type: 'vec4<u32>' },
+        { name: 'cluster_layout', offset: 80, type: 'vec4<u32>' },
+      ]);
     });
 
     it('(a.1) HDRP uniform downlevel publishes integer-texture clusters without storage', async () => {
@@ -2666,6 +2723,26 @@ ${MINIMAL_WGSL.trim()}
     load?(this: unknown, id: string): string | null | undefined;
   }
 
+  function executableBundlerSource(source: string, base = './'): string {
+    return source
+      .replaceAll('import.meta.env.BASE_URL', JSON.stringify(base))
+      .replaceAll('import.meta.env.DEV', 'false')
+      .replaceAll('import.meta.env.FORGEAX_ENGINE_RHI_DEBUG', 'undefined')
+      .replaceAll('import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE_PORT', 'undefined')
+      .replaceAll('import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE', 'undefined')
+      .replaceAll('import.meta.hot', 'undefined');
+  }
+
+  function enabledBundlerSource(source: string): string {
+    return source
+      .replaceAll('import.meta.env.BASE_URL', JSON.stringify('./'))
+      .replaceAll('import.meta.env.DEV', 'true')
+      .replaceAll('import.meta.env.FORGEAX_ENGINE_RHI_DEBUG', JSON.stringify('1'))
+      .replaceAll('import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE_PORT', JSON.stringify('6123'))
+      .replaceAll('import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE', JSON.stringify('1'))
+      .replaceAll('import.meta.hot', 'hot');
+  }
+
   describe('virtual:forgeax/bundler module resolution (AC-10 / D-4 q7-A)', () => {
     it('resolveId hook claims the virtual module id', () => {
       const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
@@ -2713,7 +2790,141 @@ ${MINIMAL_WGSL.trim()}
       expect(source).toContain('import.meta.env.BASE_URL');
       expect(source).toContain('shaders/manifest.json');
       expect(source).toContain('shaderManifestUrl');
+      expect(source).toContain('remoteServe: import.meta.env.DEV === true');
     });
+
+    it('keeps optional host capabilities behind tool-owned environment checks', () => {
+      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
+      const source = plugin.load?.call(undefined, resolved) as string;
+      expect(source).toContain('attachRhiRecorder');
+      expect(source).toContain("import.meta.env.FORGEAX_ENGINE_RHI_DEBUG === '1'");
+      expect(source).toContain("import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE === '1'");
+      expect(source).toContain('import.meta.hot.dispose(dispose)');
+      expect(source).toContain('registerDispose(dispose)');
+      expect(source).toContain("import('@forgeax/engine/app/host-adapter')");
+    });
+
+    it('provides recorder and relay capabilities in development and registers bridge teardown with the host lifecycle', () => {
+      const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+      const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
+      const source = plugin.load?.call(undefined, resolved) as string;
+      const evaluate = new Function(
+        'globalThis',
+        'hot',
+        enabledBundlerSource(source).replace('export function', 'function') +
+          '\nreturn forgeaxBundlerAdapter();',
+      );
+      const disposers: Array<() => void> = [];
+      const adapter = evaluate({}, { dispose: (dispose: () => void) => disposers.push(dispose) });
+      expect(adapter.remoteServe).toBe(true);
+      expect(typeof adapter.attachRhiRecorder).toBe('function');
+      expect(adapter.browserRemoteBridge.port).toBe('6123');
+      expect(typeof adapter.browserRemoteBridge.installLocalBridge).toBe('function');
+      expect(typeof adapter.browserRemoteBridge.installExecutionBridge).toBe('function');
+      const teardown = vi.fn();
+      adapter.browserRemoteBridge.registerDispose(teardown);
+      expect(disposers).toEqual([teardown]);
+    });
+
+    it('does not bake a headless Node remote-server flag into a production browser adapter', () => {
+      const previous = process.env.FORGEAX_ENGINE_REMOTE_SERVE;
+      process.env.FORGEAX_ENGINE_REMOTE_SERVE = '1';
+      try {
+        const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
+        const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
+        const source = plugin.load?.call(undefined, resolved) as string;
+        const evaluate = new Function(
+          'globalThis',
+          executableBundlerSource(source).replace('export function', 'function') +
+            '\nreturn forgeaxBundlerAdapter();',
+        );
+        const adapter = evaluate({});
+        expect(adapter.remoteServe).toBe(false);
+        expect(adapter.attachRhiRecorder).toBeUndefined();
+        expect(adapter.browserRemoteBridge).toBeUndefined();
+      } finally {
+        if (previous === undefined) delete process.env.FORGEAX_ENGINE_REMOTE_SERVE;
+        else process.env.FORGEAX_ENGINE_REMOTE_SERVE = previous;
+      }
+    });
+
+    it('prunes host-adapter imports from production output and retains them when capabilities are enabled', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'forgeax-host-adapter-pruning-'));
+      const publicEngine = join(root, 'node_modules/@forgeax/engine');
+      mkdirSync(publicEngine, { recursive: true });
+      const hostAdapter = join(publicEngine, 'host-adapter.mjs');
+      writeFileSync(
+        join(publicEngine, 'package.json'),
+        JSON.stringify({
+          name: '@forgeax/engine',
+          type: 'module',
+          exports: { './app/host-adapter': './host-adapter.mjs' },
+        }),
+      );
+      writeFileSync(
+        join(root, 'index.html'),
+        '<html><body><script type="module" src="/main.ts"></script></body></html>',
+      );
+      writeFileSync(
+        join(root, 'main.ts'),
+        "import { forgeaxBundlerAdapter } from 'virtual:forgeax/bundler'; globalThis.__adapter = forgeaxBundlerAdapter();",
+      );
+      writeFileSync(
+        hostAdapter,
+        `export const hostAdapterMarker = 'optional-host-adapter-payload';
+export async function attachBrowserRhiRecorder() { return {}; }
+export async function installBrowserRemoteBridge() { return () => {}; }
+export async function installBrowserExecutionBridge() { return () => {}; }
+`,
+      );
+
+      const bundle = async (dev: boolean, debug: string, bridge: string): Promise<string> => {
+        const result = await viteBuild({
+          configFile: false,
+          envFile: false,
+          root,
+          logLevel: 'silent',
+          plugins: [forgeaxShader({ engineEntries: false }) as unknown as Plugin],
+          define: {
+            'import.meta.env.DEV': JSON.stringify(dev),
+            'import.meta.env.FORGEAX_ENGINE_RHI_DEBUG': JSON.stringify(debug),
+            'import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE': JSON.stringify(bridge),
+            'import.meta.env.VITE_FORGEAX_ENGINE_BRIDGE_PORT': JSON.stringify('5833'),
+          },
+          build: {
+            write: false,
+            target: 'esnext',
+            minify: false,
+            rollupOptions: { output: { entryFileNames: 'assets/[name].js' } },
+          },
+        });
+        const output = Array.isArray(result) ? result[0] : result;
+        if (output === undefined || !('output' in output))
+          throw new Error('Vite did not return a production bundle');
+        return output.output
+          .filter((item) => item.type === 'chunk')
+          .map((item) => item.code)
+          .join('\n');
+      };
+
+      try {
+        const production = await bundle(false, '0', '0');
+        expect(production).not.toContain('optional-host-adapter-payload');
+        expect(production).not.toContain('attachBrowserRhiRecorder');
+        expect(production).not.toContain('installBrowserRemoteBridge');
+        expect(production).not.toContain('browserRemoteBridge');
+        expect(production).not.toContain('import.meta.hot');
+
+        const enabled = await bundle(true, '1', '1');
+        expect(enabled).toContain('optional-host-adapter-payload');
+        expect(enabled).toContain('attachBrowserRhiRecorder');
+        expect(enabled).toContain('installBrowserRemoteBridge');
+        expect(enabled).toContain('browserRemoteBridge');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 30_000);
 
     it.each([
       ['./', 'tauri://localhost', 'tauri://localhost/shaders/manifest.json'],
@@ -2733,9 +2944,7 @@ ${MINIMAL_WGSL.trim()}
       const source = plugin.load?.call(undefined, resolved) as string;
       const evaluate = new Function(
         'globalThis',
-        source
-          .replace('export function', 'function')
-          .replace('import.meta.env.BASE_URL', JSON.stringify(base)) +
+        executableBundlerSource(source, base).replace('export function', 'function') +
           '\nreturn forgeaxBundlerAdapter();',
       );
       const adapter = evaluate({ document: { baseURI: page }, location: { href: page } });
@@ -2753,9 +2962,7 @@ ${MINIMAL_WGSL.trim()}
       const source = plugin.load?.call(undefined, resolved) as string;
       const evaluate = new Function(
         'globalThis',
-        source
-          .replace('export function', 'function')
-          .replace('import.meta.env.BASE_URL', JSON.stringify('./')) +
+        executableBundlerSource(source).replace('export function', 'function') +
           '\nreturn forgeaxBundlerAdapter();',
       );
       expect(evaluate({}).shaderManifestUrl).toBe('./shaders/manifest.json');
@@ -2765,9 +2972,8 @@ ${MINIMAL_WGSL.trim()}
       const plugin = forgeaxShader() as unknown as PluginWithVirtualHooks;
       const resolved = plugin.resolveId?.call(undefined, VIRTUAL_ID) as string;
       const source = plugin.load?.call(undefined, resolved) as string;
-      // After C-R8, source cannot be executed in Node (import.meta.env is
-      // Vite-only). Verify the source pattern instead: it declares a function
-      // returning { shaderManifestUrl, importTransport }.
+      // The generated adapter carries the stable renderer build fields and
+      // optional host capabilities. Tool metadata remains in this module.
       expect(source).toContain('shaderManifestUrl');
       expect(source).toContain('importTransport');
       expect(source).toContain('import.meta.env.BASE_URL');

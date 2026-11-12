@@ -83,7 +83,7 @@ describe('skinned shadow caster', () => {
     expect(shader).not.toContain('meshes[meshIndex]');
     expect(shader).toContain('@location(13) color : vec4<f32>');
     expect(shader).toContain('out.color = in.color;');
-    expect(record).toContain('runtime.demandSkinTask?.(entry.source)');
+    expect(record).toContain("runtime.skinTask?.(entry.source, 'shadow')");
     expect(record).toContain('geometrySkinBindGroup(');
     expect(builder).toContain('buffers: ctx.vertexBuffers');
   });
@@ -179,8 +179,13 @@ describe('skinned shadow caster', () => {
     expect(recordSource).toContain(
       'const projectorAvailable = pipelineState.projectorAvailable !== false;',
     );
-    expect(recordSource).toContain(
-      '...(extendedLighting\n          ? extendedLightingCacheKeys\n          : projectorAvailable\n            ? [pipelineState.defaultWhiteTextureView, pipelineState.defaultSampler]',
+    const bindingSource = readFileSync(
+      fileURLToPath(new URL('../record/shadow-view-resources.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(bindingSource).toContain('const projector = state.projectorAvailable !== false;');
+    expect(bindingSource).toContain(
+      'else if (projector) keys.push(state.defaultWhiteTextureView, state.defaultSampler);',
     );
     expect(recordSource).toContain(
       '...(!extendedLighting && projectorAvailable\n              ? [\n                  {\n                    binding: 11,',

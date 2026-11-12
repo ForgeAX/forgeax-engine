@@ -463,7 +463,7 @@ for (let i = 0; i < PER_MODE_FRAMES; ) {
   } else {
     const completed = await r.value.completed;
     if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
+    else if (r.value.presentation === 'ready') framesObserved++;
     if (!completed.ok || r.value.presentation === 'ready' || Date.now() > presentationDeadline) i++;
   }
   await sharedDevice.queue.onSubmittedWorkDone();
@@ -502,7 +502,7 @@ for (let i = 0; i < PER_MODE_FRAMES; ) {
   } else {
     const completed = await r.value.completed;
     if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-    else framesObserved++;
+    else if (r.value.presentation === 'ready') framesObserved++;
     if (!completed.ok || r.value.presentation === 'ready' || Date.now() > presentationDeadline) i++;
   }
 }

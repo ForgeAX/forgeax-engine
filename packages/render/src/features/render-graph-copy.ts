@@ -55,7 +55,7 @@ export function projectRenderFeatureCopies<FrameCtx extends RenderGraphFrame>(
       currentRenderFeaturePass(frame, pass.featureIdentity, pass.name, scope)?.enabled ??
       pass.enabled ??
       true,
-    encode: ({ encoder, frame }) => {
+    encodeDirect: (encoder, frame, _graphresources) => {
       const current =
         currentRenderFeaturePass(frame, pass.featureIdentity, pass.name, scope)
           ?.resolvedGpuCopies ?? copies;

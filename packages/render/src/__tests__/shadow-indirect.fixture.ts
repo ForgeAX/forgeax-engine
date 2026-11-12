@@ -4,8 +4,9 @@ import { vi } from 'vitest';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { getOrCreateFromChain } from '../record/mesh-ssbo';
-import type { _InternalRenderPipelineContext } from '../record/render-context';
+import type { _InternalRenderPipelineContext, PipelineState } from '../record/render-context';
 import type { GpuDrivenShadowBatch } from '../record/shadow-pass';
+import { shadowViewBindingKeys } from '../record/shadow-view-resources';
 import { captureShadowBundles, preparedShadowView } from './shadow-bundle.fixture';
 
 /** Prepared frame shared by structural and native depth witnesses; the recorder is never mocked. */
@@ -46,18 +47,11 @@ export function preparedShadowFixture({
   };
   const viewBindGroupCache = new WeakMap<object, unknown>();
   const shadowMaterialBindGroups = new WeakMap<object, unknown>();
+  const binding = shadowViewBindingKeys(pipelineState as unknown as PipelineState);
+  if (binding === undefined) throw Error('Missing prepared shadow binding keys');
   getOrCreateFromChain(
     viewBindGroupCache,
-    [
-      buffer,
-      pipelineState.shadowArrayFallbackTextureView,
-      pipelineState.perPassResources.shadowSampler,
-      pipelineState.shadowAtlasFallbackTextureView,
-      buffer,
-      buffer,
-      pipelineState.shadowArrayFallbackTextureView,
-      buffer,
-    ],
+    binding.keys,
     'view-shadow-directional-0',
     () => view,
     counts,

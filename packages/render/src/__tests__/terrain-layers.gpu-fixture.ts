@@ -1,6 +1,7 @@
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
 import { World } from '@forgeax/engine-ecs';
+import type { RhiDevice } from '@forgeax/engine-rhi';
 import { _internal_getRawDevice, rhi } from '@forgeax/engine-rhi-webgpu';
 import { standardSurfaceParameters, type TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, vi } from 'vitest';
@@ -12,11 +13,16 @@ import { TerrainLayers } from '../terrain/layers';
 import { TerrainSourceCache } from '../terrain/source';
 
 /** Real shared material/image rows, narrow uploads and fixed old/new roots in one submission. */
-export async function verifyTerrainLayerEdits(sampling: string) {
-  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
-  const raw = _internal_getRawDevice(device);
-  assert(raw);
-  raw.pushErrorScope('validation');
+export async function verifyTerrainLayerEdits(
+  sampling: string,
+  backend: { readonly rhi: typeof rhi } = { rhi },
+  suppliedDevice?: RhiDevice,
+) {
+  const device =
+    suppliedDevice ??
+    (await (await backend.rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const raw = backend.rhi === rhi ? _internal_getRawDevice(device) : undefined;
+  raw?.pushErrorScope('validation');
   const registry = new AssetRegistry(),
     world = new World({ assets: registry });
   registry.installDecoder(samplerContribution.kind, samplerContribution.decoder);
@@ -61,7 +67,8 @@ export async function verifyTerrainLayerEdits(sampling: string) {
       () => store,
       () => device,
       {
-        createShaderModule: (descriptor) => rhi.createShaderModuleImmediate(device, descriptor),
+        createShaderModule: (descriptor) =>
+          backend.rhi.createShaderModuleImmediate(device, descriptor),
       },
     ),
     sources = new TerrainSourceCache();
@@ -94,23 +101,22 @@ export async function verifyTerrainLayerEdits(sampling: string) {
   const layout = device
     .createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: 4, buffer: { type: 'uniform' } },
-        { binding: 3, visibility: 4, buffer: { type: 'storage' } },
+        { binding: 0, visibility: 2, buffer: { type: 'uniform' } },
         ...[1, 2, 4, 6].map((binding) => ({
           binding,
-          visibility: 4,
+          visibility: 2,
           texture: { sampleType: 'float' as const, viewDimension: '2d-array' as const },
         })),
         ...[5, 7, 8, 9].map((binding) => ({
           binding,
-          visibility: 4,
+          visibility: 2,
           sampler: { type: 'filtering' as const },
         })),
       ],
     })
     .unwrap();
   const shader = (
-    await rhi.createShaderModule(device, {
+    await backend.rhi.createShaderModule(device, {
       code: `
 struct SurfaceInput { uv0: vec2<f32> }
 struct Material { terrainLayerRoots: vec4<f32>, terrainLayerLevels: vec4<f32>, offset: u32, pad: u32, uv: vec2<f32> }
@@ -123,26 +129,43 @@ struct Material { terrainLayerRoots: vec4<f32>, terrainLayerLevels: vec4<f32>, o
 @group(0) @binding(8) var terrainOrmLayers_sampler: sampler;
 @group(0) @binding(6) var terrainEmissionLayers: texture_2d_array<f32>;
 @group(0) @binding(9) var terrainEmissionLayers_sampler: sampler;
-@group(0) @binding(3) var<storage, read_write> output: array<vec4<f32>>;
 ${sampling.replace(/^#.*\n/gm, '')}
-@compute @workgroup_size(1) fn run() { output[material.offset] = terrain_layer(0, SurfaceInput(material.uv)).color; }
+@vertex fn vs(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32> {
+  let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0),vec2<f32>(3.0,-1.0),vec2<f32>(-1.0,3.0)); return vec4<f32>(p[i],0.0,1.0);
+}
+@fragment fn run()->@location(0) vec4<f32> {
+  let layer=terrain_layer(0, SurfaceInput(material.uv));
+  if(material.pad==1u) { return layer.normalHeight; }
+  if(material.pad==2u) { return vec4<f32>(layer.orm,0.0); }
+  if(material.pad==3u) { return vec4<f32>(layer.emission,0.0); }
+  return layer.color;
+}
 `,
     })
   ).unwrap();
   const pipeline = device
-    .createComputePipeline({
+    .createRenderPipeline({
       layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }).unwrap(),
-      compute: { module: shader, entryPoint: 'run' },
+      vertex: { module: shader, entryPoint: 'vs', buffers: [] },
+      fragment: { module: shader, entryPoint: 'run', targets: [{ format: 'rgba32float' }] },
+      primitive: { topology: 'triangle-list' },
     })
     .unwrap();
-  const output = device.createBuffer({ size: 128, usage: 132 }).unwrap();
-  const read = device.createBuffer({ size: 128, usage: 9 }).unwrap();
-  const run = async (snapshots: ReturnType<typeof fixed>[], uv = [0.375, 0.375]) => {
+  const output = device
+    .createTexture({
+      size: { width: 1, height: 8, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      usage: 17,
+    })
+    .unwrap();
+  const outputView = device.createTextureView(output, {}).unwrap();
+  const read = device.createBuffer({ size: 8 * 256, usage: 9 }).unwrap();
+  const run = async (snapshots: ReturnType<typeof fixed>[], uv = [0.375, 0.375], channel = 0) => {
     const encoder = device.createCommandEncoder().unwrap();
     const buffers = [];
     for (const [index, snapshot] of snapshots.entries()) {
       const data = new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...uv]);
-      new Uint32Array(data.buffer)[8] = index;
+      new Uint32Array(data.buffer).set([index, channel], 8);
       const uniform = device.createBuffer({ size: 48, usage: 72 }).unwrap();
       buffers.push(uniform);
       device.queue.writeBuffer(uniform, 0, data).unwrap();
@@ -161,7 +184,6 @@ ${sampling.replace(/^#.*\n/gm, '')}
           layout,
           entries: [
             { binding: 0, resource: { kind: 'buffer', value: { buffer: uniform } } },
-            { binding: 3, resource: { kind: 'buffer', value: { buffer: output } } },
             ...layers.flatMap((layer, i) => {
               const textureBinding = [1, 2, 4, 6][i];
               const samplerBinding = [5, 7, 8, 9][i];
@@ -180,13 +202,20 @@ ${sampling.replace(/^#.*\n/gm, '')}
           ],
         })
         .unwrap();
-      const pass = encoder.beginComputePass({});
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{ view: outputView, loadOp: 'load', storeOp: 'store' }],
+      });
+      pass.setViewport(0, index, 1, 1, 0, 1);
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, group);
-      pass.dispatchWorkgroups(1);
+      pass.draw(3);
       pass.end();
     }
-    encoder.copyBufferToBuffer(output, 0, read, 0, snapshots.length * 16);
+    encoder.copyTextureToBuffer(
+      { texture: output },
+      { buffer: read, bytesPerRow: 256, rowsPerImage: snapshots.length },
+      { width: 1, height: snapshots.length, depthOrArrayLayers: 1 },
+    );
     const uploads = store.prepareTextureMips().unwrap();
     device.queue
       .submit([
@@ -196,13 +225,9 @@ ${sampling.replace(/^#.*\n/gm, '')}
       .unwrap();
     uploads?.complete(true);
     const mapping = (await read.mapAsync(1)).unwrap();
-    const result = Array.from(
-      new Float32Array(
-        mapping
-          .getMappedRange()
-          .unwrap()
-          .slice(0, snapshots.length * 16),
-      ),
+    const bytes = mapping.getMappedRange().unwrap();
+    const result = snapshots.flatMap((_, index) =>
+      Array.from(new Float32Array(bytes.slice(index * 256, index * 256 + 16))),
     );
     mapping.unmap();
     for (const buffer of buffers) device.destroyBuffer(buffer).unwrap();
@@ -211,6 +236,9 @@ ${sampling.replace(/^#.*\n/gm, '')}
   try {
     const original = fixed();
     expect((await run([original])).slice(0, 4)).toEqual([1, 0.501953125, 0, 1]);
+    expect(await run([original], undefined, 1)).toEqual([0, 0, 1, 0]);
+    expect(await run([original], undefined, 2)).toEqual([1, 1, 0, 0]);
+    expect(await run([original], undefined, 3)).toEqual([0, 0, 0, 0]);
     const bytesBefore = writes.mock.calls.length;
     registry.update(layer, { values: { baseColor: [0.5, 1, 1, 1] } }).unwrap();
     expect(adopted()).toEqual([layer]);
@@ -319,13 +347,13 @@ ${sampling.replace(/^#.*\n/gm, '')}
     ]);
     expect(sources.resolve(worldRenderResources(world), first)).toBe(a);
     expect(sources.resolve(worldRenderResources(world), second)).toBe(b);
-    expect(await raw.popErrorScope()).toBeNull();
+    if (raw !== undefined) expect(await raw.popErrorScope()).toBeNull();
   } finally {
     writes.mockRestore();
     observer.dispose();
     owner.dispose();
     store.destroyAll();
-    device.destroyBuffer(output);
+    device.destroyTexture(output);
     device.destroyBuffer(read);
   }
 }

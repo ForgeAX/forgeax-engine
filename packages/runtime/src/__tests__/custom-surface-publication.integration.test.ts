@@ -37,6 +37,7 @@ fn evaluate_surface(input : SurfaceInput) -> SurfaceData {
     1.0,
     1.0,
     0.0,
+    0.0,
   );
 }
 `;
@@ -212,9 +213,11 @@ describe('custom Surface publication path', () => {
         (match) => match[1],
       );
       expect(new Set(helperScaleNames).size).toBe(2);
-      expect(sceneWgsl).toContain('sample.scale');
+      expect(sceneWgsl).toMatch(/\bsample(?:_\d+)?\.scale\b/);
       expect(sceneWgsl).not.toMatch(/let fxSurfaceHelper_[A-Za-z0-9_]+_tintScale\s*=/);
-      const privateMaterial = sceneWgsl.match(/var<private>\s+(\w+)\s*:/)?.[1];
+      const privateMaterial = sceneWgsl.match(
+        /var<private>\s+(\w+)\s*:\s*MaterialParameters\w*/,
+      )?.[1];
       expect(privateMaterial).toBeDefined();
       if (privateMaterial === undefined) return;
       expect(sceneWgsl).toMatch(

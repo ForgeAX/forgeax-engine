@@ -867,8 +867,10 @@ fn test_creation_error_boundary_clears_stale_error_and_recovers() {
 
 #[wasm_bindgen_test]
 fn reverse_z_device_feature_request() {
-    assert_eq!(super::parse_requested_features(&["depth32float-stencil8".into()]).unwrap(),
-        wgpu::Features::DEPTH32FLOAT_STENCIL8);
+    assert_eq!(
+        super::parse_requested_features(&["depth32float-stencil8".into()]).unwrap(),
+        wgpu::Features::DEPTH32FLOAT_STENCIL8
+    );
     assert!(super::parse_requested_features(&["not-a-feature".into()]).is_err());
     assert!(super::parse_requested_features(&[]).unwrap().is_empty());
 }

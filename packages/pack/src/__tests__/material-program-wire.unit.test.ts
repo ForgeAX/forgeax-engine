@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { decodeMaterialProgramWire, encodeMaterialProgramWire } from '../material-program-wire.js';
 
 function required<T>(value: T | undefined): T {
@@ -63,6 +63,14 @@ function fixture() {
   };
 }
 const wire = () => JSON.parse(JSON.stringify(encodeMaterialProgramWire(fixture())));
+
+function transport(value: unknown) {
+  return JSON.parse(
+    JSON.stringify(value, (_key, entry) =>
+      ArrayBuffer.isView(entry) ? Array.from(entry as Uint8Array) : entry,
+    ),
+  );
+}
 
 describe('package material program sharing', () => {
   it('round trips complete records and publication identity without mutating either input', () => {
@@ -169,5 +177,128 @@ describe('package material program sharing', () => {
       JSON.parse(JSON.stringify(encodeMaterialProgramWire(input))),
     );
     expect(result).toMatchObject({ ok: true, value: input });
+  });
+  it('keys complete typed artifact bytes without enumerating byte properties', () => {
+    const source = fixture();
+    let enumerations = 0;
+    const views = [7, 19].map((offset) => {
+      const store = new Uint8Array(17 * 1024 + 83).fill(201);
+      const view = new Uint8Array(store.buffer, offset, 17 * 1024 + 3);
+      for (let index = 0; index < view.length; index++) view[index] = index % 251;
+      Object.defineProperty(view, 'wireWorkProbe', {
+        enumerable: true,
+        get: () => {
+          enumerations++;
+          return 'outside the byte payload';
+        },
+      });
+      return view;
+    });
+    for (const [index, asset] of source.assets.slice(0, 2).entries()) {
+      const entry = required(required(asset.payload.cooked).programs[0]);
+      Object.assign(entry.artifact, { bytes: required(views[index]) });
+    }
+    const expected = transport(source);
+    const encoded = transport(encodeMaterialProgramWire(source));
+    expect(enumerations).toBe(0);
+    expect(encoded.programs).toHaveLength(1);
+    const result = decodeMaterialProgramWire(encoded);
+    if (!result.ok) throw result.error;
+    expect(result.value).toEqual(expected);
+    expect(transport(source)).toEqual(expected);
+  });
+
+  it.each([
+    0, 8192, 16384,
+  ])('keeps actual artifact byte %s despite identical claimed identities', (index) => {
+    const source = fixture();
+    const first = Uint8Array.from({ length: 16385 }, (_, index) => index % 251);
+    const second = first.slice();
+    second[index] = (second[index] ?? 0) ^ 128;
+    for (const [position, asset] of source.assets.slice(0, 2).entries()) {
+      const bytes = required([first, second][position]);
+      Object.defineProperty(bytes, 'toBase64', { value: () => 'one misleading claimed value' });
+      const entry = required(required(asset.payload.cooked).programs[0]);
+      Object.assign(entry.artifact, { bytes });
+    }
+    const encoded = transport(encodeMaterialProgramWire(source));
+    expect(encoded.programs).toHaveLength(2);
+    const result = decodeMaterialProgramWire(encoded);
+    if (!result.ok) throw result.error;
+    expect(result.value).toEqual(transport(source));
+  });
+
+  it('distinguishes binary locations from literal metadata and escaped property paths', () => {
+    const source = fixture();
+    const third = structuredClone(required(source.assets[1]));
+    third.guid = 'material-c';
+    source.assets.push(third);
+    const extras = [
+      { 'a/b': new Uint8Array([1, 2, 3]), a: { b: null }, 'a~1b': null },
+      { 'a/b': null, a: { b: new Uint8Array([1, 2, 3]) }, 'a~1b': null },
+      { 'a/b': null, a: { b: null }, 'a~1b': new Uint8Array([1, 2, 3]) },
+    ];
+    for (const [index, asset] of [
+      required(source.assets[0]),
+      required(source.assets[1]),
+      third,
+    ].entries()) {
+      Object.assign(required(required(asset.payload.cooked).programs[0]), {
+        extra: required(extras[index]),
+      });
+    }
+    const encoded = transport(encodeMaterialProgramWire(source));
+    expect(encoded.programs).toHaveLength(3);
+    const result = decodeMaterialProgramWire(encoded);
+    if (!result.ok) throw result.error;
+    expect(result.value).toEqual(transport(source));
+  });
+
+  it('retains ordinary typed metadata fields outside the artifact byte slot', () => {
+    const source = fixture();
+    for (const [index, asset] of source.assets.slice(0, 2).entries()) {
+      const entry = required(required(asset.payload.cooked).programs[0]);
+      Object.assign(entry.artifact, { bytes: new Uint8Array([4, 5, 6]) });
+      Object.assign(entry, {
+        metadata: Object.assign(new Uint8Array([1, 2]), { label: `metadata-${index}` }),
+      });
+    }
+    const encoded = JSON.parse(JSON.stringify(encodeMaterialProgramWire(source)));
+    expect(encoded.programs).toHaveLength(2);
+    const result = decodeMaterialProgramWire(encoded);
+    if (!result.ok) throw result.error;
+    expect(result.value).toEqual(JSON.parse(JSON.stringify(source)));
+  });
+
+  it('cannot mistake a slash-containing metadata key for actual artifact bytes', () => {
+    const source = fixture();
+    for (const [index, asset] of source.assets.slice(0, 2).entries()) {
+      const entry = required(required(asset.payload.cooked).programs[0]);
+      Object.assign(entry.artifact, { bytes: index === 0 ? new Uint8Array([1, 2, 3]) : null });
+      Object.assign(entry, { 'artifact/bytes': index === 0 ? null : new Uint8Array([1, 2, 3]) });
+    }
+    const encoded = transport(encodeMaterialProgramWire(source));
+    expect(encoded.programs).toHaveLength(2);
+    const result = decodeMaterialProgramWire(encoded);
+    if (!result.ok) throw result.error;
+    expect(result.value).toEqual(transport(source));
+  });
+
+  it('retains native JSON serialization for already-JSON artifact payloads', () => {
+    const source = fixture();
+    for (const asset of source.assets.slice(0, 2))
+      Object.assign(required(required(asset.payload.cooked).programs[0]).artifact, {
+        bytes: [1, 2, 3],
+      });
+    const stringify = vi.spyOn(JSON, 'stringify');
+    let replacers: unknown[] = [];
+    try {
+      encodeMaterialProgramWire(source);
+      replacers = stringify.mock.calls.map((args) => args[1]);
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(replacers.length).toBeGreaterThan(0);
+    expect(replacers.every((replacer) => replacer === undefined)).toBe(true);
   });
 });

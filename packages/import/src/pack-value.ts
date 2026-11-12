@@ -9,6 +9,7 @@ export function normaliseForPack(value: unknown): unknown {
     value instanceof Float32Array ||
     value instanceof Float64Array ||
     value instanceof Uint8Array ||
+    value instanceof Uint8ClampedArray ||
     value instanceof Uint16Array ||
     value instanceof Uint32Array ||
     value instanceof Int8Array ||
@@ -20,9 +21,10 @@ export function normaliseForPack(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(normaliseForPack);
   }
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = normaliseForPack(v);
-  }
-  return out;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      normaliseForPack(entry),
+    ]),
+  );
 }

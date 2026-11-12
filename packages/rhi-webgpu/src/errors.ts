@@ -8,13 +8,25 @@ export function adapterUnavailable(): Result<never, RhiError> {
     new RhiError({
       code: 'adapter-unavailable',
       expected: 'an available browser-native WebGPU adapter',
-      hint: 'this only reports the browser-native WebGPU channel; ForgeaX may continue through its wgpu/WebGL2 fallback, so do not conclude that the browser or machine is unsupported unless both backend causes fail',
+      hint: 'this only reports the browser-native WebGPU channel; ForgeAX may continue through its wgpu/WebGL2 fallback, so do not conclude that the browser or machine is unsupported unless both backend causes fail',
     }),
   );
 }
 
 /** `GPU.requestAdapter()` rejected instead of reporting adapter absence with `null`. */
 export function requestAdapterFailed(cause: unknown): Result<never, RhiError> {
+  return nativeRequestFailed('requestAdapter', cause);
+}
+
+/** Unclassified device creation failures must not invent an optional capability. */
+export function requestDeviceFailed(cause: unknown): Result<never, RhiError> {
+  return nativeRequestFailed('requestDevice', cause);
+}
+
+function nativeRequestFailed(
+  operation: 'requestAdapter' | 'requestDevice',
+  cause: unknown,
+): Result<never, RhiError> {
   const record =
     cause !== null && typeof cause === 'object'
       ? (cause as { readonly name?: unknown; readonly message?: unknown })
@@ -34,15 +46,18 @@ export function requestAdapterFailed(cause: unknown): Result<never, RhiError> {
       message = 'unserializable thrown object';
     }
   }
-  if (message.length === 0) message = 'unknown requestAdapter failure';
+  if (message.length === 0) message = `unknown ${operation} failure`;
   return err(
     new RhiError({
       code: 'webgpu-runtime-error',
-      expected: 'navigator.gpu.requestAdapter() resolves with an adapter or null',
-      hint: 'inspect detail.error before assigning the failure to WebGPU capability; the ForgeaX runtime can still attempt its wgpu/WebGL2 fallback',
+      expected:
+        operation === 'requestAdapter'
+          ? 'navigator.gpu.requestAdapter() resolves with an adapter or null'
+          : 'GPUAdapter.requestDevice() resolves with a device',
+      hint: 'inspect detail.error before assigning the failure to WebGPU capability; the ForgeAX runtime can still attempt its wgpu/WebGL2 fallback',
       detail: {
         error: {
-          code: 'request-adapter-threw',
+          code: operation === 'requestAdapter' ? 'request-adapter-threw' : 'request-device-threw',
           ...(name === undefined ? {} : { name }),
           message,
         },

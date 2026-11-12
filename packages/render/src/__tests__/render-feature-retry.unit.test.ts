@@ -34,7 +34,7 @@ describe('render feature retry rules', () => {
           ],
         }),
     };
-    const host = createRenderFeatureHost([feature], caps(false)).unwrap();
+    const host = createRenderFeatureHost([feature]).unwrap();
     const frame = (frameNumber: number) =>
       runSingleViewFeatureFrame(host, {
         worlds: [],
@@ -68,7 +68,7 @@ describe('render feature retry rules', () => {
         return ok({ work: [{ scope: { view: 'main' }, resources: [], passes: [] }] });
       },
     };
-    const host = createRenderFeatureHost([feature], caps(true)).unwrap();
+    const host = createRenderFeatureHost([feature]).unwrap();
 
     const failed = runSingleViewFeatureFrame(host, {
       worlds: [],
@@ -119,7 +119,7 @@ describe('render feature retry rules', () => {
           ],
         }),
     };
-    const host = createRenderFeatureHost([feature], caps(false)).unwrap();
+    const host = createRenderFeatureHost([feature]).unwrap();
 
     runSingleViewFeatureFrame(host, {
       worlds: [],

@@ -8,7 +8,12 @@ import { selectGpuLodLane } from '../gpu-driven/view-gpu';
 import { GpuBuffer } from '../gpu-resource';
 import { GPU_BUFFER_USAGE_INDEX, GPU_BUFFER_USAGE_VERTEX } from '../gpu-usage';
 import { MaterialResource } from '../material-resource';
-import { cpuLodLevel, lodLevelHistogram, selectCpuLodRows } from '../record/cpu-lod';
+import {
+  cpuInstanceLodDraws,
+  cpuLodLevel,
+  lodLevelHistogram,
+  selectCpuLodRows,
+} from '../record/cpu-lod';
 import { makeZeroCameraFallbackSnapshot, type ValidatedRenderable } from '../record/frame-snapshot';
 import type { RenderableSnapshot } from '../render-system-extract';
 
@@ -96,6 +101,30 @@ function row(snapshot: RenderableSnapshot, handles: MeshGpuHandles): ValidatedRe
 }
 
 describe('CPU-lane LOD selection', () => {
+  it('groups alternating opaque LOD ordinals within each resident page', () => {
+    const entry = {
+      ...row(source(), mesh()),
+      cpuInstanceLods: Array.from({ length: 260 }, (_, first) => ({
+        first,
+        count: 1,
+        level: first % 2,
+      })),
+    };
+    const pages = [
+      { firstInstanceOrdinal: 0, instanceCount: 128 },
+      { firstInstanceOrdinal: 128, instanceCount: 128 },
+      { firstInstanceOrdinal: 256, instanceCount: 4 },
+    ];
+    const draws = cpuInstanceLodDraws(entry, 0, pages, true);
+    expect(draws).toHaveLength(6);
+    expect(draws.map((draw) => draw.instanceCount)).toEqual([64, 64, 64, 64, 2, 2]);
+    expect(draws[0]?.instanceOrdinals).toEqual(Array.from({ length: 64 }, (_, i) => i * 2));
+    expect(draws[1]?.instanceOrdinals).toEqual(Array.from({ length: 64 }, (_, i) => i * 2 + 1));
+    expect(draws.flatMap((draw) => draw.instanceOrdinals ?? []).sort((a, b) => a - b)).toEqual(
+      Array.from({ length: 260 }, (_, i) => i),
+    );
+    expect(cpuInstanceLodDraws(entry, 0, pages)).toHaveLength(260);
+  });
   it('runs on devices without compute/storage/indirect, such as WebGL2', () => {
     expect(selectGpuLodLane({ compute: false, storageBuffer: false, indirectDrawing: false })).toBe(
       'cpu',
@@ -135,6 +164,37 @@ describe('CPU-lane LOD selection', () => {
     expect(rewritten[0]?.mesh.indexBuffer).toBe(handles.indexBuffer);
     expect(rewritten[0]?.mesh).not.toBe(far[0]?.mesh);
     expect(selectCpuLodRows(rows, cameraAt(40))[0]?.mesh).toBe(rewritten[0]?.mesh);
+  });
+
+  it('selects each composed instance transform and preserves ordinal order', () => {
+    const transforms = new Float32Array(4 * 16);
+    for (let ordinal = 0; ordinal < 4; ordinal++) {
+      const offset = ordinal * 16;
+      transforms[offset] =
+        transforms[offset + 5] =
+        transforms[offset + 10] =
+        transforms[offset + 15] =
+          1;
+      transforms[offset + 14] = [0, -35, -35, 0][ordinal] ?? 0;
+    }
+    const snapshot = source({
+      instances: { transforms, instanceCount: 4, cacheKey: 1, archVersion: 0 },
+    });
+    const selected = selectCpuLodRows([row(snapshot, mesh())], cameraAt(5));
+    expect(selected[0]?.cpuInstanceLods).toEqual([
+      { first: 0, count: 1, level: 0 },
+      { first: 1, count: 2, level: 1 },
+      { first: 3, count: 1, level: 0 },
+    ]);
+    expect(selected[0]?.source).toBe(snapshot);
+    const unavailable = selectCpuLodRows([row(snapshot, mesh(false))], cameraAt(5));
+    expect(unavailable[0]?.cpuInstanceLods).toEqual([{ first: 0, count: 4, level: 0 }]);
+    transforms[16] = transforms[21] = transforms[26] = 10;
+    expect(selectCpuLodRows([row(snapshot, mesh())], cameraAt(5))[0]?.cpuInstanceLods).toEqual([
+      { first: 0, count: 2, level: 0 },
+      { first: 2, count: 1, level: 1 },
+      { first: 3, count: 1, level: 0 },
+    ]);
   });
 
   it('reports the selected levels as an ascending histogram', () => {

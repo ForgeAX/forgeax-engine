@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schemas/profile-capture-1.0.json",
-  "title": "ForgeaX ProfileCapture",
+  "title": "ForgeAX ProfileCapture",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "captureId", "timeUnit", "frameLimit", "eventLimit", "phaseCatalog", "records", "completeness"],

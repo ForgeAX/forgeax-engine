@@ -39,6 +39,7 @@ export {
 } from './code-source.js';
 export type {
   ParticleAttributeRef,
+  ParticleEffectParameterSourceV3,
   ParticleEffectSourceV3,
   ParticleEmitterSourceV3,
   ParticleRendererSemantic,
@@ -54,6 +55,8 @@ export {
   isParticleTopologyRenderer,
   PARTICLE_RENDERER_SEMANTICS,
   parseParticleEffectSourceV3,
+  VFX_PARAMETER_MAX,
+  VFX_PARAMETER_NAME,
 } from './code-source-v3.js';
 export type {
   VfxDataInterfaceBindingType,
@@ -79,7 +82,7 @@ export type {
   VfxValueMap,
   VfxValueType,
 } from './effect-contract.js';
-export { createVfxEffectContract } from './effect-contract.js';
+export { createVfxEffectContract, vfxValueMatches } from './effect-contract.js';
 export type { VfxForceField, VfxForceFieldError } from './force-fields.js';
 export {
   isVfxFieldTransform,
@@ -151,4 +154,6 @@ export {
   vfxParticleCoreField,
 } from './particle-layout.js';
 export type { ParticleEffectPlayerData } from './player.js';
-export { ParticleEffectPlayer } from './player.js';
+export { ParticleEffectPlayer, vfxPlayerParameters } from './player.js';
+export type { VfxPlayerParametersError } from './player-parameters.js';
+export { validateVfxPlayerParameters } from './player-parameters.js';

@@ -45,9 +45,13 @@ export function selectTemplateAssetRoots(
   selectedSlugs: readonly string[],
 ): readonly string[] {
   const selected = new Set(selectedSlugs);
-  return groups
-    .filter((group) => selected.size === 0 || selected.has(group.slug))
-    .flatMap((group) => group.roots);
+  return [
+    ...new Set(
+      groups
+        .filter((group) => selected.size === 0 || selected.has(group.slug))
+        .flatMap((group) => group.roots),
+    ),
+  ];
 }
 
 /**

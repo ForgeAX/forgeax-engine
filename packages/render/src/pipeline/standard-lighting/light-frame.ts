@@ -1,4 +1,5 @@
 import type { Mat4, Vec3 } from '@forgeax/engine-math';
+import type { BinningCone } from '../../cluster-binner';
 import type {
   DirectionalLightSnapshot,
   PointLightSnapshot,
@@ -8,9 +9,21 @@ import type {
 import type { StandardLightCount } from '../standard-profile';
 
 export interface StandardLocalLightInput {
-  readonly kind: 'point' | 'spot' | 'rect-area';
+  /** `directional` is an unshadowed DirectionalLight after the View sun; its range is infinite. */
+  readonly kind: 'point' | 'spot' | 'rect-area' | 'directional';
+  /**
+   * Binning sphere. Point / rect / directional lights use the light origin
+   * and reach; a spot carries its lit-sector bounding sphere
+   * (`spotBinningSphere`), so this centre need not be the light position.
+   * Shading reads the light payload from `source`, never from these fields.
+   */
   readonly position: Vec3;
   readonly range: number;
+  /**
+   * A spot's lit cone (world space). The GPU membership producer intersects
+   * it with each cluster cell in addition to the binning sphere.
+   */
+  readonly cone?: BinningCone;
   /** Whether the shadow producer admitted this local light to its atlas. */
   readonly shadowed: boolean;
   /**
@@ -18,7 +31,11 @@ export interface StandardLocalLightInput {
    * it on the POD frame prevents Forward/Deferred from rebuilding a second
    * light list while leaving hand-authored unit fixtures source-free.
    */
-  readonly source?: PointLightSnapshot | SpotLightSnapshot | RectAreaDirectLightSnapshot;
+  readonly source?:
+    | PointLightSnapshot
+    | SpotLightSnapshot
+    | RectAreaDirectLightSnapshot
+    | DirectionalLightSnapshot;
 }
 
 export interface StandardLightFrame {

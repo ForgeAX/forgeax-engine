@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { canonicalDdcDigest, canonicalDdcReadbackDigests } from './canonical-json.js';
+import {
+  canonicalDdcCapturedDigest,
+  canonicalDdcDigest,
+  canonicalDdcReadbackDigests,
+  captureCanonicalDdcJson,
+} from './canonical-json.js';
 import { DdcStoreError } from './errors.js';
 import { canonicalDdcJson } from './key.js';
 
@@ -31,9 +36,16 @@ export interface DdcEntry {
   readonly receipt: DdcReceipt;
 }
 
+/** Producers may let staging derive the digest from its one private capture. */
+export type DdcEntryInput = Omit<DdcEntry, 'receipt'> & {
+  readonly receipt: Omit<DdcReceipt, 'outputDigest'> & { readonly outputDigest?: string };
+};
+
 export interface StagedDdcEntry {
   readonly key: string;
   readonly path: string;
+  /** Validated candidate identity; publish still verifies the complete existing entry. */
+  readonly existing?: Pick<DdcEntry, 'key' | 'guid' | 'receipt'>;
 }
 
 export interface PublishDdcEntryResult {
@@ -78,7 +90,7 @@ function errorCode(error: unknown): string | undefined {
   return undefined;
 }
 
-function sortedArtifacts(entry: DdcEntry): readonly [string, DdcArtifact][] {
+function sortedArtifacts(entry: Pick<DdcEntry, 'artifacts'>): readonly [string, DdcArtifact][] {
   return Object.entries(entry.artifacts).sort(([left], [right]) => left.localeCompare(right));
 }
 
@@ -95,7 +107,7 @@ function outputShape(entry: Pick<DdcEntry, 'guid' | 'payload' | 'refs' | 'artifa
     payload: entry.payload,
     refs: entry.refs,
     artifacts: Object.fromEntries(
-      sortedArtifacts(entry as DdcEntry).map(([key, artifact]) => [
+      sortedArtifacts(entry).map(([key, artifact]) => [
         key,
         {
           mediaType: artifact.mediaType,
@@ -107,8 +119,8 @@ function outputShape(entry: Pick<DdcEntry, 'guid' | 'payload' | 'refs' | 'artifa
 }
 
 function existingResult(
-  existing: DdcEntry,
-  candidate: DdcEntry,
+  existing: Pick<DdcEntry, 'key' | 'guid' | 'receipt'>,
+  candidate: Pick<DdcEntry, 'key' | 'guid' | 'receipt'>,
   key: string,
 ): PublishDdcEntryResult {
   const { publicationGeneration: _existingGeneration, ...existingReceipt } = existing.receipt;
@@ -165,9 +177,11 @@ async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, 'utf8')) as T;
 }
 
-function captureEntry(entry: DdcEntry): {
+function captureEntry(entry: DdcEntryInput): {
   readonly entry: DdcEntry;
   readonly payloadJson: Uint8Array;
+  readonly deriveOutputDigest: boolean;
+  readonly canonicalPayload: boolean;
 } {
   const { key, guid } = entry;
   const artifacts = Object.fromEntries(
@@ -176,17 +190,23 @@ function captureEntry(entry: DdcEntry): {
       { mediaType: artifact.mediaType, bytes: new Uint8Array(artifact.bytes) },
     ]),
   );
-  const payloadJson = canonicalDdcJson(entry.payload);
+  const captured = captureCanonicalDdcJson(entry.payload);
+  const payloadJson = captured.json;
+  const payload: unknown = JSON.parse(payloadJson);
+  const refs = JSON.parse(canonicalDdcJson(entry.refs)) as readonly string[];
+  const receipt = JSON.parse(canonicalDdcJson(entry.receipt)) as DdcEntryInput['receipt'];
   return {
     entry: {
       key,
       guid,
-      payload: JSON.parse(payloadJson) as unknown,
-      refs: JSON.parse(canonicalDdcJson(entry.refs)) as readonly string[],
-      receipt: JSON.parse(canonicalDdcJson(entry.receipt)) as DdcReceipt,
+      payload,
+      refs,
+      receipt: { ...receipt, outputDigest: receipt.outputDigest ?? '' },
       artifacts,
     },
     payloadJson: Buffer.from(payloadJson),
+    deriveOutputDigest: receipt.outputDigest === undefined,
+    canonicalPayload: captured.canonical,
   };
 }
 
@@ -199,11 +219,11 @@ export class DdcEntryStore {
     this.staging = join(root, 'staging');
   }
 
-  public async stage(entry: DdcEntry): Promise<StagedDdcEntry> {
+  public async stage(input: DdcEntryInput): Promise<StagedDdcEntry> {
     // Capture once before yielding. Hash the same private JSON and artifact
     // bytes that will be written, sharing the payload across all three hashes.
-    const captured = captureEntry(entry);
-    entry = captured.entry;
+    const captured = captureEntry(input);
+    let entry = captured.entry;
     validateKey(entry.key);
     if (entry.receipt?.key !== entry.key || entry.receipt.guid !== entry.guid) {
       throw new DdcStoreError({
@@ -211,18 +231,62 @@ export class DdcEntryStore {
         detail: 'receipt identity does not match entry',
       });
     }
-    const readback = await canonicalDdcReadbackDigests(
-      { payload: entry.payload, output: outputShape(entry), entry: entryShape(entry) },
-      captured.payloadJson,
-    );
-    if (
-      entry.receipt.outputDigest !== `sha256:${readback.output}` ||
-      readback.payload !== digest(captured.payloadJson)
-    ) {
+    // Canonical text and private buffers were captured synchronously above.
+    // Do not traverse that same payload again or require producers to hash it first.
+    let output: string;
+    if (captured.canonicalPayload) {
+      output = await canonicalDdcCapturedDigest(
+        outputShape(entry),
+        entry.payload,
+        captured.payloadJson,
+      );
+    } else {
+      const checked = await canonicalDdcReadbackDigests(
+        { payload: entry.payload, output: outputShape(entry), entry: entryShape(entry) },
+        captured.payloadJson,
+      );
+      if (checked.payload !== digest(captured.payloadJson)) {
+        throw new DdcStoreError({
+          code: 'ddc-entry-invalid',
+          detail: 'captured payload text is not canonical',
+        });
+      }
+      output = checked.output;
+    }
+    if (captured.deriveOutputDigest) {
+      entry = { ...entry, receipt: { ...entry.receipt, outputDigest: `sha256:${output}` } };
+    } else if (entry.receipt.outputDigest !== `sha256:${output}`) {
       throw new DdcStoreError({
         code: 'ddc-entry-invalid',
         detail: 'receipt output digest does not match entry',
       });
+    }
+    const readback = {
+      payload: digest(captured.payloadJson),
+      output,
+      entry: await canonicalDdcCapturedDigest(
+        entryShape(entry),
+        entry.payload,
+        captured.payloadJson,
+      ),
+    };
+    // This is only an admission hint, not a trusted cache read. The candidate
+    // above is fully validated; publish rereads and validates the stored body.
+    // Avoid writing and then rereading a duplicate temporary entry just to
+    // discover that the immutable destination already contains the same data.
+    const target = join(this.entries, entry.key);
+    const receipt = await readJson<DdcReceipt>(join(target, 'receipt.json')).catch(() => undefined);
+    if (
+      receipt !== null &&
+      typeof receipt === 'object' &&
+      existingResult({ key: receipt.key, guid: receipt.guid, receipt }, entry, entry.key).result ===
+        'existing'
+    ) {
+      return {
+        key: entry.key,
+        path: target,
+        existing: { key: entry.key, guid: entry.guid, receipt: entry.receipt },
+      };
     }
     const path = join(this.staging, `${entry.key}-${randomUUID()}`);
     try {
@@ -249,14 +313,43 @@ export class DdcEntryStore {
   }
 
   public async publish(staged: StagedDdcEntry): Promise<PublishDdcEntryResult> {
+    const { entry: _entry, ...result } = await this.publishValidated(staged);
+    return result;
+  }
+
+  /** Lifecycle calls this directly; no caller-supplied validation token is accepted. */
+  public async publishForCommit(staged: StagedDdcEntry): Promise<DdcEntry | null> {
+    const published = await this.publishValidated(staged);
+    if (published.result === 'conflict') {
+      throw new DdcStoreError({
+        code: 'ddc-entry-conflict',
+        detail: `immutable DDC entry ${published.key} conflicts with the staged candidate`,
+        expected: 'the existing DDC entry to have the same validated output',
+        actual: { key: published.key },
+      });
+    }
+    // A cold rename gets its destination readback. An existing destination has
+    // just passed that exact read; carry it directly to the lifecycle fence.
+    return published.result === 'published'
+      ? this.readDirectory(join(this.entries, staged.key), false)
+      : published.entry;
+  }
+
+  private async publishValidated(
+    staged: StagedDdcEntry,
+  ): Promise<PublishDdcEntryResult & { readonly entry: DdcEntry }> {
     validateKey(staged.key);
-    const candidate = await this.readDirectory(staged.path, true);
     const target = join(this.entries, staged.key);
+    if (staged.existing !== undefined) {
+      const existing = await this.readDirectory(target, false);
+      return { ...existingResult(existing, staged.existing, staged.key), entry: existing };
+    }
+    const candidate = await this.readDirectory(staged.path, true);
     await mkdir(this.entries, { recursive: true });
-    const useExisting = async (): Promise<PublishDdcEntryResult> => {
+    const useExisting = async (): Promise<PublishDdcEntryResult & { readonly entry: DdcEntry }> => {
       const existing = await this.readDirectory(target, false);
       await rm(staged.path, { recursive: true, force: true });
-      return existingResult(existing, candidate, staged.key);
+      return { ...existingResult(existing, candidate, staged.key), entry: existing };
     };
     try {
       await stat(target);
@@ -267,7 +360,7 @@ export class DdcEntryStore {
     }
     try {
       await rename(staged.path, target);
-      return { result: 'published', key: staged.key };
+      return { result: 'published', key: staged.key, entry: candidate };
     } catch (error) {
       const code = errorCode(error);
       if (process.platform === 'win32' && code === 'EPERM') {
@@ -281,6 +374,7 @@ export class DdcEntryStore {
   }
 
   public async discard(staged: StagedDdcEntry): Promise<void> {
+    if (staged.existing !== undefined) return;
     await rm(staged.path, { recursive: true, force: true });
   }
 
@@ -293,6 +387,36 @@ export class DdcEntryStore {
     try {
       validateKey(key);
       return await this.readDirectory(join(this.entries, key), false);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Payload comparison only; this candidate cannot establish artifact readiness. */
+  public async readPayloadCandidate(
+    key: string,
+  ): Promise<Pick<DdcEntry, 'guid' | 'payload' | 'receipt'> | null> {
+    try {
+      validateKey(key);
+      const path = join(this.entries, key);
+      const [payloadJson, receipt, integrity] = await Promise.all([
+        readFile(join(path, 'payload.json')),
+        readJson<DdcReceipt>(join(path, 'receipt.json')),
+        readJson<EntryIntegrity>(join(path, 'integrity.json')),
+      ]);
+      const payload: unknown = JSON.parse(payloadJson.toString('utf8'));
+      if (
+        receipt.key !== key ||
+        typeof receipt.guid !== 'string' ||
+        // The normal writer stores canonical JSON. Matching its byte digest
+        // needs no second graph traversal; equivalent noncanonical JSON keeps
+        // the semantic fallback. Full entry admission remains at publication.
+        (digest(payloadJson) !== integrity.payload &&
+          canonicalDdcDigest(payload) !== integrity.payload) ||
+        canonicalDdcDigest(receipt) !== integrity.receipt
+      )
+        return null;
+      return { guid: receipt.guid, payload, receipt };
     } catch {
       return null;
     }
@@ -357,9 +481,15 @@ export class DdcEntryStore {
       for (const [key, descriptor] of Object.entries(manifest).sort(([left], [right]) =>
         left.localeCompare(right),
       )) {
-        const bytes = new Uint8Array(
-          await readFile(join(path, 'artifacts', `${descriptor.file}.bin`)),
-        );
+        const file = await readFile(join(path, 'artifacts', `${descriptor.file}.bin`));
+        // readFile owns this storage. Keep an exact backing buffer without a
+        // second artifact-sized allocation; trim pooled/subarray storage so a
+        // small artifact cannot retain unrelated bytes. Expose Uint8Array,
+        // whose slice still copies, rather than Buffer's aliasing slice.
+        const bytes =
+          file.byteOffset === 0 && file.byteLength === file.buffer.byteLength
+            ? new Uint8Array(file.buffer)
+            : new Uint8Array(file);
         artifacts[key] = { mediaType: descriptor.mediaType, bytes };
       }
       const entry = { key: receipt.key, guid: receipt.guid, payload, refs, artifacts, receipt };

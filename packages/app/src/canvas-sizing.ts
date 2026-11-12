@@ -1,4 +1,4 @@
-import type { Renderer } from '@forgeax/engine-render';
+import { type Renderer, renderAblation } from '@forgeax/engine-render';
 
 type CanvasSurface = Pick<
   HTMLCanvasElement,
@@ -37,8 +37,9 @@ export function setCanvasDeviceLimit(canvas: CanvasSurface, maxTextureDimension2
 export function syncCanvasDrawingBuffer(
   canvas: CanvasSurface,
   requestedSize?: { readonly width: number; readonly height: number },
+  pixelRatio?: number,
 ): void {
-  const measured = requestedSize === undefined ? measurement(canvas) : undefined;
+  const measured = requestedSize === undefined ? measurement(canvas, pixelRatio) : undefined;
   const size =
     requestedSize !== undefined && hasPositiveExtent(requestedSize.width, requestedSize.height)
       ? boundedSize(canvas, requestedSize.width, requestedSize.height, 1)
@@ -62,24 +63,46 @@ export function measureCanvasDrawingBuffer(
   maxCanvasPixelRatio?: number,
   display?: { readonly width: number; readonly height: number },
 ): { readonly width: number; readonly height: number } {
-  const measured = measurement(canvas, maxCanvasPixelRatio, display);
+  const pixelRatio =
+    typeof maxCanvasPixelRatio === 'number' &&
+    Number.isFinite(maxCanvasPixelRatio) &&
+    maxCanvasPixelRatio > 0
+      ? Math.min(devicePixelRatio(), maxCanvasPixelRatio)
+      : undefined;
+  return measureCanvasDrawingBufferAtRatio(canvas, pixelRatio, display);
+}
+
+/** Measure using an exact explicit scale for the browser App host. */
+export function measureCanvasDrawingBufferAtRatio(
+  canvas: CanvasSurface,
+  pixelRatio: number | undefined,
+  display?: { readonly width: number; readonly height: number },
+): { readonly width: number; readonly height: number } {
+  const measured = measurement(canvas, pixelRatio, display);
   return measured === undefined
     ? retainedSize(canvas)
     : { width: measured.width, height: measured.height };
 }
 
+function devicePixelRatio(): number {
+  return Number.isFinite(globalThis.devicePixelRatio) && globalThis.devicePixelRatio > 0
+    ? Math.max(1, globalThis.devicePixelRatio)
+    : 1;
+}
+
 export function refreshCanvasDeviceLimit(
   canvas: CanvasSurface,
   renderer: Pick<Renderer, 'inspect'>,
+  pixelRatio?: number,
 ): void {
   let limit: number | undefined;
   try {
-    limit = renderer.inspect().limits?.maxTextureDimension2D;
+    limit = renderer.inspect({ fields: ['limits'] }).limits?.maxTextureDimension2D;
   } catch {
     // Optional inspection cannot bypass the conservative startup budget.
   }
   deviceLimits.set(canvas, deviceLimit(limit));
-  syncCanvasDrawingBuffer(canvas);
+  syncCanvasDrawingBuffer(canvas, undefined, pixelRatio);
 }
 
 function deviceLimit(limit: unknown): number {
@@ -92,16 +115,17 @@ function deviceLimit(limit: unknown): number {
 export function observeCanvasDeviceLimit(
   canvas: CanvasSurface,
   renderer: Pick<Renderer, 'inspect' | 'subscribe'>,
+  pixelRatio?: number,
 ): () => void {
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind !== 'state-changed') return;
-    if (event.current === 'alive') refreshCanvasDeviceLimit(canvas, renderer);
+    if (event.current === 'alive') refreshCanvasDeviceLimit(canvas, renderer, pixelRatio);
     else if (event.current === 'device-lost' || event.current === 'recovering') {
       deviceLimits.set(
         canvas,
         Math.min(deviceLimits.get(canvas) ?? STARTUP_DIMENSION_LIMIT, STARTUP_DIMENSION_LIMIT),
       );
-      syncCanvasDrawingBuffer(canvas);
+      syncCanvasDrawingBuffer(canvas, undefined, pixelRatio);
     }
   });
   return () => {
@@ -144,7 +168,7 @@ function hasPositiveExtent(width: number, height: number): boolean {
 
 function measurement(
   canvas: CanvasSurface,
-  maxCanvasPixelRatio?: number,
+  pixelRatio?: number,
   display?: { readonly width: number; readonly height: number },
 ) {
   // A browser host can consume its existing native display notification instead
@@ -168,18 +192,28 @@ function measurement(
     (previous?.intrinsic ?? true) &&
     clientWidth === canvas.width &&
     clientHeight === canvas.height;
-  const deviceRatio =
-    Number.isFinite(globalThis.devicePixelRatio) && globalThis.devicePixelRatio > 0
-      ? Math.max(1, globalThis.devicePixelRatio)
+  const ratio = drawingBufferPixelRatio(pixelRatio, intrinsic, Math.min(cssWidth, cssHeight));
+  // Diagnostic render-scale ablation scales the layout-derived buffer only.
+  const scale = renderAblation()?.renderScale ?? 1;
+  return {
+    cssWidth,
+    cssHeight,
+    intrinsic,
+    ...boundedSize(canvas, cssWidth, cssHeight, ratio * scale),
+  };
+}
+
+function drawingBufferPixelRatio(
+  pixelRatio: number | undefined,
+  intrinsic: boolean,
+  shortSide: number,
+): number {
+  if (intrinsic) return 1;
+  return typeof pixelRatio === 'number' && Number.isFinite(pixelRatio) && pixelRatio > 0
+    ? pixelRatio
+    : /Android|iPhone|iPad|iPod/.test(globalThis.navigator?.userAgent ?? '')
+      ? 720 / shortSide
       : 1;
-  const dpr = intrinsic
-    ? 1
-    : maxCanvasPixelRatio === undefined ||
-        !Number.isFinite(maxCanvasPixelRatio) ||
-        maxCanvasPixelRatio <= 0
-      ? deviceRatio
-      : Math.min(deviceRatio, maxCanvasPixelRatio);
-  return { cssWidth, cssHeight, intrinsic, ...boundedSize(canvas, cssWidth, cssHeight, dpr) };
 }
 
 function boundedSize(canvas: CanvasSurface, width: number, height: number, pixelRatio: number) {

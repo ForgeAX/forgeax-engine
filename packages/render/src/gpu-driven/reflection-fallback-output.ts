@@ -10,7 +10,7 @@ const REFLECTION_FALLBACK_FORMAT: TextureFormat = 'rgba16float';
  */
 export function gpuDrivenReflectionFallbackRenderState(input: {
   readonly renderState: MaterialRenderState | undefined;
-  readonly colorFormat: TextureFormat;
+  readonly colorFormat: TextureFormat | null;
   readonly additionalColorFormats: readonly TextureFormat[];
   /** The pipeline role is selected by the caller; authored entry names are not role metadata. */
   readonly forwardColorPass: boolean;
@@ -18,6 +18,7 @@ export function gpuDrivenReflectionFallbackRenderState(input: {
 }): MaterialRenderState | undefined {
   if (
     !input.forwardColorPass ||
+    input.colorFormat === null ||
     input.additionalColorFormats.length !== 1 ||
     input.additionalColorFormats[0] !== REFLECTION_FALLBACK_FORMAT
   ) {

@@ -1,7 +1,7 @@
 {
   "asset": {
     "version": "2.0",
-    "generator": "ForgeaX LOD sphere demo glTF fixture"
+    "generator": "ForgeAX LOD sphere demo glTF fixture"
   },
   "extensionsUsed": [
     "MSFT_lod"

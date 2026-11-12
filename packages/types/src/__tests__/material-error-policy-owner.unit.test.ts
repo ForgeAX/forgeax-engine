@@ -36,6 +36,7 @@ const expectedCodes = [
   'material-surface-slot-missing',
   'material-surface-abi-mismatch',
   'material-surface-forbidden-interface',
+  'material-parallax-contract-invalid',
 ] as const;
 
 const expectedPolicy = {
@@ -65,7 +66,7 @@ const expectedPolicy = {
   },
   'material-value-type-mismatch': {
     expected: 'each value matches its declared parameter type',
-    hint: 'change the value to the declared parameter type',
+    hint: 'change the value to the declared parameter type. Valid parameter types and value forms: bool (true|false), f32 (finite number), i32 (integer), u32 (integer >= 0), vec2/vec3/vec4/color (array of 2/3/4/4 finite numbers), texture | texture_2d_array | texture_3d | texture_cube | texture_external (asset guid string, integer asset handle, or texture descriptor object). The parameter type is spelled texture, not texture2d.',
   },
   'material-parameter-type-unsupported': {
     expected: 'each material parameter uses a producer-supported ABI type',
@@ -143,6 +144,11 @@ const expectedPolicy = {
   'material-surface-forbidden-interface': {
     expected: 'the Surface module declares no stage entry, resource binding, or vertex mutation',
     hint: 'remove the forbidden interface from the Surface source and recook the material',
+  },
+  'material-parallax-contract-invalid': {
+    expected:
+      'displacementMode parallax has a normalTexture value and no independent metallicTexture value',
+    hint: 'parallax needs normalTexture; bumpTexture is ignored in parallax mode',
   },
 } satisfies Record<MaterialErrorCode, { expected: string; hint: string }>;
 

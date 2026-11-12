@@ -4,6 +4,10 @@ import { saveBrowserEvidence } from './browser-evidence.fixture';
 import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
 
+// LightShadow defaults use zero depth/normal bias here. This is startup and
+// cross-renderer parity coverage, not an acne-free picture oracle: variance
+// moments can self-shadow even on the Three.js reference. Native shadow quality
+// separately requires unoccluded receiver pixels to retain their lighting.
 it.each([
   { kind: 'directional', width: 128, height: 128 },
   { kind: 'spot', width: 128, height: 128 },

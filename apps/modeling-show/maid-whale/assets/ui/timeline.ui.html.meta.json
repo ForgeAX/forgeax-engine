@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "1.0.0",
+  "kind": "external-asset-package",
+  "importer": "ui",
+  "source": "timeline.ui.html",
+  "importSettings": {},
+  "subAssets": [
+    {
+      "guid": "01900000-0000-7000-8000-0000000c1801",
+      "sourceIndex": 0,
+      "sourceKey": "ui/timeline",
+      "kind": "ui"
+    }
+  ]
+}

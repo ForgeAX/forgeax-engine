@@ -12,11 +12,11 @@ import { addAnalyticFogPass } from '../pipeline/analytic-fog-pass';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE, STANDARD_PIPELINE_ID } from '../pipeline/standard-profile';
 import type { RenderPipelineFrame, RenderPipelineTopology } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 
 let device: RhiDevice;
 
@@ -72,6 +72,7 @@ function topology(
     },
     featureTopologySignature: 'none',
     gpuDrivenTopologySignature: '',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 
@@ -103,7 +104,10 @@ function clusteredStandardLighting() {
 }
 
 function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
-  const target = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+  const target = (
+    label: string,
+    format: 'rgba16float' | 'r8unorm' | 'rgba8unorm' = 'rgba16float',
+  ) => {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
@@ -125,6 +129,8 @@ function importedTaaHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     previousTemporal: target('taa-history-previous-temporal'),
     currentStability: target('taa-history-current-stability', 'r8unorm'),
     previousStability: target('taa-history-previous-stability', 'r8unorm'),
+    currentFlicker: target('taa-history-current-flicker', 'rgba8unorm'),
+    previousFlicker: target('taa-history-previous-flicker', 'rgba8unorm'),
   };
 }
 

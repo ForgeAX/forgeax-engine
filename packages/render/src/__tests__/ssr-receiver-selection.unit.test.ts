@@ -250,6 +250,20 @@ describe('SSR receiver selection', () => {
     ).toBe(false);
     expect(hasSsrSceneInputs(prepare([], []), 'forward')).toBe(false);
   });
+
+  it.each([
+    'forgeax::pbr-skin',
+    'forgeax::default-standard-pbr-skin',
+  ])('admits the complete built-in Skin Forward SSR outputs (%s)', (materialShaderId) => {
+    const skin = material(1, { materialShaderId });
+    expect(hasSsrSceneInputs(context([skin], [pass(0, 1, 'Forward')]), 'forward')).toBe(true);
+    expect(
+      hasSsrSceneInputs(
+        context([skin, material(2)], [pass(0, 1, 'Forward'), pass(0, 2, 'Forward')]),
+        'forward',
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('record-owned material selections', () => {

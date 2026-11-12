@@ -62,6 +62,41 @@ describe('NativeCookerRegistry artifact boundary', () => {
     if (result.ok) expect(result.value.payload).toEqual({ source: 'module.wgsl', revision: 3 });
   });
 
+  it('passes each cooker the host store of its own key and none without a factory', async () => {
+    const stores = new Map<string, Map<string, Uint8Array>>();
+    const registry = new NativeCookerRegistry({
+      cache: (key) => {
+        const entries = stores.get(key) ?? new Map<string, Uint8Array>();
+        stores.set(key, entries);
+        return { get: (k) => entries.get(k), put: (k, bytes) => void entries.set(k, bytes) };
+      },
+    });
+    const seen: (number | undefined)[] = [];
+    for (const key of ['a', 'b'])
+      registry.register({
+        key,
+        cook(_input, context) {
+          seen.push(context?.cache?.get('k')?.[0]);
+          context?.cache?.put('k', new Uint8Array([key.charCodeAt(0)]));
+          return { guid: key, payload: {}, refs: [], artifacts: {}, inputFingerprint: key };
+        },
+      });
+    for (const key of ['a', 'b', 'a']) expect((await registry.runDraft(key, {})).ok).toBe(true);
+    expect(seen).toEqual([undefined, undefined, 97]);
+    expect([...stores.keys()]).toEqual(['a', 'b']);
+    const bare = new NativeCookerRegistry();
+    let context: unknown;
+    bare.register({
+      key: 'a',
+      cook(_input, received) {
+        context = received;
+        return { guid: 'a', payload: {}, refs: [], artifacts: {}, inputFingerprint: 'a' };
+      },
+    });
+    await bare.runDraft('a', {});
+    expect(context).toEqual({});
+  });
+
   it('retains structured diagnostics when a producer throws a non-Error value', async () => {
     const registry = new NativeCookerRegistry();
     registry.register({
@@ -141,4 +176,87 @@ it('uses the accepted snapshot when validation throws without publishing the can
     value: { generation: 1, draft: first.value.draft, status: 'recovered' },
   });
   expect(published).toBe(false);
+});
+
+describe('NativeCookerRegistry admission', () => {
+  const draft = (guid: string) => ({
+    guid,
+    payload: { kind: 'test-effect' },
+    refs: [],
+    artifacts: {},
+    inputFingerprint: `sha256:${guid}`,
+  });
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('admits concurrent callers of a serial cooker one at a time in call order', async () => {
+    const registry = new NativeCookerRegistry();
+    let active = 0;
+    let peak = 0;
+    const started: string[] = [];
+    registry.register({
+      key: 'serial-effect',
+      async cook(input: unknown) {
+        const guid = (input as { guid: string }).guid;
+        started.push(guid);
+        peak = Math.max(peak, ++active);
+        // Later calls finish faster; serial admission must not let them overtake.
+        await delay(guid === 'a' ? 20 : guid === 'b' ? 10 : 1);
+        active--;
+        if (guid === 'b') throw new Error('b failed');
+        return draft(guid);
+      },
+    });
+    const results = await Promise.all(
+      ['a', 'b', 'c'].map((guid) => registry.runDraft('serial-effect', { guid })),
+    );
+    expect(peak).toBe(1);
+    expect(started).toEqual(['a', 'b', 'c']);
+    // A failed cook releases admission for the next caller.
+    expect(results.map((result) => result.ok)).toEqual([true, false, true]);
+  });
+
+  it('serializes separately constructed instances of one cooker key across registries', async () => {
+    let active = 0;
+    let peak = 0;
+    // Each registry constructs its own instance, as a per-Pack or per-project load would.
+    const instance = () => ({
+      key: 'shared-effect',
+      async cook(input: unknown) {
+        peak = Math.max(peak, ++active);
+        await delay(5);
+        active--;
+        return draft((input as { guid: string }).guid);
+      },
+    });
+    const registries = [new NativeCookerRegistry(), new NativeCookerRegistry()];
+    for (const registry of registries) registry.register(instance());
+    const results = await Promise.all(
+      ['a', 'b', 'c', 'd'].map((guid, index) =>
+        registries[index % 2]?.runDraft('shared-effect', { guid }),
+      ),
+    );
+    expect(peak).toBe(1);
+    expect(results.every((result) => result?.ok)).toBe(true);
+  });
+
+  it('lets a parallel cooker overlap its calls', async () => {
+    const registry = new NativeCookerRegistry();
+    let active = 0;
+    let peak = 0;
+    registry.register({
+      key: 'parallel-effect',
+      concurrency: 'parallel',
+      async cook(input: unknown) {
+        peak = Math.max(peak, ++active);
+        await delay(5);
+        active--;
+        return draft((input as { guid: string }).guid);
+      },
+    });
+    const results = await Promise.all(
+      ['a', 'b', 'c'].map((guid) => registry.runDraft('parallel-effect', { guid })),
+    );
+    expect(peak).toBe(3);
+    expect(results.every((result) => result.ok)).toBe(true);
+  });
 });

@@ -46,6 +46,10 @@
 //   vitest report; no need to assert against error message strings.
 
 import { afterAll } from 'vitest';
+import { observeByteEqualityWork } from './byte-equality-work';
+
+const byteEqualityWork = observeByteEqualityWork();
+
 import {
   normalizeDawnAdapter,
   normalizeDawnDeviceDescriptor,
@@ -213,15 +217,20 @@ if (process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native') {
   }
 
 afterAll(async () => {
-  await teardownDawnInstance(
-    trackedDevices,
-    () => {
-      trackedDevices.clear();
-      if (gpuRefCleanup) gpuRefCleanup();
-      else delete (globalThis.navigator as { gpu?: unknown }).gpu;
-    },
-    (step: string, error: unknown) => {
-      console.error(`[setup-webgpu teardown] ${step} failed:`, error);
-    },
-  );
+  try {
+    await teardownDawnInstance(
+      trackedDevices,
+      () => {
+        trackedDevices.clear();
+        if (gpuRefCleanup) gpuRefCleanup();
+        else delete (globalThis.navigator as { gpu?: unknown }).gpu;
+      },
+      (step: string, error: unknown) => {
+        console.error(`[setup-webgpu teardown] ${step} failed:`, error);
+      },
+    );
+  } finally {
+    byteEqualityWork.stop();
+  }
+  byteEqualityWork.assertNoGenericComparisons();
 });

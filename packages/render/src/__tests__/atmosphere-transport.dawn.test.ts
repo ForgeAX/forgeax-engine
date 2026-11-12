@@ -1,13 +1,8 @@
 /// <reference types="@webgpu/types" />
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
-
-const source = (name: string) =>
-  readFileSync(new URL(`../../../shader/src/${name}.wgsl`, import.meta.url), 'utf8').replace(
-    /^#.*$/gm,
-    '',
-  );
+import { nativeAtmosphereSource as source } from './atmosphere-shader.fixture';
 
 it('measures RGB versus scalar extinction using the physical GPU transport and fixed output transform', async () => {
   const common = source('common');
@@ -27,6 +22,7 @@ it('measures RGB versus scalar extinction using the physical GPU transport and f
     structs +
     '\n' +
     'fn atmosphere_scene_visibility(m:AtmosphereMedium,p:vec3<f32>)->f32{return 1.0;}' +
+    source('atmosphere-table-access') +
     source('atmosphere-optics') +
     '\n' +
     source('atmosphere-coordinates') +
@@ -69,7 +65,9 @@ it('measures RGB versus scalar extinction using the physical GPU transport and f
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   try {
-    const module = device.createShaderModule({ code: `${kernel}\n${source('atmosphere-luts')}` });
+    const module = device.createShaderModule({
+      code: `${kernel}\n${source('atmosphere-table-kernels')}\n${source('atmosphere-luts')}`,
+    });
     expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(
       [],
     );

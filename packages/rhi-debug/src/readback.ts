@@ -198,6 +198,39 @@ export async function readbackTexturePixelsBatch(
   return readbackBatch(device, { kind: 'texture', requests }, callbacks);
 }
 
+/** Plan aligned allocation windows without changing canonical texture offsets. */
+function textureStagingGroups(request: TextureReadbackBatchRequest, maxBufferSize: number) {
+  const slices = request.slices.map((slice) => {
+    const {
+      rowBytes,
+      rowsPerImage: rows,
+      bytesPerRow: alignedRowBytes,
+      byteLength,
+    } = textureReadbackLayout(slice.width, slice.height, request);
+    return {
+      ...slice,
+      stagingOffset: 0,
+      rows,
+      rowBytes,
+      alignedRowBytes,
+      allocationBytes: byteLength,
+    };
+  });
+  const groups: Array<{ byteLength: number; slices: typeof slices }> = [];
+  let group: (typeof groups)[number] = { byteLength: 0, slices: [] };
+  for (const slice of slices) {
+    if (group.slices.length > 0 && group.byteLength + slice.allocationBytes > maxBufferSize) {
+      groups.push(group);
+      group = { byteLength: 0, slices: [] };
+    }
+    slice.stagingOffset = group.byteLength;
+    group.byteLength += slice.allocationBytes;
+    group.slices.push(slice);
+  }
+  if (group.slices.length > 0) groups.push(group);
+  return groups;
+}
+
 async function readbackBatch(
   device: RhiDevice,
   source:
@@ -221,12 +254,13 @@ async function readbackBatch(
   const staging: Array<{
     readonly handleId: string;
     readonly buffer: Buffer;
-    readonly textureSlice?: {
+    readonly textureSlices?: readonly {
+      readonly stagingOffset: number;
       readonly byteOffset: number;
       readonly rows: number;
       readonly rowBytes: number;
       readonly alignedRowBytes: number;
-    };
+    }[];
   }> = [];
   const mapped = new Map<Buffer, MappedBuffer>();
   const cleaned = new Set<Buffer>();
@@ -272,15 +306,11 @@ async function readbackBatch(
       }
     } else {
       for (const request of source.requests) {
-        for (const slice of request.slices) {
-          const {
-            rowBytes,
-            rowsPerImage: rows,
-            bytesPerRow: alignedRowBytes,
-            byteLength,
-          } = textureReadbackLayout(slice.width, slice.height, request);
+        // Share aligned staging across a texture's mip/layer chain, splitting
+        // before the device buffer limit. Every slice still gets its own copy.
+        for (const group of textureStagingGroups(request, device.limits.maxBufferSize)) {
           const stagingResult = device.createBuffer({
-            size: byteLength,
+            size: group.byteLength,
             usage: COPY_DST_MAP_READ,
           });
           if (!stagingResult.ok)
@@ -290,33 +320,31 @@ async function readbackBatch(
               `staging buffer creation failed: ${stagingResult.error.code}`,
             );
           const buffer = stagingResult.value;
-          staging.push({
-            handleId: request.handleId,
-            buffer,
-            textureSlice: { byteOffset: slice.byteOffset, rows, rowBytes, alignedRowBytes },
-          });
-          try {
-            encoder.copyTextureToBuffer(
-              {
-                texture: request.texture as Texture,
-                ...(request.aspect === undefined ? {} : { aspect: request.aspect }),
-                mipLevel: slice.mip,
-                origin: { x: 0, y: 0, z: slice.layer },
-              },
-              {
-                buffer,
-                offset: 0,
-                bytesPerRow: alignedRowBytes,
-                rowsPerImage: rows,
-              },
-              {
-                width: (rowBytes / request.bytesPerBlock) * request.blockWidth,
-                height: rows * request.blockHeight,
-                depthOrArrayLayers: 1,
-              },
-            );
-          } catch (error) {
-            return fail(request.handleId, 'copy', `copyTextureToBuffer failed: ${String(error)}`);
+          staging.push({ handleId: request.handleId, buffer, textureSlices: group.slices });
+          for (const slice of group.slices) {
+            try {
+              encoder.copyTextureToBuffer(
+                {
+                  texture: request.texture as Texture,
+                  ...(request.aspect === undefined ? {} : { aspect: request.aspect }),
+                  mipLevel: slice.mip,
+                  origin: { x: 0, y: 0, z: slice.layer },
+                },
+                {
+                  buffer,
+                  offset: slice.stagingOffset,
+                  bytesPerRow: slice.alignedRowBytes,
+                  rowsPerImage: slice.rows,
+                },
+                {
+                  width: (slice.rowBytes / request.bytesPerBlock) * request.blockWidth,
+                  height: slice.rows * request.blockHeight,
+                  depthOrArrayLayers: 1,
+                },
+              );
+            } catch (error) {
+              return fail(request.handleId, 'copy', `copyTextureToBuffer failed: ${String(error)}`);
+            }
           }
         }
       }
@@ -399,7 +427,7 @@ async function readbackBatch(
       if (!rangeResult.ok) {
         return fail(item.handleId, 'map', `getMappedRange failed: ${rangeResult.error.code}`);
       }
-      if (item.textureSlice === undefined) {
+      if (item.textureSlices === undefined) {
         result.set(item.handleId, new Uint8Array(rangeResult.value).slice().buffer as ArrayBuffer);
       } else {
         const outputBuffer = result.get(item.handleId);
@@ -407,11 +435,20 @@ async function readbackBatch(
           return fail(item.handleId, 'map', 'texture batch returned an unknown handle');
         const output = new Uint8Array(outputBuffer);
         const fullBytes = new Uint8Array(rangeResult.value);
-        const { byteOffset, rows, rowBytes, alignedRowBytes } = item.textureSlice;
-        for (let y = 0; y < rows; y++) {
-          const srcOffset = y * alignedRowBytes;
-          const dstOffset = byteOffset + y * rowBytes;
-          for (let x = 0; x < rowBytes; x++) output[dstOffset + x] = fullBytes[srcOffset + x] ?? 0;
+        for (const {
+          stagingOffset,
+          byteOffset,
+          rows,
+          rowBytes,
+          alignedRowBytes,
+        } of item.textureSlices) {
+          for (let y = 0; y < rows; y++) {
+            const srcOffset = stagingOffset + y * alignedRowBytes;
+            output.set(
+              fullBytes.subarray(srcOffset, srcOffset + rowBytes),
+              byteOffset + y * rowBytes,
+            );
+          }
         }
       }
       mappedBuffer.unmap();

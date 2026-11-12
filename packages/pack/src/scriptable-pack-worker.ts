@@ -7,6 +7,7 @@ import { parentPort } from 'node:worker_threads';
 import ts from 'typescript';
 import type { PackAuthoringError } from './pack-authoring.js';
 import { validatePluginAssetSource } from './plugin-asset.js';
+import { type CapturedJsonInputs, capturedJsonModule } from './scriptable-pack-json-input.js';
 import {
   relativeScriptableImportCandidates,
   SCRIPTABLE_SOURCE_EXTENSIONS,
@@ -28,6 +29,7 @@ const flushCompileCache = (
 ).flushCompileCache;
 const port = parentPort;
 let capturedSources: Readonly<Record<string, string>> | undefined;
+let capturedJsonInputs: CapturedJsonInputs | undefined;
 let capturedTranspiles: readonly SnapshotTranspileText[] | undefined;
 let completedTranspiles: SnapshotTranspileText[] = [];
 let reliableTranspileRecipe: string | undefined;
@@ -117,7 +119,8 @@ function resolveRelativeImport(importer: string, specifier: string): string | un
   return relativeScriptableImportCandidates(importer, specifier).find((candidate) =>
     capturedSources === undefined || !Object.hasOwn(capturedSources, importer)
       ? existsSync(candidate) && statSync(candidate).isFile()
-      : Object.hasOwn(capturedSources, candidate),
+      : Object.hasOwn(capturedSources, candidate) ||
+        (capturedJsonInputs !== undefined && Object.hasOwn(capturedJsonInputs, candidate)),
   );
 }
 
@@ -196,6 +199,26 @@ function capturedTranspileCache(): ReadonlyMap<string, unknown> {
   return cache;
 }
 
+/** Materialize captured JSON, raw text or ordinary JSON as a data-only module. */
+function compileDataModule(path: string, outputRoot: string): string | undefined {
+  const captured = capturedJsonModule(path, capturedJsonInputs, outputRoot, outputName(path));
+  if (captured !== undefined) return captured;
+  if (path.endsWith('?raw')) {
+    const sourcePath = path.slice(0, -4);
+    const text = capturedSources?.[sourcePath] ?? readFileSync(sourcePath, 'utf8');
+    return `export default ${JSON.stringify(text)};`;
+  }
+  if (extname(path) !== '.json') return undefined;
+  const source = capturedSources?.[path] ?? readFileSync(path, 'utf8');
+  // JSON is data, not TypeScript. Parsing preserves own __proto__ keys.
+  const json = JSON.stringify(JSON.parse(source));
+  // Keep bulk data out of the module's retained JavaScript source. Read
+  // only this captured compile artifact, never the live author file.
+  const dataName = `${outputName(path)}.json`;
+  writeFileSync(join(outputRoot, dataName), json);
+  return `import { readFileSync } from 'node:fs';\nexport default JSON.parse(readFileSync(new URL('./${dataName}', import.meta.url), 'utf8'));\n`;
+}
+
 /**
  * Node 22 does not execute `.ts` modules. Compile the trusted local module
  * closure into one disposable ESM directory before importing it. Bare package
@@ -218,26 +241,12 @@ function compileModuleClosure(
   while (pending.length > 0) {
     const path = pending.pop();
     if (path === undefined || sources.has(path)) continue;
-    if (path.endsWith('?raw')) {
-      const sourcePath = path.slice(0, -4);
-      const text = capturedSources?.[sourcePath] ?? readFileSync(sourcePath, 'utf8');
-      sources.set(path, `export default ${JSON.stringify(text)};`);
+    const dataModule = compileDataModule(path, outputRoot);
+    if (dataModule !== undefined) {
+      sources.set(path, dataModule);
       continue;
     }
     const source = capturedSources?.[path] ?? readFileSync(path, 'utf8');
-    if (extname(path) === '.json') {
-      // JSON is data, not TypeScript. Parsing preserves own __proto__ keys.
-      const json = JSON.stringify(JSON.parse(source));
-      // Keep bulk data out of the module's retained JavaScript source. Read
-      // only this captured compile artifact, never the live author file.
-      const dataName = `${outputName(path)}.json`;
-      writeFileSync(join(outputRoot, dataName), json);
-      sources.set(
-        path,
-        `import { readFileSync } from 'node:fs';\nexport default JSON.parse(readFileSync(new URL('./${dataName}', import.meta.url), 'utf8'));\n`,
-      );
-      continue;
-    }
     const resolvedImports = new Map<string, string>();
     const collectRuntimeImports = (sourceFile: ts.SourceFile): ts.SourceFile => {
       const visit = (node: ts.Node): void => {
@@ -450,11 +459,13 @@ async function loadDefinition(task: {
   readonly compileRoot: string;
   readonly loadId: number;
   readonly sources?: Readonly<Record<string, string>>;
+  readonly jsonInputs?: CapturedJsonInputs;
   readonly transpiles?: readonly SnapshotTranspileText[];
   /** Metadata loads compile only the statically imported closure. */
   readonly staticOnly: boolean;
 }): Promise<void> {
   capturedSources = task.sources;
+  capturedJsonInputs = task.jsonInputs;
   capturedTranspiles = task.transpiles;
   completedTranspiles = [];
   definition = undefined;
@@ -522,9 +533,24 @@ async function loadDefinition(task: {
     // Build and delayed imports use the compiled closure on disk, not these
     // load-only strings.
     capturedSources = undefined;
+    capturedJsonInputs = undefined;
     capturedTranspiles = undefined;
     completedTranspiles = [];
   }
+}
+
+/** Project the optional captured inputs without manufacturing absent protocol fields. */
+function capturedLoadInputs(value: Record<string, unknown>) {
+  return {
+    ...(value.sources === undefined ? {} : { sources: value.sources as Record<string, string> }),
+    ...(value.jsonInputs === undefined
+      ? {}
+      : { jsonInputs: value.jsonInputs as CapturedJsonInputs }),
+    ...(value.transpiles === undefined
+      ? {}
+      : { transpiles: value.transpiles as readonly SnapshotTranspileText[] }),
+    staticOnly: value.staticOnly === true,
+  };
 }
 
 async function handleMessage(message: unknown): Promise<void> {
@@ -546,13 +572,7 @@ async function handleMessage(message: unknown): Promise<void> {
         sourcePath: value.sourcePath,
         compileRoot: value.compileRoot,
         loadId: value.loadId,
-        ...(value.sources === undefined
-          ? {}
-          : { sources: value.sources as Record<string, string> }),
-        ...(value.transpiles === undefined
-          ? {}
-          : { transpiles: value.transpiles as readonly SnapshotTranspileText[] }),
-        staticOnly: value.staticOnly === true,
+        ...capturedLoadInputs(value),
       });
     } catch (error) {
       port.postMessage({ kind: 'load-threw', loadId: value.loadId, error: failure(error) });

@@ -2,9 +2,29 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { parse } from 'yaml';
 import { checkWorkflowText } from '../check-runner-pool-labels.mjs';
 import { focusPlan } from '../run-ci-focus.mjs';
 import { selectDawnGroups } from '../run-dawn-gate.mjs';
+
+test('LOD performance focus retains the real producer and separates opt-in profiling', () => {
+  const plan = focusPlan('performance', 'hello-lod-occlusion');
+  assert.deepEqual(plan.apps, ['apps/hello/lod-occlusion']);
+  assert.deepEqual(plan.args, [
+    'scripts/ci/run-lod-performance-with-retry.mjs',
+    '--',
+    'pnpm',
+    '--filter',
+    '@forgeax/hello-lod-occlusion',
+    'bench:json',
+  ]);
+  assert.equal(plan.gpuLease, true);
+  assert.equal(plan.env, undefined);
+  const profile = focusPlan('performance', 'hello-lod-occlusion-profile');
+  assert.deepEqual(profile.args, plan.args);
+  assert.deepEqual(profile.env, { FORGEAX_LOD_PROFILE: '1' });
+  assert.throws(() => focusPlan('performance', 'unknown'), /performance selector/);
+});
 
 test('focused and full Smoke routes carry 300 through all four shards', () => {
   assert.equal(focusPlan('smoke', 'hello-cinder-fall/smoke', { frames: 300 }).frames, 300);
@@ -148,6 +168,15 @@ test('unit focus preserves exact file filtering and rejects command injection or
   assert.throws(() => focusPlan('unknown', selected));
 });
 
+test('compatibility focus retains the complete stable carrier instead of a different Browser profile', () => {
+  assert.deepEqual(focusPlan('compatibility', 'stable'), {
+    args: ['scripts/ci/run-webgpu-compatibility.mjs'],
+    env: { FORGEAX_COMPAT_BROWSER: 'stable' },
+  });
+  for (const selector of ['latest', 'stable --skip', 'scene', 'webkit'])
+    assert.throws(() => focusPlan('compatibility', selector), /unknown compatibility selector/);
+});
+
 test('browser focus conserves exact roster membership before launching Chrome', () => {
   const script = 'scripts/ci/run-split-vitest-browser.mjs';
   const file = 'apps/learn-render/2.lighting/1.colors/src/__tests__/onerror-gate.browser.test.ts';
@@ -203,4 +232,70 @@ test('allocation focus selects bounded Math/ECS owners and preserves raw evidenc
   assert.match(workflow, /view, allocation\]/);
   assert.match(workflow, /path: artifacts\/ci-focus\/foundation-allocation\//);
   assert.match(workflow, /inputs.kind != 'type' && inputs.kind != 'allocation'/);
+});
+
+test('Modeling coverage focus mirrors full-job worker and compiler admission', () => {
+  const selector = '@forgeax/engine-modeling:shard-1-of-16';
+  const resources = { cpus: 8, memoryBytes: 16_000_000_000 };
+  const plan = focusPlan('coverage', selector, { resources });
+  assert.ok(plan.args.includes('--maxWorkers=2'));
+  assert.ok(plan.args.includes('--coverage'));
+  assert.ok(plan.args.includes('--shard=1/16'));
+  assert.equal(plan.env.FORGEAX_SHADER_COMPILE_WORKERS, '1');
+  const bounded = focusPlan('coverage', selector, { resources: { ...resources, cpus: 4 } });
+  assert.ok(bounded.args.includes('--maxWorkers=1'));
+});
+
+test('coverage focus retains the original complete instrumented bootstrap child', () => {
+  const selector = 'packages/devkit/src/__tests__/execution-bootstrap-cache.integration.test.ts';
+  const plan = focusPlan('coverage', selector);
+  assert.equal(plan.args[0], 'scripts/ci/run-vitest-projects.mjs');
+  assert.equal(plan.gpuLease, false);
+  assert.equal(
+    focusPlan('coverage', 'packages/devkit/src/__tests__/scene-bootstrap.e2e.test.ts').gpuLease,
+    true,
+  );
+  assert.ok(plan.args.includes('--coverage'));
+  assert.ok(plan.args.includes('--passWithNoTests=false'));
+  assert.ok(plan.args.includes('--maxWorkers=1'));
+  assert.ok(plan.args.includes('--typecheck.enabled=false'));
+  assert.ok(plan.args.includes(selector));
+  assert.equal(plan.args.filter((argument) => argument === selector).length, 1);
+  assert.ok(plan.args.includes('--coverage.reporter=json'));
+  assert.ok(plan.args.includes('--coverage.reportsDirectory=artifacts/ci-focus/coverage'));
+  assert.ok(plan.args.includes('--project'));
+  assert.ok(plan.args.includes('@forgeax/engine-devkit'));
+  assert.throws(() => focusPlan('coverage', '../outside.test.ts'), /coverage/);
+  assert.throws(() => focusPlan('coverage', 'unknown-coverage-child'), /coverage/);
+  const workflow = readFileSync('.github/workflows/ci-focus.yml', 'utf8');
+  assert.match(
+    workflow,
+    /options: \[unit, node, coverage, type, browser, compatibility, performance, dawn, smoke, view, allocation\]/,
+  );
+  assert.match(workflow, /inputs.kind == 'coverage'/);
+});
+
+test('Browser-only producer readiness cannot leak an empty policy into native Focus owners', () => {
+  const workflow = parse(readFileSync('.github/workflows/ci-focus.yml', 'utf8'));
+  const job = workflow.jobs.diagnostic;
+  assert.ok(
+    !Object.hasOwn(job.env, 'FORGEAX_DEV_PACK_READINESS'),
+    'native publication must retain its normal default instead of an empty Browser policy',
+  );
+  const step = job.steps.find((candidate) => candidate.id === 'browser-readiness');
+  assert.ok(step);
+  assert.equal(step.if, "inputs.kind == 'browser' && inputs.browser_profile == 'ci'");
+  assert.match(step.run, /echo "FORGEAX_DEV_PACK_READINESS=on-demand" >> "\$GITHUB_ENV"/);
+});
+
+test('Node focus executes the complete real Node test file without Vitest discovery', () => {
+  const selector = 'scripts/ci/__tests__/rapier-release-payload.test.mjs';
+  assert.deepEqual(focusPlan('node', selector), { args: ['--test', selector] });
+  for (const invalid of [
+    '../outside.test.mjs',
+    '/tmp/other.test.mjs',
+    'scripts/ci/__tests__/missing.test.mjs',
+    'scripts/ci/__tests__/rapier-release-payload.test.mjs;echo',
+  ])
+    assert.throws(() => focusPlan('node', invalid), /Node test file/);
 });

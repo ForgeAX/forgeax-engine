@@ -1,12 +1,15 @@
 // @forgeax/engine-render - host-side DirectLightSlot ABI and buffer helpers.
 //
-// Point, Spot, and Rect snapshots share one six-row, 96-byte Cluster slot.
+// Point, Spot, Rect and additional unshadowed Directional snapshots share
+// one reflected six-row Cluster slot.
 // The same packer is used by the Cluster producer and every Cluster consumer.
 // No-storage devices carry a bounded unshadowed point subset in the View UBO.
 
 import { err, ok, type Result, RhiError } from '@forgeax/engine-rhi';
+import type { ShaderReflection, ShaderReflectionBoundGlobal } from '@forgeax/engine-types';
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
 import type {
+  DirectionalLightSnapshot,
   PointLightSnapshot,
   RectAreaDirectLightSnapshot,
   SpotLightSnapshot,
@@ -45,9 +48,6 @@ import type {
  */
 export const STORAGE_BUFFER_MIN_REQUIRED = 4;
 
-/** Byte size of one Point/Spot/Rect DirectLightSlot. */
-export const BYTES_PER_DIRECT_LIGHT_SLOT = 96;
-
 /**
  * Cap gate at createRenderer time: check whether the device has enough
  * storage-buffer slots for the PBR pipeline (M3 requires
@@ -72,8 +72,9 @@ export const DirectLightSlotKind = {
   POINT: 0,
   SPOT: 1,
   RECT_AREA: 2,
+  DIRECTIONAL: 3,
 } as const;
-export type DirectLightSlotKind = 'point' | 'spot' | 'rect-area';
+export type DirectLightSlotKind = 'point' | 'spot' | 'rect-area' | 'directional';
 
 /** Metadata identity used for absent shadow, IES, and Cookie resources. */
 export const DIRECT_LIGHT_SLOT_METADATA_SENTINEL = 0xffffffff;
@@ -95,44 +96,267 @@ const PUNCTUAL_PCF_KERNEL_MAX = 5;
 function punctualPcfKernel(value: number | undefined): number {
   return Math.min(PUNCTUAL_PCF_KERNEL_MAX, Math.max(1, Math.round(value ?? 3)));
 }
-/** Byte size of the six-row Point/Spot/Rect transport slot. */
-export const DIRECT_LIGHT_SLOT_FLOAT_COUNT =
-  BYTES_PER_DIRECT_LIGHT_SLOT / Float32Array.BYTES_PER_ELEMENT;
+export interface ReflectedDirectLightSlotLayout {
+  readonly capacity: number;
+  readonly byteSize: number;
+  readonly rowByteOffsets: readonly number[];
+  readonly positionOffset: number;
+  readonly rangeOffset: number;
+  readonly colorOffset: number;
+  readonly firstAngleOffset: number;
+  readonly primaryAxisOffset: number;
+  readonly secondAngleOffset: number;
+  readonly auxiliaryAxisOffset: number;
+  readonly metadataByteOffset: number;
+  readonly kindByteOffset: number;
+  readonly shadowByteOffset: number;
+  readonly iesProfileByteOffset: number;
+  readonly cookieByteOffset: number;
+  readonly rollDegByteOffset: number;
+  readonly floatCount: number;
+  readonly vec4Count: number;
+  readonly lightingChannelsByteOffset: number;
+}
 
-/** Six vec4 rows shared by host packing and the WGSL direct-light consumer. */
-export const DIRECT_LIGHT_SLOT_LAYOUT = {
-  byteSize: BYTES_PER_DIRECT_LIGHT_SLOT,
-  rowByteOffsets: [0, 16, 32, 48, 64, 80],
-  positionOffset: 0,
-  rangeOffset: 12,
-  colorOffset: 16,
-  firstAngleOffset: 28,
-  primaryAxisOffset: 32,
-  secondAngleOffset: 44,
-  auxiliaryAxisOffset: 48,
-  metadataByteOffset: 64,
-  kindByteOffset: 64,
-  shadowByteOffset: 68,
-  iesProfileByteOffset: 72,
-  cookieByteOffset: 76,
-  /** Spot-only roll angle stored in the fourth row's w lane. */
-  rollDegByteOffset: 60,
-  floatCount: DIRECT_LIGHT_SLOT_FLOAT_COUNT,
-  vec4Count: 6,
-  lightingChannelsByteOffset: 80,
-} as const;
+export interface StandardClusterReflectedAbi {
+  readonly directLightSlot: ReflectedDirectLightSlotLayout;
+  readonly clusterUniformBytes: number;
+  readonly clusterUniformOffsets: Readonly<
+    Record<'grid' | 'near_far_log' | 'ao' | 'direct_ao' | 'texture' | 'cluster_layout', number>
+  >;
+}
+
+type ClusterReflectionGlobal = ShaderReflectionBoundGlobal;
+type ClusterReflectionMember = NonNullable<ClusterReflectionGlobal['members']>[number];
+type ClusterLightDataGlobal = ClusterReflectionGlobal & {
+  readonly resourceKind: 'storage-buffer';
+  readonly addressSpace: 'storage';
+  readonly elementStride: number;
+  readonly arrayLength: number;
+  readonly members: readonly ClusterReflectionMember[];
+};
+type ClusterUniformGlobal = ClusterReflectionGlobal & {
+  readonly resourceKind: 'buffer';
+  readonly addressSpace: 'uniform';
+  readonly span: number;
+  readonly members: readonly ClusterReflectionMember[];
+};
+
+interface ClusterReflectionRows {
+  readonly position: ClusterReflectionMember;
+  readonly color: ClusterReflectionMember;
+  readonly direction: ClusterReflectionMember;
+  readonly auxiliary: ClusterReflectionMember;
+  readonly metadata: ClusterReflectionMember;
+  readonly channels: ClusterReflectionMember;
+  readonly grid: ClusterReflectionMember;
+  readonly nearFarLog: ClusterReflectionMember;
+  readonly ao: ClusterReflectionMember;
+  readonly directAo: ClusterReflectionMember;
+  readonly texture: ClusterReflectionMember;
+  readonly clusterLayout: ClusterReflectionMember;
+}
+
+function isClusterLightDataGlobal(
+  global: ClusterReflectionGlobal | undefined,
+): global is ClusterLightDataGlobal {
+  return (
+    global?.resourceKind === 'storage-buffer' &&
+    global.addressSpace === 'storage' &&
+    global.elementStride !== undefined &&
+    global.arrayLength !== undefined &&
+    Number.isSafeInteger(global.arrayLength) &&
+    global.arrayLength > 0 &&
+    global.members !== undefined
+  );
+}
+
+function isClusterUniformGlobal(
+  global: ClusterReflectionGlobal | undefined,
+): global is ClusterUniformGlobal {
+  return (
+    global?.resourceKind === 'buffer' &&
+    global.addressSpace === 'uniform' &&
+    global.span !== undefined &&
+    global.members !== undefined
+  );
+}
+
+function requiredClusterGlobals(
+  reflection: ShaderReflection,
+):
+  | { readonly lightData: ClusterLightDataGlobal; readonly uniform: ClusterUniformGlobal }
+  | undefined {
+  const globals = reflection.boundGlobals;
+  if (globals === undefined) return undefined;
+  const lightData = globals.find((global) => global.group === 2 && global.binding === 3);
+  const uniform = globals.find((global) => global.group === 2 && global.binding === 6);
+  if (!isClusterLightDataGlobal(lightData) || !isClusterUniformGlobal(uniform)) return undefined;
+  return { lightData, uniform };
+}
+
+function requiredClusterRows(
+  lightData: ClusterLightDataGlobal,
+  uniform: ClusterUniformGlobal,
+  fields: readonly string[],
+  expectedUniformFields: readonly string[],
+): ClusterReflectionRows | undefined {
+  const slot = new Map(lightData.members.map((member) => [member.name, member]));
+  const slotMembers = fields.map((name) => slot.get(name));
+  const uniformMembers = new Map(uniform.members.map((member) => [member.name, member]));
+  const uniformRows = expectedUniformFields.map((name) => uniformMembers.get(name));
+  if (
+    slotMembers.some(
+      (member, index) =>
+        member === undefined ||
+        member.size !== 16 ||
+        member.alignment !== 16 ||
+        member.offset !== index * 16 ||
+        member.type !== (index >= 4 ? 'vec4<u32>' : 'vec4<f32>'),
+    ) ||
+    lightData.elementStride !== fields.length * 16 ||
+    uniformRows.some(
+      (member, index) =>
+        member === undefined ||
+        member.size !== 16 ||
+        member.alignment !== 16 ||
+        member.offset !== index * 16 ||
+        member.type !== (index === 1 || index === 3 ? 'vec4<f32>' : 'vec4<u32>'),
+    ) ||
+    uniform.span !== expectedUniformFields.length * 16
+  )
+    return undefined;
+  const [position, color, direction, auxiliary, metadata, channels] = slotMembers;
+  const [grid, nearFarLog, ao, directAo, texture, clusterLayout] = uniformRows;
+  if (
+    position === undefined ||
+    color === undefined ||
+    direction === undefined ||
+    auxiliary === undefined ||
+    metadata === undefined ||
+    channels === undefined ||
+    grid === undefined ||
+    nearFarLog === undefined ||
+    ao === undefined ||
+    directAo === undefined ||
+    texture === undefined ||
+    clusterLayout === undefined
+  )
+    return undefined;
+  return {
+    position,
+    color,
+    direction,
+    auxiliary,
+    metadata,
+    channels,
+    grid,
+    nearFarLog,
+    ao,
+    directAo,
+    texture,
+    clusterLayout,
+  };
+}
+
+/** Resolve the host Cluster layout from the compiler reflection published with Standard PBR. */
+export function deriveStandardClusterReflectedAbi(
+  reflections: readonly (ShaderReflection | undefined)[],
+): StandardClusterReflectedAbi | undefined {
+  if (reflections.length === 0) return undefined;
+  let resolved: StandardClusterReflectedAbi | undefined;
+  for (const reflection of reflections) {
+    const candidate = deriveStandardClusterAbiFromReflection(reflection);
+    if (candidate === undefined) return undefined;
+    if (resolved !== undefined && JSON.stringify(candidate) !== JSON.stringify(resolved))
+      return undefined;
+    resolved = candidate;
+  }
+  return resolved;
+}
+
+function deriveStandardClusterAbiFromReflection(
+  reflection: ShaderReflection | undefined,
+): StandardClusterReflectedAbi | undefined {
+  if (reflection?.schemaVersion !== 'shader-reflection/3') return undefined;
+  const globals = requiredClusterGlobals(reflection);
+  if (globals === undefined) return undefined;
+  const fields = [
+    'position',
+    'colorTimesIntensity',
+    'direction',
+    'auxiliary',
+    'metadata',
+    'channels',
+  ];
+  const expectedUniformFields = [
+    'grid',
+    'near_far_log',
+    'ao',
+    'direct_ao',
+    'texture',
+    'cluster_layout',
+  ] as const;
+  const { lightData, uniform } = globals;
+  const rows = requiredClusterRows(lightData, uniform, fields, expectedUniformFields);
+  if (rows === undefined) return undefined;
+  const { position, color, direction, auxiliary, metadata, channels } = rows;
+  const { grid, nearFarLog, ao, directAo, texture, clusterLayout } = rows;
+  const rowByteOffsets = [
+    position.offset,
+    color.offset,
+    direction.offset,
+    auxiliary.offset,
+    metadata.offset,
+    channels.offset,
+  ];
+  const directLightSlot = {
+    capacity: lightData.arrayLength,
+    byteSize: lightData.elementStride,
+    rowByteOffsets,
+    positionOffset: position.offset,
+    rangeOffset: position.offset + 12,
+    colorOffset: color.offset,
+    firstAngleOffset: color.offset + 12,
+    primaryAxisOffset: direction.offset,
+    secondAngleOffset: direction.offset + 12,
+    auxiliaryAxisOffset: auxiliary.offset,
+    metadataByteOffset: metadata.offset,
+    kindByteOffset: metadata.offset,
+    shadowByteOffset: metadata.offset + 4,
+    iesProfileByteOffset: metadata.offset + 8,
+    cookieByteOffset: metadata.offset + 12,
+    rollDegByteOffset: auxiliary.offset + 12,
+    floatCount: lightData.elementStride / Float32Array.BYTES_PER_ELEMENT,
+    vec4Count: lightData.elementStride / 16,
+    lightingChannelsByteOffset: channels.offset,
+  } as const;
+  return {
+    directLightSlot,
+    clusterUniformBytes: uniform.span,
+    clusterUniformOffsets: {
+      grid: grid.offset,
+      near_far_log: nearFarLog.offset,
+      ao: ao.offset,
+      direct_ao: directAo.offset,
+      texture: texture.offset,
+      cluster_layout: clusterLayout.offset,
+    },
+  };
+}
 
 export type DirectLightSnapshot =
   | PointLightSnapshot
   | SpotLightSnapshot
-  | RectAreaDirectLightSnapshot;
+  | RectAreaDirectLightSnapshot
+  | DirectionalLightSnapshot;
 
 function directLightMetadata(value: number | undefined): number {
   return value === undefined ? DIRECT_LIGHT_SLOT_METADATA_SENTINEL : value >>> 0;
 }
 
 /**
- * Pack one Point, Spot, or Rect snapshot into the unified six-row slot.
+ * Pack a direct-light snapshot into its reflected unified six-row slot.
  *
  * Row 0 is position plus inverse range. Row 1 is color plus the first
  * angular/size fact. Row 2 is the primary axis plus the second angular/size
@@ -140,49 +364,48 @@ function directLightMetadata(value: number | undefined): number {
  */
 export function packDirectLightSlot(
   snapshot: DirectLightSnapshot,
+  layout: ReflectedDirectLightSlotLayout,
   projectorSelected?: boolean,
 ): Float32Array {
-  const out = new Float32Array(DIRECT_LIGHT_SLOT_FLOAT_COUNT);
-  out[0] = snapshot.position[0] ?? 0;
-  out[1] = snapshot.position[1] ?? 0;
-  out[2] = snapshot.position[2] ?? 0;
-  out[3] = snapshot.invRangeSquared;
-  out[4] = snapshot.color[0] ?? 0;
-  out[5] = snapshot.color[1] ?? 0;
-  out[6] = snapshot.color[2] ?? 0;
+  if (snapshot.kind === 'directional') return packDirectionalLightSlot(snapshot, layout);
+  const out = new Float32Array(layout.floatCount);
+  const view = new DataView(out.buffer);
+  const writeFloat = (offset: number, value: number) => view.setFloat32(offset, value, true);
+  const writeVec3 = (offset: number, value: ArrayLike<number>) => {
+    writeFloat(offset, value[0] ?? 0);
+    writeFloat(offset + 4, value[1] ?? 0);
+    writeFloat(offset + 8, value[2] ?? 0);
+  };
+  writeVec3(layout.positionOffset, snapshot.position);
+  writeFloat(layout.rangeOffset, snapshot.invRangeSquared);
+  writeVec3(layout.colorOffset, snapshot.color);
 
   if (snapshot.kind === 'point') {
-    out[7] = snapshot.decay ?? 2;
+    writeFloat(layout.firstAngleOffset, snapshot.decay ?? 2);
     if (snapshot.iesProfileSlice !== undefined) {
-      out.set(snapshot.axisY ?? [0, 1, 0], 8);
-      out.set(snapshot.axisX ?? [1, 0, 0], 12);
+      writeVec3(layout.primaryAxisOffset, snapshot.axisY ?? [0, 1, 0]);
+      writeVec3(layout.auxiliaryAxisOffset, snapshot.axisX ?? [1, 0, 0]);
     }
   } else if (snapshot.kind === 'spot') {
-    out[7] = snapshot.cosInner;
-    out[8] = snapshot.direction[0] ?? 0;
-    out[9] = snapshot.direction[1] ?? 0;
-    out[10] = snapshot.direction[2] ?? 0;
-    out[11] = snapshot.cosOuter;
+    writeFloat(layout.firstAngleOffset, snapshot.cosInner);
+    writeVec3(layout.primaryAxisOffset, snapshot.direction);
+    writeFloat(layout.secondAngleOffset, snapshot.cosOuter);
     // Row 3 is the Rect auxiliary axis for RectArea lights. Spot uses x/y/z
     // for its receiver controls and w for roll; the surface direct-light
     // owner only consumes w, while the volume owner consumes the full row.
-    out[12] = snapshot.depthBias ?? 0.00001;
-    out[13] = snapshot.normalBias ?? 0.05;
-    out[14] = snapshot.shadowIntensity ?? 1;
-    out[15] = snapshot.rollDeg ?? 0;
+    writeFloat(layout.auxiliaryAxisOffset, snapshot.depthBias ?? 0.00001);
+    writeFloat(layout.auxiliaryAxisOffset + 4, snapshot.normalBias ?? 0.05);
+    writeFloat(layout.auxiliaryAxisOffset + 8, snapshot.shadowIntensity ?? 1);
+    writeFloat(layout.rollDegByteOffset, snapshot.rollDeg ?? 0);
   } else {
-    out[7] = snapshot.halfWidth;
-    out[8] = snapshot.axisY[0] ?? 0;
-    out[9] = snapshot.axisY[1] ?? 0;
-    out[10] = snapshot.axisY[2] ?? 0;
-    out[11] = snapshot.halfHeight;
-    out[12] = snapshot.axisX[0] ?? 0;
-    out[13] = snapshot.axisX[1] ?? 0;
-    out[14] = snapshot.axisX[2] ?? 0;
+    writeFloat(layout.firstAngleOffset, snapshot.halfWidth);
+    writeVec3(layout.primaryAxisOffset, snapshot.axisY);
+    writeFloat(layout.secondAngleOffset, snapshot.halfHeight);
+    writeVec3(layout.auxiliaryAxisOffset, snapshot.axisX);
   }
 
   const metadata = new Uint32Array(out.buffer);
-  metadata[16] =
+  metadata[layout.kindByteOffset / 4] =
     snapshot.kind === 'point'
       ? DirectLightSlotKind.POINT |
         (punctualPcfKernel(snapshot.pcfKernelSize) << DIRECT_LIGHT_SLOT_PCF_SHIFT)
@@ -202,22 +425,53 @@ export function packDirectLightSlot(
             DIRECT_LIGHT_SLOT_TILE_MASK)
         : directLightMetadata(snapshot.shadowAtlasTile)
       : undefined;
-  metadata[17] = directLightMetadata(
+  metadata[layout.shadowByteOffset / 4] = directLightMetadata(
     snapshot.kind === 'point'
       ? snapshot.shadowAtlasLayer
       : snapshot.kind === 'spot'
         ? spotShadowMetadata
         : undefined,
   );
-  metadata[18] = directLightMetadata(snapshot.iesProfileSlice);
-  metadata[19] = directLightMetadata(
+  metadata[layout.iesProfileByteOffset / 4] = directLightMetadata(snapshot.iesProfileSlice);
+  metadata[layout.cookieByteOffset / 4] = directLightMetadata(
     spotProjectorSelected && snapshot.kind === 'spot'
       ? snapshot.projectorSlice
       : snapshot.kind === 'point'
         ? undefined
         : snapshot.cookieSlice,
   );
-  metadata[20] = snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  metadata[layout.lightingChannelsByteOffset / 4] =
+    snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT;
+  return out;
+}
+
+/** Additional directional members have neutral range and resource identities. */
+function packDirectionalLightSlot(
+  snapshot: DirectionalLightSnapshot,
+  layout: ReflectedDirectLightSlotLayout,
+): Float32Array {
+  const out = new Float32Array(layout.floatCount);
+  const view = new DataView(out.buffer);
+  for (let component = 0; component < 3; component++) {
+    view.setFloat32(layout.colorOffset + component * 4, snapshot.color[component] ?? 0, true);
+    view.setFloat32(
+      layout.primaryAxisOffset + component * 4,
+      snapshot.direction[component] ?? (component === 1 ? -1 : 0),
+      true,
+    );
+  }
+  view.setUint32(layout.kindByteOffset, DirectLightSlotKind.DIRECTIONAL, true);
+  for (const offset of [
+    layout.shadowByteOffset,
+    layout.iesProfileByteOffset,
+    layout.cookieByteOffset,
+  ])
+    view.setUint32(offset, DIRECT_LIGHT_SLOT_METADATA_SENTINEL, true);
+  view.setUint32(
+    layout.lightingChannelsByteOffset,
+    snapshot.lightingChannels ?? LIGHTING_CHANNELS_DEFAULT,
+    true,
+  );
   return out;
 }
 

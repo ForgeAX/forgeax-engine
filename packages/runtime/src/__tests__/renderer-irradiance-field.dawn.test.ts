@@ -13,6 +13,7 @@ import { Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import {
   IRRADIANCE_FIELD_RELOCATION,
   IrradianceFieldProbeState,
@@ -110,7 +111,7 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     await h.settle();
     const off = await h.image();
     expect(h.errors).toEqual([]);
-    expect(off.bytes).toEqual(dark.bytes);
+    expect(equalBytes(off.bytes, dark.bytes)).toBe(true);
     expect(h.renderer.inspect().perFramePassNames).toEqual(expect.arrayContaining(PASSES));
     expect(fieldInspection(h)).toMatchObject({
       gather: 'irradiance-field',
@@ -306,7 +307,7 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     try {
       const inspected = (await replay.inspectWork(composite.workIndex, ['pixels'])).unwrap();
       assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(captured.bytes);
+      expect(equalBytes(inspected.attachment.bytes, captured.bytes)).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       webgpu._internal_getRawDevice(device)?.destroy();
@@ -377,7 +378,7 @@ it('lights, bleeds, blocks, invalidates, converges, replays and recovers in the 
     h.errors.length = 0;
     renderValue(await h.renderer.recover());
     old?.destroy();
-    expect(h.native()).not.toBe(old);
+    expect(Object.is(h.native(), old)).toBe(false);
     await h.settle(24);
     const recovered = await h.image();
     expect(Math.abs(recovered.mean - beforeLoss.mean)).toBeLessThan(0.03 * L);

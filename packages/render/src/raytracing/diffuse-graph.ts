@@ -73,7 +73,7 @@ export function addRayDiffusePasses(
       { resource: sample, usage: 'uniform-read' },
       { resource: rays, usage: 'storage-write' },
     ],
-    encode: ({ pass, resources }) => {
+    encodeDirect: (pass, _graphframe, resources) => {
       if (prepared.fence.currentGeneration() !== prepared.generation)
         throw new Error('stale diffuse GI graph; prepare the current scene');
       prepared.writeSample();

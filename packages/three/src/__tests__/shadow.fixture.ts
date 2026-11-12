@@ -2,10 +2,27 @@ import * as THREE from '@forgeax/engine/three';
 import { expect } from 'vitest';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { saveBrowserEvidence } from './browser-evidence.fixture';
-import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
+import {
+  comparePixels,
+  displayPixels,
+  readyFrames,
+  replayChecks,
+  SIZE,
+  verifyReplay,
+} from './render.fixture';
 import { renderReference } from './webgpu-reference.fixture';
 
-export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot') {
+export interface AuthoredShadowJourney {
+  verifyBaseline(): Promise<void>;
+  verifyAuthoredFilters(): Promise<void>;
+  verifyLayersAndVariance(): Promise<void>;
+  verifyAll(): Promise<void>;
+  dispose(): Promise<void>;
+}
+
+export function createAuthoredShadowJourney(
+  kind: 'directional' | 'point' | 'spot',
+): AuthoredShadowJourney {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x405060);
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
@@ -35,22 +52,51 @@ export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot
   document.body.append(canvas);
   const renderer = new THREE.WebGPURenderer({ canvas });
   renderer.shadowMap.enabled = true;
-  try {
-    await renderer.init();
-    const measure = async (name: string, frames = 1) => {
+  const replays = replayChecks();
+  let replayCount = 0;
+  const verifyCapturedReplay = async (capture: THREE.ThreeFrameCapture, label: string) => {
+    if (replayCount++ === 0) await verifyReplay(capture, label);
+    else replays.queue(capture, label);
+  };
+  const verifyPendingReplays = replays.complete;
+  const measure = async (name: string, frames = 1) => {
+    const started = performance.now();
+    const milestonesMs: Record<string, number> = {};
+    try {
       try {
         await readyFrames(renderer, scene, camera, frames);
       } catch (error) {
         throw new Error(`${kind}/${name}: ${JSON.stringify(error)}`, { cause: error });
       }
+      milestonesMs.ready = performance.now() - started;
       const capture = await renderer.captureFrame(scene, camera);
+      milestonesMs.captured = performance.now() - started;
       const reference = await renderReference(scene, camera, { shadowMap: renderer.shadowMap });
+      milestonesMs.reference = performance.now() - started;
       await saveBrowserEvidence(`shadow-${kind}-${name}`, capture, reference);
+      milestonesMs.saved = performance.now() - started;
       const pixels = displayPixels(capture);
       comparePixels(pixels, reference);
-      await verifyReplay(capture);
+      await verifyCapturedReplay(capture, `${kind}/${name}`);
+      milestonesMs.replayScheduled = performance.now() - started;
       return pixels;
-    };
+    } finally {
+      // biome-ignore lint/suspicious/noConsole: Preserve the original case deadline with named phase receipts.
+      console.info(
+        '[three-shadow-measure]',
+        JSON.stringify({ kind, name, milliseconds: performance.now() - started, milestonesMs }),
+      );
+    }
+  };
+  let initialized = false;
+  let disposed = false;
+  const initialize = async () => {
+    if (initialized) return;
+    await renderer.init();
+    initialized = true;
+  };
+  const verifyBaseline = async () => {
+    await initialize();
     const on = await measure('default', 60);
     cube.castShadow = false;
     const off = await measure('cast-off');
@@ -62,6 +108,9 @@ export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot
     camera.position.x = -4;
     camera.lookAt(0, 0.5, 0);
     await measure('camera-moved');
+  };
+  const verifyAuthoredFilters = async () => {
+    if (!initialized) throw new Error('verify the baseline before authored shadow filters');
     if (sun instanceof THREE.DirectionalLight) {
       sun.shadow.camera.left = -3;
       sun.shadow.camera.right = 3;
@@ -89,6 +138,9 @@ export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot
       renderer.shadowMap.type = THREE.PCFShadowMap;
       await measure('rectangular-vogel');
     }
+  };
+  const verifyLayersAndVariance = async () => {
+    if (!initialized) throw new Error('verify the baseline before shadow layers and variance');
     cube.layers.set(1);
     sun.shadow.camera.layers.set(1);
     const shadowOnly = await measure('shadow-layer-only');
@@ -114,9 +166,47 @@ export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot
       sun.shadow.radius = 4;
       await measure('variance-wide');
     }
+  };
+  const withCompleteReplays = async (verify: () => Promise<void>) => {
+    try {
+      await verify();
+    } finally {
+      await verifyPendingReplays();
+    }
+  };
+  const dispose = async () => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      await verifyPendingReplays();
+    } finally {
+      await renderer.dispose();
+      ground.geometry.dispose();
+      cube.geometry.dispose();
+      material.dispose();
+      canvas.remove();
+    }
+  };
+  return {
+    verifyBaseline: () => withCompleteReplays(verifyBaseline),
+    verifyAuthoredFilters: () => withCompleteReplays(verifyAuthoredFilters),
+    verifyLayersAndVariance: () => withCompleteReplays(verifyLayersAndVariance),
+    verifyAll: () =>
+      withCompleteReplays(async () => {
+        await verifyBaseline();
+        await verifyAuthoredFilters();
+        await verifyLayersAndVariance();
+        expect(replayCount).toBe(kind === 'point' ? 13 : 18);
+      }),
+    dispose,
+  };
+}
+
+export async function verifyAuthoredShadow(kind: 'directional' | 'point' | 'spot') {
+  const journey = createAuthoredShadowJourney(kind);
+  try {
+    await journey.verifyAll();
   } finally {
-    await renderer.dispose();
-    material.dispose();
-    canvas.remove();
+    await journey.dispose();
   }
 }

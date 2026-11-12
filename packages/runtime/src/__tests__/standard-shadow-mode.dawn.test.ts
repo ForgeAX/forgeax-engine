@@ -1,26 +1,21 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { World } from '@forgeax/engine-ecs';
-import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
-  Camera,
   DirectionalLight,
   type DirectionalShadowFilterLabel,
   DirectionalShadowFilterValue,
-  Materials,
-  MeshFilter,
-  MeshRenderer,
   type RenderResult,
 } from '@forgeax/engine-render';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
-import { propagateTransforms, Transform } from '@forgeax/engine-scene';
+import { propagateTransforms } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { offscreenCanvas } from './hdr-evidence.fixture';
-import { testAssets } from './helpers/runtime-assets';
+import { buildPcssScene } from './helpers/portable-pcss';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
 const SIZE = 128;
@@ -30,72 +25,6 @@ function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
   if (result === undefined) throw new Error('required Renderer operation is unavailable');
   if (!result.ok) throw result.error;
   return result.value;
-}
-
-/**
- * A wide PCSS light and a slab held 2.5 m above the ground: the filtered
- * light must produce a broad penumbra ring that the hard filter collapses.
- * No ambient term, so the ratio to the `off` frame is pure direct visibility.
- */
-function buildScene(world: World) {
-  const material = testAssets(world)
-    .create(Materials.standard({ baseColor: [0.7, 0.7, 0.7, 1], metallic: 0, roughness: 0.9 }))
-    .unwrap();
-  const box = (pos: [number, number, number], size: [number, number, number]) =>
-    world
-      .spawn(
-        { component: Transform, data: { pos } },
-        {
-          component: MeshFilter,
-          data: {
-            assetHandle: testAssets(world)
-              .create(createBoxGeometry(...size).unwrap())
-              .unwrap(),
-          },
-        },
-        { component: MeshRenderer, data: { materials: [material] } },
-      )
-      .unwrap();
-  box([0, -0.1, 0], [12, 0.2, 12]);
-  box([1, 2.5, 0], [1.2, 0.1, 1.2]);
-  const pitch = -Math.PI / 2;
-  world
-    .spawn(
-      {
-        component: Transform,
-        data: { pos: [0, 6, 0], quat: [Math.sin(pitch / 2), 0, 0, Math.cos(pitch / 2)] },
-      },
-      {
-        component: Camera,
-        data: {
-          fov: Math.PI / 4,
-          aspect: 1,
-          near: 0.1,
-          far: 30,
-          tonemap: 1,
-          antialias: 0,
-          bloom: 0,
-          clearColor: [0, 0, 0, 1],
-        },
-      },
-    )
-    .unwrap();
-  return world
-    .spawn({
-      component: DirectionalLight,
-      data: {
-        castShadow: true,
-        direction: [-0.8, -1, 0],
-        intensity: 3,
-        cascadeCount: 1,
-        mapSize: 1024,
-        shadowDistance: 20,
-        shadowFilter: DirectionalShadowFilterValue.pcssHigh,
-        shadowAngularRadius: 0.05,
-        maxPenumbraTexels: 64,
-      },
-    })
-    .unwrap();
 }
 
 interface ModeEvidence {
@@ -115,7 +44,7 @@ it('light shadow settings: PCF1 collapses the PCSS penumbra and castShadow false
   if (!host.ok) throw new Error(JSON.stringify(host.error));
   const renderer = host.value.renderer;
   const world = new World();
-  const light = buildScene(world);
+  const { light } = buildPcssScene(world);
   const lease = unwrap(renderer.attach(world));
   const errors: unknown[] = [];
   const unsubscribe = renderer.subscribe((event) => {

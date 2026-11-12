@@ -409,23 +409,32 @@ export class MemberCandidates extends FrameListBase<GpuDrivenCandidate> {
     return MemberCandidates.#from(root, members);
   }
   /**
-   * Re-judge `slots` of a subset previously selected from this owner's
-   * ancestry. Every other subset member must already equal this owner's member.
+   * Re-judge a previous selection. `slots` includes every source membership/fact
+   * change since `previousSource` and every selection change affecting its members.
+   * Other members keep their admission. A complete predecessor can start at the
+   * current source: only rejected members need a new persistent path.
    */
   patchSelection(
     subset: MemberCandidates,
     slots: Iterable<number>,
     selected: (slot: number) => boolean,
+    previousSource: MemberCandidates,
   ): MemberCandidates {
-    let result = subset;
+    let result = subset === previousSource ? this : subset;
     for (const slot of slots) {
-      const found = this.#find(slot);
-      result =
-        found !== undefined && selected(slot)
-          ? result.#put(found.page, found.base)
-          : result.without(slot);
+      const page = this.#memberPage(slot);
+      if (page !== undefined && selected(slot)) {
+        if (result !== this) result = result.#put(page, lowerBound(page, slot));
+      } else result = result.without(slot);
     }
     return result.#members === this.#members ? this : result;
+  }
+  /** Find a canonical page without constructing a temporary member position. */
+  #memberPage(slot: number): MemberPage | undefined {
+    if (this.#root === undefined) return undefined;
+    const page = pageNode(this.#root, slot).value;
+    const base = lowerBound(page, slot);
+    return base < page.length && page[base] === slot ? page : undefined;
   }
   /**
    * Append to `out` each of the ascending `slots` this owner holds a member

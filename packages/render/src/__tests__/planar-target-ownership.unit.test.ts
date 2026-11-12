@@ -87,7 +87,8 @@ describe('planar output ownership', () => {
       planarReflection: { updateIntervalFrames: 1000, requestVersion: 0 },
     } as CameraSnapshot;
     const first = state.prepare(camera, original, 0);
-    state.submit(true, Promise.resolve());
+    state.stage(true, Promise.resolve());
+    state.settle(true);
     host.markTargetSubmitted(target, original);
     host.onFrameSubmitted();
     await Promise.resolve();
@@ -126,14 +127,16 @@ describe('planar output ownership', () => {
     if (replacement === undefined) throw new Error('Missing candidate target');
     expect(replacement).not.toBe(original);
     state.prepare(camera, replacement, 1);
-    state.submit(false, undefined);
+    state.stage(false, undefined);
+    state.settle(true);
     expect(state.current()).toBe(first);
     expect(host.resolveRenderTargetTextureSource(source.value)?.textureView).toBe(
       original.mipViews[0],
     );
     const next = state.prepare(camera, replacement, 2);
     expect(next?.physical).toBe(replacement);
-    state.submit(true, Promise.resolve());
+    state.stage(true, Promise.resolve());
+    state.settle(true);
     host.markTargetSubmitted(target, replacement);
     host.onFrameSubmitted();
     await Promise.resolve();

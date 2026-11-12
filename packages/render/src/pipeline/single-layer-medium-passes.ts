@@ -18,7 +18,7 @@ import type {
   RenderPipelineTarget,
 } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
-import type { RenderSystem } from '../render-system';
+import type { RendererState } from '../render-system';
 import { FORWARD_PASS_SELECTOR } from '../systems/pass-selector';
 import { addTypedFullscreenPass, addTypedScenePass } from '../typed-render-graph-primitives';
 
@@ -310,7 +310,7 @@ export function addSingleLayerMediumPasses(
 
 /** Register the built-ins alongside their graph identities and binding contracts. */
 export function registerSingleLayerMediumBuiltins(
-  renderSystem: Pick<RenderSystem, 'registerBuiltinPostProcess'>,
+  renderSystem: Pick<RendererState, 'registerBuiltinPostProcess'>,
 ): void {
   renderSystem.registerBuiltinPostProcess(SINGLE_LAYER_MEDIUM_RAW_DEPTH_POST_PROCESS_ID, {
     source: SINGLE_LAYER_MEDIUM_RAW_DEPTH_WGSL,

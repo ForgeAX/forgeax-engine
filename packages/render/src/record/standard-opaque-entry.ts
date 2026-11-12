@@ -17,23 +17,31 @@ import type { MaterialShaderProgram } from '@forgeax/engine-shader';
  */
 export const STANDARD_OPAQUE_FRAGMENT_ENTRY = 'fs_opaque';
 
-const DECLARATION = `fn ${STANDARD_OPAQUE_FRAGMENT_ENTRY}(`;
-const declaredByProgram = new WeakMap<MaterialShaderProgram, boolean>();
-
-/** `true` when a material program source declares the `fs_opaque` entry. */
+export const STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY = 'fs_forward_screen';
+const declaredByProgram = new WeakMap<MaterialShaderProgram, number>();
+function declaresStandardForwardEntry(
+  source: string | MaterialShaderProgram | undefined,
+  entry: typeof STANDARD_OPAQUE_FRAGMENT_ENTRY | typeof STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY,
+): boolean {
+  if (source === undefined) return false;
+  if (typeof source === 'string') return source.includes(`fn ${entry}(`);
+  if (source.entryPoints !== undefined)
+    return source.entryPoints.some((candidate) => candidate.name === entry);
+  let mask = declaredByProgram.get(source);
+  if (mask === undefined) {
+    const text = source.source;
+    mask =
+      Number(text.includes(`fn ${STANDARD_OPAQUE_FRAGMENT_ENTRY}(`)) |
+      (Number(text.includes(`fn ${STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY}(`)) << 1);
+    declaredByProgram.set(source, mask);
+  }
+  return (mask & (entry === STANDARD_OPAQUE_FRAGMENT_ENTRY ? 1 : 2)) !== 0;
+}
+/** Whether the program declares the unfogged Forward entry. */
 export function declaresStandardOpaqueEntry(
   source: string | MaterialShaderProgram | undefined,
 ): boolean {
-  if (source === undefined) return false;
-  if (typeof source === 'string') return source.includes(DECLARATION);
-  if (source.entryPoints !== undefined)
-    return source.entryPoints.some((entry) => entry.name === STANDARD_OPAQUE_FRAGMENT_ENTRY);
-  let declared = declaredByProgram.get(source);
-  if (declared === undefined) {
-    declared = source.source.includes(DECLARATION);
-    declaredByProgram.set(source, declared);
-  }
-  return declared;
+  return declaresStandardForwardEntry(source, STANDARD_OPAQUE_FRAGMENT_ENTRY);
 }
 
 /**
@@ -45,9 +53,54 @@ export function declaredFragmentEntry(
   fragmentEntry: string | undefined,
   source: string | MaterialShaderProgram | undefined,
 ): string | undefined {
-  return fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY && !declaresStandardOpaqueEntry(source)
+  return (fragmentEntry === STANDARD_OPAQUE_FRAGMENT_ENTRY ||
+    fragmentEntry === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY) &&
+    !declaresStandardForwardEntry(source, fragmentEntry)
     ? undefined
     : fragmentEntry;
+}
+
+/** Forward prepass entry that writes the Standard surface-data outputs. */
+export const SURFACE_DATA_FRAGMENT_ENTRY = 'fs_ao_input';
+const surfaceDataByProgram = new WeakMap<MaterialShaderProgram, boolean>();
+
+/**
+ * Whether a draw of `materialShaderId` cannot serve the surface-data prepass
+ * entry. Built-in Standard / Unlit programs and cooked Surfaces declare it;
+ * hand-written WGSL that does not stays out of the prepass and is shaded by
+ * the main pass over the seeded depth (UE DepthRendering.cpp: a material
+ * without a depth-only path is rendered by the base pass).
+ */
+export function lacksSurfaceDataEntry(
+  fragmentEntry: string | undefined,
+  materialShaderId: string | undefined,
+  program: MaterialShaderProgram | undefined,
+  builtIn: boolean,
+): boolean {
+  if (fragmentEntry !== SURFACE_DATA_FRAGMENT_ENTRY) return false;
+  if (program === undefined) return !builtIn && materialShaderId !== undefined;
+  if (program.entryPoints !== undefined)
+    return !program.entryPoints.some((candidate) => candidate.name === fragmentEntry);
+  let declared = surfaceDataByProgram.get(program);
+  if (declared === undefined) {
+    declared = program.source.includes(`fn ${SURFACE_DATA_FRAGMENT_ENTRY}(`);
+    surfaceDataByProgram.set(program, declared);
+  }
+  return !declared;
+}
+
+/** A screen receiver overrides only the ordinary Standard entry, never authored shading. */
+export function selectStandardForwardScreenEntry(
+  requested: string | undefined,
+  authored: string | undefined,
+): string | undefined {
+  if (
+    requested === STANDARD_FORWARD_SCREEN_FRAGMENT_ENTRY &&
+    authored !== undefined &&
+    authored !== 'fs_main'
+  )
+    return authored;
+  return requested ?? authored;
 }
 
 /** Source of a material program lookup, or `undefined` when it is not registered. */

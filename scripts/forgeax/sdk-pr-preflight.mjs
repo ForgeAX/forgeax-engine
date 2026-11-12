@@ -1,6 +1,10 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, relative, resolve } from 'node:path';
+import { collectRepairArtifactSources } from '../ci/ci-repair-artifacts.mjs';
+import { requestGitHub } from '../ci/ci-repair-qualification.mjs';
+import { downloadArtifact, retryArtifact } from '../ci/download-artifact-with-retry.mjs';
 
 export const SDK_ARCHIVE_VERIFY_GROUPS = Object.freeze(['project', 'source']);
 export const SDK_PR_CONSUMERS = Object.freeze(['npm', ...SDK_ARCHIVE_VERIFY_GROUPS]);
@@ -70,7 +74,72 @@ export function checkSeed(root, expectedHead, version, group = 'all') {
   return build;
 }
 
-export function aggregateSdkConsumers(reports, expectedHead, version) {
+function consumerKey(report) {
+  return `${report.group}${report.partition ? `-${report.partition}` : ''}`;
+}
+
+export function sdkConsumerChecks() {
+  return [
+    ...SDK_ARCHIVE_VERIFY_GROUPS,
+    ...Object.keys(SDK_NPM_PARTITIONS).map((key) => `npm-${key}`),
+  ].map((key) => `sdk-consumer-${key}`);
+}
+
+function repairSourceMap(sources) {
+  if (sources === undefined) return undefined;
+  const checks = sdkConsumerChecks();
+  if (sources.length !== checks.length) throw new Error('sdk-pr-repair-conservation');
+  const result = new Map();
+  for (const source of sources) {
+    if (
+      !checks.includes(source.checkName) ||
+      result.has(source.checkName) ||
+      !/^[0-9a-f]{40}$/.test(source.sourceSha) ||
+      typeof source.reused !== 'boolean' ||
+      ![source.sourceRunId, source.sourceJobId, source.artifactId].every(
+        (id) => Number.isSafeInteger(id) && id > 0,
+      ) ||
+      !/^sha256:[0-9a-f]{64}$/.test(source.artifactDigest)
+    )
+      throw new Error('sdk-pr-repair-provenance');
+    result.set(source.checkName, source);
+  }
+  return result;
+}
+
+function assertConsumerIdentity(report, source, expectedHead, version) {
+  const sourceHead = source?.sourceSha ?? expectedHead;
+  const sourceVersion = source === undefined ? version : `0.0.0-pr.${sourceHead}`;
+  if (
+    report.ok !== true ||
+    !SDK_PR_CONSUMERS.includes(report.group) ||
+    report.engineCommit !== sourceHead ||
+    (report.sdkVersion ?? report.version) !== sourceVersion ||
+    !/^[0-9a-f]{64}$/.test(report.sha256) ||
+    !/^[0-9a-f]{40}$/.test(report.viewCommit)
+  )
+    throw new Error(`sdk-pr-consumer-identity:${report.group}`);
+  if (source?.reused === false && sourceHead !== expectedHead)
+    throw new Error('sdk-pr-repair-current-identity');
+}
+
+function assertConsumerIdentities(reports, expectedHead, version, sources) {
+  const identities = new Map();
+  for (const report of reports) {
+    const source = sources?.get(`sdk-consumer-${consumerKey(report)}`);
+    const sourceHead = source?.sourceSha ?? expectedHead;
+    assertConsumerIdentity(report, source, expectedHead, version);
+    const previous = identities.get(sourceHead);
+    if (previous !== undefined && previous !== `${report.sha256}:${report.viewCommit}`)
+      throw new Error('sdk-pr-consumer-byte-mismatch');
+    identities.set(sourceHead, `${report.sha256}:${report.viewCommit}`);
+  }
+}
+
+export function aggregateSdkConsumers(reports, expectedHead, version, repairSources) {
+  const sources = repairSourceMap(repairSources);
+  if (sources !== undefined && version !== `0.0.0-pr.${expectedHead}`)
+    throw new Error('sdk-pr-repair-current-identity');
   const npmReports = reports.filter((report) => report.group === 'npm');
   const partitions = Object.keys(SDK_NPM_PARTITIONS);
   if (
@@ -79,20 +148,7 @@ export function aggregateSdkConsumers(reports, expectedHead, version) {
     npmReports.length !== partitions.length
   )
     throw new Error('sdk-pr-consumer-conservation');
-  const identities = new Set();
-  for (const report of reports) {
-    if (
-      report.ok !== true ||
-      !SDK_PR_CONSUMERS.includes(report.group) ||
-      report.engineCommit !== expectedHead ||
-      (report.sdkVersion ?? report.version) !== version ||
-      !/^[0-9a-f]{64}$/.test(report.sha256) ||
-      !/^[0-9a-f]{40}$/.test(report.viewCommit)
-    )
-      throw new Error(`sdk-pr-consumer-identity:${report.group}`);
-    identities.add(`${report.sha256}:${report.viewCommit}`);
-  }
-  if (identities.size !== 1) throw new Error('sdk-pr-consumer-byte-mismatch');
+  assertConsumerIdentities(reports, expectedHead, version, sources);
   for (const group of SDK_ARCHIVE_VERIFY_GROUPS) {
     if (reports.filter((report) => report.group === group).length !== 1)
       throw new Error(`sdk-pr-consumer-missing-or-duplicate:${group}`);
@@ -117,12 +173,58 @@ export function aggregateSdkConsumers(reports, expectedHead, version) {
     engineCommit: expectedHead,
     sdkVersion: version,
     groups: SDK_PR_CONSUMERS,
+    ...(sources === undefined ? {} : { qualification: 'ci-repair', executions: repairSources }),
     npm: {
       partitions,
       workloads: Object.values(SDK_NPM_PARTITIONS).flat(),
       packageCount: npmReports[0].packageCount,
     },
   };
+}
+
+export async function collectSdkRepairReports(context, api, readArtifact) {
+  const rows = await collectRepairArtifactSources(
+    {
+      ...context,
+      workflow: 'sdk-pr-preflight.yml',
+      jobKey: 'consumers',
+      checkPrefix: 'sdk-consumer-',
+    },
+    sdkConsumerChecks(),
+    (name) => name.replace('sdk-consumer-', 'sdk-pr-result-'),
+    api,
+  );
+  const result = { reports: [], sources: [] };
+  for (const { checkName, artifact, source } of rows) {
+    const report = await readArtifact(artifact, source);
+    if (`sdk-consumer-${consumerKey(report)}` !== checkName)
+      throw new Error('sdk-pr-repair-report-owner');
+    result.reports.push(report);
+    result.sources.push({
+      checkName,
+      reused: source.reused,
+      sourceSha: source.sourceSha,
+      sourceRunId: source.sourceRunId,
+      sourceJobId: source.sourceJobId,
+      artifactId: artifact.id,
+      artifactDigest: artifact.digest,
+    });
+  }
+  return result;
+}
+
+async function readSdkConsumerArtifact(repository, root, artifact, source) {
+  const directory = resolve(root, String(source.sourceRunId), artifact.name);
+  mkdirSync(directory, { recursive: true });
+  const zip = resolve(directory, 'original-artifact.zip');
+  await retryArtifact(() => downloadArtifact(repository, String(artifact.id), zip));
+  if (`sha256:${digest(zip)}` !== artifact.digest) throw new Error('sdk-pr-repair-artifact-digest');
+  const names = execFileSync('unzip', ['-Z1', zip], { encoding: 'utf8' }).trim().split('\n');
+  if (names.length !== 1 || !/^[a-z0-9_.-]+-result\.json$/i.test(names[0]))
+    throw new Error('sdk-pr-repair-artifact-content');
+  const bytes = execFileSync('unzip', ['-p', zip, names[0]], { maxBuffer: 8 * 1024 * 1024 });
+  writeFileSync(resolve(directory, names[0]), bytes);
+  return JSON.parse(bytes.toString('utf8'));
 }
 
 if (import.meta.main) {
@@ -139,9 +241,32 @@ if (import.meta.main) {
     );
   else if (process.argv.includes('--aggregate')) {
     const root = resolve(value('--aggregate'));
-    const reports = readdirSync(root)
-      .filter((name) => name.endsWith('-result.json'))
-      .map((name) => JSON.parse(readFileSync(resolve(root, name), 'utf8')));
-    console.log(JSON.stringify(aggregateSdkConsumers(reports, value('--expected-head'), version)));
+    const repair = process.argv.includes('--ci-repair') ? value('--ci-repair') : 'false';
+    if (!['true', 'false'].includes(repair)) throw new Error('sdk-pr-repair-context');
+    if (repair === 'true') {
+      const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+      const repository = process.env.GITHUB_REPOSITORY;
+      const { reports, sources } = await collectSdkRepairReports(
+        {
+          eventName: process.env.GITHUB_EVENT_NAME,
+          pr: event.pull_request,
+          repository,
+          currentRunId: process.env.GITHUB_RUN_ID,
+          targetSha: value('--expected-head'),
+        },
+        (endpoint) => requestGitHub(endpoint, process.env.GH_TOKEN),
+        (artifact, source) => readSdkConsumerArtifact(repository, root, artifact, source),
+      );
+      console.log(
+        JSON.stringify(aggregateSdkConsumers(reports, value('--expected-head'), version, sources)),
+      );
+    } else {
+      const reports = readdirSync(root)
+        .filter((name) => name.endsWith('-result.json'))
+        .map((name) => JSON.parse(readFileSync(resolve(root, name), 'utf8')));
+      console.log(
+        JSON.stringify(aggregateSdkConsumers(reports, value('--expected-head'), version)),
+      );
+    }
   } else throw new Error(`unknown-sdk-pr-command:${basename(process.argv[1])}`);
 }

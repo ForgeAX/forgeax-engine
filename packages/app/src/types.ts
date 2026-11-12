@@ -12,7 +12,7 @@
 import type { AnimationPlaybackOptions } from '@forgeax/engine-animation';
 import type { AssetRegistry, CatalogSource } from '@forgeax/engine-assets-runtime';
 import type { AudioBackend } from '@forgeax/engine-audio';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import type { TimePolicy, World } from '@forgeax/engine-ecs';
 import type { ActionConfig, InputBackend } from '@forgeax/engine-input';
 import type { PhysicsWorld, PhysicsWorld2D } from '@forgeax/engine-physics';
@@ -24,12 +24,17 @@ import type {
   OutputColorSpace,
   RenderError,
   Renderer,
+  RendererOptions,
   RenderFeature,
   RenderProfile,
   SsrAdmissionIdentity,
 } from '@forgeax/engine-render';
-import type { RhiBackendInstrumentation } from '@forgeax/engine-render/internal/construct-renderer';
+import type {
+  BundlerOptions as RenderBundlerOptions,
+  RhiBackendInstrumentation,
+} from '@forgeax/engine-render/internal/construct-renderer';
 import type { RhiError, RhiInstance } from '@forgeax/engine-rhi';
+import type { RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import type { EngineEnvironmentError } from '@forgeax/engine-runtime';
 import type {
   AssetDecoderContributionRef,
@@ -40,6 +45,10 @@ import type {
 import type { AssetRuntimeAssemblyError } from './assets-runtime-assembly';
 import type { AppError, AppErrorCode } from './errors';
 import type { ExecutionControl, ExecutionOptions } from './execution';
+import type {
+  BrowserExecutionBridgeDeps,
+  BrowserRemoteBridgeDeps,
+} from './internal/browser-remote-bridge';
 import type { InputAttachOptions } from './internal/input-attach';
 import type { RhiCapture } from './internal/rhi-capture';
 import type { AppObservation } from './observation';
@@ -148,6 +157,8 @@ export interface AppAssembleArgs {
   /** Borrowed native host. App releases its frame and event leases, not this host. */
   readonly platform: Platform;
   readonly renderer: Renderer;
+  /** Explicitly start the optional Node remote server during host assembly. */
+  readonly remoteServe?: boolean;
   /** Host-owned asset catalogue paired with the renderer construction. */
   readonly assets?: AssetRegistry;
   /** Explicit catalog projection for this Registry. */
@@ -202,6 +213,8 @@ export interface CanvasDrawingBufferSize {
 export interface CreateAppOptions extends InputAttachOptions {
   /** Host facts and scheduling for local execution. */
   readonly platform?: Platform;
+  /** Canvas drawing-buffer pixels per CSS pixel. Omitted: mobile short side 720, desktop 1; explicit values override the default. */
+  readonly canvasPixelRatio?: number;
   /** Opt into realm-local engine execution. Omission preserves the existing local assembly path. */
   readonly execution?: ExecutionOptions;
   /**
@@ -249,6 +262,13 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly assetBudgetBytes?: number;
   /** Optional bounded Render-owned GPU pass facts; this is not frame latency. */
   readonly gpuPassTiming?: GpuPassTimingOptions;
+  /**
+   * Diagnostic GPU-cost ablation (pixels change; never a quality setting), as an
+   * object or the query form `shadow-raster=0,shadow-sampling=0,lights=0.5,post=0,scale=0.5`.
+   * Realm-wide; also installs `globalThis.__forgeaxRenderAblation` for devtools.
+   * Default off: unset costs one undefined check per hook.
+   */
+  readonly renderAblation?: import('@forgeax/engine-render').RenderAblation | string;
   /** Default-off receipt-owned CPU shadow workload, without additional GPU operations. */
   readonly shadowWorkload?: boolean;
   /** Exact source/tree/lock/build identity binding for the renderer-owned SSR seam. */
@@ -310,7 +330,25 @@ export interface CreateAppOptions extends InputAttachOptions {
   readonly profiler?: Profiler;
 }
 
-export type { BundlerOptions } from '@forgeax/engine-render/internal/construct-renderer';
+export type BundlerOptions = RenderBundlerOptions;
+
+/** Browser bridge lifecycle supplied by a host adapter. */
+export interface BrowserRemoteBridgeAdapter {
+  readonly port: string;
+  installExecutionBridge(deps: BrowserExecutionBridgeDeps): Promise<() => void>;
+  installLocalBridge(deps: BrowserRemoteBridgeDeps): Promise<() => void>;
+  registerDispose(dispose: () => void): void;
+}
+
+/** Host facts and optional tooling capabilities accepted by browser createApp. */
+export interface AppHostAdapter extends BundlerOptions {
+  /** Create and attach the optional browser RHI recorder when the host enables it. */
+  readonly attachRhiRecorder?: (rendererOptions: RendererOptions) => Promise<RecorderAttachment>;
+  /** Optional browser-to-relay bridge supplied by a development host. */
+  readonly browserRemoteBridge?: BrowserRemoteBridgeAdapter;
+  /** Host-selected Node remote server autostart for this browser App. */
+  readonly remoteServe?: boolean;
+}
 
 /**
  * App handle returned by createApp(...). Host owns the lifecycle and
@@ -363,7 +401,7 @@ export interface App {
    * Undefined when debug-draw is not wired (assemble-form createApp with
    * no explicit debugDraw creation — the auto-attach is canvas-form only).
    */
-  readonly debugDraw?: DebugDraw | undefined;
+  readonly debugDraw?: DebugDrawSource | undefined;
   /**
    * Begin host frame scheduling:
    *   - first call: Result.ok(undefined)

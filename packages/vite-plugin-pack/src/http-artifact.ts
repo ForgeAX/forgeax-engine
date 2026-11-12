@@ -78,6 +78,44 @@ export function varyEncoding(response: HttpResponse): void {
   response.setHeader('Vary', values.join(', '));
 }
 
+/**
+ * One RFC 9110 byte range: `first-last`, open-ended `first-` (the form
+ * HTMLMediaElement sends), or suffix `-length`. Multipart ranges are refused.
+ */
+function parseByteRange(
+  header: string | readonly string[],
+  size: number,
+): { readonly start: number; readonly end: number } | undefined {
+  if (typeof header !== 'string') return undefined;
+  const bounded = /^bytes=(\d+)-(\d+)$/.exec(header);
+  if (bounded) return { start: Number(bounded[1]), end: Number(bounded[2]) };
+  const open = /^bytes=(\d+)-$/.exec(header);
+  if (open) return { start: Number(open[1]), end: size - 1 };
+  const suffix = /^bytes=-(\d+)$/.exec(header);
+  if (!suffix) return undefined;
+  const length = Number(suffix[1]);
+  if (length === 0) return undefined;
+  return { start: Math.max(0, size - length), end: size - 1 };
+}
+
+/**
+ * The satisfiable single-range window of `header` over `size` bytes:
+ * `bytes=a-b`, open-ended `bytes=N-` (what a `<video>` element sends), and
+ * suffix `bytes=-N`. Multipart, malformed, empty and out-of-bounds ranges are
+ * `undefined` (answered with 416).
+ */
+function byteRange(
+  header: string | readonly string[],
+  size: number,
+): { readonly start: number; readonly end: number } | undefined {
+  const window = parseByteRange(header, size);
+  if (window === undefined) return undefined;
+  const { start, end } = window;
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= end && end < size
+    ? window
+    : undefined;
+}
+
 /** Server-local representations weakly owned by the existing published raw body. */
 export class HttpArtifactCompression {
   private readonly prepared = new WeakMap<Uint8Array, Uint8Array | undefined>();
@@ -85,39 +123,63 @@ export class HttpArtifactCompression {
   private tail: Promise<void> = Promise.resolve();
 
   async prepare(artifacts: Iterable<HttpArtifact>): Promise<void> {
-    for (const artifact of artifacts) {
-      const bytes = artifact.bytes;
-      if (this.prepared.has(bytes)) continue;
-      let pending = this.pending.get(bytes);
-      if (pending === undefined) {
-        pending = this.tail.then(async () => {
-          if (
-            bytes.byteLength < 1024 ||
-            !/^(?:application\/(?:x-forgeax-mesh|octet-stream)|text\/(?:wgsl|plain))$/i.test(
-              artifact.mimeType,
-            )
-          ) {
-            this.prepared.set(bytes, undefined);
-            return;
-          }
-          const encoded = await new Promise<Uint8Array | undefined>((resolve) => {
-            gzip(bytes, { level: 1 }, (error, body) => {
-              if (error !== null) {
-                console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
-                resolve(undefined);
-              } else resolve(body.byteLength < bytes.byteLength ? body : undefined);
-            });
-          }).catch((error: unknown) => {
-            console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
-            return undefined;
-          });
-          this.prepared.set(bytes, encoded);
-        });
-        this.pending.set(bytes, pending);
-        this.tail = pending;
+    // One queue across callers; small bodies overlap only within its bounded
+    // window. A second prepare never creates another set of encoder slots.
+    const pending = this.tail.then(() => this.prepareWindowed(artifacts));
+    this.tail = pending.catch(() => {});
+    await pending;
+  }
+
+  private async prepareWindowed(artifacts: Iterable<HttpArtifact>): Promise<void> {
+    let pending: Promise<void>[] = [];
+    let inputBytes = 0;
+    const drain = async (): Promise<void> => {
+      const active = pending;
+      pending = [];
+      inputBytes = 0;
+      await Promise.all(active);
+    };
+    try {
+      for (const artifact of artifacts) {
+        const bytes = artifact.bytes;
+        if (this.prepared.has(bytes) || this.pending.has(bytes)) continue;
+        // Keep large inputs exclusive, and bound temporary encoder/output
+        // storage independently of how many routes the publication contains.
+        if (pending.length > 0 && inputBytes + bytes.byteLength > 4 * 1024 * 1024) await drain();
+        const task = this.prepareArtifact(artifact);
+        this.pending.set(bytes, task);
+        pending.push(task);
+        inputBytes += bytes.byteLength;
+        if (pending.length === 4 || inputBytes >= 4 * 1024 * 1024) await drain();
       }
-      await pending;
+    } finally {
+      await drain();
     }
+  }
+
+  private async prepareArtifact(artifact: HttpArtifact): Promise<void> {
+    const bytes = artifact.bytes;
+    if (
+      bytes.byteLength < 1024 ||
+      !/^(?:application\/(?:x-forgeax-mesh|octet-stream)|text\/(?:wgsl|plain))$/i.test(
+        artifact.mimeType,
+      )
+    ) {
+      this.prepared.set(bytes, undefined);
+      return;
+    }
+    const encoded = await new Promise<Uint8Array | undefined>((resolve) => {
+      gzip(bytes, { level: 1 }, (error, body) => {
+        if (error !== null) {
+          console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
+          resolve(undefined);
+        } else resolve(body.byteLength < bytes.byteLength ? body : undefined);
+      });
+    }).catch((error: unknown) => {
+      console.warn('forgeax: HTTP artifact gzip failed; serving identity', error);
+      return undefined;
+    });
+    this.prepared.set(bytes, encoded);
   }
 
   /** Never encode in an HTTP request: unprepared or failed bodies remain identity. */
@@ -164,23 +226,15 @@ export class HttpArtifactCompression {
       return;
     }
     if (range !== undefined) {
-      const match = typeof range === 'string' ? /^bytes=(\d+)-(\d+)$/.exec(range) : null;
-      const start = Number(match?.[1]),
-        end = Number(match?.[2]);
-      if (
-        !match ||
-        !Number.isSafeInteger(start) ||
-        !Number.isSafeInteger(end) ||
-        start < 0 ||
-        end < start ||
-        end >= artifact.bytes.byteLength
-      ) {
+      const window = byteRange(range, artifact.bytes.byteLength);
+      if (window === undefined) {
         response.statusCode = 416;
         response.setHeader('Content-Range', `bytes */${artifact.bytes.byteLength}`);
         response.setHeader('Content-Length', '0');
         response.end('');
         return;
       }
+      const { start, end } = window;
       response.statusCode = 206;
       response.setHeader('Content-Range', `bytes ${start}-${end}/${artifact.bytes.byteLength}`);
       response.setHeader('Content-Length', String(end - start + 1));

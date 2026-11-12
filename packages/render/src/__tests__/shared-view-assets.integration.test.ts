@@ -11,8 +11,18 @@ import { createRenderPublisher } from '../publication/publisher';
 import { RenderPublicationReceiver } from '../publication/receiver';
 import { renderPublicationTransfers } from '../publication/record';
 import { extractFrames } from '../render-system-extract-tail';
-import { PersistentRenderScene } from '../scene/render-scene';
+import {
+  type PersistentRenderCandidateRequest,
+  PersistentRenderScene,
+} from '../scene/render-scene';
 import { SceneComposition } from '../scene/scene-composition';
+import { registerMaterialSystems } from '../world/material-systems';
+import { beginRenderFrame, createRenderWorld, endRenderFrame } from '../world/render-world';
+import {
+  type RenderSceneAdoption,
+  RenderSceneDelta,
+  registerSceneSystem,
+} from '../world/scene-systems';
 
 function fixture() {
   const assets = new AssetRegistry();
@@ -30,7 +40,6 @@ function fixture() {
       data: new Uint8Array([0, 0, 0, 255]),
     })
     .unwrap();
-  let frame = 0;
   const follow = (view: PersistentRenderScene) =>
     view.extractComposition(
       [world],
@@ -38,7 +47,6 @@ function fixture() {
       assets,
       (request) => extractFrames([world], 0, assets, undefined, { renderables: request }),
       [lease],
-      ++frame,
     );
   const update = (red: number) => {
     assets.update(texture, { data: new Uint8Array([red, 0, 0, 255]) }).unwrap();
@@ -204,21 +212,33 @@ it('fences a later same-frame view resource frame against its own asset edits', 
     })
     .unwrap();
   worlds[1]?.spawn({ component: SkyboxBackground, data: { equirect: sky } }).unwrap();
+  // One renderer frame: view 0 owns the `render-scene` observation; every
+  // view then follows it with its own resource frame.
+  const renderWorld = createRenderWorld();
+  const source = registerSceneSystem(renderWorld, shared, registries[0]);
+  registerMaterialSystems(renderWorld);
+  const build = (index: number) => {
+    const owner = { cameraOwner: index, resourceOwner: index };
+    const resources = registries[index] ?? assets;
+    return (request: PersistentRenderCandidateRequest) =>
+      extractFrames(worlds, owner, resources, undefined, { renderables: request });
+  };
   let frame = 0;
   const draw = () => {
-    frame += 1;
-    views.forEach((view, index) => {
-      const owner = { cameraOwner: index, resourceOwner: index };
-      const resources = registries[index] ?? assets;
-      view.extractComposition(
-        worlds,
-        owner,
-        resources,
-        (request) => extractFrames(worlds, owner, resources, undefined, { renderables: request }),
-        leases,
-        frame,
-      );
-    });
+    source.staged = true;
+    source.worlds = worlds;
+    source.owner = { cameraOwner: 0, resourceOwner: 0 };
+    source.leases = leases;
+    source.buildCandidateFrame = build(0);
+    beginRenderFrame(renderWorld, ++frame);
+    try {
+      const adoption = renderWorld.getResource<RenderSceneAdoption>(RenderSceneDelta);
+      views.forEach((view, index) => {
+        view.followAdoption(adoption, build(index), worlds[index]);
+      });
+    } finally {
+      endRenderFrame(renderWorld);
+    }
   };
   try {
     draw();

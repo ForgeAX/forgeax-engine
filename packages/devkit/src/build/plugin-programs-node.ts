@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createRequire, isBuiltin } from 'node:module';
@@ -33,7 +34,11 @@ export async function compileNodePluginPrograms(
   resolution: Pick<InlineConfig, 'resolve' | 'plugins'> = {},
   trace: <T>(stage: string, operation: () => Promise<T>) => Promise<T> = (_stage, operation) =>
     operation(),
-): Promise<{ readonly entry: string; readonly watchFiles: ReadonlySet<string> }> {
+): Promise<{
+  readonly entry: string;
+  readonly watchFiles: ReadonlySet<string>;
+  readonly producerIdentity: string;
+}> {
   // The selected realm root and its references own execution placement.
   // Sharing a Pack source does not make another realm's plugins executable here.
   const records = pluginAssetClosure(inventory, facts.roots[target]);
@@ -201,6 +206,18 @@ export async function compileNodePluginPrograms(
   await trace('host-compile-fence', () => assertPluginSourceInputs(inventory, facts.root));
   const entry = resolve(temporary, 'compiled/entry.mjs');
   await mkdir(resolve(temporary, 'compiled'), { recursive: true });
+  // These sealed compiler facts are data. Keeping them out of the executable
+  // loader avoids compiling and caching the complete graph again as a JS literal.
+  await writeFile(
+    resolve(temporary, 'compiled/programs.json'),
+    JSON.stringify({
+      graph,
+      imports,
+      artifacts,
+      definitions: records.map((record) => [record.definition.guid, record.definition.evidence]),
+      tools: [...projection.tools],
+    }),
+  );
   // Generated native programs need only this filesystem/Pack owner. Importing
   // the DevKit facade here also activates unrelated browser/build dependencies.
   const bundledHost = new URL('./pack-program-host.mjs', import.meta.url);
@@ -209,21 +226,35 @@ export async function compileNodePluginPrograms(
     : new URL('../../dist/pack-program-host.mjs', import.meta.url);
   await writeFile(
     entry,
-    `import { loadPackProgram } from ${JSON.stringify(import.meta.resolve('@forgeax/engine-pack/runtime'))};
+    `import { readFile } from 'node:fs/promises';
+import { loadPackProgram } from ${JSON.stringify(import.meta.resolve('@forgeax/engine-pack/runtime'))};
 import { createNodePackProgramHost } from ${JSON.stringify(programHost.href)};
-const graph = ${JSON.stringify(graph)};
-const imports = ${JSON.stringify(imports)};
+const { graph, imports, artifacts, definitions: definitionRows, tools: toolRows } =
+  JSON.parse(await readFile(new URL('./programs.json', import.meta.url), 'utf8'));
 const programHost = createNodePackProgramHost(${JSON.stringify(resolve(temporary, 'programs'))});
-const programs = new Map(${JSON.stringify(artifacts)}.map(([key, selection]) => {
+const programs = new Map(artifacts.map(([key, selection]) => {
   const artifact = { ...graph, ...selection };
   return [key, { exportSource: async () => artifact, load: async () => (await loadPackProgram(artifact, imports, programHost)).unwrap() }];
 }));
-const definitions = new Map(${JSON.stringify(records.map((record) => [record.definition.guid, record.definition.evidence]))});
-const tools = new Map(${JSON.stringify([...projection.tools])});
+const definitions = new Map(definitionRows);
+const tools = new Map(toolRows);
 export function createPrograms(sessionId, contextId, sessionGeneration) {
   return Object.freeze({ sessionId, contextId, sessionGeneration, target: ${JSON.stringify(target)}, programs, definitions, tools, imports, programHost });
 }
 `,
   );
-  return { entry, watchFiles };
+  return {
+    entry,
+    watchFiles,
+    producerIdentity: `sha256:${createHash('sha256')
+      .update(
+        JSON.stringify([
+          target,
+          facts.roots[target],
+          artifacts,
+          records.map(({ definition }) => [definition.guid, definition.asset]),
+        ]),
+      )
+      .digest('hex')}`,
+  };
 }

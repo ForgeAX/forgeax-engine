@@ -157,6 +157,10 @@ test('CI install entrypoints clean stale workspace sources first', () => {
   assert.ok(installs.every((line) => line.includes('scripts/ci/prepare-pnpm-workspace.mjs')));
   assert.doesNotMatch(workflow, /pnpm install --frozen-lockfile/);
   assert.match(workflow, /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install/);
+  assert.match(
+    workflow,
+    /node scripts\/ci\/prepare-pnpm-workspace\.mjs --install --filter @forgeax\/engine-physics-rapier3d/,
+  );
   for (const path of ['sdk-pr-preflight.yml', 'bench.yml', 'ci-focus.yml']) {
     const consumer = workspaceCommands(readFileSync(`.github/workflows/${path}`, 'utf8'));
     assert.doesNotMatch(consumer, /pnpm install --frozen-lockfile/);
@@ -171,6 +175,46 @@ test('CI install entrypoints clean stale workspace sources first', () => {
     2,
     'both Native Ray Query workspaces must clean retired submodules before installing',
   );
+});
+
+test('filtered workspace install keeps the preparer and package selector', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-filtered-pnpm-workspace-'));
+  const pnpmArgs = join(root, 'pnpm-args.json');
+  const pnpm = join(root, 'pnpm.cjs');
+  const packageFilter = '@forgeax/engine-physics-rapier3d';
+  const env = {
+    ...process.env,
+    GITHUB_ACTIONS: 'false',
+    PNPM_ARGS_PATH: pnpmArgs,
+    npm_execpath: pnpm,
+  };
+  delete env.GITHUB_WORKSPACE;
+
+  try {
+    writeFileSync(join(root, '.forgeax-public-distribution'), '');
+    mkdirSync(join(root, 'tools/view'), { recursive: true });
+    writeFileSync(join(root, 'tools/view/package.json'), '{}\n');
+    writeFileSync(
+      pnpm,
+      "require('node:fs').writeFileSync(process.env.PNPM_ARGS_PATH, JSON.stringify(process.argv.slice(2)))\n",
+    );
+
+    const result = spawnSync(process.execPath, [script, '--install', '--filter', packageFilter], {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(readFileSync(pnpmArgs, 'utf8')), [
+      'install',
+      '--frozen-lockfile',
+      '--ignore-scripts',
+      '--filter',
+      packageFilter,
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('ordinary CI installs only the current platform and never executes root lifecycle hooks', async () => {

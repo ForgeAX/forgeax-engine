@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { AssetGuid, definePackageId } from '@forgeax/engine-pack/source';
@@ -49,6 +49,23 @@ async function fixtureRoot(): Promise<string> {
 }
 
 describe('unified CLI', () => {
+  it('resolves a quoted multi-word help path like its split form', async () => {
+    const root = await fixtureRoot();
+    const split = await runUnifiedCli(['help', 'project', 'preview', '--root', root, '--json']);
+    expect(split.ok).toBe(true);
+    for (const quoted of ['project preview', ' project  preview ']) {
+      const joined = await runUnifiedCli(['help', quoted, '--root', root, '--json']);
+      expect(joined).toEqual(split);
+    }
+  });
+
+  it('leaves an ignore file in the project state directory a command used', async () => {
+    const root = await fixtureRoot();
+    await mkdir(join(root, '.forgeax'));
+    expect((await runUnifiedCli(['asset', 'list', '--root', root, '--json'])).ok).toBe(true);
+    expect(await readFile(join(root, '.forgeax', '.gitignore'), 'utf8')).toMatch(/^\*$/m);
+  });
+
   it('exposes an explicit storage WebGPU validation profile without accepting portable claims', async () => {
     const root = await fixtureRoot();
     const help = await runUnifiedCli(['help', 'project', 'build', '--root', root, '--json']);
@@ -274,6 +291,30 @@ describe('unified CLI', () => {
     expect(created.error?.hint).toContain('requestId');
   });
 
+  it('derives an asset guid from positional package id and key through the unified CLI', async () => {
+    const root = await fixtureRoot();
+    const derived = await runUnifiedCli([
+      'asset',
+      'guid',
+      '019fb7ce-5200-7000-8000-000000000000',
+      'material/punk-smoke',
+      '--root',
+      root,
+      '--json',
+    ]);
+    expect(derived).toMatchObject({
+      ok: true,
+      value: { key: 'material/punk-smoke', guid: '067856ac-0cba-54c8-9a29-44de20a37a21' },
+    });
+    const help = await runUnifiedCli(['help', 'asset', 'guid', '--root', root, '--json']);
+    expect(help).toMatchObject({
+      ok: true,
+      value: { leaf: { inputSchema: { required: ['packageId', 'key'] } } },
+    });
+    const missing = await runUnifiedCli(['asset', 'guid', '--root', root, '--json']);
+    expect(missing).toMatchObject({ ok: false });
+  });
+
   it('accepts the documented dry-run flag on the unified asset import command', async () => {
     const root = await fixtureRoot();
     const contribution = createUnifiedCommandContributions(root).find(
@@ -315,6 +356,7 @@ describe('unified CLI', () => {
       'dev',
       'engine',
       'help',
+      'model',
       'preview',
       'profile',
       'project',
@@ -590,6 +632,33 @@ describe('unified CLI', () => {
         code: 'artifact-read-failed',
         detail: { path: join(root, 'missing.rhitape') },
       },
+    });
+  });
+
+  it('takes the rhi timing tape as a positional argument and --compare as the baseline path', async () => {
+    const root = await fixtureRoot();
+    const candidate = join(root, 'candidate.rhitape');
+    const positional = await runUnifiedCli(['rhi', 'timing', '--root', root, candidate, '--json']);
+    expect(positional).toMatchObject({
+      ok: false,
+      error: { code: 'artifact-read-failed', detail: { path: candidate } },
+    });
+    await writeFile(candidate, 'not a tape');
+    const baseline = join(root, 'baseline.rhitape');
+    const compared = await runUnifiedCli([
+      'rhi',
+      'timing',
+      '--root',
+      root,
+      '--compare',
+      baseline,
+      candidate,
+      '--json',
+    ]);
+    // The candidate was read; the missing baseline is reported by its own path.
+    expect(compared).toMatchObject({
+      ok: false,
+      error: { code: 'artifact-read-failed', detail: { path: baseline } },
     });
   });
 

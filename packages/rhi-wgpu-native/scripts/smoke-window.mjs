@@ -14,7 +14,7 @@ const output = resolve(process.env.NATIVE_WINDOW_EVIDENCE ?? 'artifacts/native-w
 await mkdir(output, { recursive: true });
 const manifestPath = resolve(root, 'apps/hello/triangle/dist/shaders/manifest.json');
 const shaderManifestUrl = `data:application/json,${encodeURIComponent(await readFile(manifestPath, 'utf8'))}`;
-const window = createNativeWindow({ title: 'ForgeaX native TypeScript World', width: 640, height: 360 }).unwrap();
+const window = createNativeWindow({ title: 'ForgeAX native TypeScript World', width: 640, height: 360 }).unwrap();
 installNavigatorGpu(window.gpu).unwrap();
 const { createRenderer } = await import('@forgeax/engine-runtime');
 const { World } = await import('@forgeax/engine-ecs');
@@ -117,7 +117,7 @@ try {
   assert.equal(window.pollEvents().ok, false);
   assert.throws(() => context.getCurrentTexture(), /unconfigured/);
   report.checks.push('close is idempotent and rejects late window and surface use');
-  const replacement = createNativeWindow({ width: 320, height: 180, title: 'ForgeaX replacement' }).unwrap();
+  const replacement = createNativeWindow({ width: 320, height: 180, title: 'ForgeAX replacement' }).unwrap();
   replacement.pollEvents().unwrap();
   replacement.close().unwrap();
   report.checks.push('window can be recreated after close on the native event loop');

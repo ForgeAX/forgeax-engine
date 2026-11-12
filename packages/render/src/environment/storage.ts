@@ -12,6 +12,7 @@ import type { RenderFrameState } from '../record/frame-snapshot';
 import type { _InternalRenderPipelineContext } from '../record/render-context';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import type { RenderPipelineFrame } from '../render-pipeline';
+import { recordContext } from '../world/view-record-context';
 import type { SelectedEnvironmentFrame } from './frame';
 
 type Runtime = { readonly device: RhiDevice; readonly deviceScope: DeviceScope };
@@ -86,7 +87,7 @@ function texture(
       format: 'rgba16float',
       size: { width, height, depthOrArrayLayers: layers },
       mipLevelCount: mips,
-      usage,
+      usage: runtime.device.caps.storageTexture ? usage : usage & ~0x08,
       textureBindingViewDimension: undefined,
     })
     .unwrap();
@@ -98,6 +99,7 @@ function texture(
 export function atmosphereMediumKey(environment: SelectedEnvironmentFrame): string {
   if (environment.source.kind !== 'atmosphere') return '';
   const {
+    backgroundOnly: _backgroundOnly,
     capturePosition: _capture,
     groundOrigin: _origin,
     aerialPerspectiveStart: _start,
@@ -124,9 +126,9 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
       expected: 'selected atmosphere source',
       hint: 'rebuild the graph after environment selection changes',
     });
-  let owner = owners.get(runtime.deviceScope);
+  let owner = owners.get(recordContext(runtime).deviceScope);
   if (owner === undefined) {
-    const scope = runtime.deviceScope.createChild('atmosphere');
+    const scope = recordContext(runtime).deviceScope.createChild('atmosphere');
     try {
       owner = {
         current: undefined,
@@ -144,7 +146,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
       scope.retire();
       throw error;
     }
-    owners.set(runtime.deviceScope, owner);
+    owners.set(recordContext(runtime).deviceScope, owner);
   }
   const previous = owner.current;
   if (previous?.environment.environmentSignature === environment.environmentSignature)
@@ -168,7 +170,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
         key,
         references: 0,
         scope,
-        transmittance: texture(runtime, scope, 'atmosphere-transmittance', 256, 64, 1, 1, 0x0c),
+        transmittance: texture(runtime, scope, 'atmosphere-transmittance', 256, 64, 1, 1, 0x1c),
         multipleScattering: texture(
           runtime,
           scope,
@@ -177,7 +179,7 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
           32,
           1,
           1,
-          0x0c,
+          0x1c,
         ),
       };
     } catch (error) {
@@ -221,8 +223,8 @@ function select(runtime: Runtime, environment: SelectedEnvironmentFrame): Genera
         1,
         0x17,
       ),
-      captureSky: texture(runtime, scope, 'atmosphere-capture-sky', 192, 208, 1, 1, 0x0c),
-      distantSkyLight: texture(runtime, scope, 'atmosphere-distant-sky-light', 1, 1, 1, 1, 0x0c),
+      captureSky: texture(runtime, scope, 'atmosphere-capture-sky', 192, 208, 1, 1, 0x1c),
+      distantSkyLight: texture(runtime, scope, 'atmosphere-distant-sky-light', 1, 1, 1, 1, 0x1c),
       params: buffer(runtime, scope, 'atmosphere-params', VIEW_UNIFORM_BYTES, 0x48),
       vertices: owner.vertices,
       iblParams: owner.iblParams,
@@ -276,6 +278,12 @@ export function retainAtmosphere(
   runtime: Runtime,
   environment: SelectedEnvironmentFrame,
 ): AtmosphereLease {
+  if (environment.source.kind === 'atmosphere' && environment.source.atmosphere.backgroundOnly)
+    throw new RhiError({
+      code: 'rhi-not-available',
+      expected: 'full Atmosphere for environment, cube and planar captures',
+      hint: 'backgroundOnly supplies display sky only; remove captures or select full Atmosphere on a capable device',
+    });
   return select(runtime, environment).retain();
 }
 function lease(runtime: Runtime, storage: Generation): AtmosphereLease {
@@ -287,7 +295,7 @@ function lease(runtime: Runtime, storage: Generation): AtmosphereLease {
       if (released) return;
       released = true;
       storage.pins--;
-      if (storage.pins === 0 && owners.get(runtime.deviceScope)?.current !== storage)
+      if (storage.pins === 0 && owners.get(recordContext(runtime).deviceScope)?.current !== storage)
         retire(runtime, storage);
     },
   };
@@ -295,7 +303,7 @@ function lease(runtime: Runtime, storage: Generation): AtmosphereLease {
 
 /** Stop retaining display storage when its owner is removed; pinned captures finish. */
 export function releaseAtmosphere(runtime: Runtime): void {
-  const owner = owners.get(runtime.deviceScope);
+  const owner = owners.get(recordContext(runtime).deviceScope);
   const previous = owner?.current;
   if (owner === undefined || previous === undefined) return;
   owner.current = undefined;

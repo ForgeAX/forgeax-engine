@@ -23,9 +23,13 @@ interface MaterialSampledTextureBudgetFacts {
   readonly required: number;
   readonly transmission: 'none' | 'dedicated' | 'shared' | 'exceeded';
   readonly conflicts: readonly string[];
+  readonly parallax: 'none' | 'parallax' | 'normal-mapping';
+  /** Readiness warnings derived from the facts above. */
+  readonly warnings: readonly string[];
 }
 
 const TRANSMISSION_BUDGET_KINDS = new Set(['none', 'dedicated', 'shared', 'exceeded']);
+const PARALLAX_BUDGET_KINDS = new Set(['none', 'parallax', 'normal-mapping']);
 
 export function materialSampledTextureBudgetFacts(
   ownerFacts: Readonly<Record<string, unknown>> | undefined,
@@ -34,12 +38,15 @@ export function materialSampledTextureBudgetFacts(
   const required = ownerFacts?.sampledTextureRequired;
   const transmission = ownerFacts?.sampledTextureTransmission;
   const conflicts = ownerFacts?.sampledTextureConflicts;
+  const parallax = ownerFacts?.sampledTextureParallax ?? 'none';
   if (
     typeof limit !== 'number' ||
     typeof required !== 'number' ||
     typeof transmission !== 'string' ||
     !TRANSMISSION_BUDGET_KINDS.has(transmission) ||
-    typeof conflicts !== 'string'
+    typeof conflicts !== 'string' ||
+    typeof parallax !== 'string' ||
+    !PARALLAX_BUDGET_KINDS.has(parallax)
   )
     return undefined;
   return {
@@ -47,6 +54,13 @@ export function materialSampledTextureBudgetFacts(
     required,
     transmission: transmission as MaterialSampledTextureBudgetFacts['transmission'],
     conflicts: conflicts.length === 0 ? [] : conflicts.split(','),
+    parallax: parallax as MaterialSampledTextureBudgetFacts['parallax'],
+    warnings:
+      parallax === 'normal-mapping'
+        ? [
+            `parallax displacement falls back to plain normal mapping: ${transmission} transmission hosts its height pair at the ${limit}-texture sampled-texture budget tier`,
+          ]
+        : [],
   };
 }
 

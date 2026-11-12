@@ -42,7 +42,7 @@ function canFallbackToWgpu(error: unknown): error is EngineEnvironmentError {
     nested !== null &&
     typeof nested === 'object' &&
     'code' in nested &&
-    nested.code === 'request-adapter-threw'
+    (nested.code === 'request-adapter-threw' || nested.code === 'request-device-threw')
   );
 }
 

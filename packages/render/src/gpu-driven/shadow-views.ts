@@ -11,6 +11,7 @@ import type { Result, RhiDevice } from '@forgeax/engine-rhi';
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import { SHADOW_RASTER_GUARD_TEXELS } from '../components/directional-shadow-filter';
 import type { GpuScene } from '../gpu-scene';
+import type { SceneContentCursor } from '../gpu-scene-content-boxes';
 import type { ShadowViewIdentity, ShadowViewInvalidationReason } from '../inspection-types';
 import type { PipelineBuilderShaderModuleFactory } from '../pipeline-builder';
 import { FrameSet } from '../scene/frame-set';
@@ -40,9 +41,17 @@ import {
   type ShadowLayerWork,
   sameShadowCandidates,
 } from './shadow-layer-projection';
+import { ShadowPlanChanges } from './shadow-plan-changes';
+import { memoizedPlanPair } from './shadow-projection-publication';
+import {
+  captureShadowViewIdentity,
+  shadowViewIdentityKey as identityKey,
+} from './shadow-view-identity';
 import {
   type GpuDrivenCullingObservation,
   type GpuDrivenLodSubmitIdentity,
+  type GpuDrivenSelectionBatch,
+  type GpuDrivenSelectionWork,
   type GpuDrivenShadowCameraCull,
   GpuDrivenView,
   type GpuDrivenViewGraphResources,
@@ -196,7 +205,7 @@ interface ShadowViewRecord {
   matrix: Float32Array | undefined;
   targetSize: number | undefined;
   graphGeneration: number | undefined;
-  contentRevision: number;
+  contentCursor: SceneContentCursor;
   directMaterials: ShadowViewUpdateInput['directMaterials'];
   shadowMaterials: ShadowMaterialContent | undefined;
   planes: Float32Array;
@@ -216,43 +225,51 @@ interface ShadowViewRecord {
   cameraCull: boolean;
   cameraCulled: number | undefined;
   lastCullingObservation: GpuDrivenCullingObservation | undefined;
+  /**
+   * This publication's cull counters are read after submit. Decided before
+   * the graph executes, so an unread view encodes no telemetry copy.
+   */
+  cullingReadback: boolean;
   /** A partial static-layer miss: only these regions re-raster. */
   dirtyRects: readonly ShadowDirtyRect[] | undefined;
 }
 
-/** Frozen identities own their key; borrowed identities are always read live. */
-class OwnedShadowViewIdentity implements ShadowViewIdentity {
-  readonly kind: ShadowViewIdentity['kind'];
-  readonly index: number;
-  readonly face?: number;
-  readonly layer?: 'static';
-  readonly terrainReceiver?: NonNullable<ShadowViewIdentity['terrainReceiver']>;
-  readonly #key: string;
+const selectionProperty: PropertyDescriptor = {
+  enumerable: true,
+  get(this: ShadowViewSubmission): GpuDrawSelection {
+    let selection = viewSelections.get(this.plan);
+    if (selection === undefined) {
+      selection = GpuDrawSelection.fixed(this.plan.batches);
+      viewSelections.set(this.plan, selection);
+    }
+    return selection;
+  },
+};
 
-  constructor(source: ShadowViewIdentity) {
-    const { kind, index, face, layer, terrainReceiver } = source;
-    this.kind = kind;
-    this.index = index;
-    if (face !== undefined) this.face = face;
-    if (layer !== undefined) this.layer = layer;
-    if (terrainReceiver !== undefined) this.terrainReceiver = Object.freeze({ ...terrainReceiver });
-    this.#key = serializeIdentityKey(this);
+/** Shared accessor and object shape; each publication still owns its immutable facts. */
+class ShadowSubmission implements ShadowViewSubmission {
+  declare readonly selection: GpuDrawSelection;
+  declare readonly identity: ShadowViewIdentity;
+  declare readonly view: GpuDrivenView;
+  declare readonly plan: SubmissionPlan;
+  declare readonly generation: number;
+  declare readonly cache: ShadowViewCacheState;
+
+  constructor(
+    identity: ShadowViewIdentity,
+    view: GpuDrivenView,
+    plan: SubmissionPlan,
+    generation: number,
+    cache: ShadowViewCacheState,
+  ) {
+    Object.defineProperty(this, 'selection', selectionProperty);
+    this.identity = identity;
+    this.view = view;
+    this.plan = plan;
+    this.generation = generation;
+    this.cache = cache;
     Object.freeze(this);
   }
-
-  static key(identity: ShadowViewIdentity): string | undefined {
-    return #key in identity ? identity.#key : undefined;
-  }
-}
-
-function identityKey(identity: ShadowViewIdentity): string {
-  return OwnedShadowViewIdentity.key(identity) ?? serializeIdentityKey(identity);
-}
-
-function serializeIdentityKey(identity: ShadowViewIdentity): string {
-  return `${identity.kind}:${identity.index}:${identity.face ?? ''}${
-    identity.layer === undefined ? '' : `:${identity.layer}`
-  }${identity.terrainReceiver === undefined ? '' : `:terrain:${identity.terrainReceiver.worldId}:${identity.terrainReceiver.entityKey}`}`;
 }
 
 function createSubmission(
@@ -262,21 +279,7 @@ function createSubmission(
   generation: number,
   cache: ShadowViewCacheState,
 ): ShadowViewSubmission {
-  return Object.freeze({
-    get selection() {
-      let selection = viewSelections.get(plan);
-      if (selection === undefined) {
-        selection = new GpuDrawSelection(plan.batches);
-        viewSelections.set(plan, selection);
-      }
-      return selection;
-    },
-    identity,
-    view,
-    plan,
-    generation,
-    cache,
-  });
+  return new ShadowSubmission(identity, view, plan, generation, cache);
 }
 
 /** Update the authoritative value at a real owner transition, never on a read. */
@@ -289,9 +292,7 @@ function transitionSubmission(
   return createSubmission(state.identity, state.view, plan, state.generation, cache);
 }
 
-export function shadowViewIdentityKey(identity: ShadowViewIdentity): string {
-  return identityKey(identity);
-}
+export { shadowViewIdentityKey } from './shadow-view-identity';
 
 function validateIdentity(identity: ShadowViewIdentity): RhiError | undefined {
   if (!Number.isInteger(identity.index) || identity.index < 0) {
@@ -322,6 +323,9 @@ function validateIdentity(identity: ShadowViewIdentity): RhiError | undefined {
 }
 
 const PLANE_FLOATS = 24;
+
+/** The one compute pass that selects every point-face view of a graph. */
+export const POINT_SELECTION_BATCH_PASS = 'gpu-driven.shadow.point-cube.view-selection';
 /**
  * A single projected texel bounds subpixel caster suppression in every layer. The
  * texel edge is exact for an orthographic light; a perspective light has no
@@ -626,6 +630,12 @@ function sameLod(left: GpuDrivenBatch['lod'], right: GpuDrivenBatch['lod']): boo
 
 /** Once shader-read content is proven equal, physical material addresses are not depth facts. */
 function sameShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
+  return a === b || memoizedPlanPair(executionVerdicts, a, b, compareShadowExecution);
+}
+
+const executionVerdicts = new WeakMap<SubmissionPlan, WeakMap<SubmissionPlan, boolean>>();
+
+function compareShadowExecution(a: SubmissionPlan, b: SubmissionPlan): boolean {
   if (a.batches.length !== b.batches.length) return false;
   return a.batches.every((left, index) => {
     const right = b.batches.at(index);
@@ -991,9 +1001,10 @@ function partialStaticRects(
   previous: ShadowViewRecord,
   input: ShadowViewUpdateInput,
   reason: ShadowViewInvalidationReason,
-  retainedRevision: number,
+  retainedContent: SceneContentCursor,
   plan: SubmissionPlan,
   drawn: (plan: SubmissionPlan) => ShadowDrawnSlots,
+  changes: ShadowPlanChanges<ShadowPreparationCounters>,
 ): readonly ShadowDirtyRect[] | undefined {
   if (
     input.identity.layer !== 'static' ||
@@ -1014,14 +1025,13 @@ function partialStaticRects(
   }
   const scene = input.scene;
   const changedContent = scene.changedBoundsSince(
-    retainedRevision,
+    retainedContent,
     input.ignoredChangeSlots,
     drawn(previous.submission.plan),
   );
   if (changedContent === 'unbounded') return undefined;
-  const changed = new Set<number>();
-  changedPrimitives(previous.submission.plan, plan, changed, previous.preparation);
-  const changedDraws = scene.slotBoundsSince(retainedRevision, changed);
+  const changed = changes.between(previous.submission.plan, plan, previous.preparation);
+  const changedDraws = changes.boundsSince(scene, retainedContent, changed);
   if (changedDraws === 'unbounded') return undefined;
   return shadowDirtyRects(input.matrix, [changedContent, changedDraws]);
 }
@@ -1047,11 +1057,7 @@ function sameShadowContent(previous: ShadowViewRecord, input: ShadowViewUpdateIn
 
 function passNames(identity: ShadowViewIdentity): readonly string[] {
   const prefix = shadowViewLabelPrefix(identity);
-  return Object.freeze([
-    `${prefix}.view-reset`,
-    `${prefix}.frustum-compact`,
-    `${prefix}.finalize-indirect`,
-  ]);
+  return Object.freeze([`${prefix}.view-selection`]);
 }
 
 function graphStateError(identity: ShadowViewIdentity): RenderGraphError {
@@ -1204,8 +1210,16 @@ function countRebuild(
  */
 export class ShadowViewStatePool {
   private readonly records = new Map<string, ShadowViewRecord>();
+  private readonly pointSelectionBatches = new WeakMap<
+    object,
+    ReadonlyMap<string, ShadowViewProjection>
+  >();
   /** Slots each projected plan draws; fixed projections publish theirs. */
   private drawnByPlan = new WeakMap<SubmissionPlan, ShadowDrawnSlots>();
+  /** Plan-pair content differences and their boxes, shared by views of one plan. */
+  private readonly planChanges = new ShadowPlanChanges<ShadowPreparationCounters>(
+    changedPrimitives,
+  );
   /** One plan object per projection; a replaced view takes a fresh one. */
   private planByProjection = new WeakMap<ShadowLayerProjection, SubmissionPlan>();
   private readonly activeKeys = new Set<string>();
@@ -1248,7 +1262,7 @@ export class ShadowViewStatePool {
     const sameRestriction = sameShadowCandidates(previous?.candidates, candidates);
     this.activeKeys.add(key);
     this.retiring.delete(key);
-    const retainedRevision = previous?.contentRevision;
+    const retainedContent = previous?.contentCursor;
     let invalidationReason =
       this.structureInvalidationReason(previous, input) ?? planesChangedReason(previous, input);
     const selection = this.selectPlan(previous, input, fixedSource, candidates);
@@ -1256,7 +1270,7 @@ export class ShadowViewStatePool {
     invalidationReason ??= this.retainedInvalidationReason(
       previous,
       input,
-      retainedRevision,
+      retainedContent,
       selection.plan,
       selection.sourceRetained,
       sameRestriction,
@@ -1272,9 +1286,10 @@ export class ShadowViewStatePool {
             previous,
             input,
             invalidationReason,
-            retainedRevision ?? previous.contentRevision,
+            retainedContent ?? previous.contentCursor,
             selection.plan,
             (plan) => this.drawnSlots(plan),
+            this.planChanges,
           );
     return this.rebuild(
       key,
@@ -1284,6 +1299,7 @@ export class ShadowViewStatePool {
       candidates,
       invalidationReason,
       dirtyRects,
+      fixedSource,
     );
   }
 
@@ -1390,8 +1406,15 @@ export class ShadowViewStatePool {
     candidates: ShadowCandidates | undefined,
     invalidationReason: ShadowViewInvalidationReason | undefined,
     dirtyRects: readonly ShadowDirtyRect[] | undefined,
+    fixedSource: boolean,
   ): Result<ShadowViewUpdate, RhiError> {
-    const planes = new Float32Array(input.planes.subarray(0, PLANE_FLOATS));
+    // Keep equal owned evidence immutable. Raw input retains subarray observations.
+    const planes =
+      fixedSource &&
+      previous !== undefined &&
+      samePrefix(previous.planes, input.planes, PLANE_FLOATS)
+        ? previous.planes
+        : new Float32Array(input.planes.subarray(0, PLANE_FLOATS));
     const viewed = this.viewFor(previous, input.identity);
     if (!viewed.ok) return viewed;
     const view = viewed.value;
@@ -1415,41 +1438,83 @@ export class ShadowViewStatePool {
     if (!updated.ok) return updated;
     const generation = (previous?.submission.generation ?? 0) + 1;
     const preparation = countRebuild(previous, invalidationReason);
-    const record: ShadowViewRecord = {
-      submission: createSubmission(
-        previous?.submission.identity ?? new OwnedShadowViewIdentity(input.identity),
-        view,
-        selection.plan,
-        generation,
-        'invalidated',
-      ),
-      preparation,
-      sourcePlan: input.sourcePlan,
-      scene: input.scene,
-      frameInput: undefined,
-      matrix: input.matrix === undefined ? undefined : new Float32Array(input.matrix),
-      targetSize: input.targetSize,
-      graphGeneration: input.graphGeneration,
-      contentRevision: input.scene.contentRevision,
-      directMaterials: input.directMaterials,
-      shadowMaterials: input.shadowMaterials,
-      planes,
-      candidateSource: input.candidatePrimitiveIndices,
-      candidates,
-      projection: selection.projection,
-      invalidationReason,
-      invalidated: false,
-      published: false,
-      resourceGeneration: view.computeResourceGeneration,
-      visibleBuffer: view.visibleBuffer,
-      sceneBuffers: sceneBuffers(input.scene),
-      minCasterDiameter,
-      texelCulled: previous?.texelCulled,
-      cameraCull: cameraCull !== undefined,
-      cameraCulled: cameraCull === undefined ? undefined : previous?.cameraCulled,
-      lastCullingObservation: previous?.lastCullingObservation,
-      dirtyRects,
-    };
+    const submission = createSubmission(
+      previous?.submission.identity ?? captureShadowViewIdentity(input.identity),
+      view,
+      selection.plan,
+      generation,
+      'invalidated',
+    );
+    const matrix =
+      fixedSource && previous !== undefined && sameMatrix(previous.matrix, input.matrix)
+        ? previous.matrix
+        : input.matrix === undefined
+          ? undefined
+          : new Float32Array(input.matrix);
+    let record: ShadowViewRecord;
+    if (previous === undefined) {
+      record = {
+        submission,
+        preparation,
+        sourcePlan: input.sourcePlan,
+        scene: input.scene,
+        frameInput: undefined,
+        matrix,
+        targetSize: input.targetSize,
+        graphGeneration: input.graphGeneration,
+        contentCursor: input.scene.contentCursor,
+        directMaterials: input.directMaterials,
+        shadowMaterials: input.shadowMaterials,
+        planes,
+        candidateSource: input.candidatePrimitiveIndices,
+        candidates,
+        projection: selection.projection,
+        invalidationReason,
+        invalidated: false,
+        published: false,
+        resourceGeneration: view.computeResourceGeneration,
+        visibleBuffer: view.visibleBuffer,
+        sceneBuffers: sceneBuffers(input.scene),
+        minCasterDiameter,
+        texelCulled: undefined,
+        cameraCull: cameraCull !== undefined,
+        cameraCulled: undefined,
+        lastCullingObservation: undefined,
+        cullingReadback: false,
+        dirtyRects,
+      };
+    } else {
+      record = previous;
+      record.submission = submission;
+      record.sourcePlan = input.sourcePlan;
+      record.scene = input.scene;
+      record.frameInput = undefined;
+      record.matrix = matrix;
+      record.targetSize = input.targetSize;
+      record.graphGeneration = input.graphGeneration;
+      record.contentCursor = input.scene.contentCursor;
+      record.directMaterials = input.directMaterials;
+      record.shadowMaterials = input.shadowMaterials;
+      record.planes = planes;
+      record.candidateSource = input.candidatePrimitiveIndices;
+      record.candidates = candidates;
+      record.projection = selection.projection;
+      record.invalidationReason = invalidationReason;
+      record.invalidated = false;
+      record.published = false;
+      record.resourceGeneration = view.computeResourceGeneration;
+      record.visibleBuffer = view.visibleBuffer;
+      record.sceneBuffers = sceneBuffers(input.scene);
+      record.minCasterDiameter = minCasterDiameter;
+      record.cameraCull = cameraCull !== undefined;
+      if (cameraCull === undefined) record.cameraCulled = undefined;
+      record.dirtyRects = dirtyRects;
+    }
+    // A Skin-task-only re-cull keeps the same candidates and view, so its
+    // texel count cannot change and does not deserve a readback.
+    const recount = record.texelCulled === undefined || invalidationReason !== 'skin-task-demand';
+    record.cullingReadback = (minCasterDiameter > 0 && recount) || record.cameraCull;
+    view._setCullingReadbackDemand(record.cullingReadback);
     this.records.set(key, record);
     this.pendingPublication.add(key);
     return ok({
@@ -1470,7 +1535,7 @@ export class ShadowViewStatePool {
   private retainedInvalidationReason(
     previous: ShadowViewRecord | undefined,
     input: ShadowViewUpdateInput,
-    retainedRevision: number | undefined,
+    retainedContent: SceneContentCursor | undefined,
     selectedPlan: SubmissionPlan,
     sourceRetained: boolean,
     sameRestriction: boolean,
@@ -1480,7 +1545,7 @@ export class ShadowViewStatePool {
     const contentReason = this.retainedContentReason(
       previous,
       input,
-      retainedRevision ?? previous.contentRevision,
+      retainedContent ?? previous.contentCursor,
       selectedPlan,
       sourceRetained,
       sameRestriction,
@@ -1503,6 +1568,7 @@ export class ShadowViewStatePool {
       shaderModuleFactory: this.shaderModuleFactory,
       labelPrefix: `${shadowViewLabelPrefix(identity)}.view`,
       shadowCameraCull: cameraCullEligible(identity),
+      readback: 'culling-counts',
     });
   }
 
@@ -1544,15 +1610,15 @@ export class ShadowViewStatePool {
    * or new world box of a changed slot touches this view's retained frustum.
    */
   private sceneChangesMissView(previous: ShadowViewRecord, input: ShadowViewUpdateInput): boolean {
-    const current = input.scene.contentRevision;
-    if (previous.contentRevision === current) return true;
-    if (input.scene.changedSlotsSince(previous.contentRevision)?.length === 0) {
-      previous.contentRevision = current;
+    const current = input.scene.contentCursor;
+    if (previous.contentCursor === current) return true;
+    if (input.scene.changedSlotsSince(previous.contentCursor)?.length === 0) {
+      previous.contentCursor = current;
       return true;
     }
     missedPlanes = previous.planes;
     const missed = input.scene.changedBoundsMiss(
-      previous.contentRevision,
+      previous.contentCursor,
       boxMissesView,
       input.ignoredChangeSlots,
       // A removed dynamic caster is absent from the current ignored set but
@@ -1561,7 +1627,7 @@ export class ShadowViewStatePool {
       input.identity.layer === 'static' ? this.drawnSlots(previous.submission.plan) : undefined,
     );
     if (!missed) return false;
-    previous.contentRevision = current;
+    previous.contentCursor = current;
     return true;
   }
 
@@ -1575,7 +1641,7 @@ export class ShadowViewStatePool {
   private retainedContentReason(
     previous: ShadowViewRecord,
     input: ShadowViewUpdateInput,
-    retainedRevision: number,
+    retainedContent: SceneContentCursor,
     plan: SubmissionPlan,
     sameSource: boolean,
     sameRestriction: boolean,
@@ -1584,9 +1650,17 @@ export class ShadowViewStatePool {
     const scene = input.scene;
     let adopted = previous.submission.plan;
     if (plan !== previous.submission.plan) {
-      const changed = new Set<number>();
-      changedPrimitives(previous.submission.plan, plan, changed, previous.preparation);
-      if (!boundsMissView(previous.planes, scene.slotBoundsSince(retainedRevision, changed))) {
+      const changed = this.planChanges.between(
+        previous.submission.plan,
+        plan,
+        previous.preparation,
+      );
+      if (
+        !boundsMissView(
+          previous.planes,
+          this.planChanges.boundsSince(scene, retainedContent, changed),
+        )
+      ) {
         // Physical source changes were rejected before this content check.
         // A replaced plan changes drawn content, whose old/new bounds still
         // permit a partial static redraw, including casters now drawn dynamically.
@@ -1626,14 +1700,106 @@ export class ShadowViewStatePool {
     return undefined;
   }
 
+  /**
+   * With `batchPointFaces`, the first point-face projection on a builder
+   * declares one compute pass holding every active point-face view's
+   * selection, ahead of all point-face rasters, instead of a compute pass
+   * per face between rasters. Each view keeps its own dispatches, buffers,
+   * per-frame execution verdict and readback.
+   */
   project<FrameCtx extends RenderGraphFrame>(
     builder: RenderGraphBuilder<FrameCtx>,
     identity: ShadowViewIdentity,
     forceCompute = false,
     cameraPyramid?: GraphTextureView,
+    batchPointFaces = false,
   ): Result<ShadowViewProjection, RenderGraphError> {
     const record = this.records.get(identityKey(identity));
     if (record === undefined) return err(graphStateError(identity));
+    if (batchPointFaces && identity.kind === 'point' && cameraPyramid === undefined) {
+      const batched = this.projectPointSelectionBatch(builder, forceCompute);
+      if (!batched.ok) return batched;
+      const projected = batched.value.get(identityKey(identity));
+      if (projected !== undefined) return ok(projected);
+    }
+    return this.projectRecord(builder, record, forceCompute, cameraPyramid);
+  }
+
+  private projectPointSelectionBatch<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    forceCompute: boolean,
+  ): Result<ReadonlyMap<string, ShadowViewProjection>, RenderGraphError> {
+    const existing = this.pointSelectionBatches.get(builder);
+    if (existing !== undefined) return ok(existing);
+    const works: {
+      readonly work: GpuDrivenSelectionWork<FrameCtx>;
+      readonly after: () => Result<void, RenderGraphError>;
+    }[] = [];
+    const batch: GpuDrivenSelectionBatch<FrameCtx> = {
+      add: (work, after) => {
+        works.push({ work, after });
+      },
+    };
+    const projections = new Map<string, ShadowViewProjection>();
+    for (const key of [...this.activeKeys].sort((a, b) => a.localeCompare(b))) {
+      const record = this.records.get(key);
+      if (record === undefined || record.submission.identity.kind !== 'point') continue;
+      const projected = this.projectRecord(builder, record, forceCompute, undefined, batch);
+      if (!projected.ok) return projected;
+      projections.set(key, projected.value);
+    }
+    if (works.length > 0) {
+      const accesses: GraphAccess[] = [];
+      const seen = new Map<object, Set<string>>();
+      for (const { work } of works) {
+        for (const access of work.accesses) {
+          const usages = seen.get(access.resource) ?? new Set<string>();
+          if (usages.has(access.usage)) continue;
+          usages.add(access.usage);
+          seen.set(access.resource, usages);
+          accesses.push(access);
+        }
+      }
+      const executes = (work: GpuDrivenSelectionWork<FrameCtx>, frame: FrameCtx) =>
+        work.executeIf?.(frame) ?? true;
+      const added = builder.addComputePass(POINT_SELECTION_BATCH_PASS, {
+        accesses,
+        executeIf: (frame) => {
+          let any = false;
+          for (const { work } of works) any = executes(work, frame) || any;
+          return any;
+        },
+        encodeDirect: (pass, frame, resources) => {
+          for (const { work } of works) {
+            if (executes(work, frame)) work.encode(pass, frame, resources);
+          }
+        },
+      });
+      if (!added.ok) return added;
+      for (const { after } of works) {
+        const declared = after();
+        if (!declared.ok) return declared;
+      }
+      for (const [key, projection] of projections) {
+        if (projection.passNames.length === 0) continue;
+        projections.set(
+          key,
+          Object.freeze({ ...projection, passNames: Object.freeze([POINT_SELECTION_BATCH_PASS]) }),
+        );
+      }
+    }
+    this.pointSelectionBatches.set(builder, projections);
+    return ok(projections);
+  }
+
+  private projectRecord<FrameCtx extends RenderGraphFrame>(
+    builder: RenderGraphBuilder<FrameCtx>,
+    record: ShadowViewRecord,
+    forceCompute: boolean,
+    cameraPyramid: GraphTextureView | undefined,
+    selectionBatch?: GpuDrivenSelectionBatch<FrameCtx>,
+  ): Result<ShadowViewProjection, RenderGraphError> {
+    const identity = record.submission.identity;
     const cacheHit = record.submission.cache === 'hit' && !record.invalidated;
     if (forceCompute && cacheHit) {
       const pending = record.frameInput;
@@ -1706,6 +1872,9 @@ export class ShadowViewStatePool {
       includeCompute ? executeCompute : undefined,
       false,
       cameraPyramid,
+      undefined,
+      'combined',
+      selectionBatch,
     );
     if (!projected.ok) return projected;
     return ok({
@@ -1836,13 +2005,7 @@ export class ShadowViewStatePool {
       const record = this.records.get(key);
       if (record === undefined) continue;
       record.published = true;
-      // A Skin-task-only re-cull keeps the same candidates and view, so its
-      // texel count cannot change and does not deserve a readback.
-      const recount =
-        record.texelCulled === undefined || record.invalidationReason !== 'skin-task-demand';
-      if ((record.minCasterDiameter > 0 && recount) || record.cameraCull) {
-        void this.observeCulling(key, record);
-      }
+      if (record.cullingReadback) void this.observeCulling(key, record);
     }
     this.pendingPublication.clear();
     if (submittedGraphGeneration !== undefined) {
@@ -1911,13 +2074,15 @@ export class ShadowViewStatePool {
    * the view's current record.
    */
   private observeCulling(key: string, record: ShadowViewRecord): Promise<void> {
-    return record.submission.view.readCullingCounts().then((selection) => {
+    const view = record.submission.view;
+    const cameraCull = record.cameraCull;
+    return view.readCullingCounts().then((selection) => {
       const current = this.records.get(key);
-      if (selection === undefined || current?.submission.view !== record.submission.view) return;
+      if (selection === undefined || current?.submission.view !== view) return;
       if (selection.observation !== undefined)
         current.lastCullingObservation = selection.observation;
       current.texelCulled = selection.texelCulled;
-      if (record.cameraCull && current.cameraCull) current.cameraCulled = selection.cameraCulled;
+      if (cameraCull && current.cameraCull) current.cameraCulled = selection.cameraCulled;
     });
   }
 
@@ -1965,6 +2130,7 @@ export class ShadowViewStatePool {
 
   dispose(): void {
     this.drawnByPlan = new WeakMap();
+    this.planChanges.clear();
     this.planByProjection = new WeakMap();
     const views = new Set([...this.records.values()].map((record) => record.submission.view));
     for (const view of views) view.dispose();

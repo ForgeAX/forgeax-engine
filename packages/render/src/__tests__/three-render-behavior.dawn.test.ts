@@ -9,6 +9,12 @@ function kernel(file: string, name: string): string {
   return match[0];
 }
 
+// Production default program: the LUT path of a static `#ifdef` switch (the
+// raw source is not run through the preprocessor here).
+function defaultKernel(file: string, name: string): string {
+  return kernel(file, name).replace(/#ifdef \w+\n[\s\S]*?#else\n([\s\S]*?)#endif\n/g, '$1');
+}
+
 async function evaluate(code: string, count: number, withLut = false): Promise<Float32Array> {
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new Error('Dawn adapter unavailable');
@@ -93,6 +99,7 @@ it('IBL separates reflected single scattering from diffuse multiple scattering',
     ${kernel('brdf', 'specularF90')}
     ${kernel('ibl-sampling', 'environmentMultiScattering')}
     ${kernel('ibl-sampling', 'environmentScatteringFromDfg')}
+    ${defaultKernel('ibl-sampling', 'environmentDfg')}
     ${kernel('ibl-sampling', 'environmentScattering')}
     ${kernel('ibl-sampling', 'projectSpecularRadiance')}
     @group(0) @binding(1) var lut: texture_2d<f32>;

@@ -41,30 +41,38 @@ const cases = files.flatMap((file) =>
 function receiverClause(file: (typeof files)[number]): string {
   const text = source(file);
   const start = text.search(/(?:let|var) directionalShadow =/);
-  const end = text.indexOf(
-    file === 'standard-surface.wgsl' ? '  let directionalBase' : '  color +=',
-    start,
-  );
+  const endMarker =
+    file === 'standard-surface.wgsl' ? '  let directionalBase' : '  var directRadiance';
+  const end = text.indexOf(endMarker, start);
   if (start < 0 || end < 0) throw new Error(`Missing directional receiver in ${file}`);
   // Observe the real call site without changing the sampled shadow function.
   return text.slice(start, end).replaceAll('evalDirectionalShadowFactorAtPixel(', 'countedShadow(');
 }
 
+const casterBiasFunction = source('common.wgsl').match(
+  /fn directionalShadowCasterBias[\s\S]*?\n}/,
+)?.[0];
+if (casterBiasFunction === undefined) throw new Error('Missing shared caster bias function');
+
 const common = `
 #define_import_path forgeax_view::common
+${casterBiasFunction}
+struct CasterPolicy { clampNear: u32 };
+const shadowCasterCascade = CasterPolicy(0u);
 struct View {
   lightDir: vec3<f32>, lightColor: vec3<f32>,
   depthBias: f32, normalBias: f32, cascadeCount: f32, cascadeBlend: f32,
   splitPlanes: array<vec4<f32>, 4>, directionalShadowFilter: vec4<f32>,
   lightViewProj_A: mat4x4<f32>, lightViewProj_B: mat4x4<f32>,
   lightViewProj_C: mat4x4<f32>, lightViewProj_D: mat4x4<f32>,
+  sunSourceRadius: f32,
 }
 const identity = mat4x4<f32>(vec4(1.0,0.0,0.0,0.0), vec4(0.0,1.0,0.0,0.0),
   vec4(0.0,0.0,1.0,0.0), vec4(0.0,0.0,0.0,1.0));
 const view = View(vec3(0.0,0.0,-1.0), vec3(1.0), 0.001, 0.02, 3.0, 0.2,
   array<vec4<f32>,4>(vec4(2.0,0.25,1.0,0.0), vec4(4.0,0.25,1.0,0.0),
     vec4(6.0,0.25,1.0,0.0), vec4(6.0,0.25,1.0,0.0)),
-  vec4(3.0,0.01,4.0,0.0), identity, identity, identity, identity);
+  vec4(3.0,0.01,4.0,0.0), identity, identity, identity, identity, 0.0);
 @group(0) @binding(0) var shadowMap: texture_depth_2d_array;
 @group(0) @binding(1) var shadowSampler: sampler_comparison;
 `;
@@ -171,7 +179,7 @@ ${fullscreen}
         'forgeax_pbr::brdf': source('brdf.wgsl'),
         'forgeax_pbr::shadow_pcf': source('shadow-pcf.wgsl'),
       },
-      defines,
+      { STORAGE_BUFFER_AVAILABLE: true, ...defines },
     );
     const module = device.createShaderModule({ code });
     expect((await module.getCompilationInfo()).messages.filter((m) => m.type === 'error')).toEqual(

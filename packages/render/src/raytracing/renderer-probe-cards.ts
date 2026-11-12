@@ -9,6 +9,7 @@ import { meshAttributeChannels } from '../publication/packed-rows-mesh';
 import type { RenderResourceScope } from '../publication/resource-scope';
 import type { RenderSystemInternals } from '../record/render-context';
 import type { MaterialFrame } from '../scene/material-dispatch';
+import { recordContext } from '../world/view-record-context';
 import { CardCaptureScheduler } from './card-capture-schedule';
 import { packCardLookupProjections } from './card-lookup';
 import { type CardResidencyFocus, cardResidencyScore, rankCardResidency } from './card-residency';
@@ -92,7 +93,7 @@ export async function prepareProbeCards(
   focus?: CardResidencyFocus,
 ): Promise<ProbeCardCapture> {
   const { device, shaderRegistry: shaders, createShaderModule: compile, gpuStore: store } = runtime;
-  const sampler = runtime.getPipelineState()?.defaultSampler;
+  const sampler = recordContext(runtime).getPipelineState()?.defaultSampler;
   if (shaders === undefined || compile === undefined || sampler === undefined)
     throw new Error(
       'native Card capture requires the accepted Renderer shader and material binding owners',
@@ -198,10 +199,10 @@ export async function prepareProbeCards(
   let capture: SurfaceCapture | undefined;
   let materialFrame: MaterialFrame | undefined;
   let released = false;
-  const generation = runtime.deviceScope.generation;
+  const generation = recordContext(runtime).deviceScope.generation;
   // The region/field owner validates its source revision. An editable field
   // advances that revision while retaining these same native Card resources.
-  const current = () => !released && runtime.deviceScope.generation === generation;
+  const current = () => !released && recordContext(runtime).deviceScope.generation === generation;
   const release = () => {
     if (released) return;
     released = true;

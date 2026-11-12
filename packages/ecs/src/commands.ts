@@ -104,6 +104,8 @@ export interface WorldForCommands {
 // ────────────────────────────────────────────────────────────────────────────
 
 export interface CommandBufferImpl extends CommandBuffer {
+  /** @internal Queue size without materializing storage for an unused buffer. */
+  readonly _queueLength: number;
   /** @internal */
   _queue: Command[];
   /** @internal */
@@ -127,7 +129,7 @@ export interface CommandBufferImpl extends CommandBuffer {
  * its methods live on the prototype instead of being fresh closures per run.
  */
 class CommandBufferState implements CommandBufferImpl {
-  readonly _queue: Command[] = [];
+  private queue: Command[] | undefined;
   /** Created by the first deferred spawn; most system buffers never spawn. */
   private pending: Set<number> | undefined;
   _queueError: CommandBufferImpl['_queueError'] = null;
@@ -141,6 +143,15 @@ class CommandBufferState implements CommandBufferImpl {
 
   get status(): CommandBuffer['status'] {
     return this.currentStatus;
+  }
+
+  get _queue(): Command[] {
+    this.queue ??= [];
+    return this.queue;
+  }
+
+  get _queueLength(): number {
+    return this.queue?.length ?? 0;
   }
 
   get _pendingEntities(): Set<number> {
@@ -163,7 +174,7 @@ class CommandBufferState implements CommandBufferImpl {
   commit(): void {
     this.ensureOpen();
     this.currentStatus = 'committed';
-    this._queue.length = 0;
+    if (this.queue !== undefined) this.queue.length = 0;
     this.pending?.clear();
     this._queueError = null;
   }
@@ -175,7 +186,7 @@ class CommandBufferState implements CommandBufferImpl {
         this.world[worldInternal].cancelPendingEntity(raw as EntityHandle);
       }
     this.currentStatus = 'aborted';
-    this._queue.length = 0;
+    if (this.queue !== undefined) this.queue.length = 0;
     this.pending?.clear();
     this._queueError = null;
   }
@@ -239,13 +250,10 @@ class CommandBufferState implements CommandBufferImpl {
  */
 export function createCommandBuffer(
   world: WorldForCommands,
-  context: { readonly systemName?: string; readonly scheduleName?: string } = {},
+  systemName = '<unknown-system>',
+  scheduleName = '<unknown-schedule>',
 ): CommandBufferImpl {
-  return new CommandBufferState(
-    world,
-    context.systemName ?? '<unknown-system>',
-    context.scheduleName ?? '<unknown-schedule>',
-  );
+  return new CommandBufferState(world, systemName, scheduleName);
 }
 
 function commandFailure(
@@ -343,7 +351,7 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
     const { index, kind, cause } = buffer._queueError;
     throw commandFailure(buffer, index, kind, cause);
   }
-  if (buffer._queue.length === 0) return;
+  if (buffer._queueLength === 0) return;
 
   type Shadow = {
     readonly components: Set<number>;
@@ -588,7 +596,7 @@ function preflightCommands(buffer: CommandBufferImpl, world: WorldForCommands): 
 export function flushCommands(buffer: CommandBufferImpl, world: WorldForCommands): void {
   if (buffer.status !== 'open') return;
   // Most system buffers stay empty: commit without the batch preflight.
-  if (buffer._queue.length === 0 && buffer._queueError === null) {
+  if (buffer._queueLength === 0 && buffer._queueError === null) {
     buffer.commit();
     return;
   }

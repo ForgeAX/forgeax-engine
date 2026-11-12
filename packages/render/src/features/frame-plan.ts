@@ -174,41 +174,75 @@ export function resolveFeatureWorkResources(
   });
 }
 
-/** Engine-private primary work: names are mapped only at the physical owner.
- * The original resources remain the one IR instead of building a namespaced
- * declaration copy and reparsing its bindings. */
-export function resolveNativeFeatureWorkResources(
-  works: readonly RenderFeatureWork[],
-): readonly FeatureWorkResources[] {
-  const sharedWork = works.find((work) => work.scope === 'frame');
-  const shared = sharedWork?.resources ?? [];
-  const sharedKeys = new Map(
-    shared.map((resource) => [resource.name, featureResourceKey('frame', resource.name)]),
-  );
-  // Preparation follows the shared dependency before any view, independently
-  // of declaration order. Ordered view raster work itself is never reordered.
-  const ordered =
-    sharedWork === undefined || works[0] === sharedWork
-      ? works
-      : [sharedWork, ...works.filter((work) => work !== sharedWork)];
-  return ordered.map((work) => {
-    const keys = new Map(sharedKeys);
-    const local = new Set<string>();
-    for (const resource of work.resources) {
-      if (local.has(resource.name) || (work.scope !== 'frame' && sharedKeys.has(resource.name)))
-        throw new Error('Duplicate native feature resource');
-      local.add(resource.name);
-      keys.set(resource.name, featureResourceKey(work.scope, resource.name));
+interface NativeScopeRouting {
+  readonly scope: string;
+  readonly names: readonly string[];
+  readonly keys: ReadonlyMap<string, string>;
+}
+
+/** The Feature slot owns source-name relationships across prepared frames.
+ * Resource values and execution data still belong to each current publication. */
+export class NativeFeatureWorkRouting {
+  private shared: readonly string[] = [];
+  private scopes: readonly NativeScopeRouting[] = [];
+
+  resolve(works: readonly RenderFeatureWork[]): readonly FeatureWorkResources[] {
+    if (works.length === 0) {
+      this.shared = [];
+      this.scopes = [];
+      return NO_WORK_RESOURCES;
     }
-    return {
-      work,
-      native: true,
-      closure:
-        work.scope === 'frame'
-          ? work
-          : { resources: [...shared, ...work.resources], passes: work.passes },
-      keys,
-      resources: work.resources,
-    };
-  });
+    const sharedWork = works.find((work) => work.scope === 'frame');
+    const shared = sharedWork?.resources ?? [];
+    const sameShared =
+      shared.length === this.shared.length &&
+      shared.every((resource, index) => resource.name === this.shared[index]);
+    const ordered =
+      sharedWork === undefined || works[0] === sharedWork
+        ? works
+        : [sharedWork, ...works.filter((work) => work !== sharedWork)];
+    let routes: NativeScopeRouting[] | undefined;
+    const rows = ordered.map((work, index): FeatureWorkResources => {
+      const scope = featureScopeKey(work.scope);
+      let route = this.scopes[index];
+      if (
+        !sameShared ||
+        route?.scope !== scope ||
+        route.names.length !== work.resources.length ||
+        !work.resources.every((resource, index) => resource.name === route?.names[index])
+      ) {
+        const keys = new Map(
+          shared.map((resource) => [resource.name, featureResourceKey('frame', resource.name)]),
+        );
+        const local = new Set<string>();
+        const names: string[] = [];
+        for (const resource of work.resources) {
+          if (local.has(resource.name) || (work.scope !== 'frame' && keys.has(resource.name)))
+            throw new Error('Duplicate native feature resource');
+          local.add(resource.name);
+          names.push(resource.name);
+          keys.set(resource.name, featureResourceKey(work.scope, resource.name));
+        }
+        route = { scope, names: Object.freeze(names), keys };
+      }
+      if (route !== this.scopes[index] && routes === undefined)
+        routes = this.scopes.slice(0, index);
+      routes?.push(route);
+      return {
+        work,
+        native: true,
+        closure:
+          work.scope === 'frame'
+            ? work
+            : { resources: [...shared, ...work.resources], passes: work.passes },
+        keys: route.keys,
+        resources: work.resources,
+      };
+    });
+    if (!sameShared) this.shared = Object.freeze(shared.map((resource) => resource.name));
+    if (routes !== undefined) this.scopes = routes;
+    else if (this.scopes.length !== ordered.length)
+      this.scopes = this.scopes.slice(0, ordered.length);
+    return rows;
+  }
 }

@@ -16,6 +16,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../renderer-host';
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
@@ -445,11 +446,11 @@ it('reads the accepted cube face during a different continuous capture face on a
   const draw = async () => {
     world.update(1 / 60).unwrap();
     propagateTransforms(world).unwrap();
-    const receipt = renderValue(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
-    renderValue(await receipt.completed);
-    return receipt;
+    return drawReadyFrame(renderer, {
+      leases: [lease],
+      camera: { lease },
+      environment: { lease },
+    });
   };
   const directory = 'artifacts/scene-material-scaling/continuous-readback';
   mkdirSync(directory, { recursive: true });

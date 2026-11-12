@@ -13,11 +13,11 @@ import type {
 import { createShaderModule, rhi } from '@forgeax/engine-rhi-webgpu';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { describe, expect, it } from 'vitest';
-import { BYTES_PER_DIRECT_LIGHT_SLOT } from '../light-buffer-layout';
 import { VIEW_UNIFORM_BYTES } from '../record/view-ubo';
 import { MAX_VOLUMETRIC_FOG_OWNERS } from '../volume/component';
 import { additionalVolumeDensityBinding } from '../volume/passes';
 import { VOLUMETRIC_FOG_PARAMS_BYTES } from '../volume/resources';
+import { STANDARD_CLUSTER_TEST_ABI } from './cluster-test-abi';
 
 const MAP_READ = 0x0001;
 const BUFFER_COPY_DST = 0x0008;
@@ -32,7 +32,8 @@ const PACKED_LAYERS = Math.ceil(SIZE / 4);
 const BYTES_PER_ROW = 256;
 const BYTES_PER_PIXEL = 8;
 const MAX_CLUSTER_LIGHTS = 256;
-const CLUSTER_LIGHT_DATA_BYTES = MAX_CLUSTER_LIGHTS * BYTES_PER_DIRECT_LIGHT_SLOT;
+const CLUSTER_LIGHT_DATA_BYTES =
+  MAX_CLUSTER_LIGHTS * STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize;
 const CLUSTER_UNIFORM_BYTES = 32;
 const VOLUME_BOUNDS_MIN_Z = 0.1;
 const VOLUME_BOUNDS_MAX_Z = 0.9;

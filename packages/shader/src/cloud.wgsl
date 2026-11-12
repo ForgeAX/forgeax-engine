@@ -242,13 +242,14 @@ fn cloud_optical_transmittance(opticalDepth: f32) -> f32 {
 // shadow pattern and no camera/fog midpoint scalar can leak into lighting.
 //
 // The low sampled-texture variant has no spare view texture lane. It therefore
-// keeps direct solar fully lit and omits this pair. `CLOUD_SHADOW_LOW_LIMIT`
+// keeps direct solar fully lit and omits the cloud map. `CLOUD_SHADOW_LOW_LIMIT`
 // is injected only for material variants that declare
 // `PROJECTOR_AVAILABLE=false`; authored and standalone programs without the
 // override keep the regular 16/17 bindings.
+// The sampler is shared with atmosphere table consumers and costs no texture slot.
+@group(0) @binding(17) var cloudShadowSampler: sampler;
 #ifndef CLOUD_SHADOW_LOW_LIMIT
 @group(0) @binding(16) var cloudShadowMap: texture_2d<f32>;
-@group(0) @binding(17) var cloudShadowSampler: sampler;
 
 fn cloud_direct_solar_factor(
   worldPosition: vec3<f32>,

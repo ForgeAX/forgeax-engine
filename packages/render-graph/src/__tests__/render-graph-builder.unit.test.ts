@@ -12,6 +12,7 @@ import { RAY_QUERY_BACKEND_UNSUPPORTED } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
 import { RenderGraphBuilder } from '../builder.js';
 import { ok } from '../errors.js';
+import type { ResolvedColorTargetDescriptor } from '../graph.js';
 import type { RenderGraphFrame, RenderGraphPassInstrumentation } from '../types.js';
 
 interface Frame extends RenderGraphFrame {
@@ -26,6 +27,7 @@ function caps(overrides: Partial<RhiDevice['caps']> = {}): RhiDevice['caps'] {
     compute: true,
     storageBuffer: true,
     storageTexture: true,
+    depthTextureLoad: true,
     timestampQuery: false,
     timestampPeriodNanoseconds: null,
     indirectDrawing: true,
@@ -200,7 +202,7 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     const texture = value(
       graph.importTexture(
         'surface',
-        { format: 'rgba8unorm', size: 'surface', usage: 0x10 },
+        { format: 'rgba8unorm', size: 'surface', usage: 0x15 },
         (frame) => frame.importedTexture as Texture,
       ),
     );
@@ -233,6 +235,17 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     ).toBe(true);
     expect(createViewCount).toBe(0);
     expect(executed).toEqual(['0:raster:present']);
+    const targetAccess = compiled as typeof compiled & {
+      getColorTargetTexture(name: string): Texture | undefined;
+      getColorTargetDescriptor(name: string): ResolvedColorTargetDescriptor | undefined;
+    };
+    expect(targetAccess.getColorTargetTexture('surface')).toBe(frame.importedTexture);
+    expect(targetAccess.getColorTargetDescriptor('surface')).toMatchObject({
+      format: 'rgba8unorm',
+      size: { width: 1, height: 1 },
+      usage: 0x15,
+      sample: 1,
+    });
   });
 
   it('resolves a frame-owned attachment clear value at execution time', () => {
@@ -446,6 +459,22 @@ describe('RenderGraphBuilder resource and temporal contracts', () => {
     const result = graph.compile({ device: mockDevice(), surfaceSize: { width: 1, height: 1 } });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe('access-conflict');
+  });
+
+  it('requires initialization before a dynamic attachment can choose to load', () => {
+    const graph = new RenderGraphBuilder<Frame>();
+    const target = value(graph.createTexture('target', { format: 'rgba8unorm', size: 'surface' }));
+    const view = value(graph.view(target));
+    graph
+      .addRasterPass('dynamic', {
+        accesses: [{ resource: view, usage: 'color-attachment' }],
+        colorAttachments: [{ view, loadOp: () => 'clear', storeOp: 'store' }],
+        encodeDirect: () => {},
+      })
+      .unwrap();
+    const result = graph.compile({ device: mockDevice(), surfaceSize: { width: 1, height: 1 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('uninitialized-read');
   });
 
   it('treats attachment load as a read while clear is a first write', () => {

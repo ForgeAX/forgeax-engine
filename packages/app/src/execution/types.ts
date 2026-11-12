@@ -5,6 +5,7 @@ import type {
   GpuPassTimingOptions,
   RenderFrameInput,
   RenderInspection,
+  RenderInspectionOptions,
 } from '@forgeax/engine-render';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import type { Result, RuntimeAssetBinding } from '@forgeax/engine-types';
@@ -86,9 +87,11 @@ export interface ExecutionAudioReport extends Omit<AudioState, 'lastError'> {
 /**
  * Renderer-independent frame pacing facts owned by the active host loop.
  * `inFlight` is always `submitted - completed`; `highWater` records the
- * greatest observed in-flight depth and `throttledTicks` counts frame-loop
- * ticks that could not acquire the selected owner's frame credit, even if
- * completion resumes their coalesced frame before the next Host callback.
+ * greatest observed depth of admitted, unfinished frames (with a Render Worker
+ * this includes pictures still in preparation or on the GPU, bounded by
+ * `renderPipelineCapacity`) and `throttledTicks` counts frame-loop ticks that
+ * could not acquire the selected owner's frame credit, even if completion
+ * resumes their coalesced frame before the next Host callback.
  */
 export interface ExecutionFrameInspection {
   readonly submitted: number;
@@ -156,6 +159,8 @@ export interface ExecutionReport {
     /** Capabilities from the actual Render Worker device, not Host feature detection. */
     readonly capabilities?: ExecutionRenderCapabilities;
     readonly limits?: ExecutionRenderLimits;
+    /** The most recent recoverable Renderer loss: the epoch it started and its serialized cause. */
+    readonly lastLoss?: { readonly epoch: number; readonly cause: string };
   };
   readonly fault: ExecutionFault | null;
 }
@@ -198,7 +203,11 @@ export interface ExecutionDiagnosticsOptions {
   readonly gbufferBatchOrderDiagnostic?: import('@forgeax/engine-render').RenderProfile['gbufferBatchOrderDiagnostic'];
   /** Allow one task turn before a successor draw while a real GPU receipt is pending. */
   readonly renderTaskYield?: 'none' | 'completion' | 'features';
-  /** Bound sealed publications across simulation, preparation and GPU completion. */
+  /**
+   * Bound sealed publications across simulation, preparation and GPU completion.
+   * Default 3: one per stage, so the GPU stays fed; 2 trades throughput for one
+   * frame less queueing, 4 absorbs uneven stages.
+   */
   readonly renderPipelineCapacity?: 2 | 3 | 4;
   /** Compare geometry submission lanes with the same scene and Worker topology. */
   readonly geometryLane?: RenderFrameInput['geometryLane'];
@@ -249,19 +258,8 @@ export type ExecutionGeometryObservationResult =
 
 export interface ExecutionRendererInspectionOptions<
   K extends keyof RenderInspection = keyof RenderInspection,
-> {
-  readonly pipelineLibrary?: boolean;
-  readonly pipelineLibraryCollection?: boolean;
-  readonly pipelineLibraryLimits?: NonNullable<
-    NonNullable<
-      Parameters<import('@forgeax/engine-render').Renderer['inspect']>[0]
-    >['pipelineLibraryLimits']
-  >;
-  /** Materialize the bounded runtime request history only for an explicit diagnostic read. */
-  readonly runtimeRequests?: boolean;
+> extends RenderInspectionOptions<K> {
   readonly signal?: AbortSignal;
-  /** Select owner fields before structured cloning; omission preserves the full snapshot. */
-  readonly fields?: readonly K[];
 }
 
 /** Public `execution` root injected into App.remoteEval/executeScript in the Engine realm. */

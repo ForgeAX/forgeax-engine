@@ -200,14 +200,14 @@ test('Vitest retries only declared browser-runner instability markers', () => {
   assert.equal(
     isRetryableOutput(
       'vitest',
-      'ForgeaX linear HDR observation failed: readback-failed (A valid external Instance reference no longer exists.)',
+      'ForgeAX linear HDR observation failed: readback-failed (A valid external Instance reference no longer exists.)',
     ),
     true,
   );
   assert.equal(
     isRetryableOutput(
       'vitest',
-      'Error: ForgeaX linear HDR observation failed: observation-unavailable',
+      'Error: ForgeAX linear HDR observation failed: observation-unavailable',
     ),
     true,
   );

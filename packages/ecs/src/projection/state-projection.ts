@@ -10,6 +10,7 @@ import { worldInternal } from '../world-internal';
 const QUEUED = 1;
 const MEMBERSHIP = 2;
 const ACCEPTED = 4;
+const NO_CHANGED_COMPONENTS: readonly Component[] = Object.freeze([]);
 
 export class StateProjectionExpiredError extends Error {
   readonly code = 'state-projection-expired' as const;
@@ -56,174 +57,267 @@ export function createStateProjection(
   components: readonly Component[],
   candidates: readonly Component[] = components,
 ): StateProjection {
-  const owner = world[worldInternal];
-  const ids = components.map(componentId);
-  const candidateIds = candidates.map(componentId);
-  const work: number[] = [];
-  let flags = new Uint8Array(64);
-  let membershipWork = false;
-  let stamped = false;
-  let acceptedEpoch = -1;
-  let acceptedStructure = -1;
-  let invalid = true;
-  let readToken = 0;
-  let scannedRows = 0;
+  return new CurrentStateProjection(world, components, candidates);
+}
 
-  function inputsUnchangedSince(epoch: number): boolean {
-    // Indexed: this guard runs on every currency check and read validation.
-    const epochs = owner.getComponentMutationEpochs();
-    for (let cursor = 0; cursor < ids.length; cursor++)
-      if ((epochs[ids[cursor] as number] ?? 0) > epoch) return false;
-    for (let cursor = 0; cursor < candidateIds.length; cursor++)
-      if ((epochs[candidateIds[cursor] as number] ?? 0) > epoch) return false;
+class CurrentStateProjection implements StateProjection {
+  readonly #owner: World[typeof worldInternal];
+  readonly #ids: number[];
+  readonly #candidateIds: number[];
+  readonly work: number[] = [];
+  #flags = new Uint8Array(64);
+  #membershipWork = false;
+  #stamped = false;
+  #acceptedEpoch = -1;
+  #acceptedStructure = -1;
+  #invalid = true;
+  #readToken = 0;
+  #scannedRows = 0;
+  #partialChanges: readonly Component[] | undefined;
+
+  readonly #world: World;
+  readonly #components: readonly Component[];
+  constructor(world: World, components: readonly Component[], candidates: readonly Component[]) {
+    this.#world = world;
+    this.#components = Object.freeze(components.slice());
+    this.#owner = world[worldInternal];
+    this.#ids = this.#components.map(componentId);
+    this.#candidateIds = candidates === components ? this.#ids : candidates.map(componentId);
+    // Public callbacks keep their original detached-call behavior and identity.
+    this.isCurrent = this.isCurrent.bind(this);
+    this.read = this.read.bind(this);
+    this.entity = this.entity.bind(this);
+    this.changed = this.changed.bind(this);
+    this.invalidate = this.invalidate.bind(this);
+  }
+
+  #inputsUnchangedSince(epoch: number): boolean {
+    const epochs = this.#owner.getComponentMutationEpochs();
+    for (let cursor = 0; cursor < this.#ids.length; cursor++)
+      if ((epochs[this.#ids[cursor] as number] ?? 0) > epoch) return false;
+    for (let cursor = 0; cursor < this.#candidateIds.length; cursor++)
+      if ((epochs[this.#candidateIds[cursor] as number] ?? 0) > epoch) return false;
     return true;
   }
 
-  function matches(index: number): boolean {
-    const archetype = owner.getGraph().archetypes[owner.getRecords().archetypeId[index] ?? -1];
+  #matches(index: number): boolean {
+    const archetype =
+      this.#owner.getGraph().archetypes[this.#owner.getRecords().archetypeId[index] ?? -1];
     if (archetype === undefined) return false;
-    for (let cursor = 0; cursor < candidateIds.length; cursor++)
-      if (archetypeHasComponent(archetype, candidateIds[cursor] as number)) return true;
+    for (let cursor = 0; cursor < this.#candidateIds.length; cursor++)
+      if (archetypeHasComponent(archetype, this.#candidateIds[cursor] as number)) return true;
     return false;
   }
 
-  function enqueue(index: number): void {
-    const previous = flags[index] ?? 0;
+  readonly #enqueue = (index: number): void => {
+    const previous = this.#flags[index] ?? 0;
     if ((previous & QUEUED) !== 0) {
-      if (membershipWork) flags[index] = previous | MEMBERSHIP;
+      if (this.#membershipWork) this.#flags[index] = previous | MEMBERSHIP;
       return;
     }
-    scannedRows++;
-    if ((previous & ACCEPTED) === 0 && !matches(index)) return;
-    if (index >= flags.length) {
-      let size = flags.length;
+    this.#scannedRows++;
+    if ((previous & ACCEPTED) === 0 && !this.#matches(index)) return;
+    if (index >= this.#flags.length) {
+      let size = this.#flags.length;
       while (size <= index) size *= 2;
       const next = new Uint8Array(size);
-      next.set(flags);
-      flags = next;
+      next.set(this.#flags);
+      this.#flags = next;
     }
-    flags[index] = previous | QUEUED | (membershipWork ? MEMBERSHIP : 0);
-    work.push(index);
+    this.#flags[index] = previous | QUEUED | (this.#membershipWork ? MEMBERSHIP : 0);
+    this.work.push(index);
+  };
+
+  isCurrent(): boolean {
+    return (
+      this.#world.execution.health !== 'poisoned' &&
+      !this.#owner.isDerivedWriteActive() &&
+      !this.#invalid &&
+      this.#inputsUnchangedSince(this.#acceptedEpoch) &&
+      this.#acceptedStructure === this.#owner.getStructureEpoch()
+    );
+  }
+  entity(index: number): EntityHandle | undefined {
+    const records = this.#owner.getRecords();
+    return (records.archetypeId[index] ?? -1) < 0
+      ? undefined
+      : encodeEntity(index, records.generation[index] as number);
+  }
+  changed(entity: EntityHandle, component: Component): boolean {
+    const id = componentId(component);
+    if ((this.#owner.getComponentMutationEpochs()[id] ?? 0) <= this.#acceptedEpoch) return false;
+    return (this.#owner.getComponentChange(entity, id)?.changed ?? -1) > this.#acceptedEpoch;
+  }
+  invalidate(): void {
+    this.#readToken++;
+    this.#invalid = true;
+  }
+  read(): StateProjectionBatch {
+    this.assertReadable();
+    const poisoned = worldPoisonedError(this.#world.execution);
+    if (poisoned !== undefined) throw poisoned;
+    const token = ++this.#readToken;
+    const epoch = this.#owner.getMutationEpoch();
+    const structure = this.#owner.getStructureEpoch();
+    if (this.#stamped)
+      for (let cursor = 0; cursor < this.work.length; cursor++) {
+        const index = this.work[cursor] as number;
+        this.#flags[index] = (this.#flags[index] ?? 0) & ACCEPTED;
+      }
+    this.work.length = 0;
+    this.#scannedRows = 0;
+    this.#stamped = true;
+    const changedComponents = this.#changedComponents();
+    const mutationEpochs = this.#owner.getComponentMutationEpochs();
+    let checkedIndexEntries = 0;
+    if (this.#invalid) {
+      this.#membershipWork = true;
+      for (let index = 0; index < this.#flags.length; index++)
+        if (((this.#flags[index] ?? 0) & ACCEPTED) !== 0) this.#enqueue(index);
+      for (let cursor = 0; cursor < this.#candidateIds.length; cursor++) {
+        const index = this.#owner.getComponentChangeIndex(this.#candidateIds[cursor] as number);
+        index?.visitSince(-1, epoch, this.#enqueue);
+        checkedIndexEntries += index?.checkedEntries ?? 0;
+      }
+    } else {
+      this.#membershipWork = false;
+      for (let cursor = 0; cursor < this.#ids.length; cursor++) {
+        const id = this.#ids[cursor] as number;
+        if ((mutationEpochs[id] ?? 0) <= this.#acceptedEpoch) continue;
+        const index = this.#owner.getComponentChangeIndex(id);
+        index?.visitSince(this.#acceptedEpoch, epoch, this.#enqueue);
+        checkedIndexEntries += index?.checkedEntries ?? 0;
+      }
+      if (structure !== this.#acceptedStructure) {
+        this.#membershipWork = true;
+        const index = this.#owner.getStructuralChangeIndex();
+        index.visitSince(this.#acceptedEpoch, epoch, this.#enqueue);
+        checkedIndexEntries += index.checkedEntries;
+      }
+    }
+    return new CurrentStateCandidate(
+      this,
+      token,
+      structure,
+      epoch,
+      this.#scannedRows,
+      checkedIndexEntries,
+      this.#invalid || structure !== this.#acceptedStructure,
+      changedComponents,
+    );
   }
 
-  return {
-    isCurrent() {
-      return (
-        world.execution.health !== 'poisoned' &&
-        !owner.isDerivedWriteActive() &&
-        !invalid &&
-        inputsUnchangedSince(acceptedEpoch) &&
-        acceptedStructure === owner.getStructureEpoch()
-      );
-    },
-    entity(index) {
-      const records = owner.getRecords();
-      return (records.archetypeId[index] ?? -1) < 0
-        ? undefined
-        : encodeEntity(index, records.generation[index] as number);
-    },
-    changed(entity, component) {
-      const id = componentId(component);
-      if ((owner.getComponentMutationEpochs()[id] ?? 0) <= acceptedEpoch) return false;
-      return (owner.getComponentChange(entity, id)?.changed ?? -1) > acceptedEpoch;
-    },
-    invalidate() {
-      readToken++;
-      invalid = true;
-    },
-    read() {
-      if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
-      const poisoned = worldPoisonedError(world.execution);
-      if (poisoned !== undefined) throw poisoned;
-      const token = ++readToken;
-      const epoch = owner.getMutationEpoch();
-      const structure = owner.getStructureEpoch();
-      // Indexed loops: read/accept run once per frame and rarely reach the
-      // optimizing tier, where for-of would allocate one iterator result per index.
-      if (stamped)
-        for (let cursor = 0; cursor < work.length; cursor++) {
-          const index = work[cursor] as number;
-          flags[index] = (flags[index] ?? 0) & ACCEPTED;
-        }
-      work.length = 0;
-      scannedRows = 0;
-      stamped = true;
-      const changedComponents: Component[] = [];
-      const mutationEpochs = owner.getComponentMutationEpochs();
-      for (let cursor = 0; cursor < components.length; cursor++)
-        if ((mutationEpochs[ids[cursor] as number] ?? 0) > acceptedEpoch)
-          changedComponents.push(components[cursor] as Component);
-      let checkedIndexEntries = 0;
-      if (invalid) {
-        // Explicit baseline rebuild includes accepted identities that have disappeared.
-        membershipWork = true;
-        for (let index = 0; index < flags.length; index++)
-          if (((flags[index] ?? 0) & ACCEPTED) !== 0) enqueue(index);
-        for (const id of candidateIds) {
-          const index = owner.getComponentChangeIndex(id);
-          index?.visitSince(-1, epoch, enqueue);
-          checkedIndexEntries += index?.checkedEntries ?? 0;
-        }
-      } else {
-        membershipWork = false;
-        for (let cursor = 0; cursor < ids.length; cursor++) {
-          const id = ids[cursor] as number;
-          if ((mutationEpochs[id] ?? 0) <= acceptedEpoch) continue;
-          const index = owner.getComponentChangeIndex(id);
-          index?.visitSince(acceptedEpoch, epoch, enqueue);
-          checkedIndexEntries += index?.checkedEntries ?? 0;
-        }
-        if (structure !== acceptedStructure) {
-          membershipWork = true;
-          const index = owner.getStructuralChangeIndex();
-          index.visitSince(acceptedEpoch, epoch, enqueue);
-          checkedIndexEntries += index.checkedEntries;
-        }
+  #changedComponents(): readonly Component[] {
+    const epochs = this.#owner.getComponentMutationEpochs();
+    let count = 0;
+    for (let cursor = 0; cursor < this.#ids.length; cursor++)
+      if ((epochs[this.#ids[cursor] as number] ?? 0) > this.#acceptedEpoch) count++;
+    if (count === 0) return NO_CHANGED_COMPONENTS;
+    if (count === this.#components.length) return this.#components;
+    return this.#partialComponentChanges(epochs, count);
+  }
+
+  #partialComponentChanges(epochs: readonly number[], count: number): readonly Component[] {
+    const previous = this.#partialChanges;
+    if (previous?.length === count) {
+      let at = 0;
+      let same = true;
+      for (let cursor = 0; cursor < this.#ids.length; cursor++) {
+        if ((epochs[this.#ids[cursor] as number] ?? 0) <= this.#acceptedEpoch) continue;
+        if (previous[at++] !== this.#components[cursor]) same = false;
       }
-      let accepted = false;
-      const validate = (): void => {
-        if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
-        const poisoned = worldPoisonedError(world.execution);
-        if (poisoned !== undefined) throw poisoned;
-        if (
-          token !== readToken ||
-          !inputsUnchangedSince(epoch) ||
-          structure !== owner.getStructureEpoch()
-        )
-          throw new StateProjectionExpiredError();
-      };
-      return {
-        indices: work,
-        epoch,
-        scannedRows,
-        checkedBlocks: 0,
-        checkedIndexEntries,
-        membershipChanged: invalid || structure !== acceptedStructure,
-        changedComponents,
-        hasStructuralChange(index) {
-          if (accepted || token !== readToken) throw new StateProjectionExpiredError();
-          return ((flags[index] ?? 0) & MEMBERSHIP) !== 0;
-        },
-        validate,
-        accept() {
-          if (owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
-          if (accepted) return;
-          validate();
-          for (let cursor = 0; cursor < work.length; cursor++) {
-            const index = work[cursor] as number;
-            const state = flags[index] ?? 0;
-            // Value-only writes cannot alter candidate membership. Reconcile
-            // only identities carrying structural or explicit-baseline work.
-            flags[index] =
-              (state & MEMBERSHIP) !== 0 ? (matches(index) ? ACCEPTED : 0) : state & ACCEPTED;
-          }
-          stamped = false;
-          acceptedEpoch = epoch;
-          acceptedStructure = structure;
-          invalid = false;
-          accepted = true;
-        },
-      };
-    },
-  };
+      if (same) return previous;
+    }
+    const changed: Component[] = [];
+    for (let cursor = 0; cursor < this.#ids.length; cursor++)
+      if ((epochs[this.#ids[cursor] as number] ?? 0) > this.#acceptedEpoch)
+        changed.push(this.#components[cursor] as Component);
+    this.#partialChanges = Object.freeze(changed);
+    return this.#partialChanges;
+  }
+
+  assertReadable(): void {
+    if (this.#owner.isDerivedWriteActive()) throw new DerivedWriteActiveError();
+  }
+  validateCandidate(token: number, epoch: number, structure: number): void {
+    this.assertReadable();
+    const poisoned = worldPoisonedError(this.#world.execution);
+    if (poisoned !== undefined) throw poisoned;
+    if (
+      token !== this.#readToken ||
+      !this.#inputsUnchangedSince(epoch) ||
+      structure !== this.#owner.getStructureEpoch()
+    )
+      throw new StateProjectionExpiredError();
+  }
+  structuralChange(token: number, index: number): boolean {
+    if (token !== this.#readToken) throw new StateProjectionExpiredError();
+    return ((this.#flags[index] ?? 0) & MEMBERSHIP) !== 0;
+  }
+  commitCandidate(epoch: number, structure: number): void {
+    for (let cursor = 0; cursor < this.work.length; cursor++) {
+      const index = this.work[cursor] as number;
+      const state = this.#flags[index] ?? 0;
+      this.#flags[index] =
+        (state & MEMBERSHIP) !== 0 ? (this.#matches(index) ? ACCEPTED : 0) : state & ACCEPTED;
+    }
+    this.#stamped = false;
+    this.#acceptedEpoch = epoch;
+    this.#acceptedStructure = structure;
+    this.#invalid = false;
+  }
+}
+
+/** Independent commit capability; only requested public callbacks are bound. */
+class CurrentStateCandidate implements StateProjectionBatch {
+  readonly indices: readonly number[];
+  readonly checkedBlocks = 0;
+  #accepted = false;
+  #boundValidate: (() => void) | undefined;
+  #boundAccept: (() => void) | undefined;
+  #boundStructural: ((index: number) => boolean) | undefined;
+  readonly #projection: CurrentStateProjection;
+  readonly #token: number;
+  readonly #structure: number;
+  constructor(
+    projection: CurrentStateProjection,
+    token: number,
+    structure: number,
+    readonly epoch: number,
+    readonly scannedRows: number,
+    readonly checkedIndexEntries: number,
+    readonly membershipChanged: boolean,
+    readonly changedComponents: readonly Component[],
+  ) {
+    this.#projection = projection;
+    this.#token = token;
+    this.#structure = structure;
+    this.indices = projection.work;
+  }
+  get validate(): () => void {
+    this.#boundValidate ??= this.#check.bind(this);
+    return this.#boundValidate;
+  }
+  get accept(): () => void {
+    this.#boundAccept ??= this.#commit.bind(this);
+    return this.#boundAccept;
+  }
+  get hasStructuralChange(): (index: number) => boolean {
+    this.#boundStructural ??= this.#structural.bind(this);
+    return this.#boundStructural;
+  }
+  #check(): void {
+    this.#projection.validateCandidate(this.#token, this.epoch, this.#structure);
+  }
+  #commit(): void {
+    this.#projection.assertReadable();
+    if (this.#accepted) return;
+    this.#check();
+    this.#projection.commitCandidate(this.epoch, this.#structure);
+    this.#accepted = true;
+  }
+  #structural(index: number): boolean {
+    if (this.#accepted) throw new StateProjectionExpiredError();
+    return this.#projection.structuralChange(this.#token, index);
+  }
 }

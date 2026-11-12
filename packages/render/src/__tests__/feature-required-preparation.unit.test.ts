@@ -7,12 +7,13 @@ import {
 } from '../errors/render';
 import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature } from '../features/types';
+import { abortFeatureFrame, prepareFeatureFrame } from './feature-frame-driver';
 
 async function frame(feature: RenderFeature<{ required: boolean }>) {
   const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
   const host = createRenderFeatureHost([feature]).unwrap();
   const run = () =>
-    host.runFrame([
+    prepareFeatureFrame(host, [
       {
         worlds: [],
         owner: 0,
@@ -49,13 +50,13 @@ it('retains explicit source preparation through a failed plan and retries withou
       preparationStage: 'source-plan',
     });
     expect(pending.frame.errors).toHaveLength(1);
-    pending.onAborted();
+    abortFeatureFrame(f.host);
     required = false;
     const ordinary = f.run();
     expect(ordinary.frame.preparationPending).not.toBe(true);
     expect(ordinary.frame.preparationPendingReason).toBeUndefined();
     expect(ordinary.frame.errors).toHaveLength(1);
-    ordinary.onAborted();
+    abortFeatureFrame(f.host);
     required = true;
     missing = false;
     f.host.recover({ frameNumber: 2, caps: f.device.caps }).unwrap();
@@ -64,7 +65,7 @@ it('retains explicit source preparation through a failed plan and retries withou
     expect(ready.frame.preparationPendingFeatureIdentity).toBeUndefined();
     expect(ready.frame.preparationPendingReason).toBeUndefined();
     expect(ready.frame.errors).toEqual([]);
-    ready.onAborted();
+    abortFeatureFrame(f.host);
   } finally {
     f.host.dispose();
   }
@@ -94,7 +95,7 @@ it('a failed source readiness guard cannot fail open and still aborts extracted 
     expect(value.frame.errors).toHaveLength(1);
     expect(plan).not.toHaveBeenCalled();
     expect(aborted).toHaveBeenCalledTimes(1);
-    value.onAborted();
+    abortFeatureFrame(f.host);
     expect(aborted).toHaveBeenCalledTimes(1);
   } finally {
     f.host.dispose();
@@ -133,7 +134,7 @@ it('bounds one first-frame blocker without serializing an exception or calling u
       reason: 'backend-not-resident'.repeat(100).slice(0, 128),
     });
     expect(structuredClone(reason)).toEqual(reason);
-    pending.onAborted();
+    abortFeatureFrame(f.host);
     f.host.recover({ frameNumber: 2, caps: f.device.caps }).unwrap();
     expect(reason).toEqual(pending.frame.preparationPendingReason);
   } finally {

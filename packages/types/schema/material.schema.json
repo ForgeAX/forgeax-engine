@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://forgeax.dev/schema/material.schema.json",
-  "title": "ForgeaX MaterialAsset",
+  "title": "ForgeAX MaterialAsset",
   "type": "object",
   "additionalProperties": false,
   "required": ["kind"],

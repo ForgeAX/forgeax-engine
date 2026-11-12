@@ -13,8 +13,32 @@ import {
   SpotLight,
   type ToneMapping,
 } from 'three/src/Three.Core.js';
-import { expect } from 'vitest';
+import { afterAll, expect } from 'vitest';
 import { SIZE } from './render.fixture';
+
+let deviceOwner: OriginalRenderer | undefined;
+let devicePromise: Promise<GPUDevice> | undefined;
+
+async function referenceDevice(): Promise<GPUDevice> {
+  if (devicePromise === undefined) {
+    // Let upstream Three qualify its own feature/limit policy once. Its public
+    // device parameter borrows that device without sharing renderer/node caches.
+    deviceOwner = new OriginalRenderer();
+    const owner = deviceOwner;
+    devicePromise = owner.init().then(() => {
+      expect((owner.backend as { isWebGPUBackend?: boolean }).isWebGPUBackend).toBe(true);
+      return (owner.backend as unknown as { device: GPUDevice }).device;
+    });
+  }
+  return devicePromise;
+}
+
+afterAll(async () => {
+  await devicePromise?.catch(() => undefined);
+  deviceOwner?.dispose();
+  deviceOwner = undefined;
+  devicePromise = undefined;
+});
 
 /** Independent r184 WebGPU state also avoids its retained Texture.channel node cache. */
 export async function renderReference(
@@ -32,6 +56,7 @@ export async function renderReference(
 ): Promise<Uint8Array> {
   RectAreaLightNode.setLTC(RectAreaLightTexturesLib.init());
   const original = new OriginalRenderer({
+    device: await referenceDevice(),
     stencil: options.stencil ?? false,
     depth: options.depth ?? true,
     alpha: options.alpha ?? true,

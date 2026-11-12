@@ -58,7 +58,8 @@ describe('planar capture receipt and cadence', () => {
     const completion = new Promise<void>((resolve) => {
       done = resolve;
     });
-    state.submit(true, completion);
+    state.stage(true, completion);
+    state.settle(true);
     expect(state.prepare(camera, physical, 11)).toBeUndefined();
     expect(state.current()).toBe(first);
     done();
@@ -67,12 +68,32 @@ describe('planar capture receipt and cadence', () => {
     expect(state.current()).toBe(first);
     expect(state.prepare(camera, physical, 14)).toBeDefined();
   });
+  it('rolls back a selection the recording never staged, even in an accepted frame', () => {
+    const state = makeState();
+    // `render-capture-schedule` selected it; the recording threw before submit.
+    expect(state.prepare(camera, physical, 0)).toBeDefined();
+    state.settle(true);
+    expect(state.current()).toBeUndefined();
+    expect(state.prepare(camera, physical, 1)).toBeDefined();
+  });
+  it('rolls back a submitted selection the RenderSubmission did not accept', async () => {
+    const state = makeState();
+    expect(state.prepare(camera, physical, 0)).toBeDefined();
+    state.stage(true, Promise.resolve());
+    state.settle(false);
+    await Promise.resolve();
+    expect(state.current()).toBeUndefined();
+    // The next frame selects it again instead of waiting for its cadence.
+    expect(state.prepare(camera, physical, 1)).toBeDefined();
+  });
   it('retries failure and refreshes after resize, explicit invalidation or re-enable', async () => {
     const state = makeState();
     state.prepare(camera, physical, 0);
-    state.submit(false, undefined);
+    state.stage(false, undefined);
+    state.settle(true);
     expect(state.prepare(camera, physical, 1)).toBeDefined();
-    state.submit(true, Promise.resolve());
+    state.stage(true, Promise.resolve());
+    state.settle(true);
     await Promise.resolve();
     expect(
       state.prepare(
@@ -82,6 +103,9 @@ describe('planar capture receipt and cadence', () => {
             normal: new Float32Array([0, 1, 0]),
             distance: 0,
             clipBias: 0,
+            distortion: 0,
+            resolutionScale: 1,
+            generateMipmaps: false,
             updateIntervalFrames: 4,
             requestVersion: 1,
           },
@@ -98,11 +122,13 @@ describe('planar capture receipt and cadence', () => {
   it('restores the completed image and matrix when a resize capture does not submit', async () => {
     const state = makeState();
     const first = state.prepare(camera, physical, 0);
-    state.submit(true, Promise.resolve());
+    state.stage(true, Promise.resolve());
+    state.settle(true);
     await Promise.resolve();
     const replacement = { ...physical, generation: 2 };
     expect(state.prepare(camera, replacement, 1)?.physical).toBe(replacement);
-    state.submit(false, undefined);
+    state.stage(false, undefined);
+    state.settle(true);
     expect(state.current()).toBe(first);
     expect(state.prepare(camera, physical, 2)).toBeUndefined();
     expect(state.current()).toBe(first);
@@ -115,7 +141,8 @@ describe('planar capture receipt and cadence', () => {
       done = resolve;
     });
     state.prepare(camera, physical, 0);
-    state.submit(true, completion);
+    state.stage(true, completion);
+    state.settle(true);
     state.prepare(undefined, undefined, 1);
     done();
     await completion;
@@ -139,17 +166,76 @@ describe('planar capture receipt and cadence', () => {
     expect(firstA.physical.texture).not.toBe(firstB.physical.texture);
     expect(firstA.physical.texture).toBe(physical.texture);
     expect(firstB.physical.texture).toBe(second.texture);
-    a.submit(true, Promise.resolve());
-    b.submit(true, Promise.resolve());
+    a.stage(true, Promise.resolve());
+    a.settle(true);
+    b.stage(true, Promise.resolve());
+    b.settle(true);
     await Promise.resolve();
     expect(a.prepare(camera, physical, 1)).toBeUndefined();
     const nextB = b.prepare(otherCamera, second, 4);
     if (nextB === undefined) throw new Error('Expected updated planar capture');
-    b.submit(true, Promise.resolve());
+    b.stage(true, Promise.resolve());
+    b.settle(true);
     await Promise.resolve();
     expect(a.current()).toBe(firstA);
     expect(b.current()).toBe(nextB);
     expect(a.current()?.physical.texture).not.toBe(b.current()?.physical.texture);
     destroyRenderTargetPhysical(second);
+  });
+});
+
+describe('planar capture every-frame cadence', () => {
+  const everyFrame = {
+    target: {},
+    planarReflection: { updateIntervalFrames: 1, requestVersion: 0 },
+  } as CameraSnapshot;
+  const held = () => {
+    let done!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    return { completion, done };
+  };
+
+  it('captures again while the previous capture has not reported completion', async () => {
+    const state = makeState();
+    const first = state.prepare(everyFrame, physical, 0);
+    const a = held();
+    state.stage(true, a.completion);
+    state.settle(true);
+    // The GPU completion of frame 0 arrives after frame 1 is prepared.
+    const second = state.prepare(everyFrame, physical, 1);
+    expect(second).toBeDefined();
+    expect(second).not.toBe(first);
+    expect(state.current()).toBe(second);
+    const b = held();
+    state.stage(true, b.completion);
+    state.settle(true);
+    a.done();
+    await a.completion;
+    // A late completion of the superseded capture keeps the newer selection.
+    expect(state.current()).toBe(second);
+    expect(state.prepare(everyFrame, physical, 2)).toBeDefined();
+  });
+
+  it('falls back to the in-flight capture when the new one does not submit', () => {
+    const state = makeState();
+    state.prepare(everyFrame, physical, 0);
+    state.stage(true, held().completion);
+    state.settle(true);
+    const inFlight = state.current();
+    expect(state.prepare(everyFrame, physical, 1)).toBeDefined();
+    state.stage(false, undefined);
+    state.settle(true);
+    expect(state.current()).toBe(inFlight);
+  });
+
+  it('still honours a longer interval from the latest submitted capture', () => {
+    const state = makeState();
+    state.prepare(camera, physical, 0);
+    state.stage(true, held().completion);
+    state.settle(true);
+    expect(state.prepare(camera, physical, 3)).toBeUndefined();
+    expect(state.prepare(camera, physical, 4)).toBeDefined();
   });
 });

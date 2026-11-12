@@ -7,6 +7,7 @@ import {
   type ParamSchemaEntry,
 } from '@forgeax/engine-types';
 import { LIGHTING_CHANNELS_DEFAULT } from './components/lighting-channels';
+import { dynamicCapacity, shouldShrinkCapacity } from './dynamic-capacity';
 import { GpuDirtyRanges } from './gpu-dirty-ranges';
 import type { GpuInputArena } from './gpu-input-arena';
 import {
@@ -15,10 +16,11 @@ import {
 } from './gpu-scene-allocations';
 import {
   type GpuSceneChangedBounds,
-  GpuSceneChangeLog,
+  GpuSceneContentBoxes,
   type GpuSceneSlotBounds,
   type GpuSceneSlotRowBoxes,
-} from './gpu-scene-change-log';
+  type SceneContentCursor,
+} from './gpu-scene-content-boxes';
 import {
   GPU_MATERIAL_DESCRIPTOR,
   GPU_MESH_DESCRIPTOR,
@@ -46,6 +48,7 @@ import { type AcceptedMaterial, MaterialFrame } from './scene/material-dispatch'
 import { MeshFrame, type MeshGeometry, type MeshMorphDeltas } from './scene/mesh-frame';
 import { effectiveMeshMaterials, meshMaterialGeometry } from './scene/mesh-materials';
 import type { RenderSceneApplyResult, RenderSceneSlot } from './scene/render-scene-types';
+import { RowChangeLog } from './scene/row-change-log';
 import { StableRangeAllocator } from './stable-range-allocator';
 import { materialDisplacementRadius } from './standard-displacement-bounds';
 
@@ -176,7 +179,7 @@ interface MorphRowAllocation {
   deltas: MeshMorphDeltas;
 }
 
-const MORPH_ROW_HEADER_WORDS = 3;
+const MORPH_ROW_HEADER_WORDS = 4;
 
 interface MeshAllocation {
   readonly logicalSlot: number;
@@ -197,6 +200,14 @@ const TABLE_LAYOUTS = {
 } as const satisfies Readonly<Record<GpuSceneTableName, GpuSceneTableLayout>>;
 
 const TABLE_NAMES = Object.keys(TABLE_LAYOUTS) as readonly GpuSceneTableName[];
+const EMPTY_CPU_BYTES = new Uint8Array(0);
+const EMPTY_CPU_VIEW = new DataView(EMPTY_CPU_BYTES.buffer);
+const EMPTY_CPU_TABLES = Object.freeze({
+  primitive: EMPTY_CPU_BYTES,
+  instance: EMPTY_CPU_BYTES,
+  transform: EMPTY_CPU_BYTES,
+  material: EMPTY_CPU_BYTES,
+});
 /** Primitive and instance tables share one row capacity; transform rows also hold previous poses. */
 const GPU_SCENE_ROW_TABLE_STRIDE = Math.max(PRIMITIVE.stride, INSTANCE.stride);
 const TRANSFORM_CURRENT = gpuSceneFieldOffset(TRANSFORM, 'currentWorld');
@@ -318,6 +329,19 @@ function writeChangedMat4(
   return changed;
 }
 
+/** Zero `count` rows from `start` and mark them for upload. */
+function clearRows(
+  bytes: Uint8Array,
+  stride: number,
+  start: number,
+  count: number,
+  writes: number[],
+): void {
+  if (count <= 0) return;
+  bytes.fill(0, start * stride, (start + count) * stride);
+  for (let row = start; row < start + count; row += 1) writes.push(row);
+}
+
 function writeChangedU32(view: DataView, byteOffset: number, value: number): boolean {
   if (view.getUint32(byteOffset, true) === value) return false;
   view.setUint32(byteOffset, value, true);
@@ -428,9 +452,13 @@ export class GpuScene {
   private readonly rowScratch = new Uint8Array(PRIMITIVE.stride);
   private readonly rowScratchView = new DataView(this.rowScratch.buffer);
   private disposed = false;
+  /** The CPU table reader closes independently of submitted GPU resource frames. */
+  private cpuBusy = false;
   private failure: RhiError | undefined;
-  private tableBytes: Record<GpuSceneTableName, ArrayBuffer>;
-  private transformBytes: Uint8Array;
+  private tableBytes: Readonly<Record<GpuSceneTableName, Uint8Array<ArrayBuffer>>>;
+  private primitiveView: DataView;
+  private instanceView: DataView;
+  private transformBytes: Uint8Array<ArrayBuffer>;
   private transformView: DataView;
   private buffers: GpuSceneBuffers;
   private readonly retiredBuffers = new Set<Buffer>();
@@ -445,9 +473,14 @@ export class GpuScene {
   private fullRebuilds = 0;
   private clearedSlots = 0;
   private noChangeFrames = 0;
-  /** Monotonic content identity consumed by shadow-cache invalidation. */
-  private sceneContentRevision = 0;
-  private readonly changeLog = new GpuSceneChangeLog();
+  /**
+   * The row journal this scene's content entries join: the synced rows' own
+   * {@link RowChangeLog} once a delta names it.
+   */
+  private journal = new RowChangeLog();
+  /** Content identity consumed by shadow-cache invalidation; replaced by every completed sync. */
+  private contentAt: SceneContentCursor = { journal: this.journal, position: 0 };
+  private readonly contentBoxes = new GpuSceneContentBoxes();
   private identityUploaded = false;
   private readonly allocations = new PrimitiveAllocations<
     MeshAllocation,
@@ -498,8 +531,10 @@ export class GpuScene {
     this.materialCapacity = INITIAL_MATERIAL_CAPACITY;
     this.transformCapacity = capacity;
     this.tableBytes = this.allocateCpuTables(capacity, this.materialCapacity);
-    this.transformBytes = new Uint8Array(this.tableBytes.transform);
-    this.transformView = new DataView(this.tableBytes.transform);
+    this.transformBytes = this.tableBytes.transform;
+    this.transformView = new DataView(this.transformBytes.buffer);
+    this.primitiveView = new DataView(this.tableBytes.primitive.buffer);
+    this.instanceView = new DataView(this.tableBytes.instance.buffer);
     this.transforms.reset(1);
     this.writeIdentityTransform();
   }
@@ -541,48 +576,44 @@ export class GpuScene {
     return this.buffers.material;
   }
 
-  get contentRevision(): number {
-    return this.sceneContentRevision;
+  /** The scene journal position of the last completed sync; a new object per sync. */
+  get contentCursor(): SceneContentCursor {
+    return this.contentAt;
   }
 
-  /** World boxes changed after `revision`; see {@link GpuSceneChangeLog}. */
+  /** World boxes changed after `since`; see {@link GpuSceneContentBoxes}. */
   changedBoundsSince(
-    revision: number,
+    since: SceneContentCursor,
     ignoredSlots?: ReadonlySet<number>,
     observedSlots?: { has(slot: number): boolean },
   ): GpuSceneChangedBounds {
-    return this.changeLog.changedSince(
-      revision,
-      this.sceneContentRevision,
-      ignoredSlots,
-      observedSlots,
-    );
+    return this.contentBoxes.changedSince(since, this.contentAt, ignoredSlots, observedSlots);
   }
 
-  /** Whether every box changed after `revision` misses; see {@link GpuSceneChangeLog.changedBoundsMiss}. */
+  /** Whether every box changed after `since` misses; see {@link GpuSceneContentBoxes.changedBoundsMiss}. */
   changedBoundsMiss(
-    revision: number,
+    since: SceneContentCursor,
     misses: (boxes: Float32Array, offset: number) => boolean,
     ignoredSlots?: ReadonlySet<number>,
     observedSlots?: { has(slot: number): boolean },
   ): boolean {
-    return this.changeLog.changedBoundsMiss(
-      revision,
-      this.sceneContentRevision,
+    return this.contentBoxes.changedBoundsMiss(
+      since,
+      this.contentAt,
       misses,
       ignoredSlots,
       observedSlots,
     );
   }
 
-  /** Slots created, changed or removed after `revision`; `undefined` when unproven. */
-  changedSlotsSince(revision: number): readonly number[] | undefined {
-    return this.changeLog.changedSlotsSince(revision, this.sceneContentRevision);
+  /** Slots created, changed or removed after `since`; `undefined` when unproven. */
+  changedSlotsSince(since: SceneContentCursor): readonly number[] | undefined {
+    return this.contentBoxes.changedSlotsSince(since, this.contentAt);
   }
 
-  /** Every world box `slots` occupied after `revision`; see {@link GpuSceneChangeLog}. */
-  slotBoundsSince(revision: number, slots: Iterable<number>): GpuSceneChangedBounds {
-    return this.changeLog.slotBoundsSince(revision, this.sceneContentRevision, slots);
+  /** Every world box `slots` occupied after `since`; see {@link GpuSceneContentBoxes}. */
+  slotBoundsSince(since: SceneContentCursor, slots: Iterable<number>): GpuSceneChangedBounds {
+    return this.contentBoxes.slotBoundsSince(since, this.contentAt, slots);
   }
 
   /**
@@ -901,6 +932,8 @@ export class GpuScene {
     rowBoxesOf?: GpuSceneSlotRowBoxes,
   ): Result<GpuSceneSyncResult, RhiError> {
     if (this.failure !== undefined) return err(this.failure);
+    if (this.disposed || this.cpuBusy) return this.cpuUpdateUnavailable();
+    this.cpuBusy = true;
     try {
       this.adoptMaterialFrame(delta);
       this.adoptMeshFrame(delta);
@@ -912,7 +945,7 @@ export class GpuScene {
       if (!this.identityUploaded && !writesByTable.transform.includes(0)) {
         writesByTable.transform.push(0);
       }
-      const allocationResets = this.allocateDeltaSlots(delta, writesByTable);
+      const { resets: allocationResets, resized } = this.allocateDeltaSlots(delta, writesByTable);
       const requiredCapacity = Math.max(
         this.records.requiredCapacity(),
         this.instances.requiredCapacity(),
@@ -936,13 +969,16 @@ export class GpuScene {
       this.writeSlotPublications(
         delta,
         allocationResets,
+        resized,
         writesByTable,
         materialRows,
         temporalResolver,
       );
+      if (this.disposed) return this.cpuUpdateUnavailable();
       const uploaded = this.uploadRows(writesByTable);
       if (!uploaded.ok) return uploaded;
       this.completeSync(delta, boundsOf, rowBoxesOf);
+      if (this.disposed) return this.cpuUpdateUnavailable();
       return ok({
         ranges: uploaded.value.ranges,
         bytes: uploaded.value.bytes,
@@ -966,6 +1002,9 @@ export class GpuScene {
               { cause },
             );
       return err(this.failure);
+    } finally {
+      this.cpuBusy = false;
+      if (this.disposed) this.releaseCpuTables();
     }
   }
 
@@ -1052,12 +1091,17 @@ export class GpuScene {
     );
   }
 
-  /** Clear removed rows, then ensure every published slot's allocation; returns reset slots. */
+  /**
+   * Clear removed rows, then ensure every published slot's allocation. Returns
+   * the slots whose allocation was replaced (`resets`) and those whose
+   * instance count changed within their reserved rows (`resized`).
+   */
   private allocateDeltaSlots(
     delta: RenderSceneApplyResult,
     writesByTable: Record<GpuSceneTableName, number[]>,
-  ): Set<number> {
+  ): { readonly resets: Set<number>; readonly resized: Set<number> } {
     const allocationResets = new Set<number>();
+    const resized = new Set<number>();
     if (delta.resynced > 0) {
       for (const slot of [...this.allocations.keys()]) this.clearSlot(slot, writesByTable);
     }
@@ -1076,7 +1120,7 @@ export class GpuScene {
     ]) {
       for (const record of records) {
         const previous = this.allocations.stamp(record.slot);
-        this.ensureAllocation(record, writesByTable);
+        if (this.ensureAllocation(record, writesByTable)) resized.add(record.slot);
         if (previous !== this.allocations.stamp(record.slot)) allocationResets.add(record.slot);
       }
     }
@@ -1084,7 +1128,7 @@ export class GpuScene {
       const range = this.sharedMaterials.get(resource);
       if (range !== undefined) this.adoptMaterial(range, writesByTable);
     }
-    return allocationResets;
+    return { resets: allocationResets, resized };
   }
 
   /** Write one shared mesh descriptor header and its Skin envelope into the input arena. */
@@ -1153,31 +1197,48 @@ export class GpuScene {
     return materialRows;
   }
 
-  /** Full rows for new/reset/content slots; transform-only rows for the rest. */
+  /**
+   * Full rows for new/reset/content/resized slots; transform-only rows for the
+   * rest. A resized slot kept its rows, so it compares against them (no reset).
+   */
   private writeSlotPublications(
     delta: RenderSceneApplyResult,
     allocationResets: ReadonlySet<number>,
+    resized: ReadonlySet<number>,
     writesByTable: Record<GpuSceneTableName, number[]>,
     materialRows: Map<MaterialSnapshot, Uint8Array>,
     temporalResolver: GpuSceneTemporalResolver | undefined,
   ): void {
-    const contentUpdatedSlotIds = new Set(delta.contentUpdatedSlots.map((record) => record.slot));
-    const instanceUpdatedSlotIds = new Set(delta.instanceUpdatedSlots.map((record) => record.slot));
-    const publications = [...delta.createdSlots, ...delta.updatedSlots, ...delta.recreatedSlots];
-    const newSlots = new Set(
-      [...delta.createdSlots, ...delta.recreatedSlots].map((record) => record.slot),
-    );
-    for (const record of publications) {
-      const reset = newSlots.has(record.slot) || allocationResets.has(record.slot);
-      if (reset || contentUpdatedSlotIds.has(record.slot)) {
-        this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
-        continue;
+    const contentUpdatedSlotIds =
+      delta.contentUpdatedSlots.length === 0 ? undefined : new Set<number>();
+    for (const record of delta.contentUpdatedSlots) contentUpdatedSlotIds?.add(record.slot);
+    const instanceUpdatedSlotIds =
+      delta.instanceUpdatedSlots.length === 0 ? undefined : new Set<number>();
+    for (const record of delta.instanceUpdatedSlots) instanceUpdatedSlotIds?.add(record.slot);
+    const newSlots =
+      delta.createdSlots.length + delta.recreatedSlots.length === 0 ? undefined : new Set<number>();
+    for (const record of delta.createdSlots) newSlots?.add(record.slot);
+    for (const record of delta.recreatedSlots) newSlots?.add(record.slot);
+    // Preserve create/update/recreate order without concatenating the full row population.
+    for (let group = 0; group < 3; group++) {
+      const publications =
+        group === 0 ? delta.createdSlots : group === 1 ? delta.updatedSlots : delta.recreatedSlots;
+      for (const record of publications) {
+        const reset = newSlots?.has(record.slot) === true || allocationResets.has(record.slot);
+        if (reset || contentUpdatedSlotIds?.has(record.slot) || resized.has(record.slot)) {
+          this.writeSlot(record, reset, writesByTable, materialRows, temporalResolver?.(record));
+          continue;
+        }
+        const temporal = temporalResolver?.(record);
+        if (instanceUpdatedSlotIds?.has(record.slot))
+          this.writeInstanceTransforms(record, writesByTable, temporal);
+        this.writeRootTransform(record, false, writesByTable);
+        this.writeTemporalFlags(
+          record.slot,
+          primitiveTemporalFlags(false, temporal),
+          writesByTable,
+        );
       }
-      const temporal = temporalResolver?.(record);
-      if (instanceUpdatedSlotIds.has(record.slot))
-        this.writeInstanceTransforms(record, writesByTable, temporal);
-      this.writeRootTransform(record, false, writesByTable);
-      this.writeTemporalFlags(record.slot, primitiveTemporalFlags(false, temporal), writesByTable);
     }
   }
 
@@ -1195,8 +1256,9 @@ export class GpuScene {
     this.identityUploaded = true;
     this.clearedSlots += delta.removedSlots.length;
     if (delta.resynced > 0) this.fullRebuilds += 1;
-    this.sceneContentRevision += 1;
-    this.changeLog.record(this.sceneContentRevision, delta, boundsOf, rowBoxesOf);
+    if (delta.journal !== undefined) this.journal = delta.journal;
+    this.contentBoxes.record(this.journal, delta, boundsOf, rowBoxesOf);
+    this.contentAt = { journal: this.journal, position: this.journal.position };
   }
 
   /**
@@ -1207,22 +1269,32 @@ export class GpuScene {
    */
   commitFrame(): Result<void, RhiError> {
     if (this.failure !== undefined) return err(this.failure);
-    this.frameStamp = this.frameStamp === 0xffffffff ? 1 : this.frameStamp + 1;
-    for (const row of this.previousRows) this.transforms.release(row, 1);
-    this.previousRows.length = 0;
-    this.transformView.setUint32(TRANSFORM_STAMP, this.frameStamp, true);
-    const written = this.device.queue.writeBuffer(
-      this.buffers.transform,
-      TRANSFORM_STAMP,
-      this.transformBytes.subarray(TRANSFORM_STAMP, TRANSFORM_STAMP + 4),
-    );
-    if (!written.ok) {
-      this.writesByTable.transform.push(0);
-      return written;
+    if (this.disposed || this.cpuBusy) return this.cpuUpdateUnavailable();
+    this.cpuBusy = true;
+    try {
+      this.frameStamp = this.frameStamp === 0xffffffff ? 1 : this.frameStamp + 1;
+      for (const row of this.previousRows) this.transforms.release(row, 1);
+      this.previousRows.length = 0;
+      this.transformView.setUint32(TRANSFORM_STAMP, this.frameStamp, true);
+      const written = this.device.queue.writeBuffer(
+        this.buffers.transform,
+        TRANSFORM_STAMP,
+        this.transformBytes.buffer,
+        TRANSFORM_STAMP,
+        4,
+      );
+      if (!written.ok) {
+        this.writesByTable.transform.push(0);
+        return written;
+      }
+      if (this.disposed) return this.cpuUpdateUnavailable();
+      this.uploadRanges += 1;
+      this.uploadBytes += 4;
+      return ok(undefined);
+    } finally {
+      this.cpuBusy = false;
+      if (this.disposed) this.releaseCpuTables();
     }
-    this.uploadRanges += 1;
-    this.uploadBytes += 4;
-    return ok(undefined);
   }
 
   /** Previous pose = current pose for the frame being prepared. */
@@ -1315,7 +1387,7 @@ export class GpuScene {
     temporalFlags: number,
     writes: Record<GpuSceneTableName, number[]>,
   ): void {
-    const primitive = new DataView(this.tableBytes.primitive);
+    const primitive = this.primitiveView;
     const recordIndex = this.allocations.recordIndex(slot);
     if (recordIndex === undefined) return;
     const at = recordIndex * PRIMITIVE.stride + offset(PRIMITIVE, 'flags');
@@ -1325,7 +1397,7 @@ export class GpuScene {
       temporalFlags;
     // Pulses hold only while the root row carries this frame's stamp.
     if (temporalFlags !== 0) {
-      const transformStart = this.allocations.get(slot)?.transformStart;
+      const transformStart = this.allocations.transformStart(slot);
       if (transformStart !== undefined) this.stampTransform(transformStart, writes);
     }
     if (next === current) return;
@@ -1396,6 +1468,7 @@ export class GpuScene {
     this.records.reset();
     attempt(() => this.inputs.dispose());
     for (const buffer of Object.values(this.buffers)) attempt(() => this.retireBuffer(buffer));
+    if (!this.cpuBusy) this.releaseCpuTables();
     if (failure !== undefined) throw failure;
   }
 
@@ -1454,7 +1527,7 @@ export class GpuScene {
     if (this.writeRow('primitive', allocation.recordIndex, this.rowScratch) || resetPrevious)
       writes.primitive.push(allocation.recordIndex);
 
-    const instance = new DataView(this.tableBytes.instance);
+    const instance = this.instanceView;
     const instances = record.snapshot.instances;
     const previousInstances = temporal?.previousInstances;
     const previousOrdinals = previousInstanceOrdinals(instances, temporal);
@@ -1538,12 +1611,15 @@ export class GpuScene {
   /** Compare against the resident CPU bytes; pending upload rows survive failure. */
   private writeRow(table: GpuSceneTableName, index: number, row: Uint8Array): boolean {
     const stride = TABLE_LAYOUTS[table].stride;
-    const destination = new Uint8Array(this.tableBytes[table], index * stride, stride);
+    const destination = this.tableBytes[table];
+    const start = index * stride;
+    if (start < 0 || start + stride > destination.byteLength)
+      throw new RangeError('GPU Scene row lies outside its CPU table');
     let changed = false;
     for (let byte = 0; byte < stride; byte += 1) {
       const value = row[byte] ?? 0;
-      if (destination[byte] === value) continue;
-      destination[byte] = value;
+      if (destination[start + byte] === value) continue;
+      destination[start + byte] = value;
       changed = true;
     }
     return changed;
@@ -1566,10 +1642,10 @@ export class GpuScene {
     materialRows: Map<MaterialSnapshot, Uint8Array>,
     reset: boolean,
   ): void {
-    const allocation = this.allocations.get(record.slot);
-    if (allocation === undefined) throw new RangeError('GPU Scene allocation unavailable');
-    for (let ordinal = 0; ordinal < allocation.materialRanges.length; ordinal += 1) {
-      const range = allocation.materialRanges[ordinal];
+    const ranges = this.allocations.materialRanges(record.slot);
+    if (ranges === undefined) throw new RangeError('GPU Scene allocation unavailable');
+    for (let ordinal = 0; ordinal < ranges.length; ordinal += 1) {
+      const range = ranges[ordinal];
       if (range === undefined) throw new RangeError('material range unavailable');
       this.writeMaterial(range.version, writes, materialRows, reset && !range.version.initialized);
     }
@@ -1618,17 +1694,16 @@ export class GpuScene {
     }
     if (row.byteLength !== range.count * MATERIAL.stride)
       throw new RangeError('material payload differs from its retained allocation');
-    const destination = new Uint8Array(
-      this.tableBytes.material,
-      range.start * MATERIAL.stride,
-      row.byteLength,
-    );
+    const destination = this.tableBytes.material;
+    const start = range.start * MATERIAL.stride;
+    if (start < 0 || start + row.byteLength > destination.byteLength)
+      throw new RangeError('GPU Scene material lies outside its CPU table');
     for (let unit = 0; unit < range.count; unit++) {
       let changed = reset || !range.initialized;
       for (let byte = unit * MATERIAL.stride; byte < (unit + 1) * MATERIAL.stride; byte++) {
         const value = row[byte] ?? 0;
-        if (destination[byte] === value) continue;
-        destination[byte] = value;
+        if (destination[start + byte] === value) continue;
+        destination[start + byte] = value;
         changed = true;
       }
       if (changed) writes.material.push(range.start + unit);
@@ -1643,12 +1718,13 @@ export class GpuScene {
     writes: Record<GpuSceneTableName, number[]>,
     temporal?: GpuSceneTemporalSnapshot,
   ): void {
-    const allocation = this.allocations.get(record.slot);
+    const count = this.allocations.instanceTransformCount(record.slot);
+    const start = this.allocations.instanceTransformStart(record.slot);
     const instances = record.snapshot.instances;
-    if (allocation === undefined || instances === undefined) {
+    if (count === undefined || start === undefined || instances === undefined) {
       throw new RangeError('GPU Scene instance update has no explicit allocation');
     }
-    if (allocation.instanceTransformCount !== instances.instanceCount) {
+    if (count !== instances.instanceCount) {
       throw new RangeError('GPU Scene instance update changed instance count');
     }
     const previousOrdinals = previousInstanceOrdinals(instances, temporal);
@@ -1665,13 +1741,13 @@ export class GpuScene {
       instances.revision === resident.revision + 1 &&
       residentGenerations === currentGenerations
         ? instances.dirtyRanges
-        : [{ start: 0, end: allocation.instanceTransformCount }];
+        : [{ start: 0, end: count }];
     for (const range of rowRanges) {
-      const end = Math.min(range.end, allocation.instanceTransformCount);
+      const end = Math.min(range.end, count);
       this.instanceRowsVisited += Math.max(0, end - range.start);
       for (let ordinal = range.start; ordinal < end; ordinal += 1) {
         this.writeInstanceTransform(
-          allocation.instanceTransformStart + ordinal,
+          start + ordinal,
           instances.transforms,
           ordinal * 16,
           instanceIdentityChanged(residentGenerations, currentGenerations, ordinal),
@@ -1681,11 +1757,7 @@ export class GpuScene {
         );
       }
     }
-    this.rememberInstanceGenerations(
-      record.slot,
-      currentGenerations,
-      allocation.instanceTransformCount,
-    );
+    this.rememberInstanceGenerations(record.slot, currentGenerations, count);
     this.rememberInstanceResident(record);
   }
 
@@ -1742,9 +1814,8 @@ export class GpuScene {
     resetPrevious: boolean,
     writes: Record<GpuSceneTableName, number[]>,
   ): void {
-    const allocation = this.allocations.get(record.slot);
-    if (allocation === undefined) throw new RangeError('GPU Scene allocation unavailable');
-    const index = allocation.transformStart;
+    const index = this.allocations.transformStart(record.slot);
+    if (index === undefined) throw new RangeError('GPU Scene allocation unavailable');
     const world = record.snapshot.transform.world;
     if (resetPrevious) {
       writeMat4(this.transformView, index * TRANSFORM.stride + TRANSFORM_CURRENT, world);
@@ -1771,6 +1842,7 @@ export class GpuScene {
     if (morph === undefined || deltas === undefined || morph.targetCount !== deltas.targetCount)
       return 0;
     const words = MORPH_ROW_HEADER_WORDS + deltas.targetCount;
+    const initial = row === undefined;
     if (row === undefined) {
       row = {
         descriptor: this.inputs.arena.allocateDescriptor(words),
@@ -1785,10 +1857,17 @@ export class GpuScene {
     if (this.morphScratch.byteLength < words * 4)
       this.morphScratch = new DataView(new ArrayBuffer(words * 8));
     const scratch = this.morphScratch;
-    this.writeMorphHeader(scratch, deltas);
+    // Existing rows retain their immutable Mesh header; only weights change.
+    if (initial) this.writeMorphHeader(scratch, deltas);
+    const firstWeight = initial ? MORPH_ROW_HEADER_WORDS : 0;
     for (let target = 0; target < deltas.targetCount; target++)
-      scratch.setFloat32((MORPH_ROW_HEADER_WORDS + target) * 4, morph.weights[target] ?? 0, true);
-    this.inputs.arena.writeDescriptor(row.descriptor, scratch, words);
+      scratch.setFloat32((firstWeight + target) * 4, morph.weights[target] ?? 0, true);
+    this.inputs.arena.writeDescriptor(
+      row.descriptor,
+      scratch,
+      words,
+      initial ? 0 : MORPH_ROW_HEADER_WORDS,
+    );
     return row.descriptor;
   }
 
@@ -1796,6 +1875,7 @@ export class GpuScene {
     scratch.setUint32(0, deltas.vertexCount, true);
     scratch.setUint32(4, deltas.targetCount, true);
     scratch.setUint32(8, (this.morphDeltas.get(deltas) as MorphDeltaAllocation).descriptor, true);
+    scratch.setUint32(12, deltas.channels, true);
   }
 
   private acquireMorphDeltas(deltas: MeshMorphDeltas): void {
@@ -1882,9 +1962,12 @@ export class GpuScene {
         const write = this.device.queue.writeBuffer(
           this.buffers[name],
           tableOffset,
-          new Uint8Array(this.tableBytes[name], tableOffset, tableSize),
+          this.tableBytes[name].buffer,
+          tableOffset,
+          tableSize,
         );
         if (!write.ok) return write;
+        if (this.disposed) return this.cpuUpdateUnavailable();
         bytes += tableSize;
       }
     }
@@ -1893,10 +1976,14 @@ export class GpuScene {
     return ok({ ranges: rangeCount, bytes });
   }
 
+  /**
+   * Bind `record` to rows; returns true when only its instance count changed
+   * and the rows were resized in place (same addresses, same stamp).
+   */
   private ensureAllocation(
     record: RenderSceneSlot,
     writes: Record<GpuSceneTableName, number[]>,
-  ): void {
+  ): boolean {
     // A present Instances component is authoritative even when its array is
     // empty: preserve zero so neither the GPU Scene nor the indirect topology
     // turns it into a synthetic identity instance. Entities without the
@@ -1926,19 +2013,29 @@ export class GpuScene {
     const geometryKey =
       geometry === undefined ? undefined : `${geometry.worldId}:${geometry.handle}`;
     const existing = this.allocations.get(record.slot);
-    if (
-      existing?.mesh?.key === geometryKey &&
-      existing?.instanceCount === instanceCount &&
-      existing.instanceTransformCount === instanceTransformCount &&
-      existing.materialRanges.length === materialUnits.length &&
-      existing.materialRanges.every(
-        (range, index) =>
-          range.resource === (record.snapshot.materials[index] ?? record.snapshot.material),
-      )
-    ) {
-      for (const range of existing.materialRanges) this.adoptMaterial(range, writes);
-      return;
-    }
+    const reuse =
+      existing === undefined
+        ? undefined
+        : this.reuseAllocation(
+            record,
+            existing,
+            {
+              geometryKey,
+              materialCount: materialUnits.length,
+              instanceCount,
+              instanceTransformCount,
+            },
+            writes,
+          );
+    if (reuse !== undefined) return reuse;
+    // A slot whose count changed is a dynamic collection: reserve headroom so
+    // its next changes resize in place. First allocations stay exact.
+    const instanceCapacity =
+      existing !== undefined &&
+      explicitInstances !== undefined &&
+      existing.instanceCount !== instanceCount
+        ? dynamicCapacity(instanceCount)
+        : instanceCount;
     const mesh = geometry === undefined ? undefined : this.acquireMesh(geometry);
     const recordIndex = existing?.recordIndex ?? this.records.allocate(1);
     // Hold reused identities before releasing this binding, but let retired
@@ -1969,16 +2066,66 @@ export class GpuScene {
       // Member nodes name this live slot's physical record. Resizing its
       // variable inputs must not invalidate every retained member root.
       recordIndex,
-      instanceStart: this.instances.allocate(instanceCount),
+      instanceStart: this.instances.allocate(instanceCapacity),
       instanceCount,
       transformStart: this.transforms.allocate(1),
       instanceTransformStart:
-        instanceTransformCount === 0 ? 0 : this.transforms.allocate(instanceTransformCount),
+        explicitInstances === undefined || instanceCapacity === 0
+          ? 0
+          : this.transforms.allocate(instanceCapacity),
       instanceTransformCount,
+      instanceCapacity,
       materialRanges,
     };
     this.allocations.set(record.slot, allocation);
     this.allocationRevisionValue += 1;
+    return false;
+  }
+
+  /**
+   * Keep `existing` when `record` still binds the same mesh and materials:
+   * false when nothing changed, true when only an explicit instance count
+   * changed within the reservation (rows resized in place), undefined when
+   * the slot needs new rows.
+   */
+  private reuseAllocation(
+    record: RenderSceneSlot,
+    existing: PrimitiveAllocation,
+    binding: {
+      readonly geometryKey: string | undefined;
+      readonly materialCount: number;
+      readonly instanceCount: number;
+      readonly instanceTransformCount: number;
+    },
+    writes: Record<GpuSceneTableName, number[]>,
+  ): boolean | undefined {
+    const { materials, material, instances } = record.snapshot;
+    const { geometryKey, materialCount, instanceCount, instanceTransformCount } = binding;
+    if (
+      existing.mesh?.key !== geometryKey ||
+      existing.materialRanges.length !== materialCount ||
+      !existing.materialRanges.every(
+        (range, index) => range.resource === (materials[index] ?? material),
+      )
+    )
+      return undefined;
+    const unchanged =
+      existing.instanceCount === instanceCount &&
+      existing.instanceTransformCount === instanceTransformCount;
+    // An explicit collection that only changed its count keeps its rows when
+    // the new count fits the reserved capacity: no clear, no new addresses, no
+    // full reset. Rows past the count become unreferenced and keep their bytes.
+    const resizable =
+      instances !== undefined &&
+      existing.instanceTransformCount === existing.instanceCount &&
+      instanceCount <= existing.instanceCapacity &&
+      !shouldShrinkCapacity(instanceCount, existing.instanceCapacity);
+    if (!unchanged && !resizable) return undefined;
+    for (const range of existing.materialRanges) this.adoptMaterial(range, writes);
+    if (unchanged) return false;
+    this.allocations.resizeInstances(record.slot, instanceCount, instanceTransformCount);
+    this.allocationRevisionValue += 1;
+    return true;
   }
 
   private internRanges(ranges: readonly MaterialAllocation[]): readonly MaterialAllocation[] {
@@ -2148,7 +2295,7 @@ export class GpuScene {
       (version.start + version.count) * MATERIAL.stride,
       this.tableBytes.material.byteLength,
     );
-    new Uint8Array(this.tableBytes.material, start, end - start).fill(0);
+    this.tableBytes.material.fill(0, start, end);
     for (let unit = start / MATERIAL.stride; unit < end / MATERIAL.stride; unit++)
       writes.material.push(unit);
     this.materials.release(version.start, version.count);
@@ -2178,7 +2325,7 @@ export class GpuScene {
 
   private clearRecord(index: number, writes: Record<GpuSceneTableName, number[]>): void {
     if (index < this.capacity) {
-      new Uint8Array(this.tableBytes.primitive, index * PRIMITIVE.stride, PRIMITIVE.stride).fill(0);
+      this.tableBytes.primitive.fill(0, index * PRIMITIVE.stride, (index + 1) * PRIMITIVE.stride);
       writes.primitive.push(index);
     }
     this.records.release(index, 1);
@@ -2202,34 +2349,39 @@ export class GpuScene {
       this.inputs.releaseResource(mesh.logicalSlot);
       this.releaseMeshVersion(mesh.version);
     }
-    for (let ordinal = 0; ordinal < allocation.instanceCount; ordinal += 1) {
-      const instanceIndex = allocation.instanceStart + ordinal;
-      new Uint8Array(
-        this.tableBytes.instance,
-        instanceIndex * INSTANCE.stride,
-        INSTANCE.stride,
-      ).fill(0);
-      writes.instance.push(instanceIndex);
-    }
-    new Uint8Array(
-      this.tableBytes.transform,
-      allocation.transformStart * TRANSFORM.stride,
+    // Clear every reserved row, including unreferenced capacity past the count:
+    // a later owner of these addresses must start from zeroed rows.
+    const instanceRows = allocation.instanceCapacity;
+    // Explicit collections own one transform row per reserved instance row.
+    const transformRows =
+      allocation.instanceTransformCount === allocation.instanceCount
+        ? allocation.instanceCapacity
+        : 0;
+    clearRows(
+      this.tableBytes.instance,
+      INSTANCE.stride,
+      allocation.instanceStart,
+      instanceRows,
+      writes.instance,
+    );
+    clearRows(
+      this.transformBytes,
       TRANSFORM.stride,
-    ).fill(0);
-    writes.transform.push(allocation.transformStart);
-    for (let ordinal = 0; ordinal < allocation.instanceTransformCount; ordinal += 1) {
-      const transformIndex = allocation.instanceTransformStart + ordinal;
-      new Uint8Array(
-        this.tableBytes.transform,
-        transformIndex * TRANSFORM.stride,
-        TRANSFORM.stride,
-      ).fill(0);
-      writes.transform.push(transformIndex);
-    }
+      allocation.transformStart,
+      1,
+      writes.transform,
+    );
+    clearRows(
+      this.transformBytes,
+      TRANSFORM.stride,
+      allocation.instanceTransformStart,
+      transformRows,
+      writes.transform,
+    );
     for (const range of allocation.materialRanges) this.releaseMaterial(range, writes);
-    this.instances.release(allocation.instanceStart, allocation.instanceCount);
+    this.instances.release(allocation.instanceStart, instanceRows);
     this.transforms.release(allocation.transformStart, 1);
-    this.transforms.release(allocation.instanceTransformStart, allocation.instanceTransformCount);
+    this.transforms.release(allocation.instanceTransformStart, transformRows);
   }
 
   private retireBuffer(buffer: Buffer): void {
@@ -2302,20 +2454,28 @@ export class GpuScene {
       }
       nextBuffers[name] = result.value;
       replacements.push(name);
-      const bytes = new ArrayBuffer(newCapacity * TABLE_LAYOUTS[name].stride);
-      new Uint8Array(bytes).set(new Uint8Array(this.tableBytes[name]));
-      nextTables[name] = bytes;
-      const write = this.device.queue.writeBuffer(result.value, 0, new Uint8Array(bytes));
-      if (!write.ok) {
+      if (this.disposed) {
         for (const replaced of replacements) this.device.destroyBuffer(nextBuffers[replaced]);
-        return write;
+        return this.cpuUpdateUnavailable();
+      }
+      const bytes = new Uint8Array(newCapacity * TABLE_LAYOUTS[name].stride);
+      bytes.set(this.tableBytes[name]);
+      nextTables[name] = bytes;
+      const write = this.device.queue.writeBuffer(result.value, 0, bytes);
+      if (!write.ok || this.disposed) {
+        for (const replaced of replacements) this.device.destroyBuffer(nextBuffers[replaced]);
+        return write.ok ? this.cpuUpdateUnavailable() : write;
       }
       uploadedBytes += bytes.byteLength;
     }
     for (const name of replacements) this.retireBuffer(this.buffers[name]);
+    if (this.disposed) {
+      for (const name of replacements) this.device.destroyBuffer(nextBuffers[name]);
+      return this.cpuUpdateUnavailable();
+    }
     this.buffers = nextBuffers;
     this.tableBytes = nextTables;
-    this.refreshTransformViews();
+    this.refreshCpuViews();
     this.capacity = next.primitive;
     this.transformCapacity = next.transform;
     this.materialCapacity = next.material;
@@ -2325,21 +2485,44 @@ export class GpuScene {
     return ok(undefined);
   }
 
+  private cpuUpdateUnavailable(): Result<never, RhiError> {
+    return err(
+      new RhiError({
+        code: 'rhi-descriptor-invalid',
+        expected: 'a live GPU Scene with no synchronous CPU update in progress',
+        hint: 'finish the current sync or frame commit before another CPU update; recreate a disposed Scene',
+      }),
+    );
+  }
+
+  /** No CPU table reader remains; GPU frames retain only their actual GPU resources. */
+  private releaseCpuTables(): void {
+    this.tableBytes = EMPTY_CPU_TABLES;
+    this.transformBytes = EMPTY_CPU_BYTES;
+    this.transformView = this.primitiveView = this.instanceView = EMPTY_CPU_VIEW;
+  }
+
   private allocateCpuTables(
     capacity: number,
     materialCapacity: number,
-  ): Record<GpuSceneTableName, ArrayBuffer> {
+  ): Record<GpuSceneTableName, Uint8Array<ArrayBuffer>> {
     return {
-      primitive: new ArrayBuffer(capacity * PRIMITIVE.stride),
-      instance: new ArrayBuffer(capacity * INSTANCE.stride),
-      transform: new ArrayBuffer(capacity * TRANSFORM.stride),
-      material: new ArrayBuffer(materialCapacity * MATERIAL.stride),
+      primitive: new Uint8Array(capacity * PRIMITIVE.stride),
+      instance: new Uint8Array(capacity * INSTANCE.stride),
+      transform: new Uint8Array(capacity * TRANSFORM.stride),
+      material: new Uint8Array(materialCapacity * MATERIAL.stride),
     };
   }
 
-  private refreshTransformViews(): void {
-    this.transformBytes = new Uint8Array(this.tableBytes.transform);
-    this.transformView = new DataView(this.tableBytes.transform);
+  private refreshCpuViews(): void {
+    if (this.transformView.buffer !== this.tableBytes.transform.buffer) {
+      this.transformBytes = this.tableBytes.transform;
+      this.transformView = new DataView(this.transformBytes.buffer);
+    }
+    if (this.primitiveView.buffer !== this.tableBytes.primitive.buffer)
+      this.primitiveView = new DataView(this.tableBytes.primitive.buffer);
+    if (this.instanceView.buffer !== this.tableBytes.instance.buffer)
+      this.instanceView = new DataView(this.tableBytes.instance.buffer);
   }
 
   private writeIdentityTransform(): void {

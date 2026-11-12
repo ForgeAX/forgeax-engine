@@ -469,12 +469,15 @@ try {
       `renderer did not submit the main GPU-driven lane: ${JSON.stringify(mainGpuChannel)}`,
     );
   }
-  if (!inspection.output.graphPassNames.includes('gpu-driven.frustum-compact')) {
+  if (!inspection.output.graphPassNames.includes('gpu-driven.view-selection')) {
     throw new Error('renderer did not include the GPU-driven LOD graph passes');
   }
   const passNames = inspection.output.graphPassNames;
+  // Forward resolves the late phase in its depth prepass when one runs; main
+  // then draws the early + late union, so `main-late` only exists without it.
   const lateOcclusion =
-    passNames.includes('gpu-driven.occlusion-cull') && passNames.includes('main-late');
+    passNames.includes('gpu-driven.occlusion-cull') &&
+    (passNames.includes('main-late') || passNames.includes('standard-scene-surface-data-late'));
   if (lateOcclusion !== (inspection.capabilities.firstInstanceIndirect === true)) {
     throw new Error(
       `two-phase GPU occlusion must follow firstInstanceIndirect: ${JSON.stringify(passNames)}`,

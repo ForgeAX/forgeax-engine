@@ -1221,7 +1221,7 @@ function freezeRayPathTracer(
       if (input.reset) {
         const reset = graph.addCopyPass(`${input.label}.reset`, {
           accesses: [{ resource: accumulation, usage: 'copy-dst' }],
-          encode: ({ encoder, resources }) => {
+          encodeDirect: (encoder, _graphframe, resources) => {
             if (disposed) rayReferenceFailure('path tracer is disposed').unwrap();
             const resolved = resources.buffer(accumulation).unwrap();
             if (resolved !== buffers.accumulation)
@@ -1245,7 +1245,7 @@ function freezeRayPathTracer(
         ];
         const added = graph.addComputePass(`${input.label}.${index}.ray-path.batch`, {
           accesses,
-          encode: ({ pass, resources }) => {
+          encodeDirect: (pass, _graphframe, resources) => {
             // Frozen bind groups may not sample a different generation from the
             // one declared by the frame graph.
             for (const buffer of batch.usages.keys())

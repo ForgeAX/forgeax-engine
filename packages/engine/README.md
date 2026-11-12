@@ -11,7 +11,7 @@ pnpm exec forgeax project check
 ```
 
 pnpm projects that use Vite should keep
-`public-hoist-pattern[]=@forgeax/engine-*` in `.npmrc`. Generated ForgeaX games
+`public-hoist-pattern[]=@forgeax/engine-*` in `.npmrc`. Generated ForgeAX games
 already include it; the focused hoist lets package-owned dynamic imports resolve
 from Vite's project-level optimization cache without exposing extra declared
 dependencies.
@@ -70,10 +70,10 @@ full SDK adds offline templates, Engine skills, a pnpm store, and the complete
 public Engine source snapshot:
 
 ```bash
-pnpm dlx @forgeax/engine sdk install ~/ForgeaX/sdk
-cat ~/ForgeaX/sdk/AGENTS.md
-node ~/ForgeaX/sdk/bin/forgeax.mjs project init
-node ~/ForgeaX/sdk/bin/forgeax.mjs project new ~/Games/my-game --template empty
+pnpm dlx @forgeax/engine sdk install ~/ForgeAX/sdk
+cat ~/ForgeAX/sdk/AGENTS.md
+node ~/ForgeAX/sdk/bin/forgeax.mjs project init
+node ~/ForgeAX/sdk/bin/forgeax.mjs project new ~/Games/my-game --template empty
 cat ~/Games/my-game/AGENTS.md
 ```
 

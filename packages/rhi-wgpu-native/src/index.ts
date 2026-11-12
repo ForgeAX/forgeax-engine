@@ -58,7 +58,7 @@ export function createNativeWindow(options: NativeWindowOptions): Result<NativeW
   try {
     const native = new binding.value.NativeWindow(
       JSON.stringify({
-        title: options.title ?? 'ForgeaX',
+        title: options.title ?? 'ForgeAX',
         width: options.width,
         height: options.height,
       }),

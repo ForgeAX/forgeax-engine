@@ -9,7 +9,7 @@ import {
   ok,
   type Result,
 } from '@forgeax/engine-types';
-import { assetDataBytes, assetFieldBytes, copyAssetData } from './asset-data';
+import { assetDataBytes, assetFieldBytes, copyAssetData, takeAssetData } from './asset-data';
 
 export interface PreparedAssetContent<T = unknown> {
   readonly value: T;
@@ -445,18 +445,25 @@ export class AssetRecords implements AssetReferenceOwner {
     return this.adopt(target, input, dependencies, prepare);
   }
 
-  /** Complete replacements join the active adoption or own a single synchronous adoption. */
+  /**
+   * Complete replacements join the active adoption or own a single synchronous adoption.
+   * `storage: 'take'` admits input whose binary storage the caller gives up: it
+   * is validated and prepared like a copy, without duplicating whole buffers.
+   */
   adopt<Target extends string, T, E = never>(
     target: Target,
     input: T,
     dependencies: readonly number[] = [],
     prepare?: (owned: T) => Result<PreparedAssetContent, E>,
     replacing?: AssetHandle<Target>,
+    storage: 'copy' | 'take' = 'copy',
   ): Result<AssetHandle<Target>, AssetError | E> {
     const conflict = this.mutationError();
     if (conflict !== undefined) return err(conflict);
     if (replacing !== undefined && this.staged === undefined)
-      return this.adoptClosure(() => this.adopt(target, input, dependencies, prepare, replacing));
+      return this.adoptClosure(() =>
+        this.adopt(target, input, dependencies, prepare, replacing, storage),
+      );
     const admission = this.admissionError(replacing === undefined);
     if (admission !== undefined) return err(admission);
     const previous = replacing === undefined ? undefined : this.records.get(replacing);
@@ -472,7 +479,7 @@ export class AssetRecords implements AssetReferenceOwner {
     if (!measured.ok) return measured;
     if (!this.fits(measured.value))
       return err(failure('asset-budget-exceeded', 'available content bytes'));
-    const captured = this.capture(input);
+    const captured = this.capture(input, storage);
     if (!captured.ok) return captured;
     let prepared: Result<PreparedAssetContent, E>;
     this.preparingAdoption = this.staged !== undefined;
@@ -1358,9 +1365,9 @@ export class AssetRecords implements AssetReferenceOwner {
     }
   }
 
-  private capture<T>(input: T): Result<T, AssetError> {
+  private capture<T>(input: T, storage: 'copy' | 'take' = 'copy'): Result<T, AssetError> {
     try {
-      return ok(copyAssetData(input));
+      return ok(storage === 'take' ? takeAssetData(input) : copyAssetData(input));
     } catch (cause) {
       return err(
         failure('asset-invalid-value', cause instanceof Error ? cause.message : String(cause)),

@@ -71,3 +71,92 @@ it('rejects an impossible boundary ordering through ordinary cycle detection', (
     .unwrap();
   expect(world.update(1 / 60).ok).toBe(false);
 });
+
+it('keeps the captured Update membership in rebuilt order after fixed-time registration', () => {
+  const world = new World();
+  const trace: string[] = [];
+  let changed = false;
+  world
+    .addSystem(Update, {
+      name: 'before',
+      commands: 'none',
+      before: [FixedUpdate],
+      queries: [],
+      fn: () => {
+        trace.push('before');
+      },
+    })
+    .unwrap();
+  world
+    .addSystem(Update, {
+      name: 'a',
+      commands: 'none',
+      after: [FixedUpdate],
+      queries: [],
+      fn: () => {
+        trace.push('a');
+      },
+    })
+    .unwrap();
+  world
+    .addSystem(Update, {
+      name: 'b',
+      commands: 'none',
+      after: ['a'],
+      queries: [],
+      fn: () => {
+        trace.push('b');
+      },
+    })
+    .unwrap();
+  world
+    .addSystem(FixedUpdate, {
+      name: 'register',
+      commands: 'none',
+      queries: [],
+      fn: () => {
+        trace.push('fixed');
+        if (changed) return;
+        changed = true;
+        world
+          .replaceSystem(Update, 'a', {
+            name: 'a',
+            commands: 'none',
+            after: ['b'],
+            queries: [],
+            fn: () => {
+              trace.push('a');
+            },
+          })
+          .unwrap();
+        world
+          .replaceSystem(Update, 'b', {
+            name: 'b',
+            commands: 'none',
+            after: [FixedUpdate],
+            queries: [],
+            fn: () => {
+              trace.push('b');
+            },
+          })
+          .unwrap();
+        world
+          .addSystem(Update, {
+            name: 'new',
+            commands: 'none',
+            after: ['a'],
+            queries: [],
+            fn: () => {
+              trace.push('new');
+            },
+          })
+          .unwrap();
+      },
+    })
+    .unwrap();
+  world.update(1 / 60).unwrap();
+  expect(trace).toEqual(['before', 'fixed', 'b', 'a']);
+  trace.length = 0;
+  world.update(1 / 60).unwrap();
+  expect(trace).toEqual(['before', 'fixed', 'b', 'a', 'new']);
+});

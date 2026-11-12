@@ -1,5 +1,6 @@
 import * as THREE from '@forgeax/engine/three';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { comparePixels, displayPixels, readyFrames, SIZE, verifyReplay } from './render.fixture';
 
 export async function verifyOutput(
@@ -84,7 +85,7 @@ export async function verifyOutput(
       expect(pixelAt(pixels, -1, 0.3)).toEqual([128, 128, 255, 255]);
     if (baseline === undefined) baseline = pixels;
 
-    if (previous !== undefined) expect(pixels).not.toEqual(previous);
+    if (previous !== undefined) expect(equalBytes(pixels, previous)).toBe(false);
     previous = pixels;
     await verifyReplay(frame);
   }

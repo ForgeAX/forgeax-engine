@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { artifactUploadPaths } from '../artifact-upload-paths.mjs';
 import {
   hasReportsComponent,
   resolvedUploadViolations,
@@ -164,6 +173,67 @@ test('dynamic direct uploads require the real preceding checker with matching in
   );
 });
 
+for (const [file, job, name] of [
+  ['ci.yml', 'vitest-browser-shard', 'Preserve render browser failure evidence'],
+  ['ci-focus.yml', 'diagnostic', 'Preserve selected failure diagnostics'],
+])
+  test(`${file} render failure selection retains native tapes and screenshots without following installed dependencies`, async () => {
+    const { parse } = await import('yaml');
+    const workflow = parse(readFileSync(`.github/workflows/${file}`, 'utf8'));
+    const step = workflow.jobs[job].steps.find((step) => step.name === name);
+    const root = mkdtempSync(join(tmpdir(), 'forgeax-render-upload-'));
+    try {
+      const files = [
+        'artifacts/three-compat/material-readiness-failure.rhitape',
+        'artifacts/three-compat/material-readiness-failure.rgba',
+        'artifacts/ies-point-area/browser/deferred-point-combined-upper.rhitape',
+        'artifacts/ies-point-area/browser/deferred-point-combined-upper.rgba16float',
+        'packages/runtime/src/__tests__/__screenshots__/failure.png',
+        'apps/hello/triangle/src/__tests__/__screenshots__/failure.png',
+      ];
+      const excluded =
+        'packages/runtime/node_modules/dependency/reports/__screenshots__/excluded.png';
+      const tracked = spawnSync('git', ['ls-files', '--', 'packages', 'apps'], {
+        encoding: 'utf8',
+      });
+      assert.equal(tracked.status, 0, tracked.stderr);
+      const screenshots = [
+        ...new Set(
+          tracked.stdout
+            .split('\n')
+            .filter((file) => /\.browser(?:-no-webgpu)?\.test\.ts$/.test(file))
+            .map((file) => `${file.slice(0, file.lastIndexOf('/'))}/__screenshots__/selector.png`),
+        ),
+      ];
+      assert.ok(screenshots.length > 0, 'the real Browser source roster is required');
+      for (const file of [...files, ...screenshots, excluded]) {
+        mkdirSync(join(root, file, '..'), { recursive: true });
+        writeFileSync(join(root, file), 'evidence');
+      }
+      const { create } = await import('@actions/glob');
+      const paths = artifactUploadPaths(
+        {
+          path: step.with.path,
+          includeBrowserScreenshots: step.with['include-browser-screenshots'],
+        },
+        tracked.stdout.split('\n'),
+      );
+      const patterns = paths
+        .trim()
+        .split('\n')
+        .map((pattern) =>
+          pattern.startsWith('!') ? `!${join(root, pattern.slice(1))}` : join(root, pattern),
+        );
+      const selected = await (await create(patterns.join('\n'))).glob();
+      for (const file of [...files, ...screenshots])
+        assert.ok(selected.includes(join(root, file)), file);
+      assert.ok(!selected.includes(join(root, excluded)));
+      assert.deepEqual(await resolvedUploadViolations({ ...step.with, path: paths }, root), []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 test('official upload selection preserves include-hidden-files rather than silently filtering it', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forgeax-report-hidden-'));
   try {
@@ -206,6 +276,30 @@ test('a missing runtime selector fails clearly and leaves original failure evide
     assert.match(result.stderr, /declared @actions\/glob dependency is unavailable/u);
     assert.match(result.stderr, /original evidence files remain unchanged/u);
     assert.equal(readFileSync(join(root, 'receipt.json'), 'utf8'), '{"originalFailure":true}');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a symlinked runtime entrypoint still rejects report uploads', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forgeax-report-linked-entry-'));
+  try {
+    const source = join(root, 'source');
+    const linked = join(root, 'linked');
+    mkdirSync(source);
+    copyFileSync(new URL('../check-no-reports.mjs', import.meta.url), join(source, 'checker.mjs'));
+    symlinkSync(source, linked, process.platform === 'win32' ? 'junction' : 'dir');
+    const result = spawnSync(process.execPath, [join(linked, 'checker.mjs'), '--upload-inputs'], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        FORGEAX_ARTIFACT_NAME: 'failure-evidence',
+        FORGEAX_ARTIFACT_PATH: 'artifacts/reports/failure.json',
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /reports-upload-path/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

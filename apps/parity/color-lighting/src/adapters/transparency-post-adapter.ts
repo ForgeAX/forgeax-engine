@@ -1,3 +1,4 @@
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { World } from '@forgeax/engine-ecs';
 import { createPlaneGeometry } from '@forgeax/engine-geometry';
 import {
@@ -144,27 +145,26 @@ export async function captureTransparencyForgeaxBrowser(
     const worldAttachment1 = renderer.attach(world);
     if (!worldAttachment1.ok) throw worldAttachment1.error;
     const lease = worldAttachment1.value;
-    const drawFrame = (): ReturnType<typeof renderer.draw> => renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
+    const drawFrame = async () => {
+      const receipt = await drawReadyFrame(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
+      const observed = await renderer.observe(receipt, { include: ['draws'] });
+      if (!observed.ok) throw new Error(`transparent ForgeAX observation failed: ${observed.error.code}`);
+      return receipt;
+    };
     world.update().unwrap();
-    const drawn = drawFrame();
-    if (!drawn.ok) throw new Error(`transparent ForgeaX draw failed: ${drawn.error.code}`);
-    const observed = await renderer.observe(drawn.value, { include: ['draws'] });
-    if (!observed.ok) throw new Error(`transparent ForgeaX observation failed: ${observed.error.code}`);
+    const drawn = await drawFrame();
     if (rendererKind === 'webgl') await waitForAnimationFrameOrTimeout();
-    else await renderer.observe(drawn.value, { include: ['timings'] });
+    else await renderer.observe(drawn, { include: ['timings'] });
     world.update().unwrap();
-    const warmed = drawFrame();
-    if (!warmed.ok) throw new Error(`transparent ForgeaX warmed draw failed: ${warmed.error.code}`);
-    const warmedObservation = await renderer.observe(warmed.value, { include: ['draws'] });
-    if (!warmedObservation.ok) throw new Error(`transparent ForgeaX warmed observation failed: ${warmedObservation.error.code}`);
+    const warmed = await drawFrame();
     if (rendererKind === 'webgl') await waitForAnimationFrameOrTimeout();
-    else await renderer.observe(warmed.value, { include: ['timings'] });
+    else await renderer.observe(warmed, { include: ['timings'] });
     removeRenderErrorListener();
-    if (renderErrors.length > 0) throw new Error(`transparent ForgeaX render errors: ${renderErrors.join(' | ')}`);
+    if (renderErrors.length > 0) throw new Error(`transparent ForgeAX render errors: ${renderErrors.join(' | ')}`);
     const pixels = await readCanvasPixels(canvas);
     const surfaceEvidence = rendererKind === 'webgl' && fallbackBackendId !== undefined
       ? await projectForgeaxSurfaceEvidence({

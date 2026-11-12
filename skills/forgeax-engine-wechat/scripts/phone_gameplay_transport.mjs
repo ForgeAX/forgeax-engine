@@ -49,7 +49,7 @@ export function createPhoneGameplayTransport(options, wx, report, { now, canShow
       connection.dialog = { attempted: true, content, nativeErrMsg: native?.errMsg };
       try {
         wx.showModal({
-          title: 'ForgeaX diagnostic',
+          title: 'ForgeAX diagnostic',
           content,
           showCancel: false,
           fail(value) {

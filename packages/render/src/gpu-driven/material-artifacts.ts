@@ -1,9 +1,11 @@
 import type { TextureFormat } from '@forgeax/engine-rhi';
 import type { MaterialShaderArtifact } from '@forgeax/engine-shader';
-import { isTriangleTopology } from '@forgeax/engine-types';
+import { isTriangleTopology, type MaterialRenderState } from '@forgeax/engine-types';
 import { GpuDrivenPreparationError } from '../errors/gpu-driven';
-import { transformRenderState } from '../material-render-state';
+import { artifactAlphaMask, maskedInEarlyPassVariantSet } from '../material-alpha-mask';
+import { seededDepthRenderState, transformRenderState } from '../material-render-state';
 import type { MaterialResource } from '../material-resource';
+import { rasterColorFormat, standardSurfaceDiscardMask } from '../material-stage-constants';
 import { SKIN_UNCOVERED_GBUFFER_ENTRY } from '../pbr-pipeline';
 import { captureDispatchOverlays, type DispatchOverlays } from '../record/dispatch-overlays';
 import type { ValidatedRenderable } from '../record/frame-snapshot';
@@ -13,19 +15,20 @@ import {
 } from '../record/main-pass-geometry';
 import { isMediumMaterial } from '../record/material-pass-selection';
 import type { RenderSystemInternals } from '../record/render-context';
-import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
+import {
+  STANDARD_OPAQUE_FRAGMENT_ENTRY,
+  selectStandardForwardScreenEntry,
+} from '../record/standard-opaque-entry';
 import type { FramePresentationPendingReason } from '../render-contract';
 import type { RenderPipelineGpuDrivenFilter } from '../render-pipeline';
-import type { DispatchList, MaterialSnapshot } from '../render-system-extract';
+import type { DispatchList, MaterialSnapshot, RenderableSnapshot } from '../render-system-extract';
 import { GenerationalWeakMap } from '../scene/generational-weak-map';
 import type { AcceptedMaterial, MaterialDispatchPass } from '../scene/material-dispatch';
 import { MaterialFrame } from '../scene/material-dispatch';
 import { capturedPreparedMaterialArtifactKey, type PreparedGpuDrivenDraw } from './prepared-draw';
 import { lodCoverageMayFade } from './production-raster-lod';
-import {
-  requestMaterialAbiRasterPipeline,
-  standardSurfaceDiscardMask,
-} from './production-raster-material';
+import { requestMaterialAbiRasterPipeline } from './production-raster-material';
+import { materialBatchClass } from './row-materials';
 
 type MaterialPrograms = {
   readonly materialHandle: number;
@@ -103,11 +106,94 @@ export interface GpuDrivenMaterialProgramIndex {
   readonly overlays: DispatchOverlays;
 }
 
+/** Whether a staged GPU shadow route still describes the current material programs. */
+export function gpuShadowProgramsCompatible(
+  previous: GpuDrivenMaterialProgramIndex | undefined,
+  current: GpuDrivenMaterialProgramIndex | undefined,
+): boolean {
+  if (previous === undefined || current === undefined) return false;
+  if (previous === current) return true;
+  if (previous.materials.hasBorrowedValues || current.materials.hasBorrowedValues) return false;
+  if (previous.materials === current.materials) return true;
+  let compatible = true;
+  current.materials.changesSince(previous.materials, (before, after) => {
+    if (!compatible) return;
+    if (before === undefined || after === undefined) {
+      compatible = false;
+      return;
+    }
+    if (before.snapshot === after.snapshot) return;
+    // The batch owner already defines which program, binding and route facts
+    // permit one GPU execution to serve different numeric material values.
+    // Raw/custom programs without that proof keep the conservative CPU demand.
+    const beforeClass = materialBatchClass(before.snapshot);
+    compatible = beforeClass !== undefined && beforeClass === materialBatchClass(after.snapshot);
+  });
+  return compatible;
+}
+
 // Accepted versions are replaced as materials change; see GenerationalWeakMap.
 const sharedProgramSelections = new GenerationalWeakMap<
   AcceptedMaterial,
   MaterialPrograms & { readonly snapshot: MaterialSnapshot }
 >();
+
+/** Fixed program reads and dispatch overlays have different producer lifetimes. */
+class CapturedMaterialProgramIndex implements GpuDrivenMaterialProgramIndex {
+  readonly #materials: MaterialFrame;
+  declare readonly overlays: DispatchOverlays;
+
+  constructor(
+    readonly dispatch: DispatchList,
+    readonly materials: MaterialFrame,
+  ) {
+    this.#materials = materials;
+    let overlays: DispatchOverlays | undefined;
+    Object.defineProperty(this, 'overlays', {
+      enumerable: true,
+      configurable: true,
+      get: () => (overlays ??= captureDispatchOverlays(dispatch)),
+    });
+  }
+
+  readonly get = (material: MaterialResource) => {
+    const accepted = this.#materials.get(material);
+    if (accepted === undefined) return undefined;
+    let programs = sharedProgramSelections.get(accepted);
+    if (programs !== undefined) return programs;
+    const forward: MaterialDispatchPass[] = [];
+    const shadow: MaterialDispatchPass[] = [];
+    programs = {
+      snapshot: accepted.snapshot,
+      materialHandle: accepted.snapshot.materialHandle ?? -1,
+      forward,
+      shadow,
+    };
+    for (const pass of accepted.passes) {
+      if (pass.materialShaderId === undefined) continue;
+      if (pass.tags.LightMode === 'ShadowCaster') shadow.push(pass);
+      else if (pass.tags.LightMode === 'Forward' || isMediumMaterial(accepted.snapshot))
+        forward.push(pass);
+    }
+    Object.freeze(forward);
+    Object.freeze(shadow);
+    sharedProgramSelections.set(accepted, programs);
+    return programs;
+  };
+
+  readonly #get = this.get;
+
+  /** A producer-owned fixed root, never a borrowed getter or a raw index signature. */
+  static materialRoot(index: GpuDrivenMaterialProgramIndex | undefined): MaterialFrame | undefined {
+    if (index === undefined || index === null || !(#materials in index)) return undefined;
+    if (
+      Object.getPrototypeOf(index) !== CapturedMaterialProgramIndex.prototype ||
+      Object.getOwnPropertyDescriptor(index, 'get')?.value !== index.#get
+    )
+      return undefined;
+    return MaterialFrame.fixedProgramRoot(index.#materials);
+  }
+}
 
 /** The program index reads fixed shared material roots, without expanding dispatch members. */
 export class GpuDrivenMaterialProgramProjection {
@@ -115,41 +201,7 @@ export class GpuDrivenMaterialProgramProjection {
   project(dispatch: DispatchList, materials: MaterialFrame): GpuDrivenMaterialProgramIndex {
     if (this.current?.dispatch === dispatch && this.current.materials === materials)
       return this.current;
-    let overlays: DispatchOverlays | undefined;
-    this.current = {
-      dispatch,
-      materials,
-      get(material) {
-        const accepted = materials.get(material);
-        if (accepted === undefined) return undefined;
-        let programs = sharedProgramSelections.get(accepted);
-        if (programs !== undefined) return programs;
-        const forward: MaterialDispatchPass[] = [];
-        const shadow: MaterialDispatchPass[] = [];
-        programs = {
-          snapshot: accepted.snapshot,
-          materialHandle: accepted.snapshot.materialHandle ?? -1,
-          forward,
-          shadow,
-        };
-        for (const pass of accepted.passes) {
-          if (pass.materialShaderId === undefined) continue;
-          if (pass.tags.LightMode === 'ShadowCaster') shadow.push(pass);
-          // Medium work owns its nearest/color passes independently of the
-          // ordinary Forward selector, including an authored untagged color Pass.
-          else if (pass.tags.LightMode === 'Forward' || isMediumMaterial(accepted.snapshot))
-            forward.push(pass);
-        }
-        Object.freeze(forward);
-        Object.freeze(shadow);
-        sharedProgramSelections.set(accepted, programs);
-        return programs;
-      },
-      get overlays() {
-        overlays ??= captureDispatchOverlays(dispatch);
-        return overlays;
-      },
-    };
+    this.current = new CapturedMaterialProgramIndex(dispatch, materials);
     return this.current;
   }
   clear(): void {
@@ -229,6 +281,18 @@ export class GpuDrivenMaterialExecutionRetention {
   }
 }
 
+const REQUEST_PASS_BITS = { forward: 0, shadow: 1, depth: 2 } as const;
+
+/** The request fields that vary under the fixed scene-index address, packed to a number. */
+function artifactRequestKey(request: Parameters<BatchArtifactResolver>[1]): number {
+  return (
+    REQUEST_PASS_BITS[request.pass] |
+    (request.deformation === 'skin' ? 4 : 0) |
+    (request.vertexColorAvailable ? 8 : 0) |
+    (request.alphaMask ? 16 : 0)
+  );
+}
+
 /** Each renderer's artifact resolver owns one retention; recovery installs a new resolver. */
 const resolverRetention = new WeakMap<object, GpuDrivenMaterialExecutionRetention>();
 
@@ -261,6 +325,7 @@ export function collectGpuDrivenMaterialArtifacts({
     (reflectionFallback ? 2 : 0) |
     (probeBlend ? 4 : 0) |
     (shadowViews ? 8 : 0);
+  const programIdentity = CapturedMaterialProgramIndex.materialRoot(programs) ?? programs;
   const retainedInputs = retention?.lastInputs;
   // With the same accepted programs, flags and artifact resolutions, every
   // binding of the last join keeps its execution; only new bindings join.
@@ -268,7 +333,7 @@ export function collectGpuDrivenMaterialArtifacts({
     retention !== undefined &&
     retainedInputs !== undefined &&
     retainedInputs.collected === retention.last &&
-    retainedInputs.programs === programs &&
+    retainedInputs.programs === programIdentity &&
     retainedInputs.flags === flags &&
     retainedInputs.reads.every((read) => resolve?.(read.shader, read.request) === read.artifact)
       ? retainedInputs
@@ -278,7 +343,7 @@ export function collectGpuDrivenMaterialArtifacts({
   const materialArtifacts = new Map<string, MaterialShaderArtifact>();
   const shadowMaterialArtifacts = new Map<string, MaterialShaderArtifact>();
   const batchExecutions = new Map<GpuDrivenBatchBinding, BatchExecutions>();
-  const selectedArtifacts = new Map<string, Map<string, MaterialShaderArtifact | undefined>>();
+  const selectedArtifacts = new Map<string, Map<number, MaterialShaderArtifact | undefined>>();
   let firstSkinArtifact: MaterialShaderArtifact | undefined;
   for (const read of distinctReads) {
     let variants = selectedArtifacts.get(read.shader);
@@ -286,8 +351,7 @@ export function collectGpuDrivenMaterialArtifacts({
       variants = new Map();
       selectedArtifacts.set(read.shader, variants);
     }
-    const { pass, deformation, vertexColorAvailable } = read.request;
-    variants.set(`${pass}/${deformation}/${vertexColorAvailable}`, read.artifact);
+    variants.set(artifactRequestKey(read.request), read.artifact);
   }
   const selectArtifact: BatchArtifactResolver = (shader, request) => {
     let variants = selectedArtifacts.get(shader);
@@ -296,7 +360,7 @@ export function collectGpuDrivenMaterialArtifacts({
       selectedArtifacts.set(shader, variants);
     }
     // This resolver's address is always scene-index; the other request fields vary.
-    const key = `${request.pass}/${request.deformation}/${request.vertexColorAvailable}`;
+    const key = artifactRequestKey(request);
     if (!variants.has(key)) {
       const resolved = {
         ...request,
@@ -333,14 +397,9 @@ export function collectGpuDrivenMaterialArtifacts({
       ...(entry.fragmentEntry === undefined ? {} : { fragmentEntry: entry.fragmentEntry }),
     };
   };
-  for (const batch of batches) {
-    const binding = batch.binding;
-    if (binding === undefined)
-      throw new GpuDrivenPreparationError('missing-material-receipt', {
-        reason: 'material-receipt-missing',
-        owner: 'material',
-        expected: 'a geometry and material binding from the scene owner',
-      });
+  // A binding of the last join keeps its executions, so its program lookup and
+  // join closures are only needed for bindings that are new to this frame.
+  const prepareBinding = (binding: GpuDrivenBatchBinding): BatchExecutions => {
     const accepted = programs?.get(binding.material);
     if (accepted === undefined)
       throw new GpuDrivenPreparationError('missing-material-receipt', {
@@ -403,10 +462,21 @@ export function collectGpuDrivenMaterialArtifacts({
         return { route: 'direct', material: accepted.snapshot, pass: execution.value.pass };
       return execution.value;
     };
+    return {
+      forward: prepare('forward'),
+      shadow: shadowViews ? prepare('shadow') : NO_EXECUTION,
+    };
+  };
+  for (const batch of batches) {
+    const binding = batch.binding;
+    if (binding === undefined)
+      throw new GpuDrivenPreparationError('missing-material-receipt', {
+        reason: 'material-receipt-missing',
+        owner: 'material',
+        expected: 'a geometry and material binding from the scene owner',
+      });
     const reused = retainedJoin?.collected.batchExecutions.get(binding);
-    const forward = reused?.forward ?? prepare('forward');
-    const shadow: BatchExecution =
-      reused?.shadow ?? (shadowViews ? prepare('shadow') : NO_EXECUTION);
+    const { forward, shadow } = reused ?? prepareBinding(binding);
     batchExecutions.set(binding, { forward, shadow });
     const forwardKey =
       forward.route === 'gpu' ? capturedPreparedMaterialArtifactKey(forward.prepared) : undefined;
@@ -443,7 +513,7 @@ export function collectGpuDrivenMaterialArtifacts({
   retention.last = published;
   retention.lastInputs = {
     batches,
-    programs,
+    programs: programIdentity,
     flags,
     reads: distinctReads,
     collected: published,
@@ -478,20 +548,49 @@ function sameOrderedEntries<K, V>(
 }
 
 /** Explicit candidate rows use the same geometry/material join as retained scene batches. */
+const hiddenPreparations = new WeakMap<
+  RenderableSnapshot,
+  {
+    readonly draws: ReturnType<typeof eligibleGpuDrivenDraws>;
+    readonly programs: GpuDrivenMaterialProgramProjection;
+    readonly forward: GpuDrivenMaterialExecutionRetention;
+    readonly shadow: GpuDrivenMaterialExecutionRetention;
+  }
+>();
+const EMPTY_HIDDEN_DISPATCH: DispatchList = Object.freeze([]);
+
 export function* prepareHiddenMaterialExecutions(
   entry: ValidatedRenderable,
   materials: MaterialFrame | undefined,
   pass: 'forward' | 'shadow',
   resolve: RenderSystemInternals['getMaterialShaderArtifact'],
 ) {
-  const draws = eligibleGpuDrivenDraws(entry.source);
+  // A validated source owns fixed geometry and bindings. Frame validation may
+  // wrap that same source in a new entry. Do not recapture
+  // those bindings for every hidden PSO lane: doing so defeats the ordinary
+  // execution retention, even when the material and shader are unchanged.
+  // Sources are weak keys; no frame context, device or resolver is retained here.
+  let retained = materials === undefined ? undefined : hiddenPreparations.get(entry.source);
+  if (retained === undefined && materials !== undefined) {
+    retained = {
+      draws: eligibleGpuDrivenDraws(entry.source),
+      programs: new GpuDrivenMaterialProgramProjection(),
+      forward: new GpuDrivenMaterialExecutionRetention(),
+      shadow: new GpuDrivenMaterialExecutionRetention(),
+    };
+    hiddenPreparations.set(entry.source, retained);
+  }
+  const draws = retained?.draws ?? eligibleGpuDrivenDraws(entry.source);
   if (draws.length === 0) return;
   let fixed = materials;
   if (fixed === undefined) {
     fixed = new MaterialFrame(undefined);
     for (const draw of draws) fixed = fixed.with(draw.binding.material);
   }
-  const programs = new GpuDrivenMaterialProgramProjection().project([], fixed);
+  const programs = (retained?.programs ?? new GpuDrivenMaterialProgramProjection()).project(
+    EMPTY_HIDDEN_DISPATCH,
+    fixed,
+  );
   const collected = collectGpuDrivenMaterialArtifacts({
     batches: draws,
     resolve,
@@ -500,12 +599,47 @@ export function* prepareHiddenMaterialExecutions(
     reflectionFallback: false,
     probeBlend: false,
     shadowViews: pass === 'shadow',
+    ...(retained === undefined ? {} : { retention: retained[pass] }),
   });
   for (const draw of draws) {
     const execution = collected.batchExecutions.get(draw.binding)?.[pass];
     if (execution !== undefined) yield { draw, execution };
   }
 }
+/** The raster class's pass state (production-raster-classes shapeRenderState) for a hidden row. */
+function hiddenRenderState(
+  state: MaterialRenderState | undefined,
+  selected: MaterialShaderArtifact,
+  pass: { readonly coverageOnly: boolean; readonly seededDepth?: boolean },
+  world: Float32Array,
+): MaterialRenderState | undefined {
+  const passState =
+    pass.seededDepth === true
+      ? seededDepthRenderState(state, artifactAlphaMask(selected.variantSet))
+      : selected.fragmentEntry === 'fs_temporal'
+        ? geometryRenderStateForPass(state, 'temporal', pass.coverageOnly)
+        : state;
+  return transformRenderState(passState, world);
+}
+
+/** A seeded masked row selects the program without its alpha discard (maskedInEarlyPassVariantSet). */
+function seededHiddenArtifact(
+  artifact: MaterialShaderArtifact,
+  state: MaterialRenderState | undefined,
+  seeded: boolean,
+): MaterialShaderArtifact {
+  if (!seeded) return artifact;
+  const variantSet = maskedInEarlyPassVariantSet(
+    artifact.variantSet,
+    state,
+    seededDepthRenderState(state, artifactAlphaMask(artifact.variantSet)),
+    artifact.fragmentEntry,
+  );
+  return variantSet === undefined || variantSet === artifact.variantSet
+    ? artifact
+    : { ...artifact, variantSet };
+}
+
 /** Only explicitly requested hidden rows; admission and PSO specification are shared with real raster. */
 export function prepareHiddenGpuDrivenPipelines(input: {
   readonly entries: readonly ValidatedRenderable[];
@@ -519,6 +653,8 @@ export function prepareHiddenGpuDrivenPipelines(input: {
   readonly filter: RenderPipelineGpuDrivenFilter | undefined;
   readonly fragmentEntry: string | undefined;
   readonly coverageOnly: boolean;
+  /** Forward opaque over the exact prepass depth (see seededDepthRenderState). */
+  readonly seededDepth?: boolean;
   readonly visibleSurface: boolean;
   /** The recording view carries camera clipping planes; absent keeps them off. */
   readonly viewClipping?: boolean;
@@ -555,8 +691,8 @@ export function prepareHiddenGpuDrivenPipelines(input: {
         prepared.identity.deformation === 'skin' &&
         input.visibleSurface
           ? SKIN_UNCOVERED_GBUFFER_ENTRY
-          : input.fragmentEntry;
-      const selectedArtifact =
+          : selectStandardForwardScreenEntry(input.fragmentEntry, artifact.fragmentEntry);
+      const passArtifact =
         fragment === undefined
           ? artifact
           : {
@@ -567,10 +703,23 @@ export function prepareHiddenGpuDrivenPipelines(input: {
                 ? { variantSet: variantSetForCoveragePass(artifact.variantSet, true) ?? '' }
                 : {}),
             };
+      const renderState = hiddenRenderState(
+        material.renderState,
+        passArtifact,
+        input,
+        entry.source.transform.world,
+      );
+      // Same program as the raster class (production-raster-classes
+      // maskedInEarlyPassArtifact): a seeded masked row drops its alpha discard.
+      const selectedArtifact = seededHiddenArtifact(
+        passArtifact,
+        material.renderState,
+        input.seededDepth === true,
+      );
       const request = requestMaterialAbiRasterPipeline(input.factory, {
         artifact: selectedArtifact,
         deformation: prepared.identity.deformation,
-        format: input.formats[0] ?? 'rgba16float',
+        format: rasterColorFormat(input.formats, 'rgba16float'),
         sampleCount: input.sampleCount,
         layoutProjection: entry.mesh.layoutProjection,
         shaderUvSetCount: input.shaderUvSetCount,
@@ -580,12 +729,7 @@ export function prepareHiddenGpuDrivenPipelines(input: {
           (draw.key.topology === 'triangle-strip' || draw.key.topology === 'line-strip')
             ? entry.mesh.indexFormat
             : undefined,
-        renderState: transformRenderState(
-          fragment === 'fs_temporal'
-            ? geometryRenderStateForPass(material.renderState, 'temporal', input.coverageOnly)
-            : material.renderState,
-          entry.source.transform.world,
-        ),
+        renderState,
         additionalColorFormats: input.formats.slice(1),
         standardTextureMask: material.standardTextureMask,
         // Same facts as the raster class: source LOD capability and view clipping.

@@ -25,6 +25,25 @@ const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
 // the color lattice and every temporal frame keep their original dimensions.
 const SHADOW_MAP_SIZE = 128;
 
+interface DepthWork {
+  readonly pipeline: {
+    readonly descriptor: unknown;
+    readonly shaders: readonly { readonly stage: string; readonly entryPoint: string }[];
+  };
+}
+
+// A masked draw over the Forward prepass tests `equal` against the seeded
+// depth, so the depth convention comes from the prepass that wrote it.
+function seededDepthIsReverse(works: readonly DepthWork[], color: DepthWork): boolean {
+  const writer =
+    works.find((work) =>
+      work.pipeline.shaders.some(
+        (shader) => shader.stage === 'fragment' && shader.entryPoint === 'fs_ao_input',
+      ),
+    ) ?? color;
+  return JSON.stringify(writer.pipeline.descriptor).includes('greater');
+}
+
 function alphaShadowEvidence(shadowAttachment: ReplayReadbackResult, reverse: boolean) {
   const shadowWidth = shadowAttachment.width ?? 0;
   const shadowHeight = shadowAttachment.height ?? 0;
@@ -307,7 +326,7 @@ it.each([
             depth.value.bytes.byteOffset,
             depth.value.bytes.byteLength,
           );
-          const reverse = JSON.stringify(color.pipeline.descriptor).includes('greater');
+          const reverse = seededDepthIsReverse(model.works, color);
           expect(depth.value.provenance.selectedWorkIndex).toBe(color.workIndex);
           expect(shadowPixels.value.provenance.selectedWorkIndex).toBe(shadow.workIndex);
           let invalidDepthPixels = 0,

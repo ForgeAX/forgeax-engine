@@ -2,7 +2,7 @@ import type { EntityHandle, World } from '@forgeax/engine-ecs';
 import { mat4, ray, type Vec3Like, vec3 } from '@forgeax/engine-math';
 import { Instances } from '@forgeax/engine-render';
 import type { AssetHandle, MeshAsset } from '@forgeax/engine-types';
-import { isTriangleTopology } from '@forgeax/engine-types';
+import { isTriangleTopology, ok } from '@forgeax/engine-types';
 import { currentMeshPositions, type PoseUnavailableReason } from './current-positions';
 import { transformMeshVertex, visitSubmeshTriangles } from './mesh-triangles';
 import { computeScreenRay, rayHitsMeshBounds, type ScreenRay } from './pick-core';
@@ -19,6 +19,8 @@ export interface TriangleHit {
   readonly entity: EntityHandle;
   /** Zero-based triangle index across supported triangle submeshes. */
   readonly triangleIndex: number;
+  /** Zero-based index into `MeshAsset.submeshes` of the hit triangle. */
+  readonly submeshIndex: number;
   /** Exact world-space intersection point. */
   readonly point: Vec3Like;
   /** Distance from the screen ray origin in world units. */
@@ -124,6 +126,8 @@ export function pickTriangle(
 
 /** Query exact triangles against a ray derived from the accepted display frame. */
 export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): TrianglePickResult {
+  if (!world.frameArena.isActive)
+    return world.withFrameArena(() => ok(pickTriangleWithScreenRay(world, screen))).unwrap();
   const origin = screen.ray;
   let best: TriangleHit | undefined;
   let unsupportedReason: TrianglePickUnavailableReason | undefined;
@@ -143,7 +147,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
     }
     const [instanceTransforms, instanceCount] = instances;
 
-    const pose = currentMeshPositions(world, entity, mesh);
+    const pose = currentMeshPositions(world, entity, mesh, world.frameArena);
     if ('reason' in pose) {
       if (pose.reason !== 'cpu-geometry-unavailable') {
         unsupportedReason ??= pose.reason;
@@ -179,6 +183,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
       const worldC = vec3.create();
       const worldPoint = vec3.create();
       let triangleIndex = 0;
+      let submeshIndex = 0;
       const indices = mesh.indices;
       const maxVertex = Math.floor(positions.length / 3) - 1;
       const test = (i0: number, i1: number, i2: number, index: number): void => {
@@ -205,6 +210,7 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
           entity,
           ...(assetHandle === undefined ? {} : { assetHandle }),
           triangleIndex: index,
+          submeshIndex,
           point: [worldPoint[0], worldPoint[1], worldPoint[2]] as unknown as Vec3Like,
           distance,
           barycentric: [1 - hit.u - hit.v, hit.u, hit.v],
@@ -213,8 +219,9 @@ export function pickTriangleWithScreenRay(world: World, screen: ScreenRay): Tria
         };
       };
 
-      for (const submesh of mesh.submeshes) {
+      for (const [index, submesh] of mesh.submeshes.entries()) {
         if (!isTriangleTopology(submesh.topology)) continue;
+        submeshIndex = index;
         triangleIndex = visitSubmeshTriangles(submesh, indices, triangleIndex, test);
       }
     }

@@ -6,6 +6,7 @@ export {
 export {
   type DdcArtifact,
   type DdcEntry,
+  type DdcEntryInput,
   DdcEntryStore,
   type DdcReceipt,
   DdcStoreError,
@@ -48,6 +49,13 @@ export {
   type DdcRollbackSnapshot,
   withDdcLock,
 } from './lifecycle.js';
+export {
+  collectNativeCookGarbage,
+  createNativeCookCache,
+  NATIVE_COOK_CACHE_MAX_BYTES,
+  type NativeCookCacheOptions,
+  type NativeCookGcResult,
+} from './native-cook-cache.js';
 export {
   type AcceptedPublicationCandidate,
   type AcceptedPublicationStore,

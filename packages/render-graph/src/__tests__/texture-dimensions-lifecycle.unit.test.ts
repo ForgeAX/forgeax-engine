@@ -12,6 +12,7 @@ function caps(storageTexture: boolean): RhiDevice['caps'] {
     compute: true,
     storageBuffer: true,
     storageTexture,
+    depthTextureLoad: true,
     timestampQuery: false,
     timestampPeriodNanoseconds: null,
     indirectDrawing: false,

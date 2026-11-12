@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 
 const addonSha256 =
   process.env.FORGEAX_WEBGPU_NODE === 'wgpu-native'
@@ -302,9 +303,10 @@ it('preserves one-row texel copies with omitted stride and nonzero buffer offset
         rows.push({ direction, offset, actual: Array.from(actual) });
         const expected = initial.slice();
         expected.set(color, destination);
-        expect(actual, `${direction} offset ${offset}, preserved surrounding bytes`).toEqual(
-          expected,
-        );
+        expect(
+          equalBytes(actual, expected),
+          `${direction} offset ${offset}, preserved surrounding bytes`,
+        ).toBe(true);
       }
     }
     expect(errors).toEqual([]);

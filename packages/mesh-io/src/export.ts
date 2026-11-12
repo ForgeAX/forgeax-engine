@@ -52,7 +52,7 @@ export async function exportMeshes(
       workerData: {
         object: object.value.toJSON(),
         binary: format === 'glb',
-        three: pathToFileURL(require.resolve('three')).href,
+        three: import.meta.resolve('three'),
         exporter: pathToFileURL(require.resolve('three/addons/exporters/GLTFExporter.js')).href,
       },
     });

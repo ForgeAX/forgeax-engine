@@ -2,6 +2,11 @@ import { World } from '@forgeax/engine-ecs';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import {
+  abortFeatureFrame,
+  prepareFeatureFrame,
+  submitFeatureFrame,
+} from '../../__tests__/feature-frame-driver';
 import { projectRendererFeatureInspection } from '../../assembly/renderer-feature-inspection';
 import { createRenderFeatureHost } from '../../features/host';
 import type { RenderFeaturePlan } from '../../features/plan';
@@ -144,7 +149,8 @@ it.each([
       .extract({ worlds: [world], owner: 0, frameNumber: 1, views, caps: device.caps })
       .unwrap();
     expect(data.inspection.left?.temporalResets).toBe(0);
-    const batch = host.runFrame(
+    const batch = prepareFeatureFrame(
+      host,
       views.map((view) => ({
         ...view,
         worlds: [world],
@@ -167,8 +173,8 @@ it.each([
       lastTemporalReset: 'history-missing',
     });
     expect(projected.cloudLayer?.right?.resourceFacts?.declaredHistoryBytes).toBeGreaterThan(0);
-    batch.onAborted();
-    const disabled = host.runFrame([
+    abortFeatureFrame(host);
+    prepareFeatureFrame(host, [
       {
         identity: 'left',
         render: true,
@@ -180,8 +186,7 @@ it.each([
         frame: {},
       },
     ]);
-    disabled.views.get('left')?.onSubmitted();
-    disabled.onSubmitted();
+    submitFeatureFrame(host);
     expect(projectRendererFeatureInspection(host).cloudLayer).toMatchObject({
       left: { status: 'off', resourceStage: 'none' },
     });

@@ -1,6 +1,10 @@
 import {
   initBasisTranscoder,
+  inspectKtx2Native,
+  ktx2Bc5SourceMismatch,
   ktx2ColorSpace,
+  ktx2IsNative,
+  ktx2NativeTexture,
   parseKtx2,
   transcodeBasis,
   transcodeKtx2,
@@ -33,6 +37,16 @@ function invalid(guid: string, expected: string, reason: string) {
 
 function validDimensions(width: number, height: number): boolean {
   return Number.isSafeInteger(width) && width > 0 && Number.isSafeInteger(height) && height > 0;
+}
+
+function packMips(mips: readonly { readonly data: Uint8Array }[]): Uint8Array {
+  const data = new Uint8Array(mips.reduce((total, mip) => total + mip.data.byteLength, 0));
+  let offset = 0;
+  for (const mip of mips) {
+    data.set(mip.data, offset);
+    offset += mip.data.byteLength;
+  }
+  return data;
 }
 
 function imageBytes(value: unknown): Uint8Array | Uint8ClampedArray | undefined {
@@ -74,12 +88,12 @@ export function prepareRuntimeTexture(value: TextureAsset): Result<TextureAsset,
     if (
       value.format !== (value.colorSpace === 'srgb' ? 'rgba8unorm-srgb' : 'rgba8unorm') &&
       !(
-        value.format === 'rgba16float' &&
+        (value.format === 'rgba16float' || value.format === 'bc5-rg-unorm') &&
         value.colorSpace === 'linear' &&
         value.encoding === 'ktx2'
       )
     )
-      return fail('RGBA8 LDR or linear KTX2 RGBA16 HDR source texels');
+      return fail('RGBA8 LDR, linear KTX2 RGBA16 HDR or linear KTX2 BC5 source texels');
     const magic =
       value.encoding === 'basis'
         ? [0x73, 0x42]
@@ -94,7 +108,14 @@ export function prepareRuntimeTexture(value: TextureAsset): Result<TextureAsset,
       if (!parsed.ok) return fail(parsed.error.expected);
       const { header, dfd } = parsed.value;
       const levels = mips.kind === 'packed' ? mips.levelCount : 1;
-      if (
+      if (value.format === 'bc5-rg-unorm') {
+        const mismatch = ktx2Bc5SourceMismatch(value.data, {
+          width: shape.extent.width,
+          height: shape.extent.height,
+          levelCount: levels,
+        });
+        if (mismatch !== undefined) return fail(mismatch);
+      } else if (
         header.pixelWidth !== shape.extent.width ||
         header.pixelHeight !== shape.extent.height ||
         header.pixelDepth > 1 ||
@@ -311,6 +332,43 @@ function encodedTextureLayout(file: EncodedFile): {
 
 // Source admission validates the container but retains its single immutable
 // encoded byte source. Device capabilities belong to Renderer derivation.
+async function readNativeKtx2Surface<P extends TextureAsset | EquirectAsset>(
+  guid: string,
+  expected: string,
+  kind: P['kind'],
+  payload: object,
+  bytes: Uint8Array,
+  parsed: Extract<ReturnType<typeof parseKtx2>, { ok: true }>,
+): Promise<AssetDecoderResult<P>> {
+  const native = inspectKtx2Native(parsed.value);
+  if (!native.ok) return codecDecodeFailure(guid, kind, 'ktx2', undefined, native.error);
+  if (kind !== 'texture') return invalid(guid, expected, 'ktx2-native-equirect-unsupported');
+  const { format, width, height, levelCount } = native.value;
+  const mips = levelCount > 1 ? { kind: 'packed' as const, levelCount } : { kind: 'none' as const };
+  const shape = { viewDimension: '2d' as const, extent: { width, height } };
+  if (format === 'bc5-rg-unorm')
+    return readDecodedSurface(guid, expected, kind, {
+      ...payload,
+      shape,
+      format,
+      colorSpace: 'linear',
+      data: bytes,
+      encoding: 'ktx2',
+      mips,
+    });
+  const unwrapped = await ktx2NativeTexture(parsed.value);
+  if (!unwrapped.ok) return codecDecodeFailure(guid, kind, 'ktx2', undefined, unwrapped.error);
+  const { encoding: _encoding, ...surface } = payload as Partial<TextureAsset>;
+  return readDecodedSurface(guid, expected, kind, {
+    ...surface,
+    shape,
+    format,
+    colorSpace: 'linear',
+    data: packMips(unwrapped.value.mips),
+    mips,
+  });
+}
+
 async function readArtifactSurface<P extends TextureAsset | EquirectAsset>(
   guid: string,
   expected: string,
@@ -333,6 +391,8 @@ async function readArtifactSurface<P extends TextureAsset | EquirectAsset>(
   const parsed = container === 'ktx2' ? await parseKtx2(bytes) : undefined;
   if (parsed !== undefined && !parsed.ok)
     return codecDecodeFailure(guid, kind, container, profile, parsed.error);
+  if (parsed?.ok && codec === undefined && ktx2IsNative(parsed.value))
+    return readNativeKtx2Surface(guid, expected, kind, payload, bytes, parsed);
   if (parsed !== undefined && ktx2ColorSpace(parsed.value) !== colorSpace)
     return invalid(guid, expected, 'ktx2-color-space-mismatch');
   try {
@@ -375,6 +435,7 @@ async function readArtifactSurface<P extends TextureAsset | EquirectAsset>(
       });
     } finally {
       file.close();
+      file.delete();
     }
   } catch (cause) {
     return invalid(

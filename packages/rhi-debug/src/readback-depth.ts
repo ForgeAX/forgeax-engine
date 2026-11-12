@@ -1,4 +1,4 @@
-import type { RhiDevice, Texture } from '@forgeax/engine-rhi';
+import type { BindGroup, RenderPipeline, RhiDevice, Texture } from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { createRhiDebugError, type RhiDebugError } from './errors';
 import { readbackTexturePixelsBatch } from './readback';
@@ -6,6 +6,13 @@ import type { CreateShaderModuleFn } from './recorder/core';
 
 function readbackFailure(cause: string): Result<never, RhiDebugError> {
   return err(createRhiDebugError('readback-failed', { stage: 'readback', cause }));
+}
+
+export function isDepth32FloatCopySource(
+  format: string | undefined,
+  usage: number | undefined,
+): boolean {
+  return format === 'depth32float' && ((usage ?? 0) & 0x01) !== 0;
 }
 
 function depthBlitShader(arrayed: boolean, mipLevel: number, arrayLayer: number): string {
@@ -36,6 +43,108 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 `;
 }
 
+async function depthBlitBindings(
+  device: RhiDevice,
+  source: Texture,
+  mipLevel: number,
+  arrayLayer: number,
+  createShaderModule: CreateShaderModuleFn,
+  arrayed: boolean,
+  isCancelled?: () => boolean,
+): Promise<Result<{ pipeline: RenderPipeline; bindGroup: BindGroup }, RhiDebugError>> {
+  const sourceView = device.createTextureView(source, {
+    dimension: arrayed ? '2d-array' : '2d',
+    aspect: 'depth-only',
+  });
+  if (!sourceView.ok)
+    return readbackFailure(`depth readback source view creation failed: ${sourceView.error.code}`);
+
+  const layout = device.createBindGroupLayout({
+    entries: [
+      {
+        binding: 0,
+        visibility: 0x2,
+        texture: {
+          sampleType: 'depth',
+          viewDimension: arrayed ? '2d-array' : '2d',
+          multisampled: false,
+        },
+      },
+    ],
+  });
+  if (!layout.ok)
+    return readbackFailure(`depth readback bind group layout failed: ${layout.error.code}`);
+  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
+  if (!pipelineLayout.ok)
+    return readbackFailure(`depth readback pipeline layout failed: ${pipelineLayout.error.code}`);
+  const shader = await createShaderModule(device, {
+    code: depthBlitShader(arrayed, mipLevel, arrayLayer),
+    label: 'rhi-debug-depth-readback',
+  });
+  if (!shader.ok) return readbackFailure(`depth readback shader failed: ${shader.error.code}`);
+  if (isCancelled?.()) return readbackFailure('depth snapshot was cancelled');
+  const pipeline = device.createRenderPipeline({
+    layout: pipelineLayout.value,
+    vertex: { module: shader.value, entryPoint: 'vs_main', buffers: [] },
+    fragment: {
+      module: shader.value,
+      entryPoint: 'fs_main',
+      targets: [{ format: 'rgba32float' }],
+    },
+    primitive: { topology: 'triangle-list' },
+  });
+  if (!pipeline.ok)
+    return readbackFailure(`depth readback pipeline failed: ${pipeline.error.code}`);
+  const bindGroup = device.createBindGroup({
+    layout: layout.value,
+    entries: [{ binding: 0, resource: { kind: 'textureView', value: sourceView.value } }],
+  });
+  if (!bindGroup.ok)
+    return readbackFailure(`depth readback bind group failed: ${bindGroup.error.code}`);
+  return ok({ pipeline: pipeline.value, bindGroup: bindGroup.value });
+}
+
+async function copyNativeDepth(
+  device: RhiDevice,
+  source: Texture,
+  width: number,
+  height: number,
+  mipLevel: number,
+  arrayLayer: number,
+  isCancelled?: () => boolean,
+): Promise<Result<Uint8Array, RhiDebugError>> {
+  const read = await readbackTexturePixelsBatch(
+    device,
+    [
+      {
+        handleId: 'depth-source',
+        texture: source,
+        aspect: 'depth-only',
+        bytesPerBlock: 4,
+        blockWidth: 1,
+        blockHeight: 1,
+        totalBytes: width * height * 4,
+        slices: [
+          {
+            layer: arrayLayer,
+            mip: mipLevel,
+            width,
+            height,
+            byteOffset: 0,
+            byteLength: width * height * 4,
+          },
+        ],
+      },
+    ],
+    isCancelled === undefined ? {} : { isCancelled },
+  );
+  if (!read.ok) return read;
+  const bytes = read.value.get('depth-source');
+  return bytes === undefined
+    ? readbackFailure('depth readback returned no bytes')
+    : ok(new Uint8Array(bytes));
+}
+
 export async function readbackDepthTexture(
   device: RhiDevice,
   source: Texture,
@@ -46,61 +155,36 @@ export async function readbackDepthTexture(
   createShaderModule: CreateShaderModuleFn,
   arrayed: boolean,
   isCancelled?: () => boolean,
+  /** The descriptor admits depth32float COPY_SRC; other depth formats stay rasterized. */
+  copySource = false,
 ): Promise<Result<Uint8Array, RhiDebugError>> {
   let output: Texture | undefined;
   try {
     if (isCancelled?.()) return readbackFailure('depth snapshot was cancelled');
-    const sourceView = device.createTextureView(source, {
-      dimension: arrayed ? '2d-array' : '2d',
-      aspect: 'depth-only',
-    });
-    if (!sourceView.ok)
-      return readbackFailure(
-        `depth readback source view creation failed: ${sourceView.error.code}`,
+    if (
+      copySource &&
+      (device.caps.backendKind === 'webgpu' || device.caps.backendKind === 'wgpu-native')
+    ) {
+      return await copyNativeDepth(
+        device,
+        source,
+        width,
+        height,
+        mipLevel,
+        arrayLayer,
+        isCancelled,
       );
-
-    const layout = device.createBindGroupLayout({
-      entries: [
-        {
-          binding: 0,
-          visibility: 0x2,
-          texture: {
-            sampleType: 'depth',
-            viewDimension: arrayed ? '2d-array' : '2d',
-            multisampled: false,
-          },
-        },
-      ],
-    });
-    if (!layout.ok)
-      return readbackFailure(`depth readback bind group layout failed: ${layout.error.code}`);
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout.value] });
-    if (!pipelineLayout.ok)
-      return readbackFailure(`depth readback pipeline layout failed: ${pipelineLayout.error.code}`);
-    const shader = await createShaderModule(device, {
-      code: depthBlitShader(arrayed, mipLevel, arrayLayer),
-      label: 'rhi-debug-depth-readback',
-    });
-    if (!shader.ok) return readbackFailure(`depth readback shader failed: ${shader.error.code}`);
-    if (isCancelled?.()) return readbackFailure('depth snapshot was cancelled');
-    const pipeline = device.createRenderPipeline({
-      layout: pipelineLayout.value,
-      vertex: { module: shader.value, entryPoint: 'vs_main', buffers: [] },
-      fragment: {
-        module: shader.value,
-        entryPoint: 'fs_main',
-        targets: [{ format: 'rgba32float' }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
-    if (!pipeline.ok)
-      return readbackFailure(`depth readback pipeline failed: ${pipeline.error.code}`);
-    const bindGroup = device.createBindGroup({
-      layout: layout.value,
-      entries: [{ binding: 0, resource: { kind: 'textureView', value: sourceView.value } }],
-    });
-    if (!bindGroup.ok)
-      return readbackFailure(`depth readback bind group failed: ${bindGroup.error.code}`);
+    }
+    const bindings = await depthBlitBindings(
+      device,
+      source,
+      mipLevel,
+      arrayLayer,
+      createShaderModule,
+      arrayed,
+      isCancelled,
+    );
+    if (!bindings.ok) return bindings;
 
     const outputResult = device.createTexture({
       size: { width, height, depthOrArrayLayers: 1 },
@@ -130,8 +214,8 @@ export async function readbackDepthTexture(
         },
       ],
     });
-    pass.setPipeline(pipeline.value);
-    pass.setBindGroup(0, bindGroup.value);
+    pass.setPipeline(bindings.value.pipeline);
+    pass.setBindGroup(0, bindings.value.bindGroup);
     pass.draw(3, 1, 0, 0);
     pass.end();
 

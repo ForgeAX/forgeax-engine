@@ -116,7 +116,7 @@ it('submits resident LOD1, then admits late LOD2 without using retired mesh buff
   };
   try {
     for (let index = 0; index < 60; index++) await frame();
-    expect(renderer.inspect().output.graphPassNames).toContain('gpu-driven.frustum-compact');
+    expect(renderer.inspect().output.graphPassNames).toContain('gpu-driven.view-selection');
     await expectColor(1);
     const lowest = assets.create(coloredMesh(2)).unwrap();
     assets

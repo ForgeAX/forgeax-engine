@@ -243,7 +243,7 @@ export async function renderWorldResponse(
         });
         return responseRgb(hdr.bytes, hdr.metadata.bytesPerRow);
       }
-      await new Promise((resolve) => setTimeout(resolve, 2));
+      if (receipt.preparationCompleted !== undefined) unwrap(await receipt.preparationCompleted);
     }
     throw new Error('Skylight scene did not become ready within 300 frames');
   } finally {

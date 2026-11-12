@@ -97,7 +97,7 @@ export function createComputeStateForModule(
 
 export function computeBindGroup(
   frame: RenderGraphFrame,
-  state: ComputeState,
+  state: Pick<ComputeState, 'label' | 'layout' | 'bindGroups'>,
   entries: readonly ComputeBinding[],
 ): BindGroup {
   const device = (frame as RenderPipelineFrame).runtime.device;

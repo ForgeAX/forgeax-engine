@@ -2,6 +2,7 @@ import type { Buffer } from '@forgeax/engine-rhi';
 import { RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-webgpu';
 import { expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { GPU_DRIVEN_BATCH_STRIDE, GPU_DRIVEN_VIEW_WGSL } from '../gpu-driven/view-gpu';
 import { uploadFixture } from './gpu-driven-topology-upload-fixture';
 import { observeGpuInputBytes } from './helpers/gpu-input-bytes';
@@ -70,12 +71,17 @@ it.each([
     // Free arena capacity may receive provisional nodes; held nodes must survive.
     const after = await bytes(device, original.arena, extent);
     for (const address of reachable)
-      expect(after.subarray(address * 4, (address + 8) * 4)).toEqual(
-        before.subarray(address * 4, (address + 8) * 4),
-      );
+      expect(
+        equalBytes(
+          after.subarray(address * 4, (address + 8) * 4),
+          before.subarray(address * 4, (address + 8) * 4),
+        ),
+      ).toBe(true);
     observed.clearFailure();
     f.update(f.original).unwrap();
-    expect(await bytes(device, observed.buffers().tasks, GPU_DRIVEN_BATCH_STRIDE)).toEqual(tasks);
+    expect(
+      equalBytes(await bytes(device, observed.buffers().tasks, GPU_DRIVEN_BATCH_STRIDE), tasks),
+    ).toBe(true);
     expect(observed.members()).toEqual(members);
     f.update(f.original).unwrap();
     expect(f.view.inspect().sharedInputUploadBytes).toBe(0);

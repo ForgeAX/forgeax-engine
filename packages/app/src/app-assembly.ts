@@ -1,7 +1,7 @@
 // Realm-neutral App assembly and frame/lifecycle ownership.
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type { AudioBackend } from '@forgeax/engine-audio';
-import type { DebugDraw } from '@forgeax/engine-debug-draw';
+import type { DebugDrawSource } from '@forgeax/engine-debug-draw';
 import { createWorldContext, type World } from '@forgeax/engine-ecs';
 import type { InputBackend } from '@forgeax/engine-input';
 import type { Platform } from '@forgeax/engine-platform';
@@ -25,7 +25,6 @@ import { assembledEngineProfile } from './internal/assembled-engine-profile';
 import { projectComponentIntrospection } from './internal/component-introspection';
 import { ErrorFanoutRegistry } from './internal/error-fanout';
 import { createFrameLoop } from './internal/frame-loop';
-import { resolveRemoteServeFlag } from './internal/remote-serve-flag';
 import { remoteServerPlugin } from './internal/remote-server-plugin';
 import { bindRhiCaptureFrameDriver, type RhiCapture } from './internal/rhi-capture';
 import { createAppObservation } from './observation';
@@ -143,10 +142,7 @@ export async function createAppFromAssemble(
     );
   }
 
-  const shouldStartRemote = resolveRemoteServeFlag(
-    undefined,
-    (globalThis as { process?: { env?: { FORGEAX_ENGINE_REMOTE_SERVE?: string } } }).process?.env,
-  );
+  const shouldStartRemote = args.remoteServe === true;
   const assembledAudioBackend = pluginContext.audio;
   const frameInspection = createFrameInspectionRef();
   const executionControl = createLocalExecutionControl(
@@ -230,6 +226,8 @@ export interface BuildAppArgs {
   readonly world: World;
   readonly pluginContext: Context;
   readonly disposePluginContext?: () => Promise<void>;
+  /** Releases Host-owned session resources when this App reaches a terminal state. */
+  readonly onTerminal?: () => void;
   readonly inputBackend?: InputBackend | undefined;
   /**
    * M2 D-4: callback that buildApp calls after creating the ErrorFanoutRegistry
@@ -244,7 +242,7 @@ export interface BuildAppArgs {
   /** Optional App-owned RHI capture capability. */
   readonly rhiCapture?: RhiCapture | undefined;
   /** feat-20260615 debug-draw M5: DebugDraw instance created by createDebugDrawOnReady. */
-  readonly debugDraw?: DebugDraw | undefined;
+  readonly debugDraw?: DebugDrawSource | undefined;
   /** feat-20260629 M4 / w20: remote eval server handle from createAppFromCanvas. */
   readonly remoteHandle?: { readonly port: number; close(): Promise<void> } | undefined;
   /**
@@ -356,6 +354,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
     onStateChange: (state) =>
       execution.setEngineHealth(state === 'running' || state === 'stopped' ? state : 'idle'),
     beforeDraw: observation.prepareFrame,
+    onFrameSkipped: () => args.debugDraw?.discard(),
     pacer: execution.framePacer,
     ...(args.geometryLane === undefined ? {} : { geometryLane: args.geometryLane }),
   };
@@ -582,6 +581,7 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
         execution.setEngineHealth('stopped');
       }
       unsubscribeRendererErrors();
+      if (r.ok) args.onTerminal?.();
       return r;
     },
     async dispose(): Promise<Result<void, AppError>> {
@@ -590,8 +590,12 @@ export async function buildApp(args: BuildAppArgs): Promise<Result<App, AppError
       const state = loop.getState();
       const stopped = state === 'running' || state === 'paused' ? loop.stop() : ok(undefined);
       if (state === 'idle') loop.setStopped();
-      await loop.drainFrameReceipts();
-      await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
+      try {
+        await loop.drainFrameReceipts();
+        await (args.disposePluginContext?.() ?? pluginContext.fiber.dispose());
+      } finally {
+        args.onTerminal?.();
+      }
       observation.release();
       unsubscribeRendererErrors();
       execution.setEngineHealth('stopped');

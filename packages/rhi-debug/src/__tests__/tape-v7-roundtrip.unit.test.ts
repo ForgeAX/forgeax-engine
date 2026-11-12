@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeTape, encodeTape } from '../protocol/codec';
+import { decodeTape, decodeTapeContainerIndex, encodeTape } from '../protocol/codec';
 import type { Tape } from '../protocol/types';
 
 const caps = {
@@ -37,6 +37,32 @@ function makeTape(compression: 'none' | 'gzip'): Tape {
 }
 
 describe('v7 tape container', () => {
+  it('compresses useful payloads and preserves incompressible GPU bytes without expansion', () => {
+    let seed = 12345;
+    const noise = Uint8Array.from({ length: 4096 }, () => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return seed & 255;
+    });
+    const source = makeTape('none');
+    const tape: Tape = {
+      ...source,
+      header: { ...source.header, blobCount: 2 },
+      blobs: [
+        { hash: 'sha256:zeros', bytes: new Uint8Array(4096), compression: 'none' },
+        { hash: 'sha256:blocks', bytes: noise, compression: 'none' },
+      ],
+    };
+    const encoded = encodeTape(tape, { compression: 'auto' }).unwrap();
+    const index = decodeTapeContainerIndex(encoded, encoded.length).unwrap();
+    expect(index.blobs.map((blob) => blob.compression)).toEqual(['gzip', 'none']);
+    expect(index.blobs[1]?.length).toBe(noise.length);
+    const decoded = decodeTape(encoded).unwrap();
+    expect(decoded.blobs.map((blob) => blob.bytes)).toEqual(tape.blobs.map((blob) => blob.bytes));
+    // A mixed container retains each blob's chosen representation on re-encode.
+    expect(encodeTape(decoded).unwrap()).toEqual(encoded);
+  });
   it.each(['none', 'gzip'] as const)('round-trips %s with canonical bytes', (compression) => {
     const first = encodeTape(makeTape(compression));
     expect(first.ok).toBe(true);

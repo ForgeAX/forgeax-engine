@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { pnpmCommand } from '../lib/pnpm-command.mjs';
 import { collectViewBackendDiagnostics } from './view-backend-diagnostics.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -43,6 +44,7 @@ const steps = [
     ],
   ],
   ['contracts', 'pnpm', ['exec', 'tsc', '--noEmit', '-p', 'tools/view-plugins/tsconfig.json']],
+  ['contracts', 'node', ['--test', 'tools/view-plugins/modeling/__tests__/model.test.mjs']],
   [
     'contracts',
     'node',
@@ -56,15 +58,15 @@ const steps = [
   ['contracts', 'node', ['scripts/ci/verify-view-dependency-identity.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-export-falsifier.mjs']],
   ['contracts', 'node', ['scripts/ci/verify-view-panels-falsifier.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
-  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   [
     'diagnostics',
     'node',
     ['tools/view/scripts/verify-diagnostic-pages-integration.mjs'],
     ...(process.env.CI === 'true' ? [{ FORGEAX_BROWSER_CI_LIGHTWEIGHT: '1' }] : []),
   ],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-texture-preview-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-authoring-integration.mjs']],
+  ['diagnostics', 'node', ['tools/view/scripts/verify-pack-save-reopen-integration.mjs']],
   ['engine-only', 'node', ['scripts/ci/verify-engine-without-view.mjs']],
 ];
 if (!candidate)
@@ -123,16 +125,19 @@ for (const language of ['js', 'ts'])
       },
     ]);
   }
+// Keep the complete Modeling journey last so no later replay inherits its GPU work.
+steps.push(['modeling', 'node', ['tools/view-plugins/integration/verify-modeling.mjs']]);
 const groups = [...new Set(steps.map(([owner]) => owner).filter((owner) => owner !== 'prepare'))];
 // Keep complete owners and each language's live/cold chain on four processes.
-// Run 39969751546 measured 768 s + 310 s in Game 3D; its former contracts/TS
-// lane hit the 30-minute job bound. Keep Game 3D alone and combine the shorter
-// contracts/TS work with plugin, without changing any command or assertion.
+// Run 42955764870 hit the 30-minute cap after Plugin (782 s) and both runtime
+// chains (JS 95 s, TS 187 s) shared a lane with Modeling. Balance the complete
+// owners against the retained 42130885413 replay; keep Modeling last after the
+// diagnostic replay so no later browser journey inherits its GPU work.
 const shards = [
-  ['contracts', 'plugin', 'runtime-ts'],
-  ['lifecycle', 'workspace', 'engine-only', 'runtime-js'],
+  ['contracts', 'plugin', 'runtime-js', 'runtime-ts'],
+  ['lifecycle', 'workspace', 'engine-only'],
   ['game3d'],
-  ['diagnostics'],
+  ['diagnostics', 'modeling'],
 ];
 if (process.argv.includes('--list-shards')) {
   console.log(JSON.stringify(shards.map((_, index) => index)));
@@ -166,9 +171,11 @@ for (const [owner, file, args, env = {}] of selected) {
   const start = performance.now();
   const startedAt = Date.now();
   const viewProbe = args[0]?.startsWith('tools/view/scripts/verify-');
+  const [command, ...prefix] =
+    file === 'pnpm' ? pnpmCommand() : [file === 'node' ? process.execPath : file];
   const result = spawnSync(
-    file,
-    viewProbe ? [args[0].replace('tools/view/', ''), ...args.slice(1)] : args,
+    command,
+    [...prefix, ...(viewProbe ? [args[0].replace('tools/view/', ''), ...args.slice(1)] : args)],
     {
       cwd: viewProbe ? resolve(root, 'tools/view') : root,
       stdio: 'inherit',
@@ -185,6 +192,7 @@ for (const [owner, file, args, env = {}] of selected) {
       stage: [file, ...args].join(' '),
       seconds: (performance.now() - start) / 1000,
       exitCode: result.status,
+      spawnError: result.error?.message,
       candidate,
       owner,
     }),

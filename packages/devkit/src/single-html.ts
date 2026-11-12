@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from '
 import { tmpdir } from 'node:os';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { type DefaultTreeAdapterTypes, parse } from 'parse5';
 import ts from 'typescript';
 import { type Plugin, parseAst, Visitor, build as viteBuild } from 'vite';
@@ -350,7 +351,7 @@ function collectEntrySource(html: string): CommandResult<string> {
     return errorResult(
       'single-html-entry-ambiguous',
       'production index.html to contain exactly one module entry',
-      'Converge the generated host to one ForgeaX module entry before packaging.',
+      'Converge the generated host to one ForgeAX module entry before packaging.',
       { external: external.length, inline: inline.length },
     );
   }
@@ -811,6 +812,7 @@ async function closeStaticJavaScriptGraphs(
           staticGraphImporterPlugin(graphRoot, artifactIndex),
           singleHtmlBundlePlugin(candidateNamespace),
         ],
+        worker: { format: 'es' },
         build: {
           outDir: outputRoot,
           emptyOutDir: true,
@@ -989,6 +991,8 @@ export async function bundleSingleHtmlEntry(
       base: './',
       logLevel: 'error',
       plugins: [singleHtmlBundlePlugin(), ...(resolver === undefined ? [] : [resolver])],
+      // Worker entries that import shared chunks cannot bundle as the default IIFE.
+      worker: { format: 'es' },
       experimental: {
         renderBuiltUrl: (filename: string) => `forgeax-resource:///${GENERATED_PREFIX}${filename}`,
       },
@@ -1111,7 +1115,9 @@ function runtimeBootstrap(): string {
   const assetManifest = JSON.parse((assetManifestNode?.textContent || '[]').trim());
   const assetDataNodes = [...document.querySelectorAll('script[data-forgeax-asset-index]')];
   const entries = assetManifest.map((entry) => ({ ...entry, node: assetDataNodes[entry.index] })).filter((entry) => entry.node !== undefined);
-  const decode = (entry) => { const binary = atob(entry.node.textContent || ''); const bytes = new Uint8Array(binary.length); for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index); return bytes; };
+  const decodeStored = (entry) => { const binary = atob(entry.node.textContent || ''); const bytes = new Uint8Array(binary.length); for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index); return bytes; };
+  const bodyOf = (entry) => { const stored = decodeStored(entry); return entry.encoding === 'gzip' ? new Blob([stored]).stream().pipeThrough(new DecompressionStream('gzip')) : stored; };
+  const decode = async (entry) => { const body = bodyOf(entry); return body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer()); };
   const normalize = (value) => { try { return decodeURIComponent(String(value).split(/[?#]/, 1)[0]).replaceAll('\\\\', '/').replace(/^\\/+/, ''); } catch { return undefined; } };
   const withoutBundle = (value) => String(value).replace(/^__forgeax-bundle\\//, '');
   const lookup = (input) => { let url; try { url = input instanceof nativeURL ? input : new nativeURL(String(input), document.baseURI); } catch { return undefined; } if (url.protocol === 'data:' || url.protocol === 'blob:') return undefined; const path = normalize(url.pathname); if (path === undefined) return undefined; const normalized = withoutBundle(path); const exact = entries.find((entry) => entry.path === path || withoutBundle(entry.path) === normalized); if (exact !== undefined) return exact; const suffix = entries.filter((entry) => normalized.endsWith('/' + withoutBundle(entry.path))); if (suffix.length === 1) return suffix[0]; const name = normalized.slice(normalized.lastIndexOf('/') + 1); const matches = entries.filter((entry) => withoutBundle(entry.path).slice(withoutBundle(entry.path).lastIndexOf('/') + 1) === name); return matches.length === 1 ? matches[0] : undefined; };
@@ -1120,18 +1126,18 @@ function runtimeBootstrap(): string {
   let resourceHits = 0;
   const noteMiss = (kind, specifier) => { resourceMisses.push({ kind, specifier: String(specifier), realm: 'main' }); };
   const noteExternal = (kind, specifier) => { externalRequests.push({ kind, specifier: String(specifier), realm: 'main' }); };
-  const response = (entry) => { resourceHits += 1; return new Response(decode(entry), { status: 200, headers: { 'Content-Type': entry.mime } }); };
+  const response = (entry) => { resourceHits += 1; return new Response(bodyOf(entry), { status: 200, headers: { 'Content-Type': entry.mime } }); };
   const ownedBlobUrls = new Set();
-  const makeBlobUrl = (entry) => { const url = nativeURL.createObjectURL(new Blob([decode(entry)], { type: entry.mime })); ownedBlobUrls.add(url); return url; };
+  const makeBlobUrl = async (entry) => { const url = nativeURL.createObjectURL(new Blob([await decode(entry)], { type: entry.mime })); ownedBlobUrls.add(url); return url; };
   const dataUrl = (source) => { const bytes = new TextEncoder().encode(source); let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte); return 'data:text/javascript;base64,' + btoa(binary); };
   const workerBootstrapSource = ${JSON.stringify(bootstrapSource)};
   const workerBootstrapUrl = dataUrl(workerBootstrapSource);
   const importUrls = new Map();
-  const forgeaxImport = async (specifier) => { const entry = lookup(specifier); if (entry === undefined) { const text = String(specifier); if (/^(?:https?:)/i.test(text)) noteExternal('import', text); else noteMiss('import', text); throw new TypeError('forgeax single-html resource miss'); } let url = importUrls.get(entry.path); if (url === undefined) { url = makeBlobUrl(entry); importUrls.set(entry.path, url); } resourceHits += 1; return import(url); };
+  const forgeaxImport = async (specifier) => { const entry = lookup(specifier); if (entry === undefined) { const text = String(specifier); if (/^(?:https?:)/i.test(text)) noteExternal('import', text); else noteMiss('import', text); throw new TypeError('forgeax single-html resource miss'); } let url = importUrls.get(entry.path); if (url === undefined) { url = await makeBlobUrl(entry); importUrls.set(entry.path, url); } resourceHits += 1; return import(url); };
   globalThis.__forgeaxImport = forgeaxImport;
   const external = (input) => { try { const url = input instanceof nativeURL ? input : new nativeURL(String(input), document.baseURI); return url.protocol === 'http:' || url.protocol === 'https:'; } catch { return false; } };
   if (typeof nativeFetch === 'function') globalThis.fetch = (input, init) => { const entry = lookup(input); if (entry !== undefined) return Promise.resolve(response(entry)); if (/^(?:data:|blob:)/i.test(String(input))) return nativeFetch(input, init); if (external(input)) { noteExternal('fetch', input); return Promise.reject(new TypeError('forgeax single-html blocked an external request')); } noteMiss('fetch', input); return Promise.reject(new TypeError('forgeax single-html resource miss')); };
-  const sendResource = (worker, request) => { const entry = lookup(request.path); if (entry === undefined) { worker.postMessage({ __forgeaxResourceResponse: { requestId: String(request.requestId), ok: false } }); return; } try { const data = decode(entry); worker.postMessage({ __forgeaxResourceResponse: { requestId: String(request.requestId), ok: true, mime: entry.mime, data: data.buffer } }, [data.buffer]); } catch { worker.postMessage({ __forgeaxResourceResponse: { requestId: String(request.requestId), ok: false } }); } };
+  const sendResource = async (worker, request) => { const entry = lookup(request.path); if (entry === undefined) { worker.postMessage({ __forgeaxResourceResponse: { requestId: String(request.requestId), ok: false } }); return; } try { const data = await decode(entry); worker.postMessage({ __forgeaxResourceResponse: { requestId: String(request.requestId), ok: true, mime: entry.mime, data: data.buffer } }, [data.buffer]); } catch { worker.postMessage({ __forgeaxResourceResponse: { requestId: String(request.requestId), ok: false } }); } };
   const nativeWorker = globalThis.Worker;
   const nativeWorkerURL = (input) => { try { const url = input instanceof nativeURL ? input : new nativeURL(String(input), document.baseURI); return /^(?:blob:|data:)$/i.test(url.protocol); } catch { return false; } };
   const attachWorker = (worker) => { worker.addEventListener('message', (event) => { const request = event.data?.__forgeaxResourceRequest; if (request !== undefined) { sendResource(worker, request); event.stopImmediatePropagation?.(); return; } const miss = event.data?.__forgeaxResourceMiss; if (miss !== undefined) { resourceMisses.push({ ...miss, realm: 'worker' }); event.stopImmediatePropagation?.(); return; } const externalRequest = event.data?.__forgeaxExternalRequest; if (externalRequest !== undefined) { externalRequests.push({ ...externalRequest, realm: 'worker' }); event.stopImmediatePropagation?.(); return; } const hit = event.data?.__forgeaxResourceHit; if (typeof hit === 'number' && Number.isFinite(hit)) { resourceHits += hit; event.stopImmediatePropagation?.(); } }, { capture: true }); return worker; };
@@ -1283,18 +1289,27 @@ function buildHtml(
   const orderedResources = [...resources.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
+  // Resources that shrink are stored gzip-compressed and decoded in the page through
+  // DecompressionStream: Pack meshes, JSON and shader manifests compress several-fold.
+  const stored = orderedResources.map((resource) => {
+    const compressed = gzipSync(resource.bytes, { level: 9 });
+    return compressed.byteLength < resource.bytes.byteLength * 0.9
+      ? { bytes: compressed, encoding: 'gzip' as const }
+      : { bytes: resource.bytes, encoding: undefined };
+  });
   const assetManifestSource = JSON.stringify(
     orderedResources.map((resource, index) => ({
       path: resource.path,
       mime: resource.mediaType,
       index,
+      ...(stored[index]?.encoding === undefined ? {} : { encoding: stored[index].encoding }),
     })),
   );
   const assetManifestNode = `<script type="application/json" id="forgeax-asset-payload" data-forgeax-asset-payload>${safeScriptText(assetManifestSource)}</script>`;
   const assetDataNodes = orderedResources
     .map(
-      (resource, index) =>
-        `<script type="application/octet-stream" data-forgeax-asset-index="${index}">${Buffer.from(resource.bytes).toString('base64')}</script>`,
+      (_resource, index) =>
+        `<script type="application/octet-stream" data-forgeax-asset-index="${index}">${Buffer.from(stored[index]?.bytes ?? new Uint8Array()).toString('base64')}</script>`,
     )
     .join('');
   const assetNode = `${assetManifestNode}${assetDataNodes}`;

@@ -181,7 +181,7 @@ it('matches legacy admission pixels through changing resources, held/retired fra
       first.commit().unwrap();
       const next = store.beginFrame('gpu-admission', 1);
       const replacement = declare(next, [0, 0, 1, 1]);
-      expect(replacement.bindings).not.toBe(original.bindings);
+      expect(Object.is(replacement.bindings, original.bindings)).toBe(false);
       const bluePass = descriptor(replacement);
       for (const optimized of [false, true])
         expect(await render(next, bluePass, optimized)).toEqual([0, 0, 255, 255]);

@@ -88,3 +88,64 @@ describe('Points/Lines per-draw view slots', () => {
     expect(world?.[43]).toBe(1);
   });
 });
+
+it('keeps nested synchronous uploads independent and clears old style lanes after failures', () => {
+  const writes: Float32Array[] = [];
+  const innerQueue = {
+    writeBuffer: (_buffer: Buffer, _offset: number, payload: Float32Array) => {
+      writes.push(payload.slice());
+      return ok(undefined);
+    },
+  } as unknown as RhiQueue;
+  const buffer = {} as Buffer;
+  const plain = camera();
+  const outerQueue = {
+    writeBuffer: (_buffer: Buffer, _offset: number, payload: Float32Array) => {
+      const before = payload.slice();
+      writePointsLinesViewUbo(innerQueue, buffer, { ...plain, fov: 1 }, 12, 8, undefined, {
+        kind: 'lines',
+        width: 2,
+        dashSize: 9,
+        gapSize: 5,
+        cap: 1,
+      });
+      expect(payload).toEqual(before);
+      writes.push(payload.slice());
+      return ok(undefined);
+    },
+  } as unknown as RhiQueue;
+  const nestedCamera = {
+    ...plain,
+    get fov() {
+      writePointsLinesViewUbo(innerQueue, buffer, { ...plain, fov: 1.2 }, 32, 16);
+      return plain.fov;
+    },
+  };
+  writePointsLinesViewUbo(outerQueue, buffer, nestedCamera, 640, 360);
+  const expected = writes.at(-1)?.slice();
+  expect(expected?.slice(36, 44)).toEqual(Float32Array.of(1, 0, 0, 0, 0, 0, 0, 0));
+  expect(() =>
+    writePointsLinesViewUbo(
+      innerQueue,
+      buffer,
+      {
+        ...plain,
+        get fov(): number {
+          throw new Error('camera failed');
+        },
+      },
+      640,
+      360,
+    ),
+  ).toThrow('camera failed');
+  const failedQueue = {
+    writeBuffer: () => {
+      throw new Error('upload failed');
+    },
+  } as unknown as RhiQueue;
+  expect(() => writePointsLinesViewUbo(failedQueue, buffer, plain, 640, 360)).toThrow(
+    'upload failed',
+  );
+  writePointsLinesViewUbo(innerQueue, buffer, plain, 640, 360);
+  expect(writes.at(-1)).toEqual(expected);
+});

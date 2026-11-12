@@ -1,9 +1,9 @@
 import { MOTION_BLUR_PARAMS_BYTE_SIZE } from '../features/motion-blur/motion-blur-params';
 import type { PostProcessShaderEntry } from '../fullscreen-post-process-pass';
-import type { RenderSystem } from '../render-system';
+import type { RendererState } from '../render-system';
 
 export function registerMotionBlurPostProcess(
-  renderSystem: Pick<RenderSystem, 'registerBuiltinPostProcess'>,
+  renderSystem: Pick<RendererState, 'registerBuiltinPostProcess'>,
   source: string,
 ): void {
   renderSystem.registerBuiltinPostProcess('forgeax.motion-blur', {

@@ -41,6 +41,22 @@ above the granted device limit. The real WebGL2 regression
 an extent above the actual limit, recovery to the valid extent, and complete
 surface pixels after canvas-only portrait/landscape changes.
 
+## Device loss
+
+`device.lost` reports actual browser WebGL context loss, including an idle
+context, and explicit device destruction. The WASM device owns the native
+callback and DOM listener; destroy/free removes the listener. Queue polling
+reports detected context loss before rejecting completion, preserving Renderer
+recovery instead of classifying physical loss as an unknown completion fault.
+Borrowed native canvases without DOM events retain the active-queue observation;
+this does not establish idle-loss notification on those hosts.
+
+A restored GL context does not restore its old GPU resources. Allow browser
+context restoration before calling `renderer.recover()` on a retained canvas.
+Split Render Workers use App's existing replacement-realm/canvas recovery.
+The real-context tests retain completed frames and pixel controls; an extension
+loss is not an operating-system/driver reset or a WeChat lifecycle qualification.
+
 ## `acquireCanvasContext(canvas)`
 
 Single-entry surface for context acquisition. Replaces the deleted `createCanvasContext`.
@@ -208,3 +224,15 @@ Command, compute-pass, render-pass and render-bundle adapters require the pinned
 WASM methods they forward. Pass-only operations are excluded from the bundle
 contract. Capability admission remains at the device/backend; command adapters
 never treat a missing native operation as a successful no-op.
+
+## Compatibility conversions
+
+Buffer wrappers retain the allocation size needed to expand copy shorthand; the
+public buffer remains opaque. Uploads convert TypedArray element ranges to byte
+ranges at the same point that the source becomes Uint8Array. Invalid ranges are
+rejected before the WASM provider can clip them. Texture extents accept ordinary
+iterables as well as arrays and dictionaries.
+
+The [Linux WebKit lane](../../scripts/ci/README.md#pinned-webgpu-compatibility)
+checks actual WebGL2 texture rows and typed buffer bytes. It is not iOS/Metal
+qualification. Native WebGPU and fallback results retain their carrier identities.

@@ -3,7 +3,7 @@ import { World } from '@forgeax/engine-ecs';
 import { createBoxGeometry } from '@forgeax/engine-geometry';
 import { Transform } from '@forgeax/engine-scene';
 import { ShaderRegistry } from '@forgeax/engine-shader';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, assert, expect, it, vi } from 'vitest';
 import { MeshFilter, MeshRenderer } from '../../components';
 import { GpuInputArena } from '../../gpu-input-arena';
 import { FrameSet } from '../../scene/frame-set';
@@ -215,4 +215,45 @@ it('binds many Skin rows into an exclusive root without copying the page path pe
   const frame = skin.capture();
   expect(frame.jointCapacity).toBe(rows);
   frame.release?.();
+});
+
+it('uses Render World arena storage for a native transform-only transaction and detaches recycled input', () => {
+  const { assets, world } = scene(128);
+  const memory = new World();
+  const identity = { source: 'numeric-pose-admission', epoch: 1 };
+  const publisher = createRenderPublisher(world, assets, identity);
+  const receiver = new RenderPublicationReceiver(identity, undefined, undefined, memory);
+  const publish = () => {
+    const candidate = publisher.prepare(0).unwrap();
+    const packet = structuredClone(candidate.packet, {
+      transfer: [
+        ...renderPublicationTransfers(candidate.message),
+        ...renderPublicationAssetTransfers(candidate.message),
+      ],
+    });
+    candidate.accept();
+    return { packet, admitted: receiver.accept(encodeRenderPublication(packet)).unwrap() };
+  };
+  world.update(1 / 60).unwrap();
+  const first = publish();
+  assert(first.admitted.scene);
+  const held = first.admitted.scene.rows.capture();
+  const old = held.slotAt(0);
+  assert(old);
+  for (const row of world.query({ read: [Transform] }).unwrap())
+    world.set(row.entity, Transform, { pos: [0, 3, 0] }).unwrap();
+  world.update(1 / 60).unwrap();
+  const changed = publish();
+  assert(changed.admitted.scene);
+  assert(changed.admitted.scene.delta);
+  expect(changed.admitted.operations).toHaveLength(0);
+  expect(changed.admitted.scene.delta.updated).toBe(128);
+  expect(memory.memoryStats().arena.requests).toBe(2);
+  const captured = changed.admitted.scene.rows.capture();
+  changed.packet.transforms.fill(23);
+  expect(captured.slotAt(0)?.snapshot.transform.world[13]).toBe(3);
+  expect(old.snapshot.transform.world[13]).toBe(0);
+  expect(memory.memoryStats().arena.active).toBe(false);
+  receiver.dispose();
+  publisher.dispose();
 });

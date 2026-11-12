@@ -140,7 +140,7 @@ export function createShaderProgramCompiler(): typeof compileShader {
   };
   type Stage = CachedProgram['kind'];
   const MiB = 1024 * 1024;
-  const budgets: Record<Stage, number> = { composition: 16 * MiB, result: 32 * MiB };
+  const budgets: Record<Stage, number> = { composition: 32 * MiB, result: 64 * MiB };
   const retainedBytes: Record<Stage, number> = { composition: 0, result: 0 };
   const programs = new Map<string, CachedProgram>();
   let admittedBy = compileShaderWithComposition;

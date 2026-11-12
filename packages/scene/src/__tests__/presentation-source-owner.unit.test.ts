@@ -6,6 +6,7 @@ import {
   type SystemDescriptor,
   World,
 } from '@forgeax/engine-ecs';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { expect, it, vi } from 'vitest';
 import {
   ChildOf,
@@ -56,12 +57,12 @@ it('captures a moving fixed pose once while preserving the final stop settlement
     capture.descriptor = {
       ...descriptor,
       fn: (...args) => {
-        const set = vi.spyOn(Float32Array.prototype, 'set');
+        const reads = vi.spyOn(world[worldRead], 'copyArray');
         try {
           return descriptor.fn(...args);
         } finally {
-          copies += set.mock.calls.length;
-          set.mockRestore();
+          copies += reads.mock.calls.length;
+          reads.mockRestore();
         }
       },
     };
@@ -229,5 +230,70 @@ it('keeps interpolated motion continuous across a merged fixed catch-up', async 
     frame(0.05);
   } finally {
     await ctx.fiber.dispose();
+  }
+});
+
+it('samples shared parent paths independently and recovers from hot and cold parent cycles', async () => {
+  const world = new World();
+  const context = await createWorldContext(world, [scenePlugin()]);
+  const root = world
+    .spawn({ component: Transform, data: {} }, { component: TransformInterpolation, data: {} })
+    .unwrap();
+  const child = world
+    .spawn(
+      { component: Transform, data: { pos: [1, 0, 0] } },
+      { component: ChildOf, data: { parent: root } },
+    )
+    .unwrap();
+  const grandchild = world
+    .spawn(
+      { component: Transform, data: { pos: [2, 0, 0] } },
+      { component: ChildOf, data: { parent: child } },
+    )
+    .unwrap();
+  const read = world[worldRead];
+  const parent = read.getFieldValue;
+  try {
+    world.update(1 / 60).unwrap();
+    world.set(root, Transform, { pos: [5, 0, 0] }).unwrap();
+    expect(readPresentationWorldMatrix(world, grandchild)?.[12]).toBe(8);
+    expect(readPresentationWorldMatrix(world, child)?.[12]).toBe(6);
+    expect(readPresentationWorldMatrix(world, root)?.[12]).toBe(5);
+    world.set(child, Transform, { pos: [2, 0, 0] }).unwrap();
+    const hotCycle = vi
+      .spyOn(read, 'getFieldValue')
+      .mockImplementation((entity, component, field) =>
+        entity === root && component === ChildOf && field === 'parent'
+          ? grandchild
+          : parent(entity, component, field),
+      );
+    try {
+      expect(readPresentationWorldMatrix(world, grandchild)).toBeUndefined();
+    } finally {
+      hotCycle.mockRestore();
+    }
+    expect(readPresentationWorldMatrix(world, grandchild)?.[12]).toBe(9);
+    const coldRoot = world.spawn({ component: Transform, data: { pos: [1, 0, 0] } }).unwrap();
+    const coldChild = world
+      .spawn(
+        { component: Transform, data: { pos: [1, 0, 0] } },
+        { component: ChildOf, data: { parent: coldRoot } },
+      )
+      .unwrap();
+    const coldCycle = vi
+      .spyOn(read, 'getFieldValue')
+      .mockImplementation((entity, component, field) =>
+        entity === coldRoot && component === ChildOf && field === 'parent'
+          ? coldChild
+          : parent(entity, component, field),
+      );
+    try {
+      expect(readPresentationWorldMatrix(world, coldChild)).toBeUndefined();
+    } finally {
+      coldCycle.mockRestore();
+    }
+    expect(readPresentationWorldMatrix(world, coldChild)?.[12]).toBe(2);
+  } finally {
+    await context.fiber.dispose();
   }
 });

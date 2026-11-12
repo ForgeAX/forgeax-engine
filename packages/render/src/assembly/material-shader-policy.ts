@@ -10,6 +10,7 @@ import type { PipelineLayout, Result, RhiDevice, ShaderModule } from '@forgeax/e
 import { err, ok, RhiError } from '@forgeax/engine-rhi';
 import {
   findVariantByKey,
+  isSupportedVariantDefines,
   type MaterialShaderManifestEntry,
   type MaterialShaderProgram,
   materialShaderSource,
@@ -20,6 +21,7 @@ import {
   type ShaderCatalogDevice,
   STANDARD_PIPELINE_PARAM_SCHEMA,
   standardPhysicalTextureFields,
+  violatedVariantPermutationRules,
 } from '@forgeax/engine-shader';
 import type {
   ParamSchemaEntry,
@@ -73,6 +75,8 @@ import { STANDARD_PBR_REQUIRED_SAMPLED_TEXTURES } from './shader-prewarm-policy'
 export type SeedShaderModule = ShaderDeviceAdapterInternal['seedModule'];
 
 export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
+  /** Borrow only an already completed exact-source module from this live generation. */
+  completedModule(key: string, source: ShaderSource): ShaderModule | undefined;
   /**
    * feat-20260609 R3-fixup: seed the adapter's moduleCache with an
    * already-compiled ShaderModule under `label`. Used by the eager
@@ -86,6 +90,9 @@ export interface ShaderDeviceAdapterInternal extends ShaderCatalogDevice {
    * replacement generation rebuilds only what its predecessor actually used.
    */
   hasModule(label: string): boolean;
+  /** Only this live generation-owned asynchronous request may be retried. */
+  isPending(error: RhiError): boolean;
+  pendingCompletion(): Promise<Result<void, RhiError>> | undefined;
   invalidateModule(label: string): void;
   /** Retire the explicit generation warmup roster and pending callbacks. */
   dispose(): void;
@@ -138,6 +145,9 @@ export function makeShaderDeviceAdapter(
       ) => Result<ShaderModule, RhiError>)
     | undefined,
   mode: ShaderModuleAdapterMode = 'validated',
+  completedValidatedModule?:
+    | ((key: string, source: ShaderSource) => ShaderModule | undefined)
+    | undefined,
 ): ShaderDeviceAdapterInternal {
   const moduleCache = new Map<string, WeakRef<ShaderModule>>();
   let disposed = false;
@@ -157,7 +167,16 @@ export function makeShaderDeviceAdapter(
     release.register(module, { key, ref });
   };
   const errorCache = new Map<string, RhiError>();
-  const pending = new Map<string, { readonly epoch: number; error?: RhiError }>();
+  type PendingModule = {
+    readonly epoch: number;
+    error?: RhiError;
+    completion?: Promise<Result<void, RhiError>>;
+  };
+  const pending = new Map<string, PendingModule>();
+  const pendingSignals = new WeakMap<
+    RhiError,
+    { readonly key: string; readonly request: PendingModule }
+  >();
   const epochs = new Map<string, number>();
   const requested = new Set<string>();
 
@@ -174,7 +193,7 @@ export function makeShaderDeviceAdapter(
       const source = resolved.value;
       const key = desc.label ?? source.identity;
       const previous = sources.get(key);
-      if (previous !== undefined && previous.identity !== source.identity) {
+      if (previous !== undefined && !previous.sameText(source)) {
         epochs.set(key, (epochs.get(key) ?? 0) + 1);
         moduleCache.delete(key);
         errorCache.delete(key);
@@ -182,6 +201,17 @@ export function makeShaderDeviceAdapter(
       }
       sources.set(key, source);
       requested.add(key);
+      // A validated preparation and its later immediate draw must use the same
+      // module object, not start a second PSO for otherwise identical inputs.
+      // Do not retain an alias here: invalidation of the validated owner must
+      // take effect before the next lookup, including an earlier local module.
+      const validated = mode === 'immediate' ? completedValidatedModule?.(key, source) : undefined;
+      if (validated !== undefined) {
+        moduleCache.delete(key);
+        errorCache.delete(key);
+        pending.delete(key);
+        return ok(validated);
+      }
       const cachedModule = moduleCache.get(key)?.deref();
       if (cachedModule !== undefined) return ok(cachedModule);
       const cachedError = errorCache.get(key);
@@ -219,14 +249,16 @@ export function makeShaderDeviceAdapter(
         const asyncResult: Promise<Result<ShaderModule, RhiError>> = asyncCreateShaderModule
           ? asyncCreateShaderModule(rhiDevice, desc2)
           : invokeDeviceCreateShaderModule(rhiDevice, desc2);
-        void asyncResult.then((result) => {
-          if (pending.get(key) !== operation || (epochs.get(key) ?? 0) !== operation.epoch) return;
+        operation.completion = asyncResult.then((result) => {
+          if (pending.get(key) !== operation || (epochs.get(key) ?? 0) !== operation.epoch)
+            return ok(undefined);
           if (result.ok) {
             remember(key, result.value);
           } else {
             errorCache.set(key, result.error);
           }
           pending.delete(key);
+          return result.ok ? ok(undefined) : err(result.error);
         });
       }
 
@@ -234,8 +266,20 @@ export function makeShaderDeviceAdapter(
       // its native promise is pending. Keep its structured signal with that
       // request instead of capturing an Error stack for every retry. Settlement
       // and invalidation retire the complete record, including this signal.
-      request.error ??= makeRhiNotAvailableError(key);
+      if (request.error === undefined) {
+        request.error = makeRhiNotAvailableError(key);
+        pendingSignals.set(request.error, { key, request });
+      }
       return err(request.error);
+    },
+    completedModule(key, source): ShaderModule | undefined {
+      if (disposed) return undefined;
+      const previous = sources.get(key);
+      if (previous === undefined || (previous !== source && !previous.sameText(source)))
+        return undefined;
+      const module = moduleCache.get(key)?.deref();
+      if (module !== undefined) requested.add(key);
+      return module;
     },
     seedModule(label: string, module: ShaderModule, sourceInput: string | ShaderSource): void {
       if (disposed) return;
@@ -248,6 +292,20 @@ export function makeShaderDeviceAdapter(
     },
     hasModule(label: string): boolean {
       return requested.has(label) && moduleCache.get(label)?.deref() !== undefined;
+    },
+    isPending(error: RhiError): boolean {
+      const signal = pendingSignals.get(error);
+      return !disposed && signal !== undefined && pending.get(signal.key) === signal.request;
+    },
+    pendingCompletion() {
+      const completions = [...pending.values()].flatMap((operation) =>
+        operation.completion === undefined ? [] : [operation.completion],
+      );
+      return completions.length === 0
+        ? undefined
+        : Promise.all(completions).then(
+            (results) => results.find((result) => !result.ok) ?? ok(undefined),
+          );
     },
     invalidateModule(label: string): void {
       epochs.set(label, (epochs.get(label) ?? 0) + 1);
@@ -406,23 +464,7 @@ export async function prepareMaterialShaders(
     if (msEntry.variants.some((v) => 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' in v.defines)) {
       variantDefines.GPU_DRIVEN_SCENE_INDEX_AVAILABLE = false;
     }
-    if (msEntry.variants.some((v) => 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT' in v.defines)) {
-      // The boot material is the compact visible-stream path.  Explicit
-      // scene-index dispatches select their own variant at record time; they
-      // must never make the default artifact key unsatisfiable.
-      variantDefines.GPU_DRIVEN_SCENE_INDEX_EXPLICIT = false;
-    }
-    if (msEntry.variants.some((v) => 'ALPHA_MASK' in v.defines)) {
-      // Alpha-mask admission is a per-draw producer fact.  Keep the boot
-      // artifact opaque and resolve ALPHA_MASK=true only for a receipt-owned
-      // shadow batch.
-      variantDefines.ALPHA_MASK = false;
-    }
-    if (msEntry.variants.some((v) => 'DIRECTIONAL_PCSS_AVAILABLE' in v.defines)) {
-      variantDefines.DIRECTIONAL_PCSS_AVAILABLE = directionalPcssCapable(
-        rhiDevice.caps.backendKind,
-      );
-    }
+    bootRecordTimeAxesOff(msEntry, variantDefines);
     if (msEntry.variants.some((v) => 'VERTEX_COLOR_AVAILABLE' in v.defines)) {
       variantDefines.VERTEX_COLOR_AVAILABLE = false;
     }
@@ -645,10 +687,6 @@ export function viewAndSceneDepthLayoutEntries(hasAtmosphere: boolean): GPUBindG
   ];
 }
 
-function directionalPcssCapable(backendKind: RhiDevice['caps']['backendKind']): boolean {
-  return backendKind === 'webgpu' || backendKind === 'wgpu-native';
-}
-
 export function isSharedMaterialUserRegionCompatible(
   paramSchema: readonly ParamSchemaEntry[],
 ): boolean {
@@ -700,6 +738,39 @@ export function isSharedMaterialUserRegionCompatible(
 }
 
 /**
+ * Axes the record stage selects per draw or per frame boot off:
+ * - GPU_DRIVEN_SCENE_INDEX_EXPLICIT: the boot material is the compact
+ *   visible-stream path; explicit scene-index dispatches select their own
+ *   variant and must never make the default artifact key unsatisfiable.
+ * - ALPHA_MASK: a per-draw producer fact; the boot artifact stays opaque and
+ *   ALPHA_MASK=true resolves only for a receipt-owned batch.
+ * - DIRECTIONAL_SHADOW_SIMPLE: a per-frame shadow-config fact; the boot
+ *   artifact keeps the general receiver and record time requests the simple
+ *   one when the frame qualifies.
+ * - LOD_DITHER / CLIPPING_PLANES: discard sources boot absent, so the
+ *   discard-free program is the ordinary one; a draw whose surface discards
+ *   are reachable selects them.
+ */
+const BOOT_OFF_RECORD_TIME_AXES = [
+  'GPU_DRIVEN_SCENE_INDEX_EXPLICIT',
+  'ALPHA_MASK',
+  'DIRECTIONAL_SHADOW_SIMPLE',
+  // Bound 1:1 to DIRECTIONAL_SHADOW_SIMPLE by the permutation rules.
+  'LEAN_LIGHTING',
+  'LOD_DITHER',
+  'CLIPPING_PLANES',
+] as const;
+
+function bootRecordTimeAxesOff(
+  msEntry: MaterialShaderManifestEntry,
+  variantDefines: Record<string, boolean>,
+): void {
+  for (const axis of BOOT_OFF_RECORD_TIME_AXES) {
+    if (msEntry.variants.some((v) => axis in v.defines)) variantDefines[axis] = false;
+  }
+}
+
+/**
  * Select the PBR variant that matches a fallback mesh with no COLOR_0 input.
  * Unknown/custom material IDs may still use the legacy PBR fallback, so that
  * path must obey the same geometry-owned vertex-color axis as registered PBR.
@@ -716,28 +787,36 @@ export function selectNoColorPbrVariant(
   const probeBlendRequested = requestsProbeBlendVariant(variantSet);
   const coverageOnlyRequested = variantSet?.includes('COVERAGE_ONLY=true') === true;
   const visibleSurfaceRequested = variantSet?.includes('VISIBLE_SURFACE_AVAILABLE=true') === true;
+  const alphaMaskRequested = variantSet?.includes('ALPHA_MASK=true') === true;
+  const atmosphereRequested = variantSet?.includes('ATMOSPHERE_AVAILABLE=true') === true;
+  const directionalSimpleRequested =
+    variantSet?.includes('DIRECTIONAL_SHADOW_SIMPLE=true') === true;
+  const leanLightingRequested = variantSet?.includes('LEAN_LIGHTING=true') === true;
   return manifestEntry?.variants.find(
-    (variant) =>
-      variant.defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
-      (!('ATMOSPHERE_AVAILABLE' in variant.defines) ||
-        variant.defines.ATMOSPHERE_AVAILABLE ===
-          variantSet?.includes('ATMOSPHERE_AVAILABLE=true')) &&
-      (!('VISIBLE_SURFACE_AVAILABLE' in variant.defines) ||
-        variant.defines.VISIBLE_SURFACE_AVAILABLE === visibleSurfaceRequested) &&
-      (!('COVERAGE_ONLY' in variant.defines) ||
-        variant.defines.COVERAGE_ONLY === coverageOnlyRequested) &&
-      (!('EXTENDED_LIGHTING_AVAILABLE' in variant.defines) ||
-        variant.defines.EXTENDED_LIGHTING_AVAILABLE === extendedLightingShaderAvailable) &&
-      variant.defines.VERTEX_COLOR_AVAILABLE === false &&
-      (!('DIRECTIONAL_PCSS_AVAILABLE' in variant.defines) ||
-        variant.defines.DIRECTIONAL_PCSS_AVAILABLE === directionalPcssAvailable) &&
-      (!('PROJECTOR_AVAILABLE' in variant.defines) ||
-        variant.defines.PROJECTOR_AVAILABLE === projectorAvailable) &&
-      (!('PROBE_BLEND_AVAILABLE' in variant.defines) ||
-        variant.defines.PROBE_BLEND_AVAILABLE === probeBlendRequested) &&
-      (!('CLUSTER_FORWARD_AVAILABLE' in variant.defines) ||
-        variant.defines.CLUSTER_FORWARD_AVAILABLE === hdrpRequested),
+    ({ defines }) =>
+      defines.STORAGE_BUFFER_AVAILABLE === storageBufferCapable &&
+      defines.VERTEX_COLOR_AVAILABLE === false &&
+      declaredAxisIs(defines, 'ALPHA_MASK', alphaMaskRequested) &&
+      declaredAxisIs(defines, 'ATMOSPHERE_AVAILABLE', atmosphereRequested) &&
+      declaredAxisIs(defines, 'VISIBLE_SURFACE_AVAILABLE', visibleSurfaceRequested) &&
+      declaredAxisIs(defines, 'COVERAGE_ONLY', coverageOnlyRequested) &&
+      declaredAxisIs(defines, 'DIRECTIONAL_SHADOW_SIMPLE', directionalSimpleRequested) &&
+      declaredAxisIs(defines, 'LEAN_LIGHTING', leanLightingRequested) &&
+      declaredAxisIs(defines, 'EXTENDED_LIGHTING_AVAILABLE', extendedLightingShaderAvailable) &&
+      declaredAxisIs(defines, 'DIRECTIONAL_PCSS_AVAILABLE', directionalPcssAvailable) &&
+      declaredAxisIs(defines, 'PROJECTOR_AVAILABLE', projectorAvailable) &&
+      declaredAxisIs(defines, 'PROBE_BLEND_AVAILABLE', probeBlendRequested) &&
+      declaredAxisIs(defines, 'CLUSTER_FORWARD_AVAILABLE', hdrpRequested),
   );
+}
+
+/** An axis the variant does not declare matches any requested value. */
+function declaredAxisIs(
+  defines: Readonly<Record<string, boolean>>,
+  axis: string,
+  value: boolean,
+): boolean {
+  return !(axis in defines) || defines[axis] === value;
 }
 
 function requestsClusterVariant(variantSet: string | undefined): boolean {
@@ -1007,6 +1086,78 @@ export function resolveCachedMaterialShaderVariant(
 }
 
 /**
+ * Opt-in axes the record stage selects per frame (default off). The
+ * publication may narrow them through the shared rule table; a resolved row
+ * the table rejects falls back to the general (false) value instead of
+ * missing its manifest row. Shaders declaring them also declare a capability
+ * axis, so the capability gate above already admits them.
+ */
+// Lean lighting stays opt-in within the simple receiver domain. Each requested
+// row is checked independently against the publication rules below.
+const RULE_GATED_OPT_IN_AXES = ['DIRECTIONAL_SHADOW_SIMPLE', 'LEAN_LIGHTING'] as const;
+
+/**
+ * Producer-owned admission axes: the boot program leaves them off and only a
+ * draw that requests one selects it (alpha mask, surface discards, GPU-driven
+ * scene index, coverage-only, visible surface).
+ */
+function isProducerOptInAxis(axis: string): boolean {
+  return (
+    axis === 'ALPHA_MASK' ||
+    axis === 'LOD_DITHER' ||
+    axis === 'CLIPPING_PLANES' ||
+    axis === 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' ||
+    axis === 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT' ||
+    axis === 'COVERAGE_ONLY' ||
+    axis === 'VISIBLE_SURFACE_AVAILABLE'
+  );
+}
+
+function resolveRuleGatedOptIns(
+  defines: Record<string, boolean>,
+  requested: Readonly<Record<string, boolean>>,
+  variants: readonly { readonly defines: Readonly<Record<string, boolean>> }[],
+): void {
+  for (const axis of RULE_GATED_OPT_IN_AXES) {
+    if (!(axis in defines)) continue;
+    defines[axis] = requested[axis] === true;
+  }
+  for (const axis of RULE_GATED_OPT_IN_AXES) {
+    if (defines[axis] !== true) continue;
+    if (
+      isSupportedVariantDefines(defines) &&
+      variants.some((variant) =>
+        Object.entries(defines).every(([name, value]) => variant.defines[name] === value),
+      )
+    )
+      return;
+    defines[axis] = false;
+  }
+}
+
+/** Surface discard sources a draw may need even when its request leaves them off. */
+const SURFACE_DISCARD_AXES = new Set(['LOD_DITHER', 'CLIPPING_PLANES']);
+
+/**
+ * Programs that already hold a discard (alpha mask, temporal coverage, visible
+ * surface) are published with their discard sources folded in rather than as
+ * extra rows. Turn on every source the permutation rules require for the
+ * selected row, so a draw that left them off still finds its published program.
+ * LOD_DITHER implies CLIPPING_PLANES, so repeat until nothing changes.
+ */
+function selectRequiredDiscardSources(defines: Record<string, boolean>): void {
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const rule of violatedVariantPermutationRules(defines)) {
+      if (!SURFACE_DISCARD_AXES.has(rule.axis) || !rule.value) continue;
+      defines[rule.axis] = true;
+      changed = true;
+    }
+  }
+}
+
+/**
  * Resolve a requested material variant against the actual backend capabilities.
  * Record callers use the native-capability request; the backend-owned axes
  * must be rewritten before the request reaches shader lookup and PSO layout
@@ -1028,7 +1179,6 @@ export function resolveMaterialShaderVariantSet(
     declaredAxes.has('WEBGL2_COMPAT') ||
     declaredAxes.has('STORAGE_BUFFER_AVAILABLE') ||
     declaredAxes.has('EXTENDED_LIGHTING_AVAILABLE') ||
-    declaredAxes.has('DIRECTIONAL_PCSS_AVAILABLE') ||
     declaredAxes.has('PROJECTOR_AVAILABLE');
   if (!declaresCapabilityVariants) return requestedVariantSet;
 
@@ -1064,11 +1214,7 @@ export function resolveMaterialShaderVariantSet(
             ? backendKind !== 'wgpu-webgl2' && storageBuffer
             : axis === 'SKINNING_DISABLED'
               ? (requested[axis] ?? true)
-              : axis === 'ALPHA_MASK' ||
-                  axis === 'GPU_DRIVEN_SCENE_INDEX_AVAILABLE' ||
-                  axis === 'GPU_DRIVEN_SCENE_INDEX_EXPLICIT' ||
-                  axis === 'COVERAGE_ONLY' ||
-                  axis === 'VISIBLE_SURFACE_AVAILABLE'
+              : isProducerOptInAxis(axis)
                 ? (requested[axis] ?? false)
                 : axis === 'CLUSTER_FORWARD_AVAILABLE'
                   ? (requested[axis] ?? false)
@@ -1083,14 +1229,14 @@ export function resolveMaterialShaderVariantSet(
                           : axis === 'TRANSMISSION_AVAILABLE' ||
                               axis === 'REFLECTION_FALLBACK_AVAILABLE'
                             ? (requested[axis] ?? false)
-                            : axis === 'DIRECTIONAL_PCSS_AVAILABLE'
-                              ? directionalPcssCapable(backendKind)
-                              : axis === 'PROJECTOR_AVAILABLE'
-                                ? projectorAvailable
-                                : // Authored axes keep the manifest's all-true default.
-                                  // Only Engine-owned admission axes default to disabled.
-                                  (requested[axis] ?? true);
+                            : axis === 'PROJECTOR_AVAILABLE'
+                              ? projectorAvailable
+                              : // Authored axes keep the manifest's all-true default.
+                                // Only Engine-owned admission axes default to disabled.
+                                (requested[axis] ?? true);
   }
+  selectRequiredDiscardSources(filtered);
+  resolveRuleGatedOptIns(filtered, requested, variants);
   const sorted = Object.entries(filtered).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return sorted.every(([, value]) => value)
     ? requestedVariantSet === undefined
@@ -1223,6 +1369,19 @@ export function materialPipelineShaderSpec(
   };
 }
 
+/**
+ * Material PSO cache key. The spec encodes an absent and a `null` fragment
+ * entry alike, so only the vertex-only depth PSO carries a marker and every
+ * existing key stays byte-identical.
+ */
+export function materialPipelineCacheKey(
+  specKey: string,
+  vertexEntry: string | undefined,
+  fragmentEntry: string | null | undefined,
+): string {
+  return `${specKey}|vertex:${vertexEntry ?? 'vs_main'}${fragmentEntry === null ? '|fs:none' : ''}`;
+}
+
 /** Attachment axis: declared extra outputs follow the primary color format. */
 export function materialPipelineAttachments(
   passKind: PassKind,
@@ -1230,15 +1389,28 @@ export function materialPipelineAttachments(
   additionalColorFormats: readonly GPUTextureFormat[] | undefined,
   depthFormatOverride: GPUTextureFormat | null | undefined,
   sampleCount: number,
+  /** A depth-only scene prepass binds no color attachment. */
+  colorless = false,
 ): PipelineSpec['attachments'] {
   return {
-    colorFormats:
-      additionalColorFormats === undefined
+    colorFormats: colorless
+      ? []
+      : additionalColorFormats === undefined
         ? colorFormatsForPassKind(passKind, colorFormat)
         : [colorFormat, ...additionalColorFormats],
     depthFormat: materialPipelineDepthFormat(passKind, depthFormatOverride),
     sampleCount: (sampleCount === 4 ? 4 : 1) as 1 | 4,
   };
+}
+
+/** Builder color formats: `[]` for a colorless prepass, else primary + additional outputs. */
+export function buildPipelineColorFormats(
+  colorless: boolean,
+  additionalColorFormats: readonly GPUTextureFormat[] | undefined,
+  primary: GPUTextureFormat,
+): GPUTextureFormat[] | undefined {
+  if (colorless) return [];
+  return additionalColorFormats === undefined ? undefined : [primary, ...additionalColorFormats];
 }
 
 /** Depth-only passes default to depth32float; `null` requests a color-only pipeline. */

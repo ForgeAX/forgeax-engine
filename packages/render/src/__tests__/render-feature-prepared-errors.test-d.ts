@@ -32,6 +32,10 @@ function describeGraphicsError(error: RenderFeatureErrorDescriptor): string {
       return error.detail.featureIdentity;
     case 'render-feature-pass-order-conflict':
       return error.detail.featureIdentity;
+    case 'render-feature-input-unavailable':
+      return `${error.detail.view}:${error.detail.reason}`;
+    case 'render-feature-batch-incomplete':
+      return error.detail.missing.join(',');
   }
 }
 
@@ -50,6 +54,10 @@ function renderGraphicsCodeLabel(code: RenderFeatureErrorCode): string {
     case 'render-feature-prepared-state-mismatch':
       return code;
     case 'render-feature-draw-recording-failed':
+      return code;
+    case 'render-feature-input-unavailable':
+      return code;
+    case 'render-feature-batch-incomplete':
       return code;
   }
 }

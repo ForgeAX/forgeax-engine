@@ -21,8 +21,9 @@
 
 import type { Component, ComponentSchema } from './component';
 import { componentSchema } from './component';
-import { componentDefinition } from './component-schema';
+import { type ComponentPlan, componentDefinition } from './component-schema';
 import { ManagedArrayInvalidValueError, SharedFieldInvalidValueError } from './errors';
+import { firstNaNIndex } from './errors/validation-errors';
 
 /** A resolved shared handle is a plain number (the branded Handle bit pattern). */
 function isNumericHandle(v: unknown): boolean {
@@ -53,6 +54,35 @@ function isArrayPayload(value: unknown): boolean {
   // DataView and ArrayBuffer are views/buffers without an element `length`;
   // the storage writer cannot interpret them as a managed array payload.
   return ArrayBuffer.isView(value) && typeof (value as { length?: unknown }).length === 'number';
+}
+
+/**
+ * One-pass acceptance test for the common write payload. Returns true only
+ * when the asset, managed-array, shared and numeric validators would all
+ * accept `raw`; any doubt (including every rejection) returns false so the
+ * caller runs those validators in their fixed order and reports the same
+ * error. Components with asset or shared fields always answer false.
+ */
+export function payloadPassesValueChecks(
+  plan: ComponentPlan,
+  raw: Readonly<Record<string, unknown>>,
+): boolean {
+  if (plan.hasAssetField || plan.hasSharedField) return false;
+  const fields = plan.fields;
+  for (const fieldName in raw) {
+    const field = fields[fieldName];
+    if (field === undefined) continue;
+    const value = raw[fieldName];
+    const kind = field.kind;
+    if (kind === 'number') {
+      if (Number.isNaN(value)) return false;
+    } else if (kind === 'array' || kind === 'fixed-array') {
+      if (value === 0 || value === undefined || value === null) continue;
+      if (!isArrayPayload(value)) return false;
+      if (field.numeric && firstNaNIndex(value) >= 0) return false;
+    }
+  }
+  return true;
 }
 
 /**

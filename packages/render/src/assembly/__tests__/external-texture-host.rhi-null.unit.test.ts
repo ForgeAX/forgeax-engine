@@ -226,7 +226,7 @@ describe('external texture host lifecycle on RhiNull', () => {
     h.beginFrame();
     expect(h.resolve(handle.source, true)?.value).not.toBe(a?.value);
     expect(h.resolve(handle.source, false)?.kind).toBe('textureView');
-    expect(uploads).toEqual([expect.objectContaining({ flipY: true, version: 1 })]);
+    expect(uploads).toEqual([expect.objectContaining({ flipY: false, version: 1 })]);
   });
 
   it('reports a video source that fails to import as source-expired once until it recovers', async () => {
@@ -252,7 +252,7 @@ describe('external texture host lifecycle on RhiNull', () => {
     expect(h.resolve(handle.source, true)?.kind).toBe('externalTexture');
   });
 
-  it('falls back to an unflipped copy in external slots when caps.externalTexture is absent', async () => {
+  it('shares one unflipped copy across external and ordinary slots when caps.externalTexture is absent', async () => {
     currentDevice = Object.create(device, {
       caps: { value: { ...device.caps, externalTexture: false } },
     }) as RhiDevice;
@@ -261,8 +261,8 @@ describe('external texture host lifecycle on RhiNull', () => {
     const handle = must(await h.importTexture({ kind: 'video', source: frame }));
     expect(h.resolve(handle.source, true)?.kind).toBe('textureView');
     expect(h.resolve(handle.source, false)?.kind).toBe('textureView');
-    expect(uploads.map((u) => u.flipY)).toEqual([false, true]);
-    expect(uploads[0]?.key).not.toBe(uploads[1]?.key);
+    expect(uploads.map((u) => u.flipY)).toEqual([false, false]);
+    expect(uploads[0]?.key).toBe(uploads[1]?.key);
     expect((await handle.replace({ kind: 'video', source: frame })).ok).toBe(true);
     h.resolve(handle.source, true);
     expect(uploads[2]).toMatchObject({ version: 2, flipY: false });

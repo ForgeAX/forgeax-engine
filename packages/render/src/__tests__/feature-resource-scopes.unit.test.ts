@@ -5,17 +5,17 @@ import {
   createRenderFeatureHost,
   getRenderFeaturePlanExecutionProjection,
   type RenderFeatureFrameBatch,
+  type RenderFeatureHost,
 } from '../features/host';
 import type { RenderFeatureWork } from '../features/plan';
 import { createRenderFeatureGpuWorkOwner } from '../features/prepared-gpu-work';
 import type { RenderFeature } from '../features/types';
 import { createPreparedGraphicsResolver } from '../prepare/prepared-graphics-resolver';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
 
-function complete(batch: RenderFeatureFrameBatch) {
+function complete(host: RenderFeatureHost, batch: RenderFeatureFrameBatch) {
   expect(batch.frame.errors).toEqual([]);
-  batch.frame.onSubmitted();
-  for (const view of batch.views.values()) view.onSubmitted();
-  batch.onSubmitted();
+  submitFeatureFrame(host);
   for (const resources of batch.preparedResourceBatches) resources.release().unwrap();
 }
 
@@ -98,7 +98,8 @@ describe('prepared feature resource scopes', () => {
     });
     let batch: RenderFeatureFrameBatch | undefined;
     try {
-      batch = f.host.runFrame(
+      batch = prepareFeatureFrame(
+        f.host,
         Array.from({ length: 8 }, (_, index) => ({
           ...f.common,
           identity: `view-${index}`,
@@ -110,7 +111,7 @@ describe('prepared feature resource scopes', () => {
     }
     try {
       if (batch === undefined) throw new Error('Missing feature batch');
-      complete(batch);
+      complete(f.host, batch);
       expect(
         batch.frame.plans.map((plan) => getRenderFeaturePlanExecutionProjection(plan)?.scope),
       ).toEqual(['frame']);
@@ -132,7 +133,7 @@ describe('prepared feature resource scopes', () => {
       expect(new Set(copies.map((copy) => copy.source.buffer)).size).toBe(1);
       expect(new Set(copies.map((copy) => copy.destination.buffer)).size).toBe(8);
     } finally {
-      batch?.onAborted();
+      abortFeatureFrame(f.host);
       f.dispose();
     }
   });
@@ -142,7 +143,7 @@ describe('prepared feature resource scopes', () => {
     const f = await fixture(() => work);
     const allocations = vi.spyOn(f.device, 'createBuffer');
     const callbackOrder: string[] = [];
-    const batch = f.host.runFrame([
+    const batch = prepareFeatureFrame(f.host, [
       {
         ...f.common,
         identity: 'view-0',
@@ -167,7 +168,7 @@ describe('prepared feature resource scopes', () => {
       },
     ]);
     try {
-      complete(batch);
+      complete(f.host, batch);
       expect(callbackOrder).toEqual(['resource-scopes', 'resource-scopes']);
       const plan = batch.views.get('view-0')?.plans[0];
       if (plan === undefined) throw new Error('Missing view plan');
@@ -178,7 +179,7 @@ describe('prepared feature resource scopes', () => {
       expect(copy?.source.buffer).toBe(replacement.value);
     } finally {
       allocations.mockRestore();
-      batch.onAborted();
+      abortFeatureFrame(f.host);
       f.dispose();
     }
   });
@@ -189,7 +190,8 @@ describe('prepared feature resource scopes', () => {
     const destroyed = vi.spyOn(f.device, 'destroyBuffer');
     let callbacks = 0;
     const failure = new Error('Resolver creation failed');
-    const failed = f.host.runFrame(
+    const failed = prepareFeatureFrame(
+      f.host,
       ['view-0', 'view-1'].map((identity) => ({
         ...f.common,
         identity,
@@ -217,15 +219,16 @@ describe('prepared feature resource scopes', () => {
       expect([...failed.views.values()].flatMap((view) => view.plans)).toEqual([]);
       expect(allocations).toHaveBeenCalledTimes(5);
       expect(destroyed).toHaveBeenCalledTimes(5);
-      failed.onAborted();
-      const retried = f.host.runFrame(
+      abortFeatureFrame(f.host);
+      const retried = prepareFeatureFrame(
+        f.host,
         ['view-0', 'view-1'].map((identity) => ({
           ...f.common,
           identity,
           render: true,
         })),
       );
-      complete(retried);
+      complete(f.host, retried);
       expect(allocations).toHaveBeenCalledTimes(10);
       expect(destroyed).toHaveBeenCalledTimes(5);
       for (const view of retried.views.values()) {
@@ -238,7 +241,7 @@ describe('prepared feature resource scopes', () => {
         expect(copy?.source.buffer).toBe(shared.value);
       }
     } finally {
-      failed.onAborted();
+      abortFeatureFrame(f.host);
       allocations.mockRestore();
       destroyed.mockRestore();
       f.dispose();

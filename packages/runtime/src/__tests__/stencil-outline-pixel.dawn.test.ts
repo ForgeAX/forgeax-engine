@@ -1,4 +1,5 @@
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { testAssets } from './helpers/runtime-assets';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 // stencil-outline-pixel.dawn.test.ts -- bug-20260611-stencil-testing-outline-regression.
@@ -310,12 +311,11 @@ describe('bug-20260611 stencil-outline pixel-presence (dawn)', () => {
     if (!attachment.ok) throw attachment.error;
     for (let frame = 0; frame < 4; frame++) {
       world.update(1 / 60).unwrap();
-      const drawn = renderer.draw({
+      await drawReadyFrame(renderer, {
         leases: [attachment.value],
         camera: { lease: attachment.value },
         environment: { lease: attachment.value },
       });
-      expect(drawn.ok).toBe(true);
       await device.queue.onSubmittedWorkDone();
       if (renderTarget === undefined) throw new Error('renderTarget not configured');
 

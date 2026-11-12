@@ -4,8 +4,45 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { drawReadyFrame, driveReadyAppFrames } from '../../test/ready-render-frame.mjs';
+import {
+  completeReadyFrame,
+  drawReadyFrame,
+  driveReadyAppFrames,
+} from '../../test/ready-render-frame.mjs';
 import * as smoke from '../run-dawn-smoke-roster.mjs';
+
+test('scene acceptance keeps the same lease through preparation and GPU completion', async () => {
+  const { drawSceneFrame } = await import('../../test/ready-render-frame.mjs');
+  const scene = Object.freeze({ generation: 7 });
+  const requests = [];
+  let completed = 0;
+  const renderer = {
+    draw(request) {
+      assert.equal(completed, requests.length);
+      requests.push(request);
+      return {
+        ok: true,
+        value: {
+          frameId: requests.length,
+          presentation: requests.length === 1 ? 'pending' : 'ready',
+          completed: Promise.resolve().then(() => {
+            completed++;
+            return { ok: true };
+          }),
+        },
+      };
+    },
+  };
+  const receipt = await drawSceneFrame(renderer, scene);
+  assert.equal(receipt.frameId, 2);
+  assert.equal(completed, 2);
+  assert.equal(requests.length, 2);
+  for (const request of requests) {
+    assert.deepEqual(request.leases, [scene]);
+    assert.equal(request.camera.lease, scene);
+    assert.equal(request.environment.lease, scene);
+  }
+});
 
 const head = '0123456789abcdef0123456789abcdef01234567';
 const digest = 'a'.repeat(64);
@@ -655,4 +692,486 @@ test('ready observation retries distinguish empty barriers and partial pending c
   assert.deepEqual(reads, [2]);
   await renderer.observe(receipt, { include: requested });
   assert.deepEqual(reads, [2, 3]);
+});
+
+test('pending scene preparation waits for its Engine signal without another submission', async () => {
+  let release;
+  const preparationCompleted = new Promise((resolve) => {
+    release = resolve;
+  });
+  let ready = false;
+  let draws = 0;
+  const result = completeReadyFrame(async () => {
+    draws++;
+    return {
+      completed: Promise.resolve({ ok: true }),
+      preparationCompleted,
+      presentation: ready ? 'ready' : 'pending',
+      presentationPendingReason: { code: 'scene-pipeline-preparation' },
+    };
+  });
+  await new Promise(setImmediate);
+  assert.equal(draws, 1);
+  ready = true;
+  release({ ok: true });
+  assert.equal((await result).presentation, 'ready');
+  assert.equal(draws, 2);
+});
+
+test('cold scene preparation accepts a caller-owned deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let ready = false;
+  let draws = 0;
+  let completePreparation;
+  const preparationCompleted = new Promise((resolve) => {
+    completePreparation = resolve;
+  });
+  setTimeout(() => {
+    ready = true;
+    completePreparation({ ok: true });
+  }, 32);
+  const result = completeReadyFrame(async () => {
+    draws++;
+    return {
+      completed: Promise.resolve({ ok: true }),
+      preparationCompleted,
+      presentation: ready ? 'ready' : 'pending',
+      presentationPendingReason: { code: 'scene-pipeline-preparation' },
+    };
+  }, 64);
+  for (let elapsed = 0; elapsed < 80; elapsed++) {
+    t.mock.timers.tick(1);
+    await new Promise(setImmediate);
+  }
+  assert.equal((await result).presentation, 'ready');
+  assert.equal(draws, 2);
+});
+
+test('pending preparation retains its original fifteen-second deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let draws = 0;
+  const pending = completeReadyFrame(async () => {
+    draws++;
+    return {
+      completed: Promise.resolve({ ok: true }),
+      preparationCompleted: new Promise(() => {}),
+      presentation: 'pending',
+      presentationPendingReason: { code: 'scene-pipeline-preparation' },
+    };
+  });
+  const rejected = assert.rejects(pending, /Renderer scene presentation did not become ready/);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+  assert.equal(draws, 1);
+});
+
+test('cold preparation uses its owner budget and resumes only on the Engine signal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let release;
+  let ready = false;
+  let draws = 0;
+  const preparationCompleted = new Promise((resolve) => {
+    release = resolve;
+  });
+  const result = completeReadyFrame(
+    async () => {
+      draws++;
+      return {
+        presentation: ready ? 'ready' : 'pending',
+        presentationPendingReason: { code: 'scene-pipeline-preparation' },
+        completed: Promise.resolve({ ok: true }),
+        preparationCompleted,
+      };
+    },
+    { timeoutMs: 90_000 },
+  );
+  const observed = result.catch((error) => error);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(20_000);
+  await new Promise(setImmediate);
+  assert.equal(draws, 1);
+  ready = true;
+  release({ ok: true });
+  assert.equal((await observed).presentation, 'ready');
+  assert.equal(draws, 2);
+});
+
+test('completed preparation does not consume the next picture GPU budget', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let prepared, gpu;
+  let draws = 0;
+  const preparationCompleted = new Promise((resolve) => {
+    prepared = resolve;
+  });
+  const completed = new Promise((resolve) => {
+    gpu = resolve;
+  });
+  const result = completeReadyFrame(async () =>
+    ++draws === 1
+      ? {
+          presentation: 'pending',
+          presentationPendingReason: { code: 'scene-pipeline-preparation' },
+          completed: Promise.resolve({ ok: true }),
+          preparationCompleted,
+        }
+      : { presentation: 'ready', completed },
+  );
+  const observed = result.catch((error) => error);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(4_000);
+  prepared({ ok: true });
+  await new Promise(setImmediate);
+  t.mock.timers.tick(12_000);
+  gpu({ ok: true });
+  assert.equal((await observed).presentation, 'ready');
+  assert.equal(draws, 2);
+});
+
+test('pending GPU completion starts its wait after the Engine preparation signal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let prepared, gpu;
+  const preparationCompleted = new Promise((resolve) => {
+    prepared = resolve;
+  });
+  const completed = new Promise((resolve) => {
+    gpu = resolve;
+  });
+  let draws = 0;
+  const reads = [];
+  const result = drawReadyFrame(
+    {
+      requestObservation: () => ({ ok: true }),
+      draw: () => ({
+        ok: true,
+        value:
+          ++draws === 1
+            ? {
+                frameId: 1,
+                presentation: 'pending',
+                observationDomains: ['final-display'],
+                preparationCompleted,
+                completed,
+              }
+            : {
+                frameId: 2,
+                presentation: 'ready',
+                observationDomains: ['final-display'],
+                completed: Promise.resolve({ ok: true }),
+              },
+      }),
+      observe: async (receipt) => {
+        reads.push(receipt.frameId);
+        return { ok: true, value: {} };
+      },
+    },
+    {},
+    ['final-display'],
+  );
+  const observed = result.catch((error) => error);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(4_000);
+  prepared({ ok: true });
+  await new Promise(setImmediate);
+  t.mock.timers.tick(12_000);
+  gpu({ ok: true });
+  assert.equal((await observed).presentation, 'ready');
+  assert.equal(draws, 2);
+  assert.deepEqual(reads, [1]);
+});
+
+test('GPU failure interrupts an unresolved preparation signal', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const error = new Error('device lost during pipeline preparation');
+  let actual;
+  const result = completeReadyFrame(async () => ({
+    presentation: 'pending',
+    completed: Promise.resolve({ ok: false, error }),
+    preparationCompleted: new Promise(() => {}),
+  })).catch((failure) => {
+    actual = failure;
+  });
+  await new Promise(setImmediate);
+  assert.equal(actual, error);
+  await result;
+});
+
+test('default scene settlement stays bounded across successful preparation waves', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let draws = 0;
+  await assert.rejects(
+    completeReadyFrame(async () => {
+      draws++;
+      t.mock.timers.tick(10_000);
+      return {
+        presentation: 'pending',
+        presentationPendingReason: { code: 'scene-pipeline-preparation' },
+        completed: Promise.resolve({ ok: true }),
+        preparationCompleted: Promise.resolve({ ok: true }),
+      };
+    }),
+    /Renderer scene presentation did not become ready/,
+  );
+  assert.equal(Date.now(), 90_000);
+  assert.equal(draws, 9);
+});
+
+test('a cold owner budget does not lengthen a stalled GPU submission', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const result = completeReadyFrame(async () => new Promise(() => {}), { timeoutMs: 90_000 });
+  const rejected = assert.rejects(
+    result,
+    /Renderer scene presentation did not become ready.*submission/,
+  );
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+});
+
+test('a cold owner budget does not lengthen a stalled GPU completion', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const result = completeReadyFrame(
+    async () => ({
+      presentation: 'ready',
+      completed: new Promise(() => {}),
+    }),
+    { timeoutMs: 90_000 },
+  );
+  const rejected = assert.rejects(
+    result,
+    /Renderer scene presentation did not become ready.*gpu-completion/,
+  );
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+});
+
+test('physical completion consumers retain their own fifteen-second bound', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const result = completeReadyFrame(
+    async () => ({
+      presentation: 'ready',
+      completed: Promise.resolve({ ok: true }),
+    }),
+    { onCompleted: () => new Promise(() => {}) },
+  );
+  const rejected = assert.rejects(result, /completion-consumer/);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+});
+
+test('a ready picture stalled at its GPU fence reports the GPU owner', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  const result = drawReadyFrame(
+    {
+      draw: () => ({
+        ok: true,
+        value: { presentation: 'ready', completed: new Promise(() => {}) },
+      }),
+    },
+    {},
+  );
+  const rejected = assert.rejects(
+    result,
+    (error) =>
+      error.message.includes('"phase":"gpu-completion"') &&
+      error.message.includes('"presentation":"ready"'),
+  );
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+});
+
+test('a late preparation signal cannot submit after the owner deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let release;
+  let draws = 0;
+  const preparationCompleted = new Promise((resolve) => {
+    release = resolve;
+  });
+  const result = completeReadyFrame(
+    async () => {
+      draws++;
+      return {
+        presentation: 'pending',
+        completed: Promise.resolve({ ok: true }),
+        preparationCompleted,
+      };
+    },
+    { timeoutMs: 30_000 },
+  );
+  const rejected = assert.rejects(result, /Renderer scene presentation did not become ready/);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(30_000);
+  await rejected;
+  release({ ok: true });
+  await new Promise(setImmediate);
+  assert.equal(draws, 1);
+});
+
+test('compilation failure ends waiting without another draw', async () => {
+  const error = new Error('native compilation failed');
+  let draws = 0;
+  await assert.rejects(
+    completeReadyFrame(async () => {
+      draws++;
+      return {
+        presentation: 'pending',
+        completed: Promise.resolve({ ok: true }),
+        preparationCompleted: Promise.resolve({ ok: false, error }),
+      };
+    }),
+    (actual) => actual === error,
+  );
+  assert.equal(draws, 1);
+});
+
+test('a missing required pipeline signal fails closed', async () => {
+  await assert.rejects(
+    completeReadyFrame(async () => ({
+      presentation: 'pending',
+      presentationPendingReason: { code: 'material-pipeline-preparation' },
+      completed: Promise.resolve({ ok: true }),
+    })),
+    /omitted its compilation completion signal/,
+  );
+});
+
+for (const code of ['scene-pipeline-preparation', 'draw-entity-missing']) {
+  test(`first ready GPU work after signalled ${code} preparation uses the remaining owner budget`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+    let finish;
+    let draws = 0;
+    const completed = new Promise((resolve) => {
+      finish = resolve;
+    });
+    const result = completeReadyFrame(async () =>
+      ++draws === 1
+        ? {
+            presentation: 'pending',
+            presentationPendingReason: { code },
+            preparationCompleted: Promise.resolve({ ok: true }),
+            completed: Promise.resolve({ ok: true }),
+          }
+        : { presentation: 'ready', completed },
+    );
+    const observed = result.catch((error) => error);
+    await new Promise(setImmediate);
+    t.mock.timers.tick(20_000);
+    finish({ ok: true });
+    assert.equal((await observed).presentation, 'ready');
+    assert.equal(draws, 2);
+  });
+}
+
+test('a stalled first ready GPU completion still fails at the original total owner deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let draws = 0;
+  let settled = false;
+  const result = completeReadyFrame(async () =>
+    ++draws === 1
+      ? {
+          presentation: 'pending',
+          presentationPendingReason: { code: 'scene-pipeline-preparation' },
+          preparationCompleted: Promise.resolve({ ok: true }),
+          completed: Promise.resolve({ ok: true }),
+        }
+      : { presentation: 'ready', completed: new Promise(() => {}) },
+  ).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await new Promise(setImmediate);
+  t.mock.timers.tick(89_999);
+  await new Promise(setImmediate);
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  assert.match((await result).message, /gpu-completion/);
+});
+
+test('an environment-only barrier does not extend the ready GPU completion bound', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let draws = 0;
+  const result = completeReadyFrame(async () =>
+    ++draws === 1
+      ? {
+          presentation: 'pending',
+          presentationPendingReason: { code: 'environment-not-ready' },
+          preparationCompleted: Promise.resolve({ ok: true }),
+          completed: Promise.resolve({ ok: true }),
+        }
+      : { presentation: 'ready', completed: new Promise(() => {}) },
+  );
+  const rejected = assert.rejects(result, /gpu-completion/);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+  assert.equal(draws, 2);
+});
+
+test('actual archive startup preparation shares the existing cold GPU window', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let completePreparation;
+  let draws = 0;
+  let settled = false;
+  const preparationCompleted = new Promise((resolve) => {
+    completePreparation = resolve;
+  });
+  const result = completeReadyFrame(
+    async () => {
+      draws++;
+      return { presentation: 'ready', completed: new Promise(() => {}) };
+    },
+    { preparationCompleted },
+  ).catch((error) => {
+    settled = true;
+    return error;
+  });
+  await new Promise(setImmediate);
+  assert.equal(draws, 0, 'startup preparation must settle before submission');
+  completePreparation({ ok: true });
+  await new Promise(setImmediate);
+  assert.equal(draws, 1);
+  t.mock.timers.tick(15_000);
+  await new Promise(setImmediate);
+  assert.equal(settled, false, 'actual archive preparation owns the existing cold window');
+  t.mock.timers.tick(75_000);
+  assert.match((await result).message, /gpu-completion/);
+  assert.equal(draws, 1, 'a stalled native fence is never retried');
+});
+
+test('failed archive startup preparation cannot admit any frame', async () => {
+  const error = new Error('archive compilation failed');
+  let draws = 0;
+  await assert.rejects(
+    completeReadyFrame(
+      async () => {
+        draws++;
+      },
+      {
+        preparationCompleted: Promise.resolve({ ok: false, error }),
+      },
+    ),
+    (cause) => cause === error,
+  );
+  assert.equal(draws, 0);
+});
+
+test('stalled archive startup preparation retains its fifteen-second stage', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  let draws = 0;
+  const result = completeReadyFrame(
+    async () => {
+      draws++;
+    },
+    {
+      preparationCompleted: new Promise(() => {}),
+    },
+  );
+  const rejected = assert.rejects(result, /preparation/);
+  await new Promise(setImmediate);
+  t.mock.timers.tick(15_000);
+  await rejected;
+  assert.equal(draws, 0);
 });

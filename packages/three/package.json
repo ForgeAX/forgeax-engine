@@ -30,6 +30,8 @@
   "files": [
     "dist",
     "src",
+    "!src/**/__tests__/**",
+    "!src/generated/**",
     "README.md",
     "COMPATIBILITY.md",
     "migrations",

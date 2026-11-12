@@ -1,6 +1,7 @@
 import type { BindGroupLayout, PipelineLayout, RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { type ShaderCatalog, standardPhysicalTextureFields } from '@forgeax/engine-shader';
 import type { MaterialProgramBindingContract, ParamSchemaEntry } from '@forgeax/engine-types';
+import { materialUsesPlanarReflection } from '../../capture/planar-material';
 import { materialUsesDirectDfgLut } from '../../device/direct-dfg-lut';
 import { MaterialSampledTextureBudgetExceededError } from '../../errors/render';
 import { GPU_SHADER_STAGE_FRAGMENT, GPU_SHADER_STAGE_VERTEX } from '../../gpu-stage';
@@ -262,21 +263,21 @@ export function createMaterialLayoutCache({
     const program = artifact?.program;
     const source = program?.identity ?? '';
     const paramSchema = lookup.ok ? lookup.value.paramSchema : explicitParamSchema;
-    if (
-      isSharedLayoutMaterialShader(materialShaderId) &&
-      !clustered &&
-      !materialUsesDirectDfgLut(paramSchema)
-    )
+    // An entry is retained only after the derivations below accepted this exact
+    // (source, schema) pair, so a hit is the answer they would reproduce.
+    const cacheKey = materialLayoutSlot(layoutKind, clustered);
+    const cached = cacheState.perShaderMaterialLayoutCache.get(materialShaderId)?.get(cacheKey);
+    if (sameMaterialLayoutPublication(cached, source, paramSchema)) return cached.layout;
+    // Optional engine-owned resources extend the Standard layout and its texture budget.
+    const directMultiscatteringLut = materialUsesDirectDfgLut(paramSchema);
+    const planarReflection = materialUsesPlanarReflection(paramSchema);
+    const hasOptionalResources = directMultiscatteringLut || planarReflection;
+    if (isSharedLayoutMaterialShader(materialShaderId) && !clustered && !hasOptionalResources)
       return null;
     const singleLayerMedium =
       materialShaderId === 'forgeax::single-layer-medium' ||
       artifact?.receipt?.surface?.model === 'single-layer-medium';
     if (paramSchema === undefined) return null;
-    const cacheKey = materialLayoutSlot(layoutKind, clustered);
-    const cached = cacheState.perShaderMaterialLayoutCache.get(materialShaderId)?.get(cacheKey);
-    if (cached?.source === source && cached.paramSchema === paramSchema) {
-      return cached.layout;
-    }
     // A custom schema may reuse the shared PBR layout only when every derived
     // binding is an identical canonical prefix. Otherwise build its own layout
     // so texture dimensions and sampler/storage shapes cannot drift.
@@ -288,7 +289,7 @@ export function createMaterialLayoutCache({
       !clustered &&
       !singleLayerMedium &&
       !isStandardMapLayout &&
-      !materialUsesDirectDfgLut(paramSchema) &&
+      !hasOptionalResources &&
       isSharedMaterialUserRegionCompatible(paramSchema)
     ) {
       retainMaterialLayout(cacheState, materialShaderId, layoutKind, clustered, {
@@ -319,7 +320,7 @@ export function createMaterialLayoutCache({
         ),
       },
     });
-    if (materialUsesDirectDfgLut(paramSchema)) {
+    if (hasOptionalResources) {
       const fragmentTextures = (entries: Iterable<GPUBindGroupLayoutEntry>) =>
         Array.from(entries).filter(
           (entry) =>
@@ -340,7 +341,7 @@ export function createMaterialLayoutCache({
           materialHandle: -1,
           limit,
           required,
-          conflicts: ['directMultiscatteringLut'],
+          conflicts: optionalMaterialResourceConflicts(directMultiscatteringLut, planarReflection),
         });
     }
     const bglRes = currentBuildDevice().createBindGroupLayout(desc);
@@ -419,6 +420,16 @@ export function createMaterialLayoutCache({
   };
 }
 
+function sameMaterialLayoutPublication(
+  cached: PerShaderMaterialLayoutCacheEntry | undefined,
+  source: string,
+  paramSchema: readonly ParamSchemaEntry[] | undefined,
+): cached is PerShaderMaterialLayoutCacheEntry {
+  return (
+    paramSchema !== undefined && cached?.source === source && cached.paramSchema === paramSchema
+  );
+}
+
 // Exhaustive codes encode the closed layout union; these are cache keys only.
 const MATERIAL_LAYOUT_CODES: Readonly<Record<LayoutKind, number>> = {
   pbr: 0,
@@ -440,6 +451,14 @@ function materialLayoutSlot(kind: LayoutKind, clustered: boolean): number | stri
   return typeof code === 'number' && typeof clustered === 'boolean'
     ? code * 2 + (clustered ? 1 : 0)
     : `${kind}:${clustered}`;
+}
+
+/** Only a rejected texture budget needs a list of the optional resource names. */
+function optionalMaterialResourceConflicts(directDfg: boolean, planar: boolean): string[] {
+  const resources: string[] = [];
+  if (directDfg) resources.push('directMultiscatteringLut');
+  if (planar) resources.push('planarReflection');
+  return resources;
 }
 
 /** Inline the common single contract; allocate a hash table only for actual fanout. */

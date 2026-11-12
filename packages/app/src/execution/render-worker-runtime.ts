@@ -15,7 +15,9 @@ import {
 import { createFullscreenRenderFeature } from '@forgeax/engine-render/authoring';
 import {
   fullscreenRenderFeatureDeclaration,
+  ownReceivedPublicationMaterials,
   renderGraphCompileCount,
+  verifyPublicationPrograms,
 } from '@forgeax/engine-render/internal';
 import { createRhiDebugError, type RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import {
@@ -40,11 +42,15 @@ import { attachWorkerRhiRecorder } from '../internal/worker-rhi-capture';
 import { type PreparedExecutionBootstrap, prepareBootstrapEntry } from './bootstrap-entry';
 import { emitExecutionDiagnostic, executionDiagnosticSink } from './diagnostic-events';
 import { installCarriedGpuStub } from './gpu-stub';
-import type { SerializedRenderError } from './protocol';
-import { ownReceivedPublicationMaterials } from './received-publication-materials';
+import {
+  DEFAULT_RENDER_PIPELINE_CAPACITY,
+  renderPipelineCapacityOf,
+  type SerializedRenderError,
+} from './protocol';
 import { drainRenderCompletion, joinRenderCompletion } from './render-completion';
 import { RenderDrawTiming } from './render-draw-timing';
 import { RenderMeshResidency } from './render-mesh-residency';
+import { RenderWorkerControlBoundary } from './render-worker-control-boundary';
 import type {
   CompletedMeshConsumption,
   RenderWorkerInput,
@@ -86,13 +92,16 @@ let framesInFlight = 0;
 // This is phase information for those credits, not another queue.
 let unretiredReceipts = 0;
 let renderTaskYield: ExecutionDiagnosticsOptions['renderTaskYield'] = 'none';
-let renderPipelineCapacity: 2 | 3 | 4 = 2;
+let renderPipelineCapacity: 2 | 3 | 4 = DEFAULT_RENDER_PIPELINE_CAPACITY;
 const featureTaskTurns = createRenderWorkerTaskTurns();
 let activePreparationAbort: AbortController | undefined;
 let failed = false;
 let shuttingDown = false;
 let initializing: Promise<void> | undefined;
 let completing: Promise<void> = Promise.resolve();
+// Credit order of the admitted frames. A frame is credited after its
+// predecessor's credit, never after the predecessor's held retirement.
+let crediting: Promise<void> = Promise.resolve();
 let attachment: RecorderAttachment | undefined;
 let capture: RhiCapture | undefined;
 let captureBoundary: ReturnType<RecorderAttachment['frameBoundary']> | undefined;
@@ -110,6 +119,8 @@ interface WorkerCaptureRequest {
 }
 let activeCaptureDraw: CaptureDrawTransaction | undefined;
 let gpuPassTimingEnabled = false;
+/** Frames this session rendered without timing because every timing slot was in flight. */
+let gpuPassTimingSkippedFrames = 0;
 const terrainReceipts = new Map<number, FrameReceipt>();
 const captureRequests = new Map<number, WorkerCaptureRequest>();
 let synchronizeFeatures: (features: RenderPublication['features']) => Promise<void> =
@@ -247,7 +258,7 @@ function inspectRendererDiagnostics():
   | undefined {
   if (renderer === undefined) return undefined;
   try {
-    const inspection = renderer.inspect();
+    const inspection = renderer.inspect({ fields: ['state', 'frame', 'capabilities', 'limits'] });
     return {
       state: inspection.state,
       frameId: inspection.frame.frameId,
@@ -324,23 +335,65 @@ function traceCompletion(
   });
 }
 
+const discardTimingFailure = (): undefined => undefined;
+
+function timingSlotsExhausted(observation: GpuPassTimingObservation | undefined): boolean {
+  return (
+    observation?.status === 'failed' && observation.error.code === 'timing-in-flight-exhausted'
+  );
+}
+
+/**
+ * Timestamp readback resolves after GPU completion and never holds frame
+ * credit. Its result follows the frame's completion as an independent message;
+ * a frame whose capture found every timing slot in flight is counted as skipped.
+ */
+async function deliverGpuPassTiming(
+  message: DrawMessage,
+  receipt: FrameReceipt,
+  observedTiming: ReturnType<Renderer['observe']>,
+): Promise<void> {
+  let timingResult: Awaited<ReturnType<Renderer['observe']>>;
+  try {
+    timingResult = await observedTiming;
+  } catch (cause) {
+    if (!shuttingDown) fail(message, cause);
+    return;
+  }
+  // Disposal retires the session; a readback that resolves later has no reader.
+  if (failed || shuttingDown || !timingResult.ok) return;
+  const gpuPassTiming = timingResult.value.timings;
+  if (gpuPassTiming === undefined) return;
+  if (timingSlotsExhausted(gpuPassTiming)) gpuPassTimingSkippedFrames++;
+  scope.postMessage({
+    kind: 'gpu-pass-timing',
+    frameId: message.frameId,
+    deviceGeneration: receipt.deviceGeneration,
+    gpuPassTiming,
+    skippedFrames: gpuPassTimingSkippedFrames,
+  } satisfies RenderWorkerOutput);
+}
+
 async function completeFrame(
   message: DrawMessage,
   frameRenderer: Renderer,
   receipt: FrameReceipt,
   previous: Promise<void>,
+  previousCredit: Promise<void>,
+  credited: () => void,
   snapshotBoundary?: Promise<unknown>,
   meshConsumption?: CompletedMeshConsumption,
   captureDraw?: CaptureDrawTransaction,
 ): Promise<void> {
   const submittedAt = performance.now();
   let creditReturned = false;
-  let previousSettled = false;
   try {
     // Observe this receipt immediately, before the next draw changes frame state.
     const observedTiming = gpuPassTimingEnabled
       ? frameRenderer.observe(receipt, { include: ['timings'] })
       : undefined;
+    // Timing readback is delivered after credit; a failed frame never reads it.
+    observedTiming?.catch(discardTimingFailure);
     // Credit feedback follows GPU completion even while a cooperative draw
     // holds completion-driven releases; teardown below still awaits completed.
     const completion = (receipt.creditCompleted ?? receipt.completed).then((result) => {
@@ -352,16 +405,22 @@ async function completeFrame(
       }
       return undefined;
     });
-    const timingResult = await joinRenderCompletion(completion, observedTiming, snapshotBoundary);
-    settleCaptureDraw(captureDraw, receipt, timingResult);
+    await joinRenderCompletion(completion, snapshotBoundary);
+    // A capture reports its receipt timing; it never holds this frame's credit.
+    if (observedTiming === undefined) settleCaptureDraw(captureDraw, receipt, undefined);
+    else if (captureDraw !== undefined)
+      void observedTiming.then(
+        (timingResult) => settleCaptureDraw(captureDraw, receipt, timingResult),
+        () => failCaptureDraw(captureDraw),
+      );
     traceCompletion('render-own-composite-continuation', message, receipt);
     // Composite receipts/readbacks can finish out of order. The publisher and
     // Host advance only the contiguous completed prefix, never a newer frame.
-    await previous;
-    previousSettled = true;
+    // The prefix is the predecessor's credit: its retirement still waits for
+    // completion-driven releases a cooperative draw holds until it ends.
+    await previousCredit;
     traceCompletion('render-previous-prefix-passed', message, receipt);
     if (failed) return;
-    const gpuPassTiming = timingResult?.ok === true ? timingResult.value.timings : undefined;
     const buffers = renderPublicationTransfers(message.publication);
     const frame = {
       kind: 'frame-complete',
@@ -388,7 +447,6 @@ async function completeFrame(
         kind: 'completed',
         revision: message.publication.revision,
         buffers,
-        ...(gpuPassTiming === undefined ? {} : { gpuPassTiming }),
         ...(meshConsumption === undefined ? {} : { meshConsumption }),
         frame,
       },
@@ -401,12 +459,18 @@ async function completeFrame(
     // checkpoint of the current draw, before this receipt is fully retired.
     creditReturned = true;
     framesInFlight--;
+    credited();
+    if (observedTiming !== undefined) void deliverGpuPassTiming(message, receipt, observedTiming);
   } catch (cause) {
     // A failed successor must stop admission even while an older receipt waits.
     fail(message, cause);
   } finally {
+    // A frame that returns no credit still passes the prefix to its successor.
+    credited();
     // Observation failure cannot let disposal outrun this frame or its predecessor.
-    await drainRenderCompletion(receipt.completed, previous, previousSettled);
+    const retirement = await drainRenderCompletion(receipt.completed, previous);
+    // Credit follows the GPU work alone, so a retirement-only failure reports here.
+    if (creditReturned && retirement?.ok === false) fail(message, retirement.error);
     closeVideoFrames(message);
     unretiredReceipts--;
     if (!creditReturned) framesInFlight--;
@@ -502,14 +566,17 @@ async function receiveDispose(): Promise<void> {
 async function receiveMeshControl(
   message: Extract<RenderWorkerInput, { kind: 'mesh-prepare' | 'mesh-release' }>,
 ): Promise<void> {
+  // Capture at receipt, before initialization or any later draw can advance the cut.
+  const through = drawControls.cut;
   try {
     await initializing;
-    // A suspended recording owns its extracted mesh/binding references.
-    // Keep resource controls behind that same serial draw drain.
-    if (renderTaskYield === 'features') await drawing;
-    if (failed || shuttingDown) return;
-    if (meshResidency === undefined) throw new Error('Render mesh receiver is not ready');
-    await meshResidency.receive(message);
+    const start = async () => {
+      if (failed || shuttingDown) return;
+      if (meshResidency === undefined) throw new Error('Render mesh receiver is not ready');
+      await meshResidency.receive(message);
+    };
+    if (renderTaskYield === 'features') await drawControls.after(through, start);
+    else await start();
   } catch (cause) {
     fail(message, cause);
   }
@@ -706,9 +773,9 @@ function adoptInitPolicies(message: InitMessage): void {
   hostPort = message.hostPort;
   geometryLane = message.geometryLane;
   renderTaskYield = message.renderTaskYield ?? 'none';
-  renderPipelineCapacity =
-    message.renderPipelineCapacity === 4 ? 4 : message.renderPipelineCapacity === 3 ? 3 : 2;
+  renderPipelineCapacity = renderPipelineCapacityOf(message.renderPipelineCapacity);
   gpuPassTimingEnabled = message.gpuPassTiming !== undefined;
+  gpuPassTimingSkippedFrames = 0;
 }
 
 function recorderRendererOptions(
@@ -957,6 +1024,9 @@ async function receiveInit(message: InitMessage): Promise<void> {
 }
 
 /** Resizes the canvas, synchronizes published features and yields; false when the turn lost admission. */
+/** Releases the digest evidence of the current draw's byte programs once that draw has admitted them. */
+let releaseVerifiedPrograms: (() => void) | undefined;
+
 async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): Promise<boolean> {
   if (message.width > 0 && message.height > 0) {
     if (target.width !== message.width) target.width = message.width;
@@ -964,6 +1034,13 @@ async function prepareDrawTurn(message: DrawMessage, target: OffscreenCanvas): P
   }
   await synchronizeFeatures(message.publication.side?.features ?? []);
   if (failed || shuttingDown) return false;
+  // A packet that introduces byte programs has their digests computed off this
+  // thread; the held evidence lets the synchronous admission skip its own hash.
+  const verification = verifyPublicationPrograms(message.publication.side?.programs);
+  if (verification !== undefined) {
+    releaseVerifiedPrograms = await verification;
+    if (failed || shuttingDown) return false;
+  }
   // Keep this draw in the same serial drain and retain its publication
   // credit. A real older receipt may complete during this single task turn,
   // letting its existing completion/ACK wake the Engine Worker before the
@@ -1172,11 +1249,18 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
     captureBoundary = undefined;
     completionOwnsFrame = true;
     unretiredReceipts++;
+    const previousCredit = crediting;
+    let credited!: () => void;
+    crediting = new Promise((resolve) => {
+      credited = resolve;
+    });
     completing = completeFrame(
       message,
       frameRenderer,
       receipt,
       completing,
+      previousCredit,
+      credited,
       snapshotBoundary,
       meshConsumption,
       captureDraw,
@@ -1191,6 +1275,8 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
   } catch (cause) {
     fail(message, cause);
   } finally {
+    releaseVerifiedPrograms?.();
+    releaseVerifiedPrograms = undefined;
     drawTiming.end();
     busy = false;
     if (!completionOwnsFrame) {
@@ -1199,6 +1285,7 @@ async function receiveDraw(message: DrawMessage): Promise<void> {
     }
   }
 }
+const drawControls = new RenderWorkerControlBoundary();
 let drawing: Promise<void> | undefined;
 const queued: DrawMessage[] = [];
 scope.onmessage = (event) => {
@@ -1227,6 +1314,7 @@ scope.onmessage = (event) => {
     return;
   }
   framesInFlight++;
+  drawControls.admitDraw();
   drawTiming.arrive(message);
   if (drawing !== undefined) {
     queued.push(message);
@@ -1234,9 +1322,18 @@ scope.onmessage = (event) => {
   }
   const drain = async (first: DrawMessage): Promise<void> => {
     await receive(first);
+    drawControls.recordedDraw();
     while (queued.length > 0) {
       const next = queued.shift();
-      if (next !== undefined) await receive(next);
+      if (next !== undefined) {
+        // Back-to-back draws share no task boundary. One turn here lets a
+        // submitted frame's GPU completion return its credit before the next
+        // synchronous preparation occupies this Worker.
+        if (renderTaskYield === 'features' && unretiredReceipts > 0 && !failed && !shuttingDown)
+          await featureTaskTurns.yield();
+        await receive(next);
+        drawControls.recordedDraw();
+      }
     }
     drawing = undefined;
   };

@@ -13,8 +13,8 @@ import {
   observeDisplayP3Configuration,
   renderOutputGamutWgsl,
 } from '../output-color-space';
-import { configureSurface } from '../render-system';
 import { tonemapParams } from '../render-system-extract';
+import { configureSurface } from './render-system-driver';
 
 const webGpuDevice = {
   limits: { maxStorageBuffersPerShaderStage: 8 },

@@ -8,7 +8,6 @@ import { createHdrpClusterMembershipBindGroupLayoutDescriptor } from '../hdrp-bu
 import { RhiErrorListenerRegistry } from '../lifecycle';
 import { prepareStandardLighting } from '../pipeline/standard-lighting/prepare';
 import { deriveStandardTopologyInput } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import {
   standardCapabilityVariantSet,
   standardStorageVariantSet,
@@ -20,6 +19,10 @@ import { writeHdrpClusterAndSsaoBuffers } from '../record/frame-lighting';
 import type { RenderFrameState } from '../record/frame-snapshot';
 import { makeZeroCameraFallbackSnapshot } from '../record/frame-snapshot';
 import type { RenderSystemInternals } from '../record/render-context';
+import {
+  STANDARD_CLUSTER_TEST_ABI,
+  selectTestStandardClusterTransport as selectStandardClusterTransport,
+} from './cluster-test-abi';
 
 const standardVariants = [
   { defines: { CLUSTER_FORWARD_AVAILABLE: true, STORAGE_BUFFER_AVAILABLE: true } },
@@ -357,6 +360,7 @@ describe('Standard clustered variant resolution', () => {
     const internals = {
       device: deviceB,
       errorRegistry: new RhiErrorListenerRegistry(),
+      standardClusterAbi: STANDARD_CLUSTER_TEST_ABI,
     } as unknown as RenderSystemInternals;
     const prepared = prepareStandardLighting({
       directional: undefined,

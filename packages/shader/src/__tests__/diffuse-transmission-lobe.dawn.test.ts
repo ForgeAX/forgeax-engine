@@ -30,7 +30,7 @@ it('punctual body adds a normalized back-face Lambert lobe only for transmissive
   try {
     const compiled = await compiler.compileShader(
       `
-        #import forgeax_pbr::brdf::{standardOpaqueBrdf}
+        #import forgeax_pbr::brdf::{standardOpaqueBrdfFromView, DirectMultiScatterView, prepareDirectMultiScatterView, halfVectorTerms, directLightingAlpha}
         ${functionSource('lighting-attenuation.wgsl', 'evalDistanceAttenuation')}
         ${functionSource('lighting-punctual.wgsl', 'evalPunctualBody')}
         @group(0) @binding(0) var<storage, read_write> result: array<vec4<f32>, 5>;
@@ -43,11 +43,13 @@ it('punctual body adds a normalized back-face Lambert lobe only for transmissive
           if (id.x == 0u || id.x == 3u) { transmission = vec3<f32>(1.0); }
           if (id.x == 4u) { transmission = vec3<f32>(0.2, 0.5, 1.0); }
           let value = evalPunctualBody(lightPos, vec3<f32>(1.0), 0.0, 2.0, vec3<f32>(0.0), normal,
-            viewDir, vec3<f32>(0.5), 0.0, 0.25, vec3<f32>(0.04), transmission, false);
+            viewDir, vec3<f32>(0.5), 0.0, 0.25, vec3<f32>(0.04), transmission,
+            prepareDirectMultiScatterView(0.25, 1.0, vec3<f32>(0.04), false), false);
           result[id.x] = vec4<f32>(value, 1.0);
         }`,
       {
         id: 'forgeax::diffuse-transmission-lobe-regression',
+        defines: { DIFFUSE_TRANSMISSION_AVAILABLE: true },
         imports: { 'forgeax_pbr::brdf': source('brdf.wgsl') },
       },
     );

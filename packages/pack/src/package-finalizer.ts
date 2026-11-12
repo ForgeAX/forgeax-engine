@@ -98,6 +98,164 @@ function sorted(value: unknown): unknown {
   return value;
 }
 
+const JSON_CHUNK_SIZE = 48 * 1024;
+
+interface JsonWriter {
+  pending: string;
+  readonly write: (chunk: string) => void;
+}
+
+function appendJson(writer: JsonWriter, chunk: string): void {
+  writer.pending += chunk;
+  if (writer.pending.length >= JSON_CHUNK_SIZE) {
+    writer.write(writer.pending);
+    writer.pending = '';
+  }
+}
+
+function writeJsonText(input: string, writer: JsonWriter): void {
+  appendJson(writer, '"');
+  for (let offset = 0; offset < input.length; ) {
+    let end = Math.min(offset + JSON_CHUNK_SIZE, input.length);
+    const last = input.charCodeAt(end - 1);
+    const next = input.charCodeAt(end);
+    // A pair must reach both the native escaper and UTF-8 encoder together.
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end++;
+    appendJson(writer, JSON.stringify(input.slice(offset, end)).slice(1, -1));
+    offset = end;
+  }
+  appendJson(writer, '"');
+}
+
+function scalarJson(input: unknown): string | undefined {
+  return typeof input === 'number'
+    ? Number.isFinite(input)
+      ? String(input)
+      : 'null'
+    : typeof input === 'function'
+      ? undefined
+      : JSON.stringify(input);
+}
+
+function flushJsonNumbers(writer: JsonWriter, numbers: number[], runStart: number): void {
+  appendJson(writer, `${runStart > 0 ? ',' : ''}${JSON.stringify(numbers).slice(1, -1)}`);
+  numbers.length = 0;
+}
+
+function writeJsonArray(input: readonly unknown[], writer: JsonWriter): void {
+  appendJson(writer, '[');
+  // Batch native numeric formatting. This scratch belongs only to this traversal.
+  const numbers: number[] = [];
+  Object.setPrototypeOf(numbers, null);
+  let runStart = 0;
+  const length = input.length;
+  for (let index = 0; index < length; index++) {
+    const item = input[index];
+    if (typeof item === 'number') {
+      if (numbers.length === 0) runStart = index;
+      numbers[numbers.length] = item;
+      if (numbers.length === 1024) flushJsonNumbers(writer, numbers, runStart);
+      continue;
+    }
+    if (numbers.length > 0) flushJsonNumbers(writer, numbers, runStart);
+    if (index > 0) appendJson(writer, ',');
+    if (!writeJsonValue(item, String(index), writer)) appendJson(writer, 'null');
+  }
+  if (numbers.length > 0) flushJsonNumbers(writer, numbers, runStart);
+  appendJson(writer, ']');
+}
+
+function writeJsonObject(input: object, writer: JsonWriter): void {
+  appendJson(writer, '{');
+  let first = true;
+  // Integer-index enumeration, omission and callback order remain native.
+  for (const property of Object.keys(input)) {
+    if (
+      writeJsonValue(
+        (input as Record<string, unknown>)[property],
+        property,
+        writer,
+        `${first ? '' : ','}${JSON.stringify(property)}:`,
+      )
+    )
+      first = false;
+  }
+  appendJson(writer, '}');
+}
+
+function writeJsonValue(input: unknown, key: string, writer: JsonWriter, prefix = ''): boolean {
+  if (typeof input === 'string') {
+    if (prefix) appendJson(writer, prefix);
+    writeJsonText(input, writer);
+    return true;
+  }
+  if (typeof input === 'bigint') {
+    const json = JSON.stringify({ [key]: input });
+    if (json === '{}') return false;
+    if (prefix) appendJson(writer, prefix);
+    appendJson(writer, json.slice(JSON.stringify(key).length + 2, -1));
+    return true;
+  }
+  if ((input !== null && typeof input === 'object') || typeof input === 'function') {
+    const callback: unknown = (input as { toJSON?: unknown }).toJSON;
+    if (typeof callback === 'function') {
+      // Keep arbitrary author callbacks on the native route, including their
+      // holder key and replacement-object semantics. Ordinary producer data
+      // takes the bounded route; the ordering pass above is unchanged.
+      // Capture the property once: an inherited accessor must not run again
+      // when native JSON calls the author serializer.
+      const json = JSON.stringify({
+        [key]: { toJSON: () => Reflect.apply(callback, input, [key]) },
+      });
+      if (json === '{}') return false;
+      if (prefix) appendJson(writer, prefix);
+      appendJson(writer, json.slice(JSON.stringify(key).length + 2, -1));
+      return true;
+    }
+  }
+  if (input === null || typeof input !== 'object') {
+    const json = scalarJson(input);
+    if (json === undefined) return false;
+    if (prefix) appendJson(writer, prefix);
+    appendJson(writer, json);
+    return true;
+  }
+  if (prefix) appendJson(writer, prefix);
+  if (Array.isArray(input)) writeJsonArray(input, writer);
+  else writeJsonObject(input, writer);
+  return true;
+}
+
+/** Serialize the already ordered product without one package-sized JS string. */
+function writeJson(value: unknown, write: (chunk: string) => void): void {
+  const writer: JsonWriter = { pending: '', write };
+  if (!writeJsonValue(value, '', writer)) {
+    // Match the original hash.update(JSON.stringify(undefined)) failure.
+    throw new TypeError('Package JSON must have a serializable root');
+  }
+  if (writer.pending.length > 0) write(writer.pending);
+}
+
+function jsonBytes(value: unknown): Uint8Array {
+  const encoder = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  writeJson(value, (text) => {
+    const bytes = encoder.encode(text);
+    chunks.push(bytes);
+    byteLength += bytes.byteLength;
+  });
+  // The sink contract owns one complete byte view. Only the bounded UTF-8
+  // fragments and that final view coexist, never a package-sized UTF-16 copy.
+  const output = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
 function packageUrl(base: string, packagePath: string): string {
   const prefix = base === '/' ? '' : `/${base.replace(/^\/+|\/+$/g, '')}`;
   return `${prefix}/${packagePath.replace(/^\/+/, '')}`;
@@ -115,26 +273,26 @@ function safePath(path: string): boolean {
 
 function digest(assets: readonly PackageProductAsset[]): string {
   const pack = { schemaVersion: '2.0.0', kind: 'internal-text-package', assets } as const;
-  const hash = createHash('sha256').update(
-    JSON.stringify(
-      sorted({
-        ...pack,
-        assets: pack.assets.map((asset) => ({
-          ...asset,
-          artifacts: Object.fromEntries(
-            Object.entries(asset.artifacts).map(([key, artifact]) => [
-              key,
-              {
-                mediaType: artifact.mediaType,
-                ...(artifact.delivery === undefined ? {} : { delivery: artifact.delivery }),
-                ...(artifact.assetCodec === undefined ? {} : { assetCodec: artifact.assetCodec }),
-                byteLength: artifact.bytes.byteLength,
-              },
-            ]),
-          ),
-        })),
-      }),
-    ),
+  const hash = createHash('sha256');
+  writeJson(
+    sorted({
+      ...pack,
+      assets: pack.assets.map((asset) => ({
+        ...asset,
+        artifacts: Object.fromEntries(
+          Object.entries(asset.artifacts).map(([key, artifact]) => [
+            key,
+            {
+              mediaType: artifact.mediaType,
+              ...(artifact.delivery === undefined ? {} : { delivery: artifact.delivery }),
+              ...(artifact.assetCodec === undefined ? {} : { assetCodec: artifact.assetCodec }),
+              byteLength: artifact.bytes.byteLength,
+            },
+          ]),
+        ),
+      })),
+    }),
+    (chunk) => hash.update(chunk),
   );
   for (const [key, artifact] of assets
     .flatMap((asset) =>
@@ -259,9 +417,7 @@ async function finalizeProduct(
   const assets = [...product.assets].sort((left, right) => left.guid.localeCompare(right.guid));
   const document = packageDocument(assets, policy.artifactPath, digestBytes);
   if (policy.sink !== undefined) {
-    const packageBytes = new TextEncoder().encode(
-      JSON.stringify(sorted(encodeMaterialProgramWire(document))),
-    );
+    const packageBytes = jsonBytes(sorted(encodeMaterialProgramWire(document)));
     for (const asset of assets) {
       for (const [key, artifact] of Object.entries(asset.artifacts)) {
         const path = policy.artifactPath(asset.guid, key);
@@ -375,7 +531,7 @@ export function packageTransportRevision(value: unknown): string {
 }
 
 function transportRevision(value: unknown, digestBytes: (bytes: Uint8Array) => string): string {
-  return createHash('sha256')
-    .update(JSON.stringify(revisionStable(value, digestBytes)))
-    .digest('hex');
+  const hash = createHash('sha256');
+  writeJson(revisionStable(value, digestBytes), (chunk) => hash.update(chunk));
+  return hash.digest('hex');
 }

@@ -5,6 +5,7 @@ export default defineConfig([
   {
     ...baseTsupConfig,
     platform: 'node',
+    loader: { '.svg': 'text' },
     entry: {
       index: 'src/index.ts',
       'build-process': 'src/build/build-process.ts',
@@ -15,6 +16,7 @@ export default defineConfig([
   {
     ...baseTsupConfig,
     platform: 'node',
+    loader: { '.svg': 'text' },
     entry: ['src/cli.ts'],
     // Preserve operation-owned imports in the published CLI. A single bundle
     // hoists their external Vite/browser imports back into every control call.

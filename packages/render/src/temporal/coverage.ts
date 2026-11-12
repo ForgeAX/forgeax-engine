@@ -19,11 +19,31 @@ export interface TemporalCoverage {
   readonly fullScreen: true;
 }
 
-export function createTemporalCoverage(width: number, height: number): TemporalCoverage {
+/**
+ * Two ping-pong sets of rgba16float color (8) + rgba16float temporal (8) +
+ * r8unorm stability (1) = 2 * 17 bytes per pixel; TAA adds the rgba8unorm
+ * flickering history (2 * 4).
+ */
+export const TEMPORAL_HISTORY_BYTES_PER_PIXEL = 34;
+export const TAA_FLICKER_HISTORY_BYTES_PER_PIXEL = 8;
+
+export function createTemporalCoverage(
+  width: number,
+  height: number,
+  flicker = true,
+): TemporalCoverage {
   if (!Number.isSafeInteger(width) || width <= 0) throw new RangeError('width must be positive.');
   if (!Number.isSafeInteger(height) || height <= 0)
     throw new RangeError('height must be positive.');
-  return Object.freeze({ width, height, bytes: 34 * width * height, fullScreen: true as const });
+  return Object.freeze({
+    width,
+    height,
+    bytes:
+      (TEMPORAL_HISTORY_BYTES_PER_PIXEL + (flicker ? TAA_FLICKER_HISTORY_BYTES_PER_PIXEL : 0)) *
+      width *
+      height,
+    fullScreen: true as const,
+  });
 }
 
 export type SceneDataContributorKind = 'exact' | 'reactive';

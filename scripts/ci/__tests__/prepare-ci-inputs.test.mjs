@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { resolveAsset } from '../../../packages/wgpu-wasm/scripts/content-key.mjs';
+import { verifyProvenance } from '../../../packages/wgpu-wasm/scripts/provenance.mjs';
 import { appPackages } from '../../build-task-cache.mjs';
 import { main, prepareInputs, sourceAppBuilds } from '../prepare-ci-inputs.mjs';
 
@@ -67,7 +68,10 @@ for (const coreState of ['absent', 'timeout', 'wrong-shared-fingerprint']) {
         ];
         const dependencies = {
           root,
-          runCommand: async ([, script, ...args]) => {
+          runCommand: async (command) => {
+            const [, script, ...args] = command.filter(
+              (arg) => !arg.startsWith('--max-old-space-size='),
+            );
             if (script.endsWith('download-artifact-with-retry.mjs')) {
               if (args[args.indexOf('--artifact-ids') + 1] === '1')
                 return { status: 124, failure: 'core transfer timed out' };
@@ -175,7 +179,8 @@ for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
         {
           root,
           runCommand: async (command) => {
-            const [, script, ...args] = command;
+            const scriptIndex = command.findIndex((arg) => arg.startsWith('scripts/'));
+            const [script, ...args] = command.slice(scriptIndex);
             if (script.endsWith('download-artifact-with-retry.mjs')) {
               const id = args[args.indexOf('--artifact-ids') + 1];
               transfers.push(`start-${id}`);
@@ -211,6 +216,26 @@ for (const coreState of ['complete', 'missing', 'interrupted', 'cancelled']) {
               put(root, 'packages/fixture/dist/index.mjs', 'rebuilt');
               put(root, 'packages/fbx/pkg/fbx-wasm.mjs', 'rebuilt native');
             } else if (script.endsWith('build-shared-app-inputs.mjs')) {
+              // Exercise the actual Node launch flags, including precedence over
+              // a smaller inherited heap, after the shared archive timed out.
+              const heap = spawnSync(
+                command[0],
+                [
+                  ...command.slice(1, scriptIndex),
+                  '--input-type=module',
+                  '-e',
+                  'import v8 from "node:v8"; console.log(v8.getHeapStatistics().heap_size_limit)',
+                ],
+                {
+                  encoding: 'utf8',
+                  env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=2048' },
+                },
+              );
+              assert.equal(heap.status, 0, heap.stderr);
+              assert.ok(
+                Number(heap.stdout) >= 4096 * 1024 ** 2 && Number(heap.stdout) < 4352 * 1024 ** 2,
+                `cold shared recovery requires the bounded 4 GiB producer heap: ${heap.stdout}`,
+              );
               put(root, 'shared-app-inputs/shaders/manifest.json', '{}');
               put(
                 root,
@@ -501,7 +526,7 @@ test('source app recovery covers every Smoke gate without building unrelated fle
   );
 });
 
-for (const mutation of ['none', 'wasm', 'glue', 'source']) {
+for (const mutation of ['none', 'wasm', 'glue', 'source', 'core-missing']) {
   test(`shared compiler adoption verifies exact bytes before publishing: ${mutation}`, async () => {
     const root = mkdtempSync(join(tmpdir(), 'forgeax-shared-compiler-'));
     const oldSha = process.env.EXPECTED_PRODUCT_SHA;
@@ -516,6 +541,8 @@ for (const mutation of ['none', 'wasm', 'glue', 'source']) {
     };
     const wasm = 'producer-specific wasm bytes';
     const glue = 'producer-specific glue bytes';
+    const coreGlue = 'previous-specific glue bytes';
+    const rawGlue = join(root, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes');
     const provenance = {
       schemaVersion: 'wgpu-wasm-provenance/1',
       sourceContentKey: `sha256-${source.sha256}`,
@@ -526,16 +553,20 @@ for (const mutation of ['none', 'wasm', 'glue', 'source']) {
       toolchain: {},
       dependencies: {},
     };
-    provenance.compilerFingerprint = `sha256-${hash(
-      JSON.stringify({
-        schemaVersion: provenance.schemaVersion,
-        sourceContentKey: provenance.sourceContentKey,
-        artifactSha256: provenance.artifactSha256,
-        glueSha256: provenance.glueSha256,
-        toolchain: provenance.toolchain,
-        dependencies: provenance.dependencies,
-      }),
-    )}`;
+    const fingerprint = (manifest) =>
+      `sha256-${hash(
+        JSON.stringify({
+          schemaVersion: manifest.schemaVersion,
+          sourceContentKey: manifest.sourceContentKey,
+          artifactSha256: manifest.artifactSha256,
+          glueSha256: manifest.glueSha256,
+          toolchain: manifest.toolchain,
+          dependencies: manifest.dependencies,
+        }),
+      )}`;
+    provenance.compilerFingerprint = fingerprint(provenance);
+    const coreProvenance = { ...provenance, glueSha256: hash(coreGlue) };
+    coreProvenance.compilerFingerprint = fingerprint(coreProvenance);
     const contract = {
       artifactClasses: {
         'engine-dist': {
@@ -551,11 +582,21 @@ for (const mutation of ['none', 'wasm', 'glue', 'source']) {
     };
     try {
       put(join(root, 'scripts/ci/build-artifact-contract.json'), JSON.stringify(contract));
-      put(join(destination, 'wgpu_wasm_bg.wasm'), 'existing core wasm');
+      put(join(destination, 'wgpu_wasm_bg.wasm'), wasm);
+      put(join(destination, 'wgpu_wasm.js'), coreGlue);
+      put(join(destination, 'provenance.json'), JSON.stringify(coreProvenance));
+      put(rawGlue, coreGlue);
+      await verifyProvenance({ pkgDirectory: destination });
+      assert.equal(coreProvenance.sourceContentKey, provenance.sourceContentKey);
+      assert.notEqual(coreProvenance.compilerFingerprint, provenance.compilerFingerprint);
+      assert.equal(Buffer.byteLength(coreGlue), Buffer.byteLength(glue));
       put(join(root, 'packages/dsh/src/client.tsx'), 'authored source');
       put(join(compiler, 'wgpu_wasm_bg.wasm'), mutation === 'wasm' ? 'tampered' : wasm);
       put(join(compiler, 'wgpu_wasm.js'), mutation === 'glue' ? 'tampered' : glue);
-      if (mutation === 'source') provenance.sourceContentKey = 'stale source';
+      if (mutation === 'source') {
+        provenance.sourceContentKey = 'stale source';
+        provenance.compilerFingerprint = fingerprint(provenance);
+      }
       put(join(compiler, 'provenance.json'), JSON.stringify(provenance));
       let stage;
       let recovered = false;
@@ -577,6 +618,9 @@ for (const mutation of ['none', 'wasm', 'glue', 'source']) {
               const path = args[args.indexOf('--path') + 1];
               if (args[args.indexOf('--artifact-ids') + 1] === '1') {
                 stage = path;
+                if (mutation === 'core-missing') return { status: 1, failure: 'missing core' };
+                cpSync(destination, join(stage, 'packages/wgpu-wasm/pkg'), { recursive: true });
+                put(join(stage, 'packages/wgpu-wasm/dist/wgpu_wasm_glue.bytes'), coreGlue);
                 put(join(stage, 'packages/fixture/dist/index.mjs'), 'current build');
                 put(join(stage, 'packages/dsh/lib/client.js'), 'generated browser export');
                 put(join(stage, 'packages/dsh/src/client.tsx'), 'untrusted staged source');
@@ -595,11 +639,16 @@ for (const mutation of ['none', 'wasm', 'glue', 'source']) {
           },
         },
       );
-      if (mutation === 'none') {
-        assert.equal((await preparation).source, 'artifact');
+      if (mutation === 'none' || mutation === 'core-missing') {
+        if (mutation === 'core-missing')
+          await assert.rejects(preparation, /source recovery requested/);
+        else assert.equal((await preparation).source, 'artifact');
         assert.equal(readFileSync(join(destination, 'wgpu_wasm_bg.wasm'), 'utf8'), wasm);
         assert.equal(readFileSync(join(destination, 'wgpu_wasm.js'), 'utf8'), glue);
-        assert.equal(recovered, false);
+        assert.equal(readFileSync(rawGlue, 'utf8'), glue);
+        await verifyProvenance({ pkgDirectory: destination });
+        assert.equal(recovered, mutation === 'core-missing');
+        if (mutation === 'core-missing') return;
         assert.equal(
           readFileSync(join(root, 'packages/dsh/lib/client.js'), 'utf8'),
           'generated browser export',
@@ -611,10 +660,9 @@ for (const mutation of ['none', 'wasm', 'glue', 'source']) {
       } else {
         await assert.rejects(preparation, /source recovery requested/);
         assert.equal(recovered, true);
-        assert.equal(
-          readFileSync(join(destination, 'wgpu_wasm_bg.wasm'), 'utf8'),
-          'existing core wasm',
-        );
+        assert.equal(readFileSync(join(destination, 'wgpu_wasm_bg.wasm'), 'utf8'), wasm);
+        assert.equal(readFileSync(join(destination, 'wgpu_wasm.js'), 'utf8'), coreGlue);
+        assert.equal(readFileSync(rawGlue, 'utf8'), coreGlue);
       }
     } finally {
       if (oldSha === undefined) delete process.env.EXPECTED_PRODUCT_SHA;

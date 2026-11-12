@@ -99,7 +99,9 @@ const meshPreviewArgsSchema: ToolSchema<MeshPreviewRequest> = {
     )
       return { ok: false, error: 'expected complete mesh buffers and a valid AABB' };
     const { min, max } = binding.aabb;
-    if (min.some((component, index) => component >= (max[index] ?? Number.NaN)))
+    // Zero-thickness bounds (planes, decals, flat panels) are valid subjects;
+    // framing clamps their radius. Only inverted or non-finite bounds fail.
+    if (min.some((component, index) => !(component <= (max[index] ?? Number.NaN))))
       return { ok: false, error: 'expected complete mesh buffers and a valid AABB' };
     return {
       ok: true,

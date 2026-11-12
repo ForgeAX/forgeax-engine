@@ -37,6 +37,7 @@ import {
 import { Transform } from '@forgeax/engine-scene';
 import type { MaterialAsset } from '@forgeax/engine-types';
 import { describe, expect, it } from 'vitest';
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { constructRuntimeRendererHost } from '../../renderer-host';
 import { drawPublished } from '../draw-published';
 
@@ -516,12 +517,11 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
 
     for (let i = 0; i < 5; i++) {
       worldN2.update(1 / 60).unwrap();
-      const r = renderer2.draw({
+      await drawReadyFrame(renderer2, {
         leases: [attachmentN2.value],
         camera: { lease: attachmentN2.value },
         environment: { lease: attachmentN2.value },
       });
-      if (!r.ok) throw new Error(`draw N frame ${i} error: ${r.error.code}`);
     }
 
     const device2 = sharedDevice2;
@@ -597,12 +597,11 @@ describe('w2 -- PBR dual-state dawn smoke (AC-01 / AC-06)', () => {
 
     for (let i = 0; i < 5; i++) {
       world12.update(1 / 60).unwrap();
-      const r = renderer2.draw({
+      await drawReadyFrame(renderer2, {
         leases: [attachment12.value],
         camera: { lease: attachment12.value },
         environment: { lease: attachment12.value },
       });
-      if (!r.ok) throw new Error(`draw 1 frame ${i} error: ${r.error.code}`);
     }
     await device2.queue.onSubmittedWorkDone();
 

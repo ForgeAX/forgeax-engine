@@ -20,14 +20,14 @@ const RELEASE = {
     {
       id: 42,
       name: 'basis-wasm-pkg-abcdef01.tar.gz',
-      url: 'https://api.github.com/repos/ForgeaX-Games/forgeax-engine/releases/assets/42',
+      url: 'https://api.github.com/repos/ForgeAX/forgeax-engine/releases/assets/42',
     },
   ],
 };
 const ASSET = {
   id: 42,
   name: 'basis-wasm-pkg-abcdef01.tar.gz',
-  url: 'https://api.github.com/repos/ForgeaX-Games/forgeax-engine/releases/assets/42',
+  url: 'https://api.github.com/repos/ForgeAX/forgeax-engine/releases/assets/42',
 };
 
 const tempRoots = [];
@@ -71,7 +71,7 @@ describe('fetch-wasm native transport fallback', () => {
   it('recovers release metadata through gh when Node fetch fails at TLS', async () => {
     const calls = [];
     const logs = [];
-    const release = await getReleaseByTag('ForgeaX-Games', 'forgeax-engine', 'wasm-artifacts', {
+    const release = await getReleaseByTag('ForgeAX', 'forgeax-engine', 'wasm-artifacts', {
       pkgLabel: 'codec',
       buildHint: 'pnpm -F @forgeax/engine-codec build:wasm',
       env: ENV,
@@ -92,7 +92,7 @@ describe('fetch-wasm native transport fallback', () => {
       command: 'gh',
       args: [
         'api',
-        'repos/ForgeaX-Games/forgeax-engine/releases/tags/wasm-artifacts',
+        'repos/ForgeAX/forgeax-engine/releases/tags/wasm-artifacts',
         '--header',
         'Accept: application/vnd.github+json',
       ],
@@ -102,7 +102,7 @@ describe('fetch-wasm native transport fallback', () => {
 
   it('uses curl.exe for release metadata when gh is unavailable', async () => {
     const calls = [];
-    const release = await getReleaseByTag('ForgeaX-Games', 'forgeax-engine', 'wasm-artifacts', {
+    const release = await getReleaseByTag('ForgeAX', 'forgeax-engine', 'wasm-artifacts', {
       pkgLabel: 'codec',
       buildHint: 'build locally',
       env: ENV,
@@ -126,7 +126,7 @@ describe('fetch-wasm native transport fallback', () => {
 
   it('resolves the exact release asset through the shared asset boundary', async () => {
     const asset = await getReleaseAsset(
-      'ForgeaX-Games',
+      'ForgeAX',
       'forgeax-engine',
       'wasm-artifacts',
       ASSET.name,
@@ -147,7 +147,7 @@ describe('fetch-wasm native transport fallback', () => {
 
   it('reports a content-key mismatch from the shared asset boundary', async () => {
     await expect(
-      getReleaseAsset('ForgeaX-Games', 'forgeax-engine', 'wasm-artifacts', 'missing.tar.gz', {
+      getReleaseAsset('ForgeAX', 'forgeax-engine', 'wasm-artifacts', 'missing.tar.gz', {
         pkgLabel: 'codec',
         buildHint: 'build locally',
         env: ENV,
@@ -164,7 +164,7 @@ describe('fetch-wasm native transport fallback', () => {
     const destPath = await tempFile();
     const calls = [];
     await downloadAsset(ASSET, destPath, {
-      owner: 'ForgeaX-Games',
+      owner: 'ForgeAX',
       repo: 'forgeax-engine',
       tag: 'wasm-artifacts',
       pkgLabel: 'codec',
@@ -192,7 +192,7 @@ describe('fetch-wasm native transport fallback', () => {
         'download',
         'wasm-artifacts',
         '--repo',
-        'ForgeaX-Games/forgeax-engine',
+        'ForgeAX/forgeax-engine',
         '--pattern',
         ASSET.name,
         '--output',
@@ -206,7 +206,7 @@ describe('fetch-wasm native transport fallback', () => {
     const destPath = await tempFile();
     const calls = [];
     await downloadAsset(ASSET, destPath, {
-      owner: 'ForgeaX-Games',
+      owner: 'ForgeAX',
       repo: 'forgeax-engine',
       tag: 'wasm-artifacts',
       pkgLabel: 'codec',
@@ -228,13 +228,13 @@ describe('fetch-wasm native transport fallback', () => {
     expect(await readFile(destPath, 'utf8')).toBe('tarball');
     expect(calls.map(({ command }) => command)).toEqual(['gh', 'curl.exe']);
     expect(calls[1].args).toContain(
-      'https://api.github.com/repos/ForgeaX-Games/forgeax-engine/releases/assets/42',
+      'https://api.github.com/repos/ForgeAX/forgeax-engine/releases/assets/42',
     );
   });
 
   it('reports TLS and exhausted native transports instead of saying only offline', async () => {
     await expect(
-      getReleaseByTag('ForgeaX-Games', 'forgeax-engine', 'wasm-artifacts', {
+      getReleaseByTag('ForgeAX', 'forgeax-engine', 'wasm-artifacts', {
         pkgLabel: 'codec',
         buildHint: 'build locally',
         env: ENV,
@@ -254,7 +254,7 @@ describe('fetch-wasm native transport fallback', () => {
     });
 
     await expect(
-      getReleaseByTag('ForgeaX-Games', 'forgeax-engine', 'wasm-artifacts', {
+      getReleaseByTag('ForgeAX', 'forgeax-engine', 'wasm-artifacts', {
         pkgLabel: 'codec',
         buildHint: 'build locally',
         env: ENV,
@@ -274,7 +274,7 @@ describe('fetch-wasm native transport fallback', () => {
   it('keeps HTTP 404 on the Node path as E2 without invoking native transports', async () => {
     const commandRunner = vi.fn();
     await expect(
-      getReleaseByTag('ForgeaX-Games', 'forgeax-engine', 'wasm-artifacts', {
+      getReleaseByTag('ForgeAX', 'forgeax-engine', 'wasm-artifacts', {
         pkgLabel: 'codec',
         buildHint: 'build locally',
         env: ENV,

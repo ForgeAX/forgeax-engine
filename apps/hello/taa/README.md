@@ -1,5 +1,13 @@
 # hello-taa
 
+For the bounded 1080p TAA/TAAU/TSR cost experiment, build this carrier and run
+`FORGEAX_TSR_BENCH_OUTPUT=<external.json> node scripts/benchmark-temporal.mjs`
+from this directory. It keeps 60 warm-up and 120 measured ready frames per route,
+disables Dawn timestamp quantization, and preserves the frozen budget's failed
+exit status. Temporal pass sums are distinct from whole-frame GPU interval unions;
+use `forgeax rhi timing` on its provenance tapes for replay attribution. See the
+TSR performance evidence.
+
 This carrier exercises the smallest temporal path: attach `Camera` with TAA to
 one active camera, then inspect the renderer receipt. TAA is enabled by
 default; Motion Blur is an independent opt-in component and is disabled on a
@@ -113,7 +121,7 @@ self-hosted fleet has no physical-GPU provider. The former physical-GPU
 admission test and its artifact were removed rather than weakening the result
 or claiming that simulated GPU timing is native timing.
 
-The manifest declares all five ForgeaX metric kinds. Bundle-size, FPS, bench,
+The manifest declares all five ForgeAX metric kinds. Bundle-size, FPS, bench,
 and spike-report are intentionally disabled here because their evidence owners
 are the package build, carrier smoke, render benchmark, and spike workflow;
 the gate metric remains enabled and invokes the exact Dawn smoke command.

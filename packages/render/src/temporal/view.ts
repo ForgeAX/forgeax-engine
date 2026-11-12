@@ -1,4 +1,5 @@
 import type { Antialias } from '../components/camera';
+import { isTemporalAntialias } from '../components/camera';
 
 type Jitter = readonly [number, number];
 
@@ -75,7 +76,7 @@ interface TemporalViewSnapshot {
 export interface TemporalView {
   readonly input: Readonly<TemporalViewSnapshot>;
   readonly historyVersion: number;
-  readonly mode: 'off' | 'taa';
+  readonly mode: 'off' | 'taa' | 'tsr';
   readonly jitter: readonly [number, number] | undefined;
   readonly jitterCancellationUv: readonly [number, number] | undefined;
   readonly currentJitterUv: readonly [number, number] | undefined;
@@ -140,7 +141,8 @@ export function createTemporalView(input: TemporalViewInput): TemporalView {
     sampleTimeSeconds: input.sampleTimeSeconds,
     resetReason: input.resetReason,
   });
-  const taa = input.antialias === 'taa';
+  const mode = isTemporalAntialias(input.antialias) ? input.antialias : 'off';
+  const taa = mode !== 'off';
   const jitter: Jitter | undefined = taa
     ? (HALTON_23_8[frameIndex % HALTON_23_8.length] as Jitter)
     : undefined;
@@ -151,7 +153,7 @@ export function createTemporalView(input: TemporalViewInput): TemporalView {
   return Object.freeze({
     input: normalized,
     historyVersion,
-    mode: taa ? 'taa' : 'off',
+    mode,
     jitter,
     jitterCancellationUv: jitterUv,
     currentJitterUv: jitterUv,
@@ -178,7 +180,8 @@ export function resolveTemporalReset(
   // the reset matrix shared so a camera switch, resize, or recovery cannot
   // leak a previous motion vector merely because antialiasing is disabled.
   if (before === undefined) return 'first-frame';
-  if (after.antialias === 'taa' && before.antialias !== 'taa') return 'first-frame';
+  if (isTemporalAntialias(after.antialias) && before.antialias !== after.antialias)
+    return 'first-frame';
   if (before.width !== after.width || before.height !== after.height) return 'resize';
   if (after.cameraCut) return 'camera-cut';
   if (before.historyVersion !== after.historyVersion) return 'history-version';

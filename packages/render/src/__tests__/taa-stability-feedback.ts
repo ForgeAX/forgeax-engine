@@ -22,7 +22,8 @@ type Device = Awaited<ReturnType<typeof requestTaaDevice>>;
 type TemporalState = ReturnType<typeof getTemporalGpuState>;
 type TaaInput = { readonly texture: Texture; readonly view: TextureView };
 
-const FRAME_BYTES = 768;
+// Four 256-byte readback rows per frame: color, temporal, stability, flicker.
+const FRAME_BYTES = 1024;
 const PIXEL_EXTENT = { width: 2, height: 1, depthOrArrayLayers: 1 };
 const PIXEL_LAYOUT = { bytesPerRow: 16, rowsPerImage: 1 };
 
@@ -107,6 +108,8 @@ function writeFrameInputs(rig: TaaFeedbackRig, frame: number, scenario: TaaScena
 
 function historyBindGroup(rig: TaaFeedbackRig, index: TemporalState['readIndex']) {
   const { device, state, inputs, color, temporal, secondary } = rig;
+  const flicker = state.flicker;
+  if (flicker === undefined) throw new Error('TAA feedback requires flicker history');
   if (inputs.sampler === null || inputs.temporalSampler === null)
     throw new Error('Missing TAA samplers');
   return device
@@ -126,20 +129,23 @@ function historyBindGroup(rig: TaaFeedbackRig, index: TemporalState['readIndex']
         { binding: 10, resource: { kind: 'textureView', value: secondary.view } },
         { binding: 11, resource: { kind: 'textureView', value: temporal.view } },
         { binding: 12, resource: { kind: 'textureView', value: secondary.view } },
+        { binding: 13, resource: { kind: 'textureView', value: flicker[index].view } },
       ],
     })
     .unwrap();
 }
 
-/** Resolve one frame into the staged history slot and copy its three outputs to readback. */
+/** Resolve one frame into the staged history slot and copy its four outputs to readback. */
 function submitTaaFrame(rig: TaaFeedbackRig, frame: number): void {
   const { device, state } = rig;
+  const flicker = state.flicker;
+  if (flicker === undefined) throw new Error('TAA feedback requires flicker history');
   const group = historyBindGroup(rig, state.readIndex);
   stageTemporalGpuSubmit(state);
   const next = state.pendingIndex;
   if (next === undefined) throw new Error('Missing staged history write');
   const encoder = device.createCommandEncoder().unwrap();
-  const targets = [state.color[next], state.temporal[next], state.stability[next]];
+  const targets = [state.color[next], state.temporal[next], state.stability[next], flicker[next]];
   const pass = encoder.beginRenderPass({
     colorAttachments: targets.map(({ view }) => ({
       view,
@@ -361,7 +367,12 @@ function createTaaPipeline(
       fragment: {
         module,
         entryPoint: 'fs_main',
-        targets: [{ format: 'rgba16float' }, { format: 'rgba16float' }, { format: 'r8unorm' }],
+        targets: [
+          { format: 'rgba16float' },
+          { format: 'rgba16float' },
+          { format: 'r8unorm' },
+          { format: 'rgba8unorm' },
+        ],
       },
       primitive: { topology: 'triangle-list' },
     })
@@ -428,7 +439,7 @@ export async function verifyTaaStabilityFeedback(
       writeFrameInputs(rig, frame, scenario);
       submitTaaFrame(rig, frame);
     }
-    // Preserve every submitted frame and its three outputs, but synchronize
+    // Preserve every submitted frame and its four outputs, but synchronize
     // with the GPU once. No input depends on CPU readback; the analytic oracle
     // can consume the complete ordered history after the queue finishes.
     const mapped = (await readback.mapAsync(GPU_BUFFER_USAGE_MAP_READ)).unwrap();

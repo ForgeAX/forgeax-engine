@@ -17,6 +17,7 @@
 // plumbing. The demo's `main.ts` owns the DOM click -> viewport-coordinate glue;
 // the smoke feeds viewport coordinates straight in.
 
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -198,14 +199,11 @@ let framesObserved = 0;
 
 for (let i = 0; i < TARGET_FRAMES; i++) {
   world.update().unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) throw r.error;
-  const completed = await r.value.completed;
-  if (!completed.ok) throw completed.error;
   framesObserved++;
 }
 

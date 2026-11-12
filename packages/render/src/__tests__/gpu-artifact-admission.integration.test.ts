@@ -116,7 +116,7 @@ it('preserves mesh content invalidation across missing-artifact failure and retr
   const f = await fixture();
   try {
     expect(f.prepare().unwrap()).toBeDefined();
-    const revision = f.scene.contentRevision;
+    const revision = f.scene.contentCursor;
     const allocationCount = f.production.inspect().resourceAllocation?.successfulAllocationCount;
     expect(allocationCount).toBeDefined();
     f.replaceFirstMesh();
@@ -136,12 +136,12 @@ it('preserves mesh content invalidation across missing-artifact failure and retr
     const recovered = f.prepare().unwrap();
     expect(recovered?.materialBindings).toHaveLength(2);
     expect(f.production.inspect().preparedBatchBuilds).toBe(1);
-    expect(f.scene.contentRevision).toBe(revision);
-    const stableRevision = f.scene.contentRevision;
+    expect(f.scene.contentCursor).toBe(revision);
+    const stableRevision = f.scene.contentCursor;
     const stable = f.prepare().unwrap();
     expect(stable?.topologySignature()).toBe(recovered?.topologySignature());
     expect(f.production.inspect().preparedBatchBuilds).toBe(0);
-    expect(f.scene.contentRevision).toBe(stableRevision);
+    expect(f.scene.contentCursor).toBe(stableRevision);
   } finally {
     f.close();
   }

@@ -135,7 +135,11 @@ specialization still belongs to the compiler, not to the runtime loader.
 For Program v3, an author may declare `VfxParameters` and a bounded
 `VfxCustom`. Parameter comments such as `// forgeax-vfx-default intensity = 0.5`
 remain in reflection input and become cooked field defaults used by normal
-instance creation. Commented WGSL declarations and imports are excluded from
+instance creation. Alternatively the source-level `parameters` table (name ->
+`{ type, default }`) makes the compiler synthesize `VfxParameters` and a
+`vfx_parameters()` accessor shared by every emitter; declaring both fails. The
+prelude also exposes `ctx.time`/`time_whole`/`time_fract`, the `world_time*`
+equivalents, `vfx_forever()` and `vfx_loop_phase(...)`. Commented WGSL declarations and imports are excluded from
 layout and Data Interface discovery. When Custom is present, both hooks receive a pointer to that
 record; the managed shell writes it on spawn and persists it across update
 ticks. Renderer semantics are explicit source-to-Core/Custom mappings rather

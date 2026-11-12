@@ -118,6 +118,20 @@ The host supplies the real RHI backend and owns the file write. The package
 owns recording, encoding, decoding, replay, and readback contracts. Expected
 failures are `Result` values, not message-parsed exceptions.
 
+### Gzip transport work
+
+The internal `#tape-gzip` package condition selects Node's native zlib for Node
+hosts and the bundled portable codec for browsers and Workers. Both retain the
+v7 gzip representation, complete decompressed bytes and stored-byte SHA-256
+validation. No frame, seed, event or replay work is removed. Compressed parts
+retain ordinary owned `Uint8Array` storage and copying `slice` semantics across
+hosts. Keep both internal codec artifacts when packaging the library; browser
+bundles must not include Node builtins. The native work regression requires
+actual native codec calls and rejects JavaScript codec calls in the
+real container path, checks portable/native interoperability and retains corrupt
+digest and invalid gzip failures. The browser regression exercises its real
+conditional path independently.
+
 Recorder attachment preserves both the asynchronous shader factory and an
 optional `createShaderModuleImmediate` factory on the explicit RHI backend.
 Pipeline handles retain native identity. Calls to `getBindGroupLayout(index)`
@@ -129,6 +143,8 @@ during replay.
 
 ```sh
 forgeax rhi capture --json
+forgeax rhi summary --artifact frame.rhitape --passes --json
+forgeax rhi summary --artifact frame.rhitape --passes --label particle --json
 forgeax rhi summary --artifact frame.rhitape --json
 forgeax rhi inspect --artifact frame.rhitape --work-index 22 --fields '["pipeline","bindings","pixels"]' --json
 forgeax rhi read --artifact frame.rhitape --reads '[{"binding":{"group":1,"binding":3},"workIndex":22,"image":{"format":"rgba16float","width":512,"height":512,"tile":{"tileWidth":8,"tileHeight":8,"index":40,"border":1},"tonemap":"reinhard","png":"probe40.png"}}]' --json
@@ -145,6 +161,17 @@ kind, debug groups, pipeline identity, entry points and attachments. Shader
 source stays in `rhi.inspect`; the summary does not repeat it per draw.
 `summarizeFrame(buildFrameModel(tape))` exposes the same projection to library
 callers without requiring a GPU.
+
+`rhi summary --passes` returns one row per pass instead of the per-work list:
+`summary.passes[]` (pass index, label, color and depth targets with texture label,
+size and format, draw/dispatch/drawIndirect counts, pipeline labels with counts) and a
+one-line-per-pass `summary.passLines`. `--label <regex>` adds `summary.resources[]`,
+the textures, buffers and views whose own or viewed-texture label matches. The summary
+and `rhi inspect` with the default `pipeline`/`bindings` fields read the tape only;
+`pixels`, `outputs`, `rhi read` and `rhi timing` need a replay device. macOS and
+Windows ship no prebuilt `dawn.node` by design (source build, `build:native`), so
+replay-backend-unavailable there is the expected state, not a platform-key bug.
+`summarizePasses`, `summarizeResources` and `passLine` are the library forms.
 
 > [!WARNING]
 > `FrameModel.unseededResources` and `summary.unseededResources` list retained
@@ -213,6 +240,20 @@ a second container-sized copy:
 Identical payloads are stored once: recorder blobs are keyed by their SHA-256
 content hash, so repeated uploads and identical resources share one blob, and
 encoding reuses that hash as the blob digest instead of hashing again.
+
+Captured containers choose lossless compression per blob. GPU texture formats,
+including BC/ETC2/ASTC blocks, and uniform bytes remain exact. `EncodedTape.tape`
+decodes lazily; ordinary chunk uploads retain the encoded parts without keeping
+the original uncompressed recorder pool alive.
+
+| `TapeEncodeOptions.compression` | Storage policy |
+|:--|:--|
+| `auto` (recorder default) | Gzip only when it saves more than 32 bytes and 1%; otherwise borrow the raw bytes. |
+| `none` | Preserve uncompressed bytes. |
+| `gzip` | Explicit gzip for every blob. |
+
+Without an encoding override, re-encoding a decoded tape preserves each blob's
+chosen representation, including containers with mixed raw and gzip payloads.
 
 `CaptureFrameOptions.seed.maxResourceBytes` scopes initial contents. A resource
 whose snapshot exceeds the bound is not read back; its bootstrap entry keeps the
@@ -298,12 +339,14 @@ multisampled multi-target pass such as weighted blended OIT accumulation exposes
 every readable 1x target id for `readResourceAtWork`.
 Partial replay closes command and pass debug groups still open at the selected
 work, deriving the scopes from the recorded prefix without running later draws.
-For `2d` and `2d-array` sources, depth readback uses an unfiltered depth-to-color
-pass and returns one `f32` per texel for every supported depth format, including
-exact cleared zero. It binds the source range and selects the layer/mip explicitly
-in the load shader, preserving array and mip semantics on GLES; depth-stencil textures
-require an explicit aspect. The same path works on WebGPU and WebGL2 without
-changing recorded depth comparisons or writes. Stencil-only copies retain the
+For `2d` and `2d-array` sources, depth readback returns one `f32` per texel,
+including exact cleared zero. WebGPU and native wgpu copy `depth32float` with
+explicit `COPY_SRC` directly to staging, preserving its four bytes without a
+shader or RGBA32F intermediate. WebGL2, Null, other depth formats and descriptors
+without `COPY_SRC` retain the unfiltered depth-to-color pass. It binds the source
+range and selects the layer/mip explicitly in the load shader, preserving array
+and mip semantics on GLES; depth-stencil textures require an explicit aspect.
+Neither route changes recorded depth comparisons or writes. Stencil-only copies retain the
 backend's format restrictions and structured transfer failures.
 
 The remaining readback matrix is explicit: supported color/depth formats use
@@ -327,10 +370,12 @@ with `replay-capability-mismatch` before replay resource creation.
 
 The internal `wrap(rhi, createShaderModule)` assembly receives the backend pair;
 `attachRecorder(backend)` supplies both for host integrations. Capture and replay
-share the exact unfiltered depth-load kernel, including on WebGL2 where direct
-depth-to-buffer copies are unavailable. Depth snapshots run one resource at a time;
+share the same direct-copy admission and unfiltered depth-load fallback, including
+on WebGL2 where direct depth-to-buffer copies are unavailable. Depth snapshots run one resource at a time;
 color and buffer snapshots retain bounded copy batches. Depth staging is estimated
-from the largest RGBA32F slice; a matching temporary output texture is also live.
+conservatively from the largest RGBA32F slice; only the fallback also creates a
+matching temporary output texture. Direct copies need four staging bytes per
+texel before row alignment and retain the shared cancellation and cleanup path.
 
 Retained `depth32float` textures are snapshotted across every array layer and
 mip level. Replay restores the exact floats through a depth-only raster pass,
@@ -421,6 +466,113 @@ Times come from the replay device, not the capture device: use them to rank
 passes and find the dominant GI stage. A software adapter such as lavapipe
 emulates the GPU on the CPU, so its absolute numbers are not frame budgets.
 `scripts/measure-replay.mjs --timing` records the slowest passes into JSON.
+
+### Replay GPU benchmark
+
+`session.benchmarkPasses(options)` turns the single timed replay into a
+deterministic GPU benchmark in the style of RenderDoc replay profiling, and
+`session.compareWith(candidate, options)` times two tapes against each other.
+The devkit CLI wraps both:
+
+```sh
+forgeax rhi timing frame.rhitape                          # table: union p50 + 95% CI, drift, top passes, preflight
+forgeax rhi timing frame.rhitape --json                   # every pass, sample, interval and check
+forgeax rhi timing frame.rhitape --ci-ms 0.05 --max-repeat 200
+forgeax rhi timing frame.rhitape --skip 'shadow'          # paired cost delta with a verdict
+forgeax rhi timing after.rhitape --compare before.rhitape # interleaved A/B, after minus before
+forgeax rhi timing frame.rhitape --isolate                # per-pass submit + wait, sum >= real frame
+forgeax rhi timing frame.rhitape --restore reload --pipeline-depth 0   # the old re-upload path
+```
+
+- **Steady restore (default).** The first replay keeps every bootstrap
+  resource alive, adds `COPY_SRC | COPY_DST` to mutable buffers and
+  single-sample textures, and copies their capture-start contents into
+  pristine GPU twins once. Each later replay restores only mutable state with
+  GPU-side copies (no CPU upload, no resource re-creation) and replays the
+  frame's events. `restore.steady` reports the counts and bytes copied and
+  `unrestored` lists resources steady mode cannot reset (multisampled, or
+  mappable for reading); a tape that destroys a bootstrap resource or maps an
+  upload buffer for writing falls back to `reload` with `fallbackReason`.
+- **Pipelined timestamps.** Replays are submitted back to back into two banks
+  of `pipelineDepth` (default 4) timestamp query sets; a bank's readbacks
+  drain only when it is reused, so the GPU never idles between measured
+  replays. `pipelineDepth: 0` waits for every readback; `isolate` always does.
+- **Repeat, warm-up and convergence.** `warmup` (default 3) replays are
+  discarded. `repeat` (default 20) replays are measured; with
+  `ciTargetNanoseconds` (`--ci-ms`) repeat extends in steps until the 95%
+  interval of the union p50 (or of the paired delta) is at most the target,
+  up to `maxRepeat` (default 200), and `convergence` says whether it was met.
+- **Statistics.** Per pass and per frame: `TimingStats { count, min, p50, p95,
+  max, mean, stddev }` in nanoseconds. Each variant adds `unionP50Interval`
+  (order-statistic 95% interval of the median) and `drift` (least-squares
+  trend, first/second half p50 shift, lag-1 autocorrelation, `stable`); a
+  slow wave shows as `stable: false`. `samples` keeps every measured frame.
+- **Whole-frame time.** Tile-based GPUs (Apple, mobile) run consecutive passes
+  concurrently, so per-pass intervals overlap and their `sum` overcounts the
+  frame. `union` is the time at least one pass was open; `envelope` runs from
+  the first begin to the last end and includes idle gaps. Quote `union`.
+- **Missing timestamps.** `timestampCoverage.missingPasses` names every
+  executed pass whose interval was `unwritten`, `zero` or `inverted` and in how
+  many replays; those passes are not in `union`.
+- **Isolated mode.** `isolate: true` finishes the encoder before and after
+  every pass and submits each piece alone, waiting for `onSubmittedWorkDone`.
+  Isolation removes overlap and parallelism, so the isolated sum is at least
+  the real frame; use it to read a pass's own cost. Debug groups are dropped.
+- **Ablation.** `skip: { passLabel, passIndices, workIndices }` (`--skip`,
+  `--skip-passes`, `--skip-works`) adds an ablated variant. Base and ablated
+  replays alternate in ABBA order; `ablated.delta` holds the paired
+  base-minus-ablated statistics and `ablated.unionVerdict` a bootstrap 95%
+  interval of the median union delta, `significant` when it excludes 0. A
+  skipped pass leaves stale or cleared targets that later passes still read:
+  **the delta is a cost estimate, not a correct image**, and a shadow raster
+  skip keeps shadow sampling in its consumers.
+- **Comparison.** `compareWith` runs the baseline and candidate sessions (each
+  on its own device) in alternating chunks of `2 * pipelineDepth` replays
+  (A B B A ...), each chunk drained before the other side starts, so clock
+  drift lands on both. It reports both sides, the paired candidate-minus-
+  baseline `delta` with `unionVerdict`, per-pass deltas matched by label and
+  occurrence, and `unmatchedPasses`.
+
+The devkit `rhi.timing` operation adds a preflight and an environment block:
+the replay backend and `timestamp-query` must be present (otherwise
+`replay-backend-unavailable` / `replay-capability-mismatch`); timestamp
+quantization must be off (declared by the provider, and checked on the data:
+all pass minima on the 2^16 ns grid fail); GPU utilization is sampled before
+(busiest of four samples over 1.5 s) and after the run, and at or above
+`maxGpuPercent` (default 5) the result is `valid: false` with
+`invalidReasons`; `--require-idle` refuses to start instead (`gpu-busy`). CPU
+load, coverage, drift and convergence are warnings. `environment` records the
+adapter, build revision and dirty state, tape path, digest and size, start time
+and elapsed time. `--timeout-ms` (default 600000) fails with `timing-timeout`
+and `{ timeoutMs, elapsedMs, stage }`.
+
+Measured on r2-searchlight (Apple M4 Pro, Metal through Dawn, 110 passes,
+266 MB restored per replay, 40 measured replays, idle GPU):
+
+| | union p50 | 95% CI | sd | drift | wall / replay |
+| --- | --- | --- | --- | --- | --- |
+| live game, 15 s | 17.2 ms | | 2.3 ms | | 17.3 ms |
+| `--restore reload --pipeline-depth 0` | 23.1 / 23.6 ms | 6 ms wide | 4.6–5.1 ms | wave, lag-1 0.8 | 70 ms |
+| `--pipeline-depth 0` (steady) | 15.1 ms | 2.7 ms wide | 2.3 ms | ramp 11.5 → 19 | 27 ms |
+| default (steady, depth 4) | 11.30 / 11.32 ms | 0.03–0.04 ms wide | 0.20–0.25 ms | stable | 19 ms |
+
+Any idle gap between replays lets the Apple GPU clock fall, and replay time
+rises with it: re-uploading the tape (reload) or waiting for each readback
+(depth 0) both drift. Back-to-back steady replay holds the clock and reads the
+frame's cost at a sustained clock, which is lower than the live game's frame
+time (17.2 ms); compare replay numbers with replay numbers, not with live ms.
+Paired deltas shrink to sub-0.1 ms intervals: shadow raster skip 2.89 ms
+[2.85, 2.97], bloom 0.50 [0.41, 0.53], FXAA 0.24 [0.21, 0.26].
+
+Compared with live in-game timing, replay has no CPU, vsync, frame pacing or
+compositor noise and is comparable across commits for the same tape and
+device. It does not include cross-frame overlap, frame-to-frame cache state or
+shader-level feature toggles. Run benchmarks in a quiet machine slot: other GPU
+work shifts the numbers, which is what the preflight checks for. Dawn rounds
+timestamps to 2^16 ticks (about 65.5 us on Metal) unless the
+`timestamp_quantization` toggle is disabled, which the devkit Node GPU does. A
+Dawn build without timestamp writes for empty compute passes reports them in
+`missingPasses` as `zero`.
 
 ## Structured errors
 
@@ -631,6 +783,14 @@ view. Uncompressed encoding borrows those immutable bytes as container parts; th
 recorder hands them to the captured artifact when it releases its pool, so the
 upload streams the seeds themselves (see [Streaming large captures](#streaming-large-captures)).
 
+Each color texture shares aligned staging across its mip/layer chain, splitting
+before `device.limits.maxBufferSize`. Every subresource still has its original
+copy and tight byte destination; each staging allocation maps and retires once.
+Textures retain independent allocations, the same total padded byte budget,
+resource progress, cancellation cleanup and canonical seed order. The shared
+Browser fixture checks every face/mip byte on the ordinary and WebGL2-only paths;
+unit cases also retain BC3 blocks and exercise a smaller device buffer limit.
+
 Snapshot blobs use asynchronous native SHA-256 with the same content keys as
 synchronous queue uploads. Hash completion rechecks capture generation before
 publishing bytes or events; a cancelled digest cannot seed a later capture.
@@ -671,3 +831,13 @@ combine a broad resource kind with an unrelated role. Recorded tape kinds and
 the serialized protocol remain owned by the tape schema.
 
 FrameModel pipeline availability is a discriminated result: `available` guarantees a captured pipeline handle, kind, descriptor and shader roster; `unavailable` carries a reason and an empty roster. Missing shader source remains `null` within an available pipeline. Pipeline and shader indexes retain their admitted event kinds.
+
+## Buffer compatibility capture
+
+Recorded uploads and index shadows use the shared RHI source-range conversion:
+TypedArray offsets/counts are elements; stored blobs and event sizes are bytes.
+Subview offsets, remaining ranges and explicit zero retain their meaning. Copy
+shorthand records the actual source size from the existing descriptor table,
+then forwards the explicit size. No additional resource registry is introduced.
+The owning buffer compatibility regression checks the recorded blob and event
+against the forwarded upload. See [CI compatibility](../../scripts/ci/README.md#pinned-webgpu-compatibility).

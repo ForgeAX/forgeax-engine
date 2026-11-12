@@ -42,6 +42,14 @@ vi.mock('../../pkg/wgpu_wasm.js', () => {
   };
 });
 
+// The package deliberately has no Node type dependency.
+function testProcess(): {
+  versions: { node?: string };
+  nextTick(callback: () => void): void;
+} {
+  return (globalThis as unknown as { process: ReturnType<typeof testProcess> }).process;
+}
+
 const MOCK_ARTIFACT = new Uint8Array([1, 2, 3]);
 const MOCK_GLUE = new TextEncoder().encode('mock glue');
 const MOCK_MANIFEST = new TextEncoder().encode(
@@ -87,7 +95,7 @@ async function manifestFor(artifact: Uint8Array): Promise<Uint8Array> {
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(async (path: string) => {
     if (path.endsWith('provenance.json')) return mockManifestBytes;
-    if (path.endsWith('wgpu_wasm.js')) return MOCK_GLUE;
+    if (path.endsWith('wgpu_wasm_glue.bytes')) return MOCK_GLUE;
     return mockArtifactBytes;
   }),
 }));
@@ -109,6 +117,7 @@ describe('ensureReady singleton wrapper', () => {
 
   it('returns the same Promise reference across N calls (charter proposition 6 idempotency)', async () => {
     const mod = await import('../index.js');
+    expect(mod).not.toHaveProperty('__resetForTests');
     const p1 = mod.ensureReady();
     const p2 = mod.ensureReady();
     const p3 = mod.ensureReady();
@@ -161,14 +170,15 @@ describe('ensureReady singleton wrapper', () => {
   });
 
   it('changes identity after a new verified native payload with unchanged glue and keeps loaded identity stable', async () => {
-    const mod = await import('../index.js');
-    const original = await mod.getCompilerFingerprint();
+    const first = await import('../index.js');
+    const original = await first.getCompilerFingerprint();
     mockArtifactBytes = new Uint8Array([4, 5, 6]);
     mockManifestBytes = await manifestFor(mockArtifactBytes);
     // Disk changes do not pretend that the already-loaded compiler changed.
-    expect(await mod.getCompilerFingerprint()).toBe(original);
-    mod.__resetForTests();
-    const replacement = await mod.getCompilerFingerprint();
+    expect(await first.getCompilerFingerprint()).toBe(original);
+    vi.resetModules();
+    const second = await import('../index.js');
+    const replacement = await second.getCompilerFingerprint();
     expect(replacement).not.toBe(original);
     expect(replacement).toBe(
       JSON.parse(new TextDecoder().decode(mockManifestBytes)).compilerFingerprint,
@@ -188,12 +198,18 @@ describe('ensureReady singleton wrapper', () => {
     expect(_initCallCount).toBe(1);
   });
 
-  it('normalizes Vite raw glue transport before provenance verification', async () => {
-    // Import while Vite's own Node transport still has process; the tested loader
-    // detects the browser branch when ensureReady runs below.
+  it('loads original glue bytes from a bundler-neutral asset before provenance verification', async () => {
+    // Import while the test runner still has process; the tested loader detects
+    // the browser branch when ensureReady runs below.
     const mod = await import('../index.js');
-    vi.stubGlobal('process', undefined);
+    // Hide Node detection while retaining the test runner's asynchronous transport.
+    vi.stubGlobal('process', {
+      ...testProcess(),
+      versions: { ...testProcess().versions, node: undefined },
+    });
     const fetchMock = vi.fn(async (input: URL) => {
+      // Vitest RPC also schedules nextTick callbacks while browser loading awaits fetch.
+      await new Promise<void>((resolve) => testProcess().nextTick(resolve));
       const url = new URL(input.href);
       const response = (bytes: Uint8Array): Response =>
         ({
@@ -207,15 +223,71 @@ describe('ensureReady singleton wrapper', () => {
       if (url.pathname.endsWith('/wgpu_wasm_bg.wasm')) {
         return response(MOCK_ARTIFACT);
       }
-      expect(url.pathname.endsWith('/wgpu_wasm.js')).toBe(true);
-      expect(url.search).toBe('?raw');
-      expect(url.searchParams.has('raw')).toBe(true);
-      const glueSource = new TextDecoder().decode(MOCK_GLUE);
-      return response(new TextEncoder().encode(`export default ${JSON.stringify(glueSource)}`));
+      expect(url.pathname.endsWith('/dist/wgpu_wasm_glue.bytes')).toBe(true);
+      expect(url.search).toBe('');
+      return response(MOCK_GLUE);
     });
     vi.stubGlobal('fetch', fetchMock);
     await expect(mod.ensureReady()).resolves.toBeDefined();
     expect(_initCallCount).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { encoding: 'base64', tampered: false },
+    { encoding: 'percent', tampered: false },
+    { encoding: 'base64', tampered: true },
+    { encoding: 'percent', tampered: true },
+  ])('verifies embedded $encoding provenance and glue without data fetch (tampered=$tampered)', async ({
+    encoding,
+    tampered,
+  }) => {
+    const mod = await import('../index.js');
+    const NativeURL = globalThis.URL;
+    const manifest = new TextDecoder()
+      .decode(MOCK_MANIFEST)
+      .replace('sha256-test', tampered ? 'sha256-tampered' : 'sha256-test');
+    const embedded =
+      encoding === 'base64'
+        ? `data:application/json;charset=utf-8;base64,${btoa(manifest)}`
+        : `data:application/json,${encodeURIComponent(manifest)}`;
+    const embeddedGlue = `data:application/octet-stream;base64,${btoa(
+      String.fromCharCode(...MOCK_GLUE),
+    )}`;
+    vi.stubGlobal(
+      'URL',
+      class extends NativeURL {
+        constructor(input: string | URL, base?: string | URL) {
+          const source = String(input);
+          super(
+            source.endsWith('/provenance.json')
+              ? embedded
+              : source.endsWith('/dist/wgpu_wasm_glue.bytes')
+                ? embeddedGlue
+                : input,
+            base,
+          );
+        }
+      },
+    );
+    // Hide Node detection while retaining the test runner's asynchronous transport.
+    vi.stubGlobal('process', {
+      ...testProcess(),
+      versions: { ...testProcess().versions, node: undefined },
+    });
+    const fetchMock = vi.fn(async (input: URL) => {
+      if (input.protocol === 'data:') throw new TypeError('Failed to fetch');
+      const bytes = input.pathname.endsWith('/wgpu_wasm_bg.wasm') ? MOCK_ARTIFACT : MOCK_GLUE;
+      return new Response(bytes.slice().buffer);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    if (tampered) {
+      await expect(mod.ensureReady()).rejects.toThrow('compiler fingerprint');
+      expect(_initCallCount).toBe(0);
+    } else {
+      await expect(mod.ensureReady()).resolves.toBeDefined();
+      expect(_initCallCount).toBe(1);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

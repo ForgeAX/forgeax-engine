@@ -1512,7 +1512,7 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
       });
     });
 
-    it('reads glTF ForgeaX extras as producer-authored bounds without bind-pose derivation', async () => {
+    it('reads glTF ForgeAX extras as producer-authored bounds without bind-pose derivation', async () => {
       const parsed = await parseGltf(
         {
           asset: { version: '2.0' },
@@ -2239,8 +2239,10 @@ function unwrapReimport(result: ReturnType<typeof reimportReuseMeta>) {
           'EXT_mesh_gpu_instancing',
           'EXT_meshopt_compression',
           'KHR_draco_mesh_compression',
+          'KHR_mesh_quantization',
           'KHR_lights_punctual',
           'KHR_texture_transform',
+          'KHR_texture_basisu',
           'KHR_materials_unlit',
           'KHR_materials_emissive_strength',
           'KHR_materials_transmission',

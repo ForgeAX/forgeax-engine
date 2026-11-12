@@ -3,6 +3,11 @@ import { createAudioIntentBackend } from '@forgeax/engine-audio';
 import { createWorldContext, World } from '@forgeax/engine-ecs';
 import type { KernelDispatchResult, SharedKernelExecutor } from '@forgeax/engine-ecs/shared';
 import {
+  createVideoFrameEndpoint,
+  installWorkerVideoSourceProvider,
+  type VideoFrameEndpoint,
+} from '@forgeax/engine-graphics-extras';
+import {
   type CompositeInputLease,
   createGamepadFeedback,
   type InputBackend,
@@ -90,13 +95,19 @@ import type {
   ExecutionRendererInspectionResult,
 } from './types';
 import { serializableDetail } from './worker-error';
+import {
+  createWorkerFrameResponder,
+  type FrameNotice,
+  type FrameRequest,
+} from './worker-frame-source';
 
 const scope = globalThis as unknown as {
-  postMessage(message: EngineToHostMessage, transfer?: Transferable[]): void;
-  onmessage: ((event: MessageEvent<HostToEngineMessage>) => void) | null;
+  postMessage(message: EngineToHostMessage | FrameNotice, transfer?: Transferable[]): void;
+  onmessage: ((event: MessageEvent<HostToEngineMessage | FrameRequest>) => void) | null;
   close(): void;
 };
 
+let nativeFrames: ReturnType<typeof createWorkerFrameResponder> | undefined;
 let renderer: Renderer | undefined;
 let currentSample: InputBackendSample = {
   downKeys: new Set(),
@@ -781,6 +792,32 @@ function realmBootstrapHost(
   };
 }
 
+/** Lazily wraps `init.videoPort`; one endpoint serves every realm of this Worker. */
+let videoEndpoint: VideoFrameEndpoint | undefined;
+
+/**
+ * Feed page-owned `<video>` frames into VideoAsset materials. A realm without
+ * WebCodecs `VideoFrame` keeps no provider and reports why once.
+ */
+function videoFrameBridgePlugin(port: MessagePort): Plugin {
+  return {
+    name: 'video-frame-bridge',
+    inject: ['world'],
+    apply(ctx) {
+      ctx.effect(() => {
+        videoEndpoint ??= createVideoFrameEndpoint(port);
+        const installed = installWorkerVideoSourceProvider(ctx.world, videoEndpoint);
+        if (!installed.ok) {
+          console.warn(`[forgeax] ${installed.error.code}: ${installed.error.hint}`);
+          return () => {};
+        }
+        const provider = installed.value;
+        return () => provider.dispose();
+      }, 'execution/video-frame-bridge');
+    },
+  };
+}
+
 function realmExtensionPlugins(
   candidate: WorkerRealm,
   prepared: PreparedExecutionBootstrap,
@@ -789,6 +826,9 @@ function realmExtensionPlugins(
 ): Plugin[] {
   return [
     ...(candidate.init.workers.kernels.enabled ? [sharedKernelPlugin(candidate)] : []),
+    ...(candidate.init.videoPort === undefined
+      ? []
+      : [videoFrameBridgePlugin(candidate.init.videoPort)]),
     executionBootstrapHostPlugin(
       realmBootstrapHost(candidate, stagedRenderWorker, renderer),
       renderer,
@@ -1387,10 +1427,28 @@ async function runFrame(message: ExecutionFrameMessage): Promise<void> {
   const renderWorker = activeRealm.renderWorker;
   if (message.render !== false && renderWorker !== undefined) {
     const waitStarted = performance.now();
+    let waiting = false;
+    const onWait = () => {
+      if (waiting) return;
+      waiting = true;
+      scope.postMessage({
+        kind: 'frame-admission',
+        worldIdentity: world.identity,
+        frameId: message.frameId,
+        phase: 'render-wait',
+      });
+    };
     do {
-      if (!(await renderWorker.waitForPublicationCapacity())) return;
+      if (!(await renderWorker.waitForPublicationCapacity(onWait))) return;
       if (realm !== activeRealm || message.frameId <= lastFrameId) return;
     } while (!renderWorker.hasPublicationCapacity);
+    if (waiting)
+      scope.postMessage({
+        kind: 'frame-admission',
+        worldIdentity: world.identity,
+        frameId: message.frameId,
+        phase: 'source',
+      });
     creditWaitMs = performance.now() - waitStarted;
   }
   if (realm !== activeRealm) return;
@@ -1515,8 +1573,43 @@ async function rebuild(message: ExecutionRebuildMessage): Promise<void> {
   }
 }
 
+function receiveWorkerLifecycle(message: HostToEngineMessage | FrameRequest): boolean {
+  switch (message.kind) {
+    case 'native-frame-request':
+      nativeFrames?.receive(message);
+      return true;
+    case 'init':
+      if (message.workers.render.enabled) nativeFrames = createWorkerFrameResponder(scope);
+      void withRealmTransition(() => initialize(message));
+      return true;
+    case 'dispose':
+      nativeFrames?.dispose();
+      nativeFrames = undefined;
+      inspectionsClosed = true;
+      void withRealmTransition(async () => {
+        const target = realm;
+        realm = undefined;
+        inspectionQueue.length = 0;
+        try {
+          if (target !== undefined) await disposeRealm(target);
+          scope.postMessage({ kind: 'disposed' });
+        } catch (cause) {
+          scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
+        } finally {
+          target?.init.bootstrapPort?.close();
+          videoEndpoint?.close();
+          scope.close();
+        }
+      });
+      return true;
+    default:
+      return false;
+  }
+}
+
 scope.onmessage = (event): void => {
   const message = event.data;
+  if (receiveWorkerLifecycle(message)) return;
   switch (message.kind) {
     case 'surface-result': {
       const target = realm;
@@ -1546,9 +1639,6 @@ scope.onmessage = (event): void => {
           ),
         );
       return;
-    case 'init':
-      void withRealmTransition(() => initialize(message));
-      return;
     case 'frame':
       void runFrame(message);
       return;
@@ -1572,23 +1662,6 @@ scope.onmessage = (event): void => {
     }
     case 'rebuild':
       void withRealmTransition(() => rebuildQueue.enqueue(() => rebuild(message)));
-      return;
-    case 'dispose':
-      inspectionsClosed = true;
-      void withRealmTransition(async () => {
-        const target = realm;
-        realm = undefined;
-        inspectionQueue.length = 0;
-        try {
-          if (target !== undefined) await disposeRealm(target);
-          scope.postMessage({ kind: 'disposed' });
-        } catch (cause) {
-          scope.postMessage({ kind: 'disposed', error: serializableDetail(cause) });
-        } finally {
-          target?.init.bootstrapPort?.close();
-          scope.close();
-        }
-      });
       return;
     case 'input-clear':
       inputBackend.revokeInjectedLease();

@@ -79,7 +79,7 @@ await writeJson(join(pluginRoot, 'plugin.json'), {
   $schema: 'https://agent-plugins.org/schemas/1.0.0/plugin.schema.json',
   name: pluginName,
   version: APP_VERSION,
-  description: 'Optional ForgeaX View App and Engine workspace tools for one trusted project.',
+  description: 'Optional ForgeAX View App and Engine workspace tools for one trusted project.',
 });
 await writeJson(join(pluginRoot, 'mcp.json'), {
   $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json',

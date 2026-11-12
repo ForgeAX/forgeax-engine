@@ -4,6 +4,21 @@ import { defineComponent, World } from '../index';
 const Holder = defineComponent('WorldUniqueRefReader', { value: 'unique<OwnedPayload>' });
 
 describe('World managed payload reads', () => {
+  it('publishes one immutable resolution while retaining the live payload identity', () => {
+    const world = new World();
+    const payload = { value: 7 };
+    const handle = world.allocUniqueRef('OwnedPayload', payload);
+    const first = world.resolveUniqueRef<typeof payload>(handle);
+    expect(world.resolveUniqueRef(handle)).toBe(first);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(payload)).toBe(false);
+    payload.value = 8;
+    expect(first.unwrap()).toBe(payload);
+    expect(first.unwrap().value).toBe(8);
+    expect(Reflect.set(first, 'value', { value: 9 })).toBe(false);
+    expect(world.resolveUniqueRef(handle).unwrap()).toBe(payload);
+  });
+
   it('keeps one payload identity and rejects generations released by component replacement', () => {
     const world = new World();
     const payload = { value: 7 };

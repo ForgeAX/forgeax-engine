@@ -31,7 +31,12 @@ import {
 } from '@forgeax/engine-pack/source-node';
 import { validateCanonicalKitReceipt } from '@forgeax/engine-preview';
 import type { SsrAdmissionIdentity } from '@forgeax/engine-render';
-import { createMaterialPackCooker, listMaterialSourcePaths } from '@forgeax/engine-shader-compiler';
+import {
+  captureMaterialSourceSnapshot,
+  createMaterialPackCooker,
+  listMaterialSourcePaths,
+  type MaterialSourceSnapshot,
+} from '@forgeax/engine-shader-compiler';
 import {
   createStandaloneRuntimeAssetBinding,
   DEFAULT_LOAD_PROGRESS_LABELS,
@@ -102,7 +107,11 @@ import {
   previewVfxBoundsSource,
   resourcePresentationSource,
 } from './host/resource-presentation-source.js';
+import { startupCacheHttp } from './host/startup-cache-http.js';
+import { createStartupCacheIdentity } from './host/startup-cache-identity.js';
+import { startupEntrySource } from './host/startup-cache-source.js';
 import { hostStartupDocument, hostStartupScript } from './host/startup-source.js';
+import type { StartupUiOptions } from './host/startup-ui.js';
 import { type HostVersions, hostVersions } from './host/versions.js';
 import {
   composeBoundHostAssembly,
@@ -116,6 +125,7 @@ import type { DevKitAppOptions } from './plugin-build.js';
 import { preparePreviewHttpArtifacts } from './preview-http-artifacts.js';
 import { commandError, readProjectFacts, readProjectStartupTimeoutMs } from './project.js';
 import { DEV_PREPARATION_TIMEOUT_MS } from './startup-budget.js';
+import { traceDevStartup } from './startup-timing.js';
 import { projectToolProjection } from './tools/project-tools.js';
 import type {
   BootstrapRoot,
@@ -1122,7 +1132,7 @@ canvas.addEventListener('forgeax:frame-submitted', (event) => {
       currentApp?.renderer === undefined ||
       typeof currentApp.renderer.inspect !== 'function'
         ? undefined
-        : textureRendererObservation(currentApp.renderer.inspect(), preparedResourceOwner?.binding, frame);
+        : textureRendererObservation(preparedResourceOwner?.binding === undefined ? undefined : currentApp.renderer.inspect({ fields: ['frame', 'meshMaterialBindings'] }), preparedResourceOwner?.binding, frame);
   }
 });
 // Publish the exact canvas + game UI container to frontend plugins.
@@ -1292,6 +1302,7 @@ async function previewOwnerFacts(assets, resource, payload, textureBudget) {
             sampledTextureRequired: textureBudget.required,
             sampledTextureTransmission: textureBudget.transmission,
             sampledTextureConflicts: textureBudget.conflicts.join(','),
+            sampledTextureParallax: textureBudget.parallax,
           }),
       subjectDigest: await previewDigest(payload),
       bindingsDigest: await previewDigest(payload.passes),
@@ -1435,6 +1446,7 @@ preparedResourceOwner = await prepareResourcePreview(app, resource);
 return preparedResourceOwner.facts;
 }
 const gpuPassTiming = query.get('forgeax-gpu-pass-timing') === '1' ? {} : undefined;
+const renderAblation = query.get('forgeax-render-ablation') ?? undefined;
 const shadowWorkload = query.get('forgeax-shadow-workload') === '1' ? true : undefined;
 const geometryLane = query.get('forgeax-geometry-lane') === 'direct' ? 'direct' : undefined;
 const featureReadOnlyDepthBatchDiagnostic = (() => {
@@ -1660,6 +1672,7 @@ const appBootstrapPlugin = {
             pluginPrograms,
             runtimePacks: { ...runtimePacks, programHost: pluginPrograms.programHost ?? runtimePacks.programHost },
             gpuPassTiming,
+            ...(renderAblation === undefined ? {} : { renderAblation }),
             ...(shadowWorkload === undefined ? {} : { shadowWorkload }),
             profiler,
             ...(workspaceGame ? { input: ctx.engineWorkspaceInput.game } : {}),
@@ -2179,26 +2192,33 @@ function htmlSource(
   labels: LoadProgressLabels = DEFAULT_LOAD_PROGRESS_LABELS,
   versions?: HostVersions,
   head = '',
+  projectId = title,
+  revision?: string,
+  startupUi?: StartupUiOptions,
 ): string {
-  return hostStartupDocument(title, labels, versions)
+  const identity =
+    versions === undefined
+      ? undefined
+      : createStartupCacheIdentity({
+          ...versions,
+          project: projectId,
+          ...(revision === undefined ? {} : { revision }),
+        });
+  return hostStartupDocument(title, labels, versions, startupUi)
     .replace('  </head>', `${head}\n  </head>`)
     .replace(
       '  </body>',
-      `    <script>${hostStartupScript(startupScreen, 'undefined', labels)}</script>
+      `    <script>${hostStartupScript(startupScreen, 'undefined', labels, identity, startupUi)}</script>
     <script>
       (() => {
         // This inert marker keeps generated pages inspectable by older hosts
         // that only parse the fatal diagnostic hook.
-        const startupFailureText = 'ForgeaX game failed to start.\\n' + 'Unable to start the game.';
+        const startupFailureText = 'ForgeAX game failed to start.\\n' + 'Unable to start the game.';
         void startupFailureText;
       })();
     </script>
     <script type="module">
-      try {
-        await import('./main.ts');
-      } catch (error) {
-        globalThis.__forgeaxStartup?.fail?.(error);
-      }
+      ${startupEntrySource(identity)}
     </script>
   </body>`,
     );
@@ -2316,16 +2336,20 @@ export async function startDevProjectWithHost(
               };
               process.chdir(facts.value.root);
               changedDirectory = true;
-              const config = await createViteConfig(facts.value, 'serve', '/', {
-                server: vitePort,
-                ...(options.reuse === undefined
-                  ? {}
-                  : { generatedRoot: options.reuse.generatedRoot }),
-              });
-              server = await createViteServer(
-                options.reuse === undefined
-                  ? config
-                  : { ...config, cacheDir: options.reuse.viteCacheDir },
+              const config = await traceDevStartup('live-vite-config', () =>
+                createViteConfig(facts.value, 'serve', '/', {
+                  server: vitePort,
+                  ...(options.reuse === undefined
+                    ? {}
+                    : { generatedRoot: options.reuse.generatedRoot }),
+                }),
+              );
+              server = await traceDevStartup('live-vite-create', () =>
+                createViteServer(
+                  options.reuse === undefined
+                    ? config
+                    : { ...config, cacheDir: options.reuse.viteCacheDir },
+                ),
               );
               // Vite invokes configureServer before listen but does not wait
               // for async producer work started by that hook. The Pack plugin
@@ -2336,9 +2360,14 @@ export async function startDevProjectWithHost(
               const packPlugin = server.config.plugins.find(
                 (plugin) => plugin.name === 'forgeax:pack',
               ) as { readonly ready?: () => Promise<void> } | undefined;
-              await packPlugin?.ready?.();
+              await traceDevStartup('live-pack-ready', async () => {
+                await packPlugin?.ready?.();
+              });
               ctx.effect(() => closeServer, 'devkit/dev-server');
-              await server.listen(vitePort.port);
+              const listeningServer = server;
+              await traceDevStartup('live-vite-listen', () =>
+                listeningServer.listen(vitePort.port),
+              );
               const projectSession = server.config.plugins.find(
                 (plugin) => plugin.name === 'forgeax:project-session',
               ) as (Plugin & { inputPaths(): readonly string[] }) | undefined;
@@ -2434,7 +2463,10 @@ export async function startPreviewProjectWithHost(
                 root,
                 configFile: false,
                 base: verified.value.base,
-                plugins: [await preparePreviewHttpArtifacts(distRoot, verified.value)],
+                plugins: [
+                  startupCacheHttp(),
+                  await preparePreviewHttpArtifacts(distRoot, verified.value),
+                ],
                 preview: {
                   open: false,
                   ...port,
@@ -2503,8 +2535,7 @@ function createViteConfigTiming(
   return (stage: string): void => {
     const game = host?.workspace?.execution === 'game';
     const build = command === 'build' && process.env.FORGEAX_BUILD_PROGRESS === '1';
-    if (!game && !build && (process.env.FORGEAX_WORKSPACE_TIMING !== '1' || !host?.workspace))
-      return;
+    if (!game && !build && process.env.FORGEAX_WORKSPACE_TIMING !== '1') return;
     const now = performance.now();
     console.error(
       build ? '[forgeax.build]' : game ? '[forgeax.play]' : '[forgeax.vite-config.timing]',
@@ -2602,15 +2633,32 @@ function projectSourceIgnorePath(
   return (path: string) => ignoreSource(path) || failedSources.has(path);
 }
 
+async function captureBuildMaterialSources(
+  command: string,
+  roots: readonly string[],
+  sourceSnapshot: PluginSourceInventory['sourceSnapshot'],
+  projectRoot: string,
+): Promise<MaterialSourceSnapshot | undefined> {
+  if (command !== 'build') return undefined;
+  return captureMaterialSourceSnapshot(roots, {
+    readText: (path) => sourceSnapshot.readText(path),
+    paths: (sourceRoots) =>
+      sourceSnapshot.observePaths(resolve(projectRoot, '.forgeax/material-source-snapshot'), () =>
+        listMaterialSourcePaths(sourceRoots),
+      ),
+  });
+}
+
 function createBuiltinCookers(
   roots: readonly string[],
   materialProfile: BuildOptions['materialProfile'] | undefined,
+  sourceSnapshot?: MaterialSourceSnapshot,
 ) {
   return [
-    createMaterialPackCooker(
-      roots,
-      materialProfile === undefined ? {} : { profile: materialProfile },
-    ),
+    createMaterialPackCooker(roots, {
+      ...(materialProfile === undefined ? {} : { profile: materialProfile }),
+      ...(sourceSnapshot === undefined ? {} : { sourceSnapshot }),
+    }),
     createParticleCodeNativeCookerFromRoots(roots),
   ];
 }
@@ -3060,7 +3108,13 @@ export async function createViteConfig(
     ];
     timing('material-packages');
     const roots = packRoots(sourceRoots, canonicalKit);
-    const builtinCookers = createBuiltinCookers(roots, options.materialProfile);
+    const materialSources = await captureBuildMaterialSources(
+      command,
+      roots,
+      sourceSnapshot,
+      facts.root,
+    );
+    const builtinCookers = createBuiltinCookers(roots, options.materialProfile, materialSources);
     const outputVersions = createStandardAssetOutputProducerRegistry(
       [...scanned.value.declarations.values()].flatMap((declaration) =>
         declaration.format === 'pack.ts'
@@ -3097,7 +3151,7 @@ export async function createViteConfig(
         resolve: { alias: consumerAliases, dedupe: engineDedupe(consumerAliases) },
         plugins: engineWorkspacePlugins,
       },
-      { inventory: sourceInventory },
+      { inventory: sourceInventory, buildCacheRoot: devKitDdcRoots(facts.root).buildCacheRoot },
     );
     timing('project-cookers');
     disposePreparation = () => cookerSession.dispose();
@@ -3120,6 +3174,20 @@ export async function createViteConfig(
           resolveLoadProgressLabels(cookerSession.appOptions.loadingLabels),
           await hostVersions(facts),
           htmlHead,
+          facts.id,
+          createHash('sha256')
+            .update(
+              JSON.stringify(
+                [...sourceInventory.sourceSnapshot.inputs]
+                  .map(([path, digest]) => [
+                    relative(facts.root, path).replaceAll('\\', '/'),
+                    digest,
+                  ])
+                  .sort(),
+              ),
+            )
+            .digest('hex'),
+          cookerSession.appOptions.startupUi,
         ),
       ),
       writeFile(
@@ -3197,15 +3265,17 @@ export async function createViteConfig(
       ddc: devKitDdcRoots(facts.root),
       watch: false,
       importers: [...DEFAULT_IMPORTERS, ...cookerSession.importers],
+      producerIdentity: cookerSession.producerIdentity,
       cookers: cookerSession.cookers,
       ignorePath,
     });
     const delivery = wechat === undefined ? 'browser' : 'native';
     const plugins: Plugin[] = [
+      startupCacheHttp(),
       ...(serving ? [previewInputsPlugin(pack)] : []),
       ...(wechat === undefined ? [] : [wechat.plugin]),
       ...(serving ? [projectSourceWatchPlugin(projectWatchPaths)] : []),
-      executionWorkerEntries(undefined, delivery),
+      executionWorkerEntries(undefined, delivery, realGeneratedRoot),
       executionBootstrapEntry(realGeneratedRoot),
       ...(serving ? [generatedHostOwnerPlugin(generated)] : []),
       ...engineWorkspacePlugins,

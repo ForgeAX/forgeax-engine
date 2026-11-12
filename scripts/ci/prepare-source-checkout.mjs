@@ -6,10 +6,11 @@ import { gitHttpEnvironment } from '../lib/git-http-environment.mjs';
 import { hasExpandedSource } from '../lib/source-repository.mjs';
 
 export function prepareSourceCheckout(root = process.cwd(), path = 'third_party/wgpu') {
-  if (!['third_party/wgpu', 'third_party/blitz'].includes(path)) {
+  if (!['third_party/wgpu', 'third_party/blitz', 'packages/modeling'].includes(path)) {
     throw new Error(`[source-checkout] unknown source owner: ${path}`);
   }
-  if (hasExpandedSource(root, path, 'Cargo.toml')) return { path, status: 'expanded' };
+  const entry = path === 'packages/modeling' ? 'package.json' : 'Cargo.toml';
+  if (hasExpandedSource(root, path, entry)) return { path, status: 'expanded' };
   const env = gitHttpEnvironment(root, 'https://github.com');
   const run = (args) => spawnSync('git', args, { cwd: root, env, encoding: 'utf8' });
   const checked = (args) => {

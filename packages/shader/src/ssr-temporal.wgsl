@@ -19,11 +19,15 @@ struct SsrTemporalParams {
 @group(0) @binding(2) var currentNormal : texture_2d<u32>;
 @group(0) @binding(3) var previousHistory : texture_2d<f32>;
 @group(0) @binding(4) var currentTemporal : texture_2d<f32>;
+#if !PORTABLE_FRAGMENT
 @group(0) @binding(5) var historyOutput : texture_storage_2d<rgba16float, write>;
+#endif
 @group(0) @binding(6) var<uniform> params : SsrTemporalParams;
 // Keep the resolved confidence separate from the history depth lane. History
 // alpha remains the source view depth required for rejection.
+#if !PORTABLE_FRAGMENT
 @group(0) @binding(7) var resolvedOutput : texture_storage_2d<rgba16float, write>;
+#endif
 #import forgeax_view::common::View
 @group(0) @binding(8) var<uniform> view : View;
 // Four bytes retain presentation reactivity (R), the actual octahedral normal
@@ -33,7 +37,9 @@ struct SsrTemporalParams {
 // Reconstructing a prior shading normal from neighboring half-float depths
 // confuses thin side faces with the adjoining top surface.
 @group(0) @binding(9) var previousSurface : texture_2d<f32>;
+#if !PORTABLE_FRAGMENT
 @group(0) @binding(10) var surfaceOutput : texture_storage_2d<rgba8unorm, write>;
+#endif
 @group(0) @binding(11) var currentHitReactivity : texture_2d<f32>;
 
 fn isFinite(value : f32) -> bool {
@@ -181,10 +187,7 @@ fn sampleCurrentSsr(uv : vec2<f32>, fullSize : vec2<u32>, expectedDepth : f32, n
 
 // Reflection-only mip reduction. Confidence weighting avoids dark fringes
 // where an SSR hit borders an unavailable screen-space sample.
-@compute @workgroup_size(8, 8, 1)
-fn ssr_reflection_mip(@builtin(global_invocation_id) id : vec3<u32>) {
-  let size = textureDimensions(resolvedOutput);
-  if (any(id.xy >= size)) { return; }
+fn evaluateSsrReflectionMip(id : vec3<u32>, size : vec2<u32>) -> vec4<f32> {
   let sourceSize = textureDimensions(currentTrace, 0);
   // For exact even 2x2 footprints, use four explicit loads. Hardware linear
   // filtering is intentionally avoided here: rgba16float filtering is allowed
@@ -196,9 +199,7 @@ fn ssr_reflection_mip(@builtin(global_invocation_id) id : vec3<u32>) {
     let topRight = textureLoad(currentTrace, vec2<i32>(source + vec2<u32>(1u, 0u)), 0);
     let bottomLeft = textureLoad(currentTrace, vec2<i32>(source + vec2<u32>(0u, 1u)), 0);
     let bottomRight = textureLoad(currentTrace, vec2<i32>(source + vec2<u32>(1u, 1u)), 0);
-    textureStore(resolvedOutput, vec2<i32>(id.xy),
-      (topLeft + topRight + bottomLeft + bottomRight) * 0.25);
-    return;
+    return (topLeft + topRight + bottomLeft + bottomRight) * 0.25;
   }
   let first = vec2<i32>(id.xy * sourceSize / size);
   let end = vec2<i32>((id.xy + vec2<u32>(1)) * sourceSize / size);
@@ -215,7 +216,7 @@ fn ssr_reflection_mip(@builtin(global_invocation_id) id : vec3<u32>) {
       count += 1.0;
     }
   }
-  textureStore(resolvedOutput, vec2<i32>(id.xy), vec4<f32>(sum.rgb / max(count, 1.0), sum.a / max(count, 1.0)));
+  return vec4<f32>(sum.rgb / max(count, 1.0), sum.a / max(count, 1.0));
 }
 
 struct NeighborhoodBounds {
@@ -338,15 +339,20 @@ fn resolveSsrAt(uv : vec2<f32>, fullSize : vec2<u32>) -> SsrTemporalSample {
     sourceReactivity, current.color.a <= 0.0, current.reactivity > 0.0);
 }
 
-@compute @workgroup_size(8, 8, 1)
-fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
+struct SsrTemporalOutput {
+  @location(0) history : vec4<f32>,
+  @location(1) surface : vec4<f32>,
+  @location(2) resolved : vec4<f32>,
+}
+fn evaluateSsrTemporal(globalId : vec3<u32>) -> SsrTemporalOutput {
+  var output : SsrTemporalOutput;
   let size = textureDimensions(currentTrace, 0);
-  if (any(globalId.xy >= size)) { return; }
+  if (any(globalId.xy >= size)) { return output; }
   let pixel = vec2<i32>(globalId.xy);
   let fullSize = textureDimensions(currentDepth, 0);
   let uv = (vec2<f32>(globalId.xy) + vec2<f32>(0.5)) / vec2<f32>(fullSize);
   let history = resolveSsrAt(uv, fullSize);
-  textureStore(historyOutput, pixel, vec4<f32>(history.color.rgb, select(history.depth, -history.depth, history.missing)));
+  output.history = vec4<f32>(history.color.rgb, select(history.depth, -history.depth, history.missing));
   // Presentation remains on the current raster lattice expected by material
   // composition and the reflection mips. Store its radiance premultiplied by
   // confidence so the presentation pyramid can use hardware filtering without
@@ -359,6 +365,36 @@ fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
   let packedNormal = encodeStandardNormalRoughness(history.normal, 0.0);
   let octNormal = vec2<f32>(f32(packedNormal & 4095u), f32((packedNormal >> 12u) & 4095u)) / 4095.0;
   let normalSource = (u32(round(octNormal.x * 127.0)) << 1u) | select(0u, 1u, history.sourceReactive);
-  textureStore(surfaceOutput, pixel, vec4<f32>(presented.reactivity, f32(normalSource) / 255.0, octNormal.y, history.color.a));
-  textureStore(resolvedOutput, pixel, vec4<f32>(presented.color.rgb * presented.color.a, presented.color.a));
+  output.surface = vec4<f32>(presented.reactivity, f32(normalSource) / 255.0, octNormal.y, history.color.a);
+  output.resolved = vec4<f32>(presented.color.rgb * presented.color.a, presented.color.a);
+  return output;
 }
+#if PORTABLE_FRAGMENT
+@vertex fn ssr_fullscreen(@builtin(vertex_index) index : u32) -> @builtin(position) vec4<f32> {
+  let positions = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(positions[index], 0.0, 1.0);
+}
+@fragment fn ssr_temporal_fragment(@builtin(position) position : vec4<f32>) -> SsrTemporalOutput {
+  return evaluateSsrTemporal(vec3<u32>(vec2<u32>(position.xy), 0u));
+}
+@fragment fn ssr_reflection_mip_fragment(@builtin(position) position : vec4<f32>) -> @location(0) vec4<f32> {
+  let size = max(textureDimensions(currentTrace, 0) / vec2<u32>(2u), vec2<u32>(1u));
+  return evaluateSsrReflectionMip(vec3<u32>(vec2<u32>(position.xy), 0u), size);
+}
+#else
+@compute @workgroup_size(8, 8, 1)
+fn ssr_temporal(@builtin(global_invocation_id) globalId : vec3<u32>) {
+  if (any(globalId.xy >= textureDimensions(currentTrace, 0))) { return; }
+  let output = evaluateSsrTemporal(globalId);
+  let pixel = vec2<i32>(globalId.xy);
+  textureStore(historyOutput, pixel, output.history);
+  textureStore(surfaceOutput, pixel, output.surface);
+  textureStore(resolvedOutput, pixel, output.resolved);
+}
+@compute @workgroup_size(8, 8, 1)
+fn ssr_reflection_mip(@builtin(global_invocation_id) id : vec3<u32>) {
+  let size = textureDimensions(resolvedOutput);
+  if (any(id.xy >= size)) { return; }
+  textureStore(resolvedOutput, vec2<i32>(id.xy), evaluateSsrReflectionMip(id, size));
+}
+#endif

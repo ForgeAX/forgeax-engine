@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import process from 'node:process';
+import { listTrackedFiles } from './lib/tracked-files.mjs';
 
 export const CODE_FILE_LINE_LIMIT = 4096;
 
@@ -53,10 +53,6 @@ const UTF8_DECODER = new TextDecoder('utf-8', { fatal: true });
 
 function normalizePath(path) {
   return path.split('\\').join('/');
-}
-
-function splitNullSeparated(text) {
-  return text === '' ? [] : text.split('\0').filter(Boolean);
 }
 
 export function countPhysicalLines(text) {
@@ -113,16 +109,9 @@ export function isCodeFilePath(path, firstLine) {
   return false;
 }
 
-// The staged listing outgrew Node's 1 MiB default buffer (ENOBUFS) at ~10k files.
-const GIT_LIST_MAX_BUFFER = 64 * 1024 * 1024;
-
 function readTrackedEntries(root) {
   try {
-    const output = execFileSync('git', ['-C', root, 'ls-files', '--cached', '--stage', '-z'], {
-      encoding: 'utf8',
-      maxBuffer: GIT_LIST_MAX_BUFFER,
-    });
-    return splitNullSeparated(output).map((entry) => {
+    return listTrackedFiles(root, ['--cached', '--stage']).map((entry) => {
       const tabIndex = entry.indexOf('\t');
       if (tabIndex === -1) {
         throw new Error(`code-file-lines: malformed git ls-files entry: ${entry}`);
@@ -210,7 +199,7 @@ export function formatCodeFileLineLimitReport(result) {
     `[code-file-lines] FAIL total=${result.findings.length} files=${result.codeFileCount} max=${CODE_FILE_LINE_LIMIT}`,
   );
   lines.push(
-    '[code-file-lines] HINT split the owning boundary into smaller code files; there is no baseline, whitelist, or suppress path.',
+    '[code-file-lines] HINT first optimize the implementation: remove duplication and increase reuse where it simplifies the code. If the file still exceeds the limit, split by owning responsibility. There is no baseline, whitelist, or suppress path.',
   );
 
   return { status: 1, stdout: '', stderr: `${lines.join('\n')}\n` };

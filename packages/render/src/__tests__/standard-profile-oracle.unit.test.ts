@@ -157,10 +157,10 @@ describe('SSAO public profile', () => {
     });
     expect(Object.isFrozen(frozen.ssao)).toBe(true);
   });
-  it('rejects unavailable normals and malformed parameter objects', () => {
-    expect(validateRenderProfile({ ...DEFAULT_STANDARD_PROFILE, ssao: true })).toContain(
-      'deferred',
-    );
+  it('admits material-normal Forward AO and rejects malformed parameter objects', () => {
+    expect(
+      validateRenderProfile({ ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true }),
+    ).toBeUndefined();
     for (const ssao of [
       [],
       null,

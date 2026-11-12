@@ -379,7 +379,7 @@ Key differences from Three.js:
 |:--|:--|
 | Loading external mesh formats (glTF, FBX, OBJ) | glTF and FBX are owned by `@forgeax/engine-gltf` / `@forgeax/engine-fbx`; runtime consumption uses `@forgeax/engine-assets-runtime` after the source-plus-Meta sidecar pipeline |
 | GPU upload / handle minting | Geometry is pure-function CPU POD; registration and GPU residency are `AssetRegistry` + `GpuResourceStore` in `@forgeax/engine-runtime` |
-| Procedural mesh editing (extrude, bevel, CSG) | Out of scope for the leaf geometry package; these are future `@forgeax/engine-geometry-edit` or equivalent |
+| Procedural mesh editing (extrude, inset, mirror; later bevel and CSG) | Owned by [`@forgeax/engine/modeling`](../modeling/README.md); Geometry stays the leaf factory and layout owner |
 | Non-procedural mesh data (skinned vertices, morph targets) | Skin data lives on the `MeshAsset` POD after import; this package only populates position / normal / uv |
 | `Result.unwrap()` convenience | Caller calls `.unwrap()` from `@forgeax/engine-ecs`; this package only produces `Result` |
 
@@ -434,7 +434,7 @@ explicitly. A bias is a raster state, not a displacement of every vertex along
 its normal. Excessive bias can show through nearby surfaces.
 
 Reference: Three.js r184 `DecalGeometry` six-plane clipping and the official
-`webgl_decals` example's polygon offset. ForgeaX keeps output receiver-local
+`webgl_decals` example's polygon offset. ForgeAX keeps output receiver-local
 and applies its canonical MeshAsset tangent/layout contract. The alternative
 [GPU projected decal](../render/README.md#projected-decals) reads visible depth.
 

@@ -231,6 +231,56 @@ function floatChannelFailure(
   components: number,
 ): 0 | 1 | 2 {
   const length = source.length;
+  // A valid channel is the only hot case (this runs on every runtime mesh
+  // create), so the common component counts are scanned without a branch per
+  // value: an all-ones exponent carries into the sign bit of `exponent`, and any
+  // differing bit survives in `difference`. Callers have already matched both
+  // cardinalities, so every row read is in bounds.
+  let exponent = 0;
+  let difference = 0;
+  if (components === 3) {
+    for (let index = 0, row = base; index < length; index += 3, row += stride) {
+      const x = source[index] as number;
+      const y = source[index + 1] as number;
+      const z = source[index + 2] as number;
+      exponent |=
+        ((x & 0x7f800000) + 0x00800000) |
+        ((y & 0x7f800000) + 0x00800000) |
+        ((z & 0x7f800000) + 0x00800000);
+      difference |=
+        ((target[row] as number) ^ x) |
+        ((target[row + 1] as number) ^ y) |
+        ((target[row + 2] as number) ^ z);
+    }
+  } else if (components === 2) {
+    for (let index = 0, row = base; index < length; index += 2, row += stride) {
+      const x = source[index] as number;
+      const y = source[index + 1] as number;
+      exponent |= ((x & 0x7f800000) + 0x00800000) | ((y & 0x7f800000) + 0x00800000);
+      difference |= ((target[row] as number) ^ x) | ((target[row + 1] as number) ^ y);
+    }
+  } else if (components === 4) {
+    for (let index = 0, row = base; index < length; index += 4, row += stride) {
+      const x = source[index] as number;
+      const y = source[index + 1] as number;
+      const z = source[index + 2] as number;
+      const w = source[index + 3] as number;
+      exponent |=
+        ((x & 0x7f800000) + 0x00800000) |
+        ((y & 0x7f800000) + 0x00800000) |
+        ((z & 0x7f800000) + 0x00800000) |
+        ((w & 0x7f800000) + 0x00800000);
+      difference |=
+        ((target[row] as number) ^ x) |
+        ((target[row + 1] as number) ^ y) |
+        ((target[row + 2] as number) ^ z) |
+        ((target[row + 3] as number) ^ w);
+    }
+  } else {
+    exponent = -1;
+  }
+  if (exponent >= 0 && difference === 0) return 0;
+  // Rare path: name the first failure in channel order.
   let index = 0;
   for (let row = base; index < length; row += stride)
     for (let component = 0; component < components; component++, index++) {

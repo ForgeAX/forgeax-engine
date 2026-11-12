@@ -79,8 +79,13 @@ flowchart TD
 ```bash
 pnpm --filter @forgeax/hello-sprite-atlas dev      # vite dev server -> http://localhost:5194
 pnpm --filter @forgeax/hello-sprite-atlas build    # vite production build
-pnpm --filter @forgeax/hello-sprite-atlas smoke    # dawn-node 60 frames + pixel readback (eps<=0.05)
+pnpm --filter @forgeax/hello-sprite-atlas smoke    # Dawn: 60 completed frames and executed indexed-draw/instance counts
 ```
+
+The native smoke counts indexed work on direct passes and every execution of a
+retained RenderBundle; recording a bundle alone does not count as execution.
+It keeps the one-draw and full-instance assertions on all 60 completed frames.
+The default fixture has 10,000 entities; the PR CI fixture has 1,024.
 
 ## Rebuild atlas from sources
 
@@ -119,7 +124,7 @@ git add -f apps/hello/sprite-atlas/scripts/reference-dawn-walk-frame-0.png
 | `index.html` | `<canvas id="app">` host page |
 | `src/main.ts` | Bootstrap: createApp + asset loading + spawn 10000 independent sprite entities (no `Instances` component) sharing one atlas material |
 | `src/__tests__/main-type-affordance.test-d.ts` | AC-08 IDE autocomplete type inference: SpriteAnimation 6-field shape + SpriteRegionOverride 1-field shape |
-| `scripts/smoke-dawn.mjs` | dawn-node headless smoke: 10000 sprite entities, 60-frame loop, asserts drawIndexed=1/frame + instanceCount=10000 + foldedDraws metric advance (M4 / w17) |
+| `scripts/smoke-dawn.mjs` | dawn-node headless smoke: 10000 sprite entities, 60-frame loop, asserts one executed indexed draw per completed frame and the full fixture instance count, including cached bundles |
 | `vite.config.ts` | forgeaxShader + pluginPack, port 5194 |
 | `forgeax-engine-assets/demo-assets/hello-sprite-atlas/walk.atlas.json` | Atlas sidecar (charter F2 text channel): 4 regions [name, uMin, vMin, uW, vH] |
 | `forgeax-engine-assets/demo-assets/hello-sprite-atlas/walk.atlas.png.meta.json` | GUID sidecar for `assets.load(guid, 'texture')` resolution |

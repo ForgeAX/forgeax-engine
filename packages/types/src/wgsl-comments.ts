@@ -1,11 +1,12 @@
-/** Blank WGSL line/nested block comments while retaining token, line and source offsets. */
+/** Blank WGSL comments while retaining quoted imports and UTF-16 source/line offsets. */
 export function stripWgslComments(source: string): string {
   const parts: string[] = [];
-  const comments = /\/\/|\/\*/gu;
+  const comments = /"(?:[^"\\\r\n]|\\[^\r\n])*"?|\/\/|\/\*/gu;
   const blocks = /\/\*|\*\//gu;
   const lineEnd = /[\r\n]/gu;
   let start = 0;
   for (let comment = comments.exec(source); comment !== null; comment = comments.exec(source)) {
+    if (comment[0].startsWith('"')) continue;
     parts.push(source.slice(start, comment.index));
     if (comment[0] === '//') {
       lineEnd.lastIndex = comments.lastIndex;
@@ -19,7 +20,9 @@ export function stripWgslComments(source: string): string {
       }
       start = depth === 0 ? blocks.lastIndex : source.length;
     }
-    parts.push(source.slice(comment.index, start).replace(/[^\r\n]/g, ' '));
+    parts.push(
+      source.slice(comment.index, start).replace(/[^\r\n]+/g, (span) => ' '.repeat(span.length)),
+    );
     comments.lastIndex = start;
   }
   return parts.length === 0 ? source : parts.join('') + source.slice(start);

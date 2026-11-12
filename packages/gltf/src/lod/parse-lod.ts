@@ -101,7 +101,7 @@ export function parseGltfLodExtension(
 
 /**
  * Normalize the official node `extras.MSFT_screencoverage` form and the
- * historical ForgeaX document-extension adapter form. The official array
+ * historical ForgeAX document-extension adapter form. The official array
  * includes one terminal threshold for the discard range, while MeshAsset
  * stores only the thresholds that select lower geometry levels.
  */

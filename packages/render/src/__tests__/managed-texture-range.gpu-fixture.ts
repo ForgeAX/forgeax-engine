@@ -114,7 +114,7 @@ export async function verifyManagedTextureRange(mips: 'none' | 'generate') {
   };
   try {
     const red = edit(false);
-    expect(red.texture).not.toBe(initial.texture);
+    expect(Object.is(red.texture, initial.texture)).toBe(false);
     const redPixels = await sample(red);
     expect(redPixels.slice(0, 4)).toEqual([1, 0, 0, 1]);
     expect(redPixels.slice(4, 8)).toEqual(mips === 'generate' ? [1, 0, 0, 1] : [0, 0, 0, 0]);

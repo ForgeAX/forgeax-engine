@@ -15,7 +15,7 @@ export default defineFeature({
   catalog: 'Auto exposure',
   kind: 'visual',
   summary:
-    'Camera exposureMode = auto meters a GPU luminance histogram and adapts exposure within rangeEv at the given up/down rates; the manual multiplier is the fallback.',
+    'Camera exposureMode = auto meters the same weighted 256-bin GPU histogram with native atomics or fragment integer reductions, then adapts exposure within rangeEv at the given up/down rates. Only completed frames publish history; unavailable capabilities retain the authored fallback.',
   expect:
     'ON: the very dimly lit scene is brightened to a normal mid-grey exposure within a second or two. OFF (manual exposure 1): the same scene is almost black.',
   setup({ app, world, frames }) {

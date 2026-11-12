@@ -5,6 +5,7 @@ import {
   appBuildConcurrency,
   coverageGroupConcurrency,
   coverageVitestWorkers,
+  dawnOrdinaryWorkers,
   readMemoryPressureDiagnostics,
   runnerResources,
   shaderCompileWorkers,
@@ -19,6 +20,16 @@ function probe(files, hostMemoryBytes = 64 * 1024 ** 3, availableParallelism = 3
     readFile: (path) => files[path],
   });
 }
+
+test('Dawn opt-in never expands to the visible host-wide worker count', () => {
+  const host = { cpus: 96, memoryBytes: 128 * 1024 ** 3 };
+  assert.equal(dawnOrdinaryWorkers({}, host), 1);
+  assert.equal(dawnOrdinaryWorkers({ FORGEAX_DAWN_ORDINARY_WORKERS: '2' }, host), 2);
+  assert.throws(
+    () => dawnOrdinaryWorkers({ FORGEAX_DAWN_ORDINARY_WORKERS: '96' }, host),
+    /exactly 1 or 2/,
+  );
+});
 
 test('uses cgroup v2 CPU and memory limits for CPU containers', () => {
   const result = probe({

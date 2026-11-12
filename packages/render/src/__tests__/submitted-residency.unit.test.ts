@@ -1,11 +1,18 @@
 import type { RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { assert, describe, expect, it, vi } from 'vitest';
+import { ResidencyLifetime } from '../device/residency-lifetime';
+import { createRenderWorld } from '../world/render-world';
 import {
   type FrameRecording,
   recordFrameTransaction,
   submitFrameRecordings,
-} from '../assembly/frame-recording';
-import { ResidencyLifetime } from '../device/residency-lifetime';
+} from './frame-recording-driver';
+
+/** One submission whose RenderRecord opens `encoder` on the mock `device`. */
+function submission(device: RhiDevice, encoder: RhiCommandEncoder) {
+  Object.assign(device, { createCommandEncoder: () => ({ ok: true, value: encoder }) });
+  return { world: createRenderWorld(), device };
+}
 
 describe('physical submission residency', () => {
   it('tracks every view before publication and drains after a tracking observer throws', async () => {
@@ -37,8 +44,6 @@ describe('physical submission residency', () => {
           },
         },
         {
-          encoder,
-          device,
           reportError: () => undefined,
           onSubmittedWork: (completed) => {
             lifetime.track(completed);
@@ -49,7 +54,9 @@ describe('physical submission residency', () => {
       );
       return result.ok;
     }
-    expect(() => submitFrameRecordings([record(0), record(1)])).toThrow('observer failed');
+    expect(() =>
+      submitFrameRecordings(submission(device, encoder), [record(0), record(1)]),
+    ).toThrow('observer failed');
     expect(committed).toEqual([0, 1]);
     expect(onSubmittedWorkDone).toHaveBeenCalledTimes(1);
     for (const destroy of destroyed) expect(destroy).not.toHaveBeenCalled();
@@ -90,15 +97,13 @@ describe('physical submission residency', () => {
           abort: () => lifetime.retire(),
         },
         {
-          encoder,
-          device,
           reportError: () => undefined,
           onSubmittedWork: (done: Promise<void>) => lifetime.track(done),
         },
       );
       return result.ok;
     }
-    expect(submitFrameRecordings([record()])).toBe(true);
+    expect(submitFrameRecordings(submission(device, encoder), [record()])).toBe(true);
     expect(commit).not.toHaveBeenCalled();
     expect(destroy).not.toHaveBeenCalled();
     complete();

@@ -4,10 +4,16 @@ import { describe, expect, it } from 'vitest';
 import { withBuiltinRenderFeatures } from '../assembly/render-feature-post-processes';
 import { Camera, LensEffects, resolveLensEffects } from '../components';
 import { createRenderFeatureHost } from '../features/host';
-import { packLensEffectsParams } from '../features/lens-effects';
+import {
+  chromaticAberrationActive,
+  outputLensEffectsActive,
+  packChromaticAberrationParams,
+  packLensEffectsParams,
+} from '../features/lens-effects';
 import { createStandardOutputPlan } from '../pipeline/standard-output/graph';
 import { extractCameraSnapshots } from '../render-system-extract';
 import { setActiveCamera } from '../systems/active-camera';
+import { prepareFeatureFrame } from './feature-frame-driver';
 
 function fixture() {
   const world = new World();
@@ -50,9 +56,9 @@ describe('camera LensEffects', () => {
     ['vignetteSoftness', 0],
     ['vignetteSoftness', 2],
     ['chromaticAberration', -1],
-    ['chromaticAberration', 33],
-    ['chromaticAberrationAngle', -4],
-    ['chromaticAberrationAngle', 4],
+    ['chromaticAberration', 6],
+    ['chromaticAberrationStartOffset', -0.1],
+    ['chromaticAberrationStartOffset', 1.1],
     ['grainIntensity', -1],
     ['grainIntensity', 2],
     ['grainSize', 0],
@@ -81,7 +87,7 @@ describe('camera LensEffects', () => {
   it('creates no resources for disabled cameras and packs a deterministic frame seed', () => {
     const host = createRenderFeatureHost(withBuiltinRenderFeatures([])).unwrap();
     try {
-      const frame = host.runFrame([
+      const frame = prepareFeatureFrame(host, [
         {
           identity: 'main',
           render: true,
@@ -130,5 +136,60 @@ describe('camera LensEffects', () => {
     expect(
       createStandardOutputPlan({ ...request, lensEffects: false }).incrementalResources,
     ).not.toContain('standard-lens-effects');
+  });
+
+  it('fringes the linear HDR scene before Bloom and tone mapping, as UE', () => {
+    const plan = createStandardOutputPlan({
+      temporal: true,
+      meter: false,
+      bloom: true,
+      dof: true,
+      chromaticAberration: true,
+      exposure: false,
+      whiteBalance: false,
+      lut: false,
+      fxaa: false,
+      lensEffects: true,
+    });
+    expect(plan.logicalStages).toEqual([
+      'temporal',
+      'dof',
+      'chromatic-aberration',
+      'bloom',
+      'tone',
+      'lens-effects',
+      'output-encoding',
+    ]);
+    expect(plan.physicalStages.find((stage) => stage.name === 'chromatic-aberration')).toEqual({
+      name: 'chromatic-aberration',
+      input: 'linear-hdr',
+      output: 'linear-hdr',
+    });
+    expect(plan.incrementalResources).toContain('standard-chromatic-aberration');
+  });
+
+  it('schedules the fringe and the output pass independently', () => {
+    const { data } = fixture();
+    const only = (fields: Record<string, number>) =>
+      resolveLensEffects({ ...data(), ...fields }).unwrap();
+    const fringe = only({ chromaticAberration: 2 });
+    expect([chromaticAberrationActive(fringe), outputLensEffectsActive(fringe)]).toEqual([
+      true,
+      false,
+    ]);
+    const vignette = only({ vignetteIntensity: 0.5 });
+    expect([chromaticAberrationActive(vignette), outputLensEffectsActive(vignette)]).toEqual([
+      false,
+      true,
+    ]);
+    // UE ChromaticAberrationParams (PostProcessTonemap.cpp:709-733): percent over 1 - start.
+    const packed = new Float32Array(
+      packChromaticAberrationParams(
+        only({ chromaticAberration: 4, chromaticAberrationStartOffset: 0.5 }),
+      ).buffer,
+    );
+    expect(packed[0]).toBeCloseTo((0.04 * 0.007 * (611.3 - 464.3)) / 0.5, 6);
+    expect(packed[1]).toBeCloseTo((0.04 * 0.007 * (549.1 - 464.3)) / 0.5, 6);
+    expect(packed[2]).toBe(0.5);
   });
 });

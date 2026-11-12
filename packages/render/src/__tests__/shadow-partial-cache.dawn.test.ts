@@ -62,6 +62,7 @@ function topology(): RenderPipelineTopology {
     lane: { compute: true, storageBuffer: true, multisample: false, maxColorAttachments: 8 },
     featureTopologySignature: 'shadow-partial-cache-dawn',
     gpuDrivenTopologySignature: 'shadow-partial-cache-dawn',
+    opaque: { lane: 'forward', lateOcclusion: true },
   };
 }
 

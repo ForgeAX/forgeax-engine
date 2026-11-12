@@ -1,6 +1,14 @@
 import type { ShadowWorkloadObservation } from '../inspection-types';
 import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
+import type { ViewSettlementOwner } from '../world/view-settlement';
 import type { LodObservationCapture } from './lod-observation';
+
+function shadowPassesOf({ frameState, gpuDriven, skin }: ViewSettlementOwner, frameId: number) {
+  return frameState.shadowRaster.captureWorkload(
+    frameId,
+    gpuDriven.inspect(skin.paletteUploadBytes).shadowViews,
+  );
+}
 
 /** Consumes the current submission roster synchronously; no latest inspector/readback. */
 export function captureShadowWorkload(
@@ -21,7 +29,7 @@ export function captureShadowWorkload(
   else {
     for (const view of capture.views.slice(0, MAX_INSPECTION_SAMPLES)) {
       const passes =
-        view.state === 'rendered' ? view.system.captureShadowWorkload(identity.frameId) : undefined;
+        view.state === 'rendered' ? shadowPassesOf(view.owner, identity.frameId) : undefined;
       if (view.state === 'held') reason ??= 'held-view';
       else if (passes === undefined) reason ??= 'view-not-captured';
       views.push(

@@ -18,7 +18,7 @@ fn fs_main() -> @location(0) vec4<f32> {
 const defaultSurface = `#define_import_path forgeax_material::default_standard_surface
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
-  return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 0.5, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`;
 
 const customSurface = `#define_import_path game::rusted_surface
@@ -26,7 +26,7 @@ const customSurface = `#define_import_path game::rusted_surface
 #import game::noise::{fbm3}
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   let rust = fbm3(input.positionWS);
-  return SurfaceData(vec3<f32>(rust), input.vertexNormalWS, 0.2, 0.8, vec3<f32>(0.0), 1.0, 1.0, 0.0);
+  return SurfaceData(vec3<f32>(rust), input.vertexNormalWS, 0.2, 0.8, vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }`;
 
 const noise = `#define_import_path game::noise
@@ -62,6 +62,7 @@ struct SurfaceInput {
 struct SurfaceData {
   baseColor: vec3<f32>, normalWS: vec3<f32>, metallic: f32, roughness: f32,
   emissive: vec3<f32>, occlusion: f32, opacity: f32, alphaClipThreshold: f32,
+  reactive: f32,
 }`,
       },
       { path: 'default.wgsl', source: defaultSurface },

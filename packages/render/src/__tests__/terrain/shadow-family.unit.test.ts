@@ -16,13 +16,6 @@ const row = (worldId: number, entityKey: number, authorVisible = true) =>
     terrain: { asset: sharedAsset },
   }) as unknown as RenderableSnapshot;
 const directional = { mapSize: 1024, cascadeCount: 4 as const };
-const graphKey = (receivers: ReturnType<typeof terrainShadowReceivers>, cascadeCount = 4) =>
-  JSON.stringify({
-    topology: {
-      shadow: { directional: { ...directional, cascadeCount, terrainReceivers: receivers } },
-    },
-  });
-
 describe('Terrain shadow family admission and retained routing', () => {
   it('projects full instance identity independently of section order and asset reuse', () => {
     const sources = [row(1, 4), row(0, 7), row(0, 7), row(0, 4, false)];
@@ -52,20 +45,20 @@ describe('Terrain shadow family admission and retained routing', () => {
 
   it('refuses an old graph on same-count root replacement, reordered mapping or cascade change', () => {
     const a = terrainShadowReceivers([row(0, 1), row(0, 2)]);
-    const key = graphKey(a);
     const current = (roots = a, cascadeCount: 1 | 2 | 3 | 4 = 4) =>
       terrainShadowTopology({ ...directional, cascadeCount }, roots, 256).unwrap();
-    expect(terrainShadowLayoutMatches(key, current())).toBe(true);
+    const previous = current();
+    expect(terrainShadowLayoutMatches(previous, current())).toBe(true);
     expect(
-      terrainShadowLayoutMatches(key, current(terrainShadowReceivers([row(0, 1), row(0, 3)]))),
+      terrainShadowLayoutMatches(previous, current(terrainShadowReceivers([row(0, 1), row(0, 3)]))),
     ).toBe(false);
-    expect(terrainShadowLayoutMatches(key, current([...a].reverse()))).toBe(false);
-    expect(terrainShadowLayoutMatches(key, current(a, 2))).toBe(false);
-    expect(terrainShadowLayoutMatches(key, directional)).toBe(false);
-    expect(terrainShadowLayoutMatches(key, 'disabled')).toBe(false);
-    expect(terrainShadowLayoutMatches('invalid', current())).toBe(false);
+    expect(terrainShadowLayoutMatches(previous, current([...a].reverse()))).toBe(false);
+    expect(terrainShadowLayoutMatches(previous, current(a, 2))).toBe(false);
+    expect(terrainShadowLayoutMatches(previous, directional)).toBe(false);
+    expect(terrainShadowLayoutMatches(previous, 'disabled')).toBe(false);
+    expect(terrainShadowLayoutMatches(undefined, current())).toBe(false);
     // Preparing or rejecting another roster has no mutation authority over
     // the accepted topology key; retrying its original mapping remains valid.
-    expect(terrainShadowLayoutMatches(key, current())).toBe(true);
+    expect(terrainShadowLayoutMatches(previous, current())).toBe(true);
   });
 });

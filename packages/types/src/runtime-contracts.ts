@@ -2,6 +2,8 @@
 // catalog/loader bridges, and the EngineMetrics protocol.  Kept as one leaf so
 // the public index remains a small, explicit barrel without duplicate values.
 
+import { isDeepFrozenJson } from './frozen-json.js';
+
 // === String literal enum re-exports (already exported by @webgpu/types; we only alias) ===
 
 /** GPU texture format enum (e.g. 'rgba8unorm' / 'depth24plus' / ...). */
@@ -57,6 +59,788 @@ export interface ShaderEntryPointReads {
   readonly name: string;
   readonly stage: 'vertex' | 'fragment' | 'compute';
   readonly bindings: readonly ShaderBindingReads[];
+}
+
+/** Naga-derived byte layout for one member of a bound shader resource. */
+export interface ShaderReflectionMember {
+  readonly name: string;
+  readonly type: string;
+  readonly offset: number;
+  readonly size: number;
+  readonly alignment: number;
+  readonly typeDescriptor: ShaderReflectionTypeDescriptor;
+}
+
+export type ShaderReflectionArraySize =
+  | { readonly kind: 'constant'; readonly count: number }
+  | { readonly kind: 'pending'; readonly overrideId: number }
+  | { readonly kind: 'dynamic' };
+
+export type ShaderReflectionTypeDescriptor =
+  | {
+      readonly kind: 'scalar' | 'atomic';
+      readonly scalarKind: string;
+      readonly width: number;
+      readonly byteSize: number;
+      readonly alignment: number;
+    }
+  | {
+      readonly kind: 'vector';
+      readonly scalarKind: string;
+      readonly width: number;
+      readonly components: number;
+      readonly byteSize: number;
+      readonly alignment: number;
+    }
+  | {
+      readonly kind: 'matrix';
+      readonly scalarKind: string;
+      readonly width: number;
+      readonly columns: number;
+      readonly rows: number;
+      readonly columnStride: number;
+      readonly byteSize: number;
+      readonly alignment: number;
+    }
+  | {
+      readonly kind: 'array';
+      readonly size: ShaderReflectionArraySize;
+      readonly stride: number;
+      readonly byteSize: number;
+      readonly alignment: number;
+      readonly element: ShaderReflectionTypeDescriptor;
+    }
+  | {
+      readonly kind: 'struct';
+      readonly name?: string;
+      readonly span: number;
+      readonly byteSize: number;
+      readonly alignment: number;
+      readonly members: readonly ShaderReflectionMember[];
+    };
+
+export type ShaderResourceAccess = 'read-only' | 'write-only' | 'read-write';
+export type ShaderTextureClass = 'sampled' | 'storage' | 'external';
+export type ShaderTextureSampleType = 'float' | 'unfilterable-float' | 'depth' | 'sint' | 'uint';
+export type ShaderTextureViewDimension = '1d' | '2d' | '2d-array' | '3d' | 'cube' | 'cube-array';
+
+/** Naga-derived layout facts for one bound global in a compiled shader. */
+export interface ShaderReflectionBoundGlobal {
+  readonly group: number;
+  readonly binding: number;
+  readonly addressSpace: string;
+  readonly resourceKind: string;
+  /** Naga-derived access declared by the WGSL resource. */
+  readonly resourceAccess?: ShaderResourceAccess;
+  /** Naga image class; distinguishes sampled, storage, and external textures. */
+  readonly textureClass?: ShaderTextureClass;
+  readonly sampleType?: ShaderTextureSampleType;
+  readonly viewDimension?: ShaderTextureViewDimension;
+  readonly multisampled?: boolean;
+  readonly storageFormat?: string;
+  readonly samplerType?: 'filtering' | 'non-filtering' | 'comparison';
+  readonly visibility: number;
+  readonly name?: string;
+  readonly members?: readonly ShaderReflectionMember[];
+  readonly span?: number;
+  readonly elementStride?: number;
+  /** Reflected base type for an array or direct struct buffer resource. */
+  readonly elementType?: string;
+  /** Fixed element count for a bound array; absent for runtime-sized arrays. */
+  readonly arrayLength?: number;
+  /** Naga-derived recursive WGSL layout for buffer resources. */
+  readonly typeDescriptor?: ShaderReflectionTypeDescriptor;
+}
+
+/** Immutable compiler reflection published with the exact selected WGSL. */
+export interface ShaderReflection {
+  readonly schemaVersion: 'shader-reflection/3';
+  readonly boundGlobals: readonly ShaderReflectionBoundGlobal[];
+  readonly uvSetCount: number;
+  readonly entryPoints?: readonly ShaderEntryPointReads[];
+}
+
+function isReflectionResourceMetadataValid(global: Record<string, unknown>): boolean {
+  if (
+    (global.resourceAccess !== undefined &&
+      !['read-only', 'write-only', 'read-write'].includes(String(global.resourceAccess))) ||
+    (global.textureClass !== undefined &&
+      !['sampled', 'storage', 'external'].includes(String(global.textureClass))) ||
+    (global.sampleType !== undefined &&
+      !['float', 'unfilterable-float', 'depth', 'sint', 'uint'].includes(
+        String(global.sampleType),
+      )) ||
+    (global.viewDimension !== undefined &&
+      !['1d', '2d', '2d-array', '3d', 'cube', 'cube-array'].includes(
+        String(global.viewDimension),
+      )) ||
+    (global.multisampled !== undefined && typeof global.multisampled !== 'boolean') ||
+    (global.storageFormat !== undefined &&
+      (typeof global.storageFormat !== 'string' || global.storageFormat.length === 0)) ||
+    (global.samplerType !== undefined &&
+      !['filtering', 'non-filtering', 'comparison'].includes(String(global.samplerType)))
+  )
+    return false;
+  return true;
+}
+
+function hasNoImageFacts(global: Record<string, unknown>): boolean {
+  return (
+    global.textureClass === undefined &&
+    global.sampleType === undefined &&
+    global.viewDimension === undefined &&
+    global.multisampled === undefined &&
+    global.storageFormat === undefined
+  );
+}
+
+function hasNoResourceFacts(global: Record<string, unknown>): boolean {
+  return [
+    global.resourceAccess,
+    global.textureClass,
+    global.sampleType,
+    global.viewDimension,
+    global.multisampled,
+    global.storageFormat,
+    global.samplerType,
+  ].every((value) => value === undefined);
+}
+
+function isReflectionTextureResource(global: Record<string, unknown>): boolean {
+  if (
+    global.addressSpace !== 'handle' ||
+    global.resourceAccess === undefined ||
+    global.samplerType !== undefined
+  )
+    return false;
+  switch (global.textureClass) {
+    case 'sampled':
+      return (
+        global.resourceAccess === 'read-only' &&
+        global.sampleType !== undefined &&
+        global.viewDimension !== undefined &&
+        typeof global.multisampled === 'boolean' &&
+        global.storageFormat === undefined
+      );
+    case 'storage':
+      return (
+        global.sampleType === undefined &&
+        global.viewDimension !== undefined &&
+        global.multisampled === undefined &&
+        global.storageFormat !== undefined
+      );
+    case 'external':
+      return (
+        global.resourceAccess === 'read-only' &&
+        global.viewDimension !== undefined &&
+        global.sampleType === undefined &&
+        global.multisampled === undefined &&
+        global.storageFormat === undefined
+      );
+    default:
+      return false;
+  }
+}
+
+function isShaderReflectionResourceFacts(global: Record<string, unknown>): boolean {
+  if (hasNoResourceFacts(global)) return true;
+  if (!isReflectionResourceMetadataValid(global)) return false;
+  const imageFactsAbsent = hasNoImageFacts(global);
+  switch (global.resourceKind) {
+    case 'buffer':
+      return (
+        global.addressSpace === 'uniform' &&
+        global.resourceAccess === 'read-only' &&
+        imageFactsAbsent &&
+        global.samplerType === undefined
+      );
+    case 'storage-buffer':
+      return (
+        global.addressSpace === 'storage' &&
+        global.resourceAccess !== undefined &&
+        imageFactsAbsent &&
+        global.samplerType === undefined
+      );
+    case 'texture':
+      return isReflectionTextureResource(global);
+    case 'sampler':
+      return (
+        global.addressSpace === 'handle' &&
+        global.resourceAccess === 'read-only' &&
+        global.samplerType !== undefined &&
+        imageFactsAbsent
+      );
+    default:
+      return false;
+  }
+}
+
+const REFLECTION_SCALAR_KINDS: ReadonlySet<string> = new Set([
+  'float',
+  'sint',
+  'uint',
+  'bool',
+  'abstract-int',
+  'abstract-float',
+]);
+
+function isReflectionRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isPositiveLayoutInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function isNonNegativeLayoutInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function isPowerOfTwo(value: number): boolean {
+  return Number.isInteger(Math.log2(value));
+}
+
+function roundUpLayout(value: number, alignment: number): number {
+  return Math.ceil(value / alignment) * alignment;
+}
+
+function isSafeLayoutProduct(left: number, right: number): boolean {
+  return Number.isSafeInteger(left * right);
+}
+
+function reflectionTypeName(descriptor: ShaderReflectionTypeDescriptor): string {
+  const scalar = (kind: string, width: number) => {
+    if (kind === 'bool' || kind === 'abstract-int' || kind === 'abstract-float') return kind;
+    return `${kind === 'float' ? 'f' : kind === 'sint' ? 'i' : 'u'}${width * 8}`;
+  };
+  switch (descriptor.kind) {
+    case 'scalar':
+      return scalar(descriptor.scalarKind, descriptor.width);
+    case 'atomic':
+      return `atomic<${scalar(descriptor.scalarKind, descriptor.width)}>`;
+    case 'vector':
+      return `vec${descriptor.components}<${scalar(descriptor.scalarKind, descriptor.width)}>`;
+    case 'matrix':
+      return `mat${descriptor.columns}x${descriptor.rows}<${scalar(descriptor.scalarKind, descriptor.width)}>`;
+    case 'array':
+      return 'array';
+    case 'struct':
+      return descriptor.name ?? 'struct';
+  }
+}
+
+function isReflectionMember(value: unknown, depth: number): value is ShaderReflectionMember {
+  if (!isReflectionRecord(value) || depth > 64) return false;
+  const descriptor = value.typeDescriptor;
+  return (
+    typeof value.name === 'string' &&
+    value.name.length > 0 &&
+    typeof value.type === 'string' &&
+    value.type.length > 0 &&
+    isNonNegativeLayoutInteger(value.offset) &&
+    isNonNegativeLayoutInteger(value.size) &&
+    isPositiveLayoutInteger(value.alignment) &&
+    value.offset % value.alignment === 0 &&
+    isShaderReflectionTypeDescriptor(descriptor, depth + 1) &&
+    value.type === reflectionTypeName(descriptor) &&
+    value.size === descriptor.byteSize &&
+    value.alignment === descriptor.alignment
+  );
+}
+
+function isReflectionMembers(
+  value: unknown,
+  span: number,
+  depth: number,
+): value is readonly ShaderReflectionMember[] {
+  if (!Array.isArray(value) || depth > 64) return false;
+  let end = 0;
+  const names = new Set<string>();
+  return value.every((candidate, index) => {
+    if (!isReflectionMember(candidate, depth + 1) || candidate.offset < end) return false;
+    if (names.has(candidate.name)) return false;
+    names.add(candidate.name);
+    end = candidate.offset + candidate.size;
+    if (!Number.isSafeInteger(end)) return false;
+    if (end <= span) return true;
+    const size =
+      candidate.typeDescriptor.kind === 'array' ? candidate.typeDescriptor.size : undefined;
+    return index === value.length - 1 && size?.kind === 'dynamic';
+  });
+}
+
+function isReflectionScalarDescriptor(
+  value: Record<string, unknown>,
+  alignment: number,
+  byteSize: number,
+): boolean {
+  const width = value.width;
+  const scalarKind = value.scalarKind;
+  return (
+    typeof scalarKind === 'string' &&
+    REFLECTION_SCALAR_KINDS.has(scalarKind) &&
+    isPositiveLayoutInteger(width) &&
+    [1, 2, 4, 8].includes(width) &&
+    byteSize === width &&
+    alignment === width
+  );
+}
+
+function isReflectionVectorDescriptor(
+  value: Record<string, unknown>,
+  alignment: number,
+  byteSize: number,
+): boolean {
+  const width = value.width;
+  const components = value.components;
+  return (
+    typeof value.scalarKind === 'string' &&
+    REFLECTION_SCALAR_KINDS.has(value.scalarKind) &&
+    isPositiveLayoutInteger(width) &&
+    [1, 2, 4, 8].includes(width) &&
+    isPositiveLayoutInteger(components) &&
+    [2, 3, 4].includes(components) &&
+    isSafeLayoutProduct(width, components) &&
+    byteSize === width * components &&
+    alignment === width * (components === 2 ? 2 : 4)
+  );
+}
+
+function isReflectionMatrixDescriptor(
+  value: Record<string, unknown>,
+  alignment: number,
+  byteSize: number,
+): boolean {
+  const width = value.width;
+  const columns = value.columns;
+  const rows = value.rows;
+  const columnStride = value.columnStride;
+  return (
+    value.scalarKind === 'float' &&
+    isPositiveLayoutInteger(width) &&
+    [2, 4, 8].includes(width) &&
+    isPositiveLayoutInteger(columns) &&
+    [2, 3, 4].includes(columns) &&
+    isPositiveLayoutInteger(rows) &&
+    [2, 3, 4].includes(rows) &&
+    isPositiveLayoutInteger(columnStride) &&
+    isSafeLayoutProduct(width, rows) &&
+    isSafeLayoutProduct(columns, columnStride) &&
+    alignment === width * (rows === 2 ? 2 : 4) &&
+    columnStride === roundUpLayout(width * rows, alignment) &&
+    byteSize === columns * columnStride
+  );
+}
+
+function isReflectionArraySizeValid(
+  size: Record<string, unknown>,
+  stride: number,
+  byteSize: number,
+): boolean {
+  switch (size.kind) {
+    case 'constant':
+      return (
+        isPositiveLayoutInteger(size.count) &&
+        isSafeLayoutProduct(stride, size.count) &&
+        byteSize === stride * size.count
+      );
+    case 'pending':
+      return isNonNegativeLayoutInteger(size.overrideId) && byteSize === 0;
+    case 'dynamic':
+      return byteSize === stride;
+    default:
+      return false;
+  }
+}
+
+function isReflectionArrayDescriptor(
+  value: Record<string, unknown>,
+  alignment: number,
+  byteSize: number,
+  depth: number,
+): boolean {
+  const stride = value.stride;
+  const element = value.element;
+  const size = value.size;
+  if (
+    !isPositiveLayoutInteger(stride) ||
+    !isShaderReflectionTypeDescriptor(element, depth + 1) ||
+    alignment !== element.alignment ||
+    stride < roundUpLayout(element.byteSize, alignment) ||
+    stride % alignment !== 0 ||
+    !isReflectionRecord(size)
+  )
+    return false;
+  return isReflectionArraySizeValid(size, stride, byteSize);
+}
+
+function isReflectionStructDescriptor(
+  value: Record<string, unknown>,
+  alignment: number,
+  byteSize: number,
+  depth: number,
+): boolean {
+  const span = value.span;
+  if (
+    !isNonNegativeLayoutInteger(span) ||
+    span !== byteSize ||
+    (value.name !== undefined && typeof value.name !== 'string') ||
+    !isReflectionMembers(value.members, span, depth + 1)
+  )
+    return false;
+  const members = value.members as readonly ShaderReflectionMember[];
+  const memberAlignment = members.reduce((max, member) => Math.max(max, member.alignment), 1);
+  const memberEnd = members.reduce((max, member) => Math.max(max, member.offset + member.size), 0);
+  return (
+    alignment === memberAlignment &&
+    byteSize >= roundUpLayout(memberEnd, alignment) &&
+    (alignment === 1 || byteSize % alignment === 0)
+  );
+}
+
+function isShaderReflectionTypeDescriptor(
+  value: unknown,
+  depth = 0,
+): value is ShaderReflectionTypeDescriptor {
+  if (!isReflectionRecord(value) || depth > 64) return false;
+  const alignment = value.alignment;
+  const byteSize = value.byteSize;
+  if (
+    !isPositiveLayoutInteger(alignment) ||
+    !isPowerOfTwo(alignment) ||
+    !isNonNegativeLayoutInteger(byteSize)
+  )
+    return false;
+  switch (value.kind) {
+    case 'scalar':
+    case 'atomic':
+      return isReflectionScalarDescriptor(value, alignment, byteSize);
+    case 'vector':
+      return isReflectionVectorDescriptor(value, alignment, byteSize);
+    case 'matrix':
+      return isReflectionMatrixDescriptor(value, alignment, byteSize);
+    case 'array':
+      return isReflectionArrayDescriptor(value, alignment, byteSize, depth);
+    case 'struct':
+      return isReflectionStructDescriptor(value, alignment, byteSize, depth);
+    default:
+      return false;
+  }
+}
+
+function sameReflectionValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameReflectionValue(value, right[index]))
+    );
+  }
+  if (!isReflectionRecord(left) || !isReflectionRecord(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) => key === rightKeys[index] && sameReflectionValue(left[key], right[key]),
+    )
+  );
+}
+
+function sameReflectionMember(
+  left: ShaderReflectionMember,
+  right: ShaderReflectionMember,
+): boolean {
+  return (
+    left.name === right.name &&
+    left.type === right.type &&
+    left.offset === right.offset &&
+    left.size === right.size &&
+    left.alignment === right.alignment &&
+    sameReflectionValue(left.typeDescriptor, right.typeDescriptor)
+  );
+}
+
+function reflectedStructForBuffer(
+  descriptor: ShaderReflectionTypeDescriptor,
+): Extract<ShaderReflectionTypeDescriptor, { kind: 'struct' }> | undefined {
+  if (descriptor.kind === 'struct') return descriptor;
+  if (descriptor.kind === 'array' && descriptor.element.kind === 'struct') {
+    return descriptor.element;
+  }
+  return undefined;
+}
+
+interface ReflectionBufferProjection {
+  readonly members: readonly ShaderReflectionMember[];
+  readonly span: number;
+  readonly elementType: string | undefined;
+  readonly elementStride: number | undefined;
+  readonly arrayLength: number | undefined;
+}
+
+function reflectionBufferProjection(
+  descriptor: ShaderReflectionTypeDescriptor,
+  addressSpace: unknown,
+): ReflectionBufferProjection {
+  const struct = reflectedStructForBuffer(descriptor);
+  const elementType =
+    descriptor.kind === 'array'
+      ? reflectionTypeName(descriptor.element)
+      : descriptor.kind === 'struct'
+        ? 'struct'
+        : undefined;
+  return {
+    members: struct?.members ?? [],
+    span: struct?.span ?? 0,
+    elementType,
+    elementStride:
+      descriptor.kind === 'array'
+        ? descriptor.stride
+        : addressSpace === 'storage'
+          ? descriptor.byteSize
+          : undefined,
+    arrayLength:
+      descriptor.kind === 'array' && descriptor.size.kind === 'constant'
+        ? descriptor.size.count
+        : undefined,
+  };
+}
+
+function isReflectionBufferMembersMatch(
+  actual: readonly unknown[],
+  expected: readonly ShaderReflectionMember[],
+  span: number,
+): boolean {
+  if (!isReflectionMembers(actual, span, 0) || actual.length !== expected.length) return false;
+  return actual.every((candidate, index) => {
+    const member = expected[index];
+    return (
+      isReflectionMember(candidate, 0) &&
+      member !== undefined &&
+      sameReflectionMember(candidate, member)
+    );
+  });
+}
+
+function hasNoReflectionBufferLayout(global: Record<string, unknown>): boolean {
+  return (
+    global.typeDescriptor === undefined &&
+    global.members === undefined &&
+    global.span === undefined &&
+    global.elementStride === undefined &&
+    global.elementType === undefined &&
+    global.arrayLength === undefined
+  );
+}
+
+function isShaderReflectionBufferLayout(global: Record<string, unknown>): boolean {
+  const isBuffer = global.resourceKind === 'buffer' || global.resourceKind === 'storage-buffer';
+  if (!isBuffer) return hasNoReflectionBufferLayout(global);
+  if (
+    !isShaderReflectionTypeDescriptor(global.typeDescriptor) ||
+    !Array.isArray(global.members) ||
+    !isNonNegativeLayoutInteger(global.span)
+  )
+    return false;
+  const descriptor = global.typeDescriptor;
+  const addressSpace = global.addressSpace;
+  if (
+    (global.resourceKind === 'buffer' && addressSpace !== 'uniform') ||
+    (global.resourceKind === 'storage-buffer' && addressSpace !== 'storage')
+  )
+    return false;
+  const expected = reflectionBufferProjection(descriptor, addressSpace);
+  return (
+    global.span === expected.span &&
+    global.elementType === expected.elementType &&
+    global.elementStride === expected.elementStride &&
+    global.arrayLength === expected.arrayLength &&
+    isReflectionBufferMembersMatch(global.members, expected.members, expected.span)
+  );
+}
+
+/** Compiler identity that qualifies a published shader artifact and its reflection. */
+export interface ShaderCompilerProfile {
+  readonly id: string;
+  readonly language: 'wgsl';
+  readonly profileVersion: string;
+  readonly adapterVersion: string;
+  readonly compilerVersion: string;
+  readonly nagaVersion: string;
+}
+
+export interface ShaderColorTargetContract {
+  readonly location: number;
+  readonly format: string;
+  readonly numericType: 'float' | 'sint' | 'uint';
+}
+
+/** Source-published facts WGSL reflection cannot express, such as target formats and numeric budgets. */
+export interface ShaderProgramContract {
+  readonly schemaVersion: 'shader-program-contract/1';
+  readonly colorTargets?: readonly ShaderColorTargetContract[];
+  readonly publicationFormat?: string;
+  readonly numerical?: {
+    readonly intermediatePrecision?: 'f16' | 'f32';
+    readonly outputRange?: readonly [number, number];
+    readonly reduction?: string;
+    readonly mipLevelCount?: number;
+    readonly quantization?: string;
+  };
+}
+
+function isShaderColorTarget(value: unknown): value is ShaderColorTargetContract {
+  if (!isReflectionRecord(value)) return false;
+  return (
+    Number.isSafeInteger(value.location) &&
+    Number(value.location) >= 0 &&
+    typeof value.format === 'string' &&
+    value.format.length > 0 &&
+    (value.numericType === 'float' || value.numericType === 'sint' || value.numericType === 'uint')
+  );
+}
+
+function isShaderColorTargets(value: unknown): value is readonly ShaderColorTargetContract[] {
+  if (!Array.isArray(value)) return false;
+  const locations = new Set<number>();
+  for (const candidate of value) {
+    if (!isShaderColorTarget(candidate) || locations.has(candidate.location)) return false;
+    locations.add(candidate.location);
+  }
+  return true;
+}
+
+function isShaderOutputRange(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    typeof value[0] === 'number' &&
+    Number.isFinite(value[0]) &&
+    typeof value[1] === 'number' &&
+    Number.isFinite(value[1]) &&
+    value[0] <= value[1]
+  );
+}
+
+function isShaderNumericalContract(value: unknown): boolean {
+  if (!isReflectionRecord(value)) return false;
+  const numerical = value;
+  return !(
+    (numerical.intermediatePrecision !== undefined &&
+      numerical.intermediatePrecision !== 'f16' &&
+      numerical.intermediatePrecision !== 'f32') ||
+    (numerical.outputRange !== undefined && !isShaderOutputRange(numerical.outputRange)) ||
+    (numerical.reduction !== undefined &&
+      (typeof numerical.reduction !== 'string' || numerical.reduction.length === 0)) ||
+    (numerical.mipLevelCount !== undefined &&
+      (!Number.isSafeInteger(numerical.mipLevelCount) || Number(numerical.mipLevelCount) <= 0)) ||
+    (numerical.quantization !== undefined &&
+      (typeof numerical.quantization !== 'string' || numerical.quantization.length === 0))
+  );
+}
+
+export function isShaderProgramContract(value: unknown): value is ShaderProgramContract {
+  if (!isReflectionRecord(value) || value.schemaVersion !== 'shader-program-contract/1')
+    return false;
+  if (
+    value.publicationFormat !== undefined &&
+    (typeof value.publicationFormat !== 'string' || value.publicationFormat.length === 0)
+  )
+    return false;
+  if (value.colorTargets !== undefined && !isShaderColorTargets(value.colorTargets)) return false;
+  if (value.numerical !== undefined && !isShaderNumericalContract(value.numerical)) return false;
+  return true;
+}
+
+export function isShaderCompilerProfile(value: unknown): value is ShaderCompilerProfile {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const profile = value as Record<string, unknown>;
+  return (
+    typeof profile.id === 'string' &&
+    profile.id.length > 0 &&
+    profile.language === 'wgsl' &&
+    typeof profile.profileVersion === 'string' &&
+    profile.profileVersion.length > 0 &&
+    typeof profile.adapterVersion === 'string' &&
+    profile.adapterVersion.length > 0 &&
+    typeof profile.compilerVersion === 'string' &&
+    profile.compilerVersion.length > 0 &&
+    typeof profile.nagaVersion === 'string' &&
+    profile.nagaVersion.length > 0
+  );
+}
+
+function hasValidReflectionBindingCoordinates(global: Record<string, unknown>): boolean {
+  if (
+    !Number.isSafeInteger(global.group) ||
+    Number(global.group) < 0 ||
+    !Number.isSafeInteger(global.binding) ||
+    Number(global.binding) < 0 ||
+    !Number.isSafeInteger(global.visibility) ||
+    Number(global.visibility) < 0
+  )
+    return false;
+  return true;
+}
+
+function hasValidReflectionOptionalLayoutFields(global: Record<string, unknown>): boolean {
+  return !(
+    (global.name !== undefined && typeof global.name !== 'string') ||
+    (global.span !== undefined &&
+      (!Number.isSafeInteger(global.span) || Number(global.span) < 0)) ||
+    (global.elementStride !== undefined &&
+      (!Number.isSafeInteger(global.elementStride) || Number(global.elementStride) <= 0)) ||
+    (global.elementType !== undefined &&
+      (typeof global.elementType !== 'string' || global.elementType.length === 0)) ||
+    (global.arrayLength !== undefined &&
+      (!Number.isSafeInteger(global.arrayLength) || Number(global.arrayLength) <= 0)) ||
+    (global.arrayLength !== undefined &&
+      global.resourceKind !== 'buffer' &&
+      global.resourceKind !== 'storage-buffer') ||
+    (global.arrayLength !== undefined && global.elementStride === undefined)
+  );
+}
+
+function isShaderReflectionBoundGlobal(value: unknown): boolean {
+  if (!isReflectionRecord(value)) return false;
+  const global = value;
+  if (
+    !hasValidReflectionBindingCoordinates(global) ||
+    typeof global.addressSpace !== 'string' ||
+    typeof global.resourceKind !== 'string' ||
+    !hasValidReflectionOptionalLayoutFields(global) ||
+    !isShaderReflectionResourceFacts(global) ||
+    !isShaderReflectionBufferLayout(global) ||
+    (global.members !== undefined && !Array.isArray(global.members))
+  )
+    return false;
+  return (
+    global.members === undefined || isReflectionMembers(global.members, Number(global.span), 0)
+  );
+}
+
+const frozenShaderReflections = new WeakSet<object>();
+
+export function isShaderReflection(value: unknown): value is ShaderReflection {
+  if (!isReflectionRecord(value)) return false;
+  if (frozenShaderReflections.has(value)) return true;
+  const reflection = value;
+  if (
+    reflection.schemaVersion !== 'shader-reflection/3' ||
+    !Number.isSafeInteger(reflection.uvSetCount) ||
+    Number(reflection.uvSetCount) < 0 ||
+    !Array.isArray(reflection.boundGlobals)
+  )
+    return false;
+  if (reflection.entryPoints !== undefined && !isShaderEntryPointReads(reflection.entryPoints))
+    return false;
+  const valid = reflection.boundGlobals.every(isShaderReflectionBoundGlobal);
+  if (valid && Object.isFrozen(reflection) && isDeepFrozenJson(reflection))
+    frozenShaderReflections.add(reflection);
+  return valid;
 }
 
 const SHADER_STAGES: ReadonlySet<unknown> = new Set(['vertex', 'fragment', 'compute']);
@@ -115,7 +899,19 @@ export function isShaderEntryPointReads(value: unknown): value is readonly Shade
 }
 
 export interface ManifestEntry {
+  /** Stable publisher-selected identity for named engine utility entries. */
+  readonly identifier?: string;
+  /** Exact boolean compiler defines selected for this published entry. */
+  readonly defines?: Readonly<Record<string, boolean>>;
   readonly entryPoints?: readonly ShaderEntryPointReads[];
+  /** Naga reflection for this exact WGSL artifact; consumers derive host ABI from it. */
+  readonly reflection?: ShaderReflection;
+  /** Content identity of the exact admitted source fragment sequence. */
+  readonly sourceDigest?: string;
+  /** Compiler identity associated with this exact artifact and reflection. */
+  readonly compilerProfile?: ShaderCompilerProfile;
+  /** Source-level facts not representable in Naga's type/layout reflection. */
+  readonly programContract?: ShaderProgramContract;
   readonly hash: string;
   readonly wgsl: string;
   readonly glsl: string | undefined;

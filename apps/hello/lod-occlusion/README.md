@@ -64,8 +64,14 @@ unavailable. They do not replace the asset with procedural geometry, hand-write
 a pack index, or treat canvas liveness as visual evidence. Renderer inspection
 is a detached bounded POD containing source identity, view/slot generations,
 LOD histogram, GPU HZB occlusion counts, and at most 64 stable samples. The
-performance producer also records renderer-owned CPU draw process time and
+performance producer also records renderer-owned CPU draw thread time and
 GPU-selected index work.
+Version 5 CPU evidence uses `process.threadCpuUsage()` around the synchronous
+draw submission. Each sample also retains `processUserUs`/`processSystemUs` from
+the original process-wide span, which includes concurrent native Dawn workers.
+Those counters remain diagnostics; independent GPU timestamp gates retain
+backend execution acceptance. Version 4 process-clock samples cannot satisfy
+the version 5 contract. Missing thread CPU support fails closed.
 CPU A/B p50/p95 values use only the post-warm-up retained window, matching the
 GPU timing sample window; warm-up CPU values remain diagnostics and never enter
 the regression ratio. CPU p95 remains diagnostic because hosted runner tails

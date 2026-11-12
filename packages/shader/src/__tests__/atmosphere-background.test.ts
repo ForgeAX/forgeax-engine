@@ -24,6 +24,9 @@ describe('physical atmosphere background ray and disc', () => {
     expect(background).toContain('let radius=view.atmosphereControl.y;');
     expect(background).toContain('if radius>0.0');
     expect(background).toContain('solidAngle');
+    // The disc radiance is bounded so bloom and temporal filters stay finite.
+    expect(background).toContain('const SUN_DISC_PEAK : f32 = 100.0;');
+    expect(background).toContain('min(1.0/max(solidAngle,1e-12),SUN_DISC_PEAK)');
     for (const file of ['atmosphere-cubemap', 'atmosphere-ibl']) {
       const integration = source(file);
       expect(integration).not.toContain('solidAngle');

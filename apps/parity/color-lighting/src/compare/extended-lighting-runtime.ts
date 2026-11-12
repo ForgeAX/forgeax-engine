@@ -31,6 +31,7 @@ import { constructRuntimeRendererHost } from '@forgeax/engine-runtime/internal/r
 import { Transform } from '@forgeax/engine-scene';
 import type { IesProfileAsset, MaterialAsset, MeshAsset, TextureAsset } from '@forgeax/engine-types';
 import type { LightingSceneManifest } from './lighting-reference';
+import { createRecoveryFrameObserver, type RecoveryFrameObservation } from './extended-recovery-frame-observer';
 import { constantProbeSh } from './probe-reference';
 import { AssetRegistry } from '@forgeax/engine-assets-runtime';
 
@@ -51,6 +52,32 @@ export const EXTENDED_LIGHTING_RUNTIME_MODES = [
 ] as const;
 
 export type ExtendedLightingRuntimeMode = (typeof EXTENDED_LIGHTING_RUNTIME_MODES)[number];
+
+export interface ExtendedLightingRecoveryPhase {
+  readonly phase:
+    | 'initialization'
+    | 'renderer-create'
+    | 'initial-ready'
+    | 'ready-frame'
+    | 'ready-observation'
+    | 'force-loss'
+    | 'wait-device-lost'
+    | 'recover'
+    | 'recovered-ready'
+    | 'hdr-observe'
+    | 'surface-readback'
+    | 'dispose';
+  readonly edge: 'start' | 'end';
+  readonly generation?: number;
+  readonly cycle?: number;
+  readonly frame?: number;
+  readonly frames?: number;
+  readonly frameId?: number;
+  /** Last prepared public GPU view; neither flattened N nor unique U. */
+  readonly candidateCapacity?: number;
+  readonly resourceGeneration?: number | null;
+  readonly observation?: RecoveryFrameObservation;
+}
 
 export interface ExtendedLightingRuntimeAssets {
   readonly ies: IesProfileAsset;
@@ -403,7 +430,7 @@ const primitiveSphere = sceneAssets.create(createPrimitiveMesh('sphere').unwrap(
   // Three's native IES/SpotLight.map references in this app contain no
   // environment light. Suppress the authored direct Skylight only for the
   // explicit A/B scene so the diff measures the spot implementation rather
-  // than an extra product-only ambient contribution. Standalone ForgeaX
+  // than an extra product-only ambient contribution. Standalone ForgeAX
   // demos retain the authored direct Skylight.
   if (mode !== 'recovery' && !comparisonMode) {
     world.spawn({ component: Skylight, data: { color: manifest.lighting.skylight.direct.color, intensity: manifest.lighting.skylight.direct.intensity } }).unwrap();
@@ -415,11 +442,27 @@ async function drawFrames(
   world: World,
   lease: RenderWorldLease,
   frameCount: number,
+  onRecoveryPhase?: (event: ExtendedLightingRecoveryPhase) => void,
+  observer?: ReturnType<typeof createRecoveryFrameObserver>,
 ): Promise<FrameReceipt> {
   let receipt: FrameReceipt | undefined;
   for (let frame = 0; frame < frameCount; frame += 1) {
     world.update().unwrap();
-    receipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    onRecoveryPhase?.({
+      phase: 'ready-frame', edge: 'start',
+      generation: renderer.inspect().frame.deviceGeneration,
+      frame: frame + 1, frames: frameCount,
+    });
+    const stopObservation = frame === 0 ? observer?.begin() : undefined;
+    try {
+      receipt = await drawReadyFrame(renderer, { leases: [lease], camera: { lease }, environment: { lease } });
+    } finally {
+      stopObservation?.();
+    }
+    onRecoveryPhase?.({
+      phase: 'ready-frame', edge: 'end', generation: receipt.deviceGeneration,
+      frame: frame + 1, frames: frameCount, frameId: receipt.frameId,
+    });
   }
   if (receipt === undefined) throw new Error('extended-lighting runtime submitted no frames');
   return receipt;
@@ -439,11 +482,15 @@ export async function createExtendedLightingRuntime(input: {
   readonly deviceLoss?: {
     readonly destroyCurrentDevice: () => void;
   };
+  readonly onRecoveryPhase?: (event: ExtendedLightingRecoveryPhase) => void;
+  /** Diagnostic scope only; never passed to Renderer or frame completion. */
+  readonly recoveryObservationSignal?: AbortSignal;
 }): Promise<ExtendedLightingRuntimeSession> {
   const controlledLoss =
     input.deviceLoss === undefined
       ? undefined
       : createControlledDeviceLoss(input.deviceLoss.destroyCurrentDevice);
+  input.onRecoveryPhase?.({ phase: 'renderer-create', edge: 'start' });
   const constructed = await constructRuntimeRendererHost(
     input.canvas,
     {
@@ -454,6 +501,9 @@ export async function createExtendedLightingRuntime(input: {
   );
   if (!constructed.ok) throw constructed.error;
   const renderer = constructed.value.renderer;
+  input.onRecoveryPhase?.({
+    phase: 'renderer-create', edge: 'end', generation: renderer.inspect().frame.deviceGeneration,
+  });
   const observationHost = constructed.value.debugDrawHost as unknown as RendererLegacyHostAdapter;
   const renderErrors: {
     code: string;
@@ -489,8 +539,23 @@ export async function createExtendedLightingRuntime(input: {
     throw attached.error;
   }
   const lease = attached.value;
+  const observer = input.onRecoveryPhase === undefined ? undefined : createRecoveryFrameObserver(
+    renderer,
+    (observation) => input.onRecoveryPhase?.({
+      phase: 'ready-observation', edge: 'end', generation: observation.generation, observation,
+    }),
+    input.recoveryObservationSignal,
+  );
   const frameCount = input.frameCount ?? 12;
-  const lastReceipt = await drawFrames(renderer, world, lease, frameCount);
+  input.onRecoveryPhase?.({
+    phase: 'initial-ready', edge: 'start',
+    generation: renderer.inspect().frame.deviceGeneration, frames: frameCount,
+  });
+  const lastReceipt = await drawFrames(renderer, world, lease, frameCount, input.onRecoveryPhase, observer);
+  input.onRecoveryPhase?.({
+    phase: 'initial-ready', edge: 'end', generation: lastReceipt.deviceGeneration,
+    frames: frameCount, frameId: lastReceipt.frameId,
+  });
   let disposed = false;
   return {
     renderer,
@@ -505,7 +570,7 @@ export async function createExtendedLightingRuntime(input: {
     renderErrors,
     ...(controlledLoss === undefined ? {} : { forceDeviceLoss: controlledLoss.force }),
     inspect: () => renderer.inspect(),
-    draw: (count = 1) => drawFrames(renderer, world, lease, count),
+    draw: (count = 1) => drawFrames(renderer, world, lease, count, input.onRecoveryPhase, observer),
     async dispose() {
       if (disposed) return;
       disposed = true;

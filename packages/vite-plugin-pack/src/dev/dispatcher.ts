@@ -7,6 +7,7 @@ export interface DispatcherRequest {
 export interface DispatcherResponse {
   statusCode: number;
   setHeader(name: string, value: string): void;
+  getHeader?(name: string): number | string | readonly string[] | undefined;
   end(chunk: string | Uint8Array): void;
 }
 
@@ -53,7 +54,7 @@ export function createMiddlewareDispatcher(): MiddlewareDispatcher {
     if (closed) {
       writeJson(response, 410, {
         error: 'pack-session-closed',
-        expected: 'an open ForgeaX pack session',
+        expected: 'an open ForgeAX pack session',
         hint: 'create a new Vite server session before retrying',
       });
       return undefined;
@@ -62,7 +63,7 @@ export function createMiddlewareDispatcher(): MiddlewareDispatcher {
     if (current === undefined) {
       writeJson(response, 503, {
         error: 'pack-session-starting',
-        expected: 'an accepted ForgeaX pack snapshot',
+        expected: 'an accepted ForgeAX pack snapshot',
         hint: 'wait for startup or repair the producer and retry',
       });
       return undefined;
@@ -88,7 +89,7 @@ export function createMiddlewareDispatcher(): MiddlewareDispatcher {
       return registrationCount;
     },
     install(nextServer): void {
-      if (closed) throw new Error('ForgeaX pack dispatcher is closed');
+      if (closed) throw new Error('ForgeAX pack dispatcher is closed');
       if (servers.has(nextServer)) return;
       servers.add(nextServer);
       registrationCount += 1;

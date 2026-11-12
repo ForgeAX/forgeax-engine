@@ -53,7 +53,7 @@ export function createViewAppServer(
     async () => {
       const opened = await service.open();
       return {
-        content: [{ type: 'text', text: 'ForgeaX View is ready.' }],
+        content: [{ type: 'text', text: 'ForgeAX View is ready.' }],
         structuredContent: opened,
       };
     },
@@ -94,6 +94,7 @@ export function createViewAppServer(
           action: z.enum([
             'view-document',
             'document',
+            'document-cancel',
             'http',
             'http-batch',
             'chunk',

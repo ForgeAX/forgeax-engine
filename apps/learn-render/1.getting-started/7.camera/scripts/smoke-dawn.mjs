@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drawReadyFrame } from '../../../../../scripts/test/ready-render-frame.mjs';
 import { Update } from '@forgeax/engine-ecs';
 // apps/learn-render/1.getting-started/7.camera/scripts/smoke-dawn.mjs
 //
@@ -385,17 +386,11 @@ for (let i = 0; i < TARGET_FRAMES; i++) {
   // Note: world.update(1 / 60).unwrap() runs the frame-start scan system (refreshing
   // InputSnapshot) + the camera system (consuming it) in DAG order.
   world.update(1 / 60).unwrap();
-  const r = renderer.draw({
+  await drawReadyFrame(renderer, {
     leases: [worldAttachment1.value],
     camera: { lease: worldAttachment1.value },
     environment: { lease: worldAttachment1.value },
   });
-  if (!r.ok) {
-    console.error(`[smoke] draw frame ${i} error: ${r.error.code}`);
-  } else {
-    const completed = await r.value.completed;
-    if (!completed.ok) errors.push({ code: completed.error.code, hint: completed.error.hint });
-  }
   framesObserved++;
 }
 const device = sharedDevice;

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "ForgeaX external game project CLI and build orchestration.",
+  "description": "ForgeAX external game project CLI and build orchestration.",
   "bin": {
     "forgeax": "./dist/cli.mjs"
   },
@@ -45,15 +45,18 @@
     "@forgeax/engine-fbx": "workspace:*",
     "@forgeax/engine-font": "workspace:*",
     "@forgeax/engine-gltf": "workspace:*",
+    "@forgeax/engine-graphics-extras": "workspace:*",
     "@forgeax/engine-host": "workspace:*",
     "@forgeax/engine-image": "workspace:*",
     "@forgeax/engine-import": "workspace:*",
     "@forgeax/engine-naga": "workspace:*",
     "@forgeax/engine-input": "workspace:*",
+    "@forgeax/engine-modeling": "workspace:*",
     "@forgeax/engine-pack": "workspace:*",
     "@forgeax/engine-profiler": "workspace:*",
     "@forgeax/engine-physics": "workspace:*",
     "@forgeax/engine-plugin": "workspace:*",
+    "@forgeax/engine-platform": "workspace:*",
     "@forgeax/engine-preview": "workspace:*",
     "@forgeax/engine-project": "workspace:*",
     "@forgeax/engine-rhi-debug": "workspace:*",
@@ -81,6 +84,7 @@
     "vite": "8.3.5",
     "vitest": "4.1.12",
     "@forgeax/engine-dawn-node": "workspace:*",
+    "@forgeax/engine-ecs": "workspace:*",
     "ws": "^8.22.0",
     "typescript": "6.0.3",
     "yaml": "^2.9.0",
@@ -122,5 +126,8 @@
         "reason": "production DevKit package"
       }
     }
+  },
+  "optionalDependencies": {
+    "upstream-webgpu": "npm:webgpu@0.4.0"
   }
 }

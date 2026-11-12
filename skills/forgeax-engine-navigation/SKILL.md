@@ -1,7 +1,7 @@
 ---
 name: forgeax-engine-navigation
 description: >-
-  ForgeaX bounded graph/grid and static NavMesh navigation. Use when baking ground
+  ForgeAX bounded graph/grid and static NavMesh navigation. Use when baking ground
   clearance, projecting routes, avoiding nearby characters, or following paths through physics.
 ---
 

@@ -41,9 +41,9 @@ import { sampleChannel } from '../sample-channel';
 //   - channel target missing : skip channel
 //   - channel missing on slot: per-channel normalize covers it
 //
-// w5 layers a dev-mode warn pass on top of these silent skips
-// (channel-target-missing / channel-missing-on-some-slot, once per
-// (entity, channelKey, reason)).
+// Structured diagnostic facts report these skips to subscribed observers
+// (channel-target-missing / channel-missing-on-some-slot), once per
+// (entity, channelKey, reason).
 //
 // Decision anchors:
 //   - requirements IS-2 / AC-03 / AC-04 / AC-05 (best-effort N-way blend)
@@ -54,17 +54,14 @@ import { sampleChannel } from '../sample-channel';
 
 import type { EntityHandle, SystemHandle, World } from '@forgeax/engine-ecs';
 import { defineSystem, defineSystemSet, ENTITY_NULL_RAW } from '@forgeax/engine-ecs';
-import {
-  createStateProjection,
-  readRenderArrayView,
-  type StateProjection,
-} from '@forgeax/engine-ecs/projection';
+import { createStateProjection, type StateProjection } from '@forgeax/engine-ecs/projection';
+import { worldRead } from '@forgeax/engine-ecs/world-read';
 import { MorphWeights, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTransformChannel } from '@forgeax/engine-types';
+import { err, ok } from '@forgeax/engine-types';
 import {
   emitAnimationDiagnostic,
-  isAnimationDevMode,
-  _resetAnimationWarnsForTests as resetAnimationDiagnosticsForTests,
+  hasAnimationDiagnosticSubscribers,
 } from '../animation-diagnostic';
 import {
   animationMaskWeight,
@@ -98,11 +95,6 @@ import { clearAnimationEvents, collectTimelineEvents, publishTimelineEvents } fr
 export const ADVANCE_ANIMATION_PLAYER_SYSTEM = 'advanceAnimationPlayer' as const;
 export const AnimationSet = defineSystemSet({ name: 'animation' });
 
-export function _resetAnimationWarnsForTests(world: World): void {
-  resetAnimationDiagnosticsForTests(world);
-  targetMapCacheByWorld.delete(world);
-}
-
 /**
  * Advance all AnimationPlayer components by dt, blend the N active clips per
  * entity, and write one Transform per joint per tick. Returns void.
@@ -114,6 +106,19 @@ export function _resetAnimationWarnsForTests(world: World): void {
  * be a compile error against the reader shape).
  */
 export function advanceAnimationPlayer(world: World, dt: number): void {
+  if (!world.frameArena.isActive) {
+    world
+      .withFrameArena(() => {
+        try {
+          advanceAnimationPlayer(world, dt);
+          return ok(undefined);
+        } catch (error) {
+          return err(error);
+        }
+      })
+      .unwrap();
+    return;
+  }
   clearAnimationEvents(world);
   refreshTargetMaps(world);
   const query = world.query({ with: [AnimationPlayer] }).unwrap();
@@ -193,7 +198,9 @@ function advanceOnePlayer(world: World, entityRaw: number, dt: number, scratch: 
     });
   }
 
-  const newTimes = new Float64Array(ap.times);
+  const previousTimes = ap.times;
+  const newTimes = world.frameArena.alloc(Float64Array, previousTimes.length).unwrap();
+  newTimes.set(previousTimes);
   const activeSlots = collectActiveSlotsAndAdvanceTimes(
     world,
     ap,
@@ -227,7 +234,17 @@ function advanceOnePlayer(world: World, entityRaw: number, dt: number, scratch: 
   // Persist the advanced times column (D-7: weights are never written back —
   // negative-weight clamping is read-time only). Only `times` is set, so the
   // clips / weights / speeds slots are left untouched.
-  world.set(entity, AnimationPlayer, { times: newTimes });
+  // Externally sampled and paused players still evaluate their pose/events,
+  // but an unchanged clock is already validated World state. Avoid a managed
+  // array write and change publication when normalization did not alter it.
+  let clockChanged = false;
+  for (let index = 0; index < newTimes.length; index++) {
+    if (!Object.is(newTimes[index], previousTimes[index])) {
+      clockChanged = true;
+      break;
+    }
+  }
+  if (clockChanged) world.set(entity, AnimationPlayer, { times: newTimes });
 
   if (activeSlots.length > 0) tickEntityTargets(world, entity, entityRaw, activeSlots, scratch);
   commitRoot?.();
@@ -297,12 +314,12 @@ function collectActiveSlotsAndAdvanceTimes(
  * for translation/scale, nlerp with sign-fixed reference for rotation),
  * then writes one `world.set(joint, Transform, ...)` per touched joint.
  *
- * Dev-mode warns (D-2):
+ * Diagnostic facts (D-2):
  *   - channel-target-missing: a clip channel ID does not resolve in this
  *     player's explicit target set. Once per (entityId, clip, chIdx).
  *   - channel-missing-on-some-slot: a (joint, kind) tuple is covered by
  *     some slot but missing on another. The warn is emitted once per
- *     (entityId, the-covering-slot's-clip, that-slot's-chIdx) so users
+ *     (entityId, the-covering-slot's-clip, that-slot's-chIdx) so observers
  *     find the authoring point that has the channel; per-channel sumW
  *     normalize covers the runtime gap regardless.
  */
@@ -449,11 +466,10 @@ function tickEntityTargets(
   scratch.generation += 1;
   scratch.targets.length = 0;
   // Per-slot signature of (joint, channel-kind) coverage — used to detect
-  // channel-missing-on-some-slot once at the end of the channel walk. Lazy
-  // build only when there are 2+ active slots and dev-mode is on (warn pass
-  // is skipped in production by the shared diagnostics mode gate).
+  // channel-missing-on-some-slot once at the end of the channel walk. Build it
+  // only when an explicit diagnostic observer is attached.
   const slotCoverage: SlotCoverage | undefined =
-    activeSlots.length >= 2 && isAnimationDevMode() ? new Map() : undefined;
+    activeSlots.length >= 2 && hasAnimationDiagnosticSubscribers() ? new Map() : undefined;
 
   for (let slotIdx = 0; slotIdx < activeSlots.length; slotIdx++) {
     // biome-ignore lint/style/noNonNullAssertion: bounded by activeSlots.length
@@ -524,7 +540,9 @@ function tickEntityTargets(
       if (channel.property === 'weights') {
         let weights = morphAccumulators.get(targetRaw);
         if (weights === undefined) {
-          weights = { values: new Float32Array(sampled.length), sumW: 0 };
+          const values = world.frameArena.alloc(Float32Array, sampled.length).unwrap();
+          values.fill(0);
+          weights = { values, sumW: 0 };
           morphAccumulators.set(targetRaw, weights);
         }
         if (weights.values.length !== sampled.length) continue;
@@ -572,9 +590,10 @@ function tickEntityTargets(
     const target = targetRaw as EntityHandle;
     const weights = world.get(target, MorphWeights);
     if (weights.ok && weights.value.weights.length === acc.values.length) {
-      const next = new Float32Array(acc.values.length);
-      for (let i = 0; i < next.length; i++) next[i] = (acc.values[i] ?? 0) / acc.sumW;
-      world.set(target, MorphWeights, { weights: next });
+      // No later reader needs the unnormalized accumulator. World.set copies
+      // these query-local bytes into the managed component before scope close.
+      for (let i = 0; i < acc.values.length; i++) acc.values[i] = (acc.values[i] ?? 0) / acc.sumW;
+      world.set(target, MorphWeights, { weights: acc.values });
     }
   }
 }
@@ -866,13 +885,13 @@ function writeAccumulator(
   acc: JointAccumulator,
   scratch: PoseScratch,
 ): void {
-  const { pos, quat, scale } = scratch;
+  const { pos, quat, scale, stored } = scratch;
   let fields = 0;
   if (acc.sumWPos > 0) {
     pos[0] = acc.posX / acc.sumWPos;
     pos[1] = acc.posY / acc.sumWPos;
     pos[2] = acc.posZ / acc.sumWPos;
-    if (transformValuesChanged(world, target, 'pos', pos)) {
+    if (transformValuesChanged(world, target, 'pos', pos, stored)) {
       fields |= 1;
     }
   }
@@ -887,7 +906,7 @@ function writeAccumulator(
       quat[1] = qy / len;
       quat[2] = qz / len;
       quat[3] = qw / len;
-      if (transformValuesChanged(world, target, 'quat', quat)) {
+      if (transformValuesChanged(world, target, 'quat', quat, stored)) {
         fields |= 2;
       }
     }
@@ -896,7 +915,7 @@ function writeAccumulator(
     scale[0] = acc.scaleX / acc.sumWScale;
     scale[1] = acc.scaleY / acc.sumWScale;
     scale[2] = acc.scaleZ / acc.sumWScale;
-    if (transformValuesChanged(world, target, 'scale', scale)) {
+    if (transformValuesChanged(world, target, 'scale', scale, stored)) {
       fields |= 4;
     }
   }
@@ -909,14 +928,16 @@ function transformValuesChanged(
   target: EntityHandle,
   field: 'pos' | 'quat' | 'scale',
   values: number[],
+  stored: Float32Array,
 ): boolean {
-  const current = readRenderArrayView(world, target, Transform, field);
-  if (current === undefined || current.length !== values.length) return true;
+  // One column lookup per field; an absent array or a count other than
+  // `values.length` (including one too large for `stored`) reads as changed.
+  if (world[worldRead].copyArray(target, Transform, field, stored) !== values.length) return true;
   // Compare the f32 destination, including negative zero, so external author
   // writes are restored even when clip time has not moved.
   for (let index = 0; index < values.length; index++) {
     const value = values[index] as number;
-    if (Number.isNaN(value) || !Object.is(current[index], Math.fround(value))) return true;
+    if (Number.isNaN(value) || !Object.is(stored[index], Math.fround(value))) return true;
   }
   return false;
 }
@@ -974,6 +995,8 @@ interface PoseScratch {
   readonly pos: number[];
   readonly quat: number[];
   readonly scale: number[];
+  /** Destination readback for `transformValuesChanged`; holds the largest Transform vector. */
+  readonly stored: Float32Array;
   readonly partials: readonly { pos?: number[]; quat?: number[]; scale?: number[] }[];
 }
 
@@ -994,6 +1017,7 @@ function createPoseScratch(): PoseScratch {
     pos,
     quat,
     scale,
+    stored: new Float32Array(4),
     partials: [
       {},
       { pos },

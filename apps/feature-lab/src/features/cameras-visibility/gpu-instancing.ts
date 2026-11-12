@@ -21,7 +21,7 @@ export default defineFeature({
   catalog: 'GPU Instancing',
   kind: 'visual',
   summary:
-    'Instances packs column-major instance-local mat4s (16 floats each) on one renderable; the renderer draws them as one instanced batch.',
+    'Instances packs column-major instance-local mat4s (16 floats each) on one renderable; the renderer draws them as instanced batches. WebGL2 pages opaque CPU LOD collections into at most one draw per 128-instance page, selected level and submesh.',
   expect:
     'ON: a 5x5 grid of 25 orange cubes from one entity. OFF: the same entity holds a single instance, so only the center cube remains.',
   setup({ world }) {

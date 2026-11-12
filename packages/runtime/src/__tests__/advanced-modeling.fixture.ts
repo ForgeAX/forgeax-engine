@@ -26,6 +26,8 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 import { renderValue } from './standard-gbuffer-replay.fixture';
@@ -181,18 +183,22 @@ export async function verifyAdvancedModeling(
           quat: [0, Math.sin(item.rotation / 2), 0, Math.cos(item.rotation / 2)],
         })
         .unwrap();
-      const draw = async () => {
+      const draw = async (observation?: readonly 'linear-hdr'[]) => {
         world.update(1 / 60).unwrap();
         propagateTransforms(world).unwrap();
-        const receipt = renderValue(
-          renderer.draw({
+        const receipt = await drawReadyFrame(
+          renderer,
+          {
             leases: [lease],
             camera: { lease },
             environment: { lease },
             geometryLane: 'direct',
-          }),
+          },
+          observation,
         );
-        renderValue(await receipt.completed);
+        expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe(
+          'ready',
+        );
         return receipt;
       };
       const times: number[] = [],
@@ -215,11 +221,9 @@ export async function verifyAdvancedModeling(
           }
         }
       }
-      if (!renderer.requestObservation) throw new Error('linear HDR observation unavailable');
-      renderValue(renderer.requestObservation(['linear-hdr']));
       const pending = recorder.captureFrame();
       (await recorder.frameBoundary()).unwrap();
-      const receipt = await draw();
+      const receipt = await draw(['linear-hdr']);
       (await recorder.frameBoundary()).unwrap();
       const captured = (await pending).unwrap();
       await save(`${item.name}.rhitape`, compactTape(captured).bytes);
@@ -269,9 +273,12 @@ export async function verifyAdvancedModeling(
         const blob = tape.blobs.find((value) => value.hash === seed?.hash);
         if (!seed || !blob) throw new Error('missing captured mesh bytes');
         const bytes = new Uint8Array(expected.buffer, expected.byteOffset, expected.byteLength);
-        expect(blob.bytes.subarray(seed.byteOffset, seed.byteOffset + seed.byteLength)).toEqual(
-          bytes,
-        );
+        expect(
+          equalBytes(
+            blob.bytes.subarray(seed.byteOffset, seed.byteOffset + seed.byteLength),
+            bytes,
+          ),
+        ).toBe(true);
         uploadedBuffers.push({ resourceId: id, bytes: bytes.byteLength, digest: seed.hash });
       }
       const adapter = (await webgpu.rhi.requestAdapter()).unwrap();

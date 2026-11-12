@@ -134,6 +134,7 @@ describe('vertex color does not change the material contract', () => {
       'ior',
       'displacementScale',
       'displacementBias',
+      'displacementMode',
       'triplanarSpace',
       'triplanarScale',
       'triplanarSharpness',

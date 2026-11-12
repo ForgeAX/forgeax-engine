@@ -6,6 +6,10 @@ const renderSystemSource = readFileSync(
   resolve(import.meta.dirname, '../render-system.ts'),
   'utf8',
 );
+const reflectionSystemsSource = readFileSync(
+  resolve(import.meta.dirname, '../world/reflection-systems.ts'),
+  'utf8',
+);
 const recoveryRootsSource = readFileSync(
   resolve(import.meta.dirname, '../recovery/render-system-roots.ts'),
   'utf8',
@@ -37,7 +41,7 @@ describe('recovery generation contract', () => {
       'resetForRecover(retiringPipelineState?: PipelineState, replacementDevice?: RhiDevice): void {',
     );
     const reset = renderSystemSource.slice(start, renderSystemSource.indexOf('\n    },', start));
-    for (const field of ['ssrHistoryOwner', 'ssrSpatialAdmission']) {
+    for (const field of ['ssrHistoryOwner', 'ssrSpatialAdmission', 'ssrFallbackGeneration']) {
       expect(reset).toContain(`frameState.${field} = undefined`);
     }
     // Initial readiness and recovery await the same pipeline preparation owner.
@@ -47,7 +51,11 @@ describe('recovery generation contract', () => {
       'await buildPipeline(recoveryScope, device, candidateGpuStore)',
     );
     expect(rendererRecoverySource).not.toContain('initializeSsr(');
-    expect(renderSystemSource).toContain('format: ssrFormatReceipts.get(internals.device)');
+    expect(reset).toContain('ssrFormats.delete(internals.device)');
+    // SSR admission reads only the active device's receipt.
+    expect(reflectionSystemsSource).toContain(
+      'format: owner.ssrFormats.get(owner.internals.device)',
+    );
   });
 
   it('prepares roots from candidate state and switches environment owner only at publish', () => {

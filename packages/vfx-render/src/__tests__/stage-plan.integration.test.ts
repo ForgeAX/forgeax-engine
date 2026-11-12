@@ -74,6 +74,7 @@ describe('VFX managed stage execution seam', () => {
       reset: true,
       delta: 1 / 60,
       initialDelta: 1 / 60,
+      worldElapsed: 0,
       elapsed: 1 / 60,
       phaseTick: 0,
       tick: 0,

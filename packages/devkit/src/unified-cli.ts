@@ -10,6 +10,7 @@ import {
 } from '@forgeax/engine-tool-runtime';
 import { createDevkitCliStartup } from './cli-host.js';
 import { compactCliResult } from './cli-presentation.js';
+import { ignoreProjectState } from './project-state-ignore.js';
 
 export interface UnifiedCliResult {
   readonly ok: boolean;
@@ -45,6 +46,26 @@ interface ParsedCli {
   readonly helpRequested: boolean;
   readonly input?: unknown;
   readonly args: Record<string, unknown>;
+}
+
+type ParsedCliResult =
+  | { readonly ok: true; readonly value: ParsedCli }
+  | { readonly ok: false; readonly error: unknown };
+
+/** Exact built-in owner controls do not consume project command contracts. */
+function ownerControlDiscovery(
+  parsed: ParsedCliResult,
+): Parameters<typeof createDevkitCliStartup>[1] {
+  return parsed.ok &&
+    !parsed.value.helpRequested &&
+    parsed.value.args.help !== true &&
+    parsed.value.path.length === 2 &&
+    ((parsed.value.path[0] === 'backend' &&
+      ['start', 'status', 'stop'].includes(parsed.value.path[1] ?? '')) ||
+      (parsed.value.path[0] === 'dev' &&
+        ['start', 'status', 'stop', 'reload'].includes(parsed.value.path[1] ?? '')))
+    ? async () => []
+    : undefined;
 }
 
 function flagKey(value: string): string {
@@ -134,7 +155,10 @@ function applyCliToken(
     return 0;
   }
   if (!flag.startsWith('--')) {
-    state.path.push(flag);
+    // `help "project preview"` names the same path as `help project preview`; outside
+    // help a token may be a positional value, so it stays whole.
+    if (helpRequested) state.path.push(...flag.split(/\s+/).filter((part) => part !== ''));
+    else state.path.push(flag);
     return 0;
   }
   if (CLI_BOOLEAN_FLAGS.has(flag)) {
@@ -305,23 +329,31 @@ export async function runUnifiedCli(
   let startup: Awaited<ReturnType<typeof createHostStartup>> | undefined;
   let cli: ReturnType<typeof createDevkitCliStartup> | undefined;
   let rawCommand = '';
+  let projectRoot: string | undefined;
   try {
     // Select the project before Host startup so an external --root creates one
     // Host for that target. A malformed request still starts the default Host
     // before returning its parse failure; discovery and dispatch remain behind
     // the Host lifecycle.
-    let parsedResult:
-      | { readonly ok: true; readonly value: ParsedCli }
-      | { readonly ok: false; readonly error: unknown };
+    let parsedResult: ParsedCliResult;
     try {
       parsedResult = { ok: true, value: parseArgs(argv) };
     } catch (error) {
       parsedResult = { ok: false, error };
     }
-    cli = createDevkitCliStartup(parsedResult.ok ? parsedResult.value.root : process.cwd());
+    // The serving owner validates its project during start/reload. The command
+    // client only dispatches that operation; inventory here duplicates its scan
+    // and retains an unrelated snapshot throughout startup. Recovery controls
+    // also remain usable with broken project/Host Packs. Help and extension
+    // paths retain ordinary discovery.
+    cli = createDevkitCliStartup(
+      parsedResult.ok ? parsedResult.value.root : process.cwd(),
+      ownerControlDiscovery(parsedResult),
+    );
     startup = await createHostStartup({ startupPlugins: [createToolApiPlugin(), cli.plugin] });
     if (!parsedResult.ok) throw parsedResult.error;
     const parsed = parsedResult.value;
+    projectRoot = parsed.root;
     const present = (result: UnifiedCliResult, args?: unknown): UnifiedCliResult =>
       options.presentation === 'compact' && !parsed.detail
         ? compactCliResult(result, { root: parsed.root, args, tree: parsed.tree })
@@ -398,8 +430,13 @@ export async function runUnifiedCli(
     return errorResult(error, rawCommand);
   } finally {
     await startup?.dispose();
+    // Commands create `.forgeax/` on demand; keep it out of git whichever made it.
+    await ignoreProjectState(projectRoot);
   }
 }
+
+/** `forgeax rhi timing TAPE` is `--artifact TAPE`. */
+const RHI_ARTIFACT_COMMANDS = new Set(['rhi summary', 'rhi inspect', 'rhi read', 'rhi timing']);
 
 function positionalArgs(
   command: string,
@@ -407,6 +444,17 @@ function positionalArgs(
   positionals: readonly string[],
 ): Record<string, unknown> {
   const args = { ...flags };
+  if (command === 'asset guid') {
+    // `asset guid <packageId> <key>`: the Pack subject namespace, then the sourceKey.
+    if (positionals.length > 2) {
+      throw new Error(
+        `too many positional arguments for ${command}: ${positionals.slice(2).join(' ')}`,
+      );
+    }
+    if (positionals[0] !== undefined) args.packageId = positionals[0];
+    if (positionals[1] !== undefined) args.key = positionals[1];
+    return args;
+  }
   const positionalName =
     command === 'asset import'
       ? 'path'
@@ -418,7 +466,9 @@ function positionalArgs(
             ? 'script'
             : command === 'project engine use-local'
               ? 'path'
-              : undefined;
+              : RHI_ARTIFACT_COMMANDS.has(command)
+                ? 'artifact'
+                : undefined;
   if (positionalName === undefined) {
     if (positionals.length > 0) {
       throw new Error(`unexpected positional argument for ${command}: ${positionals[0]}`);

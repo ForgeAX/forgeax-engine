@@ -87,9 +87,9 @@ function drawPublished(renderer: RendererType, world: WorldType) {
   //   case B (world has 0 Camera entity): normal clear/UI frame.
   //   case C (world has 0 DirectionalLight): unlit fallback
   //          (intensity = 0); no error event fired (D-Q7 softening point).
-  //   case D (world has N>1 Camera / Light): fires
-  //          'render-system-multi-camera' / 'render-system-multi-light' +
-  //          uses first archetype hit.
+  //   case D (world has N>1 Camera): fires 'render-system-multi-camera' +
+  //          uses first archetype hit; N>1 DirectionalLight renders all
+  //          lights (first one shadowed) without a multi-light warn.
   //   asset-not-registered: fires 'asset-not-registered' + entity skipped
   //          + .detail = { assetHandle: number } (D-S6 + F-3 contract).
   //   internal exception: fires 'webgpu-runtime-error' + frame skipped +
@@ -184,7 +184,7 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       __mockTag: 'gpu-device',
       lost,
       features: new Set(),
-      limits: {},
+      limits: { maxTextureDimension2D: 8192 },
       queue: {
         submit: () => {
           log.queueSubmitCount++;
@@ -430,7 +430,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // pass-count literal that changes when a named stage is split.
       expect(log.beginRenderPassCount).toBeGreaterThan(log.queueSubmitCount);
       expect(log.setPipelineCount).toBeGreaterThan(0);
-      expect(log.drawIndexedCount).toBe(1);
+      // The Forward depth prepass and `main` each draw the entity once.
+      expect(log.drawIndexedCount).toBe(2);
       expect(log.encoderFinishCount).toBe(1); // one typed graph command encoder
       expect(log.queueSubmitCount).toBe(1); // one submission for the frame graph
       // Three BindGroups recorded per entity (view / material / mesh-array).
@@ -579,9 +580,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
 
       // Soft path: no error fired (D-Q7 mirroring; LO §1.1 minimum semantic).
       expect(errors).toHaveLength(0);
-      // Nine fallback clears plus spot-shadow, skybox, main and output-transform.
+      // Nine fallback clears plus spot-shadow, the Forward depth prepass and its
+      // seed (UE ShouldForceFullDepthPass), skybox, main and output-transform.
       // Empty geometry still paints; absent clouds and idle debug UI add no pass.
-      expect(log.beginRenderPassCount).toBe(13);
+      expect(log.beginRenderPassCount).toBe(15);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
       // No geometry submitted.
       expect(log.drawIndexedCount).toBe(0);
@@ -635,7 +637,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       drawPublished(renderer, world as WorldType);
 
       expect(errors).toEqual([]);
-      expect(log.drawIndexedCount).toBe(1);
+      // Forward depth prepass + main.
+      expect(log.drawIndexedCount).toBe(2);
     });
 
     it('case D: world has N>1 Camera fires render-system-multi-camera + uses first hit', async () => {
@@ -706,13 +709,10 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       expect(log.drawIndexedCount).toBeGreaterThanOrEqual(1);
     });
 
-    it('case D: world has N>1 DirectionalLight fires warn-once console.warn + uses first hit', async () => {
-      // feat-20260608-rhi-hdr-renderable-caps-and-warn-once m3-1: multi-light
-      // overrun was migrated from per-frame errorRegistry.fire to warn-once
-      // console.warn (aligned with frameState.warnedShadowDisabled idiom).
-      // Test asserts the new contract: a `[forgeax] render-system-multi-light
-      // directional:` line appears once on console.warn during the overrun
-      // frame, and the renderer still picks the first archetype hit.
+    it('case D: world has N>1 DirectionalLight renders every light without a multi-light warn', async () => {
+      // Every DirectionalLight is rendered: the first owns the View sun lane
+      // and CSM, later ones are unshadowed Cluster members. The former
+      // `[forgeax] render-system-multi-light directional:` warn is gone.
       const { createRenderer, log } = await setupWebGPU();
       const canvas = makeMockCanvas({ webgl2: 'context', webgpu: 'context' });
       const renderer = await createRenderer(
@@ -757,6 +757,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       );
 
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const errors: { code: string }[] = [];
+      subscribeRendererErrors(renderer, (e) => errors.push(e));
       drawPublished(renderer, world as WorldType);
       await new Promise((resolve) => setTimeout(resolve, 0));
       Object.assign(log, makeLog());
@@ -767,7 +769,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
           typeof c[0] === 'string' &&
           c[0].startsWith('[forgeax] render-system-multi-light directional:'),
       );
-      expect(multiLightCalls.length).toBe(1);
+      expect(multiLightCalls.length).toBe(0);
+      expect(errors).toEqual([]);
       expect(log.drawIndexedCount).toBeGreaterThanOrEqual(1);
       warnSpy.mockRestore();
     });
@@ -824,17 +827,18 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       // Case E secondary-fix: even when every renderable fails asset
       // registration, the clear pass still runs (so visual debugging shows
       // the cleared canvas rather than a stale frame).
-      // Nine fallback clears plus spot-shadow, skybox, main and output-transform.
+      // Nine fallback clears plus spot-shadow, the Forward depth prepass and its
+      // seed (UE ShouldForceFullDepthPass), skybox, main and output-transform.
       // Empty geometry still paints; absent clouds and idle debug UI add no pass.
-      expect(log.beginRenderPassCount).toBe(13);
+      expect(log.beginRenderPassCount).toBe(15);
       expect(log.queueSubmitCount).toBe(9); // 2D + array + 6 cube-face fallbacks + frame
     });
 
-    it('internal exception fires webgpu-runtime-error with .detail = { error: string } and skips frame', async () => {
+    it('encoder failure reports the closed device operation cause and skips submission', async () => {
       // Inject a raw command-encoder failure only after renderer construction
       // has completed. RHI device creation intentionally leaves this raw
-      // boundary synchronous, so RenderSystem's outer try/catch must surface
-      // the failure as webgpu-runtime-error instead of a ready-time failure.
+      // boundary synchronous; the Record system reports its structured cause
+      // without submitting the abandoned frame.
       const log = makeLog();
       const { device } = makeMockGPUDevice(log);
       const raw = device as {
@@ -886,18 +890,25 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       );
 
       const errors: RendererErrorObservation[] = [];
-      subscribeRendererErrors(renderer, (e) => errors.push(e));
+      renderer.subscribe((event) => {
+        if (event.kind === 'error') errors.push(event.error);
+      });
+      const submitsBefore = log.queueSubmitCount;
       drawPublished(renderer, world as WorldType);
 
-      const runtimeErr = errors.find((e) => e.code === 'webgpu-runtime-error');
-      expect(runtimeErr).toBeDefined();
-      expect(runtimeErr?.detail).toBeDefined();
-      const runtimeDetail = runtimeErr?.detail as
-        | { error?: { code: string; message: string } }
-        | undefined;
-      expect(runtimeDetail?.error).toBeDefined();
-      expect(typeof runtimeDetail?.error?.message).toBe('string');
-      expect(runtimeDetail?.error?.message).toContain('createCommandEncoder');
+      expect(errors).toMatchObject([
+        {
+          code: 'device-operation-failed',
+          detail: {
+            operation: 'draw',
+            cause: {
+              code: 'command-encoder-unavailable',
+              detail: 'mock: createCommandEncoder failure',
+            },
+          },
+        },
+      ]);
+      expect(log.queueSubmitCount).toBe(submitsBefore);
     });
   });
 
@@ -1387,7 +1398,8 @@ function drawPublished(renderer: RendererType, world: WorldType) {
       drawPublished(renderer, world as WorldType);
 
       expect(errors).toHaveLength(0);
-      expect(log.drawIndexedCount).toBe(1);
+      // Forward depth prepass + main.
+      expect(log.drawIndexedCount).toBe(2);
 
       // Without stencilReference, the draw loop should call
       // setStencilReference(0) (harmless WebGPU default) or not call it at

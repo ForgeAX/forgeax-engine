@@ -13,6 +13,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { assert, expect, it } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { observeReplaySubmissions } from './native-replay-work.fixture';
 import {
   createIrradianceFieldHarness,
@@ -311,7 +312,7 @@ it('serves Lite reflections from the directional radiance cache under field gath
       const composed = reads[2]?.unwrap();
       assert(composed);
       expect(composed.provenance.selectedWorkIndex).toBe(composite.workIndex);
-      expect(composed.bytes).toEqual(captured.bytes);
+      expect(equalBytes(composed.bytes, captured.bytes)).toBe(true);
       const broad = reads[0]?.unwrap();
       const directional = reads[1]?.unwrap();
       assert(broad && directional);
@@ -351,8 +352,8 @@ it('serves Lite reflections from the directional radiance cache under field gath
       const without = (
         await falsifier.replay.readResourceAtWork(sceneHandle, last.workIndex)
       ).unwrap();
-      expect(without.bytes).toEqual(unreflected.bytes);
-      expect(without.bytes).not.toEqual(captured.bytes);
+      expect(equalBytes(without.bytes, unreflected.bytes)).toBe(true);
+      expect(equalBytes(without.bytes, captured.bytes)).toBe(false);
     } finally {
       falsifier.submissions.restore();
       await falsifier.dispose();

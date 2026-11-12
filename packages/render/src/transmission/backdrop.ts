@@ -520,7 +520,7 @@ export function addTransmissionBackdropPasses(
       { resource: input.source.view, usage: 'copy-src' },
       { resource: mip0.value, usage: 'copy-dst' },
     ],
-    encode: ({ encoder, resources }) => {
+    encodeDirect: (encoder, _graphframe, resources) => {
       const source = resources.texture(input.source.texture);
       const target = resources.texture(backdrop.value.texture);
       if (!source.ok) throw source.error;
@@ -590,7 +590,7 @@ export function addTransmissionBackdropPasses(
               storeOp: 'store',
             },
           ],
-          encode: ({ pass, frame, resources }) =>
+          encodeDirect: (pass, frame, resources) =>
             encodeRoughMip({
               pass,
               frame,
@@ -608,7 +608,7 @@ export function addTransmissionBackdropPasses(
           { resource: scratchView.value, usage: 'copy-src' },
           { resource: destination, usage: 'copy-dst' },
         ],
-        encode: ({ encoder, resources }) => {
+        encodeDirect: (encoder, _graphframe, resources) => {
           const from = resources.texture(scratch.value);
           const to = resources.texture(backdrop.value.texture);
           if (!from.ok) throw from.error;
@@ -631,7 +631,7 @@ export function addTransmissionBackdropPasses(
         { resource: input.source.view, usage: 'color-attachment' },
       ],
       colorAttachments: [{ view: input.source.view, loadOp: 'load', storeOp: 'store' }],
-      encode: () => undefined,
+      encodeDirect: () => undefined,
     });
     if (!transmission.ok) return transmission;
 
@@ -639,7 +639,7 @@ export function addTransmissionBackdropPasses(
       const pass = input.graph.addRasterPass(name, {
         accesses: [{ resource: input.source.view, usage: 'color-attachment' }],
         colorAttachments: [{ view: input.source.view, loadOp: 'load', storeOp: 'store' }],
-        encode: () => undefined,
+        encodeDirect: () => undefined,
       });
       if (!pass.ok) return pass;
     }
@@ -656,6 +656,6 @@ export function addTransmissionBackdropTemporalPass(
   return graph.addRasterPass('temporal', {
     accesses: [{ resource: source.view, usage: 'color-attachment' }],
     colorAttachments: [{ view: source.view, loadOp: 'load', storeOp: 'store' }],
-    encode: () => undefined,
+    encodeDirect: () => undefined,
   });
 }

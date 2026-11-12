@@ -15,6 +15,7 @@ import {
 import { type CaptureRendererError, captureRenderFailure } from './capture-render-failure.js';
 import { type ExecutionHealth, executionHealth } from './execution-health.js';
 import { failureSummary } from './failure-summary.js';
+import type { StartupUiState } from './host/startup-ui.js';
 import {
   collectLayout,
   DEFAULT_PLAY_VIEWPORTS,
@@ -388,8 +389,16 @@ async function waitForInputOpen(page: Page, timeoutMs: number): Promise<InputGat
   try {
     const handle = await page.waitForFunction(
       () => {
+        const startup = (
+          Reflect.get(globalThis, '__forgeaxStartup') as { inspect?(): StartupUiState } | undefined
+        )?.inspect?.();
+        if (startup?.phase === 'failed' && startup.recovery !== 'retrying')
+          return (startup.diagnostics || startup.message || 'Engine startup failed').slice(
+            0,
+            2_000,
+          );
         const fatal = document.querySelector('#forgeax-fatal');
-        if (fatal?.checkVisibility())
+        if (startup === undefined && fatal?.checkVisibility())
           return (
             document.querySelector('#forgeax-fatal-details')?.textContent?.trim() ||
             fatal.textContent?.trim() ||

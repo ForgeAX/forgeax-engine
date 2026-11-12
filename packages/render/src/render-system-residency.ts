@@ -1,3 +1,4 @@
+import { STANDARD_OBJECT_SPACE_NORMAL_BIT, standardMaskHasBit } from '@forgeax/engine-shader';
 import type { AssetHandle } from '@forgeax/engine-types';
 import {
   type MaterialAsset,
@@ -5,6 +6,7 @@ import {
   type TextureAsset,
   validateTextureLayout,
 } from '@forgeax/engine-types';
+import { ownedMaterialValues } from './material-resource';
 import {
   type MeshMaterialBindingPreparationFailure,
   type MeshMaterialBindingResidency,
@@ -96,6 +98,22 @@ export function materialSamplerHandles(
     handles.set(Number(handle), handle);
   }
   return [...handles.values()];
+}
+
+// Object-space normals read .b; tangent space reconstructs Z from RG instead.
+const NO_BLUE_FORMATS: ReadonlySet<GPUTextureFormat> = new Set<GPUTextureFormat>([
+  'r8unorm',
+  'rg8unorm',
+  'bc4-r-unorm',
+  'bc5-rg-unorm',
+  'eac-r11unorm',
+  'eac-rg11unorm',
+]);
+
+function objectSpaceNormalHandle(material: MaterialSnapshot): AssetHandle<'texture'> | undefined {
+  const mask = material.standardTextureMask ?? 0;
+  if (!standardMaskHasBit(mask, STANDARD_OBJECT_SPACE_NORMAL_BIT)) return undefined;
+  return material.textureHandles?.get('normalTexture') ?? material.normalTexture;
 }
 
 const EMPTY_RESIDENCY_DETAILS = Object.freeze([]);
@@ -207,6 +225,19 @@ export function observeMaterialResidency(
         failure ??= preparationFailureFrom(error);
         continue;
       }
+      const format = prepared.value.receipt.format;
+      if (
+        NO_BLUE_FORMATS.has(format) &&
+        Number(objectSpaceNormalHandle(material)) === Number(handle)
+      ) {
+        failure ??= {
+          code: 'asset-invalid-value',
+          expected: `an object-space normal texture with a blue channel; ${format} carries no Z`,
+          hint: "use normalMapSpace 'tangent' for RG normal maps (Z is reconstructed), or supply an RGB/RGBA object-space normal texture",
+          detail: { field: 'normalMapSpace', value: format, reason: 'normal-texture-lacks-blue' },
+        };
+        continue;
+      }
       resident = true;
       if (includeDetails) {
         textures ??= [];
@@ -281,6 +312,20 @@ export function observeMaterialResidency(
   });
 }
 
+/** Readiness keys share value-only clones while retaining resource overrides. */
+function materialResidencyKey(material: MaterialSnapshot): MaterialSnapshot | number {
+  return (material.textureHandles?.size ?? 0) === 0 &&
+    (material.samplerHandles?.size ?? 0) === 0 &&
+    (material.videoTextureFields?.size ?? 0) === 0 &&
+    (material.baseColorTexture ?? 0) === 0 &&
+    (material.metallicRoughnessTexture ?? 0) === 0 &&
+    (material.normalTexture ?? 0) === 0 &&
+    (material.emissiveTexture ?? 0) === 0 &&
+    (material.occlusionTexture ?? 0) === 0
+    ? (material.materialHandle ?? 0)
+    : material;
+}
+
 /**
  * Share detached material observations only within one synchronous projection.
  * A new preparation/submission phase observes the resource owners again.
@@ -297,26 +342,47 @@ export function createMaterialResidencyObserver(
     RenderResourceScope | undefined,
     Map<MaterialSnapshot | number, MeshMaterialBindingResidency>
   >();
+  let latestWorld: RenderResourceScope | undefined;
+  let latestMaterial: MaterialSnapshot | undefined;
+  let latestOwned = false;
+  let latestObservation: MeshMaterialBindingResidency | undefined;
+  const retainLatest = (
+    world: RenderResourceScope | undefined,
+    material: MaterialSnapshot,
+    observation: MeshMaterialBindingResidency,
+    fixedValues: boolean | undefined,
+  ): MeshMaterialBindingResidency => {
+    // Inspect ownership before publishing any part of the tuple: a proxy can
+    // reenter this observer during metadata inspection. Borrowed values keep
+    // their ordinary key reads, including after a previous owned consumer.
+    const owned =
+      material === latestMaterial
+        ? latestOwned
+        : fixedValues === true || ownedMaterialValues(material);
+    latestWorld = world;
+    latestMaterial = material;
+    latestOwned = owned;
+    latestObservation = observation;
+    return observation;
+  };
   return (
     world: RenderResourceScope | undefined,
     material: MaterialSnapshot,
+    fixedValues?: boolean,
   ): MeshMaterialBindingResidency => {
+    if (
+      latestOwned &&
+      latestMaterial === material &&
+      latestWorld === world &&
+      latestObservation !== undefined
+    )
+      return latestObservation;
     // Value-only clones share the same MaterialAsset readiness. Texture,
     // sampler and video overrides retain their exact snapshot observation.
-    const key =
-      (material.textureHandles?.size ?? 0) === 0 &&
-      (material.samplerHandles?.size ?? 0) === 0 &&
-      (material.videoTextureFields?.size ?? 0) === 0 &&
-      (material.baseColorTexture ?? 0) === 0 &&
-      (material.metallicRoughnessTexture ?? 0) === 0 &&
-      (material.normalTexture ?? 0) === 0 &&
-      (material.emissiveTexture ?? 0) === 0 &&
-      (material.occlusionTexture ?? 0) === 0
-        ? (material.materialHandle ?? 0)
-        : material;
+    const key = materialResidencyKey(material);
     let materials = scopes.get(world);
     const cached = materials?.get(key);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return retainLatest(world, material, cached, fixedValues);
     const observation = observeMaterialResidency(
       world,
       material,
@@ -329,6 +395,6 @@ export function createMaterialResidencyObserver(
       scopes.set(world, materials);
     }
     materials.set(key, observation);
-    return observation;
+    return retainLatest(world, material, observation, fixedValues);
   };
 }

@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   type DdcArtifact,
-  type DdcEntry,
+  type DdcEntryInput,
   DdcEntryStore,
   type DdcGenerationEntryCandidate,
   DdcGenerationSession,
@@ -13,7 +13,7 @@ import {
   ddcOutputDigest,
 } from '@forgeax/engine-ddc';
 import { canonicalDdcJson } from '@forgeax/engine-ddc/key';
-import { stripRuntimePackLifecycle } from '@forgeax/engine-pack/build';
+import { bindRuntimePackScope, stripRuntimePackLifecycle } from '@forgeax/engine-pack/build';
 import { decodeMaterialProgramWire } from '@forgeax/engine-pack/runtime';
 import {
   type CatalogEntry,
@@ -30,7 +30,7 @@ import {
 
 interface SourcePackageDdcEntryInput {
   readonly root: string;
-  readonly entry: DdcEntry;
+  readonly entry: DdcEntryInput;
   readonly context: SourcePackageErrorContext;
 }
 
@@ -46,6 +46,8 @@ interface ImmutablePackSelection {
 }
 
 export interface ImportPublicationInput {
+  /** Tool-owned opt-in; publication never reads ambient environment configuration. */
+  readonly traceTiming?: boolean;
   readonly root: string;
   readonly guid: string;
   readonly desiredKey: string;
@@ -86,6 +88,16 @@ export type ImportPublicationResult =
     }
   | { readonly ok: false; readonly error: ImportPublicationError; readonly head: DdcHead };
 
+/** A validated current projection; restoring it never writes a sidecar or DDC head. */
+export interface ImportPublicationSnapshot {
+  readonly key: string;
+  readonly head: DdcHead;
+  readonly catalog: readonly CatalogEntry[];
+  readonly revision: ResourceRevision;
+  readonly pack: unknown;
+  readonly artifacts: Readonly<Record<string, DdcArtifact>>;
+}
+
 export interface StagedImportPublication {
   readonly input: ImportPublicationInput;
   readonly ddc: StagedSourcePackageDdc;
@@ -98,6 +110,17 @@ export interface StagedImportPublication {
 export type StagedImportPublicationResult =
   | { readonly ok: true; readonly candidate: StagedImportPublication }
   | { readonly ok: false; readonly error: ImportPublicationError; readonly head: DdcHead };
+
+function publicationTiming(stage: string, started: number | undefined): void {
+  if (started === undefined) return;
+  try {
+    process.stderr.write(
+      `[forgeax.meta-publication.timing] ${JSON.stringify({ stage, elapsedMs: performance.now() - started })}\n`,
+    );
+  } catch {
+    // Optional diagnostics do not change publication outcomes.
+  }
+}
 
 function inspectHead(root: string, guid: string, desiredKey: string): Promise<DdcHead> {
   return new DdcLifecycle(root).inspect(guid, desiredKey);
@@ -162,7 +185,7 @@ async function immutablePackPayload(
   input: ImportPublicationInput,
 ): Promise<ImmutablePackSelection> {
   const semantic = stripRuntimePackLifecycle(input.pack);
-  const existing = await new DdcEntryStore(input.root).read(input.desiredKey);
+  const existing = await new DdcEntryStore(input.root).readPayloadCandidate(input.desiredKey);
   if (
     existing !== null &&
     existing.guid.toLowerCase() === input.guid.toLowerCase() &&
@@ -277,6 +300,35 @@ function publicationContext(input: ImportPublicationInput): SourcePackageErrorCo
   };
 }
 
+function validatePublicationTransport(
+  input: ImportPublicationInput,
+  pack: unknown,
+): Result<void, SourcePackageError> {
+  if (input.transport === undefined) return ok(undefined);
+  let transportedPack: unknown;
+  try {
+    const decoded = decodeMaterialProgramWire(JSON.parse(input.transport.body));
+    if (!decoded.ok) throw new TypeError('Invalid material program table');
+    transportedPack = decoded.value;
+  } catch {
+    return err(
+      sourcePackageError('source-package-publication-invalid', publicationContext(input), {
+        stage: 'route-integrity',
+        reason: 'transport body is not valid JSON for the published Pack',
+      }),
+    );
+  }
+  if (canonicalDdcJson(transportedPack) !== canonicalDdcJson(pack)) {
+    return err(
+      sourcePackageError('source-package-publication-invalid', publicationContext(input), {
+        stage: 'route-integrity',
+        reason: 'transport body does not match the published Pack',
+      }),
+    );
+  }
+  return ok(undefined);
+}
+
 /**
  * Validate the Pack-to-transport closure before DDC staging can advance its
  * head. The Pack is the authority for required artifact paths; a missing or
@@ -284,6 +336,7 @@ function publicationContext(input: ImportPublicationInput): SourcePackageErrorCo
  */
 function validatePublicationArtifactClosure(
   input: ImportPublicationInput,
+  checkTransportBody = true,
 ): Result<Readonly<Record<string, DdcArtifact>>, SourcePackageError> {
   const context = publicationContext(input);
   const decoded = decodeMaterialProgramWire(input.pack);
@@ -458,28 +511,9 @@ function validatePublicationArtifactClosure(
     );
   }
 
-  if (input.transport !== undefined) {
-    let transportedPack: unknown;
-    try {
-      const decodedTransport = decodeMaterialProgramWire(JSON.parse(input.transport.body));
-      if (!decodedTransport.ok) throw new TypeError('Invalid material program table');
-      transportedPack = decodedTransport.value;
-    } catch {
-      return err(
-        sourcePackageError('source-package-publication-invalid', context, {
-          stage: 'route-integrity',
-          reason: 'transport body is not valid JSON for the published Pack',
-        }),
-      );
-    }
-    if (canonicalDdcJson(transportedPack) !== canonicalDdcJson(pack)) {
-      return err(
-        sourcePackageError('source-package-publication-invalid', context, {
-          stage: 'route-integrity',
-          reason: 'transport body does not match the published Pack',
-        }),
-      );
-    }
+  if (checkTransportBody) {
+    const checked = validatePublicationTransport(input, pack);
+    if (!checked.ok) return checked;
   }
 
   return ok(publicationArtifacts(input.transport));
@@ -529,10 +563,66 @@ export async function publishImportPublication(
   return commitImportPublication(staged.candidate);
 }
 
+/**
+ * Adopt an equivalent current entry through the existing DDC integrity/head fence.
+ * Transport text is deliberately discarded: callers serve the returned validated
+ * Pack, rebound to the requested runtime scope, rather than trusting that text.
+ * A miss, damaged entry, changed output or active writer retains normal publication.
+ */
+export async function readImportPublication(
+  input: ImportPublicationInput,
+): Promise<ImportPublicationSnapshot | undefined> {
+  const artifacts = validatePublicationArtifactClosure(input, false);
+  if (!artifacts.ok) return undefined;
+  const payload = stripRuntimePackLifecycle(input.pack);
+  const outputDigest = ddcOutputDigest({
+    guid: input.guid,
+    payload,
+    refs: [],
+    artifacts: artifacts.value,
+  });
+  const runtime = input.pack as {
+    readonly scopeId?: unknown;
+    readonly generation?: unknown;
+  } | null;
+  const scopeId = runtime?.scopeId;
+  const generation = runtime?.generation;
+  const current = await new DdcLifecycle(input.root)
+    .readCurrentEntry(input.guid)
+    .catch(() => undefined);
+  if (
+    current?.head.state !== 'current' ||
+    current.head.activeLease !== undefined ||
+    current.head.currentKey !== input.desiredKey ||
+    current.entry === null ||
+    current.entry.key !== input.desiredKey ||
+    current.entry.guid !== input.guid ||
+    current.entry.receipt.producer !== 'engine-import/source-package-publication' ||
+    current.entry.receipt.inputFingerprint !== input.desiredKey ||
+    current.entry.receipt.outputDigest !== outputDigest
+  )
+    return undefined;
+  const projected = projectImportPublication(input, current.head, Date.now());
+  const pack =
+    typeof scopeId === 'string' && typeof generation === 'number'
+      ? bindRuntimePackScope(current.entry.payload, scopeId, generation)
+      : current.entry.payload;
+  return {
+    key: input.desiredKey,
+    head: current.head,
+    ...projected,
+    pack,
+    artifacts: current.entry.artifacts,
+  };
+}
+
 export async function stageImportPublication(
   input: ImportPublicationInput,
 ): Promise<StagedImportPublicationResult> {
+  const timing = input.traceTiming === true;
+  let started = timing ? performance.now() : undefined;
   const validatedArtifacts = validatePublicationArtifactClosure(input);
+  publicationTiming('artifact-closure', started);
   if (!validatedArtifacts.ok) {
     return {
       ok: false,
@@ -541,8 +631,11 @@ export async function stageImportPublication(
     };
   }
   const artifacts = validatedArtifacts.value;
+  started = timing ? performance.now() : undefined;
   const selected = await immutablePackPayload(input);
+  publicationTiming('immutable-payload', started);
   const { payload } = selected;
+  started = timing ? performance.now() : undefined;
   const staged = await stageSourcePackageDdc({
     root: input.root,
     entry: {
@@ -559,16 +652,11 @@ export async function stageImportPublication(
         ...(selected.publicationGeneration === undefined
           ? {}
           : { publicationGeneration: selected.publicationGeneration }),
-        outputDigest: ddcOutputDigest({
-          guid: input.guid,
-          payload,
-          refs: [],
-          artifacts,
-        }),
       },
     },
     context: publicationContext(input),
   });
+  publicationTiming('ddc-stage', started);
   if (!staged.ok) {
     return {
       ok: false,

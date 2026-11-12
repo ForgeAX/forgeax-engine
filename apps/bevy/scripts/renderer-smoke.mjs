@@ -82,11 +82,19 @@ export async function runSmokeAppFrames(app, pumpFrame, count) {
       }
       const current = receipt;
       receipt = undefined;
+      // The first ready submission can compile cold native GPU pipelines. Keep
+      // its one-time allowance inside the unchanged 30 s completed-frame budget.
+      const completionBudget = ready === 0 && current.presentation === 'ready' ? 15_000 : 5_000;
       let timer;
       const completed = await Promise.race([
         current.completed,
         new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Smoke GPU frame completion exceeded its credit budget')), Math.min(5_000, Math.max(1, deadline - Date.now())));
+          timer = setTimeout(() => reject(new Error(
+            `Smoke GPU frame completion exceeded its credit budget: ${JSON.stringify({
+              ready, target: count, frameId: current.frameId,
+              presentation: current.presentation, pendingReason: current.presentationPendingReason,
+            })}`,
+          )), Math.min(completionBudget, Math.max(1, deadline - Date.now())));
         }),
       ]).finally(() => clearTimeout(timer));
       if (!completed.ok) throw completed.error;

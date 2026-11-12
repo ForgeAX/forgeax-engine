@@ -17,15 +17,16 @@ import {
   workspacePackages,
   writeReceipt,
 } from './build-task-cache.mjs';
+import { buildPackageSelection } from './lib/build-package-selection.mjs';
 import { pnpmCommand } from './lib/pnpm-command.mjs';
 import { runnerResources, workspaceConcurrency } from './lib/runner-resources.mjs';
 
 const root = resolve(process.env.FORGEAX_REPO_ROOT ?? '.');
-const packages = workspacePackages(root);
-const byName = new Map(packages.map((pkg) => [pkg.manifest.name, pkg]));
-const knownNames = new Set(packages.map((pkg) => pkg.manifest.name));
+const allPackages = workspacePackages(root);
+const byName = new Map(allPackages.map((pkg) => [pkg.manifest.name, pkg]));
+const knownNames = new Set(allPackages.map((pkg) => pkg.manifest.name));
 const dependencies = new Map(
-  packages.map((pkg) => [
+  allPackages.map((pkg) => [
     pkg.manifest.name,
     workspaceDependencyNames(pkg.manifest, knownNames, [
       'dependencies',
@@ -34,6 +35,7 @@ const dependencies = new Map(
     ]),
   ]),
 );
+const packages = buildPackageSelection(allPackages, dependencies, process.argv.slice(2));
 const { cpus, memoryBytes } = runnerResources();
 const concurrency = Number(
   process.env.FORGEAX_PACKAGE_BUILD_CONCURRENCY ??

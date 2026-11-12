@@ -52,4 +52,16 @@ describe('IBL irradiance payload contract', () => {
       /irradianceFiniteVec3\(sampleVec\)[\s\S]*irradianceFiniteVec3\(sampleColor\)[\s\S]*irradianceFiniteScalar\(sampleWeight\)/,
     );
   });
+
+  it('integrates a band-limited PMREM level instead of point-sampling the full cube', () => {
+    // Regression: a 2.9 degree point-sample grid over the full-resolution
+    // cube aliased an HDR sun disc into blocky speckles on diffuse surfaces.
+    // three.js reads its PMREM at roughness 1 for diffuse for the same reason.
+    expect(irradianceSource).toMatch(/var envPmrem:\s*texture_2d<f32>/);
+    expect(irradianceSource).not.toMatch(/texture_cube/);
+    expect(irradianceSource).toMatch(/const IRRADIANCE_SOURCE_MIP:\s*f32\s*=\s*4\.0/);
+    expect(irradianceSource).toMatch(
+      /samplePmremLevel\(\s*envPmrem,\s*envSamplerS,\s*sampleVec,\s*IRRADIANCE_SOURCE_MIP/,
+    );
+  });
 });

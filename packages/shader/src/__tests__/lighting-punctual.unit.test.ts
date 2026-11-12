@@ -91,14 +91,14 @@ describe('direct punctual lighting shader contract', () => {
     expect(brdf).toContain('energyLoss * favg * favg + vec3<f32>(1e-6)');
     expect(brdf).not.toContain('energyLoss * favg + vec3<f32>(1e-6)');
     expect(source).toContain(
-      'standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,',
+      'standardOpaqueBrdfFromView(baseColor, metallic, directAlpha, F0, ms, nDotL, nDotH, vDotH,',
     );
     expect(brdf).toContain('directMultiScatter(sqrt(max(alpha, 0.0)), nDotV, nDotL, f0,');
     expect(brdf).toContain('return (1.0 - metallic) * baseColor / 3.14159265 + specular;');
     expect(source).toContain('evalDistanceAttenuation(dSquared, invRangeSquared, decay, 1e-4)');
     expect(source).not.toContain('let kd = (vec3<f32>(1.0) - f) * (1.0 - metallic);');
     expect(directional).toContain(
-      'standardOpaqueBrdf(baseColor, metallic, alphaSq, F0, nDotV, nDotL, nDotH, vDotH,',
+      'standardOpaqueBrdfEnergy(baseColor, metallic, directAlpha, F0, nDotV, nDotL, nDotH, vDotH, dEnergy,',
     );
     expect(directional).not.toContain('THREE_R184_DFG_LUT');
   });
@@ -187,5 +187,69 @@ describe('direct punctual lighting shader contract', () => {
     expect(pbr).toContain('#ifdef DIFFUSE_TRANSMISSION_AVAILABLE');
     expect(pbr).toContain('diffuseAlbedo = diffuseAlbedo * (1.0 - diffuseTransmissionFactor);');
     expect(pbr).toMatch(/directionalShadowNormal = select\(receiverNormal, -receiverNormal,/);
+  });
+});
+
+describe('exact-zero light reach gates', () => {
+  it('derives the range gate from the attenuation window and the cone gate from evalSpotCone', async () => {
+    const [source, attenuation] = await Promise.all([
+      readFile(shaderPath, 'utf8'),
+      readFile(join(dirname(shaderPath), 'lighting-attenuation.wgsl'), 'utf8'),
+    ]);
+    // The gate must use the same floored distance as the window it predicts.
+    expect(attenuation).toContain(
+      'let window = clamp(1.0 - (safeDistance * invRangeSquared) * (safeDistance * invRangeSquared), 0.0, 1.0);',
+    );
+    const range = source.slice(source.indexOf('fn punctualRangeReaches('));
+    const rangeBody = range.slice(0, range.indexOf('\n}'));
+    expect(rangeBody).toContain('let dSquared = max(dot(toLight, toLight), 1e-4);');
+    // NaN-preserving: a NaN product still reaches the evaluator.
+    expect(rangeBody).toContain('return !(dSquared * invRangeSquared >= 1.0);');
+    const cone = source.slice(source.indexOf('fn spotConeReaches('));
+    const coneBody = cone.slice(0, cone.indexOf('\n}'));
+    expect(coneBody).toContain('normalize(lightPos - worldPos)');
+    expect(coneBody).toContain('!(evalSpotCone(cosInner, cosOuter, dot(l, -lightDir)) == 0.0)');
+  });
+
+  it('skips shadow taps only when the unshadowed body is exactly zero', async () => {
+    const source = await readFile(shaderPath, 'utf8');
+    const point = source.slice(source.indexOf('fn evalPointShadowed('));
+    expect(point.indexOf('if (all(lit == vec3<f32>(0.0))) { return lit; }')).toBeGreaterThan(0);
+    expect(point.indexOf('if (all(lit == vec3<f32>(0.0))) { return lit; }')).toBeLessThan(
+      point.indexOf('sample_shadow_cube_vogel('),
+    );
+    const spot = source.slice(source.indexOf('fn evalSpotShadowed('));
+    expect(spot.indexOf('if (all(body == vec3<f32>(0.0))) { return body; }')).toBeGreaterThan(0);
+    expect(spot.indexOf('if (all(body == vec3<f32>(0.0))) { return body; }')).toBeLessThan(
+      spot.indexOf('sample_shadow_2d_punctual('),
+    );
+  });
+
+  it.each([
+    'standard-cluster.wgsl',
+    'hdrp-cluster-forward.wgsl',
+  ])('gates point and spot members in %s before any per-light shading', async (name) => {
+    const source = await readFile(join(dirname(shaderPath), name), 'utf8');
+    const body = source.slice(source.indexOf('fn evaluate_cluster_light('));
+    const rangeGate = body.indexOf(
+      '!punctualRangeReaches(light.position.xyz, world_pos, light.position.w)',
+    );
+    expect(rangeGate).toBeGreaterThan(0);
+    expect(rangeGate).toBeLessThan(body.indexOf('if (kind == KIND_POINT) {'));
+    const spot = body.slice(body.indexOf('if (kind == KIND_SPOT) {'));
+    expect(spot.indexOf('!spotConeReaches(')).toBeGreaterThan(0);
+    expect(spot.indexOf('!spotConeReaches(')).toBeLessThan(spot.indexOf('evalSpotShadowed('));
+  });
+
+  it('looks the standard cluster cell up from the fragment screen position', async () => {
+    const source = await readFile(standardClusterShaderPath, 'utf8');
+    const body = source.slice(source.indexOf('fn evaluateStandardClusterLights('));
+    // The screen-linear NDC comes from @builtin(position) and the View
+    // viewport, not the interpolated NDC varying or a per-pixel reprojection.
+    const screen = body.indexOf('pixel / vec2<f32>(view.viewportWidth, view.viewportHeight)');
+    expect(screen).toBeGreaterThan(0);
+    expect(body).not.toContain('view.worldViewProj * vec4<f32>(world_pos, 1.0)');
+    expect(body).toContain('ndc_position_to_cluster(fragment_ndc,');
+    expect(screen).toBeLessThan(body.indexOf('ndc_position_to_cluster(fragment_ndc,'));
   });
 });

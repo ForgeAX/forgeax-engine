@@ -221,12 +221,81 @@ The managed shell exposes this stable particle surface:
 
 Author modules must define exactly `vfx_spawn` and `vfx_update`. They must not declare shader stages, bind groups, bindings, or `forgeax_vfx_*` symbols. Reuse behavior with ordinary shader `#import`; imports are composed and validated at cook time.
 
+## Time and instance parameters
+
+Both `VfxSpawnContext` and `VfxUpdateContext` carry time, so a program never
+needs to reconstruct it from `particle.age`:
+
+| Field | Meaning |
+|:--|:--|
+| `ctx.time` | Player elapsed seconds (f32). Respects `timeScale` and pause. |
+| `ctx.time_whole`, `ctx.time_fract` | The same elapsed time split into a `u32` whole-second part and an `f32` fraction. |
+| `ctx.world_time`, `ctx.world_time_whole`, `ctx.world_time_fract` | World-clock seconds advanced by unscaled frame time. It keeps running while the Player is paused or scaled. |
+| `ctx.delta` | Step delta. |
+
+Precision: the host keeps elapsed time in f64 and uploads the split pair, so the
+fraction stays exact for hours. Use `ctx.time` for short effects. For looping
+visuals use `vfx_loop_phase(ctx.time_whole, ctx.time_fract, rate, offset)`
+(cycles per second, result in [0, 1)); it multiplies the whole seconds in wrapping
+u32 fixed point and loses no frame resolution after long sessions. A particle
+that never expires uses `lifetime = vfx_forever()` instead of an arbitrary
+huge literal.
+
+Instance parameters are typed values declared once on the effect and read in any
+emitter through `vfx_parameters()`:
+
+```ts
+defineParticleEffectSourceV3({
+  schemaVersion: 3,
+  parameters: {
+    at: { type: 'vec4<f32>', default: [0, 0, 0, 1] }, // xyz position, w scale
+    opacity: { type: 'f32', default: 0.4 },
+  },
+  emitters: [/* ... */],
+});
+```
+
+```wgsl
+fn vfx_spawn(ctx: VfxSpawnContext, particle: ptr<function, VfxParticle>) {
+  (*particle).position = vfx_parameters().at.xyz;
+}
+```
+
+Supported types are the scalar and vector types reflected for `VfxParameters`.
+Types may be spelled `vec4<f32>` or the material-style `vec4` (likewise `vec2`, `vec3`); both mean the f32 vector. Names must be identifiers and at most 32 parameters (`VFX_PARAMETER_MAX`) are allowed. An emitter that
+declares its own `VfxParameters` struct together with an effect `parameters`
+table fails with a compile error; use one or the other.
+
+Override per Player at runtime or in scene/pack authoring with the string field
+`ParticleEffectPlayer.parameters`, a JSON object of name to value:
+
+```ts
+world.spawn({
+  component: ParticleEffectPlayer,
+  data: { effect, playing: true, parameters: vfxPlayerParameters({ at: [-138.5, -5, 36.2, 9.5] }) },
+});
+```
+
+An unknown name, a wrong type or a non-finite value is reported through the
+`vfx-parameters-invalid` diagnostic and the Player keeps the effect defaults.
+`validateVfxPlayerParameters(json, fields)` performs the same check offline, for
+example in a pack or scene validator; `fields` is the effect's declared parameter list
+(`{ name, type }[]`). A change on a paused Player is validated and applied immediately,
+and takes visible effect when it plays. The unknown-name error carries `detail.parameter`
+(the offending name) and `detail.validNames`.
+
+Diagnostics are read from the runtime resource:
+`world.getResource('VfxGpuRuntime').diagnostics()` returns every active `vfx-*` code with
+its `detail`. Nothing else surfaces them yet, so poll it in tests and tools after
+`world.update`. Parameters changed on a live Player are
+applied on the next frame without restarting it.
+
 ## Load and play
 
 ```ts
 import { loadVfxGpuEffect, ParticleEffectPlayer } from '@forgeax/engine-vfx';
 
-const loaded = await loadVfxGpuEffect(assets, EFFECT_GUID);
+const loaded = await loadVfxGpuEffect(assets, EFFECT_GUID); // string or AssetGuid
 if (!loaded.ok) return loaded;
 
 const effect = loaded.value;

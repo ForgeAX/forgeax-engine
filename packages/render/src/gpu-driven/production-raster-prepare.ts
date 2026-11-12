@@ -23,6 +23,7 @@ import type {
   GpuDrivenCandidate,
   SubmissionPlan,
 } from './batch-topology';
+import { captureGpuMaterialBindings } from './captured-material-bindings';
 import { GpuDrawSelection } from './draw-selection';
 import { fixedTaskPlan } from './fixed-task-plan';
 import { capturedPreparedMaterialArtifactKey } from './prepared-draw';
@@ -365,20 +366,6 @@ export function groupForPartition(
   };
 }
 
-function filteredMaterialBindings(batches: readonly PreparedBatch[]) {
-  return Object.freeze(
-    batches.map(({ batch, materialBindingClass }) => {
-      const binding = batch.binding;
-      if (binding === undefined) throw new Error('Prepared batch has no shared material binding');
-      return Object.freeze({
-        material: binding.material,
-        worldId: binding.worldId,
-        resourceClass: materialBindingClass,
-      });
-    }),
-  );
-}
-
 export function assembleFilteredGroups(
   source: SubmissionPlan,
   batches: readonly PreparedBatch[],
@@ -416,16 +403,16 @@ export function assembleFilteredGroups(
   });
   const plan = fixedMembership ? fixedTaskPlan(captured) : captured;
   const ownedBatches = Object.freeze([...batches]);
-  let materialBindings: ReturnType<typeof filteredMaterialBindings> | undefined;
+  let materialBindings: ReturnType<typeof captureGpuMaterialBindings> | undefined;
   return {
     plan,
     batches: ownedBatches,
     get materialBindings() {
-      materialBindings ??= filteredMaterialBindings(ownedBatches);
+      materialBindings ??= captureGpuMaterialBindings(ownedBatches);
       return materialBindings;
     },
     materialBatches: Object.freeze([...materialBatches.values()]),
-    selection: new GpuDrawSelection(batches.map((batch) => batch.batch)),
+    selection: GpuDrawSelection.fixed(batches.map((batch) => batch.batch)),
   };
 }
 
@@ -646,25 +633,4 @@ export class BatchPreparation {
         readonly inputs?: PreparedAssemblyInputs;
       }
     | undefined;
-}
-
-/** Current artifact facts use the original canonical signature. */
-export function shadowArtifactSignature(
-  artifact: MaterialShaderArtifact | undefined,
-): string | undefined {
-  if (artifact === undefined) return undefined;
-  return JSON.stringify([
-    artifact.material,
-    artifact.pass,
-    artifact.layoutIdentity,
-    artifact.receipt?.receiptIdentity ?? '',
-    artifact.receipt?.generation ?? 0,
-    artifact.variantSet ?? '',
-    materialArtifactProgramIdentity(artifact),
-    artifact.receipt?.sceneIndexEntry ?? '',
-    artifact.vertexEntry ?? artifact.receipt?.sceneIndexEntry ?? '',
-    artifact.fragmentEntry ?? '',
-    artifact.uvSetCount ?? -1,
-    artifact.reflectionFallbackOutputAvailable === true,
-  ]);
 }

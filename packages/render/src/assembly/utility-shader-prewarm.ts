@@ -23,9 +23,20 @@ export const SSR_SHADER_STAGES = [
   ['compose', 'ssr_compose', 'vs_ssr_compose'],
 ] as const satisfies readonly UtilityShaderStage<keyof SsrShaderSources>[];
 
+const DEPTH_PYRAMID_FRAGMENT_STAGES = [
+  ['seed', 'depth_pyramid_seed_fragment', 'depth_pyramid_seed_fragment'],
+  ['reduce', 'depth_pyramid_reduce_fragment', 'depth_pyramid_reduce_fragment'],
+] as const;
+const SSR_FRAGMENT_STAGES = [
+  ['trace', 'ssr_trace_fragment', 'ssr_trace_fragment'],
+  ['temporal', 'ssr_temporal_fragment', 'ssr_temporal_fragment'],
+  ['compose', 'ssr_compose_fragment', 'vs_ssr_compose_fragment'],
+] as const;
+
 export const ATMOSPHERE_SHADER_STAGES = [
   ['compose', 'atmosphere_compose', 'atmosphere_compose_vs'],
   ['luts', 'atmosphere_luts', 'atmosphere_transmittance'],
+  ['lutsFragment', 'atmosphere_luts_fragment', 'atmosphere_tables_vs'],
   ['cube', 'atmosphere_cube', 'atmosphere_cubemap_vs'],
   ['background', 'atmosphere_background', 'atmosphere_background_vs'],
   ['ibl', 'atmosphere_ibl', 'atmosphere_ibl_vs'],
@@ -88,17 +99,18 @@ export async function prewarmSsrWithDepthPyramid(
   entries: readonly ManifestEntry[],
   compile: (label: string, source: string | ShaderSource, bundle: string) => Promise<ShaderModule>,
   seed: SeedShaderModule,
+  execution: 'compute' | 'fragment' = 'compute',
 ): Promise<{ ssr: SsrShaderSources; pyramid: DepthPyramidShaderSources } | undefined> {
   const pyramid = await prewarmUtilityShaders(
     'depth pyramid',
-    DEPTH_PYRAMID_SHADER_STAGES,
+    execution === 'fragment' ? DEPTH_PYRAMID_FRAGMENT_STAGES : DEPTH_PYRAMID_SHADER_STAGES,
     entries,
     (label, source) => compile(label, source, 'depth pyramid'),
     seed,
   );
   const ssr = await prewarmUtilityShaders(
     'SSR',
-    SSR_SHADER_STAGES,
+    execution === 'fragment' ? SSR_FRAGMENT_STAGES : SSR_SHADER_STAGES,
     entries,
     (label, source) => compile(label, source, 'SSR'),
     seed,
@@ -111,5 +123,15 @@ export async function prewarmSsrWithDepthPyramid(
       hint: "add 'depth_pyramid_seed' and 'depth_pyramid_reduce' to the engine shader manifest",
     });
   }
-  return { ssr, pyramid };
+  return execution === 'compute'
+    ? { ssr, pyramid }
+    : {
+        ssr: {
+          ...ssr,
+          traceFragment: ssr.trace,
+          temporalFragment: ssr.temporal,
+          composeFragment: ssr.compose,
+        },
+        pyramid: { ...pyramid, seedFragment: pyramid.seed, reduceFragment: pyramid.reduce },
+      };
 }

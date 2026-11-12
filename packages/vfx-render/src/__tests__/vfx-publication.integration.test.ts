@@ -1580,7 +1580,7 @@ function materialColor(planned: Parameters<typeof planResources>[0]) {
   );
   if (runtime?.kind !== 'buffer' || !(runtime.data instanceof Uint8Array))
     throw new Error('Expected the actual particle projection runtime buffer');
-  return [...new Float32Array(runtime.data.buffer, runtime.data.byteOffset, 76).slice(32, 36)];
+  return [...new Float32Array(runtime.data.buffer, runtime.data.byteOffset, 80).slice(32, 36)];
 }
 
 it('omits duplicated cooked records while keeping mutable authored VFX material values current', async () => {

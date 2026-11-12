@@ -5,6 +5,10 @@ import {
   STANDARD_TRANSMISSION_PARAMETER_NAMES,
 } from './standard-layer-plan.js';
 
+/** Closed `displacementMode` domain: authors name the technique, the ABI carries its u32. */
+export const STANDARD_DISPLACEMENT_MODES = { vertex: 0, parallax: 1 } as const;
+export type StandardDisplacementMode = keyof typeof STANDARD_DISPLACEMENT_MODES;
+
 /** The single Standard material parameter vocabulary shared by shader, cookers, and importers. */
 export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'baseColor', type: 'color', default: [1, 1, 1, 1] },
@@ -68,6 +72,8 @@ export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   { name: 'alphaTexture', type: 'texture2d' },
   { name: 'displacementScale', type: 'f32', default: 1 },
   { name: 'displacementBias', type: 'f32', default: 0 },
+  // Closed technique selector over the same height: 0 = vertex, 1 = parallax occlusion.
+  { name: 'displacementMode', type: 'u32', default: 0 },
   { name: 'displacementTexture', type: 'texture2d' },
   { name: 'diffuseTransmission', type: 'f32', default: 0 },
   { name: 'diffuseTransmissionColor', type: 'vec3', colorSpace: 'linear', default: [1, 1, 1] },
@@ -84,6 +90,9 @@ export const STANDARD_MATERIAL_PARAM_SCHEMA: readonly ParamSchemaEntry[] = [
   // Optional resource capability: 0 uses the fit, nonzero samples the shared LUT.
   // Declaration is explicit; no baseline or canonical material acquires this field.
   { name: 'directMultiscatteringLut', type: 'u32', default: 1 },
+  // Optional resource capability: the declaration alone mirrors the camera PlanarReflection on its
+  // plane (GPU Scene rows do not carry it). Explicit and forward-only; no baseline material acquires it.
+  { name: 'planarReflection', type: 'u32', default: 1 },
 ] as const;
 
 /**
@@ -98,6 +107,7 @@ export const STANDARD_SURFACE_PARAM_SCHEMA: readonly ParamSchemaEntry[] =
     (entry) =>
       !entry.type.startsWith('texture') &&
       entry.name !== 'directMultiscatteringLut' &&
+      entry.name !== 'planarReflection' &&
       entry.name !== 'flatShading' &&
       !STANDARD_PHYSICAL_PARAMETER_NAMES.has(entry.name) &&
       (!STANDARD_TRANSMISSION_PARAMETER_NAMES.has(entry.name) || entry.name === 'ior'),

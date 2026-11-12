@@ -3,12 +3,6 @@ import type { RhiCommandEncoder, RhiDevice } from '@forgeax/engine-rhi';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  type FrameRecording,
-  profileFrameRecording,
-  recordFrameTransaction,
-  submitFrameRecordings,
-} from '../assembly/frame-recording';
 import { Camera } from '../components/camera';
 import { CAMERA_VIEW_DEFAULTS, CameraView, cameraViewExtent } from '../components/camera-view';
 import { PlanarReflection } from '../components/planar-reflection';
@@ -17,12 +11,22 @@ import { createRenderFeatureHost } from '../features/host';
 import type { RenderFeature } from '../features/types';
 import { renderComponentsPlugin } from '../plugin';
 import {
+  cameraForView,
   prepareExtractContext,
   projectAuxiliaryCamerasForView,
   selectCameraRoles,
 } from '../render-system-extract';
 import { extractFrame } from '../render-system-extract-tail';
 import { createRenderTargetOwner } from '../targets/owner';
+import { stageRecordedFeatureGraph } from '../world/feature-systems';
+import { createRenderWorld, renderSubmission } from '../world/render-world';
+import { abortFeatureFrame, prepareFeatureFrame, submitFeatureFrame } from './feature-frame-driver';
+import {
+  type FrameRecording,
+  profileFrameRecording,
+  recordFrameTransaction,
+  submitFrameRecordings,
+} from './frame-recording-driver';
 
 function fixture(fail: 'none' | 'finish' | 'submit' = 'none') {
   const finish = vi.fn(() =>
@@ -30,11 +34,23 @@ function fixture(fail: 'none' | 'finish' | 'submit' = 'none') {
   );
   const submit = vi.fn(() =>
     fail === 'submit'
-      ? { ok: false, error: { code: 'submit-failure' } }
+      ? {
+          ok: false,
+          error: {
+            code: 'submit-failure',
+            expected: 'queue accepts the command buffer',
+            hint: 'inspect queue failure',
+          },
+        }
       : { ok: true, value: undefined },
   );
   const encoder = { finish } as unknown as RhiCommandEncoder;
-  const device = { queue: { submit } } as unknown as RhiDevice;
+  // RenderRecord opens `encoder`: the one encoder of the submission.
+  const device = {
+    queue: { submit, onSubmittedWorkDone: () => Promise.resolve() },
+    createCommandEncoder: () => ({ ok: true, value: encoder }),
+  } as unknown as RhiDevice;
+  const input = { world: createRenderWorld(), device };
   const committed: number[] = [],
     aborted: number[] = [],
     encoded: number[] = [];
@@ -50,18 +66,22 @@ function fixture(fail: 'none' | 'finish' | 'submit' = 'none') {
         commit: () => committed.push(id),
         abort: () => aborted.push(id),
       },
-      { encoder, device, reportError: () => undefined },
+      { reportError: () => undefined },
     );
     return result.ok;
   }
-  return { finish, submit, committed, aborted, encoded, record };
+  const submitAll = (
+    recordings: readonly FrameRecording[],
+    afterEncode?: (encoder: RhiCommandEncoder) => boolean,
+  ) => submitFrameRecordings({ ...input, afterEncode }, recordings);
+  return { finish, submit, committed, aborted, encoded, record, submitAll };
 }
 
 describe('multi-camera submission barrier', () => {
   it('encodes all views before one finish/submit and commits each only afterwards', () => {
     const f = fixture();
     expect(
-      submitFrameRecordings([f.record(1), f.record(2)], () => {
+      f.submitAll([f.record(1), f.record(2)], () => {
         expect(f.encoded).toEqual([1, 2]);
         expect(f.committed).toEqual([]);
         return true;
@@ -78,19 +98,62 @@ describe('multi-camera submission barrier', () => {
   ] as const)('keeps every history unchanged after %s fails', (failure) => {
     const f = fixture(failure);
     if (failure === 'submit')
-      expect(() => submitFrameRecordings([f.record(1), f.record(2)])).toThrowError(
+      expect(() => f.submitAll([f.record(1), f.record(2)])).toThrowError(
         expect.objectContaining({
           code: 'frame-submit-rejected',
-          detail: { operation: 'draw', stage: 'submit', accepted: false },
+          detail: expect.objectContaining({
+            operation: 'draw',
+            stage: 'submit',
+            accepted: false,
+            cause: expect.objectContaining({
+              code: 'submit-failure',
+              expected: 'queue accepts the command buffer',
+              hint: 'inspect queue failure',
+            }),
+          }),
         }),
       );
-    else expect(submitFrameRecordings([f.record(1), f.record(2)])).toBe(false);
+    else expect(f.submitAll([f.record(1), f.record(2)])).toBe(false);
     expect(f.committed).toEqual([]);
     expect(f.aborted).toEqual([1, 2]);
   });
+  it.each([
+    false,
+    true,
+  ])('retains a stale input cause and rejects without queue acceptance (diagnostic throws=%s)', (diagnosticThrows) => {
+    const f = fixture();
+    const cause = {
+      code: 'fixture-stale-input',
+      expected: 'accepted input remains current',
+      hint: 'reprepare input',
+    };
+    function* record(): FrameRecording {
+      const result = yield {
+        reportError: () => undefined,
+        isCurrent: () => false,
+        rejectionCause: () => {
+          if (diagnosticThrows) throw Error('diagnostic failed');
+          return cause;
+        },
+      };
+      return result.ok;
+    }
+    expect(() => f.submitAll([record()])).toThrowError(
+      expect.objectContaining({
+        code: 'frame-submit-rejected',
+        detail: expect.objectContaining({
+          accepted: false,
+          cause: expect.objectContaining({
+            code: diagnosticThrows ? 'frame-generation-stale' : cause.code,
+          }),
+        }),
+      }),
+    );
+    expect(f.submit).not.toHaveBeenCalled();
+  });
   it('aborts a previously encoded camera if a later camera cannot encode', () => {
     const f = fixture();
-    expect(submitFrameRecordings([f.record(1), f.record(2, true)])).toBe(false);
+    expect(f.submitAll([f.record(1), f.record(2, true)])).toBe(false);
     expect(f.submit).not.toHaveBeenCalled();
     expect(f.committed).toEqual([]);
     expect(f.aborted.sort()).toEqual([1, 2]);
@@ -98,7 +161,7 @@ describe('multi-camera submission barrier', () => {
   it('keeps profiling around active segments of the same recording', () => {
     const f = fixture(),
       run = vi.fn((action: () => unknown) => action());
-    expect(submitFrameRecordings([profileFrameRecording(f.record(1), run as never)])).toBe(true);
+    expect(f.submitAll([profileFrameRecording(f.record(1), run as never)])).toBe(true);
     expect(run).toHaveBeenCalledTimes(2);
     expect(f.committed).toEqual([1]);
   });
@@ -144,18 +207,16 @@ describe('one feature host for the complete view roster', () => {
     const f = producer(),
       host = createRenderFeatureHost([f.feature]).unwrap();
     try {
-      const batch = host.runFrame(inputs());
+      prepareFeatureFrame(host, inputs());
       expect(f.extract).toHaveBeenCalledTimes(1);
       expect(f.plan).toHaveBeenCalledWith(
         ['left', 'right'],
         expect.objectContaining({ views: expect.any(Array) }),
       );
-      for (const view of batch.views.values()) view.onSubmitted();
       expect(f.submitted).not.toHaveBeenCalled();
       expect(f.acknowledged).not.toHaveBeenCalled();
-      batch.frame.onSubmitted();
-      batch.onSubmitted();
-      batch.onSubmitted();
+      submitFeatureFrame(host);
+      submitFeatureFrame(host);
       expect(f.submitted).toHaveBeenCalledTimes(1);
       expect(
         f.submitted.mock.calls[0]?.[1].works.map((work: { scope: unknown }) => work.scope),
@@ -169,16 +230,20 @@ describe('one feature host for the complete view roster', () => {
     const f = producer(),
       host = createRenderFeatureHost([f.feature]).unwrap();
     try {
-      const rejected = host.runFrame(inputs());
-      rejected.views.get('left')?.onSubmitted();
-      rejected.onAborted();
-      rejected.onSubmitted();
+      const rejected = prepareFeatureFrame(host, inputs());
+      stageRecordedFeatureGraph(host.world, {
+        kind: 'empty',
+        frame: renderSubmission(host.world).frame,
+        generation: renderSubmission(host.world).generation,
+        view: undefined,
+        plans: rejected.views.get('left')?.plans ?? [],
+      });
+      abortFeatureFrame(host);
+      submitFeatureFrame(host);
       expect(f.aborted).toHaveBeenCalledTimes(1);
       expect(f.acknowledged).not.toHaveBeenCalled();
-      const retry = host.runFrame(inputs().reverse());
-      retry.frame.onSubmitted();
-      for (const view of retry.views.values()) view.onSubmitted();
-      retry.onSubmitted();
+      prepareFeatureFrame(host, inputs().reverse());
+      submitFeatureFrame(host);
       expect(f.submitted).toHaveBeenCalledTimes(1);
       expect(f.acknowledged).toHaveBeenCalledExactlyOnceWith(['right', 'left'], { tick: 1 });
     } finally {
@@ -190,7 +255,8 @@ describe('one feature host for the complete view roster', () => {
       host = createRenderFeatureHost([f.feature]).unwrap();
     const acknowledge = vi.fn();
     try {
-      const batch = host.runFrame(
+      const batch = prepareFeatureFrame(
+        host,
         inputs().map((input) => ({
           ...input,
           publishedFeatures: [{ identity: f.feature.identity, data: ['left', 'right'] }],
@@ -199,9 +265,8 @@ describe('one feature host for the complete view roster', () => {
       );
       expect(f.extract).not.toHaveBeenCalled();
       expect(f.plan).toHaveBeenCalledTimes(1);
-      batch.frame.onSubmitted();
-      for (const view of batch.views.values()) view.onSubmitted();
-      batch.onSubmitted();
+      expect(batch.frame.errors).toEqual([]);
+      submitFeatureFrame(host);
       expect(acknowledge).toHaveBeenCalledExactlyOnceWith(f.feature.identity, { tick: 1 });
       expect(f.acknowledged).not.toHaveBeenCalled();
     } finally {
@@ -228,12 +293,14 @@ it('derives split and scaled extents before camera frustum extraction without ch
     renderWidth: 200,
     renderHeight: 200,
   });
+  const viewExtent = { width: extent.renderWidth, height: extent.renderHeight };
+  const resolved = cameraForView(selectCameraRoles(world).display, Number(camera), viewExtent);
   const frame = extractFrame(
     world,
     prepareExtractContext(world, {
       cameraEntityKey: Number(camera),
       renderables: 'none',
-      viewExtent: { width: extent.renderWidth, height: extent.renderHeight },
+      view: { extent: viewExtent, camera: resolved },
     }),
   );
   expect(frame.cameras[0]?.aspect).toBe(1);
@@ -267,7 +334,9 @@ it('retains planar auxiliary cameras when CameraView selects a display extent', 
     })
     .unwrap();
   propagateTransforms(world).unwrap();
-  const roles = selectCameraRoles(world, Number(display), { width: 320, height: 180 });
+  const extent = { width: 320, height: 180 };
+  const camera = cameraForView(selectCameraRoles(world).display, Number(display), extent);
+  const roles = selectCameraRoles(world, Number(display), { extent, camera });
   expect(roles.display).toHaveLength(1);
   expect(roles.auxiliary).toHaveLength(1);
   expect(roles.auxiliary[0]?.planarReflection).toBeDefined();
@@ -300,7 +369,9 @@ it('does not schedule a target CameraView again as an auxiliary capture', () => 
     )
     .unwrap();
   propagateTransforms(world).unwrap();
-  const roles = selectCameraRoles(world, Number(display), { width: 64, height: 64 });
+  const extent = { width: 64, height: 64 };
+  const camera = cameraForView(selectCameraRoles(world).display, Number(display), extent);
+  const roles = selectCameraRoles(world, Number(display), { extent, camera });
   expect(roles.display.map((camera) => camera.entityKey)).toEqual([Number(display)]);
   expect(roles.auxiliary).toEqual([]);
 });
@@ -314,7 +385,7 @@ it('preserves a structured view failure after finalizing the frame', () => {
   }
   let failure: unknown;
   try {
-    submitFrameRecordings([rejected(), f.record(2)]);
+    f.submitAll([rejected(), f.record(2)]);
   } catch (cause) {
     failure = cause;
   }
@@ -331,7 +402,7 @@ it('aggregates multiple failures after draining every view continuation', () => 
   }
   let failure: unknown;
   try {
-    submitFrameRecordings([rejected(0), rejected(1), f.record(3)]);
+    f.submitAll([rejected(0), rejected(1), f.record(3)]);
   } catch (cause) {
     failure = cause;
   }
@@ -347,7 +418,7 @@ it('drains the remaining view continuations even if one commit throws', () => {
     yield* f.record(1);
     throw new Error('commit failed');
   }
-  expect(() => submitFrameRecordings([throwing(), f.record(2)])).toThrow('commit failed');
+  expect(() => f.submitAll([throwing(), f.record(2)])).toThrow('commit failed');
   expect(f.committed).toEqual([1, 2]);
 });
 

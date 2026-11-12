@@ -38,7 +38,7 @@ export async function buildWorkerProbe({ engineRoot, out, runId, appid = 'touris
     'options.js': Buffer.from(`module.exports=${JSON.stringify(options)};\n`),
     'game.json': Buffer.from(`${JSON.stringify({ deviceOrientation: 'landscape', workers: 'workers' })}\n`),
     'project.config.json': Buffer.from(`${JSON.stringify({ appid, compileType: 'game',
-      projectname: 'ForgeaX Worker capability probe', setting: { es6: false, enhance: false, minified: false, urlCheck: false } }, null, 2)}\n`),
+      projectname: 'ForgeAX Worker capability probe', setting: { es6: false, enhance: false, minified: false, urlCheck: false } }, null, 2)}\n`),
   };
   const files = Object.fromEntries(Object.entries(outputs).map(([name, bytes]) => [name, { bytes: bytes.length, sha256: hash(bytes) }]));
   const manifest = { kind: 'forgeax-worker-probe-build', schema: 1, runId, source, timeoutMs, files };

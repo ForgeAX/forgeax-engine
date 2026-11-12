@@ -157,9 +157,12 @@ struct Out { @builtin(position) position: vec4f, @location(0) value: vec3f };
   try {
     expect(await render(old)).toEqual([0, 0, 0, 255]);
     const green = edit(0, 1, 0);
-    expect(indexed ? green.indexBuffer : green.vertexBuffer).not.toBe(
-      indexed ? old.indexBuffer : old.vertexBuffer,
-    );
+    expect(
+      Object.is(
+        indexed ? green.indexBuffer : green.vertexBuffer,
+        indexed ? old.indexBuffer : old.vertexBuffer,
+      ),
+    ).toBe(false);
     expect(await render(green)).toEqual([0, 255, 0, 255]);
     expect(await render(sibling)).toEqual([0, 0, 0, 255]);
     expect(await render(old)).toEqual([0, 0, 0, 255]);

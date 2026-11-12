@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createGlobalSdfComposition } from '../../raytracing/global-sdf';
 import { GlobalSdfQueryStatus as GlobalStatus } from '../../raytracing/global-sdf-query';
 import { packReferenceRays, type ReferenceRay } from '../../raytracing/scene';
@@ -226,15 +227,18 @@ export async function verifySoftwareSdfQuery(
             [2, p.global, 3],
           ] as const) {
             expect(
-              (await replay.readResourceAtWork(binding(work, b), work)).unwrap().bytes,
-            ).toEqual(outputs[p.case]?.[part]);
+              equalBytes(
+                (await replay.readResourceAtWork(binding(work, b), work)).unwrap().bytes,
+                outputs[p.case]?.[part],
+              ),
+            ).toBe(true);
           }
       } else {
         const actual = (await replay.readResourceAtWork(binding(3, 2), 3)).unwrap().bytes,
           a = view(actual);
         if (skip === 1)
           expect(rays.map((_, i) => a.getUint32(i * 48 + 32, true))).toEqual(rays.map(() => 0));
-        if (skip === 2) expect(actual).toEqual(packReferenceRays(rays).unwrap());
+        if (skip === 2) expect(equalBytes(actual, packReferenceRays(rays).unwrap())).toBe(true);
         if (skip === 0) {
           const hits = (await replay.readResourceAtWork(binding(3, 3), 3)).unwrap().bytes;
           expect(view(hits).getUint32(0, true)).toBe(GlobalStatus.missingField);

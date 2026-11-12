@@ -120,6 +120,7 @@ export interface AppDetailExecutionWorkerUnavailable {
 export interface AppDetailExecutionBootstrapFailed {
   readonly phase: 'import' | 'export' | 'prepare' | 'bootstrap' | 'data';
   readonly moduleUrl: string;
+  readonly realmBoundOption?: string;
   readonly cause: unknown;
 }
 

@@ -1,12 +1,27 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { materialShaderSource } from '../manifest-publication';
+import { manifestShaderSource, materialShaderSource } from '../manifest-publication';
 import {
   materialShaderSourceEquals,
   readShaderManifestPublication,
   shaderSourceDigestInput,
 } from '../manifest-publication.js';
 import { ShaderRegistry } from '../ShaderRegistry';
+
+it('loads the publication source in native Node without a bundler resolver', () => {
+  const source = new URL('../manifest-publication.ts', import.meta.url).href;
+  expect(() =>
+    execFileSync(
+      process.execPath,
+      ['--input-type=module', '--eval', `await import(${JSON.stringify(source)})`],
+      {
+        timeout: 2000,
+        stdio: 'pipe',
+      },
+    ),
+  ).not.toThrow();
+});
 
 const nativeSubtle = crypto.subtle;
 
@@ -52,6 +67,35 @@ function publication() {
 }
 
 describe('shader publication admission', () => {
+  it('owns one immutable receipt per publication row before verification yields', async () => {
+    const receipt = { byteLength: 64, nested: { fields: ['position', 'normal'] } };
+    const input = {
+      ...publication(),
+      receipts: [receipt],
+      materialShaders: [
+        {
+          ...publication().materialShaders[0],
+          receiptIndex: 0,
+          variants: [{ ...publication().materialShaders[0]?.variants[0], receiptIndex: 0 }],
+        },
+      ],
+    };
+    const pending = readShaderManifestPublication(input);
+    receipt.nested.fields[0] = 'mutated';
+    const result = (await pending) as {
+      materialShaders: { receipt: typeof receipt; variants: { receipt: typeof receipt }[] }[];
+    };
+    const accepted = result.materialShaders[0]?.receipt;
+    expect(accepted?.nested.fields).toEqual(['position', 'normal']);
+    expect(accepted).not.toBe(receipt);
+    expect(Object.isFrozen(accepted?.nested.fields)).toBe(true);
+    expect(result.materialShaders[0]?.variants[0]?.receipt).toBe(accepted);
+    const next = (await readShaderManifestPublication(input)) as typeof result;
+    expect(next.materialShaders[0]?.receipt.nested.fields[0]).toBe('mutated');
+    expect(next.materialShaders[0]?.receipt).not.toBe(accepted);
+    expect(accepted?.nested.fields[0]).toBe('position');
+  });
+
   it('owns shared entry-read facts before awaiting and rejects invalid or unused references', async () => {
     const fields = ['roughness'];
     const reads = [
@@ -250,14 +294,15 @@ describe('shader publication admission', () => {
   });
   it('restores exact WGSL into program and material rows', async () => {
     expect(await readShaderManifestPublication(publication())).toEqual({
-      entries: [{ hash: 'a', bindings: '[]', wgsl }],
+      entries: [{ hash: 'a', bindings: '[]', sourceDigest: digest, wgsl }],
       materialShaders: [
         {
           identifier: 'material',
           sourcePath: 'material.wgsl',
           paramSchema: '[]',
+          sourceDigest: digest,
           composedWgsl: wgsl,
-          variants: [{ definesKey: '', defines: {}, composedWgsl: wgsl }],
+          variants: [{ definesKey: '', defines: {}, sourceDigest: digest, composedWgsl: wgsl }],
         },
       ],
     });
@@ -287,7 +332,9 @@ describe('shader publication admission', () => {
       materialShaders: [],
     };
     expect(await readShaderManifestPublication(value)).toEqual({
-      entries: [{ hash: 'ordered', bindings: '[]', wgsl: fragments.join('') }],
+      entries: [
+        { hash: 'ordered', bindings: '[]', sourceDigest: digest, wgsl: fragments.join('') },
+      ],
       materialShaders: [],
     });
     await expect(
@@ -347,7 +394,12 @@ describe('shader publication admission', () => {
       materialShaders: [],
     };
     expect(await readShaderManifestPublication(value)).toEqual({
-      entries: fragments.map((source, i) => ({ hash: String(i), bindings: '[]', wgsl: source })),
+      entries: fragments.map((source, i) => ({
+        hash: String(i),
+        bindings: '[]',
+        sourceDigest: digests[i],
+        wgsl: source,
+      })),
       materialShaders: [],
     });
     for (const index of [0, 16, 34]) {
@@ -406,7 +458,7 @@ describe('shader publication admission', () => {
     value.fragments[0] = '// modified while awaiting\n';
     value.fragments[128] = '// modified last source while awaiting\n';
     expect(await pending).toEqual({
-      entries: complete.map((wgsl) => ({ wgsl })),
+      entries: complete.map((wgsl, index) => ({ sourceDigest: digests[index], wgsl })),
       materialShaders: [],
     });
     expect(submitted).toHaveLength(258);
@@ -474,4 +526,31 @@ it('shares selected publication source storage through ordinary registration and
       })
       .materialProgram(source),
   ).toBe(program);
+});
+
+it('keeps lazy source getters detached and publication-local while sharing equal source references', async () => {
+  type Expanded = {
+    entries: { wgsl: string }[];
+    materialShaders: { composedWgsl: string; variants: { composedWgsl: string }[] }[];
+  };
+  const first = (await readShaderManifestPublication(publication())) as Expanded;
+  const second = (await readShaderManifestPublication(publication())) as Expanded;
+  const entry = first.entries[0],
+    row = first.materialShaders[0],
+    other = second.materialShaders[0];
+  if (!entry || !row || !other || !row.variants[0]) throw new Error('Missing source fixture');
+  const descriptor = Object.getOwnPropertyDescriptor(row, 'composedWgsl');
+  const entryDescriptor = Object.getOwnPropertyDescriptor(entry, 'wgsl');
+  expect(descriptor?.enumerable).toBe(true);
+  expect(descriptor?.set).toBeUndefined();
+  expect(descriptor?.get?.call(undefined)).toBe(wgsl);
+  expect(descriptor?.get?.call({ composedWgsl: 'foreign' })).toBe(wgsl);
+  expect(entryDescriptor?.get?.call(other)).toBe(wgsl);
+  expect(Object.create(row).composedWgsl).toBe(wgsl);
+  expect(JSON.parse(JSON.stringify(row)).composedWgsl).toBe(wgsl);
+  const selected = materialShaderSource(row);
+  expect(materialShaderSource(row.variants[0])).toBe(selected);
+  expect(manifestShaderSource(entry)).toBe(selected);
+  expect(materialShaderSource(other)).not.toBe(selected);
+  expect(selected.read()).toBe(wgsl);
 });

@@ -1,7 +1,7 @@
 // Reproduction of Bevy's ecs/system_closure example.
 //
 // Bevy registers ordinary closures, closures with persistent local state, and
-// closures that capture an outside value. ForgeaX keeps the same explicit
+// closures that capture an outside value. ForgeAX keeps the same explicit
 // capture boundary in SystemDescriptor.fn: the schedule owns invocation while
 // the closure owns only the state it intentionally captures.
 

@@ -4,6 +4,7 @@ import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgea
 import * as gpu from '@forgeax/engine-rhi-webgpu';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import { worldRenderResources } from '../publication/resource-scope';
 
@@ -137,7 +138,7 @@ export async function verifyTextureGenerations() {
       });
       const reads = (await replay.readAtWorks(requests)).unwrap();
       for (const [index, read] of reads.entries())
-        expect(read.unwrap().bytes).toEqual(results[index]);
+        expect(equalBytes(read.unwrap().bytes, results[index])).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       freshRaw.destroy();

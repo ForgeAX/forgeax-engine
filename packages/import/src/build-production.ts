@@ -51,6 +51,10 @@ import {
   produceSourcePackage,
   sourcePackageAssetsByGuid,
 } from './source-package.js';
+import {
+  createSourcePackageBuildDdc,
+  type SourcePackageBuildDdc,
+} from './source-package-build-product.js';
 import { sourceDeclarationForCatalogPath } from './source-path.js';
 
 export interface BuildProductionFailure {
@@ -90,6 +94,7 @@ export interface BuildProductionOptions {
   readonly sourceSnapshot?: ScriptablePackSourceSnapshot;
   /** Reuse producer-verified immutable products; publication remains current-generation work. */
   readonly buildCacheRoot?: string;
+  readonly producerIdentity?: string;
   readonly sink: BuildProductionSink;
   readonly fail: (failure: BuildProductionFailure) => Error;
 }
@@ -181,7 +186,7 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
   const maxConcurrency = packBuildConcurrency(
     {
       parallelism: availableParallelism(),
-      freeBytes: Math.min(freemem(), process.availableMemory?.() ?? Infinity),
+      freeBytes: process.availableMemory?.() ?? freemem(),
       heapHeadroomBytes: getHeapStatistics().heap_size_limit - process.memoryUsage().heapUsed,
       concurrentCookers:
         context.cookers?.every((cooker) => cooker.concurrency === 'parallel') ?? true,
@@ -204,15 +209,21 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
       executors,
     });
   try {
+    const artifactPaths = new WeakMap<Uint8Array, string>();
+    const artifactPath = (bytes: Uint8Array): string => {
+      let path = artifactPaths.get(bytes);
+      if (path === undefined) {
+        path = `shared/${createHash('sha256').update(bytes).digest('hex')}.bin`;
+        artifactPaths.set(bytes, path);
+      }
+      return path;
+    };
     const policy = (packageId: PackageId) => (product: ScriptablePackBuildProduct) => {
       const paths = new Map(
         product.product.assets.flatMap((asset) =>
           Object.entries(asset.artifacts).map(
             ([key, artifact]) =>
-              [
-                `${asset.guid.toLowerCase()}/${key}`,
-                `shared/${createHash('sha256').update(artifact.bytes).digest('hex')}.bin`,
-              ] as const,
+              [`${asset.guid.toLowerCase()}/${key}`, artifactPath(artifact.bytes)] as const,
           ),
         ),
       );
@@ -235,6 +246,11 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         sourceClosure: source.sourceClosure,
         publicationGeneration: context.generation,
         policy: policy(source.definition.packageId),
+        transportIdentity: JSON.stringify([
+          'shared-binary/1',
+          context.basePrefix || '/',
+          PackageId.format(source.definition.packageId),
+        ]),
       });
     }
     for (const instance of subjects.value.instances) {
@@ -247,6 +263,11 @@ async function buildPackSources(context: BuildProductionOptions): Promise<PackBu
         values: instance.values,
         publicationGeneration: context.generation,
         policy: policy(instance.packageId),
+        transportIdentity: JSON.stringify([
+          'shared-binary/1',
+          context.basePrefix || '/',
+          PackageId.format(instance.packageId),
+        ]),
       });
     }
     if (inputs.length === 0) return [];
@@ -360,6 +381,7 @@ interface BuildEmissionWork {
   readonly importedEntries: PackIndexEntry[];
   readonly context: BuildProductionOptions;
   readonly sharedMaterialPrograms: Set<string>;
+  readonly sourcePackageDdc?: SourcePackageBuildDdc;
 }
 
 interface PackEmissionOptions {
@@ -375,6 +397,20 @@ interface PackEmissionOptions {
   readonly publication?: AssetPublicationEnvelope;
   readonly sourcePath?: string;
   readonly revision?: PackIndexEntry['revision'];
+}
+
+const CONTENT_ADDRESSED_PROGRAM = /^materials\/programs\/[a-f0-9]{64}\.wgsl$/;
+
+/**
+ * Imported material programs are already named by the digest of their bytes,
+ * and many imported files compile to the same handful of programs. Keeping
+ * that address under `shared/` lets every Pack in one build output reference a
+ * single file instead of writing one copy per material. A changed material
+ * compiles to a new digest, so it gets a new file and never overwrites one
+ * that other Packs still reference. Other artifacts stay owner-scoped.
+ */
+function importedArtifactPath(assetGuid: string, key: string): string {
+  return CONTENT_ADDRESSED_PROGRAM.test(key) ? `shared/${key}` : `${assetGuid}-${key}.bin`;
 }
 
 async function emitPackDocument(
@@ -726,6 +762,7 @@ async function emitBuildEntry(
     registry: work.context.importerRegistry,
     fs: work.context.fsForImport,
     cookers: work.context.cookers,
+    ...(work.sourcePackageDdc === undefined ? {} : { ddc: work.sourcePackageDdc }),
   });
   if (!sourcePackage.ok) throw work.context.fail(sourcePackage.error);
   const ownerFinalizer = work.context.importerRegistry.get(runMeta.importer)?.finalize;
@@ -745,7 +782,7 @@ async function emitBuildEntry(
     {
       base: work.context.basePrefix,
       packagePath: `assets/${subAssets[0]?.guid ?? 'pack'}.pack.json`,
-      artifactPath: (assetGuid, key) => `${assetGuid}-${key}.bin`,
+      artifactPath: importedArtifactPath,
     },
   );
   const productByGuid = sourcePackageAssetsByGuid(sourcePackage.value);
@@ -786,7 +823,18 @@ export async function produceBuildAssets(
   const availableGuids = new Set(entries.map((entry) => entry.guid.toLowerCase()));
   const importedEntries = [...entries];
   const guidSeen = new Set<string>();
-  const work: BuildEmissionWork = { importedEntries, context, sharedMaterialPrograms: new Set() };
+  const sourcePackageDdc = await createSourcePackageBuildDdc({
+    root: context.buildCacheRoot,
+    identityRoot: context.cwd,
+    producerIdentity: context.producerIdentity,
+    cookers: context.cookers,
+  });
+  const work: BuildEmissionWork = {
+    importedEntries,
+    context,
+    sharedMaterialPrograms: new Set(),
+    ...(sourcePackageDdc === undefined ? {} : { sourcePackageDdc }),
+  };
   // Emission owns the remaining queue. Published payloads no longer need to
   // survive while subsequent Packs are cooked; Catalog rows live in entries.
   for (let bundle = dynamicBundles.shift(); bundle !== undefined; bundle = dynamicBundles.shift()) {

@@ -1,6 +1,6 @@
 # Color and Lighting Parity
 
-Minimal, evidence-first parity gate for Three.js r184 and ForgeaX color and lighting.
+Minimal, evidence-first parity gate for Three.js r184 and ForgeAX color and lighting.
 
 For a complete scene written independently through both public APIs, open
 `scene-authoring.html` and read the scene authoring comparison.
@@ -21,10 +21,10 @@ producer gate is exercised by the direct-light Dawn test.
 
 | Capability | Required route | Authority |
 | :-- | :-- | :-- |
-| Direct-light parity | Three r184 plus ForgeaX `SceneCase` | [`scene-case.schema.json`](./schemas/scene-case.schema.json) |
+| Direct-light parity | Three r184 plus ForgeAX `SceneCase` | [`scene-case.schema.json`](./schemas/scene-case.schema.json) |
 | Named case result | One `CaseReport` per case | [`case-report.schema.json`](./schemas/case-report.schema.json) |
 | Required parity backend roster | Browser WebGPU, Dawn, Chromium WebGL2 fallback | [`package.json`](./package.json) `parityMatrix`; per-case `applicableBackends`/`matrixRequiredBackends` are owned by [`required-cases.ts`](./src/coverage/required-cases.ts) |
-| Chromium final-display sentinel slice | Six Chromium WebGL2 cells: default sRGB, alpha mask, alpha blend, ACES tone, direct directional URP, transparent LDR URP | [`verify-webkit-color-lighting.mjs`](../../../scripts/dev-verify/verify-webkit-color-lighting.mjs) runs ForgeaX rhi-wgpu + Three r184 in isolated Chromium processes with WebGPU disabled; the filename remains a compatibility anchor for the protected CI context |
+| Chromium final-display sentinel slice | Six Chromium WebGL2 cells: default sRGB, alpha mask, alpha blend, ACES tone, direct directional URP, transparent LDR URP | [`verify-webkit-color-lighting.mjs`](../../../scripts/dev-verify/verify-webkit-color-lighting.mjs) runs ForgeAX rhi-wgpu + Three r184 in isolated Chromium processes with WebGPU disabled; the filename remains a compatibility anchor for the protected CI context |
 | Required pipelines | `urp` and `hdrp` | Generated `status-index.json` |
 
 The current backend and pipeline matrix is generated at
@@ -51,6 +51,27 @@ not duplicate per-case status values.
 > closed instead of becoming a skip.
 > Raw byte differences remain diagnostic; finite analytic/ROI fallback budgets
 > are still enforced, with no empirical gamma, multiplier, or blend correction.
+
+## Transparency capture readiness
+
+Both authored transparency pictures wait for the Engine receipt's preparation
+and GPU completion signals before canvas readback. The shared ready-frame owner
+retains its fifteen-second bound, pixel metrics and independent Three reference;
+two submissions alone do not establish picture readiness.
+
+## Direct-light capture workload
+
+The native WebGPU single-receiver fixtures disable optional GPU occlusion: one
+64-pixel receiver does not need a depth pyramid or late occlusion pass. Shadow
+and clearcoat fixtures restore the default profile, including occlusion. WebGL2
+keeps its original capability-selected profile. Browser still captures 24
+completed frames and Dawn 60; HDR, light-slot, Three reference and shadow
+falsifiers retain their original deadlines and assertions.
+
+A complete 24-frame RHI capture before and after the profile change contained
+336 and 120 works respectively, with byte-identical raw HDR and display outputs.
+This is workload evidence, not a CI timing guarantee; complete final-head
+Browser and Dawn runs remain required.
 
 ## Three.js r184 common-stage contract
 
@@ -161,7 +182,7 @@ and `firstDivergence` fields; do not infer matrix coverage from this document.
 
 ```mermaid
 flowchart TD
-    A["SceneCase input"] --> B["ForgeaX live producer"]
+    A["SceneCase input"] --> B["ForgeAX live producer"]
     A --> C["Three r184 adapter"]
     B --> D["linearHdr and finalDisplay observations"]
     C --> E["independent named captures"]
@@ -201,7 +222,7 @@ and [`forgeax-engine-rhi`](../../../skills/forgeax-engine-rhi/SKILL.md).
 
 M5 adds seven named cases. The semantic JSON under
 [`cases/vertex-color/`](./cases/vertex-color/) is the only shared input; the
-ForgeaX and Three.js r184 adapters build their own scene, shader, capture, and
+ForgeAX and Three.js r184 adapters build their own scene, shader, capture, and
 readback. The report records `sourceSha`, fixture hash, producer/build/backend,
 color domain, samples, expected/observed RGBA, verdict, confidence, and
 artifact references. The schema and TypeScript owner remain the authority:
@@ -226,7 +247,7 @@ final display space; alpha is coverage and is never sRGB encoded.
 
 ```mermaid
 flowchart LR
-    F["semantic fixture"] --> A["ForgeaX producer"]
+    F["semantic fixture"] --> A["ForgeAX producer"]
     F --> B["independent Three r184 producer"]
     A --> C["Browser or Dawn 60-frame readback"]
     B --> C
@@ -300,7 +321,7 @@ readback path.
 ## Render defaults comparison
 
 Open `render-defaults.html` on this app's dev/preview server. The page runs the
-production ForgeaX FXAA and Bloom WGSL from the shader manifest and the actual
+production ForgeAX FXAA and Bloom WGSL from the shader manifest and the actual
 pinned Three r184 WebGPU nodes on identical 256x128 textures. It isolates the
 post-processing kernels; it is not whole-renderer pixel parity.
 

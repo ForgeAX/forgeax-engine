@@ -20,6 +20,7 @@ import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { ok } from '@forgeax/engine-types';
 import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { afterEach, assert, expect, it, vi } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import { createIrradianceFieldHarness } from './renderer-irradiance-field.fixture';
 import { shaderManifestUrl } from './shader-manifest-url.fixture';
 
@@ -145,15 +146,19 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     h.setGi(undefined);
     for (let i = 0; i < 4; i++) await h.draw();
     const off = await h.image();
+    expect(off.receipt.presentation).toBe('ready');
     expect(off.mean).toBe(0);
 
     h.setGi({ gather: 'baked', volume: DARK, resolution: 'half' });
     await h.settle(2);
-    expect((await h.image()).bytes).toEqual(off.bytes);
+    const dark = await h.image();
+    expect(dark.receipt.presentation).toBe('ready');
+    expect(equalBytes(dark.bytes, off.bytes)).toBe(true);
 
     h.setGi({ gather: 'baked', volume: LIT, resolution: 'half' });
     await h.settle(2);
     const lit = await h.image();
+    expect(lit.receipt.presentation).toBe('ready');
     expect(h.errors).toEqual([]);
     // White Lambert wall under D = 0.5 everywhere: outgoing radiance albedo * D.
     expect(lit.center).toBeGreaterThan(0.45);
@@ -203,7 +208,7 @@ it('gathers a cooked irradiance volume from the Catalog without tracing', {
     try {
       const inspected = (await replay.inspectWork(composite.workIndex, ['pixels'])).unwrap();
       assert(inspected.attachment);
-      expect(inspected.attachment.bytes).toEqual(captured.bytes);
+      expect(equalBytes(inspected.attachment.bytes, captured.bytes)).toBe(true);
     } finally {
       (await replay.dispose()).unwrap();
       webgpu._internal_getRawDevice(device)?.destroy();

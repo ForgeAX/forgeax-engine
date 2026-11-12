@@ -107,3 +107,27 @@ it('selects all material lanes without projecting temporary handle arrays', asyn
     projection.mockRestore();
   }
 });
+
+it('shares equal single-material lane values across rows and keeps later reads live', () => {
+  const count = 2048;
+  const opaque = defaultMaterialSnapshot(7);
+  const c = {
+    dispatch: [],
+    validatedOrdered: Array.from({ length: count }, (_, renderableIndex) => ({
+      renderableIndex,
+    })) as ValidatedRenderable[],
+    materialSlots: [opaque],
+    materialSlotIndices: Array.from({ length: count }, () => [0, 0]),
+  };
+  const first = matchedMaterialsForRecordMode(c, null, 'opaque');
+  expect(first?.size).toBe(count);
+  expect(new Set(first?.values()).size).toBe(1);
+  expect([...(first?.get(0) ?? [])]).toEqual([7]);
+  c.materialSlots[0] = { ...opaque, materialHandle: 11 };
+  const changed = matchedMaterialsForRecordMode(c, null, 'opaque');
+  expect([...(changed?.get(0) ?? [])]).toEqual([11]);
+  expect([...(first?.get(count - 1) ?? [])]).toEqual([7]);
+  c.materialSlots[0] = { ...opaque, transparent: true };
+  expect(matchedMaterialsForRecordMode(c, null, 'opaque')?.size).toBe(0);
+  expect(matchedMaterialsForRecordMode(c, null, 'transparent')?.size).toBe(count);
+});

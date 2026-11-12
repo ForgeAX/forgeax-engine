@@ -3,6 +3,8 @@ import { createBoxGeometry } from '@forgeax/engine-geometry';
 import {
   Camera,
   Fog,
+  type FrameReceipt,
+  type FrameReceiptObservation,
   Materials,
   MeshFilter,
   MeshRenderer,
@@ -12,6 +14,7 @@ import {
 import type { EncodedTape, RecorderAttachment } from '@forgeax/engine-rhi-debug';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
 
@@ -232,6 +235,11 @@ export async function renderFogFrames(
     readonly domain?: 'linear-ldr' | 'linear-hdr';
     readonly recorder?: RecorderAttachment;
     readonly capture?: (tape: EncodedTape) => void | Promise<void>;
+    readonly evidence?: (value: {
+      readonly receipt: FrameReceipt;
+      readonly observation: NonNullable<FrameReceiptObservation['observations']>[number];
+      readonly tape?: EncodedTape | undefined;
+    }) => void | Promise<void>;
   },
 ): Promise<LinearImage> {
   const frames = options.frames ?? 6;
@@ -249,22 +257,26 @@ export async function renderFogFrames(
       world.update(1 / 60).unwrap();
       propagateTransforms(world).unwrap();
       const last = index === frames - 1;
-      if (last) unwrap(renderer.requestObservation?.([domain]));
       const pending = last ? options.recorder?.captureFrame() : undefined;
       if (pending !== undefined) (await options.recorder?.frameBoundary())?.unwrap();
-      const frame = unwrap(
-        renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+      const frame = await drawReadyFrame(
+        renderer,
+        { leases: [lease], camera: { lease }, environment: { lease } },
+        last ? [domain] : undefined,
       );
-      unwrap(await frame.completed);
+      expect(frame.presentation, JSON.stringify(frame.presentationPendingReason)).toBe('ready');
+      let tape: EncodedTape | undefined;
       if (pending !== undefined) {
         (await options.recorder?.frameBoundary())?.unwrap();
-        await options.capture?.(compactTape((await pending).unwrap()));
+        tape = (await pending).unwrap();
+        await options.capture?.(compactTape(tape));
       }
       if (!last) continue;
       const observation = unwrap(
         await renderer.observe(frame, { include: [domain] }),
       ).observations?.find((value) => value.domain === domain);
       if (observation === undefined) throw new Error('missing translucent-fog readback');
+      await options.evidence?.({ receipt: frame, observation, tape });
       image = observation;
     }
     expect(errors, JSON.stringify(errors)).toEqual([]);

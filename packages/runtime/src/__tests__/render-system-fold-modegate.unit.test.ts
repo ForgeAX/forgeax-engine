@@ -6,10 +6,8 @@
 //   mode 2 (LAYER_YZ)  -> bypass per-entity (composite foot-Y key).
 //   mode 3 (DISTANCE)  -> bypass per-entity (per-entity camera distance).
 //
-// Bypass semantics (modes 2/3): each DispatchEntry produces its own
-// singleton bucket (bucketSize=1). The fold dispatcher (record-stage)
-// treats singleton buckets identically to per-entity drawIndexed (charter
-// P3 silent fallback — no error, no warning).
+// Bypass modes produce no fold work; the original per-entity commands remain.
+// No bucket or transform matrix is materialized for that inert path.
 //
 // Mode 1 (LAYER_Y) folds using posY as the sort-axis bucket key: tiles in
 // the same row share posY and consecutive same-material runs collapse into
@@ -83,7 +81,7 @@ function mockRenderable(
 describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
   // 5 entries all sharing (layer=0, posZ=0, posY=0, materialHandle=1).
   // Under mode 0 and 1 they collapse to 1 bucket. Under mode 2/3 they each
-  // get their own singleton bucket (bypass).
+  // get their own direct draw (bypass).
   function makeUniformInputs(N: number): {
     entries: DispatchEntry[];
     renderables: ReturnType<typeof mockRenderable>[];
@@ -124,7 +122,7 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
     expect(b.bucketSize).toBe(5);
   });
 
-  it('mode 1 (LAYER_Y) — distinct posY per entry -> N singleton buckets', () => {
+  it('mode 1 (LAYER_Y) — distinct posY per entry -> no fold buckets', () => {
     // Each tile is in a different row (different posY); no consecutive run
     // can form, so each entry becomes its own bucket.
     const N = 4;
@@ -142,8 +140,7 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
       renderables.push(mockRenderable(0, i * 16)); // posY = 0, 16, 32, 48
     }
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_Y, renderables);
-    expect(buckets).toHaveLength(N);
-    for (const b of buckets) expect(b.bucketSize).toBe(1);
+    expect(buckets).toEqual([]);
   });
 
   it('mode 1 (LAYER_Y) — sortKey carries posY (world[13])', () => {
@@ -170,18 +167,16 @@ describe('foldDispatchBuckets — mode-gate (D-5, w3)', () => {
     expect(b.sortKey).toBeCloseTo(3.0);
   });
 
-  it('mode 2 (LAYER_YZ) — N entries bypass to N singleton buckets (no fold)', () => {
+  it('mode 2 (LAYER_YZ) — N entries bypass to no fold buckets (no fold)', () => {
     const { entries, renderables } = makeUniformInputs(5);
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_LAYER_YZ, renderables);
-    expect(buckets).toHaveLength(5);
-    for (const b of buckets) expect(b.bucketSize).toBe(1);
+    expect(buckets).toEqual([]);
   });
 
-  it('mode 3 (DISTANCE) — N entries bypass to N singleton buckets (no fold)', () => {
+  it('mode 3 (DISTANCE) — N entries bypass to no fold buckets (no fold)', () => {
     const { entries, renderables } = makeUniformInputs(5);
     const buckets = foldDispatchBuckets(entries, TRANSPARENT_SORT_MODE_DISTANCE, renderables);
-    expect(buckets).toHaveLength(5);
-    for (const b of buckets) expect(b.bucketSize).toBe(1);
+    expect(buckets).toEqual([]);
   });
 
   it('mode-gate is silent: bypass modes 2/3 do not throw or fire errors', () => {

@@ -1,5 +1,6 @@
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { describe, expect, it } from 'vitest';
+import { prepareFeatureFrame } from '../../../render/src/__tests__/feature-frame-driver';
 import { createFullscreenRenderFeature } from '../../../render/src/features/fullscreen';
 import { createRenderFeatureHost } from '../../../render/src/features/host';
 import { createRenderFeatureTarget } from '../../../render/src/features/targets';
@@ -28,7 +29,7 @@ describe('fullscreen feature host contract', () => {
     expect(host.value.features).toHaveLength(1);
     const [registered] = host.value.features;
     expect(registered).toBeDefined();
-    const planned = host.value.runFrame([
+    const planned = prepareFeatureFrame(host.value, [
       {
         identity: 'main',
         render: true,
@@ -62,7 +63,7 @@ describe('fullscreen feature host contract', () => {
     const host = createRenderFeatureHost([feature]);
     expect(host.ok).toBe(true);
     if (!host.ok) return;
-    const planned = host.value.runFrame([
+    const planned = prepareFeatureFrame(host.value, [
       {
         identity: 'main',
         render: true,

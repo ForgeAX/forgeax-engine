@@ -34,7 +34,7 @@ export function addSmaaPasses(
       `${lookup.target === area.value ? 'smaa-area' : 'smaa-search'}-upload`,
       {
         accesses: [{ resource: lookup.target.view, usage: 'copy-dst' }],
-        encode: ({ frame, resources }) => {
+        encodeDirect: (_graphencoder, frame, resources) => {
           const texture = resources.texture(lookup.target.texture).unwrap();
           if (texture === initialized) return;
           frame.runtime.device.queue

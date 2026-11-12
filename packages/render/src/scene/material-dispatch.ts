@@ -1,5 +1,9 @@
 import type { EntityHandle } from '@forgeax/engine-ecs';
-import type { MaterialResource } from '../material-resource';
+import {
+  type MaterialResource,
+  materialUsesSpriteGeometry,
+  ownedMaterialValues,
+} from '../material-resource';
 import { getOpaqueResourceIdentity, worldEntityKey } from '../record/frame-snapshot';
 import { isMediumMaterial, matchesRecordMode } from '../record/material-pass-selection';
 import {
@@ -15,7 +19,6 @@ import { GenerationalWeakMap } from './generational-weak-map';
 import type { MeshFrame, MeshGeometry } from './mesh-frame';
 import {
   captureMaterialOverrides,
-  defaultMeshMaterial,
   effectiveMeshMaterials,
   type MeshMaterialBindingWrite,
   type MeshMaterialGeometry,
@@ -156,6 +159,8 @@ interface MaterialDemandCounts {
   readonly backs: number;
   readonly medium: number;
   readonly unfogged: number;
+  readonly borrowed: number;
+  readonly foldableSprites: number;
 }
 const EMPTY_DEMAND: MaterialDemandCounts = {
   transmission: 0,
@@ -163,11 +168,14 @@ const EMPTY_DEMAND: MaterialDemandCounts = {
   backs: 0,
   medium: 0,
   unfogged: 0,
+  borrowed: 0,
+  foldableSprites: 0,
 };
 
 function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCounts {
   if (material === undefined) return EMPTY_DEMAND;
   const snapshot = material.snapshot;
+  const owned = ownedMaterialValues(snapshot);
   const transmission = matchesRecordMode(snapshot, 'transmission');
   const roughness = snapshot.paramSnapshot?.roughness ?? snapshot.roughness;
   return {
@@ -182,6 +190,10 @@ function demandCounts(material: AcceptedMaterial | undefined): MaterialDemandCou
       snapshot.renderState?.fog === false && matchesRecordMode(snapshot, 'opaque-unfogged')
         ? material.bindings
         : 0,
+    borrowed: owned ? 0 : 1,
+    // Zero-binding accepted entries can still be consumed by actual Pass queries.
+    foldableSprites:
+      owned && snapshot.transparent === true && materialUsesSpriteGeometry(snapshot) ? 1 : 0,
   };
 }
 
@@ -198,6 +210,8 @@ function replaceDemand(
     medium: counts.medium - old.medium + current.medium,
     backs: counts.backs - old.backs + current.backs,
     unfogged: counts.unfogged - old.unfogged + current.unfogged,
+    borrowed: counts.borrowed - old.borrowed + current.borrowed,
+    foldableSprites: counts.foldableSprites - old.foldableSprites + current.foldableSprites,
   };
 }
 
@@ -231,6 +245,25 @@ function sameMaterialPasses(previous: MaterialSnapshot, next: MaterialSnapshot):
 
 /** Fixed shared material roots; capturing or adopting a version never copies bindings. */
 export class MaterialFrame {
+  readonly #programRoot = true;
+
+  /** Native fixed program root; proxies and borrowed/custom read protocols stay observable. */
+  static fixedProgramRoot(frame: unknown): MaterialFrame | undefined {
+    if (typeof frame !== 'object' || frame === null || !(#programRoot in frame)) return undefined;
+    if (
+      Object.getPrototypeOf(frame) !== MaterialFrame.prototype ||
+      Object.hasOwn(frame, 'get') ||
+      Object.hasOwn(frame, 'hasBorrowedValues') ||
+      Object.getOwnPropertyDescriptor(MaterialFrame.prototype, 'get')?.value !==
+        MATERIAL_FRAME_GET ||
+      Object.getOwnPropertyDescriptor(MaterialFrame.prototype, 'hasBorrowedValues')?.get !==
+        MATERIAL_FRAME_BORROWED ||
+      frame.hasBorrowedValues
+    )
+      return undefined;
+    return frame;
+  }
+
   readonly transmissionDemand: import('../transmission/projection').TransmissionDemand;
   constructor(
     private readonly root: Node<AcceptedMaterial> | undefined,
@@ -244,6 +277,14 @@ export class MaterialFrame {
   }
   get hasMedium(): boolean {
     return this.counts.medium > 0;
+  }
+  /** Accepted owned Sprite materials that can participate in folding. */
+  get hasFoldableSprites(): boolean {
+    return this.counts.foldableSprites > 0;
+  }
+  /** Raw snapshots cannot prove cross-capture reuse from value or program identity. */
+  get hasBorrowedValues(): boolean {
+    return this.counts.borrowed > 0;
   }
   /** An opaque material opts out of scene fog (`renderState.fog: false`). */
   get hasUnfoggedOpaque(): boolean {
@@ -372,30 +413,116 @@ export class MaterialFrame {
   }
 }
 
+const MATERIAL_FRAME_GET = MaterialFrame.prototype.get;
+const MATERIAL_FRAME_BORROWED = Object.getOwnPropertyDescriptor(
+  MaterialFrame.prototype,
+  'hasBorrowedValues',
+)?.get;
+
 // Only a completed real traversal can populate this cache. Fixed Work is
 // retained across parameter adoption, so later draws and slices reuse its order.
 // Work nodes are rebuilt with their dispatch; see GenerationalWeakMap.
 const consumedBindings = new GenerationalWeakMap<Work, readonly number[]>();
 
-function* workBindings(work: Work, start = 0, end = Infinity): Generator<number> {
+function workBindings(work: Work, start = 0, end = Infinity): Iterable<number> {
   const cached = consumedBindings.get(work);
-  if (cached !== undefined) {
-    for (let index = Math.max(0, start); index < Math.min(end, cached.length); index++) {
-      const binding = cached[index];
-      if (binding !== undefined) yield binding;
+  if (cached !== undefined) return new BindingWindow(cached, start, end);
+  if (start > 0 || end < work.groups.count) return mergeWorkBindings(work, start, end);
+  return new BindingCapture(work);
+}
+
+/** One private result per walk; consumers observe each numeric member before advancing. */
+class BindingWindow implements IterableIterator<number> {
+  private index: number;
+  private readonly end: number;
+  private readonly result: { value: number | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(
+    private readonly bindings: readonly number[],
+    start: number,
+    end: number,
+  ) {
+    this.index = Math.max(0, start);
+    this.end = Math.min(end, bindings.length);
+  }
+  next(): IteratorResult<number> {
+    while (this.index < this.end) {
+      const value = this.bindings[this.index++];
+      if (value !== undefined) {
+        this.result.value = value;
+        return this.result as IteratorResult<number>;
+      }
     }
-    return;
+    return this.return();
   }
-  if (start > 0 || end < work.groups.count) {
-    yield* mergeWorkBindings(work, start, end);
-    return;
+  return(): IteratorResult<number> {
+    this.index = this.end;
+    this.result.value = undefined;
+    this.result.done = true;
+    return this.result as IteratorResult<number>;
   }
-  const consumed: number[] = [];
-  for (const binding of mergeWorkBindings(work, start, end)) {
-    consumed.push(binding);
-    yield binding;
+  [Symbol.iterator](): IterableIterator<number> {
+    return this;
   }
-  consumedBindings.set(work, consumed);
+}
+
+/** Only complete private walks publish membership; each active reader owns its cursor. */
+class BindingCapture implements IterableIterator<number> {
+  private finished = false;
+  private captured: number[] | undefined = [];
+  private iterator: Iterator<number> | RosterCursor | undefined;
+  private readonly result: { value: number | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(private work: Work | undefined) {
+    const groups = (work as Work).groups;
+    this.iterator =
+      groups.left === undefined && groups.right === undefined
+        ? new RosterCursor(groups.value)
+        : mergeWorkBindings(work as Work);
+  }
+  next(): IteratorResult<number> {
+    if (this.finished) return this.result as IteratorResult<number>;
+    try {
+      const iterator = this.iterator;
+      let value: number;
+      if (iterator instanceof RosterCursor) {
+        if (!iterator.next()) return this.complete();
+        value = iterator.value;
+      } else {
+        const step = (iterator as Iterator<number>).next();
+        if (step.done) return this.complete();
+        value = step.value;
+      }
+      (this.captured as number[]).push(value);
+      this.result.value = value;
+      return this.result as IteratorResult<number>;
+    } catch (cause) {
+      this.return();
+      throw cause;
+    }
+  }
+  private complete(): IteratorResult<number> {
+    consumedBindings.set(this.work as Work, this.captured as number[]);
+    return this.return();
+  }
+  return(): IteratorResult<number> {
+    const iterator = this.iterator;
+    this.finished = true;
+    this.work = undefined;
+    this.iterator = undefined;
+    this.captured = undefined;
+    this.result.value = undefined;
+    this.result.done = true;
+    if (iterator !== undefined && !(iterator instanceof RosterCursor)) iterator.return?.();
+    return this.result as IteratorResult<number>;
+  }
+  [Symbol.iterator](): IterableIterator<number> {
+    return this;
+  }
 }
 
 /** Merge shared member trees only while their actual draw work is consumed. */
@@ -458,24 +585,33 @@ function* mergeWorkBindings(work: Work, start = 0, end = Infinity): Generator<nu
  * consecutive generations read it; one no generation read is dropped, so a
  * cold complete traversal never stays resident per binding.
  */
+interface StampedDispatchEntry {
+  entry: DispatchEntry;
+  generation: number;
+}
+
+/** Each slot keeps one observation while consecutive queries read it. */
 class DispatchEntries {
   generation = 0;
-  private current = new Map<number, DispatchEntry>();
-  private previous = new Map<number, DispatchEntry>();
+  private readonly entries = new Map<number, StampedDispatchEntry>();
 
   constructor(private readonly columns: BindingColumns) {}
 
   rotate(): void {
-    this.previous = this.current;
-    this.current = new Map();
     this.generation++;
+    this.entries.forEach(expireDispatchEntry, this);
+  }
+
+  expire(stamped: StampedDispatchEntry, key: number): void {
+    if (stamped.generation < this.generation - 1) this.entries.delete(key);
   }
 
   get(pass: Pass, slot: number, renderableIndex: number): DispatchEntry {
     const key = getOpaqueResourceIdentity(pass) * 4294967296 + slot;
     const entityIndex = this.columns.entity(slot) as EntityHandle;
     const layer = this.columns.layer[slot] ?? 0;
-    let entry = this.current.get(key) ?? this.previous.get(key);
+    let stamped = this.entries.get(key);
+    let entry = stamped?.entry;
     if (
       entry === undefined ||
       entry.renderableIndex !== renderableIndex ||
@@ -483,15 +619,28 @@ class DispatchEntries {
       entry.layer !== layer
     )
       entry = dispatchEntry(pass, entityIndex, renderableIndex, layer);
-    this.current.set(key, entry);
+    if (stamped === undefined) {
+      stamped = { entry, generation: this.generation };
+      this.entries.set(key, stamped);
+    } else {
+      stamped.entry = entry;
+      stamped.generation = this.generation;
+    }
     return entry;
   }
 
   clear(): void {
-    this.current.clear();
-    this.previous.clear();
+    this.entries.clear();
     this.generation++;
   }
+}
+
+function expireDispatchEntry(
+  this: DispatchEntries,
+  stamped: StampedDispatchEntry,
+  key: number,
+): void {
+  this.expire(stamped, key);
 }
 
 class FrameDispatch extends FrameListBase<DispatchEntry> {
@@ -504,31 +653,64 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     super();
     this.length = root?.count ?? 0;
   }
-  private entry(pass: Pass, slot: number): DispatchEntry {
+  entry(pass: Pass, slot: number): DispatchEntry {
     const renderableIndex = this.slots.indexOfSlot(slot);
     if (renderableIndex === undefined) throw new Error('Missing material binding frame address');
     return this.dispatchEntries.get(pass, slot, renderableIndex);
   }
+  /** Complete synchronous consumers need no cursor for each already captured Pass roster. */
+  override forEach(consume: (value: DispatchEntry, index: number) => void): void {
+    const iterator = this[Symbol.iterator];
+    if (iterator !== nativeDispatchIterator) {
+      forEachCustomDispatch(this, iterator, consume);
+      return;
+    }
+    const cached = this.readTraversal();
+    if (cached !== undefined) {
+      for (let index = 0; index < cached.length; index++)
+        consume(cached[index] as DispatchEntry, index);
+      return;
+    }
+    const captured: DispatchEntry[] = [];
+    let index = 0;
+    for (const node of nodes(this.root)) {
+      const work = node.value;
+      const bindings = consumedBindings.get(work);
+      if (bindings === undefined) {
+        for (const binding of workBindings(work)) {
+          const entry = this.entry(work.pass, binding);
+          captured.push(entry);
+          consume(entry, index++);
+        }
+      } else {
+        for (let cursor = 0; cursor < bindings.length; cursor++) {
+          const binding = bindings[cursor];
+          if (binding === undefined) continue;
+          const entry = this.entry(work.pass, binding);
+          captured.push(entry);
+          consume(entry, index++);
+        }
+      }
+    }
+    this.completeTraversal(captured);
+  }
   /** Complete traversals are fixed for this root, slot roster and entry generation. */
   private traversed: readonly DispatchEntry[] | undefined;
   private traversedGeneration = -1;
-  *[Symbol.iterator](): Generator<DispatchEntry> {
+  [Symbol.iterator](): IterableIterator<DispatchEntry> {
+    return new FrameDispatchIterator(this, this.root);
+  }
+  readTraversal(): readonly DispatchEntry[] | undefined {
     if (
       this.traversed !== undefined &&
       this.traversedGeneration === this.dispatchEntries.generation
-    ) {
-      yield* this.traversed;
-      return;
-    }
+    )
+      return this.traversed;
     this.traversed = undefined;
-    const traversed: DispatchEntry[] = [];
-    for (const { value: work } of nodes(this.root))
-      for (const binding of workBindings(work)) {
-        const entry = this.entry(work.pass, binding);
-        traversed.push(entry);
-        yield entry;
-      }
-    this.traversed = traversed;
+    return undefined;
+  }
+  completeTraversal(entries: readonly DispatchEntry[]): void {
+    this.traversed = entries;
     this.traversedGeneration = this.dispatchEntries.generation;
   }
   /** Pass-level work without visiting members; a pass fact classifies all of its entries. */
@@ -576,7 +758,11 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
     if (index < 0 || index >= this.length) return undefined;
     const work = at(this.root, index);
     if (work === undefined) return undefined;
-    const member = workBindings(work.node.value, work.offset, work.offset + 1).next().value;
+    const bindings = consumedBindings.get(work.node.value);
+    const member =
+      bindings === undefined
+        ? mergeWorkBindings(work.node.value, work.offset, work.offset + 1).next().value
+        : bindings[work.offset];
     return member === undefined ? undefined : this.entry(work.node.value.pass, member);
   }
   override slice(start = 0, end = this.length): DispatchEntry[] {
@@ -589,6 +775,107 @@ class FrameDispatch extends FrameListBase<DispatchEntry> {
       for (const member of workBindings(work.value, work.start, work.end))
         result.push(this.entry(work.value.pass, member));
     return result;
+  }
+}
+
+/** One private completion cursor per walk; only a complete walk publishes its rows. */
+const nativeDispatchIterator = FrameDispatch.prototype[Symbol.iterator];
+
+/** A captured root with the native walk: one identity always lists the same Pass members. */
+export function isCapturedDispatch(list: DispatchList): boolean {
+  return list instanceof FrameDispatch && list[Symbol.iterator] === nativeDispatchIterator;
+}
+
+/** Preserve a custom iterator's single lookup, receiver and IteratorClose. */
+function forEachCustomDispatch(
+  frame: FrameDispatch,
+  iterator: FrameDispatch[typeof Symbol.iterator],
+  consume: (value: DispatchEntry, index: number) => void,
+): void {
+  const values = { [Symbol.iterator]: () => iterator.call(frame) };
+  let index = 0;
+  for (const value of values) consume(value, index++);
+}
+
+class FrameDispatchIterator implements IterableIterator<DispatchEntry> {
+  private started = false;
+  private done = false;
+  private cached: readonly DispatchEntry[] | undefined;
+  private index = 0;
+  private captured: DispatchEntry[] | undefined;
+  private works: Iterator<Node<Work>> | undefined;
+  private work: Work | undefined;
+  private bindings: Iterator<number> | undefined;
+  private readonly result: { value: DispatchEntry | undefined; done: boolean } = {
+    value: undefined,
+    done: false,
+  };
+  constructor(
+    private frame: FrameDispatch | undefined,
+    private root: Node<Work> | undefined,
+  ) {}
+  next(): IteratorResult<DispatchEntry> {
+    if (this.done) return this.result as IteratorResult<DispatchEntry>;
+    const frame = this.frame as FrameDispatch;
+    if (!this.started) {
+      this.started = true;
+      this.cached = frame.readTraversal();
+      if (this.cached === undefined) {
+        this.captured = [];
+        this.works = nodes(this.root);
+      }
+      this.root = undefined;
+    }
+    if (this.cached !== undefined) {
+      if (this.index >= this.cached.length) return this.return();
+      this.result.value = this.cached[this.index++];
+      return this.result as IteratorResult<DispatchEntry>;
+    }
+    try {
+      return this.advance(frame);
+    } catch (cause) {
+      this.return();
+      throw cause;
+    }
+  }
+  private advance(frame: FrameDispatch): IteratorResult<DispatchEntry> {
+    for (;;) {
+      if (this.bindings !== undefined) {
+        const binding = this.bindings.next();
+        if (!binding.done) {
+          const entry = frame.entry((this.work as Work).pass, binding.value);
+          (this.captured as DispatchEntry[]).push(entry);
+          this.result.value = entry;
+          return this.result as IteratorResult<DispatchEntry>;
+        }
+        this.bindings = undefined;
+      }
+      const step = (this.works as Iterator<Node<Work>>).next();
+      if (step.done) {
+        frame.completeTraversal(this.captured as DispatchEntry[]);
+        return this.return();
+      }
+      this.work = step.value.value;
+      this.bindings = workBindings(this.work)[Symbol.iterator]();
+    }
+  }
+  return(): IteratorResult<DispatchEntry> {
+    const bindings = this.bindings;
+    this.done = true;
+    this.frame = undefined;
+    this.root = undefined;
+    this.cached = undefined;
+    this.captured = undefined;
+    this.works = undefined;
+    this.work = undefined;
+    this.bindings = undefined;
+    this.result.value = undefined;
+    this.result.done = true;
+    bindings?.return?.();
+    return this.result as IteratorResult<DispatchEntry>;
+  }
+  [Symbol.iterator](): IterableIterator<DispatchEntry> {
+    return this;
   }
 }
 
@@ -928,9 +1215,7 @@ export class MaterialDispatch {
             ? direct
             : [
                 ...new Set(
-                  [defaultMeshMaterial, ...overrides].filter(
-                    (value): value is MaterialResource => value !== undefined,
-                  ),
+                  overrides.filter((value): value is MaterialResource => value !== undefined),
                 ),
               ];
         for (const resource of held) {

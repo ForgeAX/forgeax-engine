@@ -509,6 +509,9 @@ async function launchSmokeBrowser() {
     headless: process.env.FORGEAX_BROWSER_HEADLESS !== '0',
     channel: CHROME_CHANNEL,
     args: CHROME_ARGS,
+    ...(process.env.FORGEAX_BROWSER_EXECUTABLE
+      ? { executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE }
+      : {}),
     timeout: 30_000,
     chromiumSandbox: true,
   });

@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, resolve } from 'node:path';
 import { execFileCommand } from './child-process.js';
@@ -22,8 +31,10 @@ async function materializeEngineArtifacts(
   const reused = manifest.artifacts.filter((entry) => entry.enginePath !== undefined);
   if (reused.length === 0) return;
   const require = createRequire(resolve(download, 'node_modules/@forgeax/engine-sdk/package.json'));
-  const engine = dirname(require.resolve('@forgeax/engine/package.json'));
-  if (!isFilesystemPathWithin(download, engine, false)) throw new Error('sdk-carrier-engine-path');
+  const engine = await realpath(dirname(require.resolve('@forgeax/engine/package.json')));
+  const downloadRoot = await realpath(download);
+  if (!isFilesystemPathWithin(downloadRoot, engine, false))
+    throw new Error('sdk-carrier-engine-path');
   const identity = JSON.parse(await readFile(resolve(engine, 'package.json'), 'utf8'));
   if (identity.name !== '@forgeax/engine' || identity.version !== manifest.sdkVersion)
     throw new Error('sdk-carrier-engine-version-mismatch');

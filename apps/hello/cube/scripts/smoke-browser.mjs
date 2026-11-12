@@ -10,6 +10,8 @@ await verifyDemoCapture({
   pkg: '@forgeax/hello-cube',
   label: 'hello-cube',
   mode: 'structural',
+  waitForAppScene: true,
+  warmupMs: 0,
   // The verifier selects an actual color-attachment work from FrameModel.
   appDir: dirname(scriptsDir),
 });

@@ -310,7 +310,10 @@ export function readConservativeAnimatedBounds(
  *     bytes (PNG / JPEG) into a `TextureAsset` POD plus a `bytes` copy
  *     suitable for `<guid>.bin` emission. When the host applies an offline
  *     delivery codec, it also returns the artifact media type and codec so
- *     gltfImporter can preserve those facts in the Pack v2 envelope. The seam
+ *     gltfImporter can preserve those facts in the Pack v2 envelope.
+ *     `image/ktx2` (glTF KHR_texture_basisu) is validated and passed through
+ *     still compressed, exactly like a standalone `.ktx2` image source; the
+ *     settings' `colorSpace` must match the KTX2 DFD transfer function. The seam
  *     keeps gltfImporter
  *     out of `@forgeax/engine-image` (D-1: zero static `from
  *     '@forgeax/engine-image'` edge in `packages/gltf/src`). The
@@ -333,7 +336,7 @@ export interface ImportContext {
   >;
   decodeImage(
     bytes: Uint8Array,
-    mimeType: 'image/png' | 'image/jpeg' | 'image/x-tga',
+    mimeType: 'image/png' | 'image/jpeg' | 'image/x-tga' | 'image/ktx2',
     importSettings: Readonly<Record<string, unknown>>,
   ): Promise<
     | {

@@ -21,6 +21,11 @@ fn oetf(value: f32) -> f32 {
   return select(12.92 * safe, 1.055 * pow(safe, 0.41666) - 0.055, safe > 0.0031308);
 }
 
+fn eotf(value: f32) -> f32 {
+  let safe = max(value, 0.0);
+  return select(safe / 12.92, pow((safe + 0.055) / 1.055, 2.4), safe > 0.04045);
+}
+
 @vertex
 fn vs(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
   var positions = array<vec2<f32>, 3>(
@@ -31,7 +36,12 @@ fn vs(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs() -> @location(0) vec4<f32> {
-  let linear = textureSample(lut, lutSampler, vec3<f32>(0.37, 0.61, 0.22));
+  // Display-LUT addressing as the Standard LUT stage: sRGB-encoded index at texel centres,
+  // texels decoded back to linear.
+  let size = f32(textureDimensions(lut).x);
+  let index = vec3<f32>(oetf(0.37), oetf(0.61), oetf(0.22));
+  let encoded = textureSample(lut, lutSampler, index * ((size - 1.0) / size) + 0.5 / size);
+  let linear = vec4<f32>(eotf(encoded.r), eotf(encoded.g), eotf(encoded.b), encoded.a);
   return vec4<f32>(vec3<f32>(oetf(linear.r), oetf(linear.g), oetf(linear.b)), linear.a);
 }
 `;

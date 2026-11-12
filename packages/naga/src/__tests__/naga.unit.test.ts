@@ -115,8 +115,31 @@ vi.mock('@forgeax/engine-wgpu-wasm', () => ({
 
 {
   // M3 characterization: the raw Naga reader must consume only the generic
-  // shader-reflection/2 wire. Material meaning is selected by shader-compiler.
-  describe('shader-reflection/2 generic bound-global wire', () => {
+  // shader-reflection/3 wire. Material meaning is selected by shader-compiler.
+  describe('shader-reflection/3 generic bound-global wire', () => {
+    const valueDescriptor = {
+      kind: 'scalar',
+      scalarKind: 'float',
+      width: 4,
+      byteSize: 4,
+      alignment: 4,
+    } as const;
+    const valueMember = {
+      name: 'roughness',
+      type: 'f32',
+      offset: 0,
+      size: 4,
+      alignment: 4,
+      typeDescriptor: valueDescriptor,
+    } as const;
+    const uniformDescriptor = {
+      kind: 'struct',
+      name: 'SurfaceParameters',
+      span: 16,
+      byteSize: 16,
+      alignment: 4,
+      members: [valueMember],
+    } as const;
     const uniform = {
       group: 1,
       binding: 0,
@@ -124,16 +147,10 @@ vi.mock('@forgeax/engine-wgpu-wasm', () => ({
       resourceKind: 'buffer',
       visibility: 3,
       name: 'surfaceParameters',
-      members: [
-        {
-          name: 'roughness',
-          type: 'f32',
-          offset: 0,
-          size: 4,
-          alignment: 4,
-        },
-      ],
+      members: [valueMember],
       span: 16,
+      elementType: 'struct',
+      typeDescriptor: uniformDescriptor,
     };
     const texture = {
       group: 1,
@@ -144,9 +161,23 @@ vi.mock('@forgeax/engine-wgpu-wasm', () => ({
       name: 'albedoTexture',
     };
     const generic = {
-      schemaVersion: 'shader-reflection/2',
+      schemaVersion: 'shader-reflection/3',
       boundGlobals: [uniform, texture],
       uvSetCount: 0,
+    };
+    const resourceFacts = {
+      ...generic,
+      boundGlobals: [
+        { ...uniform, resourceAccess: 'read-only' },
+        {
+          ...texture,
+          resourceAccess: 'read-only',
+          textureClass: 'sampled',
+          sampleType: 'unfilterable-float',
+          viewDimension: '2d',
+          multisampled: false,
+        },
+      ],
     };
 
     it('keeps complete coordinates, member span, visibility, kind, and diagnostic name', async () => {
@@ -185,17 +216,22 @@ vi.mock('@forgeax/engine-wgpu-wasm', () => ({
       });
     });
 
+    it('preserves complete Naga-derived resource access and texture class facts', async () => {
+      const { parseReflectionWire } = await import('../index.js');
+      expect(parseReflectionWire(JSON.stringify(resourceFacts))).toEqual(resourceFacts);
+    });
+
     it('accepts explicit empty and static-only reflection without a material fallback', async () => {
       const { parseReflectionWire } = await import('../index.js');
       expect(
         parseReflectionWire(
-          JSON.stringify({ schemaVersion: 'shader-reflection/2', boundGlobals: [], uvSetCount: 0 }),
+          JSON.stringify({ schemaVersion: 'shader-reflection/3', boundGlobals: [], uvSetCount: 0 }),
         ),
       ).toMatchObject({ boundGlobals: [] });
       expect(
         parseReflectionWire(
           JSON.stringify({
-            schemaVersion: 'shader-reflection/2',
+            schemaVersion: 'shader-reflection/3',
             boundGlobals: [texture],
             uvSetCount: 0,
           }),
@@ -205,6 +241,7 @@ vi.mock('@forgeax/engine-wgpu-wasm', () => ({
 
     it.each([
       ['old array wire', []],
+      ['stale reflection schema', { ...generic, schemaVersion: 'shader-reflection/2' }],
       ['missing schema version', { boundGlobals: [uniform], uvSetCount: 0 }],
       ['missing group', { ...generic, boundGlobals: [{ ...uniform, group: undefined }] }],
       ['missing binding', { ...generic, boundGlobals: [{ ...uniform, binding: undefined }] }],
@@ -222,13 +259,141 @@ vi.mock('@forgeax/engine-wgpu-wasm', () => ({
       ],
       ['missing uniform span', { ...generic, boundGlobals: [{ ...uniform, span: undefined }] }],
       [
+        'missing recursive buffer descriptor',
+        { ...generic, boundGlobals: [{ ...uniform, typeDescriptor: undefined }] },
+      ],
+      [
+        'missing recursive member descriptor',
+        {
+          ...generic,
+          boundGlobals: [
+            {
+              ...uniform,
+              members: [{ ...valueMember, typeDescriptor: undefined }],
+              typeDescriptor: {
+                ...uniformDescriptor,
+                members: [{ ...valueMember, typeDescriptor: undefined }],
+              },
+            },
+          ],
+        },
+      ],
+      [
+        'member list contradicts recursive descriptor',
+        { ...generic, boundGlobals: [{ ...uniform, members: [] }] },
+      ],
+      [
+        'mat3x3 layout reports a forbidden 12-byte alignment',
+        {
+          ...generic,
+          boundGlobals: [
+            {
+              ...uniform,
+              span: 48,
+              members: [
+                {
+                  name: 'roughness',
+                  type: 'mat3x3<f32>',
+                  offset: 0,
+                  size: 48,
+                  alignment: 12,
+                  typeDescriptor: {
+                    kind: 'matrix',
+                    scalarKind: 'float',
+                    width: 4,
+                    columns: 3,
+                    rows: 3,
+                    columnStride: 16,
+                    byteSize: 48,
+                    alignment: 12,
+                  },
+                },
+              ],
+              typeDescriptor: {
+                kind: 'struct',
+                name: 'SurfaceParameters',
+                span: 48,
+                byteSize: 48,
+                alignment: 12,
+                members: [
+                  {
+                    name: 'roughness',
+                    type: 'mat3x3<f32>',
+                    offset: 0,
+                    size: 48,
+                    alignment: 12,
+                    typeDescriptor: {
+                      kind: 'matrix',
+                      scalarKind: 'float',
+                      width: 4,
+                      columns: 3,
+                      rows: 3,
+                      columnStride: 16,
+                      byteSize: 48,
+                      alignment: 12,
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      [
+        'array descriptor omits its element type',
+        {
+          ...generic,
+          boundGlobals: [
+            {
+              group: 0,
+              binding: 4,
+              addressSpace: 'storage',
+              resourceKind: 'storage-buffer',
+              resourceAccess: 'read-only',
+              visibility: 4,
+              members: [],
+              span: 0,
+              elementStride: 16,
+              typeDescriptor: {
+                kind: 'array',
+                size: { kind: 'dynamic' },
+                stride: 16,
+                byteSize: 16,
+                alignment: 16,
+              },
+            },
+          ],
+        },
+      ],
+      [
+        'uniform access contradicts Naga resource kind',
+        { ...generic, boundGlobals: [{ ...uniform, resourceAccess: 'write-only' }, texture] },
+      ],
+      [
+        'sampled texture facts are incomplete',
+        {
+          ...generic,
+          boundGlobals: [
+            uniform,
+            { ...texture, resourceAccess: 'read-only', textureClass: 'sampled' },
+          ],
+        },
+      ],
+      [
+        'invalid fixed array length',
+        {
+          ...generic,
+          boundGlobals: [{ ...uniform, arrayLength: 0, elementStride: 16 }],
+        },
+      ],
+      [
         'duplicate group and binding',
         { ...generic, boundGlobals: [uniform, { ...uniform, name: 'duplicate' }] },
       ],
       [
         'legacy material fallback',
         {
-          schemaVersion: 'shader-reflection/2',
+          schemaVersion: 'shader-reflection/3',
           boundGlobals: [],
           uvSetCount: 0,
           material: { members: [] },

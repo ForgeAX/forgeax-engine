@@ -108,3 +108,42 @@ it.each([
     f.dispose();
   }
 });
+
+it.each([
+  'forward',
+  'deferred',
+  'temporal',
+  'shadow',
+] as const)('submits per-instance CPU LOD ranges in original order through %s', async (kind) => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const shader = (await rhi.createShaderModule(device, { code: CPU_SETUP_SHADER })).unwrap();
+  const f = cpuPhysicalRangesFixture(device, shader);
+  const transforms = new Float32Array(257 * 16);
+  for (let ordinal = 0; ordinal < 257; ordinal++) {
+    const offset = ordinal * 16;
+    transforms[offset] =
+      transforms[offset + 5] =
+      transforms[offset + 10] =
+      transforms[offset + 15] =
+        1;
+    transforms[offset + 14] = ordinal >= 127 && ordinal < 256 ? -35 : 0;
+  }
+  Object.assign(f.second.source, {
+    instances: { transforms, instanceCount: 257, cacheKey: 2, archVersion: 0 },
+  });
+  try {
+    const pass = device.createCommandEncoder().unwrap().beginRenderPass({ colorAttachments: [] });
+    const draws = vi.spyOn(pass, 'drawIndexed');
+    f.recordRange(pass, kind, 0);
+    expect(draws.mock.calls).toEqual([
+      [3, 1, 0, 0, 0],
+      [3, 127, 3, 2, 0],
+      [3, 129, 6, 5, 127],
+      [3, 1, 3, 2, 256],
+    ]);
+    pass.end();
+    expect(f.errors).toEqual([]);
+  } finally {
+    f.dispose();
+  }
+});

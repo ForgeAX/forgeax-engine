@@ -12,6 +12,7 @@ import {
   validateRenderFeaturePlan,
 } from '../features/plan';
 import type { RenderFeature } from '../features/types';
+import { submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 const plan = (data = new Uint32Array([1, 2, 3, 4])) =>
@@ -500,7 +501,7 @@ describe('RenderFeature plan authority', () => {
 
     expect(result.errors).toEqual([]);
     expect(result.preparedResourceBatches).toHaveLength(0);
-    result.onSubmitted();
+    submitFeatureFrame(host.value);
     expect(result.preparedResourceBatches).toHaveLength(1);
     expect(result.requiresPreparedResourceKey).toBe(false);
   });

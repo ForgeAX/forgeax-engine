@@ -400,7 +400,8 @@ interface SelectionPrimitive {
 export class ReflectionProbeProjection {
   private revision = 0;
   private facts: readonly ReflectionProbeFact[] = [];
-  private factSignature = '';
+  /** The probe roster revision the selections were derived from. */
+  private factsRevision = -1;
   private readonly selected = new Map<string, ReflectionProbeSelectionResult>();
   private readonly keys = new Map<number, string>();
   private scannedPrimitives = 0;
@@ -414,11 +415,12 @@ export class ReflectionProbeProjection {
   });
 
   update(
-    facts: readonly ReflectionProbeFact[],
+    roster: { readonly facts: readonly ReflectionProbeFact[]; readonly revision: number },
     rows: ProjectedRows | undefined,
     centerOf: (slot: RenderSceneSlot) => ReflectionProbePrimitiveCenter | undefined,
   ): ReflectionProbeProjectionSnapshot {
     this.scannedPrimitives = 0;
+    const facts = roster.facts;
     if (facts.length === 0 || rows === undefined) {
       // No probe has no per-row demand: drop the projection; a later probe re-derives it cold.
       if (this.facts.length > 0 || this.selected.size > 0) {
@@ -426,23 +428,19 @@ export class ReflectionProbeProjection {
         this.selected.clear();
         this.keys.clear();
         this.facts = [];
-        this.factSignature = '';
+        this.factsRevision = -1;
         this.revision += 1;
       }
       return this.snapshot();
     }
-    const nextFacts = facts
-      .slice()
-      .sort((a, b) => a.worldId - b.worldId || a.entityKey - b.entityKey);
-    const signature = JSON.stringify(nextFacts);
     this.centerOf = centerOf;
     const visits = this.primitives.visits;
     const sync = this.primitives.sync(rows);
     this.scannedPrimitives = this.primitives.visits - visits;
-    const factsChanged = signature !== this.factSignature;
+    const factsChanged = roster.revision !== this.factsRevision;
     const reselectAll = factsChanged || sync.cold;
-    this.facts = nextFacts;
-    this.factSignature = signature;
+    this.facts = facts;
+    this.factsRevision = roster.revision;
     let changed = factsChanged;
     for (const slot of sync.changed) {
       const key = this.keys.get(slot);
@@ -450,7 +448,7 @@ export class ReflectionProbeProjection {
       this.keys.delete(slot);
     }
     const select = (slot: number, primitive: SelectionPrimitive) => {
-      const result = selectReflectionProbe(nextFacts, primitive.center);
+      const result = selectReflectionProbe(facts, primitive.center);
       const before = this.selected.get(primitive.key);
       if (before === undefined || !sameSelection(before, result)) changed = true;
       this.selected.set(primitive.key, result);

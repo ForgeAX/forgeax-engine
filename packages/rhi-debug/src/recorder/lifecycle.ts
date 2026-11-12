@@ -14,7 +14,7 @@ import {
   readbackTexturePixels,
   readbackTexturePixelsBatch,
 } from '../readback';
-import { readbackDepthTexture } from '../readback-depth';
+import { isDepth32FloatCopySource, readbackDepthTexture } from '../readback-depth';
 import { computeTextureLayout, projectTextureExtent } from '../texel-layout';
 import type { HandleId, RhiCallEvent, Tape } from '../types';
 import { _collectFrameReferencedHandleIds, _computeClosure, _topoSortClosure } from './closure';
@@ -435,6 +435,7 @@ export function createRecorderLifecycle(
                     createShaderModule,
                     layerCount > 1 || entry.textureBindingViewDimension === '2d-array',
                     () => !snapshotIsActive(),
+                    isDepth32FloatCopySource(entry.format, entry.usage),
                   )
                 : undefined;
             if (depth !== undefined && !depth.ok) return depth;

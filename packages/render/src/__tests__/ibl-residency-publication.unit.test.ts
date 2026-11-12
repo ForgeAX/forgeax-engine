@@ -80,14 +80,19 @@ describe('IBL residency publication', () => {
 
   it('retains each bounded irradiance-face submission before the next face', () => {
     const runStart = iblSource.indexOf('export async function runIblPrecompute(');
-    const irradianceStart = iblSource.indexOf('// (b) irradiance convolve', runStart);
-    const prefilterStart = iblSource.indexOf('// (c) prefilter env', irradianceStart);
+    const prefilterStart = iblSource.indexOf('// (b) PMREM prefilter', runStart);
+    const irradianceStart = iblSource.indexOf('// (c) irradiance convolve', runStart);
+    const brdfStart = iblSource.indexOf('// (d) brdf-lut', irradianceStart);
+    // The irradiance sum reads the finished PMREM atlas, so it follows the prefilter.
+    expect(prefilterStart).toBeGreaterThan(runStart);
+    expect(irradianceStart).toBeGreaterThan(prefilterStart);
     const faceMarkers = iblSource.match(/submitStage\(`irradiance-face-\$\{face\}`/g) ?? [];
     expect(faceMarkers).toHaveLength(1);
-    expect(iblSource.slice(irradianceStart, prefilterStart)).toMatch(
+    expect(iblSource.slice(irradianceStart, brdfStart)).toMatch(
       /await submitStage\(`irradiance-face-\$\{face\}`, true\)/,
     );
-    expect(iblSource.slice(irradianceStart, prefilterStart)).not.toContain(
+    expect(iblSource.slice(irradianceStart, brdfStart)).toContain('candidatePrefilterView');
+    expect(iblSource.slice(irradianceStart, brdfStart)).not.toContain(
       "await submitStage('irradiance', true)",
     );
   });

@@ -152,6 +152,61 @@ describe.skipIf(!pkgBuilt)('transcodeKtx2 — real UASTC -> BC7 (w14)', () => {
   });
 });
 
+describe.skipIf(!pkgBuilt)('repeated transcodes release their files', () => {
+  /** Linear-memory size of the singleton transcoder module (grows when malloc runs out). */
+  async function heapBytes(): Promise<number> {
+    const mod = (await initBasisTranscoder()) as unknown as { HEAP8: Int8Array };
+    return mod.HEAP8.buffer.byteLength;
+  }
+
+  it('every opened file is deleted', async () => {
+    _setBasisTranscoderImporter();
+    const mod = (await initBasisTranscoder()) as unknown as Record<
+      'KTX2File' | 'BasisFile',
+      { prototype: { delete(): void } }
+    >;
+    const ktx2 = await encodeUastcKtx2(16, 16, true);
+    const basis = await encodeUastcKtx2(16, 16, false);
+    const parsed = parseKtx2(ktx2);
+    if (!parsed.ok) throw new Error(parsed.error.code);
+    const deletes = { KTX2File: 0, BasisFile: 0 };
+    const originals = {
+      KTX2File: mod.KTX2File.prototype.delete,
+      BasisFile: mod.BasisFile.prototype.delete,
+    };
+    for (const name of ['KTX2File', 'BasisFile'] as const) {
+      mod[name].prototype.delete = function (this: unknown) {
+        deletes[name]++;
+        originals[name].call(this);
+      };
+    }
+    try {
+      for (let i = 0; i < 10; i++) {
+        expect((await transcodeKtx2(parsed.value, 'bc7-rgba-unorm')).ok).toBe(true);
+        expect((await transcodeBasis(basis, 'bc7-rgba-unorm')).ok).toBe(true);
+      }
+    } finally {
+      mod.KTX2File.prototype.delete = originals.KTX2File;
+      mod.BasisFile.prototype.delete = originals.BasisFile;
+    }
+    expect(deletes).toEqual({ KTX2File: 10, BasisFile: 10 });
+  });
+
+  it('ktx2: 2000 transcodes grow the WASM heap by less than 1 MiB', async () => {
+    _setBasisTranscoderImporter();
+    const parsed = parseKtx2(await encodeUastcKtx2(16, 16));
+    if (!parsed.ok) throw new Error(parsed.error.code);
+    // Warm up so allocator high-water marks are reached before the baseline.
+    for (let i = 0; i < 50; i++) await transcodeKtx2(parsed.value, 'bc7-rgba-unorm');
+    const before = await heapBytes();
+    for (let i = 0; i < 2000; i++) {
+      const result = await transcodeKtx2(parsed.value, 'bc7-rgba-unorm');
+      if (!result.ok) throw new Error(result.error.code);
+    }
+    expect((await heapBytes()) - before).toBeLessThan(1 << 20);
+  });
+});
+
 describe.skipIf(!pkgBuilt)('selected targets carry their declared pixel or block bytes', () => {
   for (const container of ['ktx2', 'basis'] as const) {
     describe(container, () => {

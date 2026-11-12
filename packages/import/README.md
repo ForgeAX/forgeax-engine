@@ -74,13 +74,41 @@ length and SHA before removing a serialized copy. Missing or inconsistent extern
 evidence retains the inline bytes for the existing complete record, integrity and
 inline/external equality checks; compaction never repairs a malformed publication.
 
-CookProduct digests use the same typed-array-to-JSON-array normalization as Pack
-publication. A native view and its transported array therefore retain one output
+CookProduct digests and Pack publication share numeric view normalization,
+including the clamped byte views admitted by Equirect assets. The projection
+copies the selected view elements without changing the source.
+A native view and its transported array therefore retain one output
 digest; changed values or artifact bytes still change that digest. Normalization
 does not alter source sampling, GUIDs, material programs or the emitted Pack format.
 Source-package production and Vite development request product-only import;
 their shared transport finalizer owns Pack projection, so import does not build
 an additional Pack that those callers discard.
+
+Build and live development Meta imports reuse the existing Pack build-product
+DDC before import and native Cook. The host supplies its sealed build-program identity; the same
+Pack cache owns storage, typed-array encoding, integrity and material generation
+rebinding. No producer identity means ordinary uncached production.
+
+```mermaid
+flowchart LR
+  M["Source plus Meta"] --> K["Pack product DDC lookup"]
+  K -->|miss| I["Import and native Cook"]
+  I --> D["Store complete Pack build product"]
+  K -->|hit| P["Current publication validation"]
+  D --> P
+```
+
+Lookup includes Meta declarations and settings, primary and captured sibling file
+bytes, Engine identity, sealed importer programs and versioned native cookers.
+The prior file roster only discovers inputs to hash; it never replaces current
+byte checks. Import dependency labels can name builtin shaders and are not file
+paths; native cookers retain authority for their complete source identity.
+Missing or corrupt cache evidence falls back to the producer. Every hit still
+checks declared GUID closure and passes through the ordinary publication owner.
+Development admits current native cooker identities on every production attempt;
+an existing server can rebuild edited material inputs without retaining an old
+cache identity. Cached terminal receipts are reconstructed for dev publication,
+while build-only consumers reuse the product without that extra work.
 
 Imported materials use the host's registered material cooker before the complete
 source package is published. `produceSourcePackage` accepts the same `cookers`
@@ -96,6 +124,8 @@ Without a registered material cooker, an importer remains responsible for its
 published payload; uncooked output is not evidence of ray-program readiness.
 
 ### ScriptablePack build generation
+
+A `texture` ScriptablePack output with `encoding: 'ktx2'` must be a linear 2D `bc5-rg-unorm` source: the producer admits it through codec `ktx2Bc5SourceMismatch` (the same helper runtime `prepareRuntimeTexture` uses) and stores the container as an `image/ktx2` body with no Basis codec descriptor. Native `rg8unorm` texels use the ordinary raw path; other encoded textures are rejected.
 
 A `terrain` ScriptablePack output supplies a validated `TerrainSource`. The terrain producer derives subsection meshes, height/control mips and Standard material arrays as one GUID-linked closure; the existing Pack cook, Catalog and runtime loader own publication. See [the terrain contract](../terrain/README.md) for bounds and layer semantics.
 
@@ -121,7 +151,9 @@ legacy Pack v2 already-published Engine materials retain their transport contrac
 The same map also accepts explicit `PackCookSource` rows for custom kinds.
 Their `execution: 'cooked'` and `source` fields dispatch through the existing
 build-time NativeCooker registry; the closed ordinary Asset producer union is
-unchanged. Cooked refs, artifacts and fingerprints participate in the same
+unchanged. A cooker whose payload is an ordinary Asset (a texture baked outside
+the build timeout, a mesh) is published as that kind through its standard
+producer, with the cooker's refs and artifacts merged. Cooked refs, artifacts and fingerprints participate in the same
 worklist, reference validation and finalizer. Staged content reads retain the
 custom author source instead of pretending its metadata is a runtime asset.
 
@@ -180,8 +212,14 @@ lane from both free memory and remaining Node heap.
 `FORGEAX_BUILD_CONCURRENCY=1..4` can lower this memory/CPU admission limit.
 Custom native cookers keep host admission serial unless they explicitly declare
 `concurrency: 'parallel'` for reentrant, input-isolated cooking. The builtin
-material and particle cookers declare that capability. Existing worker lifetime
-and source/reference validation remain in effect.
+material and particle cookers declare that capability. `NativeCookerRegistry`
+owns that admission: concurrent `runDraft` calls of a serial cooker key run one
+at a time in call order, whichever registry or instance receives them. Within one
+Pack, up to four complete custom outputs share admission in sourceKey order, so a serial custom cooker (a modeling job) keeps its order
+while the material cooks it returns fill the material worker pool; rows publish
+in sourceKey order and the first failure in that order is returned after started
+outputs settle. Existing worker lifetime and source/reference validation remain
+in effect.
 
 Source path projection preserves nested imports: `assets/original/assets/ui.pack.ts`
 and `assets/cloned/assets/ui.pack.ts` remain distinct in both development and build
@@ -434,8 +472,15 @@ integrity are checked on read. A hit reuses the complete staged product, then
 passes through the same current-generation
 GUID/reference-closure validation as a cold build. Material CookedRecords keep
 their publication fence in the stored product; the current generation is rebound
-on reuse without recompiling the immutable material program. Products with observed
-external content reads or a native cooker without `cacheIdentity` bypass this
+on reuse without recompiling the immutable material program. A product that read
+content by GUID stores each dependency's content digest. On a key match the cache
+asks the worklist for every dependency's current digest (a staged output, or the
+published snapshot only when no other subject is still pending) and hits only when
+all digests are equal. The resolver cooks nothing: an unavailable dependency is a
+miss, the cook then waits on `asset-not-found`, and a later pass retries. A
+changed, missing or failed dependency is a miss, so a byte-equal dependency rebuilt from an edited source keeps its
+dependents. Products with a reference-only external row (no content bytes to
+validate; a known limit) or a native cooker without `cacheIdentity` bypass this
 cache; a miss or damaged entry rebuilds normally. These entries are disposable
 derived data, not Pack or Catalog authority.
 
@@ -446,6 +491,11 @@ derived data, not Pack or Catalog authority.
 > reuse: serialization, decompression, or cache I/O failure falls back to normal
 > Pack production.
 
+Cache format 10 copies only reachable typed-view bytes into zeroed backing storage and
+normalizes string storage before V8 encoding. Unrelated pooled bytes and V8
+one-byte/two-byte string representations cannot enter SDK publication identity.
+Unobserved backing tails are trimmed. View offsets, shared buffers and explicitly
+reachable ArrayBuffer bytes are preserved.
 Before V8 encoding, equal immutable plain-data subtrees and byte bodies are shared
 within the disposable product representation. Caller-owned publications are not
 mutated; sparse arrays, special scalar values and cyclic/non-POD graphs keep their
@@ -791,13 +841,65 @@ The caller supplies stable GUIDs through the existing source-key identity route.
 Publish the root and all generated siblings atomically through the ordinary
 Pack production path. The Mesh producer emits the root's lower-level refs and
 mesh-binary v5 artifacts; Catalog and `assets.load(guid, 'mesh')` consume them.
-For ScriptablePack, declare the same output keys and return the root and siblings
-from `build`. Generation never allocates GUIDs, writes source, or changes the input.
+Generation never allocates GUIDs, writes source, or changes the input.
+
+All material sections are simplified in one pass: vertices shared between sections are
+split into bit-identical copies, so adjacent sections collapse consistently and no
+back-to-back duplicate triangles appear. Each level is then checked against LOD 0 and
+must add no non-manifold edge and no open boundary edge. On failure the vertices around
+the defect are locked (rings 1 to 4) and the level is retried; if no retry passes, the
+previous valid level is reused. Level positions stay bit-identical to the source.
+
+A level that still exceeds its triangle target is retried once with the simplifier's
+`Permissive` flag, which also collapses across attribute seams. Flat-shaded or UV-split
+parts (every corner its own vertex) have no seam-free collapse, so the first pass returns
+their source unchanged. The retry locks vertices shared by two sections, uses the same
+topology check and ring locks, and is adopted only when it has fewer triangles than the
+previous valid level. `targetReached` stays false when the error budget still blocks the
+target; faceted normals make that budget tighter than on smooth parts.
+
+### Pack mesh LOD requests
+
+A ScriptablePack build requests levels for its own mesh outputs with
+`generatePackMeshLods(packageId, outputs, requests)` from the same subpath (design
+seam X4). Level `i` becomes the ordinary output `<key>/lod<i + 1>`; its GUID is
+`AssetGuid.derive(packageId, sourceKey)` like every other output, so it survives
+rebuilds and instances. The returned `outputs` replace the root and add the levels;
+`reports` carry the per-level triangle count, error and `targetReached`.
+
+```ts
+import { generatePackMeshLods } from '@forgeax/engine/import/mesh-lod-generator';
+
+build: async ({ packageId, values }) => {
+  const rim = buildWheelRim(values).finish({ key: 'wheel-rim' }); // { 'mesh/wheel-rim': MeshAsset }
+  if (!rim.ok) return rim;
+  const lods = await generatePackMeshLods(packageId, rim.value, {
+    'mesh/wheel-rim': {
+      maxError: 0.005,
+      levels: [
+        { triangleRatio: 0.6, screenCoverage: 0.5 },
+        { triangleRatio: 0.4, screenCoverage: 0.25, maxError: 0.02 },
+      ],
+    },
+  });
+  return lods.ok ? ok(lods.value.outputs) : lods;
+},
+```
+
+A missing or non-mesh root, a level key the build already returns, and invalid
+options fail with `mesh-lod-generation-invalid` whose `detail.reason` starts with
+the root source key. Live-generation Packs may import this subpath. Evidence: the
+C-101 rim (case C-015) in `packages/import/__tests__/mesh-lod-pack.dawn.test.ts`
+cooks through the Pack loader and Mesh producer and renders each decoded level.
+Hard-surface sources with many sharp edges and UV seams reduce less, because
+seam-preserving collapses keep vertices where several attribute wedges meet: the
+rim (7208 triangles) reaches 66 %, 55 % and 50 % at budgets 0.005, 0.02 and 0.05,
+with `targetReached: false` for ratios 0.6, 0.4 and 0.25.
 
 | Contract | Behavior |
 |:--|:--|
 | Levels | One to seven, strictly decreasing triangle ratios and screen coverage |
-| Error | `maxError` in `[0, 1]`, relative to source extent, including weighted attributes; each level simplifies the original independently |
+| Error | `maxError` in `[0, 1]`, relative to source extent, including weighted attributes; an optional per-level `maxError` overrides it (coarser levels usually allow more); each level simplifies the original independently |
 | Sections | Triangle lists with a complete ordered partition; original material slots and section identities survive |
 | Appearance | Attribute-aware normals/tangents (weight 0.5), all UV sets and color (weight 1), topology-preserving seams |
 | Open edges | Locked by default; `lockBorder: false` permits boundary simplification |
@@ -982,3 +1084,33 @@ fields derive from ImportedAsset; runtime Assets still never carry ref indices.
 
 Production builds emit one file per artifact. Player packaging groups them into
 Asset Bundles; see [the DevKit player delivery contract](../devkit/README.md#player-asset-bundles).
+
+ScriptablePack output admission and native cooker serialization follow the
+[build-time admission contract](#scriptablepack-build-generation): complete custom
+outputs overlap within a four-output bound, while each native cooker retains
+its registry-owned serial or opted-in parallel policy.
+
+Build producers can opt into transport metadata reuse with a stable
+`ScriptablePackInput.transportIdentity` for a pure, sink-free finalization policy.
+The cache keys producer bytes, source identity, publication generation, location
+and policy identity; it validates current artifact digests and reuses the existing
+product binary payloads. Corrupt or mismatched metadata falls back to ordinary
+finalization. Policies without an identity remain live. Cached output/read GUIDs
+are scheduling hints only; the current dependency worklist still validates every
+reference and retries missing dependencies.
+
+Meta publication lets DDC staging derive its receipt digest from one private
+capture. DDC validates and publishes the immutable entry once before its ordinary
+lifecycle CAS; the Import adapter does not bypass closure checks or head fences.
+With `FORGEAX_WORKSPACE_TIMING=1`, `forgeax.meta-publication.timing` separates
+artifact closure validation, immutable payload selection and DDC staging.
+
+Live generation owners first call `readImportPublication` with their newly
+produced Pack and complete artifact closure. Matching output digest, producer,
+current key and a fenced integrity-checked DDC entry restore the Catalog revision
+and runtime-bound Pack without staging, leases, head commits or sidecar writes.
+Serve the returned Pack and its privately owned artifact bytes: restoration discards
+the caller's transport text and buffers. Prepare HTTP compression only after these
+restored bodies are installed. Changed,
+damaged, missing or actively leased entries retain ordinary publication and its
+rollback; a product-cache hit alone never admits a publication.

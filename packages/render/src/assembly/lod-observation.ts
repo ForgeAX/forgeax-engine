@@ -7,7 +7,8 @@ import type {
 } from '../inspection-types';
 import { MAX_INSPECTION_SAMPLES, MAX_RECEIPT_OBSERVATION_BYTES } from '../observation-budget';
 import type { FrameReceipt } from '../render-contract';
-import type { LodOcclusionInspectionCell, RenderSystem } from '../render-system';
+import type { LodOcclusionInspectionCell } from '../render-system';
+import type { ViewSettlementOwner } from '../world/view-settlement';
 
 interface LodObservationLeaseCapture {
   readonly lease: RenderReadLease;
@@ -24,7 +25,8 @@ export interface LodObservationViewCapture {
   readonly graphGeneration: number;
   readonly graphIncarnation: object | undefined;
   readonly state: 'rendered' | 'held';
-  readonly system: RenderSystem;
+  /** The view's owner bag: its LOD cell, compiled graph and GPU-driven production. */
+  readonly owner: ViewSettlementOwner;
   readonly viewRef: object | undefined;
   readonly primary: boolean;
   readonly inspection: LodOcclusionInspectionCell | undefined;
@@ -82,17 +84,18 @@ export async function observeLodOcclusionCapture(
     const captureFailure = currentCaptureFailure(capture, validity);
     if (captureFailure !== undefined)
       return unavailableLodObservation(captureFailure, roster(capture.views));
-    const cell = view.system.lodOcclusion;
+    const cell = view.owner.lod.cell;
     if (cell !== view.inspection)
       return unavailableLodObservation('lod-readback-unavailable', roster(capture.views));
-    const ownerInspection = await view.system.observeLodOcclusion({
-      frameId: receipt.frameId,
-      deviceGeneration: receipt.deviceGeneration,
-    });
+    const ownerInspection = await view.owner.lod.observe(
+      view.owner.gpuDriven,
+      view.owner.surfaceSubmission,
+      { frameId: receipt.frameId, deviceGeneration: receipt.deviceGeneration },
+    );
     const captureFailureAfterRead = currentCaptureFailure(capture, validity);
     if (captureFailureAfterRead !== undefined)
       return unavailableLodObservation(captureFailureAfterRead, roster(capture.views));
-    const currentCell = view.system.lodOcclusion;
+    const currentCell = view.owner.lod.cell;
     if (
       (ownerInspection === undefined && currentCell !== cell) ||
       (ownerInspection !== undefined &&
@@ -105,15 +108,10 @@ export async function observeLodOcclusionCapture(
   const projected: LodOcclusionReceiptViewObservation[] = [];
   let unavailableReason: LodOcclusionReceiptUnavailableReason | undefined;
   for (const view of capture.views) {
-    const currentInspection =
-      view.state === 'rendered' ? view.system.lodOcclusion?.value() : undefined;
+    const currentInspection = view.state === 'rendered' ? view.owner.lod.cell?.value() : undefined;
     projected.push(projectView(view, currentInspection));
     if (view.state !== 'rendered') unavailableReason ??= 'held-view';
-    if (
-      !view.system.perFrameGraphInfo ||
-      view.system.perFrameGraphInfo.generation !== view.graphGeneration
-    )
-      unavailableReason ??= 'graph-generation-mismatch';
+    if (!graphMatchesGeneration(view)) unavailableReason ??= 'graph-generation-mismatch';
     if (view.state === 'held') continue;
     if (currentInspection === undefined) {
       unavailableReason ??= 'lod-readback-unavailable';
@@ -172,11 +170,11 @@ export async function observeLodOcclusionCapture(
       unavailableReason ??=
         attributedWorlds.length > 0
           ? 'world-attribution-unavailable'
-          : hasUnsupportedLodLane(view.system)
+          : hasUnsupportedLodLane(view.owner)
             ? 'unsupported-lod-lane'
             : 'lod-readback-unavailable';
     }
-    if (view.system.gpuDrivenInspection.overflow)
+    if (gpuDrivenInspectionOf(view.owner).overflow)
       unavailableReason ??= 'world-attribution-unavailable';
   }
 
@@ -237,7 +235,7 @@ export function cachedLodObservationMatchesCapture(
       return false;
     if (view.state === 'held') return row.lodOcclusion === undefined;
     if (row.lodOcclusion === undefined) return observation.status === 'unavailable';
-    return view.system.lodOcclusion?.value() === row.lodOcclusion;
+    return view.owner.lod.cell?.value() === row.lodOcclusion;
   });
 }
 
@@ -259,8 +257,12 @@ function ownerInspectionMatchesCapture(
   );
 }
 
-function hasUnsupportedLodLane(system: RenderSystem): boolean {
-  return system.gpuDrivenInspection.channels.some(
+function gpuDrivenInspectionOf(owner: ViewSettlementOwner) {
+  return owner.gpuDriven.inspect(owner.skin.paletteUploadBytes);
+}
+
+function hasUnsupportedLodLane(owner: ViewSettlementOwner): boolean {
+  return gpuDrivenInspectionOf(owner).channels.some(
     (channel) =>
       channel.viewPass === 'main' &&
       channel.lane === 'blocked' &&
@@ -283,7 +285,7 @@ function validateCapture(
     if (!capture.leases.some((lease) => lease.worldIdentity === view.attachmentId))
       return 'attachment-unavailable';
     if (view.inspection === undefined) return 'lod-readback-unavailable';
-    if (view.system.lodOcclusion !== view.inspection) return 'lod-readback-unavailable';
+    if (view.owner.lod.cell !== view.inspection) return 'lod-readback-unavailable';
     if (
       view.inspection.submit.frameId !== capture.frameId ||
       view.inspection.submit.deviceGeneration !== capture.deviceGeneration
@@ -311,13 +313,23 @@ function currentCaptureFailure(
   return undefined;
 }
 
+/** The compiled-graph generation and incarnation a view's owner currently holds. */
+export function graphFacts({ frameState }: ViewSettlementOwner) {
+  const graph = frameState.compiledFrameGraph?.graph;
+  return { generation: graph?.inspect().generation ?? 0, incarnation: graph as object | undefined };
+}
+
+function graphMatchesGeneration(view: LodObservationViewCapture): boolean {
+  const graph = view.owner.frameState.compiledFrameGraph?.graph;
+  return graph !== undefined && graph.inspect().generation === view.graphGeneration;
+}
+
 function graphMatchesCapture(view: LodObservationViewCapture): boolean {
-  const graphInfo = view.system.perFrameGraphInfo;
+  const graph = view.owner.frameState.compiledFrameGraph?.graph;
   return (
     view.graphIncarnation !== undefined &&
-    view.system.perFrameGraphIncarnation === view.graphIncarnation &&
-    graphInfo !== undefined &&
-    graphInfo.generation === view.graphGeneration
+    graph === view.graphIncarnation &&
+    graph.inspect().generation === view.graphGeneration
   );
 }
 

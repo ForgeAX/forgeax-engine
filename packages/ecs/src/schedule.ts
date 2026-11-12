@@ -13,6 +13,7 @@ import {
   type SystemSetNotRegisteredError,
   systemSetNotRegistered,
 } from './errors';
+import { isSuspendedMemoryResult, MemoryError } from './memory-types';
 import type { Query, QueryDescriptor } from './query/query';
 // type-only import: erases at build time, carries no runtime edge (same
 // criterion as scripts/check-ecs-no-runtime-import.mjs). `world.ts` already
@@ -101,6 +102,12 @@ export interface SystemDescriptor<
   /** Query descriptors this system reads. */
   readonly queries: Qs;
   /**
+   * Deferred structural capability, snapshotted at registration. `none` passes
+   * a permanently closed capability and creates no per-run transaction.
+   * Direct World writes retain their ordinary structural/query fences.
+   */
+  readonly commands?: 'deferred' | 'none';
+  /**
    * System function — receives the World, resolved query results, and commands.
    *
    * @param world The owning World — read resources (`world.getResource(KEY)`),
@@ -136,6 +143,25 @@ export type SystemHandle<
   Qs extends ReadonlyArray<QueryDescriptor> = ReadonlyArray<QueryDescriptor>,
 > = SystemDescriptor<Qs>;
 
+/** A query-free system receives the same closed immutable empty tuple. */
+const EMPTY_QUERY_RESULTS: readonly [] = Object.freeze([]);
+
+function deferredCommandsUnavailable(): never {
+  throw new Error('System declared commands: none; deferred structural commands are unavailable');
+}
+
+/** No invocation-owned state exists when the system explicitly declines it. */
+const NO_COMMANDS: CommandBuffer = Object.freeze({
+  status: 'aborted',
+  spawn: deferredCommandsUnavailable,
+  despawn: deferredCommandsUnavailable,
+  addComponent: deferredCommandsUnavailable,
+  removeComponent: deferredCommandsUnavailable,
+  commit: deferredCommandsUnavailable,
+  abort: () => {},
+  isDeferred: () => false,
+});
+
 /** Internal system record with registration index. */
 interface SystemRecord {
   descriptor: SystemDescriptor;
@@ -143,6 +169,7 @@ interface SystemRecord {
   registrationIndex: number;
   /** Cached executable Queries, one per descriptor. */
   queries: Query[] | null;
+  deferredCommands: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -177,7 +204,7 @@ export interface Schedule {
   /** Sorted system names after buildSchedule(). */
   sortedOrder: string[];
   /** Direct predecessor names derived while the DAG is built. */
-  predecessors: Map<string, Set<string>>;
+  predecessors: Map<string, readonly string[]>;
   /** Reverse set membership derived with the schedule graph. */
   systemToSets: Map<string, string[]>;
   /**
@@ -185,6 +212,8 @@ export interface Schedule {
    * set gate, query materialization or predecessor flush. Derived on build.
    */
   plain: boolean;
+  /** At least one built system can enqueue deferred structural work. */
+  deferredCommands: boolean;
   /** `scheduleRevision` at which cross-schedule references last validated. */
   validatedRevision: number;
 }
@@ -212,6 +241,7 @@ export function createSchedule(token: ScheduleToken): Schedule {
     predecessors: new Map(),
     systemToSets: new Map(),
     plain: true,
+    deferredCommands: false,
     validatedRevision: -1,
   };
 }
@@ -233,6 +263,7 @@ export function addSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
     descriptor: descriptor as unknown as SystemDescriptor,
     registrationIndex: schedule.nextIndex++,
     queries: null,
+    deferredCommands: descriptor.commands !== 'none',
   };
   schedule.systems.set(descriptor.name, record);
   schedule.dirty = true;
@@ -414,6 +445,7 @@ export function replaceSystem<const Qs extends ReadonlyArray<QueryDescriptor>>(
     );
   }
   record.descriptor = descriptor as unknown as SystemDescriptor;
+  record.deferredCommands = descriptor.commands !== 'none';
   // Reset cached query states — descriptor.queries may have changed shape.
   record.queries = null;
   schedule.dirty = true;
@@ -610,7 +642,7 @@ export function buildSchedule(schedule: Schedule): string[] {
   }
 
   schedule.sortedOrder = sorted;
-  schedule.predecessors = predecessors;
+  schedule.predecessors = new Map([...predecessors].map(([name, edges]) => [name, [...edges]]));
   schedule.systemToSets = systemToSets;
   schedule.plain =
     schedule.sets.size === 0 &&
@@ -623,6 +655,7 @@ export function buildSchedule(schedule: Schedule): string[] {
         (predecessors.get(name)?.size ?? 0) === 0
       );
     });
+  schedule.deferredCommands = sorted.some((name) => systems.get(name)?.deferredCommands === true);
   schedule.dirty = false;
   return sorted;
 }
@@ -680,22 +713,32 @@ function poisonSystemFailure(world: World, systemName: string, cause: unknown): 
 }
 
 function abortOutstandingCommands(
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>>,
+  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
 ): void {
-  for (const commands of commandsBySystem.values()) {
-    if (commands.status === 'open') commands.abort();
-  }
+  if (commandsBySystem === undefined) return;
+  commandsBySystem.forEach(abortOpenCommands);
+}
+
+/** Native Map traversal preserves live ledger order without iterator result objects. */
+function abortOpenCommands(commands: ReturnType<typeof createCommandBuffer>): void {
+  if (commands.status === 'open') commands.abort();
+}
+
+function flushCommandForWorld(this: World, commands: ReturnType<typeof createCommandBuffer>): void {
+  flushCommands(commands, this);
 }
 
 /** Apply only buffers that have an explicit graph edge into the next system. */
 function flushPredecessorCommands(
-  predecessors: ReadonlySet<string> | undefined,
+  predecessors: readonly string[] | undefined,
   world: World,
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>>,
+  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
 ): void {
   // Systems without inbound edges skip the iterator entirely.
-  if (predecessors === undefined || predecessors.size === 0) return;
-  for (const predecessor of predecessors) {
+  if (predecessors === undefined || predecessors.length === 0 || commandsBySystem === undefined)
+    return;
+  for (let index = 0; index < predecessors.length; index++) {
+    const predecessor = predecessors[index] as string;
     const producerCommands = commandsBySystem.get(predecessor);
     if (producerCommands) {
       try {
@@ -704,6 +747,42 @@ function flushPredecessorCommands(
         abortOutstandingCommands(commandsBySystem);
         throw error;
       }
+    }
+  }
+}
+
+/** One invocation owns its capability, error boundary and returned Result. */
+function invokeSystem(
+  record: SystemRecord,
+  name: string,
+  scheduleName: string,
+  world: World,
+  queries: Parameters<SystemRecord['descriptor']['fn']>[1],
+  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
+): void {
+  const commands = record.deferredCommands
+    ? createCommandBuffer(world, name, scheduleName)
+    : undefined;
+  if (commands !== undefined) {
+    if (commandsBySystem === undefined) throw new Error('Missing deferred execution storage');
+    commandsBySystem.set(name, commands);
+  }
+  let returnValue: unknown;
+  try {
+    returnValue = record.descriptor.fn(world, queries, commands ?? NO_COMMANDS);
+    if (isSuspendedMemoryResult(returnValue))
+      throw new MemoryError({ kind: 'scope', reason: 'asynchronous' });
+  } catch (error) {
+    abortOutstandingCommands(commandsBySystem);
+    poisonSystemFailure(world, name, error);
+    throw new SystemFailedError(name, scheduleName, error);
+  }
+  if (returnValue && typeof returnValue === 'object' && 'ok' in returnValue) {
+    const result = returnValue as { ok: boolean; error?: unknown };
+    if (result.ok === false && result.error !== undefined) {
+      abortOutstandingCommands(commandsBySystem);
+      poisonSystemFailure(world, name, result.error);
+      throw new SystemFailedError(name, scheduleName, result.error);
     }
   }
 }
@@ -720,46 +799,25 @@ function flushPredecessorCommands(
 function runScheduleBody(
   schedule: Schedule,
   world: World,
-  selectedNames: readonly string[] | undefined,
-  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>>,
+  selected: ReadonlySet<string> | undefined,
+  commandsBySystem: Map<string, ReturnType<typeof createCommandBuffer>> | undefined,
   finalDrain = true,
+  start: number,
+  end: number,
 ): void {
-  if (schedule.dirty) {
-    buildSchedule(schedule);
-  }
-  if (selectedNames === undefined && commandsBySystem.size === 0 && schedule.plain) {
-    for (const name of schedule.sortedOrder) {
+  const order = schedule.sortedOrder;
+  if (selected === undefined && (commandsBySystem?.size ?? 0) === 0 && schedule.plain) {
+    for (let index = start; index < end; index++) {
+      const name = order[index] as string;
       const record = schedule.systems.get(name);
       /* istanbul ignore next -- sortedOrder comes from systems Map keys */
       if (!record) continue;
 
-      const commands = createCommandBuffer(world, {
-        systemName: name,
-        scheduleName: schedule.token.name,
-      });
-      commandsBySystem.set(name, commands);
-      let returnValue: unknown;
-      try {
-        returnValue = record.descriptor.fn(world, [], commands);
-      } catch (error) {
-        abortOutstandingCommands(commandsBySystem);
-        poisonSystemFailure(world, name, error);
-        throw new SystemFailedError(name, schedule.token.name, error);
-      }
-      if (returnValue && typeof returnValue === 'object' && 'ok' in returnValue) {
-        const result = returnValue as { ok: boolean; error?: unknown };
-        if (result.ok === false && result.error !== undefined) {
-          abortOutstandingCommands(commandsBySystem);
-          poisonSystemFailure(world, name, result.error);
-          throw new SystemFailedError(name, schedule.token.name, result.error);
-        }
-      }
+      invokeSystem(record, name, schedule.token.name, world, EMPTY_QUERY_RESULTS, commandsBySystem);
     }
-    if (finalDrain) {
+    if (finalDrain && commandsBySystem !== undefined) {
       try {
-        for (const commands of commandsBySystem.values()) {
-          flushCommands(commands, world);
-        }
+        commandsBySystem.forEach(flushCommandForWorld, world);
       } catch (error) {
         abortOutstandingCommands(commandsBySystem);
         throw error;
@@ -767,15 +825,14 @@ function runScheduleBody(
     }
     return;
   }
-  const selected = selectedNames ? new Set(selectedNames) : undefined;
-
   const systemToSets = schedule.systemToSets;
 
   // Per-frame set runIf cache (D-5). Discarded at frame end — no cross-frame state.
   // Created on the first gated set so ungated schedules allocate nothing here.
   let setRunIfCache: Map<string, boolean> | undefined;
 
-  for (const name of schedule.sortedOrder) {
+  for (let index = start; index < end; index++) {
+    const name = order[index] as string;
     if (selected && !selected.has(name)) continue;
     const record = schedule.systems.get(name);
     /* istanbul ignore next -- defensive: sortedOrder comes from systems Map keys */
@@ -824,43 +881,22 @@ function runScheduleBody(
 
     // ── Layer 3: system execution + Result collection ──
     // trusted-cast: the descriptor tuple constructed the matching Query tuple above.
-    const commands = createCommandBuffer(world, {
-      systemName: name,
-      scheduleName: schedule.token.name,
-    });
-    commandsBySystem.set(name, commands);
-    let returnValue: unknown;
-    try {
-      returnValue = record.descriptor.fn(
-        world,
-        record.queries as Parameters<typeof record.descriptor.fn>[1],
-        commands,
-      );
-    } catch (error) {
-      abortOutstandingCommands(commandsBySystem);
-      poisonSystemFailure(world, name, error);
-      throw new SystemFailedError(name, schedule.token.name, error);
-    }
-
-    // A returned Result error is a poisoned frame failure.
-    if (returnValue && typeof returnValue === 'object' && 'ok' in (returnValue as object)) {
-      const result = returnValue as { ok: boolean; error?: unknown };
-      if (result.ok === false && result.error !== undefined) {
-        abortOutstandingCommands(commandsBySystem);
-        poisonSystemFailure(world, name, result.error);
-        throw new SystemFailedError(name, schedule.token.name, result.error);
-      }
-    }
+    invokeSystem(
+      record,
+      name,
+      schedule.token.name,
+      world,
+      record.queries as Parameters<typeof record.descriptor.fn>[1],
+      commandsBySystem,
+    );
     // void return is treated as successful execution.
   }
 
-  if (finalDrain) {
+  if (finalDrain && commandsBySystem !== undefined) {
     // A schedule boundary drains every remaining buffer, including commands
     // enqueued by lifecycle hooks while another command is being applied.
     try {
-      for (const commands of commandsBySystem.values()) {
-        flushCommands(commands, world);
-      }
+      commandsBySystem.forEach(flushCommandForWorld, world);
     } catch (error) {
       abortOutstandingCommands(commandsBySystem);
       throw error;
@@ -878,12 +914,26 @@ export function runSchedule(
   schedule: Schedule,
   world: World,
   selectedNames?: readonly string[],
-  commandsBySystem = new Map<string, ReturnType<typeof createCommandBuffer>>(),
+  commandsBySystem?: Map<string, ReturnType<typeof createCommandBuffer>>,
   finalDrain = true,
+  selectedStart = 0,
+  selectedEnd?: number,
 ): void {
+  if (schedule.dirty) buildSchedule(schedule);
+  // Update borrows a window of this exact compiled order. A registration during
+  // the preceding segment may replace it: only that cold path needs membership
+  // filtering against the new order, preserving the original selected names.
+  const direct = selectedNames === undefined || selectedNames === schedule.sortedOrder;
+  const start = direct && selectedNames !== undefined ? selectedStart : 0;
+  const end =
+    direct && selectedNames !== undefined
+      ? (selectedEnd ?? schedule.sortedOrder.length)
+      : schedule.sortedOrder.length;
+  const selected = direct ? undefined : new Set(selectedNames?.slice(selectedStart, selectedEnd));
+  if (commandsBySystem === undefined && schedule.deferredCommands) commandsBySystem = new Map();
   let completed = false;
   try {
-    runScheduleBody(schedule, world, selectedNames, commandsBySystem, finalDrain);
+    runScheduleBody(schedule, world, selected, commandsBySystem, finalDrain, start, end);
     completed = true;
   } finally {
     // When Update is split around the FixedUpdate anchor, the first segment

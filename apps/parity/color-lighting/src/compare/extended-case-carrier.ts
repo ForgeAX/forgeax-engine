@@ -14,6 +14,7 @@ import {
 } from './lighting-reference';
 import {
   createExtendedLightingRuntime,
+  type ExtendedLightingRecoveryPhase,
   type ExtendedLightingRuntimeMode,
 } from './extended-lighting-runtime';
 
@@ -344,18 +345,40 @@ async function waitForState(
 
 async function recoverThreeTimes(
   session: Awaited<ReturnType<typeof createExtendedLightingRuntime>>,
+  onRecoveryPhase?: (event: ExtendedLightingRecoveryPhase) => void,
 ): Promise<ExtendedLightingRecoveryReceipt> {
   const generations = [session.inspect().frame.deviceGeneration];
   const resourceCounts = [session.inspect().extendedLighting.resourceCount];
+  const emit = (
+    phase: ExtendedLightingRecoveryPhase['phase'],
+    edge: ExtendedLightingRecoveryPhase['edge'],
+    cycle: number,
+  ) => {
+    if (onRecoveryPhase === undefined) return;
+    const inspection = session.inspect();
+    onRecoveryPhase({
+      phase, edge, cycle, generation: inspection.frame.deviceGeneration,
+      candidateCapacity: inspection.renderScene.gpuDriven.candidateCapacity,
+      resourceGeneration: inspection.renderScene.gpuDriven.resourceGeneration ?? null,
+    });
+  };
   for (let cycle = 0; cycle < 3; cycle += 1) {
     if (session.forceDeviceLoss === undefined) {
       throw new Error('recovery carrier is missing its controlled device-loss trigger');
     }
+    emit('force-loss', 'start', cycle + 1);
     session.forceDeviceLoss();
+    emit('force-loss', 'end', cycle + 1);
+    emit('wait-device-lost', 'start', cycle + 1);
     await waitForState(() => session.renderer.state(), 'device-lost');
+    emit('wait-device-lost', 'end', cycle + 1);
+    emit('recover', 'start', cycle + 1);
     const recovered = await session.renderer.recover();
     if (!recovered.ok) throw recovered.error;
+    emit('recover', 'end', cycle + 1);
+    emit('recovered-ready', 'start', cycle + 1);
     await session.draw(2);
+    emit('recovered-ready', 'end', cycle + 1);
     const inspection = session.inspect();
     if (inspection.state !== 'alive') throw new Error(`recovery cycle ${cycle + 1} ended in ${inspection.state}`);
     generations.push(inspection.frame.deviceGeneration);
@@ -409,16 +432,51 @@ function extendedLightingCapability(session: Awaited<ReturnType<typeof createExt
   };
 }
 
+type RecoveryDiagnosticsInput = {
+  readonly onRecoveryPhase?: (event: ExtendedLightingRecoveryPhase) => void;
+  readonly recoveryObservationSignal?: AbortSignal;
+};
+
+function runtimeRecoveryDiagnostics(input: RecoveryDiagnosticsInput) {
+  return input.onRecoveryPhase === undefined ? {} : {
+    onRecoveryPhase: input.onRecoveryPhase,
+    ...(input.recoveryObservationSignal === undefined ? {} : { recoveryObservationSignal: input.recoveryObservationSignal }),
+  };
+}
+
+function beginRecoveryDisposal(
+  input: RecoveryDiagnosticsInput,
+  session: Awaited<ReturnType<typeof createExtendedLightingRuntime>>,
+) {
+  const disposal = input.onRecoveryPhase === undefined ? undefined : {
+    phase: 'dispose' as const, edge: 'start' as const,
+    generation: session.inspect().frame.deviceGeneration,
+  };
+  if (disposal !== undefined) input.onRecoveryPhase?.(disposal);
+  return disposal;
+}
+
+function endRecoveryDisposal(
+  input: RecoveryDiagnosticsInput,
+  disposal: ReturnType<typeof beginRecoveryDisposal>,
+) {
+  if (disposal !== undefined) input.onRecoveryPhase?.({ ...disposal, edge: 'end' });
+}
+
 export async function runExtendedLightingCarrier(input: {
   readonly fixture: SceneCase;
   readonly exactProductHead: string;
   readonly bundler: RuntimeBundler;
+  readonly onRecoveryPhase?: (event: ExtendedLightingRecoveryPhase) => void;
+  /** Ends test diagnostic observation only, not the original recovery work. */
+  readonly recoveryObservationSignal?: AbortSignal;
 }): Promise<ExtendedLightingCarrierReceipt> {
   const caseId = input.fixture.caseId as RequiredExtendedLightingCaseId;
   if (!['rect-area', 'spot-modifiers', 'probe', 'recovery'].includes(caseId)) {
     throw new Error(`unsupported extended-lighting carrier ${input.fixture.caseId}`);
   }
   const mode = runtimeMode(caseId);
+  input.onRecoveryPhase?.({ phase: 'initialization', edge: 'start' });
   const sceneData = await createLightingSceneManifest(
     sceneManifestMode(caseId),
     input.exactProductHead,
@@ -435,23 +493,41 @@ export async function runExtendedLightingCarrier(input: {
     // frames are useful for local/nightly evidence, while the CI Dawn profile
     // needs only four settled submissions before the same observations.
     frameCount: DAWN_LIGHTWEIGHT ? 4 : 12,
+    ...runtimeRecoveryDiagnostics(input),
     ...(caseId === 'recovery'
       ? { deviceLoss: { destroyCurrentDevice: () => surface.getDevice().destroy() } }
       : {}),
   });
+  const emit = (
+    phase: ExtendedLightingRecoveryPhase['phase'],
+    edge: ExtendedLightingRecoveryPhase['edge'],
+  ) => {
+    if (input.onRecoveryPhase === undefined) return;
+    const inspection = session.inspect();
+    input.onRecoveryPhase({
+      phase, edge, generation: inspection.frame.deviceGeneration,
+      candidateCapacity: inspection.renderScene.gpuDriven.candidateCapacity,
+      resourceGeneration: inspection.renderScene.gpuDriven.resourceGeneration ?? null,
+    });
+  };
   try {
+    emit('initialization', 'end');
     const capability = extendedLightingCapability(session);
     const requiresExtendedLighting = caseId === 'rect-area'
       || caseId === 'spot-modifiers'
       || caseId === 'recovery';
     const unsupported = requiresExtendedLighting && !capability.admitted;
-    const recovery = caseId === 'recovery' && !unsupported ? await recoverThreeTimes(session) : undefined;
+    const recovery = caseId === 'recovery' && !unsupported ? await recoverThreeTimes(session, input.onRecoveryPhase) : undefined;
+    emit('hdr-observe', 'start');
     const observation = await session.observationHost.observeCurrentFrame({
       semantic: 'linear-hdr',
       readback: (lease) => readbackRgba16float(session.device, lease),
     });
     if (!observation.ok) throw observation.error;
+    emit('hdr-observe', 'end');
+    emit('surface-readback', 'start');
     const finalBytes = await readSurfacePixels(surface, input.fixture.scene.width, input.fixture.scene.height);
+    emit('surface-readback', 'end');
     const nonBlackPixels = countNonBlackPixels(finalBytes);
     if (nonBlackPixels === 0) throw new Error(`${caseId} final display is all black`);
     const inspection = session.inspect();
@@ -519,6 +595,8 @@ export async function runExtendedLightingCarrier(input: {
       ...(recovery === undefined ? {} : { recovery }),
     };
   } finally {
+    const disposal = beginRecoveryDisposal(input, session);
     await session.dispose();
+    endRecoveryDisposal(input, disposal);
   }
 }

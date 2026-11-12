@@ -199,8 +199,8 @@ describe('KTX2 error paths (w23)', () => {
   });
 
   describe('Error code closed-union exhaustiveness', () => {
-    it('all 6 CodecErrorCode members are reachable', () => {
-      // Type-level check: verify the CodecErrorCode union has exactly 6 members.
+    it('all 7 CodecErrorCode members are reachable', () => {
+      // Type-level check: verify the CodecErrorCode union has exactly 7 members.
       // This is validated by TS compilation — if a member is missing,
       // the following code fails to typecheck.
       const codes: CodecErrorCode[] = [
@@ -210,8 +210,9 @@ describe('KTX2 error paths (w23)', () => {
         'ktx2-unsupported-scheme',
         'transcode-failed',
         'ktx2-encode-failed',
+        'ktx2-native-unsupported',
       ];
-      expect(codes.length).toBe(6);
+      expect(codes.length).toBe(7);
 
       // Verify exhaustive switch compiles (no default branch)
       for (const code of codes) {
@@ -230,6 +231,8 @@ describe('KTX2 error paths (w23)', () => {
               return 'transcode-failed';
             case 'ktx2-encode-failed':
               return 'ktx2-encode-failed';
+            case 'ktx2-native-unsupported':
+              return 'ktx2-native-unsupported';
           }
         })();
         expect(typeof _checked).toBe('string');

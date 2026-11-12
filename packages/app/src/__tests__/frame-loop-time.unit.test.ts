@@ -259,6 +259,32 @@ describe('frame-loop Time forwarding', () => {
     expect(world.getResource(FixedTime).droppedSeconds).toBe(0);
   });
 
+  it('gives the first frame after start and resume a nominal positive delta', () => {
+    const world = new World();
+    const clock = scheduler();
+    let timestamp = 1000;
+    const loop = createFrameLoop({
+      world,
+      renderer: renderer(),
+      platform: testPlatform({ now: () => timestamp, raf: clock.raf, caf: clock.caf }),
+    });
+
+    loop.start().unwrap();
+    clock.tick(timestamp);
+    expect(world.getResource(Time).delta).toBeCloseTo(1 / 60, 8);
+    timestamp += 16;
+    clock.tick(timestamp);
+    expect(world.getResource(Time).delta).toBeCloseTo(0.016, 8);
+
+    loop.pause().unwrap();
+    timestamp += 5000;
+    loop.resume().unwrap();
+    // A rAF timestamp may precede the resume baseline.
+    clock.tick(timestamp - 2);
+    expect(world.getResource(Time).delta).toBeCloseTo(1 / 60, 8);
+    loop.stop().unwrap();
+  });
+
   it('forwards one measured delta to own and injected Worlds', () => {
     const own = new World();
     const injected = new World();

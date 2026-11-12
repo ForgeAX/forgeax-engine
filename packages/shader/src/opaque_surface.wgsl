@@ -5,5 +5,5 @@
 // Cutout materials select their shared Surface explicitly on every Pass.
 fn evaluate_surface(input: SurfaceInput) -> SurfaceData {
   return SurfaceData(vec3<f32>(1.0), input.vertexNormalWS, 0.0, 1.0,
-    vec3<f32>(0.0), 1.0, 1.0, 0.0);
+    vec3<f32>(0.0), 1.0, 1.0, 0.0, 0.0);
 }

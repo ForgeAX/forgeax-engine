@@ -48,7 +48,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
   };
   try {
     device.pushErrorScope('validation');
-    const runtime = new Float32Array(76);
+    const runtime = new Float32Array(80);
     const words = new Uint32Array(runtime.buffer);
     words[4] = 2;
     words[61] = 32;

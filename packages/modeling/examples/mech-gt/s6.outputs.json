@@ -1,0 +1,60 @@
+{
+  "front": [
+    "material/paint",
+    "material/underside",
+    "mesh/s6-front",
+    "mesh/s6-front/lod1",
+    "mesh/s6-front/lod2",
+    "texture/car-paint-flakes",
+    "texture/s6-front-ao"
+  ],
+  "nose": [
+    "material/carbon",
+    "material/glass",
+    "material/paint",
+    "material/underside",
+    "mesh/s6-nose",
+    "mesh/s6-nose/lod1",
+    "mesh/s6-nose/lod2",
+    "texture/car-paint-flakes",
+    "texture/carbon-fiber-albedo",
+    "texture/carbon-fiber-anisotropy",
+    "texture/carbon-fiber-normal",
+    "texture/s6-nose-ao"
+  ],
+  "cabin": [
+    "material/glass",
+    "material/intake",
+    "material/paint",
+    "material/underside",
+    "mesh/s6-cabin",
+    "mesh/s6-cabin/lod1",
+    "mesh/s6-cabin/lod2",
+    "texture/car-paint-flakes",
+    "texture/s6-cabin-ao"
+  ],
+  "rear": [
+    "material/carbon",
+    "material/louvre",
+    "material/paint",
+    "material/underside",
+    "mesh/s6-rear",
+    "mesh/s6-rear/lod1",
+    "mesh/s6-rear/lod2",
+    "texture/car-paint-flakes",
+    "texture/carbon-fiber-albedo",
+    "texture/carbon-fiber-anisotropy",
+    "texture/carbon-fiber-normal",
+    "texture/s6-rear-ao",
+    "texture/s6-rear-normal"
+  ],
+  "wheels": [
+    "material/tire",
+    "mesh/s6-wheels",
+    "mesh/s6-wheels/lod1",
+    "mesh/s6-wheels/lod2",
+    "texture/s6-wheels-ao",
+    "texture/tire-blocks-normal",
+    "texture/tire-blocks-roughness"
+  ]
+}

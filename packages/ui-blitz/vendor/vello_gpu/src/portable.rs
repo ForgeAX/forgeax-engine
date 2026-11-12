@@ -1,4 +1,4 @@
-// Copyright 2026 the Vello Authors and ForgeaX contributors
+// Copyright 2026 the Vello Authors and ForgeAX contributors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Engine-owned GPU execution of the existing Vello sparse-strip schedule.

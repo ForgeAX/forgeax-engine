@@ -1,0 +1,137 @@
+{
+  "schema": "github-actions-coverage-upstream-block/1",
+  "source": {
+    "repository": "ForgeAX/forgeax-engine",
+    "runId": 42711557372,
+    "head": "ad82402a5c5311d7b4d6d45d5ce1bec0c1f10303",
+    "jobId": 129483382276
+  },
+  "core": {
+    "id": 129482128148,
+    "run_id": 42711557372,
+    "name": "ci-core",
+    "status": "completed",
+    "conclusion": "failure",
+    "steps": [
+      {
+        "name": "Function complexity gate",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 17
+      }
+    ]
+  },
+  "aggregate": {
+    "id": 129483382276,
+    "run_id": 42711557372,
+    "name": "coverage-pnpm",
+    "status": "completed",
+    "conclusion": "failure",
+    "steps": [
+      {
+        "name": "Set up job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 1
+      },
+      {
+        "name": "Require every coverage shard",
+        "status": "completed",
+        "conclusion": "failure",
+        "number": 2
+      },
+      {
+        "name": "Scrub stale global/system git auth header (self-hosted)",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 3
+      },
+      {
+        "name": "Checkout",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 4
+      },
+      {
+        "name": "Qualify earlier success for an explicit CI repair",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 5
+      },
+      {
+        "name": "[ci-repair-reused] run  job ",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 6
+      },
+      {
+        "name": "Materialize pinned View workspace",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 7
+      },
+      {
+        "name": "Setup Node.js and pnpm",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 8
+      },
+      {
+        "name": "Clear stale root dependency links (self-hosted)",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 9
+      },
+      {
+        "name": "Install (frozen)",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 10
+      },
+      {
+        "name": "Download coverage shards",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 11
+      },
+      {
+        "name": "Merge coverage shards and enforce aggregate thresholds",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 12
+      },
+      {
+        "name": "Coverage test performance budget",
+        "status": "completed",
+        "conclusion": "skipped",
+        "number": 13
+      },
+      {
+        "name": "Upload coverage diagnostics on failure (feat-20260608-ci-time-cut)",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 14
+      },
+      {
+        "name": "Post Upload coverage diagnostics on failure (feat-20260608-ci-time-cut)",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 28
+      },
+      {
+        "name": "Complete job",
+        "status": "completed",
+        "conclusion": "success",
+        "number": 29
+      }
+    ]
+  },
+  "placeholder": {
+    "id": 129483383801,
+    "run_id": 42711557372,
+    "name": "coverage-pnpm-shard-${{ matrix.shard }}",
+    "status": "completed",
+    "conclusion": "skipped",
+    "steps": []
+  }
+}

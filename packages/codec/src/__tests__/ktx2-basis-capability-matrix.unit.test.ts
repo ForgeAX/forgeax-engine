@@ -62,6 +62,7 @@ function parsedWithTransfer(transferFunction: number): Ktx2Parsed {
 function fakeBasisFile(): BasisFile {
   return {
     close: () => undefined,
+    delete: () => undefined,
     getNumImages: () => 1,
     getNumLevels: () => 2,
     getImageWidth: () => 8,
@@ -236,6 +237,7 @@ describe('KTX2/Basis capability matrix', () => {
       }
     } finally {
       file.close();
+      file.delete();
     }
   });
 });

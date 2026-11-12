@@ -186,7 +186,7 @@ it.each([
         configFile: false,
         logLevel: 'silent',
         plugins: [compilerGuard],
-        server: { middlewareMode: true, ws: false },
+        server: { middlewareMode: true, ws: false, watch: { usePolling: true } },
       });
       try {
         for (const id of [
@@ -222,7 +222,14 @@ it.each([
       } else {
         dev = await createServer({
           ...config,
-          server: { host: '127.0.0.1', port: 0, ws: false, fs: { allow: [root, repository] } },
+          server: {
+            host: '127.0.0.1',
+            port: 0,
+            ws: false,
+            fs: { allow: [root, repository] },
+            // Retain real file observation and portable fixture retirement.
+            watch: { usePolling: true },
+          },
         });
         const observeClose = (owner: { close(): Promise<void> }, name: string) => {
           const close = owner.close.bind(owner);
@@ -247,6 +254,10 @@ it.each([
         dev.httpServer?.once('close', () => record('retirement-complete', 'http'));
         record('phase', 'dev-listen');
         await dev.listen();
+        const watcher = dev.watcher;
+        await vi.waitFor(() => {
+          expect(Object.values(watcher.getWatched()).flat()).toContain('fixture.js');
+        });
       }
       const url = defined(defined(defined(server ?? dev).resolvedUrls).local[0]);
       const errors: string[] = [];

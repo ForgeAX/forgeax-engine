@@ -1,3 +1,5 @@
+export const DAWN_VITEST_CONFIG = 'config/vitest.dawn.config.ts';
+
 import { DAWN_COMPACT_TEST_FILES } from './dawn-compact-roster.mjs';
 import { DAWN_HEAVY_TEST_PARTITIONS } from './dawn-heavy-roster.mjs';
 
@@ -10,7 +12,19 @@ export const VFX_DEPTH_DAWN_TEST_FILE =
 // Vitest configuration and local/PR/nightly execution derive from these groups.
 export const DAWN_ISOLATED_GROUPS = [
   {
+    id: 'shadow-quality',
+    files: [
+      'packages/runtime/src/__tests__/cube-plane-shadow-contact.dawn.test.ts',
+      'packages/runtime/src/__tests__/curved-shadow-receiver.dawn.test.ts',
+    ],
+  },
+  {
     id: 'surface-pipelines',
+    // Run 42325043736 completed ordinary-4 after 2,058 seconds, leaving
+    // this complete owner too little of the unchanged 40-minute step.
+    // Reserve ten minutes and start it before ordinary backfill; case,
+    // frame and step budgets remain unchanged.
+    placementReserveSeconds: 600,
     files: [
       'packages/runtime/src/__tests__/surface-standard-pipeline.dawn.test.ts',
       'packages/runtime/src/__tests__/standard-deferred-parity.dawn.test.ts',
@@ -27,6 +41,26 @@ export const DAWN_ISOLATED_GROUPS = [
   {
     id: 'feature-depth',
     files: ['packages/runtime/src/__tests__/feature-depth-material.dawn.test.ts'],
+  },
+  {
+    // The complete S6 capture journey owns a fresh native parent process;
+    // keep both case tests and their original budgets outside ordinary backfill.
+    id: 'modeling-s6',
+    // Run 429298 measured a 443-second full-profile capture. Reserve ten
+    // minutes so it still starts before ordinary backfill with time for drift.
+    placementReserveSeconds: 600,
+    files: ['packages/modeling/examples/mech-gt/__tests__/s6.case.dawn.test.ts'],
+  },
+  {
+    id: 'modeling-show',
+    // Run 41597394498 reached this full capture journey at minute 36. The
+    // retained complete-owner maximum is 187 seconds; preserve ten minutes of
+    // startup/capture headroom without starving ordinary work on other lanes.
+    placementReserveSeconds: 600,
+    // Run 41306958512 missed the original sky-preparation deadline inside
+    // ordinary-3. Keep all cues, pixel controls and sixty completed frames
+    // in one fresh native lifetime; the scene and readiness budget stay fixed.
+    files: ['apps/modeling-show/__tests__/show.dawn.test.ts'],
   },
   { id: 'vfx-depth', files: [VFX_DEPTH_DAWN_TEST_FILE] },
   {
@@ -104,6 +138,10 @@ export const DAWN_ISOLATED_GROUPS = [
   },
   {
     id: 'gi-5',
+    // Run 42122803571 reached this complete journey at minute 37 and
+    // interrupted it at the unchanged step deadline. Reserve ten minutes
+    // and admit it before ordinary backfill; the test budgets stay fixed.
+    placementReserveSeconds: 600,
     files: [
       'packages/runtime/src/__tests__/renderer-irradiance-field-residency.dawn.test.ts',
       'packages/runtime/src/__tests__/renderer-irradiance-field-multiview.dawn.test.ts',
@@ -125,37 +163,49 @@ export const DAWN_ISOLATED_TEST_FILES = DAWN_ISOLATED_GROUPS.flatMap(({ files })
 
 // Complete native owners share four lanes; ordinary files fill the remaining
 // time using the latest measured costs. Each process keeps its native lifetime.
+// Independent long capture journeys occupy separate lanes; one slow runner
+// must not amplify both Modeling captures before the same ordinary backfill.
 export const DAWN_GATE_SHARDS = Object.freeze([
   Object.freeze([
     'ordinary-1',
-    'surface-pipelines',
-    'gi-1',
-    'direct-light',
-    'gi-6',
+    'compact-1',
+    'rect-source',
+    'shadow-fields',
     'heavy-1',
-    'renderer',
-    'screen-probe',
+    'heavy-2',
+    'nested-discard',
+    'gpu-timing',
+    'vfx-depth',
   ]),
   Object.freeze([
     'ordinary-2',
-    'gi-2',
-    'compact-2',
-    'vfx-depth',
-    'transmission',
+    'modeling-s6',
     'heavy-3',
+    'heavy-4',
+    'shadow-quality',
+    'specular-aa',
+    'compact-3',
     'timing-lifecycle',
+    'gi-6',
+    'renderer',
   ]),
-  Object.freeze(['ordinary-3', 'feature-depth', 'gi-3', 'compact-3', 'heavy-2', 'heavy-4']),
+  Object.freeze([
+    'ordinary-3',
+    'modeling-show',
+    'compact-2',
+    'direct-light',
+    'gi-4',
+    'gi-1',
+    'transmission',
+    'gi-2',
+  ]),
   Object.freeze([
     'ordinary-4',
-    'rect-source',
-    'shadow-fields',
-    'compact-1',
-    'nested-discard',
-    'specular-aa',
-    'gpu-timing',
-    'gi-4',
+    'surface-pipelines',
     'gi-5',
+    'gi-3',
+    'screen-probe',
+    'feature-depth',
   ]),
 ]);
 
@@ -173,5 +223,13 @@ export const DAWN_GATE_GROUPS = [
     env: { FORGEAX_DAWN_COMPACT: '1' },
   })),
   ...DAWN_ISOLATED_GROUPS.map((group) => ({ ...group, env: { FORGEAX_DAWN_ISOLATED: '1' } })),
-  { id: 'direct-light', files: [DIRECT_LIGHT_DAWN_TEST_FILE], env: {} },
+  {
+    id: 'direct-light',
+    // Run 42388664877 reached this complete journey at minute 39. Admit it
+    // before ordinary backfill with its retained complete-owner placement forecast;
+    // retain every phase and its original native process/test deadlines.
+    placementReserveSeconds: 219.011,
+    files: [DIRECT_LIGHT_DAWN_TEST_FILE],
+    env: {},
+  },
 ];

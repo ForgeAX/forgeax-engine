@@ -10,6 +10,7 @@ import type {
   GpuOwnedFrame,
   RenderableSnapshot,
 } from '../render-system-extract';
+import { materialDisplacementRadius } from '../standard-displacement-bounds';
 import { SubsurfaceSelection } from '../subsurface/selection';
 import { withRenderableIndex } from './dispatch-entry';
 import type { FrameList } from './frame-list';
@@ -19,7 +20,10 @@ import type { MeshFrame } from './mesh-frame';
 import type { PersistentShadowCasterProjection } from './render-scene';
 import { worldBounds, writeBounds } from './render-scene-snapshots';
 import type { RenderSceneSlot } from './render-scene-types';
+import { ResidualBoundsProof } from './residual-bounds-proof';
+import type { SceneSlotFrame } from './scene-slots';
 import { buildShadowFrusta } from './shadow-visibility';
+import type { SkinSceneFrame } from './skin-scene-inputs';
 
 let cullProjectedIndexScratch = new Int32Array(0);
 
@@ -536,6 +540,46 @@ export interface ResidualCullMemo {
   readonly subsurface: SubsurfaceSelection;
   readonly admission: CameraAdmission;
   readonly planes: readonly Float32Array[];
+  readonly slots: SceneSlotFrame;
+  readonly materials: MaterialFrame;
+  readonly meshes: MeshFrame;
+  readonly unavailable: FrameSet;
+  readonly skinRoot: object | undefined;
+  readonly skinSlots: SceneSlotFrame | undefined;
+  readonly skinReadable: boolean | undefined;
+  readonly facts: ResidualCullFacts;
+}
+
+interface ResidualCullBounds {
+  readonly meshes: MeshFrame;
+  readonly skin: SkinSceneFrame | undefined;
+  readonly unavailable: FrameSet;
+}
+
+function sameResidualSkin(before: ResidualCullMemo, bounds: ResidualCullBounds): boolean {
+  return (
+    before.skinRoot === bounds.skin?.current.inputRoot() &&
+    before.skinSlots === bounds.skin?.slots &&
+    before.skinReadable === bounds.skin?.current.readable
+  );
+}
+
+/** Culling reads the accepted displacement interval and Skin position proof, not color values. */
+function sameResidualMaterials(before: MaterialFrame, current: MaterialFrame): boolean {
+  if (before === current) return true;
+  if (before.hasBorrowedValues || current.hasBorrowedValues) return false;
+  let same = true;
+  current.changesSince(before, (left, right) => {
+    if (left?.snapshot === right?.snapshot) return;
+    if (
+      left === undefined ||
+      right === undefined ||
+      left.snapshot.positionBounds !== right.snapshot.positionBounds ||
+      materialDisplacementRadius(left.snapshot) !== materialDisplacementRadius(right.snapshot)
+    )
+      same = false;
+  });
+  return same;
 }
 
 function samePlanes(left: readonly Float32Array[], right: readonly Float32Array[]): boolean {
@@ -555,6 +599,88 @@ function samePlanes(left: readonly Float32Array[], right: readonly Float32Array[
  * `cameraVisible` carries the camera admission, so no dispatch address depends
  * on another row's visibility.
  */
+interface ResidualCullFacts {
+  readonly bounds: ResidualBoundsProof;
+  readonly hiddenSlots: FrameSet;
+  readonly boundedSlots: FrameSet;
+  readonly skinSlots: FrameSet;
+}
+
+/** Only changed residual rows are tested while the view and bound resources are fixed. */
+function residualChanges(
+  before: ResidualCullMemo,
+  gpuOwned: GpuOwnedFrame,
+  residual: FrameSet,
+  bounds: ResidualCullBounds,
+): Set<number> | undefined {
+  const dirty = new Set<number>();
+  if (
+    before.slots !== gpuOwned.slots &&
+    !gpuOwned.slots.changesSince(before.slots, (slot) => dirty.add(slot))
+  )
+    return undefined;
+  residual.changesSince(before.admission.residual, (slot) => dirty.add(slot));
+  bounds.unavailable.changesSince(before.unavailable, (slot) => dirty.add(slot));
+  if (!sameResidualSkin(before, bounds)) for (const slot of before.facts.skinSlots) dirty.add(slot);
+  return dirty;
+}
+
+function testResidualRows(
+  gpuOwned: GpuOwnedFrame,
+  selection: GpuDrawSelection,
+  residual: FrameSet,
+  unavailable: FrameSet,
+  before: ResidualCullFacts | undefined,
+  dirty: ReadonlySet<number> | undefined,
+  boundsOf: Parameters<typeof cullResidualFrame>[2],
+  intersects: (aabb: box3.Box3) => boolean,
+  meshes: MeshFrame,
+): ResidualCullFacts {
+  if (dirty?.size === 0 && before !== undefined) return before;
+  const aabb = box3.create();
+  const proof = new ResidualBoundsProof(dirty === undefined ? undefined : before?.bounds);
+  const test = (record: RenderSceneSlot): boolean => {
+    const known =
+      record.snapshot.authorVisible !== false && boundsOf(record.snapshot, -1, aabb, record);
+    proof.record(record.snapshot, meshes, known ? aabb : undefined);
+    return known;
+  };
+  if (dirty === undefined) {
+    const hidden: number[] = [];
+    const bounded: number[] = [];
+    const skin: number[] = [];
+    for (const record of gpuOwned.residualSlots(selection)) {
+      if (record.snapshot.skinBinding !== undefined) skin.push(record.slot);
+      if (!test(record)) continue;
+      bounded.push(record.slot);
+      if (!intersects(aabb)) hidden.push(record.slot);
+    }
+    return {
+      bounds: proof,
+      hiddenSlots: FrameSet.from(hidden),
+      boundedSlots: FrameSet.from(bounded),
+      skinSlots: FrameSet.from(skin),
+    };
+  }
+  const hidden = new Map<number, boolean>();
+  const bounded = new Map<number, boolean>();
+  const skin = new Map<number, boolean>();
+  for (const slot of dirty) {
+    const record =
+      residual.has(slot) && !unavailable.has(slot) ? gpuOwned.slots.slotAt(slot) : undefined;
+    const known = record !== undefined && test(record);
+    skin.set(slot, record?.snapshot.skinBinding !== undefined);
+    bounded.set(slot, known);
+    hidden.set(slot, known && !intersects(aabb));
+  }
+  return {
+    bounds: proof,
+    hiddenSlots: (before?.hiddenSlots ?? new FrameSet()).edit(hidden),
+    boundedSlots: (before?.boundedSlots ?? new FrameSet()).edit(bounded),
+    skinSlots: (before?.skinSlots ?? new FrameSet()).edit(skin),
+  };
+}
+
 export function cullResidualFrame(
   frame: ExtractedFrame,
   materials: MaterialFrame,
@@ -567,8 +693,27 @@ export function cullResidualFrame(
   gpuOwned: GpuOwnedFrame,
   selection: GpuDrawSelection,
   memo: { value: ResidualCullMemo | undefined },
+  bounds: ResidualCullBounds,
 ): PersistentCullResult {
   const planes = buildCameraFrusta(frame.cameras);
+  const before = memo.value;
+  const residual = gpuOwned.residualSet(selection);
+  const sameFrusta = before !== undefined && samePlanes(before.planes, planes);
+  const fixedBounds = !materials.hasBorrowedValues && before?.materials.hasBorrowedValues === false;
+  let dirty =
+    before !== undefined &&
+    sameResidualMaterials(before.materials, materials) &&
+    (before.meshes === bounds.meshes ||
+      (fixedBounds && before.facts.bounds.meshesUnchanged(before.meshes, bounds.meshes)))
+      ? residualChanges(before, gpuOwned, residual, bounds)
+      : undefined;
+  let previousFacts = before?.facts;
+  if (!sameFrusta) {
+    if (fixedBounds && dirty !== undefined && previousFacts?.bounds.enclosed(planes) === true) {
+      if (previousFacts.hiddenSlots.size > 0)
+        previousFacts = { ...previousFacts, hiddenSlots: new FrameSet() };
+    } else dirty = undefined;
+  }
   const intersects = (aabb: box3.Box3): boolean =>
     planes.length === 0 ||
     planes.some(
@@ -576,39 +721,23 @@ export function cullResidualFrame(
         cameraPlanes.length === 0 ||
         frustum.intersectsBox(cameraPlanes as frustum.Frustum, aabb as box3.Box3Like),
     );
-  const aabb = box3.create();
-  const hidden = new Set<number>();
-  const residualKeys = new Set<number>();
-  const previous = memo.value?.admission;
-  const residual = gpuOwned.residualSet(selection);
-  // Each frame derives from the previous sets, so their diffs name only flips.
-  let hiddenSlots = previous?.hidden ?? new FrameSet();
-  if (previous !== undefined && previous.residual !== residual)
-    residual.changesSince(previous.residual, (slot) => {
-      if (!residual.has(slot)) hiddenSlots = hiddenSlots.without(slot);
-    });
-  let total = 0;
-  let culled = 0;
-  // Scene rows carry every fact this test reads; frame rows are never resolved here.
-  for (const record of gpuOwned.residualSlots(selection)) {
-    const candidate = record.snapshot;
-    residualKeys.add(worldEntityKey(candidate.worldId, candidate.entityKey));
-    if (candidate.authorVisible === false || !boundsOf(candidate, -1, aabb, record)) {
-      hiddenSlots = hiddenSlots.without(record.slot);
-      continue;
-    }
-    total += 1;
-    if (intersects(aabb)) {
-      hiddenSlots = hiddenSlots.without(record.slot);
-      continue;
-    }
-    culled += 1;
-    hidden.add(worldEntityKey(candidate.worldId, candidate.entityKey));
-    hiddenSlots = hiddenSlots.with(record.slot);
-  }
+  const previous = before?.admission;
+  const facts = testResidualRows(
+    gpuOwned,
+    selection,
+    residual,
+    bounds.unavailable,
+    previousFacts,
+    dirty,
+    boundsOf,
+    intersects,
+    bounds.meshes,
+  );
+  const { hiddenSlots, boundedSlots } = facts;
+  const isResidualSlot = (slot: number | undefined): boolean =>
+    slot !== undefined && residual.has(slot) && !bounds.unavailable.has(slot);
   const subsurface = memo.value?.subsurface ?? new SubsurfaceSelection();
   subsurface.trackAll(materials);
-  const sameFrusta = memo.value !== undefined && samePlanes(memo.value.planes, planes);
   const admission: CameraAdmission =
     previous !== undefined &&
     sameFrusta &&
@@ -620,7 +749,6 @@ export function cullResidualFrame(
           residual,
           frusta: sameFrusta && previous !== undefined ? previous.frusta : {},
         };
-  memo.value = { subsurface, admission, planes };
   // Owned rows are tested only when a reader asks; the answer is fixed per frame.
   const ownedVisible = new Map<number, boolean | undefined>();
   const ownedAabb = box3.create();
@@ -631,9 +759,12 @@ export function cullResidualFrame(
     return visible;
   };
   const cameraVisible = (source: RenderableSnapshot): boolean => {
-    const key = worldEntityKey(source.worldId, source.entityKey);
-    if (hidden.has(key)) return false;
-    return residualKeys.has(key) || ownedVisibility(source, key) !== false;
+    const slot = gpuOwned.slots.identitySlot(source.worldId, source.entityKey);
+    if (slot !== undefined && hiddenSlots.has(slot)) return false;
+    return (
+      isResidualSlot(slot) ||
+      ownedVisibility(source, worldEntityKey(source.worldId, source.entityKey)) !== false
+    );
   };
   let ownedStats: { readonly culled: number; readonly total: number } | undefined;
   const ownedStatistics = () => {
@@ -642,7 +773,11 @@ export function cullResidualFrame(
     let ownedTotal = 0;
     for (const source of frame.renderables) {
       const key = worldEntityKey(source.worldId, source.entityKey);
-      if (source.authorVisible === false || residualKeys.has(key)) continue;
+      if (
+        source.authorVisible === false ||
+        isResidualSlot(gpuOwned.slots.identitySlot(source.worldId, source.entityKey))
+      )
+        continue;
       const visible = ownedVisibility(source, key);
       if (visible === undefined) continue;
       ownedTotal += 1;
@@ -652,15 +787,15 @@ export function cullResidualFrame(
     return ownedStats;
   };
   const demand = subsurface.demand;
-  return {
+  const result: PersistentCullResult = {
     frame: {
       ...frame,
       frustumStats: {
         get culled() {
-          return culled + ownedStatistics().culled;
+          return hiddenSlots.size + ownedStatistics().culled;
         },
         get total() {
-          return total + ownedStatistics().total;
+          return boundedSlots.size + ownedStatistics().total;
         },
       },
       cameraVisible,
@@ -669,4 +804,18 @@ export function cullResidualFrame(
     },
     subsurface: { source: demand, authorVisible: demand, admitted: demand },
   };
+  memo.value = {
+    subsurface,
+    admission,
+    planes,
+    slots: gpuOwned.slots,
+    materials,
+    meshes: bounds.meshes,
+    unavailable: bounds.unavailable,
+    skinRoot: bounds.skin?.current.inputRoot(),
+    skinSlots: bounds.skin?.slots,
+    skinReadable: bounds.skin?.current.readable,
+    facts,
+  };
+  return result;
 }

@@ -10,14 +10,15 @@
 #pragma material_slot surface
 #import forgeax_material::displacement::{displaceVertex, displacedNormal}
 #define_import_path forgeax::default-shadow-caster
+#import forgeax_shadow::surface::{projectShadowPosition}
 #import forgeax_clipping::planes::{applyViewClipping, applyLocalClipping}
 #import forgeax_material::slot::surface::{evaluate_surface, evaluate_standard_surface}
 #import forgeax_material::surface_v1::{SurfaceInput, SurfaceData}
 #import forgeax_material::parameters::{material}
 
-#import forgeax_view::common::{applyLodCoverage, View, Mesh, InstanceData, ShadowCasterCascade, view, shadowCasterCascade, sampleMaterialTexture}
+#import forgeax_view::common::{applyLodCoverage, View, Mesh, InstanceData, view, sampleMaterialTexture, transformNormal}
 #ifdef GPU_DRIVEN_SCENE_INDEX_AVAILABLE
-#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
+#import forgeax_view::common::{sceneIndexDraw, sceneIndexMorphPosition, sceneIndexMorphNormal, sceneIndexMorphTangent, sceneInstances, SCENE_INDEX_LOCAL_IDENTITY}
 #else
 #import forgeax_view::common::{meshes, instances}
 #endif
@@ -28,8 +29,8 @@
 
 struct VsInput {
   @location(0) position : vec3<f32>,
-#ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
   @location(1) normal : vec3<f32>,
+#ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
 #ifndef STANDARD_UV_INPUT_UNUSED
   @location(2) uv : vec2<f32>,
 #endif
@@ -97,21 +98,12 @@ struct VsOut {
 #import forgeax_skin::task::{skinTaskDescriptor, skinTaskBlend, skinTaskDirectCandidate}
 #endif
 
-fn _cascadeLightViewProj(layer : u32) -> mat4x4<f32> {
-  switch (layer) {
-    case 0u: { return view.lightViewProj_A; }
-    case 1u: { return view.lightViewProj_B; }
-    case 2u: { return view.lightViewProj_C; }
-    default: { return view.lightViewProj_D; }
-  }
-}
-
 fn standardVertexPosition(in : VsInput) -> vec3<f32> {
 #if TERRAIN_GEOMETRY_AVAILABLE == true
   return terrainVertex(in.position, terrainHeightTexture, material.terrainSection, material.terrainLod, material.terrainNeighbors);
 #else
 #ifdef DISPLACEMENT_TEXTURE_AVAILABLE
-  if (standardUsesDisplacementTexture()) {
+  if (standardUsesDisplacementTexture() && !standardUsesParallaxDisplacement()) {
     return displaceVertex(in.position, in.normal, displacementTexture, displacementTexture_sampler,
       material.displacementScale, material.displacementBias,
       material.displacementTextureCoordinatesTransform, material.displacementTextureCoordinatesMetadata, material.displacementTextureCoordinatesRotation,
@@ -128,6 +120,12 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
   // visible = (scene instance row, material row, candidate row, LOD fade).
   let visible = visibleItems[idx];
   in.position = sceneIndexMorphPosition(visible.x, vertex, in.position);
+  in.normal = sceneIndexMorphNormal(visible.x, vertex, in.normal);
+#ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
+#ifndef STANDARD_TANGENT_INPUT_UNUSED
+  in.tangent = sceneIndexMorphTangent(visible.x, vertex, in.tangent);
+#endif
+#endif
   let materialIndex = visible.y;
   let lodFadeBits = visible.w;
   let sceneDraw = sceneIndexDraw(visible.x);
@@ -143,10 +141,16 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
 #endif
 #endif
   let localPosition = standardVertexPosition(in);
+#if TERRAIN_GEOMETRY_AVAILABLE == true
+  let biasLocalNormal = terrainNormal(in.position, terrainHeightTexture, material.terrainSection, material.terrainLod, material.terrainNeighbors);
+#else
+  let biasLocalNormal = in.normal;
+#endif
 #if SKINNING_DISABLED == false
   let descriptor = skinTaskDescriptor(paletteBase);
   let skinMatrix = skinTaskBlend(descriptor, in.skinIndex, in.skinWeight, false);
   let worldPos = skinMatrix * vec4<f32>(localPosition, 1.0);
+  let biasNormal = transformNormal(skinMatrix, biasLocalNormal);
 #ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
   let worldNormal = normalize((skinMatrix * vec4<f32>(in.normal, 0.0)).xyz);
 #ifndef STANDARD_TANGENT_INPUT_UNUSED
@@ -161,6 +165,7 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
   let worldMatrix = meshes[0u].worldFromLocal * instances[idx].localFromInstance;
 #endif
   let worldPos = worldMatrix * vec4<f32>(localPosition, 1.0);
+  let biasNormal = transformNormal(worldMatrix, biasLocalNormal);
 #ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
   let worldNormal = normalize((worldMatrix * vec4<f32>(in.normal, 0.0)).xyz);
 #ifndef STANDARD_TANGENT_INPUT_UNUSED
@@ -171,11 +176,7 @@ fn shadowVertex(source : VsInput, idx : u32, vertex : u32) -> VsOut {
 #endif
 
   var out : VsOut;
-  if (shadowCasterCascade.isSpot == 1u) {
-    out.clip = shadowCasterCascade.spotLightViewProj * worldPos;
-  } else {
-    out.clip = _cascadeLightViewProj(shadowCasterCascade.index) * worldPos;
-  }
+  out.clip = projectShadowPosition(worldPos, biasNormal);
   out.positionWS = worldPos.xyz;
 #ifndef OPAQUE_SHADOW_COVERAGE_AVAILABLE
 #ifndef STANDARD_OBJECT_POSITION_UNUSED
@@ -329,9 +330,22 @@ fn evaluateShadowSurface(in : VsOut, frontFacing : bool) -> SurfaceData {
 }
 
 fn alphaTestShadowSurface(surface : SurfaceData) {
+#if ALPHA_MASK == true
+  // The stock Surface raises the clip threshold only when the material declares
+  // alphaCutoff; without it (hash-only or coverage-only) the cutoff test is
+  // absent from the source. A custom Surface keeps the generic gate.
+#ifdef STANDARD_STOCK_SURFACE_AVAILABLE
+#ifdef ALPHA_CLIPPING_AVAILABLE
   if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
     discard;
   }
+#endif
+#else
+  if (surface.alphaClipThreshold > 0.0 && surface.opacity <= surface.alphaClipThreshold) {
+    discard;
+  }
+#endif
+#endif
 }
 
 // The depth-only pass has no color target; alpha clipping still runs through

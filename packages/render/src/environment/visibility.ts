@@ -85,3 +85,21 @@ export function atmosphereVisibilityAccesses(visibility: AtmosphereVisibility) {
     .filter((v): v is GraphTextureView => v !== undefined)
     .map((resource) => ({ resource, usage: 'sampled-read' as const }));
 }
+
+/** A table caches optical transport only while its visibility generation is unchanged. */
+export function atmosphereVisibilityDirty(
+  frame: RenderPipelineFrame,
+  visibility: AtmosphereVisibility,
+): boolean {
+  if (visibility.cloud !== undefined) return true;
+  if (visibility.directional === undefined) return false;
+  const context = frame as import('../record/render-context')._InternalRenderPipelineContext;
+  if (context.directionalShadowCacheMiss !== undefined) return true;
+  for (let index = 0; index < context.pipelineState.perPassResources.shadowCascadeCount; index++) {
+    if (
+      context.gpuDrivenShadowViews?.invalidationReason({ kind: 'directional', index }) !== undefined
+    )
+      return true;
+  }
+  return false;
+}

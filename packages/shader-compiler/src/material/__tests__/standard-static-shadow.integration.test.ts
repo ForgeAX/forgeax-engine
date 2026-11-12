@@ -9,7 +9,7 @@ describe('static Standard shadow coverage', () => {
     }
     expect(forward.abi.resourceSlots.some((slot) => slot.parameter === 'normalTexture')).toBe(true);
     expect(forward.abi.vertexInputs.some((input) => input.semantic === 'normal')).toBe(true);
-    expect(shadow.abi.vertexInputs.map((input) => input.semantic)).toEqual(['position']);
+    expect(shadow.abi.vertexInputs.map((input) => input.semantic)).toEqual(['position', 'normal']);
     expect(shadow.compile.wgsl).not.toMatch(
       /(?:surfaceSample\w*|textureSample\w*)\(normalTexture,/,
     );
@@ -18,10 +18,12 @@ describe('static Standard shadow coverage', () => {
   it.each([
     'mesh',
     'skinned',
-  ] as const)('publishes the actual %s position-only shadow contract', async (geometry) => {
+  ] as const)('publishes the actual %s opaque shadow bias input contract', async (geometry) => {
     const { shadow, forward } = await cookStaticShadow({ context: { geometry } });
     expect(shadow.abi.vertexInputs.map((input) => input.semantic)).toEqual(
-      geometry === 'skinned' ? ['position', 'skinIndex', 'skinWeight'] : ['position'],
+      geometry === 'skinned'
+        ? ['position', 'normal', 'skinIndex', 'skinWeight']
+        : ['position', 'normal'],
     );
     expect(shadow.abi.alphaMask).toEqual({ cutoff: '', source: '' });
     expect(shadow.abi.materialRow.fields).not.toContain('alphaCutoff');
@@ -32,6 +34,7 @@ describe('static Standard shadow coverage', () => {
       expect(compiled?.wgsl).toContain('applyViewClipping');
       expect(compiled?.wgsl).toContain('applyLocalClipping');
     }
+    // The shadow pass is not on the discard-free lane: its LOD coverage stays unconditional.
     expect(shadow.sceneCompile?.wgsl).toContain('applyLodCoverage');
     expect(forward.compile.wgsl).toContain('surfaceSample');
     expect(forward.compile.wgsl).not.toMatch(/\.alphaCutoff\b/);
@@ -82,8 +85,25 @@ describe('static Standard shadow coverage', () => {
   it('keeps the selected contract valid in the uniform fallback', async () => {
     const cooked = await cookStaticShadow({ context: { capability: 'uniform-fallback' } });
     expect(cooked.shadow.sceneCompile).toBeUndefined();
-    expect(cooked.shadow.abi.vertexInputs.map((input) => input.semantic)).toEqual(['position']);
+    expect(cooked.shadow.abi.vertexInputs.map((input) => input.semantic)).toEqual([
+      'position',
+      'normal',
+    ]);
     expect(cooked.shadow.abi.alphaMask).toEqual({ cutoff: '', source: '' });
     expect(cooked.forward.compile.wgsl).not.toMatch(/\.alphaCutoff\b/);
   });
+});
+
+it.each([
+  'mesh',
+  'skinned',
+] as const)('cooks tangent-free Morph position and normal inputs for %s', async (geometry) => {
+  const { forward } = await cookStaticShadow({
+    context: { geometry },
+    staticSwitches: { ...OPAQUE_SWITCHES, textures: false },
+  });
+  expect(forward.abi.vertexInputs.map((input) => input.semantic)).not.toContain('tangent');
+  expect(forward.sceneCompile).toBeDefined();
+  expect(forward.sceneCompile?.wgsl).toContain('sceneIndexMorphPosition');
+  expect(forward.sceneCompile?.wgsl).toContain('sceneIndexMorphNormal');
 });

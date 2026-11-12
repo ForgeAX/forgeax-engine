@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { loadDocumentReference } from '../src/app/document-reference.ts';
 import { once } from 'node:events';
 import { randomFillSync } from 'node:crypto';
 import { chromium } from 'playwright';
@@ -43,7 +44,7 @@ try {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   base = `http://127.0.0.1:${server.address().port}`;
   service = createViewService({ root: '/native-import-fixture', request: async () => ({ ok: true, value: { url: base, presentationId: 'native-import-fixture' } }) });
-  const reference = await service.invoke({ action: 'document', url: base + '/index.html' });
+  const reference = await loadDocumentReference(args => service.invoke(args), base + '/index.html');
   documentHtml = new TextDecoder().decode(await readResourceBytes(reference, args => service.invoke(args)));
   browser = await chromium.launch({ executablePath: process.env.FORGEAX_BROWSER_EXECUTABLE,
     headless: true, args: ['--disable-gpu'], chromiumSandbox: true });

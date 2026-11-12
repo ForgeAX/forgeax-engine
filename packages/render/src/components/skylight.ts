@@ -65,12 +65,21 @@ import { defineComponent } from '@forgeax/engine-ecs';
  * zero, independent of image/color/intensity. Standard applies 1/pi before
  * occlusion; this value produces no specular environment.
  *
+ * **Units: `color * intensity` is radiance, not irradiance.** Like an Unreal
+ * SkyLight, it is the brightness of the sky seen from the surface, so diffuse
+ * = albedo * radiance with no 1/pi. Three.js `AmbientLight` / `HemisphereLight`
+ * intensity is irradiance (diffuse = albedo * I / pi); divide it by pi to get
+ * `intensity`. `ambientIrradiance` is the one field given as irradiance.
+ *
  * `color` is the linear-space ambient tint (default white [1, 1, 1]).
  * `intensity` is a linear multiplier (default 1.0; 0 disables image/solid-color lighting). Both
  * are read every frame, so they are live dynamic dials. Solid-color diffuse is
  * `color * intensity * albedo` with no 1/pi (punctual and directional lights divide by pi), so
- * Three.js `HemisphereLight` / `AmbientLight` intensity I maps to `intensity` I / pi:
- * daylight fill is 0.6-0.9, a lamp-lit night 0.1-0.2.
+ * Three.js `HemisphereLight` / `AmbientLight` intensity I maps to `intensity` I / pi.
+ *
+ * Under Atmosphere the ambient is the sky's radiance times `intensity`, so it
+ * follows the sun: the sky light falls along with the direct light as the sun
+ * sinks toward the horizon.
  *
  * `groundColor` turns the diffuse term into a hemisphere ambient like Three.js
  * `HemisphereLight`: the tint is `mix(groundColor, color, normal.y * 0.5 + 0.5)`
@@ -117,6 +126,7 @@ export const Skylight = defineComponent('Skylight', {
   color: { type: 'array<f32, 3>', default: new Float32Array([1, 1, 1]) },
   // Downward-facing diffuse tint; all-zero (the default) keeps uniform `color`.
   groundColor: { type: 'array<f32, 3>' },
+  // Scales the sky radiance (not irradiance): Three.js ambient intensity / pi.
   intensity: { type: 'f32', default: 1.0 },
   rotation: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 0, 1]) },
 });

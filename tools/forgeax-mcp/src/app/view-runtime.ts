@@ -51,7 +51,7 @@ export async function startFullViewBridge() {
     if (!target?.targetId || !target.url)
       throw new Error('Exact Engine target has no document URL');
     const handle = documents.createFrame(target.url);
-    handle.element.title = 'ForgeaX Preview 3D viewport';
+    handle.element.title = 'ForgeAX Preview 3D viewport';
     handle.element.dataset.forgeaxMcpPreview = target.targetId;
     void handle.ready.catch(error => console.error('MCP document failed', error));
     return handle.element;

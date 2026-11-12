@@ -64,7 +64,7 @@ export function deriveFbxSourceKeys(outputs: readonly FbxSourceKeyOutput[]): Fbx
 
 /**
  * Apply the explicit sidecar producer row when an FBX source cannot carry
- * ForgeaX extras. Missing or malformed rows preserve the parsed raw value (or
+ * ForgeAX extras. Missing or malformed rows preserve the parsed raw value (or
  * no bounds), so the renderer never receives a guessed bind-pose AABB.
  */
 export function applyFbxImportSettingsBounds(

@@ -86,7 +86,7 @@ if (compare) {
   threePanelLabel.textContent = diagnosticCombined
     ? 'THREE.JS r184 · WEBGPU · native IES + SpotLight.map + shadow'
     : diagnosticRecovery
-      ? 'THREE.JS r184 · WEBGPU · Rect + IES/Cookie + Sky baseline (lifecycle is ForgeaX-owned)'
+      ? 'THREE.JS r184 · WEBGPU · Rect + IES/Cookie + Sky baseline (lifecycle is ForgeAX-owned)'
       : mode === 'ies'
     ? diagnosticPlainSpot
       ? 'THREE.JS r184 · WEBGPU · plain SpotLight baseline'
@@ -167,7 +167,7 @@ try {
     inspection,
   };
   status.textContent = compare
-    ? `ForgeaX ${inspection.capabilities.backendKind} · Three.js r184 ${reference?.backend ?? 'reference'} · ${frameCount} ForgeaX frames`
+    ? `ForgeAX ${inspection.capabilities.backendKind} · Three.js r184 ${reference?.backend ?? 'reference'} · ${frameCount} ForgeAX frames`
     : `WebGPU · ${inspection.capabilities.backendKind} · ${frameCount} submitted frames`;
 } catch (error) {
   const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);

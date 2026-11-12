@@ -65,8 +65,29 @@ test('Native GI prepares the current UI payload before its full Engine package b
   assert.ok(preparation > prior.lastIndexOf('      - name: Install workspace dependencies\n'));
   const step = workflow.slice(preparation).split('\n      - name: ')[0];
   assert.match(step, /uses: \.\/\.github\/actions\/prepare-ui-blitz/);
-  assert.doesNotMatch(step, /\n\s+if:/);
+  const nativeSteps = parse(workflow).jobs['native-node-gi'].steps;
+  const prepare = nativeSteps.find((candidate) => candidate.name === 'Prepare current Blitz UI');
+  const packageBuild = nativeSteps.find((candidate) => candidate.name === 'Build engine packages');
+  assert.equal(prepare.if, "steps.ci-repair.outputs.reused != 'true'");
+  assert.equal(prepare.if, packageBuild.if, 'every actual Engine build must prepare UI first');
   assert.match(step, /cache-scope: self-hosted-ubuntu-linux-x64/);
+});
+
+test('WebGPU portable scene producers verify the UI input before their package closure', () => {
+  const workflow = parse(readFileSync('.github/workflows/webgpu-compatibility.yml', 'utf8'));
+  const steps = workflow.jobs.compatibility.steps;
+  const preparation = steps.findIndex((step) => step.name === 'Prepare current Blitz UI');
+  const build = steps.findIndex((step) => step.name === 'Prepare verified portable scene inputs');
+  assert.ok(preparation >= 0 && build > preparation, 'prepare verified UI before scene packages');
+  const step = steps[preparation];
+  assert.equal(step.uses, './.github/actions/prepare-ui-blitz');
+  assert.equal(step.if, steps[build].if, 'every actual portable scene build prepares UI first');
+  assert.equal(
+    step.if,
+    "steps.ci-repair.outputs.reused != 'true' && (matrix.carrier == 'stable' || matrix.carrier == 'webkit')",
+  );
+  assert.equal(step.with['cache-scope'], 'self-hosted-ubuntu-linux-x64');
+  assert.equal(step.env.GH_TOKEN, '${{ secrets.GHA }}');
 });
 
 function shellStep(name) {
@@ -148,6 +169,13 @@ for (const state of ['absent', 'stale-source', 'corrupt-bytes', 'current']) {
       if (state === 'stale-source')
         writeFileSync(join(root, 'third_party/blitz/vendor/stylo/lib.rs'), 'changed');
       if (state === 'corrupt-bytes') writeFileSync(join(pkg, 'pkg/ui_blitz_bg.wasm'), 'damaged');
+      const current = run('bash', [
+        '-e',
+        '-c',
+        shellStep('Reuse verified UI bytes before optional cache'),
+      ]);
+      assert.equal(current.status, 0, current.stdout + current.stderr);
+      assert.match(readFileSync(output, 'utf8'), new RegExp(`ready=${state === 'current'}`));
       const hydrate = run('bash', ['-e', '-c', shellStep('Hydrate and verify UI bundle')]);
       assert.equal(hydrate.status, 0, hydrate.stdout + hydrate.stderr);
       assert.match(readFileSync(output, 'utf8'), new RegExp(`needs_build=${state !== 'current'}`));
@@ -164,3 +192,16 @@ for (const state of ['absent', 'stale-source', 'corrupt-bytes', 'current']) {
     }
   });
 }
+
+test('verified UI bytes bypass optional cache before Rust admission', () => {
+  const steps = parse(action).runs.steps;
+  const current = steps.findIndex((step) => step.id === 'current');
+  const cache = steps.findIndex((step) => step.name === 'Cache matched UI bundle');
+  const hydrate = steps.findIndex((step) => step.id === 'hydrate');
+  assert.ok(current >= 0 && current < cache && cache < hydrate);
+  assert.equal(steps[cache].if, "steps.current.outputs.ready != 'true'");
+  assert.match(steps[current].run, /ensure-wasm\.mjs/);
+  assert.match(steps[current].run, /verify-current\.mjs/);
+  assert.doesNotMatch(steps[hydrate].run, /ensure-wasm\.mjs/);
+  assert.equal(steps.at(-1).run.trim(), 'node packages/ui-blitz/scripts/verify-current.mjs');
+});

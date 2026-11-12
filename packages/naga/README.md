@@ -17,6 +17,7 @@
 | `parse(source)` | `(string) => Promise<Result<ParsedModule, ShaderError>>` | naga `parse_str` 透传；syntax error → `Result.err(ShaderError code='shader-compile-failed')`（含 lineNum / linePos） |
 | `validate(parsed)` | `(ParsedModule) => Promise<Result<ValidatedModule, ShaderError>>` | naga `Validator::validate` 透传；ownership 转移（消费 parsed handle） |
 | `emit_reflection(validated, optionsJson)` | `(ValidatedModule, string) => Promise<Result<string, ShaderError>>` | reflection JSON 字符串 emit；ModuleInfo 已嵌入 ValidatedModule 句柄；上层 `@forgeax/engine-shader-compiler.parseReflectionJson` 派生 `BindGroupLayoutDescriptor[]` |
+| `composeShader(entry, imports, defines)` | `Promise<string>` | Build-time Naga Oil Composer passthrough; resolves selected imports and throws prefixed composition errors. |
 
 Reflection also carries `entryPoints`: the binding and top-level struct-field
 reads of each actual entry and its reachable helper calls. The native Naga IR
@@ -49,3 +50,57 @@ arrays as well as storage arrays/records. Consumers use that fact for joint
 palette publication on both capability paths; the TypeScript reader accepts it
 only on buffer resources and requires a positive integer. Scalar/struct uniform
 blocks do not invent an array stride.
+
+## Buffer layout reflection v3
+
+`emit_reflection()` publishes `shader-reflection/3`. Every reflected buffer has
+a recursive `typeDescriptor` from Naga's validated type/layout projection:
+scalars and vectors retain scalar width and alignment, matrices retain their
+column/row dimensions and column stride, arrays retain their element descriptor,
+Naga stride and constant/pending/dynamic size, and structs retain their span and
+member offsets. Each member carries its own recursive descriptor.
+
+The older flat fields remain projections for existing consumers. For an array,
+`elementType`, `elementStride` and `arrayLength` must agree with the recursive
+element, stride and constant count. Non-arrays cannot publish `arrayLength`;
+their applicable element type and storage stride must match the descriptor.
+The reader rejects schema `/2`, missing descriptors and contradictory flat
+fields. Do not repair a stale entry by editing its flat fields.
+
+```ts
+const parsed = parseReflectionWire(reflectionJson);
+const slot = parsed.boundGlobals.find(({ group, binding }) => group === 0 && binding === 3);
+if (!slot || slot.typeDescriptor.kind !== 'array') {
+  throw new Error('expected the published array buffer layout');
+}
+```
+
+> [!WARNING]
+> Direct `emit_reflection()` preserves Naga's reflected `@align` and `@size`
+> layout facts. The pinned Naga Oil import/header writer does not preserve those
+> tokens for composable modules. The composition boundary therefore rejects an
+> active imported padding attribute with `shader-compile-failed` at
+> `naga-oil-import-layout-admission`, before it can publish a mismatched ABI.
+> Keep the source and host contract intact; use a naturally laid-out buffer
+> whose host packing matches reflection, or a writer that preserves the layout.
+
+Raw `composeShader` keeps conservative padding admission for registered modules.
+Modules without `align` or `size` identifier tokens need no layout-specific
+conditional preprocessing; the composer still validates their defines when
+selected. The candidate check stays conservative across directives separating
+`@` from its name. Padding inside comments does not select that check. Registered padding, selected-module
+unknown defines and definition conflicts retain their existing failures. The
+public compiler projects its selected source before calling this boundary.
+
+After changing Naga/WASM reflection, rebuild the source-matched producer and
+verify its provenance before rebuilding shader publications:
+
+```sh
+pnpm --filter @forgeax/engine-wgpu-wasm build:wasm
+node packages/wgpu-wasm/scripts/verify-current.mjs
+pnpm build:engine
+```
+
+Then rebuild or re-cook manifests from their owning source producer. Runtime
+admission rejects old `/2` or inconsistent `/3` publications; bypassing that
+check would let host packing and WGSL disagree.

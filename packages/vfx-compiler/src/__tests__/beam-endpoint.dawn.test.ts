@@ -60,7 +60,7 @@ fn vfx_update(ctx: VfxUpdateContext, particle: ptr<function, VfxParticle>) {}`,
     const particle = new Float32Array(28);
     particle.set([1, 2, 3], 0);
     particle.set([1, 0, 1, 2], 4);
-    const runtime = new Float32Array(76);
+    const runtime = new Float32Array(80);
     runtime.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], 8);
     new Uint32Array(runtime.buffer)[62] = 1;
     const output = buffer(new Float32Array(12));

@@ -87,7 +87,7 @@ fn preparePixel(p: vec2i, extent: vec2u) -> DiffuseHistoryPixel {
 // Hard admission precedes any weighting. No epsilon floor may admit another wall.
 // UE StochasticLightingTileClassification does per-tap material/normal/depth
 // admission. Exact instance/material identity and a plane test are conservative
-// first-version ForgeaX choices, not a claim of identical UE material policy.
+// first-version ForgeAX choices, not a claim of identical UE material policy.
 fn supportReject(a: DiffuseHistoryPixel, b: DiffuseHistoryPixel) -> u32 {
   if (b.surface.z != 1u || !finite3(b.radiance.xyz) || any(b.radiance.xyz < vec3f(0)) ||
       !(b.radiance.w >= 1.0 && b.radiance.w < 1e30) ||

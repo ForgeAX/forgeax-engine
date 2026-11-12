@@ -1,4 +1,5 @@
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
 import type { verifyUint4Readback } from './uint4-readback.fixture';
 
 export function assertUint4Readback(result: Awaited<ReturnType<typeof verifyUint4Readback>>) {
@@ -30,5 +31,5 @@ export function assertUint4Readback(result: Awaited<ReturnType<typeof verifyUint
     ...initial,
     ...initial,
   ]);
-  expect(result.live).toEqual(result.after.bytes);
+  expect(equalBytes(result.live, result.after.bytes)).toBe(true);
 }

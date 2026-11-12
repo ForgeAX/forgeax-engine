@@ -217,8 +217,9 @@ reject creation; dynamic failures reach `onError`, while explicit
 `loadResources()` rejects. `UiResourceError` preserves the URL and original
 transport cause; decoding failures retain the core diagnostic. Multiple failures
 are an `AggregateError`. Disposal aborts reads and rejects late publication.
-PNG companion pixels, nested CSS and WOFF2 are regression-qualified; this does
-not claim every image codec or SVG feature.
+PNG companions, the startup Logo SVG path, nested CSS and WOFF2 are
+regression-qualified. SVG image decoding and painting use the same enabled
+Blitz SVG feature; this does not claim every image codec or SVG feature.
 
 Ordinary `UiAsset` companions enter through `createUiLoader` and AssetRegistry's
 publication-scoped artifact reader. `mountUi` projects those verified bytes to
@@ -231,7 +232,7 @@ Removed stylesheet nodes cannot adopt late font or CSS results.
 
 The Engine gitlink at `third_party/blitz` and this package's `Cargo.lock` fix the
 source graph. Rust 1.99.0, wasm-bindgen 0.2.129, sequential style, default features
-disabled except `blitz-dom/woff,raster`, and `anyrender_vello_cpu` 0.18.0 define the current headless build.
+disabled except `blitz-dom/woff,raster,svg` and `blitz-paint/svg`, and `anyrender_vello_cpu` 0.18.0 define the current headless build.
 Release optimizes for size globally and uses `opt-level = 3` for `vello_common`'s
 CPU path/strip preparation. This changes compilation, not the portable GPU ABI
 or the renderer's ownership; measured scope and payload identity are recorded in

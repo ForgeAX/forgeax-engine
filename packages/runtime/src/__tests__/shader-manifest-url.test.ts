@@ -31,8 +31,18 @@ it('fetches every shader variant and binding through a verified shared-source pu
   const publication = await (await fetch(shaderManifestUrl(manifest))).json();
   expect(publication.schemaVersion).toBe(SHADER_MANIFEST_PUBLICATION_VERSION);
   expect(await readShaderManifestPublication(publication)).toEqual({
-    entries: manifest.entries,
-    materialShaders: manifest.materialShaders,
+    entries: manifest.entries.map((entry, index) => ({
+      ...entry,
+      sourceDigest: publication.entries[index].sourceDigest,
+    })),
+    materialShaders: manifest.materialShaders.map((entry, index) => ({
+      ...entry,
+      sourceDigest: publication.materialShaders[index].sourceDigest,
+      variants: entry.variants.map((variant, variantIndex) => ({
+        ...variant,
+        sourceDigest: publication.materialShaders[index].variants[variantIndex].sourceDigest,
+      })),
+    })),
   });
 
   const missingSource = { ...publication, sources: { ...publication.sources } };

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Same-browser WebGPU comparison for the ForgeaX and Three.js object paths.
+// Same-browser WebGPU comparison for the ForgeAX and Three.js object paths.
 // This is intentionally an ad-hoc experiment, not a CI admission gate.
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -84,6 +84,8 @@ function queryString() {
     pointLights: String(config.pointLights),
     spotLights: String(config.spotLights),
     profile: process.env.PERF_PROFILE ?? '0',
+    // The producer must outlive warmup, measurement and the completion sentinel.
+    frameLimit: String(config.warmupFrames + config.measureFrames + 2),
   });
   return query.toString();
 }
@@ -311,6 +313,7 @@ async function runOne({ implementation, path, globalName }, baseUrl, runIndex) {
       },
     };
   } catch (error) {
+    const lastEvidence = await page.evaluate(name => globalThis[name], globalName).catch(() => null);
     return {
       implementation,
       run: runIndex + 1,
@@ -318,7 +321,7 @@ async function runOne({ implementation, path, globalName }, baseUrl, runIndex) {
       errors: [error instanceof Error ? error.message : String(error)],
       pageErrors,
       consoleErrors,
-      evidence: null,
+      evidence: compactEvidence(lastEvidence),
       samples: null,
     };
   } finally {
@@ -378,7 +381,7 @@ function validateEvidence(implementation, evidence, intervals, pageErrors, conso
   if (evidence?.postSpawn?.pointLightCount !== config.pointLights) errors.push('point-light count drifted');
   if (evidence?.postSpawn?.spotLightCount !== config.spotLights) errors.push('spot-light count drifted');
   if ((evidence?.frameErrors ?? []).length > 0) errors.push('implementation reported frame errors');
-  if ((evidence?.appRendererErrors ?? []).length > 0) errors.push('ForgeaX reported renderer errors');
+  if ((evidence?.appRendererErrors ?? []).length > 0) errors.push('ForgeAX reported renderer errors');
   if (intervals.length !== config.measureFrames) {
     errors.push(`captured ${intervals.length}/${config.measureFrames} frame intervals`);
   }

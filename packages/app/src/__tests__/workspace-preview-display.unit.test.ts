@@ -339,6 +339,76 @@ describe('preview binding facts and display ownership', () => {
     }
   });
 
+  it('shows caller overlays by key, replaces and removes them, and rejects malformed input atomically', async () => {
+    const assets = new AssetRegistry({});
+    publishWorkspaceAssets(assets, []);
+    const world = new World({ assets });
+    const mesh = createBoxGeometry(1, 1, 1).unwrap();
+    const meshRef = assets.create(mesh).unwrap();
+    const material = assets.create(Materials.unlit([1, 0, 0, 1])).unwrap();
+    const entity = world
+      .spawn(
+        { component: Transform, data: { pos: [1, 0, 0] } },
+        { component: MeshFilter, data: { assetHandle: meshRef } },
+        { component: MeshRenderer, data: { materials: [material] } },
+      )
+      .unwrap();
+    const context = await createWorldContext(world, [assetsPlugin(assets)]);
+    const overlayRows = () => {
+      // Query rows are reused cursors; read each row while iterating.
+      const meshes = [];
+      for (const row of world.query({ with: [MeshFilter] }).unwrap())
+        if (row.entity !== entity)
+          meshes.push(assets.read(world.get(row.entity, MeshFilter).unwrap().assetHandle).unwrap());
+      return meshes;
+    };
+    try {
+      const fiber = context.plugin(workspaceMeshDisplayPlugin, { mesh, entity });
+      await fiber.await();
+      const display = fiber.ctx.get('engineWorkspacePreviewDisplay');
+      if (!display) throw new Error('Missing preview display service');
+      const edges = {
+        topology: 'line-list' as const,
+        positions: [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0],
+        colors: [1, 0.5, 0, 1, 1, 0.5, 0, 1, 1, 0.5, 0, 1, 1, 0.5, 0, 1],
+      };
+      const tags = { topology: 'triangle-list' as const, positions: [0, 0, 0, 1, 0, 0, 0, 1, 0] };
+      expect(await display.set({ overlays: { sharp: edges, tags } })).toMatchObject({
+        overlays: ['sharp', 'tags'],
+      });
+      const shown = overlayRows();
+      expect(shown.map((m) => m.submeshes[0]?.topology).sort()).toEqual([
+        'line-list',
+        'triangle-list',
+      ]);
+      expect(shown.every((m) => m.attributes.color !== undefined)).toBe(true);
+      await expect(
+        Promise.resolve().then(() => display.set({ overlays: { 'Bad Key': tags } } as never)),
+      ).rejects.toThrow(/Overlay key/);
+      await expect(
+        Promise.resolve().then(() =>
+          display.set({ overlays: { tags: { topology: 'triangle-list', positions: [0, 0, 0] } } }),
+        ),
+      ).rejects.toThrow(/whole triangle-list primitives/);
+      expect((await display.get()).overlays).toEqual(['sharp', 'tags']);
+      expect(overlayRows()).toHaveLength(2);
+      expect(
+        await display.set({
+          overlays: { sharp: null, tags: { ...tags, positions: [0, 0, 0, 2, 0, 0, 0, 2, 0] } },
+        }),
+      ).toMatchObject({ overlays: ['tags'] });
+      const replaced = overlayRows();
+      expect(replaced).toHaveLength(1);
+      expect(Array.from(replaced[0]?.attributes.position as Float32Array).slice(3, 4)).toEqual([2]);
+      await fiber.dispose();
+      expect(overlayRows()).toHaveLength(0);
+    } finally {
+      await context.fiber.dispose();
+      world.despawn(entity).unwrap();
+      assets.dispose();
+    }
+  });
+
   it('isolates simultaneous preview display services and retires only the closed preview', async () => {
     const assets = new AssetRegistry({});
     publishWorkspaceAssets(assets, []);

@@ -40,6 +40,7 @@ const publicToneModes: readonly Tonemap[] = [
   'aces-filmic',
   'agx',
   'neutral',
+  'ue-filmic',
 ];
 void publicToneModes;
 

@@ -4,8 +4,10 @@ import type {
   RenderGraphError,
 } from '@forgeax/engine-render-graph';
 import { err, ok, type Result } from '@forgeax/engine-types';
+import { isTemporalAntialias } from '../components/camera';
 import { SceneDataUnavailableError } from '../errors/render';
 import { motionBlurTemporalDemand } from '../features/motion-blur/motion-blur-params';
+import { GPU_TEXTURE_USAGE_COPY_SRC } from '../gpu-texture-usage';
 import type { RenderExtent } from '../pipeline/render-extent';
 import { renderExtentSize } from '../pipeline/render-extent';
 import { selectMainPassMaterials } from '../record/main-pass';
@@ -19,8 +21,43 @@ import type {
 } from '../render-pipeline';
 import { createRenderPipelineTarget } from '../render-pipeline';
 import { STANDARD_TEMPORAL_FORMAT } from '../standard-attachments';
-import { COLOR_PASS_SELECTOR, DEFERRED_PASS_SELECTOR } from '../systems/pass-selector';
+import {
+  COLOR_PASS_SELECTOR,
+  DEFERRED_PASS_SELECTOR,
+  FORWARD_PASS_SELECTOR,
+} from '../systems/pass-selector';
 import { addTypedScenePass } from '../typed-render-graph-primitives';
+import {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR,
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+  type SCENE_DATA_TEMPORAL_V1_SCHEMA,
+} from './scene-data';
+
+export function bindStandardSceneDataTarget(
+  target: RenderPipelineTarget,
+  topology: import('../render-pipeline').RenderPipelineTopology,
+  schema:
+    | typeof SCENE_DATA_TEMPORAL_V1_SCHEMA
+    | typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA
+    | typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+): RenderPipelineTarget {
+  const owners = (topology.sceneDataBindings ?? [])
+    .filter((binding) => binding.schema === schema)
+    .flatMap((binding) => binding.owners);
+  if (owners.length === 0) return target;
+  const unique = new Map(
+    owners.map((owner) => [
+      `${owner.featureIdentity}:${owner.viewIdentity}:${owner.planIdentity}:${owner.generation}:${owner.deviceGeneration}:${owner.surfaceAdmissionIdentity ?? ''}:${owner.surfaceAdmissionRevision ?? ''}`,
+      owner,
+    ]),
+  );
+  return {
+    ...target,
+    sceneDataBindings: [{ schema, owners: Object.freeze([...unique.values()]) }],
+  };
+}
 
 /** Scene history and the motion producer must agree on every temporal consumer. */
 export function standardSceneTemporalDemand(
@@ -31,7 +68,7 @@ export function standardSceneTemporalDemand(
   const motionBlur = camera.motionBlur;
   return (
     sceneConsumer ||
-    camera.antialias === 'taa' ||
+    isTemporalAntialias(camera.antialias) ||
     (motionBlur !== undefined &&
       motionBlurTemporalDemand({
         ...motionBlur,
@@ -195,6 +232,16 @@ export interface StandardSceneDataTargets {
   readonly temporal: RenderPipelineTarget;
 }
 
+/** Material-normal and depth semantics shared by current-view scene consumers. */
+export interface StandardSceneSurfaceDataTargets {
+  readonly normalSchema: typeof SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA;
+  readonly depthSchema: typeof SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA;
+  /** `encodeStandardNormalRoughness` packed material normal in world space. */
+  readonly normal: RenderPipelineTarget;
+  /** Current-view raster depth, with opaque/Alpha Mask coverage. */
+  readonly depth: RenderPipelineTarget;
+}
+
 const TEMPORAL_TARGET: GraphTextureDescriptor = {
   format: STANDARD_TEMPORAL_FORMAT,
   size: 'surface',
@@ -211,6 +258,40 @@ export function createStandardSceneDataTarget(
     size: extent === undefined ? TEMPORAL_TARGET.size : renderExtentSize(extent, 'internal'),
   });
   return temporal.ok ? ok({ temporal: temporal.value }) : temporal;
+}
+
+/** The current-view surface depth alone, for a depth-only Forward prepass. */
+export function createStandardSceneSurfaceDepthTarget(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  size: GraphTextureDescriptor['size'],
+): Result<RenderPipelineTarget, RenderGraphError> {
+  return createRenderPipelineTarget(graph, 'standard-scene-surface-depth', {
+    format: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.format,
+    size,
+    sampleCount: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_DESCRIPTOR.sampleCount,
+  });
+}
+
+/** Allocate the Forward surface inputs when no compatible Deferred GBuffer exists. */
+export function createStandardSceneSurfaceDataTargets(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  size: GraphTextureDescriptor['size'],
+): Result<StandardSceneSurfaceDataTargets, RenderGraphError> {
+  const normal = createRenderPipelineTarget(graph, 'standard-scene-surface-normal', {
+    format: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.format,
+    size,
+    sampleCount: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_DESCRIPTOR.sampleCount,
+    usage: GPU_TEXTURE_USAGE_COPY_SRC,
+  });
+  if (!normal.ok) return normal;
+  const depth = createStandardSceneSurfaceDepthTarget(graph, size);
+  if (!depth.ok) return depth;
+  return ok({
+    normalSchema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+    depthSchema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+    normal: normal.value,
+    depth: depth.value,
+  });
 }
 
 export function addStandardSceneDataPass(
@@ -256,5 +337,31 @@ export function addStandardSceneDataPass(
     clearColor: [0, 0, -1, 1],
     colorLoadOp: surfaces === 'opaque' ? 'clear' : 'load',
     depthLoadOp: 'load',
+  });
+}
+
+/**
+ * Produce shared current-view surface semantics for Forward scene consumers.
+ * Without a normal target the pass is depth-only (UE DepthPass PositionOnly):
+ * no color attachment, and only Alpha Mask draws keep a fragment for coverage.
+ */
+export function addStandardSceneSurfaceDataPass(
+  graph: RenderGraphBuilder<RenderPipelineFrame>,
+  targets: Pick<StandardSceneSurfaceDataTargets, 'depth'> &
+    Partial<Pick<StandardSceneSurfaceDataTargets, 'normal'>>,
+  gpuDriven?: RenderPipelineGpuDrivenProjection,
+): Result<void, RenderGraphError> {
+  return addTypedScenePass(graph, {
+    name: 'standard-scene-surface-data',
+    ...(gpuDriven === undefined ? {} : { gpuDriven }),
+    gpuDrivenFilter: 'opaque',
+    ...(targets.normal === undefined ? { colorTargets: [] } : { color: targets.normal }),
+    depth: targets.depth,
+    selector: FORWARD_PASS_SELECTOR,
+    recordMode: 'opaque',
+    passKind: 'forward',
+    fragmentEntryPoint: 'fs_ao_input',
+    colorLoadOp: 'clear',
+    depthLoadOp: 'clear',
   });
 }

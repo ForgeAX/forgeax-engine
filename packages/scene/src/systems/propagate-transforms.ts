@@ -1,4 +1,5 @@
 import {
+  type BufferHandle,
   defineSystem,
   defineSystemSet,
   type EcsError,
@@ -106,6 +107,10 @@ function countPropagation(name: keyof TransformPropagationTrace): void {
 }
 
 interface Scratch {
+  world: World;
+  stateBuffers: BufferHandle<Uint8Array>[];
+  changedBuffers: BufferHandle<Uint8Array>[];
+  flatBuffers: BufferHandle<Uint8Array>[];
   local: Mat4;
   parent: Mat4;
   candidate: Mat4;
@@ -259,6 +264,10 @@ function scratchFor(world: World): Scratch {
   const existing = SCRATCH.get(world);
   if (existing !== undefined) return existing;
   const created = {
+    world,
+    stateBuffers: [] as BufferHandle<Uint8Array>[],
+    changedBuffers: [] as BufferHandle<Uint8Array>[],
+    flatBuffers: [] as BufferHandle<Uint8Array>[],
     local: mat4.create(),
     parent: mat4.create(),
     candidate: mat4.create(),
@@ -553,14 +562,45 @@ function composeBindingRow(
   writeCandidate(binding, row, scratch.candidate, changed, touched, bindingIndex);
 }
 
+function markerBuffer(
+  scratch: Scratch,
+  handles: BufferHandle<Uint8Array>[],
+  index: number,
+  capacity: number,
+): Uint8Array {
+  let handle = handles[index];
+  if (handle === undefined) {
+    handle = scratch.world.buffers.alloc(Uint8Array, capacity).unwrap();
+    handles[index] = handle;
+  } else scratch.world.buffers.resize(handle, capacity).unwrap();
+  return scratch.world.buffers.view(handle).unwrap();
+}
+
+function releaseHierarchyBuffers(scratch: Scratch): void {
+  for (const handles of [scratch.stateBuffers, scratch.changedBuffers]) {
+    for (const handle of handles)
+      if (handle !== undefined) scratch.world.buffers.release(handle).unwrap();
+    handles.length = 0;
+  }
+  scratch.hierarchyStates.length = 0;
+  scratch.hierarchyChanged.length = 0;
+}
+
+function releaseScratch(world: World): void {
+  const scratch = SCRATCH.get(world);
+  if (scratch === undefined) return;
+  for (const handles of [scratch.stateBuffers, scratch.changedBuffers, scratch.flatBuffers])
+    for (const handle of handles) if (handle !== undefined) world.buffers.release(handle).unwrap();
+  SCRATCH.delete(world);
+}
+
 function ensureHierarchyBinding(scratch: Scratch, binding: HierarchyBinding, index: number): void {
   const capacity = binding.entities.length;
   const previous = scratch.hierarchyStates[index];
   if ((previous?.length ?? 0) >= capacity) return;
-  const states = new Uint8Array(capacity);
-  if (previous !== undefined) states.set(previous);
-  scratch.hierarchyStates[index] = states;
-  scratch.hierarchyChanged[index] = new Uint8Array(capacity);
+  scratch.hierarchyStates[index] = markerBuffer(scratch, scratch.stateBuffers, index, capacity);
+  scratch.hierarchyChanged[index] = markerBuffer(scratch, scratch.changedBuffers, index, capacity);
+  scratch.hierarchyChanged[index]?.fill(0);
 }
 
 function resetHierarchyBuffers(scratch: Scratch, bindings: readonly HierarchyBinding[]): void {
@@ -577,7 +617,7 @@ function resetHierarchyBuffers(scratch: Scratch, bindings: readonly HierarchyBin
 function ensureFlatBinding(scratch: Scratch, binding: TransformBinding, index: number): void {
   const capacity = binding.entities.length;
   if ((scratch.flatChanged[index]?.length ?? 0) < capacity)
-    scratch.flatChanged[index] = new Uint8Array(capacity);
+    scratch.flatChanged[index] = markerBuffer(scratch, scratch.flatBuffers, index, capacity);
 }
 
 function derivedWriteError(cause: EcsError, bindingIndex: number): SceneError {
@@ -1227,6 +1267,24 @@ function readStructuralCandidates(world: World, scratch: Scratch): StructuralCan
   return { entities, relationLeftTransform };
 }
 
+/** Empty temporal reads need no collection; keep dirty membership local to this call. */
+function addHierarchyDirty(
+  dirty: Set<EntityHandle> | undefined,
+  entity: EntityHandle,
+): Set<EntityHandle> {
+  const next = dirty ?? new Set<EntityHandle>();
+  next.add(entity);
+  return next;
+}
+
+function readDirtyTransforms(scratch: Scratch): Set<EntityHandle> | undefined {
+  let dirty: Set<EntityHandle> | undefined;
+  for (const span of scratch.dirtyTransforms?.spans().unwrap() ?? [])
+    for (let row = 0; row < span.length; row++)
+      dirty = addHierarchyDirty(dirty, span.entities[row] as EntityHandle);
+  return dirty;
+}
+
 function propagateHierarchy(
   world: World,
   scratch: Scratch,
@@ -1251,25 +1309,21 @@ function propagateHierarchy(
     // Keep the flat-only lane independent: it must not allocate hierarchy
     // markers or scan every Transform row merely to prove that no ChildOf
     // archetype exists.
-    scratch.hierarchyStates.length = 0;
-    scratch.hierarchyChanged.length = 0;
+    releaseHierarchyBuffers(scratch);
     scratch.hierarchyValid = true;
     return ok(undefined);
   }
-  const dirty = new Set<EntityHandle>();
-  for (const span of scratch.dirtyTransforms?.spans().unwrap() ?? []) {
-    for (let row = 0; row < span.length; row++) dirty.add(span.entities[row] as EntityHandle);
-  }
+  let dirty = readDirtyTransforms(scratch);
   let rebuild = !scratch.hierarchyValid || structural.relationLeftTransform;
-  const structuralSet = new Set(structural.entities);
+  const structuralSet = structural.entities.length === 0 ? undefined : new Set(structural.entities);
   const edgeCursor = scratch.hierarchyResidualParentCursor;
   for (const span of scratch.dirtyParents?.spans().unwrap() ?? []) {
     for (let row = 0; row < span.length; row++) {
       const entity = span.entities[row] as EntityHandle;
-      dirty.add(entity);
+      dirty = addHierarchyDirty(dirty, entity);
       if (
         !rebuild &&
-        !structuralSet.has(entity) &&
+        !structuralSet?.has(entity) &&
         !parentEdgeMirrored(world, entity, transformWriter, edgeCursor)
       ) {
         rebuild = true;
@@ -1277,14 +1331,15 @@ function propagateHierarchy(
     }
   }
   for (const entity of structural.entities) {
-    if (world[worldRead].getFieldValue(entity, ChildOf, 'parent') !== undefined) dirty.add(entity);
+    if (world[worldRead].getFieldValue(entity, ChildOf, 'parent') !== undefined)
+      dirty = addHierarchyDirty(dirty, entity);
   }
-  for (const entity of globalEdited) dirty.add(entity);
-  for (const entity of flatRoots) dirty.add(entity);
-  if (!rebuild && dirty.size === 0) return ok(undefined);
+  for (const entity of globalEdited) dirty = addHierarchyDirty(dirty, entity);
+  for (const entity of flatRoots) dirty = addHierarchyDirty(dirty, entity);
+  if (!rebuild && dirty === undefined) return ok(undefined);
   let dirtyRoots: EntityHandle[] | undefined;
   if (!rebuild) {
-    dirtyRoots = highestDirtyEntities(world, dirty);
+    dirtyRoots = highestDirtyEntities(world, dirty as ReadonlySet<EntityHandle>);
   }
   if (dirtyRoots === undefined) {
     resetHierarchyBuffers(scratch, hierarchyBindings);
@@ -1395,9 +1450,7 @@ export function propagateTransforms(world: World): Result<void, SceneError> {
     }
     const hierarchy = propagateHierarchy(world, scratch, structural, globalEdited, flat.value);
     // Consume our own derived publications, while preserving later external edits.
-    for (const _span of scratch.dirtyGlobals?.spans().unwrap() ?? []) {
-      /* observation only */
-    }
+    scratch.dirtyGlobals?.markObserved();
     return hierarchy;
   } catch (cause) {
     // Private temporal readers may already have accepted discovery before a
@@ -1416,9 +1469,8 @@ export const PropagateTransforms: SystemHandle<readonly []> = defineSystem({
     const result = propagateTransforms(world);
     if (!result.ok) throw result.error;
     publishPresentationTransforms(world);
-    for (const _span of scratchFor(world).dirtyGlobals?.spans().unwrap() ?? []) {
-      /* consume this owner's presentation writes */
-    }
+    // Consume this owner's presentation writes.
+    scratchFor(world).dirtyGlobals?.markObserved();
   },
 });
 
@@ -1448,7 +1500,7 @@ export function registerPropagateTransforms(
         world.removeSystem(FixedUpdate, PROPAGATE_TRANSFORMS_FIXED_SYSTEM);
         world.removeSystem(Update, PROPAGATE_TRANSFORMS_SYSTEM);
         REGISTRATION_LEASES.delete(world);
-        SCRATCH.delete(world);
+        releaseScratch(world);
       }
     };
   }
@@ -1481,6 +1533,6 @@ export function registerPropagateTransforms(
     world.removeSystem(FixedUpdate, PROPAGATE_TRANSFORMS_FIXED_SYSTEM);
     world.removeSystem(Update, PROPAGATE_TRANSFORMS_SYSTEM);
     REGISTRATION_LEASES.delete(world);
-    SCRATCH.delete(world);
+    releaseScratch(world);
   };
 }

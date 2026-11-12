@@ -3,6 +3,9 @@ import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
+  // These DOM fixtures execute Node build generators, not browser modules.
+  // Vite 8 must retain native builtins and file URLs for their source assets.
+  environments: { client: { consumer: 'server' } },
   test: {
     name: '@forgeax/engine-devkit',
     environment: 'node',

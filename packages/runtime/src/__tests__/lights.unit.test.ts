@@ -25,6 +25,10 @@ import { Camera, DirectionalLight, PointLight, Skylight, SpotLight } from '@forg
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { describe, expect, it } from 'vitest';
 import {
+  packTestDirectLightSlot as packDirectLightSlot,
+  STANDARD_CLUSTER_TEST_ABI,
+} from '../../../render/src/__tests__/cluster-test-abi';
+import {
   computeInvRangeSquared,
   degToCos,
   validateDirectionalLightData,
@@ -32,12 +36,7 @@ import {
   validateSpotLightData,
 } from '../../../render/src/components/light-helpers';
 import type { ShadowInvalidConfigError } from '../../../render/src/errors/render';
-import {
-  BYTES_PER_DIRECT_LIGHT_SLOT,
-  DIRECT_LIGHT_SLOT_LAYOUT,
-  DirectLightSlotKind,
-  packDirectLightSlot,
-} from '../../../render/src/light-buffer-layout';
+import { DirectLightSlotKind } from '../../../render/src/light-buffer-layout';
 import { buildPbrViewBglEntries } from '../../../render/src/pbr-pipeline';
 import type {
   PointLightSnapshot,
@@ -45,8 +44,24 @@ import type {
 } from '../../../render/src/render-system-extract';
 import { prepareExtractContext } from '../../../render/src/render-system-extract';
 import { extractFrame } from '../../../render/src/render-system-extract-tail';
+import { registerLightSystems } from '../../../render/src/world/light-systems';
 import { renderLightsOf } from '../../../render/src/world/render-lights';
-import { createRenderWorld } from '../../../render/src/world/render-world';
+import {
+  beginRenderFrame,
+  createRenderWorld,
+  endRenderFrame,
+} from '../../../render/src/world/render-world';
+import { RenderLightInput } from '../../../render/src/world/scene-systems';
+
+function prepareLights(world: World) {
+  const renderWorld = createRenderWorld();
+  const roster = extractFrame(world, prepareExtractContext(world)).lights;
+  renderWorld.insertResource(RenderLightInput, { roster });
+  registerLightSystems(renderWorld);
+  beginRenderFrame(renderWorld, 1);
+  endRenderFrame(renderWorld);
+  return renderLightsOf(renderWorld).roster;
+}
 
 type LightSpawnResult = ReturnType<World['spawn']>;
 
@@ -353,7 +368,7 @@ function spawnValidatedLight(
         expect(defaults.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(defaults.mapSize).toBe(2048);
         expect(defaults.depthBias).toBeCloseTo(0.00001, 7);
-        expect(defaults.normalBias).toBeCloseTo(0.05, 5);
+        expect(defaults.normalBias).toBeCloseTo(0, 5);
         expect(defaults.shadowDistance).toBeCloseTo(200, 5);
         expect(defaults.shadowFilter).toBe(6);
         expect(defaults.staggerCascades).toBe(false);
@@ -362,7 +377,7 @@ function spawnValidatedLight(
         // 1 castShadow + 10 closed shadow-quality fields + staggerCascades + contactShadowLength + lightingChannels = 17 fields (feat-20260709 M2 collapsed
         // direction/color from 6 per-axis scalars to 2 array<f32,3> columns;
         // nearPlane removed — derived from camera near; farPlane -> shadowDistance)
-        expect(Object.keys(componentSchema(dl)).length).toBe(28);
+        expect(Object.keys(componentSchema(dl)).length).toBe(29);
         expect('lightingChannels' in componentSchema(dl)).toBe(true);
         expect(componentSchema(dl).staggerCascades).toBe('bool');
         expect('contactShadowLength' in componentSchema(dl)).toBe(true);
@@ -400,7 +415,7 @@ function spawnValidatedLight(
         expect(lightData.splitLambda).toBeCloseTo(0.5, 5);
         expect(lightData.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(lightData.depthBias).toBeCloseTo(0.00001, 7);
-        expect(lightData.normalBias).toBeCloseTo(0.05, 5);
+        expect(lightData.normalBias).toBeCloseTo(0, 5);
         expect(lightData.shadowDistance).toBeCloseTo(200, 5);
       });
 
@@ -420,7 +435,7 @@ function spawnValidatedLight(
         expect(light.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(light.mapSize).toBeCloseTo(2048, 5);
         expect(light.depthBias).toBeCloseTo(0.00001, 7);
-        expect(light.normalBias).toBeCloseTo(0.05, 5);
+        expect(light.normalBias).toBeCloseTo(0, 5);
         expect(light.shadowDistance).toBeCloseTo(200, 5);
       });
 
@@ -881,9 +896,7 @@ function spawnValidatedLight(
         propagateTransforms(world);
         // The Render World assigns each casting spot a stable tile.
         const frame = {
-          lights: renderLightsOf(createRenderWorld()).sync(
-            extractFrame(world, prepareExtractContext(world)).lights,
-          ),
+          lights: prepareLights(world),
         };
 
         expect(frame.lights.spot).toHaveLength(1);
@@ -959,9 +972,7 @@ function spawnValidatedLight(
         propagateTransforms(world);
         // The Render World assigns each casting spot a stable tile.
         const frame = {
-          lights: renderLightsOf(createRenderWorld()).sync(
-            extractFrame(world, prepareExtractContext(world)).lights,
-          ),
+          lights: prepareLights(world),
         };
 
         expect(frame.lights.spot).toHaveLength(5);
@@ -997,9 +1008,7 @@ function spawnValidatedLight(
         propagateTransforms(world);
         // The Render World assigns each casting spot a stable tile.
         const frame = {
-          lights: renderLightsOf(createRenderWorld()).sync(
-            extractFrame(world, prepareExtractContext(world)).lights,
-          ),
+          lights: prepareLights(world),
         };
 
         expect(frame.lights.spot).toHaveLength(2);
@@ -1561,54 +1570,54 @@ function spawnValidatedLight(
   describe('lightslot-layout.test.ts', () => {
     // ── test: unified direct-light slot byte-size lock ─────
 
-    describe('BYTES_PER_DIRECT_LIGHT_SLOT', () => {
+    describe('reflected DirectLightSlot byte size', () => {
       it('is exactly 96 (unified ABI lock)', () => {
-        expect(BYTES_PER_DIRECT_LIGHT_SLOT).toBe(96);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize).toBe(96);
       });
     });
 
     // ── test: DirectLightSlot layout byte-size lock ───────────────────────────────
 
-    describe('DIRECT_LIGHT_SLOT_LAYOUT byte-size', () => {
+    describe('reflected DirectLightSlot layout byte-size', () => {
       it('declares byteSize === 96', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.byteSize).toBe(96);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.byteSize).toBe(96);
       });
 
       it('declares floatCount === 24 (96 bytes / 4 bytes per f32)', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.floatCount).toBe(24);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.floatCount).toBe(24);
       });
 
       it('declares vec4Count === 6 (96 bytes / 16 bytes per vec4)', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.vec4Count).toBe(6);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.vec4Count).toBe(6);
       });
     });
 
     // ── test: DirectLightSlot field offsets match the WGSL struct ─────────────────
 
-    describe('DIRECT_LIGHT_SLOT_LAYOUT field offsets', () => {
+    describe('reflected DirectLightSlot field offsets', () => {
       it('position at byte 0', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.positionOffset).toBe(0);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.positionOffset).toBe(0);
       });
       it('invRangeSquared at byte 12 (lane .w of vec4[0])', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.rangeOffset).toBe(12);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.rangeOffset).toBe(12);
       });
       it('color at byte 16', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.colorOffset).toBe(16);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.colorOffset).toBe(16);
       });
       it('cosInner at byte 28 (lane .w of vec4[1])', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.firstAngleOffset).toBe(28);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.firstAngleOffset).toBe(28);
       });
       it('direction at byte 32', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.primaryAxisOffset).toBe(32);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.primaryAxisOffset).toBe(32);
       });
       it('cosOuter at byte 44 (lane .w of vec4[2])', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.secondAngleOffset).toBe(44);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.secondAngleOffset).toBe(44);
       });
       it('kind at byte 48', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.auxiliaryAxisOffset).toBe(48);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.auxiliaryAxisOffset).toBe(48);
       });
       it('pad at byte 52 (3 x u32 = 12 bytes of padding)', () => {
-        expect(DIRECT_LIGHT_SLOT_LAYOUT.metadataByteOffset).toBe(64);
+        expect(STANDARD_CLUSTER_TEST_ABI.directLightSlot.metadataByteOffset).toBe(64);
       });
       it('metadata starts at byte 64 after four payload rows', () => {
         const buf = new Float32Array(24);
@@ -1641,12 +1650,13 @@ function spawnValidatedLight(
       it('kind values are disjoint (0 vs 1)', () => {
         expect(DirectLightSlotKind.POINT).not.toBe(DirectLightSlotKind.SPOT);
       });
-      it('only two members exist (0 and 1)', () => {
+      it('only the point, spot, rect-area and directional members exist', () => {
         const keys = Object.keys(DirectLightSlotKind);
-        expect(keys.length).toBe(3);
+        expect(keys.length).toBe(4);
         expect(keys).toContain('POINT');
         expect(keys).toContain('SPOT');
         expect(keys).toContain('RECT_AREA');
+        expect(keys).toContain('DIRECTIONAL');
       });
     });
   });
@@ -1897,7 +1907,7 @@ function spawnValidatedLight(
         expect(view.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
-        expect(view.normalBias).toBeCloseTo(0.05, 5);
+        expect(view.normalBias).toBeCloseTo(0, 5);
         expect(view.shadowDistance).toBeCloseTo(200, 5);
         expect(view.shadowFilter).toBe(6);
       });
@@ -1913,7 +1923,7 @@ function spawnValidatedLight(
         expect(view.cascadeBlend).toBeCloseTo(0.2, 5);
         expect(view.mapSize).toBe(2048);
         expect(view.depthBias).toBeCloseTo(0.00001, 7);
-        expect(view.normalBias).toBeCloseTo(0.05, 5);
+        expect(view.normalBias).toBeCloseTo(0, 5);
         expect(view.shadowDistance).toBeCloseTo(200, 5);
         expect(view.shadowFilter).toBe(6);
       });
@@ -1948,7 +1958,7 @@ function spawnValidatedLight(
       });
 
       it('schema includes lightingChannels alongside the existing light and shadow fields', () => {
-        expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(28);
+        expect(Object.keys(componentSchema(DirectionalLight)).length).toBe(29);
         expect(componentSchema(DirectionalLight).staggerCascades).toBe('bool');
         expect(componentDefinition(DirectionalLight).defaults?.staggerCascades).toBe(false);
         expect('direction' in componentSchema(DirectionalLight)).toBe(true);
@@ -2271,9 +2281,10 @@ function spawnValidatedLight(
           projectorAvailable: false,
         });
         const samplers = entries.filter((e) => e.sampler !== undefined);
-        expect(samplers).toHaveLength(1);
-        expect(samplers[0]?.binding).toBe(4);
-        expect(samplers[0]?.sampler?.type).toBe('comparison');
+        expect(samplers.map((entry) => [entry.binding, entry.sampler?.type])).toEqual([
+          [4, 'comparison'],
+          [17, 'filtering'],
+        ]);
       });
     });
 
@@ -2322,7 +2333,7 @@ function spawnValidatedLight(
     });
 
     describe('base binding roster keeps Points/Lines at 10', () => {
-      it('exposes camera/shadow bindings plus binding 10', () => {
+      it('exposes camera/shadow bindings, Points/Lines at 10 and the shared optical sampler at 17', () => {
         const bindings = buildPbrViewBglEntries({
           storageBuffer: true,
           extendedLighting: false,
@@ -2330,7 +2341,7 @@ function spawnValidatedLight(
         })
           .map((e) => e.binding)
           .sort((a, b) => a - b);
-        expect(bindings).toEqual([0, 3, 4, 5, 6, 7, 8, 10]);
+        expect(bindings).toEqual([0, 3, 4, 5, 6, 7, 8, 10, 17]);
       });
     });
   });

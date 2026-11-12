@@ -38,6 +38,9 @@ const probes = vi.hoisted(() => {
     }),
     sessionListeners,
     sessionPost: vi.fn(),
+    nativeFrames: undefined as
+      | ((callback: () => void, unavailable: () => void) => (() => void) | undefined)
+      | undefined,
   };
 });
 
@@ -87,6 +90,8 @@ vi.mock('../execution/engine-worker', async () => {
           workerWebGpu: true,
         },
         post: probes.sessionPost,
+        requestFrame: (callback: () => void, unavailable: () => void) =>
+          probes.nativeFrames?.(callback, unavailable),
         listen: probes.sessionListen,
         dispose: probes.sessionDispose,
       }),
@@ -129,6 +134,7 @@ vi.mock('../browser-frame-signal', () => ({
 }));
 
 import { createWorkerExecutionApp } from '../execution/host-controller';
+import { isExecutionReport } from '../execution/schema';
 
 const capabilities = {
   worker: { available: true, reason: 'test' },
@@ -165,7 +171,7 @@ function makeCanvas(): HTMLCanvasElement {
 
 async function createRunningApp(
   tier: 'engine-worker' | 'render-worker' = 'engine-worker',
-  renderPipelineCapacity: 2 | 3 | 4 = 2,
+  renderPipelineCapacity: 2 | 3 | 4 | 'default' = 2,
   syncCanvas?: import('../execution/host-controller').CreateWorkerExecutionAppOptions['syncCanvas'],
   startupTimeoutMs: number | null = 2_000,
   frameTimeoutMs?: number | null,
@@ -183,7 +189,7 @@ async function createRunningApp(
         bootstrap: 'https://example.test/game.js',
         startupTimeoutMs,
         frameTimeoutMs,
-        diagnostics: { renderPipelineCapacity },
+        diagnostics: renderPipelineCapacity === 'default' ? {} : { renderPipelineCapacity },
       },
     } as never,
     capabilities,
@@ -277,6 +283,142 @@ describe('Worker frame admission watchdog', () => {
     }
   });
 
+  it('uses the startup boundary while a split frame waits for render credit, then restores the source deadline', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-wait',
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(app.lastError).toBeUndefined();
+      expect(frames()).toHaveLength(2);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'source',
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'source',
+      });
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it.each([
+    'render-wait',
+    'source',
+  ] as const)('retains the %s admission phase across native visibility suspension', async (phase) => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-wait',
+      });
+      visibility(false);
+      await vi.advanceTimersByTimeAsync(11_000);
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase,
+      });
+      expect(app.lastError).toBeUndefined();
+      visibility(true);
+      await vi.advanceTimersByTimeAsync(2_001);
+      if (phase === 'render-wait') {
+        expect(app.lastError).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(8_000);
+      }
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: phase === 'render-wait' ? 10_000 : 2_000 },
+      });
+      expect(frames()).toHaveLength(2);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('bounds render-credit waits and ignores duplicate phase notices rather than extending them', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      const waiting = {
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId,
+        phase: 'render-wait',
+      } as const;
+      emit(waiting);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(app.lastError).toBeUndefined();
+      emit(waiting);
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 10_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('rejects stale render-credit phase notices before they can replace the source watchdog', async () => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', 2, undefined, 10_000);
+    const emit = listener();
+    try {
+      emit({ ...completeMessage(frame), kind: 'simulation-complete' });
+      callbacks.at(-1)?.(16);
+      const next = lastFrame();
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: 'retired-world',
+        frameId: next.frameId,
+        phase: 'render-wait',
+      });
+      emit({
+        kind: 'frame-admission',
+        worldIdentity: next.worldIdentity,
+        frameId: next.frameId - 1,
+        phase: 'render-wait',
+      });
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(app.execution.report().fault).toMatchObject({
+        code: 'app-execution-deadline-exceeded',
+        detail: { phase: 'frame', timeoutMs: 2_000 },
+      });
+    } finally {
+      await app.dispose();
+    }
+  });
+
   it.each([
     'engine-worker',
     'render-worker',
@@ -287,6 +429,13 @@ describe('Worker frame admission watchdog', () => {
       callbacks.at(-1)?.(16);
       const pending = probes.sessionPost.mock.calls.at(-1)?.[0] as ExecutionFrameMessage;
       const posted = probes.sessionPost.mock.calls.length;
+      if (tier === 'render-worker')
+        listener()({
+          kind: 'frame-admission',
+          worldIdentity: pending.worldIdentity,
+          frameId: pending.frameId,
+          phase: 'render-wait',
+        });
       await vi.advanceTimersByTimeAsync(120_001);
       callbacks.at(-1)?.(120_017);
       expect(app.lastError).toBeUndefined();
@@ -655,9 +804,11 @@ describe('Worker frame admission watchdog', () => {
   });
 
   it.each([
-    3, 4,
-  ] as const)('admits exactly %i sealed publications while keeping one simulation credit and real completion retirement', async (capacity) => {
-    const { app, callbacks, frame } = await createRunningApp('render-worker', capacity);
+    [3, 3],
+    [4, 4],
+    ['default', 3],
+  ] as const)('admits %s (%i) sealed publications while keeping one simulation credit and real completion retirement', async (option, capacity) => {
+    const { app, callbacks, frame } = await createRunningApp('render-worker', option);
     const emit = listener();
     try {
       for (let id = 1; id <= capacity; id++) {
@@ -670,8 +821,20 @@ describe('Worker frame admission watchdog', () => {
         if (id < capacity) expect(frames()).toHaveLength(id + 1);
       }
       expect(frames()).toHaveLength(capacity);
+      const beforeLateCallback = app.execution.report().frame;
       callbacks.at(-1)?.(64);
       expect(frames()).toHaveLength(capacity);
+      // The last display demand already fired and is coalesced until credit
+      // returns. Its late callback cannot count a second throttled tick.
+      expect(app.execution.report().frame).toEqual(beforeLateCallback);
+      // Diagnostics retain the real pipeline depth and admitted waiting ticks.
+      expect(app.execution.report().frame).toEqual({
+        submitted: capacity,
+        completed: capacity,
+        inFlight: 0,
+        highWater: capacity,
+        throttledTicks: capacity,
+      });
       const picture = completeMessage(frame) as never;
       emit({ kind: 'render-submitted', epoch: 1, frame: picture });
       emit({ kind: 'render-complete', epoch: 0, frame: picture });
@@ -862,8 +1025,19 @@ describe('Worker frame admission watchdog', () => {
       await vi.advanceTimersByTimeAsync(3000);
       expect(app.lastError).toBeUndefined();
       expect(app.execution.report().frame).toMatchObject({ completed: 0, inFlight: 1 });
+      // The loss cause stays observable through the report, beside the epoch it ended.
+      expect(app.execution.report().render).toMatchObject({
+        epoch: 2,
+        state: 'rebuilding',
+        lastLoss: { epoch: 2, cause: 'loss before source update' },
+      });
+      expect(isExecutionReport(app.execution.report())).toBe(true);
 
       emit({ kind: 'render-ready', epoch: 2 });
+      expect(app.execution.report().render).toMatchObject({
+        state: 'alive',
+        lastLoss: { epoch: 2, cause: 'loss before source update' },
+      });
       callbacks.at(-1)?.(3040);
       expect(frames()).toEqual([frame]);
       probes.now = 3050;
@@ -1495,6 +1669,87 @@ describe('Worker inspection replies', () => {
     });
     await expect(run).rejects.toMatchObject({ code: 'live-world-stale' });
     await app.dispose();
+  });
+});
+
+describe('Worker native frame progress', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    probes.sessionListeners.length = 0;
+    probes.pending.message = undefined;
+    probes.now = 0;
+    probes.visible = true;
+    probes.platformListeners.clear();
+    probes.sessionDispose.mockResolvedValue(ok(undefined));
+  });
+  afterEach(() => {
+    probes.nativeFrames = undefined;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    'host',
+    'worker',
+  ] as const)('admits one frame when the %s clock wins and fences the late clock', async (winner) => {
+    const { app, callbacks, frame } = await createRunningApp();
+    const native: (() => void)[] = [],
+      cancelled = vi.fn();
+    try {
+      listener()(completeMessage(frame));
+      app.pause().unwrap();
+      probes.nativeFrames = (callback) => {
+        native.push(callback);
+        return cancelled;
+      };
+      app.resume().unwrap();
+      const before = frames().length,
+        host = callbacks.at(-1),
+        firstNative = native[0];
+      if (host === undefined || firstNative === undefined)
+        throw new Error('Both native frame leases must be scheduled');
+      if (winner === 'host') host(16);
+      else {
+        probes.now = 16;
+        firstNative();
+      }
+      expect(frames()).toHaveLength(before + 1);
+      expect(app.execution.report().frame.inFlight).toBe(1);
+      host(32);
+      firstNative();
+      expect(frames()).toHaveLength(before + 1);
+      expect(app.lastError).toBeUndefined();
+      expect(cancelled).toHaveBeenCalled();
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  it('cancels both pending clocks on pause without admitting their late callbacks', async () => {
+    const { app, callbacks, frame } = await createRunningApp();
+    let native: (() => void) | undefined;
+    const cancelled = vi.fn();
+    try {
+      listener()(completeMessage(frame));
+      app.pause().unwrap();
+      probes.nativeFrames = (callback) => {
+        native = callback;
+        return cancelled;
+      };
+      app.resume().unwrap();
+      const host = callbacks.at(-1),
+        before = frames().length;
+      if (host === undefined || native === undefined)
+        throw new Error('Both native frame leases must be scheduled');
+      app.pause().unwrap();
+      host(16);
+      native();
+      expect(frames()).toHaveLength(before);
+      expect(cancelled).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.dispose();
+    }
   });
 });
 

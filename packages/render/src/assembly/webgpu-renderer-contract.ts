@@ -1,4 +1,5 @@
 import type { RhiCanvasContext, RhiCanvasTarget, RhiDevice, RhiError } from '@forgeax/engine-rhi';
+import type { MaterialShaderEntry } from '@forgeax/engine-shader';
 import type { ImportTransport } from '@forgeax/engine-types';
 import type { RenderFeatureHost } from '../features/host';
 import type {
@@ -27,6 +28,15 @@ import type { BundlerOptions } from './bundler-contract';
 import type { RendererAssemblyImplementation } from './host-contract';
 import type { MeshSsboGrowResult, MeshSsboState } from './mesh-ssbo-grow';
 
+/** One resolved material source supplies the pipeline identity and layout. */
+export interface MaterialPipelineSource {
+  readonly entry: MaterialShaderEntry;
+  readonly label: string;
+  readonly moduleLabel: string;
+  readonly layoutShaderId: string;
+  readonly ownEntries: boolean;
+}
+
 export type WebGPUOutcome =
   | { kind: 'ok'; renderer: RendererAssemblyImplementation }
   | { kind: 'rhi-err'; error: RhiError }
@@ -51,8 +61,8 @@ export interface WebGPURendererInternals {
   ssrShaders?: SsrShaderSources | undefined;
   depthPyramidShaders?: DepthPyramidShaderSources | undefined;
   atmosphereShaders?: AtmosphereShaderSources | undefined;
-  standardDeferredShaders?:
-    | import('../pipeline/standard-deferred-lighting').StandardDeferredShaderSources
+  standardSceneShaders?:
+    | import('../pipeline/standard-deferred-lighting').StandardSceneShaderSources
     | undefined;
   gpuPassTimingSubmittedWork?: Promise<void> | undefined;
   /** Null retires the loss observer when the Renderer is disposed. */

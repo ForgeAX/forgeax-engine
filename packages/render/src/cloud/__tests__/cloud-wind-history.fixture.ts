@@ -10,6 +10,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { CLOUD_RESOLVE_FULLSCREEN_WGSL } from '@forgeax/engine-shader';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 
 // Exact binary16 values keep the independent transport oracle free of
 // encoder rounding: cloud positions are kilometres, View positions metres.
@@ -44,14 +45,14 @@ export async function verifyCloudWindHistory(
   const previousPosition = texture('rgba16float', 6);
   const depth = texture('depth32float', 20);
   const output = texture('rgba16float', 17);
-  const view = buffer(1280, 72);
+  const view = buffer(1296, 72);
   const params = buffer(176, 72);
   fill(source, [0, 0, 0, 0x3800]);
   fill(current, [0x3800, 0x3800, 0x3800, 0x3c00], [0x3400, 0x3400, 0x3400, 0x3c00]);
   fill(previous, [0x3800, 0x3800, 0x3800, 0x3c00]);
   fill(transmission, [0x3800, 0x3800, 0x3800, 0x3c00]);
   fill(position, [0, 0, 0x3c00, 0x3c00]); // z = 1000 m
-  const uniforms = new Float32Array(320);
+  const uniforms = new Float32Array(324);
   for (const offset of [0, 44, 252]) for (let i = 0; i < 4; i++) uniforms[offset + i * 5] = 1;
   device.queue.writeBuffer(view, 0, uniforms);
   const cloud = new Float32Array(44);
@@ -181,7 +182,7 @@ export async function verifyCloudWindHistory(
           await replay.inspectWork(work.workIndex, ['pipeline', 'bindings', 'pixels'])
         ).unwrap();
         expect(inspected.attachment?.format).toBe('rgba16float');
-        expect(inspected.attachment?.bytes).toEqual(bytes);
+        expect(equalBytes(inspected.attachment?.bytes, bytes)).toBe(true);
         await save(`${entry.name}-replay.rgba16`, inspected.attachment?.bytes ?? new Uint8Array());
       } finally {
         (await replay.dispose()).unwrap();

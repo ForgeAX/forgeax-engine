@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveEvidenceCommitIdentity } from './evidence-identity';
 
 describe('evidence commit identity', () => {
-  it('prefers the ForgeaX Vite commit injection', () => {
+  it('prefers the ForgeAX Vite commit injection', () => {
     expect(
       resolveEvidenceCommitIdentity({
         VITE_FORGEAX_COMMIT: 'forgeax-commit',
@@ -11,7 +11,7 @@ describe('evidence commit identity', () => {
     ).toBe('forgeax-commit');
   });
 
-  it('accepts the GitHub Vite injection when the ForgeaX value is absent', () => {
+  it('accepts the GitHub Vite injection when the ForgeAX value is absent', () => {
     expect(resolveEvidenceCommitIdentity({ VITE_GITHUB_SHA: 'github-commit' })).toBe(
       'github-commit',
     );

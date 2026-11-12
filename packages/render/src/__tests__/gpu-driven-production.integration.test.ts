@@ -27,13 +27,15 @@ import {
 } from '@forgeax/engine-shader';
 import { deriveMaterialDynamicInputLayout, err, ok } from '@forgeax/engine-types';
 import { describe, expect, it, vi } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
 import { materialParametersToParamSchema } from '../../../assets-runtime/src/material/runtime-shader';
 import { createMaterialPackCooker } from '../../../shader-compiler/src/material/pack-cooker';
 import { derive } from '../../../types/src/index';
-import { createRenderer as constructRenderer } from '../assembly/factory';
+import { createRenderer as constructRenderer, exposeRenderer } from '../assembly/factory';
 import { resolveMaterialPipelineVertexEntry } from '../assembly/material/pipeline-helpers';
 import { Camera, DirectionalLight, MeshFilter, MeshRenderer, PointLight } from '../components';
+import { DeviceScope } from '../device/device-scope';
 import { BatchTopology } from '../gpu-driven/batch-topology';
 import { PreparedRasterBundleCache } from '../gpu-driven/prepared-raster-bundle';
 import { GpuDrivenProduction } from '../gpu-driven/production-raster';
@@ -63,13 +65,15 @@ import * as gpuDrawReceipts from '../record/gpu-draw-receipts';
 import * as mainPass from '../record/main-pass';
 import type { PipelineState, RenderSystemInternals } from '../record/render-context';
 import { STANDARD_OPAQUE_FRAGMENT_ENTRY } from '../record/standard-opaque-entry';
-import { ensureCompiledFrameGraph, executeCompiledFrameGraph } from '../record/typed-frame-graph';
+import { ensureShadowDepthLayers } from '../record/typed-frame-graph';
 import type { RenderPipeline, RenderPipelineFrame } from '../render-pipeline';
 import type { RenderableSnapshot } from '../render-system-extract';
 import { PersistentRenderScene, RenderScene } from '../scene/render-scene';
 import { ReadonlyDynamicInputPage } from '../surface/dynamic-input';
 import { createTemporalFrameTransaction, TemporalViewHistory } from '../temporal/frame';
 import type { ViewLights } from '../world/render-lights';
+import { publishRenderSubmission, renderWorldFor } from '../world/render-world';
+import { executeCompiledFrameGraph } from './frame-recording-driver';
 import {
   admitGpuFixture,
   mesh,
@@ -78,9 +82,36 @@ import {
   standardPbrInputs,
   updateSnapshot,
 } from './gpu-driven-production-fixture';
+import { compileAndAdoptViewGraph } from './graph-compile.fixture';
 import { renderLifecycleManifestUrl, standardPbrFixtureVariants } from './shader-manifest-fixture';
 
 const STANDARD_PBR_RECEIPT = createStandardPbrArtifactReceipt();
+
+/** The frame's shared submission accepted: a recorded graph transaction may commit its history. */
+function acceptFrame(internals: object): void {
+  publishRenderSubmission(renderWorldFor(internals), {
+    accepted: true,
+    completion: undefined,
+    creditCompletion: undefined,
+    generation: 0,
+  });
+}
+
+function readyAssemblyDraw(
+  renderer: Awaited<ReturnType<typeof constructRenderer>>,
+  worlds: readonly World[],
+) {
+  const leases = worlds.map((world) => {
+    const attached = renderer.attach(world);
+    expect(attached.ok).toBe(true);
+    if (!attached.ok) throw attached.error;
+    return attached.value;
+  });
+  const lease = leases[0];
+  if (lease === undefined) throw new Error('A scene needs its camera World');
+  const facade = exposeRenderer(renderer);
+  return () => drawReadyFrame(facade, { leases, camera: { lease }, environment: { lease } });
+}
 
 describe('GPU-driven scene-index mesh address selection', () => {
   it('keeps direct batches on their local group and rebuilds clustered group(2) around the same projection buffer', () => {
@@ -214,6 +245,15 @@ function manifestDataUrl(
     composedWgsl: pbrWgsl,
     ...(withReceipt ? { receipt: STANDARD_PBR_RECEIPT } : {}),
   });
+  const clusterVariants = standardPbrFixtureVariants(pbrWgsl)
+    .filter(
+      (variant) =>
+        variant.defines.CLUSTER_FORWARD_AVAILABLE && variant.defines.STORAGE_BUFFER_AVAILABLE,
+    )
+    .map(({ receipt: _receipt, ...variant }) => ({
+      ...variant,
+      ...(withReceipt ? { receipt: STANDARD_PBR_RECEIPT } : {}),
+    }));
   const materialShader = (
     identifier: string,
     paramSchema: readonly unknown[],
@@ -244,6 +284,7 @@ function manifestDataUrl(
           [
             standardPbrVariant(false, STANDARD_PBR_URP_VARIANT_KEY),
             standardPbrVariant(true, STANDARD_PBR_TRANSMISSION_VARIANT_KEY),
+            ...clusterVariants,
           ],
         ),
         materialShader('forgeax::default-unlit', DEFAULT_UNLIT_PARAM_SCHEMA, unlitWgsl),
@@ -383,6 +424,7 @@ describe('GPU-driven production projection', () => {
           expect.objectContaining({ detail: expect.objectContaining({ cause: failure }) }),
         ]),
       );
+      const beforeRetry = renderer.inspect().renderScene.gpuDriven.preparedBundleHits ?? 0;
       const retried = renderer.draw(input);
       if (!retried.ok) throw retried.error;
       const retry = retried.value;
@@ -392,7 +434,13 @@ describe('GPU-driven production projection', () => {
       expect(submit).toHaveBeenCalledOnce();
       expect(submitted).toHaveBeenCalledOnce();
       expect(acknowledged).toHaveBeenCalledOnce();
-      expect(renderer.inspect().renderScene.gpuDriven.encodedIndirectDraws).toBeGreaterThan(0);
+      const inspection = renderer.inspect();
+      expect(inspection.renderScene.gpuDriven.encodedIndirectDraws).toBeGreaterThan(0);
+      if (path === 'hit')
+        expect(inspection.renderScene.gpuDriven.preparedBundleHits).toBeGreaterThan(beforeRetry);
+      const iblBinding = inspection.iblBinding;
+      expect(iblBinding?.pipeline).toBeDefined();
+      expect(iblBinding?.pipeline?.drawFrameId).toBe(iblBinding?.frameId);
     } finally {
       execute.mockRestore();
       bundles.mockRestore();
@@ -608,8 +656,17 @@ describe('GPU-driven production projection', () => {
             selection.context.capability === 'storage-buffer',
         );
       expect(forward?.abi?.vertexInputs.some((input) => input.semantic === 'normal')).toBe(true);
-      expect(shadow?.abi?.vertexInputs.map((input) => input.semantic)).toEqual(['position']);
-      expect(shadow?.abi?.receiptIdentity).not.toBe(forward?.abi?.receiptIdentity);
+      // The shared caster projection consumes the geometric normal for its VS bias.
+      expect(shadow?.abi?.vertexInputs.map((input) => input.semantic)).toEqual([
+        'position',
+        'normal',
+      ]);
+      // Equal layouts share ABI receipts; distinct pass programs retain their artifacts.
+      expect(shadow?.abi?.receiptIdentity).toBe(forward?.abi?.receiptIdentity);
+      const programDigest = (selection: typeof forward) =>
+        record.programs.find((program) => program.selections.some((item) => item === selection))
+          ?.artifact.digest;
+      expect(programDigest(shadow)).not.toBe(programDigest(forward));
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -1378,7 +1435,11 @@ describe('GPU-driven production projection', () => {
     const errors: unknown[] = [];
     const errorRegistry = new RhiErrorListenerRegistry();
     errorRegistry.add((error) => errors.push(error));
-    const dependencies = { device, errorRegistry };
+    const dependencies = {
+      device,
+      deviceScope: DeviceScope.create(0, 'gpu-driven-production-test'),
+      errorRegistry,
+    };
     const internals = dependencies as unknown as RenderSystemInternals;
     const pipelineState = {
       format: 'rgba8unorm',
@@ -1391,17 +1452,16 @@ describe('GPU-driven production projection', () => {
       shadowViews: [],
     } as unknown as ViewLights;
     const compile = () =>
-      ensureCompiledFrameGraph(
+      compileAndAdoptViewGraph({
         internals,
-        state,
+        frameState: state,
         pipelineState,
-        makeZeroCameraFallbackSnapshot(),
+        camera: makeZeroCameraFallbackSnapshot(),
         lights,
-        1,
-        1,
-        undefined,
-        current,
-      );
+        surface: { width: 1, height: 1 },
+        shadowDepthLayers: ensureShadowDepthLayers(state, internals.device),
+        gpuDriven: current,
+      });
     const boundVertices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setVertexBuffer');
     const boundIndices = vi.spyOn(RhiNullRenderPassEncoder.prototype, 'setIndexBuffer');
     const encode = (compiled: NonNullable<ReturnType<typeof compile>>) => {
@@ -1409,13 +1469,14 @@ describe('GPU-driven production projection', () => {
       boundIndices.mockClear();
       expect(state.compiledFrameGraph?.graph).toBe(compiled);
       const encoder = internals.device.createCommandEncoder().unwrap();
+      // RenderRecord opens the encoder the graph passes record into.
+      vi.spyOn(internals.device, 'createCommandEncoder').mockReturnValueOnce(ok(encoder));
+      acceptFrame(internals);
       expect(
-        executeCompiledFrameGraph(
-          internals,
-          state,
-          { encoder, pipelineState } as unknown as RenderPipelineFrame,
+        executeCompiledFrameGraph(internals, state, {
           encoder,
-        ),
+          pipelineState,
+        } as unknown as RenderPipelineFrame),
       ).toBe(true);
       expect(
         boundVertices.mock.calls.some(([, buffer]) => buffer === resident.vertexBuffer.handle),
@@ -2669,7 +2730,8 @@ describe('GPU-driven production projection', () => {
       'gpu-driven.finalize-indirect',
       'main',
     ]);
-    expect(device.totalDispatchCount).toBe(3);
+    // reset, cull, visible-order scan and place, finalize.
+    expect(device.totalDispatchCount).toBe(5);
     expect(device.totalDrawCount).toBe(3);
     expect(production.inspect().indirectDrawCount).toBe(3);
     expect(production.inspect().indirectDrawCount).toBeLessThanOrEqual(
@@ -2866,7 +2928,12 @@ describe('GPU-driven production projection', () => {
       canvas,
       { rhi },
       {
-        shaderManifestUrl: manifestDataUrl(`/* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`, true),
+        // The descriptor oracle declares the override it observes. The runtime
+        // correctly filters constants absent from a program's own ABI.
+        shaderManifestUrl: manifestDataUrl(
+          `@id(64000) override fixture_texture_mask: u32 = 0u; /* f_schlick( */ ${OUTPUT_TRANSFORM_WGSL}`,
+          true,
+        ),
       },
     );
     const pipelines = vi.spyOn(renderer.device, 'createRenderPipeline');
@@ -2875,7 +2942,7 @@ describe('GPU-driven production projection', () => {
       const assets = renderer.assetRegistry;
       const world = new World({ assets });
       const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-      expect(renderer.attach(world)).toMatchObject({ ok: true });
+      const draw = readyAssemblyDraw(renderer, [world]);
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -2912,10 +2979,7 @@ describe('GPU-driven production projection', () => {
       }
       for (let frame = 0; frame < 4; frame += 1) {
         world.update(1 / 60).unwrap();
-        expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 })).toMatchObject({
-          ok: true,
-        });
-        await Promise.resolve();
+        await draw();
       }
       const specialized = () =>
         pipelines.mock.calls
@@ -2924,13 +2988,11 @@ describe('GPU-driven production projection', () => {
       expect(specialized()).toEqual(expect.arrayContaining([0, 4]));
       const count = specialized().length;
       world.update(1 / 60).unwrap();
-      expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 })).toMatchObject({
-        ok: true,
-      });
+      await draw();
       expect(specialized()).toHaveLength(count);
     } finally {
       pipelines.mockRestore();
-      renderer.dispose();
+      await renderer.dispose();
     }
   });
 
@@ -2955,7 +3017,7 @@ describe('GPU-driven production projection', () => {
       const assets = renderer.assetRegistry;
       const world = new World({ assets });
       const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-      expect(renderer.attach(world)).toMatchObject({ ok: true });
+      const draw = readyAssemblyDraw(renderer, [world]);
       world
         .spawn(
           { component: Transform, data: { pos: [0, 0, 5] } },
@@ -2984,10 +3046,7 @@ describe('GPU-driven production projection', () => {
       }
       for (let frame = 0; frame < 4; frame += 1) {
         world.update(1 / 60).unwrap();
-        expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 })).toMatchObject({
-          ok: true,
-        });
-        await Promise.resolve();
+        await draw();
       }
       const specialized = () =>
         pipelines.mock.calls
@@ -3021,13 +3080,11 @@ describe('GPU-driven production projection', () => {
       );
       const count = specialized().length;
       world.update(1 / 60).unwrap();
-      expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 })).toMatchObject({
-        ok: true,
-      });
+      await draw();
       expect(specialized()).toHaveLength(count);
     } finally {
       pipelines.mockRestore();
-      renderer.dispose();
+      await renderer.dispose();
     }
   });
 
@@ -3048,7 +3105,7 @@ describe('GPU-driven production projection', () => {
     const assets = renderer.assetRegistry;
     const world = new World({ assets });
     const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-    expect(renderer.attach(world).ok).toBe(true);
+    const draw = readyAssemblyDraw(renderer, [world]);
     world
       .spawn(
         { component: Transform, data: { pos: [0, 0, 5] } },
@@ -3071,13 +3128,12 @@ describe('GPU-driven production projection', () => {
 
     for (let frame = 0; frame < 4; frame += 1) {
       world.update(1 / 60).unwrap();
-      expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(true);
-      await Promise.resolve();
+      await draw();
     }
     const device = renderer.device as RhiNullDevice;
     device.totalDrawCount = 0;
     world.update(1 / 60).unwrap();
-    expect(renderer.draw([world], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(true);
+    await draw();
     expect(renderer.perFramePassNames).toEqual(
       expect.arrayContaining(['cluster-membership-producer', 'main', 'output-transform']),
     );
@@ -3085,8 +3141,9 @@ describe('GPU-driven production projection', () => {
     // Storage-buffer LDR frames keep the scene linear until the one output
     // transform writes the encoded surface. The ordinary unprepared mesh
     // remains the CPU residual under common visibility projection, while the
-    // clustered Standard graph and output transform stay active.
-    expect(device.totalDrawCount).toBe(2);
+    // clustered Standard graph and output transform stay active. The residual
+    // also draws in the Forward depth prepass, which one draw seeds into `main`.
+    expect(device.totalDrawCount).toBe(4);
     expect(renderer.renderScene).toMatchObject({
       worldEntitiesScanned: 0,
       fullRebuilds: 1,
@@ -3104,7 +3161,7 @@ describe('GPU-driven production projection', () => {
         cpuFallbackDrawItems: 1,
       },
     });
-    renderer.dispose();
+    await renderer.dispose();
   });
 
   it('keeps a stable multi-World composition resident and patches one World transform', async () => {
@@ -3125,8 +3182,7 @@ describe('GPU-driven production projection', () => {
     const assets = new AssetRegistry();
     const sceneWorld = new World({ assets });
     const cube = assets.create(createBoxGeometry(1, 1, 1).unwrap()).unwrap();
-    expect(renderer.attach(cameraWorld).ok).toBe(true);
-    expect(renderer.attach(sceneWorld).ok).toBe(true);
+    const draw = readyAssemblyDraw(renderer, [cameraWorld, sceneWorld]);
     cameraWorld
       .spawn(
         { component: Transform, data: { pos: [0, 0, 5] } },
@@ -3144,10 +3200,7 @@ describe('GPU-driven production projection', () => {
     for (let frame = 0; frame < 4; frame += 1) {
       cameraWorld.update(1 / 60).unwrap();
       sceneWorld.update(1 / 60).unwrap();
-      expect(
-        renderer.draw([cameraWorld, sceneWorld], { cameraOwner: 0, resourceOwner: 0 }).ok,
-      ).toBe(true);
-      await Promise.resolve();
+      await draw();
     }
     expect(renderer.renderScene).toMatchObject({
       worldEntitiesScanned: 0,
@@ -3160,16 +3213,14 @@ describe('GPU-driven production projection', () => {
     sceneWorld.set(rendered, Transform, { pos: [1, 0, 0] }).unwrap();
     cameraWorld.update(1 / 60).unwrap();
     sceneWorld.update(1 / 60).unwrap();
-    expect(renderer.draw([cameraWorld, sceneWorld], { cameraOwner: 0, resourceOwner: 0 }).ok).toBe(
-      true,
-    );
+    await draw();
     expect(renderer.renderScene).toMatchObject({
       worldEntitiesScanned: 0,
       fullRebuilds: 1,
       transformUpdates: 1,
       projectionRecords: 1,
     });
-    renderer.dispose();
+    await renderer.dispose();
   });
 
   it('routes mixed ordinary camera and light edits through common visibility projection', async () => {

@@ -110,6 +110,11 @@ if (rawArgs[0] === '--__forgeax-backend') {
         if (leaf.example !== undefined)
           process.stdout.write(`  example: ${JSON.stringify(leaf.example)}\n`);
       }
+    } else if (result.command === 'rhi timing' && value !== undefined) {
+      const { formatTimingTable, isTimingOutput } = await import('./rhi-debug/timing-format.js');
+      process.stdout.write(
+        isTimingOutput(value) ? formatTimingTable(value) : `${JSON.stringify(value)}\n`,
+      );
     } else if (value !== undefined) {
       process.stdout.write(`${JSON.stringify(value)}\n`);
       if (result.omitted !== undefined)

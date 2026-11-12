@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "3.0.0",
+  "packageId": "019fb7ce-5200-7000-8000-000000000000",
+  "assets": {
+    "material/punk-smoke": {
+      "kind": "material",
+      "payload": {
+        "kind": "material",
+        "passes": [
+          {
+            "name": "particle-billboard",
+            "program": {
+              "module": "punk::smoke",
+              "vertexEntry": "vs_main",
+              "fragmentEntry": "fs_main",
+              "bindings": "render-material"
+            },
+            "renderState": {
+              "cullMode": "none",
+              "depthCompare": "less-equal",
+              "depthWriteEnabled": false,
+              "queue": 3005,
+              "blend": {
+                "color": {
+                  "srcFactor": "one",
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add"
+                },
+                "alpha": {
+                  "srcFactor": "one",
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add"
+                }
+              }
+            }
+          }
+        ],
+        "parameters": [
+          { "name": "baseColor", "type": "color" },
+          { "name": "smokeTexture", "type": "texture" }
+        ],
+        "values": {
+          "baseColor": [1, 1, 1, 1],
+          "smokeTexture": "01a1920f-13a6-7edf-a966-1edf53181492"
+        }
+      },
+      "refs": ["01a1920f-13a6-7edf-a966-1edf53181492"]
+    },
+    "vfx/punk-smoke-ambient": {
+      "kind": "particle-effect",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "ambient",
+            "capacity": 40,
+            "backend": { "required": "gpu" },
+            "space": "world",
+            "bounds": { "kind": "sphere", "center": [-122, -3, 26], "radius": 60 },
+            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 40 }] },
+            "program": { "module": "punk-smoke-ambient.vfx.wgsl" },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "067856ac-0cba-54c8-9a29-44de20a37a21",
+                "blend": "alpha"
+              }
+            ]
+          }
+        ]
+      },
+      "refs": ["067856ac-0cba-54c8-9a29-44de20a37a21"],
+      "artifacts": {}
+    },
+    "vfx/punk-smoke-exhaust": {
+      "kind": "particle-effect",
+      "payload": {
+        "schemaVersion": 3,
+        "emitters": [
+          {
+            "id": "exhaust",
+            "capacity": 50,
+            "backend": { "required": "gpu" },
+            "space": "local",
+            "bounds": { "kind": "sphere", "center": [0, 0.6, 0], "radius": 3 },
+            "schedule": { "rate": 0, "bursts": [{ "time": 0, "count": 50 }] },
+            "program": { "module": "punk-smoke-exhaust.vfx.wgsl" },
+            "renderers": [
+              {
+                "kind": "billboard",
+                "material": "067856ac-0cba-54c8-9a29-44de20a37a21",
+                "blend": "alpha"
+              }
+            ]
+          }
+        ]
+      },
+      "refs": ["067856ac-0cba-54c8-9a29-44de20a37a21"],
+      "artifacts": {}
+    }
+  }
+}

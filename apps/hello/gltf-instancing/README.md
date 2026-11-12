@@ -26,7 +26,7 @@ consistent abstraction).
 
 ```text
 assets/
-  instanced-box.gltf            # Tier-B box mesh + EXT_mesh_gpu_instancing N=4
+  instanced-box.gltf            # Unlit box + EXT_mesh_gpu_instancing N=4
   instanced-box.gltf.meta.json  # subAssets[]: mesh / material / scene UUIDv7
 ```
 
@@ -36,10 +36,7 @@ assets/
 pnpm --filter @forgeax/hello-gltf-instancing smoke
 ```
 
-The full-roster invocation runs 60 frames through dawn-node, asserts
-`backend === 'webgpu'`, frames produced >= 60, multi-pixel readback
-distance from clear color above the threshold, and zero `RhiError`
-events. Single SSOT for AC-13.
+The full-roster invocation awaits 60 ready, completed Dawn frames and emits the canonical smoke receipt. The shared source fixture explicitly declares `KHR_materials_unlit`; both browser and smoke load that asset without a lighting override. Readback requires a nonblack mesh sample at least 0.05 from the actual corner background, agreeing background samples, and zero renderer errors. Single SSOT for AC-13.
 
 ## Dev server
 

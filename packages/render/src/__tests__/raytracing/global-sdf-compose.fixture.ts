@@ -3,6 +3,7 @@ import type { Buffer } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import {
   createGlobalSdfComposition,
   createGlobalSdfCompositionRecorder,
@@ -116,19 +117,26 @@ export async function verifyBorrowedGlobalSdfComposition(
     referenceBytes = await readBuffer(device, reference.buffers.voxels, count * 16);
     borrowedBytes = await readBuffer(device, input.voxels.buffer, offset + count * 16 + 256);
     omittedBytes = await readBuffer(device, omitted.buffer, offset + count * 16 + 256);
-    expect(await readBuffer(device, observedOmission.buffer, offset + count * 16 + 256)).toEqual(
-      omittedBytes,
-    );
+    expect(
+      equalBytes(
+        await readBuffer(device, observedOmission.buffer, offset + count * 16 + 256),
+        omittedBytes,
+      ),
+    ).toBe(true);
     await save?.(tapeBytes, {
       reference: referenceBytes,
       borrowed: borrowedBytes,
       omitted: omittedBytes,
     });
-    expect(borrowedBytes.subarray(offset, offset + count * 16)).toEqual(referenceBytes);
+    expect(equalBytes(borrowedBytes.subarray(offset, offset + count * 16), referenceBytes)).toBe(
+      true,
+    );
     expect(omittedBytes.subarray(offset, offset + count * 16).every((value) => value === 0)).toBe(
       true,
     );
-    expect(referenceBytes).not.toEqual(omittedBytes.subarray(offset, offset + count * 16));
+    expect(equalBytes(referenceBytes, omittedBytes.subarray(offset, offset + count * 16))).toBe(
+      false,
+    );
     for (const bytes of [borrowedBytes, omittedBytes]) {
       expect(bytes.subarray(0, offset).every((value) => value === 0xcd)).toBe(true);
       expect(bytes.subarray(offset + count * 16).every((value) => value === 0xcd)).toBe(true);
@@ -175,9 +183,12 @@ export async function verifyBorrowedGlobalSdfComposition(
           .subarray(index === 0 ? 0 : offset, (index === 0 ? 0 : offset) + count * 16)
           .every((value) => value === 0),
       ).toBe(true);
-      expect((await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes).toEqual(
-        index === 0 ? referenceBytes : borrowedBytes,
-      );
+      expect(
+        equalBytes(
+          (await replay.readResourceAtWork(resource, work.workIndex)).unwrap().bytes,
+          index === 0 ? referenceBytes : borrowedBytes,
+        ),
+      ).toBe(true);
     }
     const missing = model.resources.find((resource) => {
       const descriptor = resource.descriptor as {
@@ -190,8 +201,11 @@ export async function verifyBorrowedGlobalSdfComposition(
     const last = dispatches[1];
     assert(last);
     expect(
-      (await replay.readResourceAtWork(missing.resourceId, last.workIndex)).unwrap().bytes,
-    ).toEqual(omittedBytes);
+      equalBytes(
+        (await replay.readResourceAtWork(missing.resourceId, last.workIndex)).unwrap().bytes,
+        omittedBytes,
+      ),
+    ).toBe(true);
   } finally {
     (await replay.dispose()).unwrap();
     freshNative.destroy();

@@ -71,6 +71,7 @@ ${extra}`,
       STORAGE_BUFFER_AVAILABLE: true,
       SKINNING_DISABLED: true,
       VERTEX_COLOR_AVAILABLE: true,
+      LOD_DITHER: false,
       EXTENDED_LIGHTING_AVAILABLE: false,
       PER_INSTANCE_REGION: false,
     },
@@ -206,7 +207,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
       { entry: 'fs_oit', facing: true, oit: 'straight' },
       { entry: 'fs_oit_premultiplied', facing: true, oit: 'premultiplied' },
     ] as const;
-    const view = buffer(1280, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+    const view = buffer(1296, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
     const materialLayout = derive(DEFAULT_UNLIT_PARAM_SCHEMA);
     const coordinates = materialLayout.coordinateRecords.find(
       (record) => record.parameter === 'baseColorTexture',
@@ -279,7 +280,7 @@ it('unlit color skips normal/MatCap work and preserves mode, fog and coverage pi
     for (const mode of [0, 1, 2, 0]) {
       for (const composition of [0, 1, 2, 3]) {
         for (const cutoff of [0, 0.35, 0.45]) {
-          const values = new Float32Array(320);
+          const values = new Float32Array(324);
           values.set(identity, 0);
           values.set(identity, 44);
           values.set([0, 0, 3], 24);

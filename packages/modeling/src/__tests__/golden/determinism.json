@@ -1,0 +1,86 @@
+{
+  "crate-default": {
+    "fxem": "021e44e207d4838d42294f0eb5ba78557b5829bbf5afa1ad73b6a3679912d56d",
+    "mesh": "dc73ae7990298422a2ee9f4b7e5322c598f77fd69ba162f7e62e89c6f1e6b288",
+    "fxemBytes": 65664,
+    "triangles": 896
+  },
+  "crate-variant": {
+    "fxem": "8bd0d7f2ba2eb6b75548cd72d70e18208aa00433ac1d19e3df9a6d44e8bea6ee",
+    "mesh": "5063be6e67ede6fbaa5951dad29eca275f26b3d8c5e5964f5dc06574d06bab06",
+    "fxemBytes": 65664,
+    "triangles": 896
+  },
+  "kernel-sample": {
+    "fxem": "c0fdfd603e1115bab4095071e00a0e8481e3c4a58b3e8da005e4263ac4c10363",
+    "mesh": "4c1cdbee32db48386394dfc3a31366f6fcd0bc2fa2e040428639e0cfa6eb85e7",
+    "fxemBytes": 42480,
+    "triangles": 412
+  },
+  "boolean-panel": {
+    "fxem": "0661a46fa6e132d36cf7ae27747c2936c66b359736fa4ebcd2994f8bc1af37a4",
+    "mesh": "382fdea96ff7d60d862b540bb7cbf32acae1a6c4566e809f2eaf62257559a042",
+    "fxemBytes": 79504,
+    "triangles": 1526
+  },
+  "sweep-sample": {
+    "fxem": "7dac9675217ef1666a6dad2b11e31ac674cd2ce2387b14684dade4bea7645cd6",
+    "mesh": "7f2aa78fb0acdd1be531af6f9d3a05a230e679fb2917e510e4595c52dba1450d",
+    "fxemBytes": 265920,
+    "triangles": 3644
+  },
+  "bevel-bracket": {
+    "fxem": "b937641fc02b11bef1b09c44baa2f8237313ba81c5792a76e44d49dfb24f24cf",
+    "mesh": "4678394876c8c6364d055350f995c5193eb27c334541d565f8031dfa04f84b99",
+    "fxemBytes": 59472,
+    "triangles": 876
+  },
+  "shell-housing": {
+    "fxem": "eb31ccda864869517a9fd4294cea996ad9d6560f959051fbae0be1ce72a9ad49",
+    "mesh": "32f7f8c5ac69be735d36cf5451e6db3830eaf3d3ec1113858bdee5e44f2f61e0",
+    "fxemBytes": 99728,
+    "triangles": 1496
+  },
+  "subdivide-deform": {
+    "fxem": "0ff90b606820617e53d0112d29f136d2a8b53f26b6ddc193e4828a2841f5a236",
+    "mesh": "5c24a46dfd791525bc52d7fe54ade1efc69e7b81d9b57f1b9e780bed3432aa20",
+    "fxemBytes": 30800,
+    "triangles": 448
+  },
+  "subdivide-pauldron": {
+    "fxem": "9af7442138cddc417c39c51eacf02f7c8862973382f4020bee2f290c62e54160",
+    "mesh": "4783cadfd788079cb7c29da76647bbed6389e681c6703792b5e3bbf3fbddd601",
+    "fxemBytes": 320400,
+    "triangles": 4736
+  },
+  "uv-wheel": {
+    "fxem": "bf0b6bf488d3e7a643910d20cbed217bd8406c75191ce43ea3014a66e83bffe1",
+    "mesh": "36b70384d375777fe62ca065a450473daabfd82ade1530f5e568fe1edf546b44",
+    "fxemBytes": 260000,
+    "triangles": 3838
+  },
+  "voxel-remesh": {
+    "fxem": "f276ff413fa4d588151bf6af4e3ad5a9f2843e62b74e2e630c0a020c679c7050",
+    "mesh": "4cee487d155528f704cb36f2946a3c01269bfd1792727d276bdf44b91c37ce34",
+    "fxemBytes": 123472,
+    "triangles": 1468
+  },
+  "uv-auto-pauldron": {
+    "fxem": "0d08bdc379c6dc7d77c89dcf88d019b8288c7ff97601ac6ab3f123fb0e5cde13",
+    "mesh": "1ebd8b9210295cfa621110e9455b276df706ad532a09466d8dde9c5609371c5e",
+    "fxemBytes": 320400,
+    "triangles": 4736
+  },
+  "bake-vertex": {
+    "fxem": "5e8bdce2f05dcf5f87c39021d0aa1871a4d3c59da32868ebe18e3e3ea89cd62a",
+    "mesh": "b4d812c5bd488996491aff2d7628b7c787a94c5a5520c9f36081ab4e43459aa6",
+    "fxemBytes": 18912,
+    "triangles": 168
+  },
+  "arap-forearm": {
+    "fxem": "cdc0dc0a006984c4627e7c5db871bf49a456373431cd7c50de9f51e0bc4aac3a",
+    "mesh": "9d6dfebaf70c9888fb7ce417c76c70d8b33dd5703fbe1e23b4fb3ef711c0546f",
+    "fxemBytes": 78192,
+    "triangles": 1148
+  }
+}

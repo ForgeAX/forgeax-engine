@@ -7,10 +7,22 @@ function required<T>(value: T | undefined): T {
   return value;
 }
 
+function probePreblendSource(templateSource: string): string {
+  const start = templateSource.indexOf('  var probeShPreblend :');
+  const environment = /^ {2}(?:let|var) environment = evaluateStandardEnvironment\(/m.exec(
+    templateSource.slice(start),
+  );
+  const end = environment === null ? -1 : start + environment.index;
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return templateSource.slice(start, end);
+}
+
 const shaderRoot = resolve('packages/shader/src');
 const imports = Object.fromEntries(
   [
     'atmosphere-coordinates',
+    'atmosphere-table-access',
     'atmosphere-optics',
     'atmosphere-sampling',
     'atmosphere-visibility',
@@ -29,6 +41,7 @@ const imports = Object.fromEntries(
     'lighting-spot-projector',
     'shadow-pcf',
     'standard-lighting',
+    'cluster-texture-data',
     'standard-cluster',
     'view-atmosphere',
     'common',
@@ -45,11 +58,7 @@ for (const template of ['default-standard-pbr.wgsl', 'default-standard-pbr-skin.
         /* @vite-ignore */ new URL('../../../shader-compiler/dist/index.mjs', import.meta.url).href
       );
       const templateSource = readFileSync(resolve(shaderRoot, template), 'utf8');
-      const start = templateSource.indexOf('  var probeShPreblend :');
-      const end = templateSource.indexOf('  let environment =', start);
-      expect(start).toBeGreaterThanOrEqual(0);
-      expect(end).toBeGreaterThan(start);
-      const productionBlock = templateSource.slice(start, end);
+      const productionBlock = probePreblendSource(templateSource);
       // Count requested coefficient reads without replacing the production
       // header/identity/control flow. This is a work falsifier, not a claim
       // about uninstrumented driver memory traffic or GPU timing.

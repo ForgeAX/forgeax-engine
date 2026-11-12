@@ -6,6 +6,10 @@ import type {
 import { ok, type Result } from '@forgeax/engine-types';
 import type { GraphAtmosphere } from '../environment/luts';
 import {
+  STANDARD_FEATURE_PRE_OPAQUE_PASSES,
+  STANDARD_FEATURE_SCENE_COMPOSITE_PASSES,
+} from '../features/vocabulary';
+import {
   GPU_TEXTURE_USAGE_COPY_SRC,
   GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
   GPU_TEXTURE_USAGE_TEXTURE_BINDING,
@@ -114,7 +118,7 @@ export function contributeStandardCloudPreOpaque(
     namedTargets: cloudShadow === undefined ? {} : { 'cloud-shadow': cloudShadow },
     standardSurfaceAccesses: [],
     placement: 'scene',
-    passNames: ['cloud-layer-density-cache', 'cloud-layer-shadow'],
+    passNames: STANDARD_FEATURE_PRE_OPAQUE_PASSES,
   });
   if (!contributed.ok) return contributed;
   return ok(featureTargets);
@@ -158,7 +162,7 @@ export function contributeStandardCloudComposite(
     },
     standardSurfaceAccesses: receiverAccesses,
     placement: 'scene',
-    passNames: ['cloud-layer-transport', 'cloud-layer-resolve'],
+    passNames: STANDARD_FEATURE_SCENE_COMPOSITE_PASSES,
     atmosphere: atmosphere,
   });
 }

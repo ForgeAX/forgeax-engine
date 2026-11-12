@@ -15,7 +15,7 @@ const app = new App(
 );
 let frame = document.querySelector<HTMLIFrameElement>('#view')!;
 const show = (value: unknown) => {
-  console.debug('ForgeaX carrier', value);
+  console.debug('ForgeAX carrier', value);
 };
 const queue = createToolQueue((params: Parameters<App['callServerTool']>[0], signal) =>
   app.callServerTool(params, { signal }),
@@ -64,7 +64,7 @@ const loadView = async () => {
   if (retired) return;
   bridge = new AppBridge(
     null,
-    { name: 'ForgeaX MCP carrier', version: APP_VERSION },
+    { name: 'ForgeAX MCP carrier', version: APP_VERSION },
     { ...app.getHostCapabilities(), serverTools: {} },
     { hostContext: app.getHostContext() ?? {} },
   );

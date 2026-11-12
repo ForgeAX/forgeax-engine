@@ -151,7 +151,7 @@ export async function verifyDist(rootInput: string): Promise<CommandResult<DistM
       error: {
         code: 'dist-manifest-invalid',
         expected: 'forgeax-dist schema 1.0.0',
-        hint: 'Rebuild the game with a compatible ForgeaX DevKit.',
+        hint: 'Rebuild the game with a compatible ForgeAX DevKit.',
         detail: { root },
       },
     };

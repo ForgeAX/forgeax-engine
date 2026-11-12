@@ -130,9 +130,9 @@ export function spawnSkinnedCharacter(
  * -x/-z, so its ground shadow falls toward +x/+z (screen right and down).
  * One capsule on its single joint approximates the body.
  */
-function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCache: boolean) {
+export function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCache: boolean) {
   const ground = Materials.standard({ baseColor: [0.6, 0.6, 0.6, 1], metallic: 0, roughness: 0.8 });
-  world
+  const receiver = world
     .spawn(
       { component: Transform, data: { pos: [0, -0.1, 0] } },
       {
@@ -149,7 +149,7 @@ function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCach
     .unwrap();
 
   const body = Materials.standard({ baseColor: [0.2, 0.4, 0.8, 1], metallic: 0, roughness: 0.6 });
-  const { character, casterMaterial, hiddenMaterial } = spawnSkinnedCharacter(
+  const { character, joint, casterMaterial, hiddenMaterial } = spawnSkinnedCharacter(
     world,
     assets,
     body,
@@ -157,7 +157,7 @@ function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCach
   );
 
   const pitch = (-45 * Math.PI) / 180;
-  world
+  const camera = world
     .spawn(
       {
         component: Transform,
@@ -182,7 +182,7 @@ function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCach
     )
     .unwrap();
   world.spawn({ component: Skylight, data: { color: [0.4, 0.45, 0.5], intensity: 0.15 } }).unwrap();
-  world
+  const light = world
     .spawn({
       component: DirectionalLight,
       data: {
@@ -199,10 +199,10 @@ function buildCapsuleScene(world: World, assets: AssetRegistry, staticShadowCach
       },
     })
     .unwrap();
-  return { character, casterMaterial, hiddenMaterial };
+  return { character, joint, casterMaterial, hiddenMaterial, receiver, camera, light };
 }
 
-function setVariant(
+export function setVariant(
   world: World,
   scene: ReturnType<typeof buildCapsuleScene>,
   variant: CapsuleShadowVariant,
@@ -234,6 +234,7 @@ export interface CapsuleShadowEvidence {
   /** Largest change of the capsule image in the top rows, far from the character. */
   readonly farFieldMaxDelta: number;
   readonly forwardMaxDelta: number;
+  readonly forwardCapsuleShadow: ShadowMaskStats;
 }
 
 export interface ShadowMaskStats {
@@ -242,7 +243,7 @@ export interface ShadowMaskStats {
   readonly maxDarken: number;
 }
 
-function shadowMask(off: Float32Array, on: Float32Array, size: number) {
+export function shadowMask(off: Float32Array, on: Float32Array, size: number) {
   const mask = new Uint8Array(size * size);
   let pixels = 0;
   let sumX = 0;
@@ -268,7 +269,7 @@ function shadowMask(off: Float32Array, on: Float32Array, size: number) {
   return { mask, stats };
 }
 
-/** Deferred none/raster/capsule comparison plus the Forward fallback for the same World. */
+/** Deferred and Forward compare the same posed capsule and raster shadow. */
 export async function verifyCapsuleShadow(
   renderer: Renderer,
   assets: AssetRegistry,
@@ -339,6 +340,7 @@ export async function verifyCapsuleShadow(
     const none = await sample('deferred', 'none');
     const raster = await sample('deferred', 'raster', true);
     const capsule = await sample('deferred', 'capsule', true);
+    const forwardNone = await sample('forward', 'none');
     const forwardRaster = await sample('forward', 'raster');
     const forwardCapsule = await sample('forward', 'capsule');
     const rasterShadow = shadowMask(none.luminance, raster.luminance, size);
@@ -367,6 +369,7 @@ export async function verifyCapsuleShadow(
       capsuleMaxBrighten,
       farFieldMaxDelta,
       forwardMaxDelta,
+      forwardCapsuleShadow: shadowMask(forwardNone.luminance, forwardCapsule.luminance, size).stats,
     };
   } finally {
     unsubscribe();
@@ -383,6 +386,7 @@ export function summarizeCapsuleShadowEvidence(evidence: CapsuleShadowEvidence) 
     capsuleMaxBrighten: evidence.capsuleMaxBrighten,
     farFieldMaxDelta: evidence.farFieldMaxDelta,
     forwardMaxDelta: evidence.forwardMaxDelta,
+    forwardCapsuleShadow: evidence.forwardCapsuleShadow,
     inspection: {
       raster: evidence.deferred.raster.inspection,
       capsule: evidence.deferred.capsule.inspection,
@@ -406,8 +410,10 @@ export function assertCapsuleShadowEvidence(evidence: CapsuleShadowEvidence): vo
   expect(distance, summary).toBeLessThan(CAPSULE_SHADOW_SIZE * 0.08);
   expect(evidence.capsuleMaxBrighten, summary).toBeLessThan(1e-3);
   expect(evidence.farFieldMaxDelta, summary).toBeLessThan(0.005);
-  // Forward keeps the cascade shadow, so tagging the character changes nothing.
-  expect(evidence.forwardMaxDelta, summary).toBeLessThan(1e-3);
+  expect(evidence.forwardMaxDelta, summary).toBeGreaterThan(1e-3);
+  expect(evidence.forwardCapsuleShadow.pixels, summary).toBeGreaterThan(rasterShadow.pixels * 0.5);
+  expect(evidence.forwardCapsuleShadow.pixels, summary).toBeLessThan(rasterShadow.pixels * 2.5);
+  expect(evidence.forwardCapsuleShadow.maxDarken, summary).toBeGreaterThan(0.1);
   expect(evidence.deferred.raster.inspection, summary).toBeUndefined();
   expect(evidence.deferred.capsule.inspection, summary).toMatchObject({
     requested: 1,
@@ -419,7 +425,8 @@ export function assertCapsuleShadowEvidence(evidence: CapsuleShadowEvidence): vo
   });
   expect(evidence.deferred.capsule.inspection?.tileCount ?? 0, summary).toBeGreaterThan(0);
   expect(evidence.forwardCapsule.inspection, summary).toMatchObject({
-    admitted: 0,
-    fallbacks: { 'forward-path': 1 },
+    admitted: 1,
+    capsuleCount: 1,
+    fallbacks: {},
   });
 }

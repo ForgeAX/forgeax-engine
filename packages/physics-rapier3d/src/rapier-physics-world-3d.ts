@@ -5,6 +5,7 @@ import {
   changeBodyActivation,
   readBodyConstraintCount,
 } from './body-activation.js';
+import { BodyMotionReadback, type BodyMotionWriteback } from './body-motion-readback.js';
 import { readContactObservation } from './contact-observation.js';
 import { orderDerivedCandidateGroups } from './derived-admission-order.js';
 import {
@@ -35,6 +36,7 @@ import {
   type BodyMotion,
   CharacterController,
   type CharacterControllerData,
+  type CharacterSynchronization,
   Collider,
   ColliderShapeValue,
   type ColliderSnapshot,
@@ -59,6 +61,7 @@ import {
   type ManagedJointInput,
   ManagedPhysicsError,
   type ManagedPhysicsFailure,
+  type MoveAndSlideOptions,
   PairIsolationError,
   type PairIsolationInput,
   type PairIsolationLease,
@@ -85,13 +88,20 @@ import {
 } from '@forgeax/engine-physics';
 import { ChildOf } from '@forgeax/engine-scene';
 import { err, ok, type Result, type RigidBodyType } from '@forgeax/engine-types';
+import { writeNativeBodyMotion } from './body-motion.js';
 import { localPositionForWorld3D, translateAttachedColliders3D } from './body-pose.js';
 import { rapierBodyTypeFromString, rapierBodyTypeToString } from './body-type.js';
 import { applyKccTuning } from './character-controller-tuning.js';
 import {
+  characterMovementDeltaTime,
+  characterSynchronizationSource,
+  requireCharacterBody,
+} from './character-motion.js';
+import {
   currentContactOwner,
   queryContactManifolds,
-  queryContactNeighbors,
+  readContactNeighborSnapshot,
+  readContactNeighborsBatch,
   readContactQuery,
 } from './contact-query.js';
 import {
@@ -102,7 +112,6 @@ import {
   preflightDerivedBatch,
   projectPendingDerivedSources,
   queueGuardedDerivedAdmission,
-  readNativeBodyMotion,
   readNativeDerivedMotion,
   revalidatePendingDerivedCandidates,
 } from './derived-admission-preflight.js';
@@ -171,14 +180,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     filterIntersectionPair: (a: number, b: number) => !this.colliderPairIsolated(a, b),
   };
 
-  /**
-   * Entities whose dynamic pose is written back at the next writeback even if
-   * Rapier no longer reports them active: bodies awake at the previous
-   * writeback (their final pose before sleeping), newly registered bodies, and
-   * dynamic bodies whose ECS Transform was overwritten (Rapier owns that pose).
-   */
-  private poseWritebackEntities = new Set<number>();
-  private activeWritebackEntities = new Set<number>();
+  private readonly motionReadback = new BodyMotionReadback();
+
+  onBodyMotionChange(listener: (entity: number) => void): () => void {
+    this.assertActive('onBodyMotionChange');
+    return this.motionReadback.subscribe(listener);
+  }
 
   private eventQueue: RapierEventQueue;
 
@@ -598,7 +605,25 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     }
     translateAttachedColliders3D(body, delta);
     if (ctx && local) ctx.world.set(entity as EntityHandle, ctx.transform, { pos: local }).unwrap();
-    if (body.isDynamic()) this.poseWritebackEntities.add(entity);
+    this.motionReadback.enroll(entity, true);
+    this.motionReadback.notify(entity);
+  }
+
+  synchronizeCharacter(entity: number, character: CharacterSynchronization): void {
+    this.assertActive('synchronizeCharacter');
+    const { state, handle, index, previous } = characterSynchronizationSource(
+      entity,
+      character,
+      this.bodyForEntity(entity),
+      this.syncState,
+      this.rapierModule,
+    );
+    // Reuse the same single-entity owner as PhysicsSyncBackend. Do not accept
+    // its global projection: other pending bodies still belong to normal sync.
+    const descriptor = this.reconcilePhysicsEntity(state, handle, previous);
+    if (descriptor) state.accepted.set(index, descriptor);
+    this.teleport(entity, character.position);
+    state.world.set(handle, CharacterController, { grounded: character.grounded }).unwrap();
   }
 
   step(deltaTime: number): void {
@@ -928,22 +953,30 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     filterMask?: number,
     normalFilter?: PhysicsContactNormalFilter,
   ): Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure> {
-    return readContactQuery(
+    return readContactNeighborSnapshot(
       this.currentContactStepAvailable(),
       entity,
       () => this.bodyForEntity(entity),
-      (body) => ({
-        fixedStep: this.fixedStep,
-        deltaTime: this.contactDeltaTime,
-        entities: queryContactNeighbors(
-          this.raw,
-          body,
-          this.currentContactOwner,
-          entity,
-          filterMask,
-          normalFilter,
-        ),
-      }),
+      this.raw,
+      this.currentContactOwner,
+      this.fixedStep,
+      this.contactDeltaTime,
+      filterMask,
+      normalFilter,
+    );
+  }
+
+  getCurrentContactNeighborsBatch(
+    requests: Parameters<NonNullable<PhysicsWorld['getCurrentContactNeighborsBatch']>>[0],
+  ): Result<readonly PhysicsContactNeighborsSnapshot[], ManagedPhysicsFailure> {
+    return readContactNeighborsBatch(
+      requests,
+      this.raw,
+      this.currentContactOwner,
+      (entity) => this.bodyForEntity(entity),
+      () => this.currentContactStepAvailable(),
+      this.fixedStep,
+      this.contactDeltaTime,
     );
   }
 
@@ -975,7 +1008,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     entity: number,
     command: BodyActivationCommand,
   ): Result<void, ManagedPhysicsFailure> {
-    return changeBodyActivation(
+    const result = changeBodyActivation(
       entity,
       command,
       this.disposed ||
@@ -991,6 +1024,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
         this.contactDeltaTime = 0;
       },
     );
+    if (result.ok) this.motionReadback.notify(entity);
+    return result;
   }
   /** Prepare disabled native shapes for one entity without changing queries. */
   prepareDerivedShapeCandidate(
@@ -1987,9 +2022,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
 
   getBodyMotion(entity: number): Result<BodyMotion, ManagedPhysicsFailure> {
     this.assertActive('getBodyMotion');
-    const body = this.bodyForEntity(entity);
-    if (body === undefined) return err(new ManagedPhysicsError('managed-body-missing', { entity }));
-    return ok(readNativeBodyMotion(body));
+    return this.motionReadback.read(entity, this.bodyForEntity(entity));
   }
 
   setBodyMotion(
@@ -2011,19 +2044,11 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
           reason: 'finite pose/velocities and unit rotation required',
         }),
       );
-    const vector = (value: readonly number[]) => ({ x: value[0], y: value[1], z: value[2] });
     try {
       this.contactDeltaTime = 0;
-      body.setTranslation(vector(motion.position), true);
-      body.setRotation({ ...vector(motion.rotation), w: motion.rotation[3] }, true);
-      body.setLinvel(vector(motion.linearVelocity), true);
-      body.setAngvel(
-        this.entityMap.get(entity)?.lockRotation
-          ? { x: 0, y: 0, z: 0 }
-          : vector(motion.angularVelocity),
-        true,
-      );
-      this.poseWritebackEntities.add(entity);
+      writeNativeBodyMotion(body, motion, this.entityMap.get(entity)?.lockRotation);
+      this.motionReadback.enroll(entity, true);
+      this.motionReadback.notify(entity);
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -2049,6 +2074,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     try {
       this.contactDeltaTime = 0;
       body.applyImpulse({ x: impulse[0], y: impulse[1], z: impulse[2] }, true);
+      this.motionReadback.notify(entity);
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -2325,6 +2351,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   /** Applies the candidate natively and returns the body record it will own once accepted. */
   private stageDerivedRecord(undo: DerivedAdmissionUndo): DerivedBodyRecord {
     const { record, body, old } = undo;
+    // Invalidation carries no native values and remains valid if admission rolls back.
+    this.motionReadback.enroll(record.input.entity, true);
+    this.motionReadback.notify(record.input.entity);
     primeGroupedContacts(
       this.raw,
       old,
@@ -3012,6 +3041,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
   dispose(): void {
     if (this.disposed) return;
     this.assertActive('dispose');
+    this.motionReadback.clear();
     this.clearPairIsolation();
     this.isolationColliderOwners.clear();
     this.invalidateDerivedShapeCandidates('physics-dispose');
@@ -3058,6 +3088,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     return this.entityMap.has(entity);
   }
 
+  /** Generation-bearing native identity, scoped to this instance's raw world. */
+  getBodyHandle(entity: number): number | undefined {
+    this.assertActive('getBodyHandle');
+    return this.bodyForEntity(entity)?.handle;
+  }
+
   /** Bind the ECS owner used by character motion and pose writeback. */
   setMoveContext(world: World, transform: Component): void {
     this.assertActive('setMoveContext');
@@ -3076,8 +3112,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (this.worldIdentity === world) this.worldIdentity = undefined;
   }
 
-  moveAndSlide(entity: number, desiredDelta: Vec3): Vec3 {
+  moveAndSlide(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3 {
     this.assertActive('moveAndSlide');
+    const deltaTime = characterMovementDeltaTime(options);
     this.contactDeltaTime = 0;
     if (this.recoveryBlocked())
       throw new DerivedPhysicsError(
@@ -3089,7 +3126,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.preparePairIsolation(false);
     this.nativeExecuting = true;
     try {
-      return this.computeMove(entity, desiredDelta);
+      return this.computeMove(entity, desiredDelta, options, deltaTime);
     } finally {
       this.nativeExecuting = false;
     }
@@ -3118,68 +3155,42 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
    * structured PhysicsError before the World is read, so error-path tests can
    * call this without registered systems.
    */
-  private computeMove(entity: number, desiredDelta: Vec3): Vec3 {
-    // ── Fail-Fast entry checks (charter P3) ──
-    const record = this.entityMap.get(entity);
-    if (!record) {
-      throw new PhysicsError({
-        code: 'body-not-found',
-        expected: 'a registered Rapier body for this entity',
-        hint: PHYSICS_ERROR_HINTS['body-not-found'],
-        detail: { code: 'body-not-found', entity },
-      });
-    }
-    // biome-ignore lint/suspicious/noExplicitAny: Rapier bodies API needs any-cast
-    const body = (this.raw as any).bodies.get(record.bodyHandle) as RapierRigidBody | null;
-    if (!body) {
-      throw new PhysicsError({
-        code: 'body-not-found',
-        expected: 'a registered Rapier body for this entity',
-        hint: PHYSICS_ERROR_HINTS['body-not-found'],
-        detail: { code: 'body-not-found', entity },
-      });
-    }
-    if (body.numColliders() === 0) {
-      // D-2: body exists but carries no collider — more precise than body-not-found.
-      throw new PhysicsError({
-        code: 'collider-not-found',
-        expected: 'a Collider attached to this entity body',
-        hint: PHYSICS_ERROR_HINTS['collider-not-found'],
-        detail: { code: 'collider-not-found', entity },
-      });
-    }
+  private computeMove(
+    entity: number,
+    desiredDelta: Vec3,
+    options: MoveAndSlideOptions | undefined,
+    deltaTime: number | undefined,
+  ): Vec3 {
     const RAPIER = this.rapierModule;
-    if (body.bodyType() !== RAPIER.RigidBodyType.KinematicPositionBased) {
-      throw new PhysicsError({
-        code: 'controller-requires-kinematic',
-        expected: "RigidBody.type === 'kinematic'",
-        hint: PHYSICS_ERROR_HINTS['controller-requires-kinematic'],
-        detail: {
-          code: 'controller-requires-kinematic',
-          entity,
-          bodyType: rapierBodyTypeToString(RAPIER, body.bodyType()),
-        },
-      });
-    }
-
+    const body = requireCharacterBody(entity, this.bodyForEntity(entity), RAPIER);
     const collider = body.collider(0); // D-4: zero-schema reverse lookup
 
     // ── Read CharacterController tuning + lazily build/configure the KCC ──
     const cc = this.readCharacterController(entity);
     const ctrl = this.ensureKcc(entity, cc.offset);
     applyKccTuning(ctrl, cc);
+    if (deltaTime === 0 || options?.applyImpulsesToDynamicBodies === false)
+      ctrl.setApplyImpulsesToDynamicBodies(false);
 
     const delta = { x: desiredDelta[0] ?? 0, y: desiredDelta[1] ?? 0, z: desiredDelta[2] ?? 0 };
-    ctrl.computeColliderMovement(
-      collider,
-      delta,
-      RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
-      undefined,
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier Collider in filter predicate
-      (other: any) =>
-        this.isolationColliderOwners.get(other.handle) !== entity &&
-        !this.colliderPairIsolated(collider.handle, other.handle),
-    );
+    // The KCC consumes producer time synchronously under the native-execution
+    // guard. Default live calls leave its World timestep untouched.
+    const timestep = deltaTime === undefined ? 0 : this.raw.timestep;
+    try {
+      if (deltaTime !== undefined) this.raw.timestep = deltaTime;
+      ctrl.computeColliderMovement(
+        collider,
+        delta,
+        RAPIER.QueryFilterFlags.EXCLUDE_SENSORS,
+        collider.collisionGroups(),
+        // biome-ignore lint/suspicious/noExplicitAny: Rapier Collider in filter predicate
+        (other: any) =>
+          this.isolationColliderOwners.get(other.handle) !== entity &&
+          !this.colliderPairIsolated(collider.handle, other.handle),
+      );
+    } finally {
+      if (deltaTime !== undefined) this.raw.timestep = timestep;
+    }
 
     // ── Step 2/3: read corrected movement + grounded ──
     const movement = ctrl.computedMovement() as { x: number; y: number; z: number };
@@ -3208,7 +3219,9 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
           pos: localPositionForWorld3D(ctx.world, entity as EntityHandle, next),
         })
         .unwrap();
-      ctx.world.set(entity as EntityHandle, CharacterController, { grounded });
+      // An unchanged flag skips the checked write; the row already holds `grounded`.
+      if (cc.grounded !== grounded)
+        ctx.world.set(entity as EntityHandle, CharacterController, { grounded });
     }
 
     return vec3.create(movement.x, movement.y, movement.z);
@@ -3493,7 +3506,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     } else if (bodyType === 'kinematic' && !descriptor.hasCharacterController) {
       this.syncAuthoredPose(entity, descriptor.transform, scaledCollider, 'kinematic');
     } else if (bodyType === 'dynamic') {
-      this.poseWritebackEntities.add(entity);
+      this.motionReadback.enroll(entity);
     }
     return descriptor;
   }
@@ -3863,6 +3876,8 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
       body.setNextKinematicTranslation(transform.position);
       body.setNextKinematicRotation(transform.rotation);
     }
+    this.motionReadback.enroll(entity, true);
+    this.motionReadback.notify(entity);
     if (collider === undefined) return;
     const rapierCollider = this.bodyColliders(body).find(
       (shape) =>
@@ -3943,10 +3958,11 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     if (!this.derivedBodySources.has(entity)) {
       this.derivedBodySources.set(entity, { sourceKey: `entity:${entity}`, revision: 0 });
     }
-    this.poseWritebackEntities.add(entity);
+    this.motionReadback.enroll(entity, true);
     const body = this.raw.getRigidBody(bodyHandle);
     if (body !== undefined && body !== null)
       for (const collider of this.bodyColliders(body)) this.syncIsolationCollider(collider, entity);
+    this.motionReadback.notify(entity);
   }
 
   setKinematicPosition(entity: number, pos: { x: number; y: number; z: number }): void {
@@ -3957,51 +3973,12 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     const body = (this.raw as any).bodies.get(record.bodyHandle) as RapierRigidBody | null;
     if (!body) return;
     body.setNextKinematicTranslation({ x: pos.x, y: pos.y, z: pos.z });
+    this.motionReadback.enroll(entity, true);
+    this.motionReadback.notify(entity);
   }
-  /**
-   * Write Rapier dynamic body poses back. Cost is O(awake dynamic bodies):
-   * sleeping and fixed bodies are not visited, except for the bodies tracked
-   * by `poseWritebackEntities`.
-   */
-  writebackDynamicBodies(): Array<{
-    entity: number;
-    pos: { x: number; y: number; z: number };
-    rotation: { x: number; y: number; z: number; w: number };
-  }> {
-    const results: Array<{
-      entity: number;
-      pos: { x: number; y: number; z: number };
-      rotation: { x: number; y: number; z: number; w: number };
-    }> = [];
-    const pending = this.poseWritebackEntities;
-    const active = this.activeWritebackEntities;
-    (this.raw as RapierWorld).forEachActiveRigidBody(
-      (body: { userData: unknown; handle: number }) => {
-        const entity = body.userData as number;
-        if (this.entityMap.get(entity)?.bodyHandle !== body.handle) return;
-        active.add(entity);
-        pending.add(entity);
-      },
-    );
-    for (const entity of pending) {
-      const record = this.entityMap.get(entity);
-      if (record === undefined) continue;
-      // biome-ignore lint/suspicious/noExplicitAny: Rapier bodies API needs any-cast
-      const body = (this.raw as any).bodies.get(record.bodyHandle) as RapierRigidBody | null;
-      if (!body) continue;
-      if (body.bodyType() !== this.rapierModule.RigidBodyType.Dynamic) continue;
-      const translation = body.translation();
-      const rotation = body.rotation();
-      results.push({
-        entity,
-        pos: { x: translation.x, y: translation.y, z: translation.z },
-        rotation: { x: rotation.x, y: rotation.y, z: rotation.z, w: rotation.w },
-      });
-    }
-    pending.clear();
-    this.poseWritebackEntities = active;
-    this.activeWritebackEntities = pending;
-    return results;
+  /** Detached dynamic poses; unchanged sleeping bodies need no native reads. */
+  writebackDynamicBodies(): BodyMotionWriteback[] {
+    return this.motionReadback.writeback(this.raw, this.entityMap, this.rapierModule.RigidBodyType);
   }
 
   removeEntity(entity: number): void {
@@ -4068,6 +4045,7 @@ export class RapierPhysicsWorld3D implements PhysicsWorld {
     this.entityMap.delete(entity);
     this.dirtyPairPolicies.delete(entity);
     this.derivedBodySources.delete(entity);
+    this.motionReadback.notify(entity);
     // Clear the despawned entity from every overlap set so a collected Core does
     // not linger in the player's CollidingEntities (Rapier emits no `stopped`
     // event when a collider is removed mid-overlap).

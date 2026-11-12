@@ -671,7 +671,10 @@ describe('PBR prepared GPU-driven batch topology', () => {
     const empty = projection.apply([updateInstances(withInstances(initial, 0))]);
     expect(topology.apply(empty)).toBe(true);
     expect(topology.query(topology.sourcePlan(), undefined).candidateCount).toBe(0);
-    expect(topology.inspect().ineligible).toBe(1);
+    // An empty instance source is retained, but requests neither GPU nor CPU raster work.
+    expect(projection.recordCount).toBe(1);
+    expect(topology.inspect().ineligible).toBe(0);
+    expect(topology.unbatchedSlots.size).toBe(0);
   });
   it.each([
     1, 16, 256,
@@ -1303,4 +1306,40 @@ it('shares one interned membership projection and no member object per single-in
   ).toBe(true);
   expect(members.map((member) => member.entityKey)).toEqual(rows.map((row) => row.entityKey));
   expect(members.every((member) => member.instanceCount === 1)).toBe(true);
+});
+
+it.each([
+  true,
+  false,
+])('keeps authored-hidden rows out of GPU and CPU demand with GPU support %s', (supported) => {
+  const source = snapshot(44, prepared());
+  const value = supported ? source : { ...source, gpuDrivenDraws: [] };
+  const scene = new RenderScene();
+  const topology = new BatchTopology();
+  scene.apply([updateSnapshot({ ...value, authorVisible: false })]);
+  topology.rebuild(scene.slotsSnapshot());
+  expect(topology.unbatchedSlots.size).toBe(0);
+  expect(execution(topology).candidateCount).toBe(0);
+  for (let cycle = 0; cycle < 20; cycle++) {
+    topology.apply(scene.apply([updateSnapshot({ ...value, authorVisible: true })]));
+    const visible = topology.unbatchedSlots;
+    expect(visible.size).toBe(supported ? 0 : 1);
+    expect(execution(topology).candidateCount).toBe(supported ? 1 : 0);
+    topology.apply(scene.apply([updateSnapshot({ ...value, authorVisible: false })]));
+    expect(topology.unbatchedSlots.size).toBe(0);
+    expect(execution(topology).candidateCount).toBe(0);
+    expect(visible.size).toBe(supported ? 0 : 1);
+  }
+});
+
+it('retires zero-instance raster demand without discarding the retained source identity', () => {
+  const source = snapshot(45, prepared());
+  const scene = new RenderScene();
+  const topology = new BatchTopology();
+  for (const count of [0, 1, 0, 8, 0]) {
+    topology.apply(scene.apply([updateSnapshot(withInstances(source, count))]));
+    expect(scene.recordCount).toBe(1);
+    expect(topology.unbatchedSlots.size).toBe(0);
+    expect(execution(topology).candidateCount).toBe(count);
+  }
 });

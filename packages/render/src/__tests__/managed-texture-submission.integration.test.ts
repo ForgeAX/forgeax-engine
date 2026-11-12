@@ -4,13 +4,21 @@ import {
   DynamicTextureStore,
 } from '@forgeax/engine-assets-runtime';
 import { runtimeAssets } from '@forgeax/engine-assets-runtime/internal';
-import { err, ok, RhiError } from '@forgeax/engine-rhi';
+import { err, ok, type RhiDevice, RhiError } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import type { TextureAsset } from '@forgeax/engine-types';
 import { assert, expect, it, vi } from 'vitest';
-import { type FrameRecording, submitFrameRecordings } from '../assembly/frame-recording';
 import { GpuResidencyCache } from '../device/gpu-residency';
 import type { RenderSystemInternals } from '../record/render-context';
+import { createRenderWorld } from '../world/render-world';
+import { type FrameRecording, submitFrameRecordings } from './frame-recording-driver';
+
+/** One submission whose RenderRecord opens a `render-frame` encoder on `device`. */
+const submission = (device: RhiDevice, rendererInternals: RenderSystemInternals) => ({
+  world: createRenderWorld(),
+  device,
+  rendererInternals,
+});
 
 it.each([
   'static',
@@ -30,7 +38,6 @@ it.each([
   const submit = vi.spyOn(device.queue, 'submit');
   const completed: boolean[] = [];
   const internals = { gpuStore: store, dynamicTextureStore: dynamic } as RenderSystemInternals;
-  const encoder = device.createCommandEncoder().unwrap();
   if (owner === 'static') {
     const buffer = device.createCommandEncoder().unwrap().finish().unwrap();
     vi.spyOn(store, 'prepareTextureMips').mockReturnValueOnce(
@@ -62,12 +69,14 @@ it.each([
     })
     ?.unwrap();
   function* view(): FrameRecording {
-    const submitted = yield { encoder, device, reportError: () => {} };
+    const submitted = yield { reportError: () => {} };
     completed.push(submitted.ok);
     return submitted.ok;
   }
   try {
-    expect(() => submitFrameRecordings([view(), view()], undefined, internals)).toThrow(failure);
+    expect(() => submitFrameRecordings(submission(device, internals), [view(), view()])).toThrow(
+      failure,
+    );
     expect(submit).toHaveBeenCalledTimes(1);
     expect(completed).toEqual([true, true]);
     expect(dynamic.prepareMipmaps(device)).toBeUndefined();
@@ -104,12 +113,11 @@ it('keeps mip work across a rejected multi-view submission and consumes it exact
   expect(submit).not.toHaveBeenCalled();
   const internals = { gpuStore: store } as RenderSystemInternals;
   const frame = () => {
-    const encoder = device.createCommandEncoder().unwrap();
     function* view(): FrameRecording {
-      const submitted = yield { encoder, device, reportError: () => {} };
+      const submitted = yield { reportError: () => {} };
       return submitted.ok;
     }
-    return submitFrameRecordings([view(), view()], undefined, internals);
+    return submitFrameRecordings(submission(device, internals), [view(), view()]);
   };
   const observer = assets.observe().unwrap();
   try {
@@ -197,14 +205,13 @@ it('submits Canvas mips discovered by either view before their shared scene buff
   const key = {};
   let version = 1;
   const frame = () => {
-    const encoder = device.createCommandEncoder({ label: 'test-scene' }).unwrap();
     function* view(): FrameRecording {
       // Actual binding happens during recording, after the first view started.
       dynamic.uploadFrame(key, source, 8, 8, { version, generateMipmaps: true })?.unwrap();
-      const submitted = yield { encoder, device, reportError: () => {} };
+      const submitted = yield { reportError: () => {} };
       return submitted.ok;
     }
-    return submitFrameRecordings([view(), view()], undefined, internals);
+    return submitFrameRecordings(submission(device, internals), [view(), view()]);
   };
   const submittedLabels = (index: number) =>
     submit.mock.calls[index]?.[0].map((buffer) => labels.get(buffer));
@@ -219,16 +226,16 @@ it('submits Canvas mips discovered by either view before their shared scene buff
       ),
     );
     expect(frame).toThrowError(expect.objectContaining({ code: 'frame-submit-rejected' }));
-    expect(submittedLabels(0)).toEqual(['texture-mips', 'dynamic-texture-mips', 'test-scene']);
+    expect(submittedLabels(0)).toEqual(['texture-mips', 'dynamic-texture-mips', 'render-frame']);
     expect(frame()).toBe(true);
-    expect(submittedLabels(1)).toEqual(['texture-mips', 'dynamic-texture-mips', 'test-scene']);
+    expect(submittedLabels(1)).toEqual(['texture-mips', 'dynamic-texture-mips', 'render-frame']);
     expect(copies).toHaveBeenCalledTimes(1);
     expect(dynamic.prepareMipmaps(device)).toBeUndefined();
     expect(frame()).toBe(true);
-    expect(submittedLabels(2)).toEqual(['test-scene']);
+    expect(submittedLabels(2)).toEqual(['render-frame']);
     version++;
     expect(frame()).toBe(true);
-    expect(submittedLabels(3)).toEqual(['dynamic-texture-mips', 'test-scene']);
+    expect(submittedLabels(3)).toEqual(['dynamic-texture-mips', 'render-frame']);
     expect(copies).toHaveBeenCalledTimes(2);
     expect(dynamic.prepareMipmaps(device)).toBeUndefined();
   } finally {

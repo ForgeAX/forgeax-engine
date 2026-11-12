@@ -2,15 +2,17 @@ import type { Vec3 } from '@forgeax/engine-math';
 import { describe, expect, it } from 'vitest';
 import {
   DIRECT_LIGHT_SLOT_KIND_MASK,
-  DIRECT_LIGHT_SLOT_LAYOUT,
   DIRECT_LIGHT_SLOT_METADATA_SENTINEL,
   DIRECT_LIGHT_SLOT_PCF_SHIFT,
   DIRECT_LIGHT_SLOT_PROJECTOR_FLAG,
   DIRECT_LIGHT_SLOT_TILE_MASK,
   DirectLightSlotKind,
-  packDirectLightSlot,
 } from '../light-buffer-layout';
 import type { SpotLightSnapshot } from '../render-system-extract';
+import {
+  packTestDirectLightSlot as packDirectLightSlot,
+  STANDARD_CLUSTER_TEST_ABI,
+} from './cluster-test-abi';
 
 const snapshot: SpotLightSnapshot = {
   kind: 'spot',
@@ -89,16 +91,18 @@ describe('direct light snapshot buffer layout', () => {
 
 describe('DirectLightSlot ABI', () => {
   it('locks the six-row 96-byte host contract and closed kind values', () => {
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.byteSize).toBe(96);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.rowByteOffsets).toEqual([0, 16, 32, 48, 64, 80]);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.metadataByteOffset).toBe(64);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.kindByteOffset).toBe(64);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.shadowByteOffset).toBe(68);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.iesProfileByteOffset).toBe(72);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.cookieByteOffset).toBe(76);
-    expect(DIRECT_LIGHT_SLOT_LAYOUT.rollDegByteOffset).toBe(60);
+    const layout = STANDARD_CLUSTER_TEST_ABI.directLightSlot;
+    expect(layout.capacity).toBe(256);
+    expect(layout.byteSize).toBe(96);
+    expect(layout.rowByteOffsets).toEqual([0, 16, 32, 48, 64, 80]);
+    expect(layout.metadataByteOffset).toBe(64);
+    expect(layout.kindByteOffset).toBe(64);
+    expect(layout.shadowByteOffset).toBe(68);
+    expect(layout.iesProfileByteOffset).toBe(72);
+    expect(layout.cookieByteOffset).toBe(76);
+    expect(layout.rollDegByteOffset).toBe(60);
     expect(DIRECT_LIGHT_SLOT_METADATA_SENTINEL).toBe(0xffffffff);
-    expect(DirectLightSlotKind).toEqual({ POINT: 0, SPOT: 1, RECT_AREA: 2 });
+    expect(DirectLightSlotKind).toEqual({ POINT: 0, SPOT: 1, RECT_AREA: 2, DIRECTIONAL: 3 });
   });
 
   it('packs Point, Spot, and Rect fields into the same six rows', () => {
@@ -175,5 +179,29 @@ describe('DirectLightSlot ABI', () => {
     const words = new Uint32Array(packDirectLightSlot({ ...point, pcfKernelSize } as never).buffer);
     expect((words[16] ?? 0) & DIRECT_LIGHT_SLOT_KIND_MASK).toBe(DirectLightSlotKind.POINT);
     expect((words[16] ?? 0) >>> DIRECT_LIGHT_SLOT_PCF_SHIFT).toBe(pcfKernelSize);
+  });
+});
+
+describe('directional DirectLightSlot', () => {
+  it('packs an unshadowed directional light with direction, scaled color, and channels', () => {
+    const packed = packDirectLightSlot({
+      kind: 'directional',
+      direction: [0.6, -0.8, 0],
+      color: [3, 2, 1],
+      intensity: 2,
+      contactShadowLength: 0,
+      lightingChannels: 5,
+    } as never);
+    const words = new Uint32Array(packed.buffer);
+
+    expect(packed.byteLength).toBe(96);
+    expect([...packed.slice(0, 4)]).toEqual([0, 0, 0, 0]);
+    expect([...packed.slice(4, 7)]).toEqual([3, 2, 1]);
+    expect([...packed.slice(8, 11)].map((v) => Math.round(v * 10) / 10)).toEqual([0.6, -0.8, 0]);
+    expect(words[16]).toBe(DirectLightSlotKind.DIRECTIONAL);
+    expect(words[17]).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
+    expect(words[18]).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
+    expect(words[19]).toBe(DIRECT_LIGHT_SLOT_METADATA_SENTINEL);
+    expect(words[20]).toBe(5);
   });
 });

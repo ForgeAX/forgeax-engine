@@ -16,7 +16,7 @@ interface TemporalHistorySnapshot {
 interface HistoryOptions {
   readonly width: number;
   readonly height: number;
-  readonly mode: 'off' | 'taa';
+  readonly mode: 'off' | 'taa' | 'tsr';
 }
 
 export class TemporalHistory {
@@ -32,16 +32,16 @@ export class TemporalHistory {
   private resetReason: string | undefined;
 
   constructor(scope: DeviceScope, options: HistoryOptions) {
-    const taa = options.mode === 'taa';
+    const taa = options.mode !== 'off';
     this.coverage = taa
-      ? createTemporalCoverage(options.width, options.height)
+      ? createTemporalCoverage(options.width, options.height, options.mode === 'taa')
       : Object.freeze({
           width: options.width,
           height: options.height,
           bytes: 0,
           fullScreen: true as const,
         });
-    this.historyCount = taa ? 6 : 0;
+    this.historyCount = options.mode === 'taa' ? 8 : taa ? 6 : 0;
     this.historyBytes = this.coverage.bytes;
     if (!taa) {
       this.resources = [];
@@ -56,11 +56,17 @@ export class TemporalHistory {
       child.ref('texture', Object.freeze({ slot: 'temporal-b' })),
       child.ref('texture', Object.freeze({ slot: 'stability-a' })),
       child.ref('texture', Object.freeze({ slot: 'stability-b' })),
+      ...(options.mode === 'taa'
+        ? [
+            child.ref('texture', Object.freeze({ slot: 'flicker-a' })),
+            child.ref('texture', Object.freeze({ slot: 'flicker-b' })),
+          ]
+        : []),
     ]);
   }
 
   stage(view: TemporalView, producers: TemporalProducerState): void {
-    if (view.mode !== 'taa' || this.historyCount === 0) return;
+    if (view.mode === 'off' || this.historyCount === 0) return;
     this.pending = { ...producers };
     this.resetReason = undefined;
   }

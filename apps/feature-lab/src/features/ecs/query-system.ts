@@ -6,7 +6,7 @@ export default defineFeature({
   catalog: 'Query row',
   kind: 'headless',
   summary:
-    'defineComponent declares a typed schema, world.spawn creates rows, and an Update system mutates them through row.mut.',
+    'A retained Query visits borrowed rows synchronously with forEach; row.mut applies declared writes without a new iterator each update.',
   expect:
     'All checks pass: three spawned entities are queried and each Position.x advances by 1 per world.update.',
   run(checks) {
@@ -15,7 +15,9 @@ export default defineFeature({
       name: 'feature-lab-move',
       queries: [{ write: [Position] }],
       fn: (_world, [rows]) => {
-        for (const row of rows) row.mut(Position).x += 1;
+        rows.forEach((row) => {
+          row.mut(Position).x += 1;
+        });
       },
     });
     const world = new World();

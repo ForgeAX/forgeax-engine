@@ -10,6 +10,10 @@ repository source and package tests.
 > Worlds may have zero cameras. Renderer clears/composes UI normally without a
 > camera error, and scene rendering begins when a camera is authored. No default
 > camera is inserted into the World.
+> A clear/UI frame requires no Cluster shader reflection or AO transport; those
+> capabilities are admitted when an authored camera consumes the Standard scene.
+> A camera-only empty shader publication also consumes no Standard material
+> bindings. Local lights and AO retain their reflected transport requirements.
 
 ## Adaptive resolution
 
@@ -175,7 +179,7 @@ reading renderer private state:
 |:--|:--|
 | `requested` / `effective` | Author request and admitted profile |
 | `status` | `accepted`, explicit `fallback`, or `rejected` |
-| `fallbackReason` | `webgl2-unsupported`, `rhi-null-structural`, or `candidate-failed` |
+| `fallbackReason` | `rhi-null-structural` or `candidate-failed`; legacy `webgl2-unsupported` remains a wire label |
 | `lastKnownGood` | Whether the previous admitted profile was retained |
 | `pixelEvidence` | `available` or `not-available`; structural evidence is not pixel proof |
 | `deviceGeneration` / `graphGeneration` | 当前 inspection result 的 generation identity |
@@ -186,9 +190,10 @@ For `error.code === 'shadow-invalid-config'`, use the structured properties
 `reason`. Set the named field to the bound described by `detail`, then retry;
 the prose `error.message` is not an API. For a failed capable candidate, keep
 the `lastKnownGood` projection, repair or rebuild its producer, call
-`renderer.recover()`, and retry the identical draw. WebGL2 may expose only its
-explicit PCF fallback, while RhiNull is structural (`pixelEvidence:
-not-available`); neither state may be rewritten as PCSS support. A
+`renderer.recover()`, and retry the identical draw. WebGL2 admits PCSS through raw-depth blocker reads and shader comparisons;
+its requested and effective quality agree only after the real candidate is admitted.
+RhiNull remains structural (`pixelEvidence: not-available`) and supplies no PCSS
+pixel proof. A
 `not-run` Browser/Dawn/PNG/timing receipt stays `not-run`.
 
 The complete author → inspect → recover path is:
@@ -428,13 +433,20 @@ The default browser path prefers native WebGPU and can retry through the
 `wgpu`/WebGL2 downlevel backend at most once. Without `navigator.gpu`, it
 selects WebGL2 directly and never retries that same backend. An explicitly
 injected RHI is authoritative and does not trigger automatic fallback.
+Stock Renderer shaders require `caps.depthTextureLoad`. A device lacking that
+operation is retired before the canvas is acquired and returns
+`feature-not-enabled`, permitting the automatic host's existing WebGL2 attempt.
+Explicit RHI injection retains this error. A successful RHI Compatibility Mode
+probe does not qualify the stock shaders against the mode's additional
+texture-view, cube-array or texture/sampler restrictions.
 Consequently, a native-channel
 `adapter-unavailable` error means only that `navigator.gpu.requestAdapter()` did
 not produce an adapter; it is not a verdict that the machine cannot run the
-game. A thrown `requestAdapter()` failure is reported separately as
-`webgpu-runtime-error` with the original name/message in `detail.error`, while a
-literal `null` remains `adapter-unavailable`. Both outcomes can select the
-WebGL2 fallback; unrelated runtime, shader, and asset failures do not.
+game. A thrown native `requestAdapter()` or `requestDevice()` failure is reported
+as `webgpu-runtime-error` with its original name/message in `detail.error`, while
+a literal `null` remains `adapter-unavailable`. These native creation failures
+can select the WebGL2 fallback; other runtime operations, shader, and asset
+failures do not.
 
 When both attempts fail, `EngineEnvironmentError.detail.webgpuError` and
 `.wgpuError` retain their respective causes, including WASM initialization or
@@ -445,7 +457,7 @@ host with both backend paths, completed frames, and pixel readback.
 Always diagnose the final structured error rather than matching the word
 “WebGPU”. Inspect `.code`, `.expected`, `.hint`, and nested backend causes. Asset,
 shader, Pack, permission-policy, and application bootstrap failures belong to
-their own owners and must not be repaired by replacing ForgeaX with a second
+their own owners and must not be repaired by replacing ForgeAX with a second
 Canvas renderer or by swallowing the entry-module exception.
 
 ## Import each domain from its owner

@@ -8,10 +8,11 @@ import { type EntityHandle, Time, type World } from '@forgeax/engine-ecs';
 import type { RhiCaps } from '@forgeax/engine-rhi';
 import { Children, GlobalTransform, readPresentationWorldMatrix } from '@forgeax/engine-scene';
 import { type Asset, err, ok, type Result } from '@forgeax/engine-types';
+import { planarCaptureDemanded } from '../capture/planar-material';
 import { MeshFilter } from '../components/mesh-filter';
 import { stereoEyeCameras } from '../components/stereo-camera';
 import { Visibility, VisibilityStateValue } from '../components/visibility';
-import { EnvironmentGate } from '../extract/environment-gate';
+import { EnvironmentFrameGate } from '../extract/environment-frame-gate';
 import { renderMaterialContext } from '../extract/material-context';
 import { fullscreenRenderFeatureDeclaration } from '../features/fullscreen';
 import {
@@ -23,7 +24,6 @@ import { renderFeatureCameraView } from '../features/view';
 import { MaterialResource } from '../material-resource';
 import {
   type DispatchEntry,
-  type EnvironmentFrameGate,
   type MaterialSnapshot,
   type MaterialSnapshotCachesByWorld,
   type RenderableSnapshot,
@@ -55,6 +55,7 @@ import {
   type RenderPublicationTemplate,
 } from './contract';
 import { publicationFrameDependencies, renderableAssetRoots } from './dependencies';
+import { MAX_RENDER_FRAMES_IN_FLIGHT } from './frame-limits';
 import { EntityMaterialLists } from './material-lists';
 import { PublishedMaterialProjections } from './material-projections';
 import { beginSourcePreparation, type SourcePreparationObservation } from './observation';
@@ -136,6 +137,18 @@ interface MaterialReferences {
   readonly dependencies: readonly number[];
   /** Bucket key part naming the material tuple. */
   readonly key: string;
+}
+
+/** Cold per-preparation facts, admitted only when a row needs template construction. */
+function createTemplateWorkspace() {
+  return {
+    valueIds: new Map<object, number>(),
+    tokens: new Map<object, { readonly field: string; readonly token: string }>(),
+    structuralIds: new Map<string, number>(),
+    templateBuckets: new Map<string, { index: number; dependencies: readonly number[] }[]>(),
+    values: new Map<string, number>(),
+    templateIds: new Map<string, { index: number; dependencies: readonly number[] }>(),
+  };
 }
 
 function sameList(a: readonly unknown[] | undefined, b: readonly unknown[] | undefined): boolean {
@@ -227,7 +240,7 @@ export function createRenderPublisher(
   const nextMaterialDependencies = new Map<number, readonly number[]>();
   const materialHolds = new Map<number, number>();
   let nextMaterialId = 1;
-  if (maxInFlight !== 2 && maxInFlight !== 3 && maxInFlight !== 4)
+  if (maxInFlight !== 2 && maxInFlight !== 3 && maxInFlight !== MAX_RENDER_FRAMES_IN_FLIGHT)
     throw new RenderPublicationError({ reason: 'shape', subject: 'publication capacity' });
   let activeObservation: SourcePreparationObservation | undefined;
   const publishedFullscreenFeatures = new Map<string, object>();
@@ -235,6 +248,8 @@ export function createRenderPublisher(
   const source = createRenderSourceState(world);
   const transforms = createGlobalTransformChangeQuery(world);
   const caches: MaterialSnapshotCachesByWorld = new WeakMap();
+  // PlanarReflection demand at the last extraction; a flip re-routes cached receivers.
+  let planarDemand: boolean | undefined;
   const members = new Set<number>();
   const publishedPrograms = new Set<string>();
   const publishedMaterialProjections = new PublishedMaterialProjections();
@@ -274,8 +289,9 @@ export function createRenderPublisher(
   let frameDependencies = new Set<number>();
   let revision = 0,
     disposed = false,
-    failed = false,
-    active = false;
+    failed = false;
+  let preparationPhase: 'idle' | 'preparing' | 'candidate' | 'settling' = 'idle';
+  const phaseIs = (phase: typeof preparationPhase): boolean => preparationPhase === phase;
   let lastScannedRows = 0,
     allocations = 0;
   // One record per publication slot: it crosses with its publication and
@@ -285,7 +301,7 @@ export function createRenderPublisher(
   // Metadata of the last accepted publication; the next message omits unchanged entries.
   let acceptedMetadata: RenderPublicationMetadata | undefined;
   // Camera, light and environment entries re-extract only when their inputs change.
-  const environmentGate: EnvironmentFrameGate = new EnvironmentGate();
+  const environmentGate = new EnvironmentFrameGate();
   const record = (bytes: number): ArrayBuffer => {
     let value = storage ?? new ArrayBuffer(0);
     // A baseline-sized record must not keep crossing the Worker boundary: every
@@ -348,20 +364,9 @@ export function createRenderPublisher(
     // Dispatch entries share their material's parameter snapshot. Intern
     // both so each pass/entity does not serialize that same payload again.
     // The value table lives only for this preparation.
-    private readonly valueIds = new Map<object, number>();
-    private readonly tokens = new Map<object, { readonly field: string; readonly token: string }>();
-    private readonly structuralIds = new Map<string, number>();
+    private templateWork: ReturnType<typeof createTemplateWorkspace> | undefined;
     private recentReferences: MaterialReferences | undefined;
-    private readonly templateBuckets = new Map<
-      string,
-      { index: number; dependencies: readonly number[] }[]
-    >();
-    private readonly values = new Map<string, number>();
     private readonly templates: RenderPublicationTemplate[] = [];
-    private readonly templateIds = new Map<
-      string,
-      { index: number; dependencies: readonly number[] }
-    >();
     private readonly upserts: number[] = [];
     private readonly programs = new Map<string, RenderPublication['programs'][number]>();
     private readonly programMaterials = new Set<MaterialSnapshot>();
@@ -399,6 +404,11 @@ export function createRenderPublisher(
       observation?.fact('invalidated', this.invalidated.size);
       observation?.fact('matrixRows', this.matrixRows.size);
       for (const entity of this.changed) pending.add(entity);
+    }
+
+    private templateWorkspace(): ReturnType<typeof createTemplateWorkspace> {
+      this.templateWork ??= createTemplateWorkspace();
+      return this.templateWork;
     }
 
     private collectSourceChanges(): void {
@@ -472,17 +482,15 @@ export function createRenderPublisher(
     }
 
     private collectTransformRows(): void {
-      for (const span of transforms.spans().unwrap()) {
-        for (let row = 0; row < span.entities.length; row++) {
-          const entity = span.entities[row] as EntityHandle;
-          skinJoints.mark(entity);
-          if (members.has(entity) && !this.removed.has(entity)) {
-            const matrix = readPresentationWorldMatrix(world, entity);
-            if (matrix !== undefined) this.matrixRows.set(entity, matrix);
-            pending.add(entity);
-          }
+      transforms.forEach((row) => {
+        const entity = row.entity;
+        skinJoints.mark(entity);
+        if (members.has(entity) && !this.removed.has(entity)) {
+          const matrix = readPresentationWorldMatrix(world, entity);
+          if (matrix !== undefined) this.matrixRows.set(entity, matrix);
+          pending.add(entity);
         }
-      }
+      });
     }
 
     private readonly keyValue = (key: string, value: unknown): unknown =>
@@ -491,15 +499,15 @@ export function createRenderPublisher(
         : publicationKeyValue(key, value);
 
     private valueId(object: object, parameters = false): number {
-      const cached = this.valueIds.get(object);
+      const cached = this.templateWorkspace().valueIds.get(object);
       if (cached !== undefined) return cached;
       const value = JSON.stringify(object, parameters ? publicationKeyValue : this.keyValue);
-      let id = this.values.get(value);
+      let id = this.templateWorkspace().values.get(value);
       if (id === undefined) {
-        id = this.values.size;
-        this.values.set(value, id);
+        id = this.templateWorkspace().values.size;
+        this.templateWorkspace().values.set(value, id);
       }
-      this.valueIds.set(object, id);
+      this.templateWorkspace().valueIds.set(object, id);
       return id;
     }
 
@@ -608,6 +616,7 @@ export function createRenderPublisher(
       });
       observation?.phase('templates');
       observation?.fact('renderables', frame.renderables.length);
+      this.invalidatePlanarRouting();
       this.republishInvalidatedMaterials();
       const unsupported = this.addRenderableTemplates(frame);
       if (unsupported !== undefined) return fail('unsupported', unsupported);
@@ -691,7 +700,7 @@ export function createRenderPublisher(
       const message = encodeRenderPublication(packet, acceptedMetadata);
       observation?.phase('candidate');
       this.batch.validate();
-      active = true;
+      preparationPhase = 'candidate';
       let closed = false;
       return ok({
         packet,
@@ -700,6 +709,7 @@ export function createRenderPublisher(
         accept: () => {
           if (closed || disposed || failed)
             throw new RenderPublicationError({ reason: 'revision', subject: 'closed candidate' });
+          preparationPhase = 'settling';
           try {
             observation?.phase('accept');
             this.batch.accept();
@@ -715,7 +725,6 @@ export function createRenderPublisher(
             }
             for (const key of this.programs.keys()) publishedPrograms.add(key);
             closed = true;
-            active = false;
             revision++;
             acceptedMetadata = packet.metadata;
             flights.set(revision, {
@@ -734,23 +743,43 @@ export function createRenderPublisher(
           } catch (cause) {
             failed = true;
             closed = true;
-            active = false;
             throw this.acceptanceFailure(cause);
+          } finally {
+            preparationPhase = 'idle';
           }
         },
         discard: () => {
           if (closed) return;
           closed = true;
-          active = false;
-          for (const row of featureRows)
-            this.featureSources
-              .find((feature) => feature.identity === row.identity)
-              ?.onSourceFrameDiscarded?.(row.data);
-          closeFrames(this.videoFrames, this.canvasFrames);
-          observation?.finish('discarded');
-          activeObservation = undefined;
+          preparationPhase = 'settling';
+          try {
+            for (const row of featureRows)
+              this.featureSources
+                .find((feature) => feature.identity === row.identity)
+                ?.onSourceFrameDiscarded?.(row.data);
+            closeFrames(this.videoFrames, this.canvasFrames);
+            observation?.finish('discarded');
+          } finally {
+            activeObservation = undefined;
+            preparationPhase = 'idle';
+          }
         },
       });
+    }
+
+    /**
+     * Adding or removing a PlanarReflection capture changes no entity or
+     * asset, yet planar receivers drop or regain their Deferred pass with it.
+     * Republish every cached receiver routed for the other demand.
+     */
+    private invalidatePlanarRouting(): void {
+      const demanded = planarCaptureDemanded(world);
+      if (planarDemand === demanded) return;
+      planarDemand = demanded;
+      for (const { cache } of caches.get(worldRenderResources(world))?.values() ?? [])
+        for (const [handle, cached] of cache)
+          if (cached.planarRouted !== undefined && cached.planarRouted !== demanded)
+            this.invalidated.add(handle);
     }
 
     private republishInvalidatedMaterials(): void {
@@ -783,40 +812,62 @@ export function createRenderPublisher(
       }
     }
 
-    /** Publish every extracted renderable; returns the unsupported source kind, if any. */
+    /** Grouping is synchronous: no temporary column escapes template admission. */
     private addRenderableTemplates(frame: ReturnType<typeof extractFrames>): string | undefined {
+      const count = frame.renderables.length;
+      if (count === 0) return undefined;
+      const entries: readonly DispatchEntry[] = Array.isArray(frame.dispatch)
+        ? frame.dispatch
+        : [...frame.dispatch];
+      const words = count * 2 + 1 + entries.length;
+      // A tiny factory is cheaper than a scope/Result/view. Large grouping
+      // uses the World's bounded arena through the end of this exact reader.
+      if (words < 256) return this.groupRenderableTemplates(frame, entries, new Int32Array(words));
+      return world
+        .withFrameArena(() => {
+          const allocated = world.frameArena.alloc(Int32Array, words);
+          if (!allocated.ok) return allocated;
+          return ok(this.groupRenderableTemplates(frame, entries, allocated.value));
+        })
+        .unwrap();
+    }
+
+    private groupRenderableTemplates(
+      frame: ReturnType<typeof extractFrames>,
+      entries: readonly DispatchEntry[],
+      storage: Int32Array,
+    ): string | undefined {
       const meshCounts = new Map<number, number>();
       for (const row of frame.renderables)
         if (row.assetHandle !== undefined)
           meshCounts.set(row.assetHandle, (meshCounts.get(row.assetHandle) ?? 0) + 1);
-      // Group dispatch entries by renderable with two numeric columns; entries
-      // are copied without their row identity only when a new template needs them.
       const count = frame.renderables.length;
-      const entries: readonly DispatchEntry[] = [...frame.dispatch];
-      const starts = new Int32Array(count + 1);
+      const cursorBase = count + 1;
+      const orderBase = count * 2 + 1;
+      storage.fill(0, 0, cursorBase);
       for (const entry of entries)
         if (entry.renderableIndex >= 0 && entry.renderableIndex < count)
-          starts[entry.renderableIndex + 1] = (starts[entry.renderableIndex + 1] as number) + 1;
-      for (let index = 0; index < count; index++)
-        starts[index + 1] = (starts[index + 1] as number) + (starts[index] as number);
-      const order = new Int32Array(starts[count] as number);
-      const cursor = starts.slice(0, count);
-      for (let index = 0; index < entries.length; index++) {
-        const renderable = (entries[index] as DispatchEntry).renderableIndex;
+          storage[entry.renderableIndex + 1] = (storage[entry.renderableIndex + 1] as number) + 1;
+      for (let i = 0; i < count; i++) {
+        storage[i + 1] = (storage[i + 1] as number) + (storage[i] as number);
+        storage[cursorBase + i] = storage[i] as number;
+      }
+      for (let i = 0; i < entries.length; i++) {
+        const renderable = (entries[i] as DispatchEntry).renderableIndex;
         if (renderable < 0 || renderable >= count) continue;
-        order[cursor[renderable] as number] = index;
-        cursor[renderable] = (cursor[renderable] as number) + 1;
+        const cursor = cursorBase + renderable;
+        storage[orderBase + (storage[cursor] as number)] = i;
+        storage[cursor] = (storage[cursor] as number) + 1;
       }
       const checked = new Set<MaterialResource>();
+      const rowDispatch = { entries, order: storage, start: 0, end: 0 };
       for (let i = 0; i < count; i++) {
         const row = frame.renderables.at(i) as RenderableSnapshot;
         const unsupported = unsupportedRenderableSource(row, checked);
         if (unsupported !== undefined) return unsupported;
-        this.addRenderableTemplate(
-          row,
-          { entries, order, start: starts[i] as number, end: starts[i + 1] as number },
-          meshCounts,
-        );
+        rowDispatch.start = orderBase + (storage[i] as number);
+        rowDispatch.end = orderBase + (storage[i + 1] as number);
+        this.addRenderableTemplate(row, rowDispatch, meshCounts);
       }
       return undefined;
     }
@@ -826,38 +877,46 @@ export function createRenderPublisher(
       rowDispatch: RowDispatch,
       meshCounts: ReadonlyMap<number, number>,
     ): void {
-      const {
-        worldId: _world,
-        entityKey,
-        transform,
-        material,
-        materials,
-        materialOverrides,
-        ...content
-      } = row;
+      const { entityKey, transform, material, materials, materialOverrides } = row;
       const references = this.materialReferences(material, materials, materialOverrides);
-      const { materials: materialReferences, overrides } = references;
       nextMaterialDependencies.set(entityKey, references.dependencies);
-      const snapshot = {
-        ...content,
-        material: references.material,
-        materials: materialReferences,
-        ...(overrides === undefined ? {} : { materialOverrides: overrides }),
-      };
-      const shareable = this.shareable(snapshot, meshCounts);
-      // Rows of one mesh/material tuple almost always share content: compare
-      // against that tuple's templates before deriving a content key.
-      const bucketKey = shareable ? `${snapshot.assetHandle}|${references.key}` : undefined;
-      const bucket = bucketKey === undefined ? undefined : this.templateBuckets.get(bucketKey);
+      const shareable = this.shareable(row, meshCounts);
+      // extractFrames owns these plain source-row envelopes. Compare the exact
+      // publication fields before constructing another envelope on a hit.
+      const bucketKey = shareable ? `${row.assetHandle}|${references.key}` : undefined;
+      const bucket =
+        bucketKey === undefined
+          ? undefined
+          : this.templateWorkspace().templateBuckets.get(bucketKey);
+      let snapshot: RenderPublicationTemplate['snapshot'] | undefined;
       let known =
-        bucket === undefined ? undefined : this.matchTemplate(snapshot, rowDispatch, bucket);
+        bucket === undefined
+          ? undefined
+          : this.matchRowTemplate(row, references, rowDispatch, bucket);
       let template: RenderPublicationTemplate | undefined;
       let key: string | undefined;
       if (known === undefined) {
+        const {
+          worldId: _world,
+          entityKey: _entity,
+          transform: _transform,
+          material: _material,
+          materials: _materials,
+          materialOverrides: _overrides,
+          ...content
+        } = row;
+        snapshot = {
+          ...content,
+          material: references.material,
+          materials: references.materials,
+          ...(references.overrides === undefined
+            ? {}
+            : { materialOverrides: references.overrides }),
+        };
         template = { snapshot, dispatch: strippedDispatch(rowDispatch) };
         if (shareable) {
           key = this.templateKey(template);
-          known = this.templateIds.get(key);
+          known = this.templateWorkspace().templateIds.get(key);
         }
       }
       if (known !== undefined && bucketKey !== undefined && bucket?.includes(known) !== true)
@@ -872,7 +931,7 @@ export function createRenderPublisher(
           ].map((resource) => resource.snapshot),
         );
         known = { index, dependencies: renderableAssetRoots(row) };
-        if (key !== undefined) this.templateIds.set(key, known);
+        if (key !== undefined) this.templateWorkspace().templateIds.set(key, known);
         if (bucketKey !== undefined) this.addTemplateBucket(bucketKey, known);
       }
       if (known === undefined) throw new Error('renderable template was not published');
@@ -919,7 +978,10 @@ export function createRenderPublisher(
 
     /** False for payloads only one entity can own. */
     private shareable(
-      snapshot: RenderPublicationTemplate['snapshot'],
+      snapshot: Pick<
+        RenderableSnapshot,
+        'instances' | 'spriteInstances' | 'skinBinding' | 'pointsLines' | 'assetHandle'
+      >,
       meshCounts: ReadonlyMap<number, number>,
     ): boolean {
       // These payloads already contain the source entity identity. They
@@ -944,25 +1006,65 @@ export function createRenderPublisher(
       bucketKey: string,
       known: { index: number; dependencies: readonly number[] },
     ): void {
-      const bucket = this.templateBuckets.get(bucketKey);
-      if (bucket === undefined) this.templateBuckets.set(bucketKey, [known]);
+      const bucket = this.templateWorkspace().templateBuckets.get(bucketKey);
+      if (bucket === undefined) this.templateWorkspace().templateBuckets.set(bucketKey, [known]);
       else if (bucket.length < TEMPLATE_BUCKET_LIMIT) bucket.push(known);
     }
 
-    private matchTemplate(
-      snapshot: RenderPublicationTemplate['snapshot'],
+    private matchRowTemplate(
+      row: RenderableSnapshot,
+      materials: MaterialReferences,
       dispatch: RowDispatch,
       bucket: readonly { index: number; dependencies: readonly number[] }[],
     ): { index: number; dependencies: readonly number[] } | undefined {
+      // A custom JSON root must still take the ordinary captured-template path.
+      if (typeof (row as unknown as { toJSON?: unknown }).toJSON === 'function') return undefined;
       for (const known of bucket) {
         const candidate = this.templates[known.index] as RenderPublicationTemplate;
         if (
-          this.sameContent('snapshot', snapshot, candidate.snapshot, 0) &&
+          this.sameRowContent(row, materials, candidate.snapshot) &&
           this.sameDispatch(dispatch, candidate.dispatch)
         )
           return known;
       }
       return undefined;
+    }
+
+    private sameRowContent(
+      row: RenderableSnapshot,
+      materials: MaterialReferences,
+      candidate: RenderPublicationTemplate['snapshot'],
+    ): boolean {
+      if (
+        !this.sameContent('material', materials.material, candidate.material, 1) ||
+        !this.sameContent('materials', materials.materials, candidate.materials, 1) ||
+        !this.sameContent('materialOverrides', materials.overrides, candidate.materialOverrides, 1)
+      )
+        return false;
+      const fields = row as unknown as Record<string, unknown>;
+      const captured = candidate as unknown as Record<string, unknown>;
+      let count = materials.overrides === undefined ? 2 : 3;
+      for (const key in fields) {
+        if (
+          !Object.hasOwn(fields, key) ||
+          key === 'worldId' ||
+          key === 'entityKey' ||
+          key === 'transform' ||
+          key === 'material' ||
+          key === 'materials' ||
+          key === 'materialOverrides'
+        )
+          continue;
+        const value = fields[key];
+        if (value === undefined || typeof value === 'function') continue;
+        count++;
+        if (!this.sameContent(key, value, captured[key], 1)) return false;
+      }
+      for (const key in captured) {
+        const value = captured[key];
+        if (value !== undefined && typeof value !== 'function') count--;
+      }
+      return count === 0;
     }
 
     /** {@link sameContent} of a row's dispatch entries without their row identity fields. */
@@ -1067,7 +1169,7 @@ export function createRenderPublisher(
           return `x${this.leafId(field, value as object)}`;
       }
       if (value === null) return 'z';
-      const cached = this.tokens.get(value);
+      const cached = this.templateWorkspace().tokens.get(value);
       if (cached !== undefined && cached.field === field) return cached.token;
       let token: string;
       const prototype = Object.getPrototypeOf(value);
@@ -1093,14 +1195,14 @@ export function createRenderPublisher(
           token += '}';
         }
         // Intern the content so enclosing tokens stay short.
-        let id = this.structuralIds.get(token);
+        let id = this.templateWorkspace().structuralIds.get(token);
         if (id === undefined) {
-          id = this.structuralIds.size;
-          this.structuralIds.set(token, id);
+          id = this.templateWorkspace().structuralIds.size;
+          this.templateWorkspace().structuralIds.set(token, id);
         }
         token = `@${id}`;
       } else token = `#${this.leafId(field, value)}`;
-      this.tokens.set(value, { field, token });
+      this.templateWorkspace().tokens.set(value, { field, token });
       return token;
     }
 
@@ -1510,7 +1612,7 @@ export function createRenderPublisher(
     ): Result<RenderPublicationCandidate, RenderPublicationError> {
       if (disposed || failed)
         return fail('disposed', 'publisher retired or failed; start a new source epoch');
-      if (active || flights.size >= maxInFlight)
+      if (!phaseIs('idle') || flights.size >= maxInFlight)
         return fail('in-flight', 'publication slots are occupied');
       materialRows.clear();
       materialSources.clear();
@@ -1526,14 +1628,21 @@ export function createRenderPublisher(
         baseline,
       );
       activeObservation = observation;
-      const preparation = new PublicationPreparation(baseline, observation);
+      preparationPhase = 'preparing';
+      let preparation: PublicationPreparation | undefined;
       try {
+        preparation = new PublicationPreparation(baseline, observation);
         return preparation.prepare(sampleTimeSeconds, temporalReset);
       } catch (cause) {
         observation?.finish('prepare-error');
         activeObservation = undefined;
-        closeFrames(preparation.videoFrames, preparation.canvasFrames);
+        if (preparation !== undefined)
+          closeFrames(preparation.videoFrames, preparation.canvasFrames);
         return fail('unsupported', cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (phaseIs('preparing')) {
+          preparationPhase = 'idle';
+        }
       }
     },
     acknowledgeFeatures(
@@ -1574,7 +1683,7 @@ export function createRenderPublisher(
       const returned = buffers[0];
       if (buffers.length !== 1 || !(returned instanceof ArrayBuffer))
         return fail('shape', 'returned storage');
-      if (active || storage !== undefined) spareStorage.push(returned);
+      if (!phaseIs('idle') || storage !== undefined) spareStorage.push(returned);
       else storage = returned;
       flights.delete(acceptedRevision);
       return ok(undefined);

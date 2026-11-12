@@ -83,6 +83,7 @@ if (process.argv.includes('--build')) {
     const result = spawnSync(
       process.execPath,
       [
+        '--max-old-space-size=4096',
         'scripts/build-shared-inputs.mjs',
         '--root',
         root,

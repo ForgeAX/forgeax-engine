@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { forgeaxShader } from '@forgeax/engine-vite-plugin-shader';
 import { chromium } from 'playwright';
 import { build, normalizePath, type Rollup } from 'vite';
 import { expect, it } from 'vitest';
@@ -26,6 +27,13 @@ async function fixture(base = './') {
   const facts = await readProjectFacts(root);
   if (!facts.ok) throw facts.error;
   const config = await createViteConfig(facts.value, 'build', base);
+  // This fixture replaces the runtime with a registry-only module. Keep the
+  // real bundler plugin, without publishing renderer programs it never uses.
+  config.plugins = (config.plugins ?? []).map((plugin) =>
+    plugin && typeof plugin === 'object' && 'name' in plugin && plugin.name === 'forgeax:shader'
+      ? forgeaxShader({ engineEntries: false })
+      : plugin,
+  );
   const generated = config.root;
   if (generated === undefined) throw new Error('Missing generated root');
   const host = await readFile(resolve(generated, 'main.ts'), 'utf8');
@@ -96,10 +104,12 @@ export const registry = Object.freeze({ version: ${JSON.stringify(version)} });`
 }
 
 it.each([
-  '/',
   './',
   '/play/game/',
   'https://cdn.test/play/game/',
+  // The first Vite build under V8 coverage approaches this test's unchanged
+  // 15-second budget; exercise the root base after the other bases warm it.
+  '/',
 ])('changes the bootstrap filename and page reference with runtime bytes at base %s', async (base) => {
   const f = await fixture(base);
   try {

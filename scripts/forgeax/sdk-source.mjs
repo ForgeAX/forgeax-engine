@@ -181,6 +181,7 @@ export function assertSourceDependencyInventory(source, artifacts) {
       ],
     ],
     ['tools/view', ['package.json', 'LICENSE', 'host.pack.json', 'scripts/build-tool.mjs']],
+    ['packages/modeling', ['package.json', 'LICENSE', 'README.md', 'src/index.ts']],
   ]) {
     for (const path of requiredPaths) {
       if (!artifacts.some((entry) => entry.path === `${source.root}/${dependencyRoot}/${path}`))

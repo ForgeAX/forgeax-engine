@@ -5,6 +5,7 @@ import { createWorldContext, World } from '@forgeax/engine-ecs';
 import { ChildOf, MorphWeights, Name, scenePlugin, Transform } from '@forgeax/engine-scene';
 import type { AnimationClip, AnimationTargetIdValue } from '@forgeax/engine-types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { subscribeAnimationDiagnostics } from '../animation-diagnostic';
 import { AnimationPlayer } from '../animation-player';
 import { AnimationTargetId, bindAnimationTargets } from '../animation-target';
 import { animationPlugin } from '../plugin';
@@ -74,9 +75,16 @@ describe('morph weights animation contract', () => {
 
   it('emits the exact missing MorphWeights diagnostic and does not draw a base substitute', async () => {
     const { world } = await setupTarget(false);
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    world.update(0.25);
-    expect(warn).toHaveBeenCalledWith(
+    const diagnostics: unknown[] = [];
+    const unsubscribe = subscribeAnimationDiagnostics((source, diagnostic) => {
+      if (source === world) diagnostics.push(diagnostic);
+    });
+    try {
+      world.update(0.25);
+    } finally {
+      unsubscribe();
+    }
+    expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'animation-target-morph-weights-missing',
         detail: expect.objectContaining({ property: 'weights', expectedWeightCount: 4 }),

@@ -63,11 +63,36 @@ function texture(data: number[]): TextureAsset {
   };
 }
 
+async function captureFailedDecalFrame(
+  recorder: RecorderAttachment,
+  draw: () => Promise<unknown>,
+  save: Save,
+) {
+  const failing = recorder.captureFrame();
+  (await recorder.frameBoundary()).unwrap();
+  try {
+    await draw();
+  } catch {
+    /* Preserve the actual failing work. */
+  }
+  (await recorder.frameBoundary()).unwrap();
+  const captured = await failing;
+  if (captured.ok) await save('failure.rhitape', compactTape(captured.value).bytes);
+}
+
+function expectDeferredMsaaRejected(renderer: Renderer, input: Parameters<Renderer['draw']>[0]) {
+  const multisampled = renderer.draw(input);
+  expect(multisampled.ok).toBe(false);
+  if (!multisampled.ok) expect(multisampled.error.code).toBe('projected-decal-invalid');
+}
+
 export async function verifyDecals(
   renderer: Renderer,
   recorder: RecorderAttachment,
   save: Save,
   settleFrames = 60,
+  renderPath: 'forward' | 'deferred' = 'deferred',
+  meshReplay?: Parameters<typeof verifyMeshDecalReplay>[3],
 ) {
   const world = new World();
   const errors: unknown[] = [];
@@ -76,7 +101,7 @@ export async function verifyDecals(
   value(
     renderer.setProfile({
       ...originalProfile,
-      renderPath: 'deferred',
+      renderPath,
       ssao: false,
     }),
   );
@@ -205,7 +230,11 @@ export async function verifyDecals(
         { component: MeshRenderer, data: { materials: [receiverMaterial] } },
       )
       .unwrap();
+    const occlusionCapture = recorder.captureFrame();
+    (await recorder.frameBoundary()).unwrap();
     const occluded = await observe('occluded');
+    (await recorder.frameBoundary()).unwrap();
+    await save('occluded.rhitape', compactTape((await occlusionCapture).unwrap()).bytes);
     expect(delta(patch(occluded, 64, 64), patch(off, 64, 64))).toBeLessThan(0.015);
     world.despawn(occluder).unwrap();
     const second = world
@@ -269,12 +298,20 @@ export async function verifyDecals(
     const projectWork = model.works.find((w) =>
       w.pipeline.shaders.some((s) => s.source?.includes('struct DecalParams')),
     );
-    const applyWork = model.works.find((w) =>
-      w.pipeline.shaders.some((s) => s.source?.includes('struct DecalSurfaceOutput')),
+    const applyWork = model.works.find(
+      (w) =>
+        w.pipeline.shaders.some((s) => s.source?.includes('struct DecalSurfaceOutput')) ||
+        w.pipeline.shaders.some((s) => s.source?.includes('struct ScreenParameters')),
     );
-    const lighting = model.works.find((w) =>
-      w.pipeline.shaders.some((s) => s.entryPoint?.startsWith('fs_standard_deferred')),
-    );
+    const lighting = model.works
+      .filter((w) =>
+        w.pipeline.shaders.some(
+          (s) =>
+            s.entryPoint?.startsWith('fs_standard_deferred') ||
+            s.entryPoint === 'fs_forward_screen',
+        ),
+      )
+      .at(-1);
     if (!projectWork || !applyWork) throw new Error('missing decal work in real frame');
     const adapter = (await webgpu.rhi.requestAdapter()).unwrap();
     const device = (
@@ -343,22 +380,22 @@ export async function verifyDecals(
     }
     const activeProfile = renderer.inspect().profile;
     value(renderer.setProfile({ ...activeProfile, renderPath: 'forward' }));
-    const unavailable = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
-    expect(unavailable.ok).toBe(false);
-    if (!unavailable.ok) expect(unavailable.error.code).toBe('projected-decal-invalid');
-    value(renderer.setProfile(activeProfile));
+    expect(
+      delta(patch(await observe('forward-supported'), 64, 64), patch(on, 64, 64)),
+    ).toBeLessThan(0.005);
     world.set(camera, Camera, { antialias: 2 }).unwrap();
-    const multisampled = renderer.draw({
-      leases: [lease],
-      camera: { lease },
-      environment: { lease },
-    });
-    expect(multisampled.ok).toBe(false);
-    if (!multisampled.ok) expect(multisampled.error.code).toBe('projected-decal-invalid');
+    for (let i = 0; i < settleFrames; i++) await draw();
+    expect(delta(patch(await observe('forward-msaa'), 64, 64), patch(on, 64, 64))).toBeLessThan(
+      0.005,
+    );
+    value(renderer.setProfile(activeProfile));
+    if (renderPath === 'deferred') {
+      expectDeferredMsaaRejected(renderer, {
+        leases: [lease],
+        camera: { lease },
+        environment: { lease },
+      });
+    }
     world.set(camera, Camera, { antialias: 0 }).unwrap();
     expect(delta(patch(await observe('gpu-recovered'), 64, 64), patch(on, 64, 64))).toBeLessThan(
       0.005,
@@ -401,7 +438,7 @@ export async function verifyDecals(
     (await recorder.frameBoundary()).unwrap();
     const meshTape = (await meshCapture).unwrap();
     await save('mesh.rhitape', compactTape(meshTape).bytes);
-    await verifyMeshDecalReplay(meshTape.bytes, meshPixels, save);
+    await verifyMeshDecalReplay(meshTape.bytes, meshPixels, save, meshReplay);
     expect(patch(meshPixels, 50, 50)[0]).toBeGreaterThan(patch(meshPixels, 50, 50)[2] * 2);
     expect(patch(meshPixels, 50, 77)[2]).toBeGreaterThan(patch(meshPixels, 50, 77)[0] * 2);
     const firstMeshPass = meshPaint.passes?.[0];
@@ -440,6 +477,7 @@ export async function verifyDecals(
     expect(errors, JSON.stringify(errors)).toEqual([]);
     await save('report.json', json(report));
   } catch (error) {
+    await captureFailedDecalFrame(recorder, draw, save);
     await save(
       'failure.json',
       json({ error: String(error), errors, report, inspect: renderer.inspect() }),

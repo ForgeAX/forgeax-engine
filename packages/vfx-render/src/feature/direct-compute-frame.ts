@@ -16,8 +16,8 @@ interface Bucket {
   words: Uint32Array;
   count: number;
 }
-/** One job table holds at most sixteen 336-byte rows (one arena slab). */
-const JOB_BYTES = 336;
+/** One job table holds at most sixteen 352-byte rows (one arena slab). */
+const JOB_BYTES = 352;
 const TABLE_BYTES = 16 * JOB_BYTES;
 const JOB_STRIDES_PREFIX = [112, 4, 24, 20, 4, 4] as const;
 /**
@@ -119,7 +119,7 @@ export function createVfxDirectComputeFrame() {
     if (r.length !== JOB_STRIDES_PREFIX.length + 1)
       throw new RangeError('Unaligned direct VFX range');
     const words = bucket.words,
-      offsets = (at + 304) >> 2;
+      offsets = (at + 320) >> 2;
     for (let i = 0; i < r.length; i++) {
       const range = r[i],
         stride = i < JOB_STRIDES_PREFIX.length ? JOB_STRIDES_PREFIX[i] : input.customStride;

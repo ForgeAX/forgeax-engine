@@ -21,6 +21,7 @@
 //   - iblDGGX(nDotH, roughness)
 //   - importanceSampleGGX(Xi, N, roughness)
 //   - fresnelSchlickRoughness(cosTheta, F0, roughness)
+//   - standardSpecularOcclusion(nDotV, ao, roughness)
 //
 // References: LearnOpenGL §6.2 IBL pipeline; Karis 2013 split-sum.
 
@@ -31,6 +32,12 @@ const PI: f32 = 3.14159265;
 // Albedo, radiance and occlusion are applied by the consumer exactly once.
 fn standardDiffuseWeight(cosTheta: f32, f0: vec3<f32>, roughness: f32, metallic: f32) -> vec3<f32> {
   return (vec3<f32>(1.0) - fresnelSchlickRoughness(cosTheta, f0, roughness)) * (1.0 - metallic);
+}
+
+// Unreal's GetSpecularOcclusion (Lagarde 2014): diffuse occlusion attenuates
+// a glossy lobe less, and not at all at ao = 1. Roughness is perceptual.
+fn standardSpecularOcclusion(nDotV: f32, ao: f32, roughness: f32) -> f32 {
+  return clamp(pow(max(nDotV + ao, 0.0), roughness * roughness) - 1.0 + ao, 0.0, 1.0);
 }
 
 // Map a direction vector to equirectangular UV.

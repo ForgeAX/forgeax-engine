@@ -9,6 +9,7 @@ import type { ResolveContext } from '@forgeax/engine-render-graph';
 import type {
   BindGroupEntry,
   Buffer,
+  RhiComputePassEncoder,
   RhiRenderPassEncoder,
   Sampler,
   Texture,
@@ -32,6 +33,7 @@ import {
   getOrCreateSsaoFallbackTexture,
   type SsaoBuffers,
 } from './ssao-buffers';
+import { getSsaoParameters } from './ssao-config';
 import { buildSsaoUniformPayload } from './ssao-uniform';
 
 type DepthResolutionContext = Pick<_InternalRenderPipelineContext, 'runtime'> & {
@@ -243,6 +245,66 @@ export interface SsaoCalcPassViews {
   readonly depthCacheKey: TextureView;
 }
 
+export interface GtaoComputePassViews {
+  readonly output: TextureView;
+  readonly normal: TextureView;
+  readonly depth: TextureView;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Encode the production raw GTAO entry into the graph-owned storage target. */
+export function recordGtaoComputePass(
+  context: _InternalRenderPipelineContext,
+  pass: RhiComputePassEncoder,
+  views: GtaoComputePassViews,
+): void {
+  const { runtime, pipelineState } = context;
+  const pp = pipelineState.perPassResources;
+  const pipeline = pp.gtaoComputePipeline;
+  const layout = pp.gtaoComputeBgl;
+  if (pipeline == null || layout == null) {
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'the selected GTAO compute entry and bind-group layout are available',
+      hint: 'prepare a compute-capable shader generation or select the admitted GTAO fragment entry',
+    });
+  }
+  const config = context.frameState.installedPipelineConfig?.ssao;
+  if (getSsaoParameters(config?.enabled === true ? config : undefined).algorithm !== 'gtao') {
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'the GTAO compute entry is selected only for the GTAO algorithm',
+      hint: 'retain the SSAO fragment path when algorithm is hemisphere SSAO',
+    });
+  }
+  const buffers = getOrCreateSsaoBuffers(runtime);
+  if (buffers === null) {
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'GTAO uniform resources are allocated for the current device generation',
+      hint: 'repair the SSAO resource preparation failure before recording GTAO',
+    });
+  }
+  const payload = buildSsaoUniformPayload(context.camera, config);
+  const written = runtime.device.queue.writeBuffer(buffers.uniformBuffer, 0, payload);
+  if (!written.ok) throw written.error;
+  const group = runtime.device.createBindGroup({
+    label: 'gtao-compute-bind-group',
+    layout,
+    entries: [
+      { binding: 0, resource: { kind: 'buffer', value: { buffer: buffers.uniformBuffer } } },
+      { binding: 4, resource: { kind: 'textureView', value: views.normal } },
+      { binding: 5, resource: { kind: 'textureView', value: views.depth } },
+      { binding: 9, resource: { kind: 'textureView', value: views.output } },
+    ],
+  });
+  if (!group.ok) throw group.error;
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, group.value);
+  pass.dispatchWorkgroups(Math.ceil(views.width / 8), Math.ceil(views.height / 8), 1);
+}
+
 export function recordSsaoCalcPass(
   _c: _InternalRenderPipelineContext,
   resolveCtx?: ResolveContext,
@@ -255,13 +317,6 @@ export function recordSsaoCalcPass(
   const { runtime, pipelineState, encoder } = _c;
   const pp = pipelineState.perPassResources;
 
-  if (runtime.device.caps.backendKind === 'wgpu-webgl2') {
-    throw new RhiError({
-      code: 'feature-not-enabled',
-      expected: 'SSAO raw depth sampling on a WebGPU-capable backend',
-      hint: 'use WebGPU for SSAO or disable StandardProfile.ssao on the GLES fallback',
-    });
-  }
   if (pp.ssaoCalcPipeline === null || pp.ssaoBgl === null) {
     throw new PostProcessError({
       code: 'post-process-not-found',
@@ -463,6 +518,76 @@ export function recordSsaoBlurPass(
   pass.setBindGroup(0, bindGroup);
   pass.draw(3, 1, 0, 0);
   if (graphPass === undefined) pass.end();
+}
+
+export interface SsaoClusterPackPassViews {
+  readonly source: TextureView;
+  readonly region: {
+    readonly originX: number;
+    readonly originY: number;
+    readonly packedWidth: number;
+    readonly width: number;
+    readonly height: number;
+    readonly textureWidth: number;
+    readonly writeHeight: number;
+  };
+}
+
+/** Pack the filtered visibility values into the disjoint AO region of Cluster's integer texture. */
+export function recordSsaoClusterPackPass(
+  context: _InternalRenderPipelineContext,
+  pass: RhiRenderPassEncoder,
+  views: SsaoClusterPackPassViews,
+): void {
+  const { runtime, pipelineState } = context;
+  const perPass = pipelineState.perPassResources;
+  const pipeline = perPass.ssaoClusterPackPipeline;
+  const layout = perPass.ssaoClusterPackBgl;
+  if (pipeline === null || layout === null) {
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'the admitted no-storage AO/Cluster pack pipeline is available',
+      hint: 'prepare a device-compatible rgba32uint attachment path or report the AO transport failure',
+    });
+  }
+  const config = context.frameState.installedPipelineConfig?.ssao;
+  const buffers = getOrCreateSsaoBuffers(runtime);
+  if (buffers === null) {
+    throw new RhiError({
+      code: 'feature-not-enabled',
+      expected: 'AO uniform resources are allocated for the current device generation',
+      hint: 'repair the SSAO resource preparation failure before packing AO into Cluster',
+    });
+  }
+  const payload = buildSsaoUniformPayload(context.camera, config, views.region);
+  const written = runtime.device.queue.writeBuffer(buffers.uniformBuffer, 0, payload);
+  if (!written.ok) throw written.error;
+  const group = runtime.device.createBindGroup({
+    label: 'ssao-cluster-pack-bind-group',
+    layout,
+    entries: [
+      { binding: 0, resource: { kind: 'buffer', value: { buffer: buffers.uniformBuffer } } },
+      { binding: 7, resource: { kind: 'textureView', value: views.source } },
+    ],
+  });
+  if (!group.ok) throw group.error;
+  pass.setViewport(
+    views.region.originX,
+    views.region.originY,
+    views.region.textureWidth,
+    views.region.writeHeight,
+    0,
+    1,
+  );
+  pass.setScissorRect(
+    views.region.originX,
+    views.region.originY,
+    views.region.textureWidth,
+    views.region.writeHeight,
+  );
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, group.value);
+  pass.draw(3, 1, 0, 0);
 }
 
 /**

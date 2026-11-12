@@ -409,7 +409,8 @@ export function buildPipelineForMaterialShader(
         topology: geometry?.topology ?? 'triangle-list',
         cullMode: renderState?.cullMode ?? 'back',
         frontFace: renderState?.frontFace ?? 'ccw',
-        ...(attachmentFormats.length > 0 &&
+        // A colorless forward PSO (depth-only scene prepass) still draws indexed strips.
+        ...((attachmentFormats.length > 0 || passKind === 'forward') &&
         geometry?.topology !== undefined &&
         isStripTopology(geometry.topology)
           ? { stripIndexFormat: geometry.stripIndexFormat }

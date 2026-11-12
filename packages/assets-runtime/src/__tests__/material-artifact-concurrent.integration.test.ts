@@ -1,12 +1,38 @@
 import { ShaderRegistry } from '@forgeax/engine-shader';
+import type { ArtifactDescriptor } from '@forgeax/engine-types';
 import { expect, it, vi } from 'vitest';
 import { materialContribution } from '../../../render/src/assets/asset-decoders';
 import { AssetRegistry } from '../asset-registry.js';
 import { runtimeAssets } from '../internal/runtime-assets';
-import { materialProductionFixture } from './fixtures/material-production.js';
+import {
+  bundleMaterialFixture,
+  materialProductionFixture,
+} from './fixtures/material-production.js';
 import { materialRecordFixture } from './fixtures/material-publication.js';
 
-async function deferredMaterial() {
+/** Production pools programs; loose transport (dev server, Runtime Packs) keeps one read each. */
+function loosenPrograms(fixture: Awaited<ReturnType<typeof materialProductionFixture>>) {
+  const directory = fixture.entry.packageUrl.slice(
+    1,
+    fixture.entry.packageUrl.lastIndexOf('/') + 1,
+  );
+  for (const asset of fixture.pack.assets as { artifacts?: Record<string, ArtifactDescriptor> }[])
+    for (const [key, descriptor] of Object.entries(asset.artifacts ?? {})) {
+      if (descriptor.byteRange === undefined) continue;
+      const program = fixture.record.programs.find(({ artifact }) => artifact.path === key);
+      if (program === undefined) throw new Error(`missing fixture program ${key}`);
+      const path = `loose/${program.artifact.digest.replace(/^sha256:/, '')}.bin`;
+      fixture.files.set(`${directory}${path}`, {
+        type: 'asset',
+        fileName: `${directory}${path}`,
+        source: program.artifact.bytes,
+      });
+      const { byteRange: _pooled, ...loose } = descriptor;
+      (asset.artifacts as Record<string, ArtifactDescriptor>)[key] = { ...loose, path };
+    }
+}
+
+async function deferredMaterial(loose = true) {
   const record = materialRecordFixture({
     passes: [
       { name: 'Forward', program: { module: 'game::first' } },
@@ -14,6 +40,11 @@ async function deferredMaterial() {
     ],
   });
   const fixture = await materialProductionFixture(true, record);
+  if (loose) loosenPrograms(fixture);
+  else {
+    const report = await bundleMaterialFixture(fixture);
+    expect(report).toMatchObject({ bundles: 1, entries: record.programs.length });
+  }
   const originalPack = JSON.stringify(fixture.pack);
   const requests: { url: string; release: (response: Response) => void }[] = [];
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -138,6 +169,27 @@ it('deduplicates the actual shared reads across two simultaneous material caller
     expect(await first).toMatchObject({ ok: true });
     expect(await second).toMatchObject({ ok: true });
     expect(f.requests).toHaveLength(2);
+  } finally {
+    await f.drain();
+    await Promise.all([first, second]);
+  }
+});
+
+it('reads one pooled production container for every program of a material', async () => {
+  const f = await deferredMaterial(false);
+  const first = f.load(),
+    second = f.load();
+  try {
+    await vi.waitFor(() => expect(f.requests).toHaveLength(1), { timeout: 300, interval: 5 });
+    expect(f.requests[0]?.url).toMatch(/\/assets\/bundles\/[0-9a-f]{64}\.bin$/);
+    for (const request of f.requests) request.release(f.good(request));
+    expect(await first).toMatchObject({ ok: true });
+    expect(await second).toMatchObject({ ok: true });
+    expect(f.requests).toHaveLength(1);
+    for (const program of f.record.programs)
+      expect(f.registry.getMaterialArtifact(program.specializationKey)?.bytes).toEqual(
+        program.artifact.bytes,
+      );
   } finally {
     await f.drain();
     await Promise.all([first, second]);

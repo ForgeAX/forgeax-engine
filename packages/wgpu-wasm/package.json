@@ -34,6 +34,7 @@
     "pkg/wgpu_wasm_bg.wasm",
     "pkg/wgpu_wasm_bg.wasm.d.ts",
     "src",
+    "!src/**/__tests__/**",
     "scripts",
     "Cargo.toml",
     "Cargo.lock",
@@ -47,7 +48,7 @@
     "fetch-wasm": "node scripts/fetch-wasm.mjs",
     "postinstall": "node scripts/ensure-wasm.mjs",
     "prebuild": "node scripts/verify-current.mjs",
-    "build": "tsup",
+    "build": "tsup && node scripts/prepare-browser-glue.mjs",
     "test": "vitest run",
     "test:wasm": "wasm-pack test --node"
   },

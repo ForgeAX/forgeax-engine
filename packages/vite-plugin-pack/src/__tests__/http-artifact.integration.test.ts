@@ -233,6 +233,35 @@ describe('published HTTP artifact representations', () => {
     });
   });
 
+  it('serves the open-ended and suffix Ranges a browser <video> element sends', async () => {
+    // HTMLMediaElement opens with `Range: bytes=0-` and seeks with
+    // `bytes=N-`; a 416 here leaves a streamed video artifact unplayable.
+    const compression = new HttpArtifactCompression(),
+      body = artifact();
+    await compression.prepare([body]);
+    const length = body.bytes.length;
+    await serve(compression, body, async (server) => {
+      for (const [range, start, end] of [
+        ['bytes=0-', 0, length - 1],
+        ['bytes=9-', 9, length - 1],
+        ['bytes=-5', length - 5, length - 1],
+        [`bytes=-${length + 10}`, 0, length - 1],
+      ] as const) {
+        const result = await get(server, { 'Accept-Encoding': 'gzip', Range: range });
+        expect(result.status, range).toBe(206);
+        expect(result.headers['content-encoding'], range).toBeUndefined();
+        expect(result.headers['content-range'], range).toBe(`bytes ${start}-${end}/${length}`);
+        expect(Number(result.headers['content-length']), range).toBe(end - start + 1);
+        expect(result.bytes, range).toEqual(Buffer.from(body.bytes.subarray(start, end + 1)));
+      }
+      for (const range of [`bytes=${length}-`, 'bytes=-0', 'bytes=-']) {
+        const invalid = await get(server, { 'Accept-Encoding': 'gzip', Range: range });
+        expect(invalid.status, range).toBe(416);
+        expect(invalid.headers['content-range'], range).toBe(`bytes */${length}`);
+      }
+    });
+  });
+
   it('returns HTTP 406 for forbidden identity instead of silently falling back, including HEAD and Range', async () => {
     const compression = new HttpArtifactCompression(),
       body = artifact();
@@ -315,14 +344,38 @@ describe('published HTTP artifact representations', () => {
     );
   });
 
-  it('serializes preparation and keys representations by raw body rather than GUID history', async () => {
+  it('coalesces overlapping preparation and keys representations by raw body rather than GUID history', async () => {
     const compression = new HttpArtifactCompression(),
       first = artifact(),
       replacement = artifact();
     await Promise.all([compression.prepare([first, replacement]), compression.prepare([first])]);
     await compression.prepare([first]);
     expect(encoder.calls).toBe(2);
+    expect(encoder.peak).toBe(2);
+  });
+
+  it('bounds small-body preparation to four encoders across overlapping callers', async () => {
+    const compression = new HttpArtifactCompression();
+    const bodies = Array.from({ length: 11 }, artifact);
+    await Promise.all([compression.prepare(bodies.slice(0, 6)), compression.prepare(bodies)]);
+    expect(encoder.calls).toBe(bodies.length);
+    expect(encoder.peak).toBe(4);
+    expect(encoder.active).toBe(0);
+  });
+
+  it('drains each input-byte window and handles oversized bodies alone', async () => {
+    const compression = new HttpArtifactCompression();
+    const body = (size: number): HttpArtifact => ({
+      bytes: new Uint8Array(size).fill(7),
+      mimeType: 'application/octet-stream',
+    });
+    // Any pair exceeds the shared 4 MiB input window, even though each small
+    // body is individually eligible for overlap. Large bodies keep one slot.
+    const bodies = [body(3 * 1024 * 1024), body(5 * 1024 * 1024), body(3 * 1024 * 1024)];
+    await compression.prepare(bodies);
+    expect(encoder.calls).toBe(3);
     expect(encoder.peak).toBe(1);
+    expect(encoder.active).toBe(0);
   });
 
   it.each([

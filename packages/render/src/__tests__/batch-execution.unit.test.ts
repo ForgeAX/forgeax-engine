@@ -50,6 +50,7 @@ it('prepares one shared geometry and material version without entity inputs', ()
     deformation: 'rigid',
     pass: 'forward',
     address: 'scene-index',
+    alphaMask: false,
   });
   if (accepted.route !== 'gpu') throw new Error('Expected shared GPU execution');
   const next = { ...material, roughness: 0.9 };
@@ -183,4 +184,15 @@ it.each([
   ).unwrap();
   expect(result.route).toBe('none');
   expect(resolve).not.toHaveBeenCalled();
+});
+
+it('requests the alpha-mask program only for a material that can cut out', () => {
+  const resolve = vi.fn(() => artifact);
+  const masked = { ...material, paramSnapshot: { alphaCutoff: 0.5 } };
+  prepareBatchExecution(geometry, masked, pass, resolve).unwrap();
+  prepareBatchExecution(geometry, material, pass, resolve).unwrap();
+  expect(resolve.mock.calls.map((call) => (call as unknown[])[1])).toEqual([
+    expect.objectContaining({ alphaMask: true }),
+    expect.objectContaining({ alphaMask: false }),
+  ]);
 });

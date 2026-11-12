@@ -53,6 +53,31 @@ export interface RaycastHit {
   timeOfImpact: number;
 }
 
+/** Per-call policy for 3D character movement; the character itself still moves. */
+export type MoveAndSlideOptions =
+  | {
+      /** Include current support motion. This is the default live policy. */
+      readonly bodyMotion?: 'live';
+      /** Positive finite producer interval in seconds. Omit to use the World timestep. */
+      readonly deltaTime?: number;
+      /** Apply native contact impulses to dynamic bodies. Defaults to true. */
+      readonly applyImpulsesToDynamicBodies?: boolean;
+    }
+  | {
+      /** Resolve current geometry without integrating other bodies' motion. */
+      readonly bodyMotion: 'frozen';
+      /** Frozen movement consumes no time; custom intervals are invalid. */
+      readonly deltaTime?: never;
+      /** Frozen movement never applies impulses to other bodies. */
+      readonly applyImpulsesToDynamicBodies?: false;
+    };
+
+/** Synchronous 3D character handoff; gravity and stance decisions remain game-owned. */
+export interface CharacterSynchronization {
+  readonly position: Vec3;
+  readonly grounded: boolean;
+}
+
 /**
  * PhysicsWorld Resource interface — the engine-side API surface for physics
  * operations. Backend implementations (RapierPhysicsWorld3D/2D) satisfy this
@@ -71,6 +96,13 @@ export interface PhysicsWorld {
   ) => Result<ManagedJointBinding, ManagedPhysicsFailure>;
   /** Detached world-space body evidence; no Rapier object escapes. */
   getBodyMotion?: (entity: number) => Result<BodyMotion, ManagedPhysicsFailure>;
+  /** Subscribe to motion invalidation, without allocating detached poses for unchanged bodies.
+   * Covers explicit writes, lifecycle/policy changes and completed-step active/final-sleep
+   * bodies. Notifications may repeat and do not certify a readable admission boundary:
+   * enqueue the entity and read after physics writeback. Subscribe before the initial read.
+   * Listeners must only enqueue work; disposal releases the subscription. Optional backends
+   * without this capability require full polling. */
+  onBodyMotionChange?: (listener: (entity: number) => void) => () => void;
   /** Bounded current solid contacts after writeback; optional packed groups match raycast filters. */
   getCurrentContacts?: (
     entity: number,
@@ -82,6 +114,15 @@ export interface PhysicsWorld {
     filterMask?: number,
     normalFilter?: PhysicsContactNormalFilter,
   ) => Result<PhysicsContactNeighborsSnapshot, ManagedPhysicsFailure>;
+  /** Atomic completed-step reads sharing native-owner validation within this
+   * synchronous call. Each request retains its own mask, normal and visit limit. */
+  getCurrentContactNeighborsBatch?: (
+    requests: readonly {
+      readonly entity: number;
+      readonly filterMask?: number;
+      readonly normalFilter?: PhysicsContactNormalFilter;
+    }[],
+  ) => Result<readonly PhysicsContactNeighborsSnapshot[], ManagedPhysicsFailure>;
   /** Read current Native impulse and multibody joints attached to this live entity.
    * No handles escape; unavailable during execution/admission or after retirement. */
   getBodyConstraintCount?: (entity: number) => Result<number, ManagedPhysicsFailure>;
@@ -156,6 +197,18 @@ export interface PhysicsWorld {
   teleport(entity: number, position: Vec3): void;
 
   /**
+   * Synchronize one existing kinematic CharacterController from its current
+   * authored Collider/tuning, then place its world-space center and seed the
+   * grounded output for an authoritative handoff. Resets native velocity like
+   * teleport; does not step, scan/synchronize other entities or apply impulses.
+   * Game-owned gravity velocity is not part of this state. The next
+   * moveAndSlide computes contact again from the actual synchronized shape.
+   * Requires registered physics systems and a ready body. Throws PhysicsError
+   * for a missing body/collider, non-kinematic character or invalid state.
+   */
+  synchronizeCharacter(entity: number, state: CharacterSynchronization): void;
+
+  /**
    * Move a kinematic character with collision response, slope handling,
    * auto-step, and ground-snap, then write the resolved position back to the
    * entity's `Transform` and `CharacterController.grounded`.
@@ -167,17 +220,25 @@ export interface PhysicsWorld {
    * `Collider`, and a `CharacterController` component.
    *
    * Tuning (offset / slope / auto-step / ground-snap) is read from the
-   * `CharacterController` component each call; there is no per-call options
-   * object and no `dt` parameter (the delta already encodes elapsed time).
+   * `CharacterController` component each call. The optional call policy can
+   * suppress impulses on other dynamic bodies. The explicit frozen policy also
+   * ignores velocity-driven motion from other bodies and forces impulses off;
+   * current geometric collision response remains active. Neither policy suppresses this
+   * character's pose/collider/grounded writes and is not a non-mutating query.
+   * Live `options.deltaTime` sets the producer interval for support motion and
+   * impulses; desiredDelta already encodes active movement and is never scaled.
+   * Omit it to use the World timestep. Split that interval across geometric
+   * subdivisions; frozen correction legs consume no additional body-motion time.
    *
    * @param entity       the character entity (kinematic RigidBody + Collider + CharacterController).
    * @param desiredDelta the requested world-space displacement for this step.
+   * @param options      optional 3D producer time, body-motion and dynamic-body impulse policy.
    * @returns the actual displacement applied after collision resolution.
    * @throws PhysicsError `body-not-found` if the entity has no Rapier body,
    *   `collider-not-found` if the body has no collider,
    *   `controller-requires-kinematic` if the body is not kinematic.
    */
-  moveAndSlide(entity: number, desiredDelta: Vec3): Vec3;
+  moveAndSlide(entity: number, desiredDelta: Vec3, options?: MoveAndSlideOptions): Vec3;
 
   /** Advance the physics simulation by one timestep. */
   step(deltaTime: number): void;

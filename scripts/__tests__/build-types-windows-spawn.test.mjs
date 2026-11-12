@@ -24,7 +24,7 @@ test('Engine build uses direct Node spawning and preserves declaration stages', 
 
   assert.match(
     buildSource,
-    /runStage\('producer', process\.execPath, \['scripts\/build-shared-inputs\.mjs'/,
+    /runStage\('producer', process\.execPath, \[\s*'--max-old-space-size=4096',\s*'scripts\/build-shared-inputs\.mjs'/,
   );
   assert.match(
     buildSource,

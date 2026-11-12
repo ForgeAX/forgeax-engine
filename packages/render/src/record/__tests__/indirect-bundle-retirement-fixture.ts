@@ -1,6 +1,7 @@
 import type { RhiRenderPassEncoder } from '@forgeax/engine-rhi';
 import { createShaderModule } from '@forgeax/engine-rhi-webgpu';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { nativeDeviceFixture } from '../../__tests__/native-device-fixture';
 import { RenderBundleCache } from '../render-bundle-cache';
 
@@ -41,7 +42,7 @@ override GAIN: f32 = 1.0;
       })
       .unwrap();
   const pipelines = [pipeline(1), pipeline(0.5)];
-  expect(pipelines[0]).not.toBe(pipelines[1]);
+  expect(Object.is(pipelines[0], pipelines[1])).toBe(false);
   const batches = [0, 1, 2].map((index) => {
     const uniform = device.createBuffer({ size: 16, usage: 64 | 8 }).unwrap();
     device.queue
@@ -124,14 +125,14 @@ override GAIN: f32 = 1.0;
         return bytes;
       };
       const direct = await render(false);
-      expect(await render(true)).toEqual(direct);
+      expect(equalBytes(await render(true), direct)).toBe(true);
       expect(direct.some((value, index) => index % 4 !== 3 && value > 200)).toBe(true);
       if (frame === 8) expect(counters).toEqual({ hits: 2, misses: 0 });
       if (frame === 23) beforePipelineChange = direct;
       if (frame === 24) {
         expect(counters).toEqual({ hits: 1, misses: 1 });
         expect(beforePipelineChange).toBeDefined();
-        expect(direct).not.toEqual(beforePipelineChange);
+        expect(equalBytes(direct, beforePipelineChange)).toBe(false);
       }
     }
     expect(await native.popErrorScope()).toBeNull();

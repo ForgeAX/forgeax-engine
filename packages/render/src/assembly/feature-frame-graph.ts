@@ -9,15 +9,15 @@ import {
   createRenderFeatureProjectionState,
   projectRenderFeaturePlans,
 } from '../features/render-graph-contribution';
-import { createPassTimingInstrumentation } from '../record/gpu-pass-timing/instrumentation';
 import type { RenderSystemInternals } from '../record/render-context';
 
-/** Frame-scoped feature work precedes every view in the same command encoder. */
-export function recordSharedFeatureGraph(
+/** Compile frame-scoped Feature work; execution and retirement belong to Render World. */
+export function compileSharedFeatureGraph(
   internals: RenderSystemInternals,
-  encoder: RhiCommandEncoder,
   result: RenderFeatureFrameResult,
-): { retire(): Promise<unknown> } | undefined {
+):
+  | import('@forgeax/engine-render-graph').CompiledRenderGraph<{ encoder: RhiCommandEncoder }>
+  | undefined {
   const executions = result.plans
     .map(getRenderFeaturePlanExecutionProjection)
     .filter((plan): plan is RenderFeaturePlanExecution => plan !== undefined);
@@ -47,17 +47,5 @@ export function recordSharedFeatureGraph(
     },
   });
   if (!compiled.ok) throw compiled.error;
-  const graph = compiled.value;
-  const capture = internals.gpuPassTimingCapture;
-  const executed = graph.execute(
-    { encoder },
-    undefined,
-    capture === undefined ? undefined : createPassTimingInstrumentation(capture),
-  );
-  if (!executed.ok) {
-    void graph.retire();
-    throw executed.error;
-  }
-  internals.framePassNames?.push(...graph.inspect().passes.map((pass) => pass.name));
-  return graph;
+  return compiled.value;
 }

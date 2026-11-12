@@ -7,6 +7,7 @@ import type {
 import { RenderGraphError } from '@forgeax/engine-render-graph';
 import { err, mipDimension, ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import { standardBloomAdmitted } from '../bloom-admission';
+import { isTemporalAntialias } from '../components/camera';
 import { addTypedDebugOverlayPass } from '../debug-draw-glue';
 import type { GraphAtmosphere } from '../environment/luts';
 import { RenderFeatureCapabilityMissingError, SceneDataUnavailableError } from '../errors/render';
@@ -15,7 +16,10 @@ import {
   BARREL_DISTORTION_POST_PROCESS_ID,
 } from '../features/barrel-distortion';
 import { addDepthOfFieldPasses } from '../features/depth-of-field/depth-of-field-feature';
-import { LENS_EFFECTS_POST_PROCESS_ID } from '../features/lens-effects';
+import {
+  CHROMATIC_ABERRATION_POST_PROCESS_ID,
+  LENS_EFFECTS_POST_PROCESS_ID,
+} from '../features/lens-effects';
 import { isLensFlarePostProcess, LENS_FLARE_POST_PROCESS_ID } from '../features/lens-flare';
 import { addLensFlarePasses } from '../features/lens-flare-graph';
 import { addMotionBlurPass } from '../features/motion-blur/motion-blur-feature';
@@ -35,10 +39,15 @@ import {
   type RenderPipelineTarget,
   resolveOutputDither,
 } from '../render-pipeline';
+import { SCENE_DATA_TEMPORAL_V1_SCHEMA } from '../temporal/scene-data';
+import { bindStandardSceneDataTarget } from '../temporal/standard-scene-data';
+import { usesTsrCompute } from '../tsr/capabilities';
+import { addTsrPasses } from '../tsr/graph';
 import {
   addObservationCapturePass,
   addTypedBloomPasses,
   addTypedCompositePostEffects,
+  addTypedFrameObservationPass,
   addTypedFullscreenPass,
   addTypedOutputTransformPass,
   addTypedTemporalResolvePass,
@@ -46,7 +55,7 @@ import {
   TYPED_BLOOM_PASS_NAMES,
   type TypedTemporalResolveTargets,
 } from '../typed-render-graph-primitives';
-import { renderExtentSize } from './render-extent';
+import { renderExtentSize, temporalAnalysisCapacity } from './render-extent';
 import {
   addAutoExposureExposurePass,
   addAutoExposureGraphPasses,
@@ -381,6 +390,7 @@ export function contributeStandardSceneFeatures(
   },
   receiverAccesses: readonly GraphAccess[],
   atmosphere?: GraphAtmosphere,
+  semanticTargets: readonly RenderPipelineTarget[] = [],
 ): Result<void, RenderPipelineBuildError> {
   const { color, colorResolve, depth } = targets;
   return context.contributeFeatures({
@@ -402,9 +412,10 @@ export function contributeStandardSceneFeatures(
         sampleCount: depth.sampleCount,
       },
     ],
-    semanticTargets: [],
+    semanticTargets,
     namedTargets: {},
     standardSurfaceAccesses: receiverAccesses,
+    placement: 'scene',
     exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
     passNames: [],
     atmosphere: atmosphere,
@@ -444,7 +455,8 @@ function standardPostRoute(
   const camera = topology.camera;
   const features = standardOutputFeatures(topology, clearOnly);
   const hdr =
-    !clearOnly && (camera.tonemap !== 'none' || camera.antialias === 'taa' || features.bloom);
+    !clearOnly &&
+    (camera.tonemap !== 'none' || isTemporalAntialias(camera.antialias) || features.bloom);
   const rawOnly = !clearOnly && topology.surface.profile?.kind === 'raw-only';
   // The barrel declaration is supplied by the ordinary feature host so its
   // shader stays prepared and recoverable, but Standard owns its one explicit
@@ -478,10 +490,11 @@ function standardOutputFeatures(
 ): StandardOutputPlan['features'] {
   const camera = topology.camera;
   return createStandardOutputPlan({
-    temporal: !clearOnly && camera.antialias === 'taa',
+    temporal: !clearOnly && isTemporalAntialias(camera.antialias),
     meter: topology.output?.autoExposure === true,
     bloom: !clearOnly && standardBloomAdmitted(topology.camera),
     dof: !clearOnly && camera.depthOfField !== undefined,
+    chromaticAberration: !clearOnly && camera.chromaticAberration === true,
     lensFlare: !clearOnly && camera.lensFlare === true,
     exposure: topology.output?.autoExposure === true,
     whiteBalance: topology.output?.whiteBalance === true,
@@ -504,6 +517,7 @@ function encodedPostEffects(
       !preTemporalEffects.includes(identity) &&
       identity !== BARREL_DISTORTION_POST_PROCESS_ID &&
       identity !== LENS_EFFECTS_POST_PROCESS_ID &&
+      identity !== CHROMATIC_ABERRATION_POST_PROCESS_ID &&
       !isOutlinePostProcess(identity) &&
       !isLensFlarePostProcess(identity) &&
       !isSmaaPostProcess(identity),
@@ -541,7 +555,7 @@ function standardToneLutFuses(
   const extent = topology.extent;
   const antialiasAllowsFusion =
     topology.camera.antialias === 'none' ||
-    (topology.camera.antialias === 'taa' &&
+    (isTemporalAntialias(topology.camera.antialias) &&
       (extent === undefined ||
         (extent.internalWidth === extent.outputWidth &&
           extent.internalHeight === extent.outputHeight)));
@@ -561,14 +575,24 @@ function lensCapabilityFailure(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   features: StandardOutputPlan['features'],
 ): RenderFeatureCapabilityMissingError | undefined {
-  if (!(features.barrelDistortion || features.lensEffects || features.lensFlare)) return undefined;
+  if (
+    !(
+      features.barrelDistortion ||
+      features.lensEffects ||
+      features.chromaticAberration ||
+      features.lensFlare
+    )
+  )
+    return undefined;
   if (context.capabilities?.rgba16floatRenderable === true) return undefined;
   return new RenderFeatureCapabilityMissingError(
     features.barrelDistortion
       ? BARREL_DISTORTION_FEATURE_IDENTITY
       : features.lensEffects
         ? LENS_EFFECTS_POST_PROCESS_ID
-        : LENS_FLARE_POST_PROCESS_ID,
+        : features.chromaticAberration
+          ? CHROMATIC_ABERRATION_POST_PROCESS_ID
+          : LENS_FLARE_POST_PROCESS_ID,
     0,
     'rgba16floatRenderable',
   );
@@ -691,6 +715,7 @@ function addStandardTemporalResolve(
   secondaryReactivity: TemporalSecondaryReactivity | undefined,
   coverage: RenderPipelineTarget | undefined,
   coverageDepth: RenderPipelineTarget | undefined,
+  opaqueGuide: RenderPipelineTarget | undefined,
 ): Result<
   NonNullable<RenderPipelineBuildContext<RenderPipelineFrame>['taaHistory']>,
   RenderPipelineBuildError
@@ -716,7 +741,33 @@ function addStandardTemporalResolve(
     writeTemporal: history.currentTemporal,
     writeStability: history.currentStability,
   };
-  const resolve = addTypedTemporalResolvePass(context.graph, resolveTargets);
+  if (topology.camera.antialias === 'tsr' && opaqueGuide === undefined)
+    return err(missingTemporalContributor(topology, 'forgeax::standard::opaque-guide'));
+  const upper = temporalAnalysisCapacity(
+    topology.surface.width,
+    topology.surface.height,
+    topology.camera.dynamicResolution?.maxScale,
+  );
+  const { previousFlicker, currentFlicker } = history;
+  const resolve =
+    topology.camera.antialias === 'tsr' && opaqueGuide !== undefined
+      ? addTsrPasses(
+          context.graph,
+          resolveTargets,
+          opaqueGuide,
+          {
+            width: upper.width,
+            height: upper.height,
+          },
+          usesTsrCompute(topology.lane),
+        )
+      : previousFlicker !== undefined && currentFlicker !== undefined
+        ? addTypedTemporalResolvePass(context.graph, {
+            ...resolveTargets,
+            historyFlicker: previousFlicker,
+            writeFlicker: currentFlicker,
+          })
+        : err(missingTemporalContributor(topology, 'forgeax::standard::taa-history'));
   if (!resolve.ok) return resolve;
   return ok(history);
 }
@@ -772,6 +823,7 @@ function standardFeatureTargets(
  */
 function addSceneFeatureStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
   route: StandardPostRoute,
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
@@ -780,11 +832,15 @@ function addSceneFeatureStages(
 ): Result<RenderPipelineTarget, RenderPipelineBuildError> {
   if (route.clearOnly) return ok(postInput);
   if (route.motionBlur) {
-    return addMotionBlurStage(context, route, featureTargets, postInput, postTemporal);
+    return addMotionBlurStage(context, topology, route, featureTargets, postInput, postTemporal);
   }
+  const boundTemporal =
+    sceneTemporal === undefined
+      ? undefined
+      : bindStandardSceneDataTarget(sceneTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA);
   const features = context.contributeFeatures({
     targets: featureTargets,
-    semanticTargets: sceneTemporal === undefined ? [] : [sceneTemporal],
+    semanticTargets: boundTemporal === undefined ? [] : [boundTemporal],
     namedTargets: {},
     standardSurfaceAccesses: [],
     exclude: [BARREL_DISTORTION_FEATURE_IDENTITY],
@@ -795,6 +851,7 @@ function addSceneFeatureStages(
 
 function addMotionBlurStage(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  topology: RenderPipelineTopology,
   route: StandardPostRoute,
   featureTargets: StandardFeatureTargets,
   postInput: RenderPipelineTarget,
@@ -813,7 +870,9 @@ function addMotionBlurStage(
   if (!blurred.ok) return blurred;
   const features = context.contributeFeatures({
     targets: featureTargets,
-    semanticTargets: [postTemporal],
+    semanticTargets: [
+      bindStandardSceneDataTarget(postTemporal, topology, SCENE_DATA_TEMPORAL_V1_SCHEMA),
+    ],
     namedTargets: {
       'motion-input': postInput,
       'motion-output': blurred.value,
@@ -829,7 +888,22 @@ function addMotionBlurStage(
   return ok(blurred.value);
 }
 
-/** Depth of field, Bloom and the lens flare filter the linear HDR image in order. */
+/** Copy the original scene only after all generic scene-target writers. */
+function addSceneObservation(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  route: StandardPostRoute,
+  scene: RenderPipelineTarget,
+): Result<void, RenderPipelineBuildError> {
+  if (route.clearOnly) return ok(undefined);
+  // Indirect VFX can write this target in the generic feature stage. Keep the
+  // observation after those writers and before HDR lens/output processing.
+  return addTypedFrameObservationPass(context.graph, scene);
+}
+
+/**
+ * Depth of field, the scene color fringe, Bloom and the lens flare filter the
+ * linear HDR image in order.
+ */
 function addHdrLensStages(
   context: RenderPipelineBuildContext<RenderPipelineFrame>,
   topology: RenderPipelineTopology,
@@ -856,6 +930,13 @@ function addHdrLensStages(
     if (!dof.ok) return dof;
     postInput = dof.value;
   }
+  // UE fringes the scene color before Bloom is added and before tone mapping
+  // (PostProcessTonemap.usf:318-341, Bloom at :356-399 and :525-526).
+  if (route.features.chromaticAberration) {
+    const fringed = addChromaticAberrationStage(context, postInput);
+    if (!fringed.ok) return fringed;
+    postInput = fringed.value;
+  }
   // Bloom requires linear HDR intermediates independently of the selected output curve.
   if (route.hdr && route.features.bloom) {
     const bloom = addStandardBloom(context, topology, postInput);
@@ -873,6 +954,26 @@ function addHdrLensStages(
     postInput = flare.value;
   }
   return ok(postInput);
+}
+
+function addChromaticAberrationStage(
+  context: RenderPipelineBuildContext<RenderPipelineFrame>,
+  postInput: RenderPipelineTarget,
+): Result<RenderPipelineTarget, RenderPipelineBuildError> {
+  const fringed = target(context, 'standard-chromatic-aberration', {
+    format: 'rgba16float',
+    size: 'surface',
+    domain: postInput.domain ?? 'linear-hdr',
+  });
+  if (!fringed.ok) return fringed;
+  const pass = addTypedFullscreenPass(context.graph, {
+    name: 'chromatic-aberration',
+    shader: CHROMATIC_ABERRATION_POST_PROCESS_ID,
+    input: postInput,
+    outputs: [fringed.value],
+  });
+  if (!pass.ok) return pass;
+  return ok(fringed.value);
 }
 
 function addStandardBloom(
@@ -1294,6 +1395,7 @@ export function addStandardPost(
   secondaryReactivity?: TemporalSecondaryReactivity,
   coverage?: RenderPipelineTarget,
   coverageDepth?: RenderPipelineTarget,
+  opaqueGuide?: RenderPipelineTarget,
 ): Result<void, RenderPipelineBuildError> {
   if (topology.clearOnly === true && surface.display === undefined) {
     return addClearOnlyPresent(context, scene, surface);
@@ -1318,7 +1420,7 @@ export function addStandardPost(
   let postTemporal = sceneTemporal;
   const autoExposure = requireAutoExposure(context, route);
   if (!autoExposure.ok) return autoExposure;
-  if (topology.camera.antialias === 'taa') {
+  if (isTemporalAntialias(topology.camera.antialias)) {
     const history = addStandardTemporalResolve(
       context,
       topology,
@@ -1328,6 +1430,7 @@ export function addStandardPost(
       secondaryReactivity,
       coverage,
       coverageDepth,
+      opaqueGuide,
     );
     if (!history.ok) return history;
     postInput = history.value.currentColor;
@@ -1340,6 +1443,7 @@ export function addStandardPost(
   const featureTargets = standardFeatureTargets(scene, depth);
   const featured = addSceneFeatureStages(
     context,
+    topology,
     route,
     featureTargets,
     postInput,
@@ -1347,6 +1451,8 @@ export function addStandardPost(
     sceneTemporal,
   );
   if (!featured.ok) return featured;
+  const observed = addSceneObservation(context, route, scene);
+  if (!observed.ok) return observed;
   const lensed = addHdrLensStages(context, topology, route, depth, featured.value, postTemporal);
   if (!lensed.ok) return lensed;
   const exposed = addExposureWhiteBalance(

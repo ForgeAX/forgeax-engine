@@ -84,6 +84,11 @@ test and SDK producer share this gate; SDK packaging rejects stale or broken
 runtime payloads before copying them into npm packages or the source archive.
 An optional `pkg/` directory argument checks an already delivered payload.
 
+Codec's Vitest project owns the runtime and offline tooling suites. The tooling
+suite uses Vitest test-finished cleanup; its discovery guard retains both the
+real WASM initialization gate and offline source acquisition. A Node suite
+executed during import cannot replace a collected Vitest test.
+
 The shared downloader tries Node `fetch` first, then authenticated `gh` and
 platform-native `curl` (`curl.exe` on Windows) when the Node TLS/network
 handshake fails. All paths remain pinned to the current repository, the

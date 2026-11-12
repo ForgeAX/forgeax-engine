@@ -1,7 +1,11 @@
 import {
   type CodecError,
+  ktx2ChannelLanes,
+  ktx2IsNative,
+  ktx2NativeTexture,
   parseKtx2,
   selectTranscodeTarget,
+  type TranscodeChannels,
   transcodeBasis,
   transcodeKtx2,
 } from '@forgeax/engine-codec';
@@ -12,16 +16,30 @@ import {
   ok,
   type Result,
   type TextureAsset,
+  textureCompressionFeature,
   validateTextureLayout,
 } from '@forgeax/engine-types';
 import { type GpuResourceNamespace, ScopedGpuResources } from './scoped-gpu-resources';
 
 type Prepared = Result<TextureAsset, AssetError>;
+interface Target {
+  result: Prepared;
+  completed: Promise<void>;
+  /** A caller has received the settled result; until then it is owed and pinned. */
+  taken: boolean;
+}
 interface Source {
   readonly revision: number;
   readonly fixed: TextureAsset;
-  readonly targets: Map<GPUTextureFormat, { result: Prepared; completed: Promise<void> }>;
+  readonly channels: TranscodeChannels;
+  readonly targets: Map<GPUTextureFormat, Target>;
   bytes: number;
+}
+/** In flight, or settled but not yet delivered: eviction would discard owed work. */
+function pinned(source: Source): boolean {
+  for (const target of source.targets.values())
+    if (target.result === pending || !target.taken) return true;
+  return false;
 }
 const MAX_BYTES = 256 * 1024 * 1024;
 const MAX_SOURCES = 256;
@@ -33,8 +51,34 @@ const pending: Prepared = err(
   }),
 );
 
+const FEATURE_CAPS = {
+  'texture-compression-bc': 'textureCompressionBc',
+  'texture-compression-etc2': 'textureCompressionEtc2',
+  'texture-compression-astc': 'textureCompressionAstc',
+} as const;
+
+/** Native block-compressed texels reach the device only when it exposes their feature. */
+function admitNativeFormat(asset: TextureAsset, caps: RhiCaps | undefined): Prepared {
+  const feature = textureCompressionFeature(asset.format);
+  if (feature === undefined || caps === undefined || caps[FEATURE_CAPS[feature]]) return ok(asset);
+  return err(
+    new AssetError({
+      code: 'device-unsupported',
+      expected: `a device exposing ${feature} for native ${asset.format} texels`,
+      hint:
+        asset.format === 'bc5-rg-unorm'
+          ? 'publish the normal map as a BC5 KTX2 source (encoding ktx2), which derives RG8 on devices without BC, or supply native rg8unorm texels'
+          : 'publish a Basis/KTX2 source so the Renderer derives a supported format, or supply uncompressed texels',
+      detail: { field: 'format', value: asset.format, reason: `${feature}-unavailable` },
+    }),
+  );
+}
+
 /** Device derivatives of privately captured source versions. A miss schedules
- * one transcode; steady draws perform one keyed lookup and never touch WASM. */
+ * one transcode; steady draws perform one keyed lookup and never touch WASM.
+ * The budget evicts only delivered derivatives. When owed work alone fills it,
+ * a new source starts nothing and reports not-ready; the caller's next-frame
+ * retry is its place in the queue, admitted as delivered entries free room. */
 export class TextureDerivations {
   private readonly sources = new ScopedGpuResources<Source>();
   private bytes = 0;
@@ -47,19 +91,8 @@ export class TextureDerivations {
     target?: GPUTextureFormat,
     namespace: GpuResourceNamespace = 0,
   ): Prepared {
-    if (asset.encoding === undefined) return ok(asset);
-    target ??= selectTranscodeTarget(
-      {
-        model: asset.format === 'rgba16float' ? 'uastc-hdr' : 'uastc-ldr',
-        srgb: asset.colorSpace === 'srgb',
-        channels: 'rgba',
-      },
-      {
-        bc: caps?.textureCompressionBc ?? false,
-        astc: caps?.textureCompressionAstc ?? false,
-        etc2: caps?.textureCompressionEtc2 ?? false,
-      },
-    );
+    if (asset.encoding === undefined)
+      return target === undefined ? admitNativeFormat(asset, caps) : ok(asset);
     let source = this.sources.get(key, namespace);
     if (source !== undefined && source.revision !== revision) {
       this.remove(key, Number.POSITIVE_INFINITY, namespace);
@@ -67,21 +100,45 @@ export class TextureDerivations {
     }
     if (source === undefined) {
       if (asset.data.byteLength > MAX_BYTES) return this.exceeded();
+      if (!this.admit(asset.data.byteLength)) return pending;
       // Borrowed World objects can mutate. Async work sees only this private
       // capture; the numeric source revision, not object identity, selects it.
+      const parsed = asset.encoding === 'ktx2' ? parseKtx2(asset.data) : undefined;
       source = {
         revision,
         fixed: structuredClone(asset),
+        // The DFD channel ids are the source's only channel authority: an RG
+        // normal map selects BC5 / EAC RG11 / RG8 instead of an RGBA format.
+        channels: parsed?.ok ? ktx2ChannelLanes(parsed.value).channels : 'rgba',
         targets: new Map(),
         bytes: asset.data.byteLength,
       };
       this.sources.set(key, source, namespace);
       this.bytes += source.bytes;
     }
+    // A BC5 KTX2 has one device-dependent form: its blocks, or their exact
+    // RG8 decode where the device lacks BC.
+    if (asset.format === 'bc5-rg-unorm')
+      target ??= caps?.textureCompressionBc === true ? 'bc5-rg-unorm' : 'rg8unorm';
+    target ??= selectTranscodeTarget(
+      {
+        model: asset.format === 'rgba16float' ? 'uastc-hdr' : 'uastc-ldr',
+        srgb: asset.colorSpace === 'srgb',
+        channels: source.channels,
+      },
+      {
+        bc: caps?.textureCompressionBc ?? false,
+        astc: caps?.textureCompressionAstc ?? false,
+        etc2: caps?.textureCompressionEtc2 ?? false,
+      },
+    );
     const current = source.targets.get(target);
-    if (current !== undefined) return current.result;
+    if (current !== undefined) {
+      if (current.result !== pending) current.taken = true;
+      return current.result;
+    }
     const captured = source;
-    const state = { result: pending, completed: Promise.resolve() };
+    const state: Target = { result: pending, completed: Promise.resolve(), taken: false };
     state.completed = this.transcode(captured.fixed, target, String(key), caps).then((result) => {
       if (this.sources.get(key, namespace) !== captured) return;
       if (result.ok && captured.bytes + result.value.data.byteLength > MAX_BYTES)
@@ -91,10 +148,9 @@ export class TextureDerivations {
         this.bytes += result.value.data.byteLength;
       }
       state.result = result;
-      this.trim(key, namespace);
+      this.trim(0, 0);
     });
     source.targets.set(target, state);
-    this.trim(key, namespace);
     return pending;
   }
 
@@ -122,11 +178,20 @@ export class TextureDerivations {
     this.sources.clear();
     this.bytes = 0;
   }
-  private trim(keep: string | number, namespace: GpuResourceNamespace): void {
+  /** Room for one more source of `bytes`, evicting delivered derivatives first. */
+  private admit(bytes: number): boolean {
+    this.trim(1, bytes);
+    return this.within(1, bytes);
+  }
+  private within(sources: number, bytes: number): boolean {
+    return this.sources.size + sources <= MAX_SOURCES && this.bytes + bytes <= MAX_BYTES;
+  }
+  /** Evict delivered sources oldest first until `sources`/`bytes` more fit. */
+  private trim(sources: number, bytes: number): void {
     for (const [scope, resources] of this.sources.entries()) {
-      for (const key of resources.keys()) {
-        if (this.sources.size <= MAX_SOURCES && this.bytes <= MAX_BYTES) return;
-        if (key !== keep || scope !== namespace) this.remove(key, Number.POSITIVE_INFINITY, scope);
+      for (const [key, source] of resources) {
+        if (this.within(sources, bytes)) return;
+        if (!pinned(source)) this.remove(key, Number.POSITIVE_INFINITY, scope);
       }
     }
   }
@@ -173,9 +238,11 @@ export class TextureDerivations {
     try {
       const parsed = source.encoding === 'ktx2' ? await parseKtx2(source.data) : undefined;
       if (parsed !== undefined && !parsed.ok) return codecFailure(parsed.error);
-      const result = parsed?.ok
-        ? await transcodeKtx2(parsed.value, target)
-        : await transcodeBasis(source.data, target);
+      const result = !parsed?.ok
+        ? await transcodeBasis(source.data, target)
+        : ktx2IsNative(parsed.value)
+          ? await ktx2NativeTexture(parsed.value, target)
+          : await transcodeKtx2(parsed.value, target);
       if (!result.ok) return codecFailure(result.error);
       const { width, height, mips } = result.value;
       const count = source.mips.kind === 'packed' ? source.mips.levelCount : 1;

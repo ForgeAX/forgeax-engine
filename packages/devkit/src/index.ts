@@ -27,6 +27,7 @@ export { createNodePackProgramHost } from './build/pack-program-host.js';
 export { createNodePackProgramImports } from './build/pack-program-imports.js';
 export {
   assetAddCommand,
+  assetGuidCommand,
   assetInspectCommand,
   assetListCommand,
   assetVerifyCommand,

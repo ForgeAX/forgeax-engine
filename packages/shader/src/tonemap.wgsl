@@ -7,7 +7,7 @@
 // `reinhard-extended` remains Forgeax's existing luminance-domain curve; the
 // distinct `reinhard` mode is Three's per-channel Reinhard curve.
 
-#import forgeax_view::common::{FullscreenOutput, ditherUnorm8, fullscreen_triangle}
+#import forgeax_view::common::{FullscreenOutput, ditherUnorm8, fullscreen_triangle, linearToSrgbOetf}
 #import forgeax_view::output_encoding::{encodeOutput}
 #import forgeax_view::tone_mapping::{mapTone}
 
@@ -88,12 +88,28 @@ fn fs_present(in : FullscreenOutput) -> @location(0) vec4<f32> {
 @group(2) @binding(0) var outputLut : texture_3d<f32>;
 @group(2) @binding(1) var outputLutSampler : sampler;
 
+fn srgbToLinearEotf(color : vec3<f32>) -> vec3<f32> {
+  let low = color / vec3<f32>(12.92);
+  let high = pow((color + vec3<f32>(0.055)) / vec3<f32>(1.055), vec3<f32>(2.4));
+  return select(high, low, color <= vec3<f32>(0.04045));
+}
+
+// A display LUT maps sRGB-encoded colour to sRGB-encoded colour, indexed at texel
+// centres: UE PostProcessCombineLUTs.usf:200-202 (LinearToSrgb, then c * 15/16 + 0.5/16)
+// and the (N - 1) / N, 0.5 / N scale and offset of PostProcessTonemap.usf:187-188,209.
+// The result returns to linear as at PostProcessCombineLUTs.usf:224.
+fn sampleOutputLut(linearColor : vec3<f32>) -> vec3<f32> {
+  let size = f32(textureDimensions(outputLut).x);
+  let encoded = linearToSrgbOetf(clamp(linearColor, vec3<f32>(0.0), vec3<f32>(1.0)));
+  let uvw = encoded * ((size - 1.0) / size) + vec3<f32>(0.5 / size);
+  return srgbToLinearEotf(textureSampleLevel(outputLut, outputLutSampler, uvw, 0.0).rgb);
+}
+
 @fragment
 fn fs_tone_lut_encode(in : FullscreenOutput) -> @location(0) vec4<f32> {
   let source = sampleOutputSource(in.position.xy);
   let toned = quantizeToF16(vec4<f32>(mapTonemap(source.rgb), source.a));
-  let mapped = textureSampleLevel(outputLut, outputLutSampler,
-    clamp(toned.rgb, vec3<f32>(0.0), vec3<f32>(1.0)), 0.0);
-  let graded = quantizeToF16(vec4<f32>(mix(toned.rgb, mapped.rgb, params.lutStrength), toned.a));
+  let mapped = sampleOutputLut(toned.rgb);
+  let graded = quantizeToF16(vec4<f32>(mix(toned.rgb, mapped, params.lutStrength), toned.a));
   return encodeFinal(graded.rgb, graded.a, in.position);
 }

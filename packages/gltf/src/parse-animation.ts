@@ -147,6 +147,9 @@ export function parseAnimation(
         ANIMATION_ACCESSOR_TYPES,
         bufferViews,
         buffers,
+        // KHR_mesh_quantization: rotation/weights outputs may be normalized
+        // byte/short, translation/scale outputs plain or normalized byte/short.
+        true,
       );
       if (!outputResult.ok) return err(outputResult.error);
 

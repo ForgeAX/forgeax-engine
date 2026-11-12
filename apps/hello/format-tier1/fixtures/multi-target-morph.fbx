@@ -1,12 +1,12 @@
 ; FBX 7.4.0 project file
-; Minimal ASCII fixture for the ForgeaX Morph importer integration gate.
+; Minimal ASCII fixture for the ForgeAX Morph importer integration gate.
 ; The Shape -> BlendShapeChannel -> BlendShape -> Geometry links are the
 ; standard FBX deformer chain consumed by the pinned ufbx v0.23.0 parser.
 ; Source is intentionally text so the fixture is auditable and reproducible.
 FBXHeaderExtension:  {
 	FBXHeaderVersion: 1003
 	FBXVersion: 7400
-	Creator: "ForgeaX Morph Integration Fixture"
+	Creator: "ForgeAX Morph Integration Fixture"
 }
 GlobalSettings:  {
 	Version: 1000

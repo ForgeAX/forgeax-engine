@@ -172,7 +172,11 @@ describe('render-system-record sprite-pass 80B interleaved upload (w9, AC-05)', 
     const N = 4;
     const transforms = makeTransforms(N, 0);
     const regions = makeRegions(N, 1000);
-    const out = interleaveSpriteInstanceBuffer(transforms, regions);
+    const out = interleaveSpriteInstanceBuffer(
+      new Float32Array((transforms.length / 16) * 20),
+      transforms,
+      regions,
+    );
     expect(out).toBeInstanceOf(Float32Array);
     expect(out.length).toBe(N * (TRANSFORMS_PER_INSTANCE + REGIONS_PER_INSTANCE));
     expect(out.byteLength).toBe(transforms.byteLength + regions.byteLength);
@@ -188,7 +192,11 @@ describe('render-system-record sprite-pass 80B interleaved upload (w9, AC-05)', 
       303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315,
     ]);
     const regions = new Float32Array([200, 201, 202, 203, 400, 401, 402, 403]);
-    const out = interleaveSpriteInstanceBuffer(transforms, regions);
+    const out = interleaveSpriteInstanceBuffer(
+      new Float32Array((transforms.length / 16) * 20),
+      transforms,
+      regions,
+    );
     expect(out.length).toBe(N * 20);
     // Instance 0
     for (let i = 0; i < 16; i++) expect(out[i]).toBe(100 + i);

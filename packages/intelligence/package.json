@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "sideEffects": false,
-  "description": "Provider-neutral asynchronous Activity boundary for ForgeaX Engine.",
+  "description": "Provider-neutral asynchronous Activity boundary for ForgeAX Engine.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -15,7 +15,7 @@
   },
   "main": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
-  "files": ["dist", "src", "README.md"],
+  "files": ["dist", "src", "!src/**/__tests__/**",  "README.md"],
   "scripts": {
     "build": "tsup",
     "test": "vitest run"

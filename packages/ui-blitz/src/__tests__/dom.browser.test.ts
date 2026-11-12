@@ -1889,9 +1889,54 @@ it('keeps the original startup noscript fallback absent after the host script ru
         reducedMotion: true,
         reload: () => {},
       },
-    ) as { prepare(): void; destroy(): void };
+    ) as {
+      prepare(): void;
+      progress(view: { percent: number; activity: string; detail: string }): void;
+      inspect(): { progress: { detail: string } };
+      destroy(): void;
+    };
     cleanup.push(() => startup.destroy());
     startup.prepare();
+    const detail =
+      'assets/worlds/forgotten-observatory/materials/very-long-material-texture-name.ktx2';
+    startup.progress({ percent: 46, activity: 'Preparing shaders and pipelines', detail });
+    expect(startup.inspect().progress.detail).toBe(detail);
+    const label = required(document.querySelector<HTMLElement>('#forgeax-loading-detail'));
+    expect(label.title).toBe(detail);
+    expect(label.textContent?.endsWith('…')).toBe(true);
+    expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth);
+    expect(document.querySelector('#forgeax-loading-status')?.textContent).toBe(
+      'Preparing shaders and pipelines',
+    );
+    expect(document.querySelector('#forgeax-loading-meta')?.textContent).toBe('46% · 0 s');
+    if (document === ui.document) {
+      const pixels = required(ui.paint(0));
+      const logo = required(
+        document.querySelector('#forgeax-loading-logo'),
+      ).getBoundingClientRect();
+      let orange = 0;
+      for (let y = Math.ceil(logo.top); y < Math.floor(logo.bottom); y++) {
+        for (let x = Math.ceil(logo.left); x < Math.floor(logo.right); x++) {
+          const offset = (y * 500 + x) * 4;
+          if (pixels[offset] === 232 && pixels[offset + 1] === 105 && pixels[offset + 2] === 44)
+            orange++;
+        }
+      }
+      expect(orange).toBeGreaterThan(10);
+      const preview = globalThis.document.createElement('canvas');
+      preview.width = 500;
+      preview.height = 140;
+      required(preview.getContext('2d')).putImageData(
+        new ImageData(new Uint8ClampedArray(pixels), 500, 140),
+        0,
+        0,
+      );
+      await commands.writeFile(
+        `${evidence}/startup-logo.native.png`,
+        required(preview.toDataURL().split(',')[1]),
+        'base64',
+      );
+    }
     required(document.querySelector<HTMLElement>('#app-shell')).style.display = 'none';
     const fallback = required(document.querySelector('noscript'));
     snapshots.push({

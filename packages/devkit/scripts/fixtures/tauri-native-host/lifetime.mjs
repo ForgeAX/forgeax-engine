@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 const addon = createRequire(import.meta.url)(process.env.NATIVE_TAURI_ADDON ?? fileURLToPath(new URL(`./native/tauri-native-host.${process.platform}-${process.arch}.node`, import.meta.url)));
 assert.equal(typeof globalThis.gc, 'function', 'Run this fixture with node --expose-gc');
-const options = JSON.stringify({title:'ForgeaX drawable lifetime',width:320,height:180});
+const options = JSON.stringify({title:'ForgeAX drawable lifetime',width:320,height:180});
 let controller = new addon.TauriWindow(options);
 const native = controller.takeNativeWindow();
 const weakController = new WeakRef(controller);

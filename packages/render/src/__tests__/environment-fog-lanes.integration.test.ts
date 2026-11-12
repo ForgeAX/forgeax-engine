@@ -4,7 +4,7 @@ import { Atmosphere } from '../components/atmosphere';
 import { DirectionalLight } from '../components/directional-light';
 import { Fog } from '../components/fog';
 import { DeviceScope } from '../device/device-scope';
-import { selectEnvironment } from '../environment/frame';
+import { selectEnvironment, viewFogIsActive } from '../environment/frame';
 import { EnvironmentLifecycle } from '../environment/lifecycle';
 import { extractFrames } from '../render-system-extract-tail';
 import { earthAtmosphere } from './atmosphere-fixture';
@@ -28,12 +28,36 @@ const frame = selectEnvironment({
       mode: 'exp',
       near: 0,
       far: 100,
+      skyOpacity: 1,
     },
   ],
   suns: [{ entityKey: 9, direction: [0, -1, 0], color: [1, 1, 1], intensity: 2 }],
 });
 
 describe('Environment and Fog frame contract', () => {
+  it('admits forward fog only for active analytic fog or finite atmosphere', () => {
+    expect(frame.ok).toBe(true);
+    if (!frame.ok) return;
+    const environment = frame.value;
+    if (environment.source.kind !== 'atmosphere') throw new Error('expected fixture atmosphere');
+    const background = {
+      ...environment,
+      source: {
+        ...environment.source,
+        atmosphere: { ...environment.source.atmosphere, backgroundOnly: true },
+      },
+    };
+    expect(viewFogIsActive(undefined, undefined)).toBe(false);
+    expect(viewFogIsActive(undefined, environment)).toBe(true);
+    expect(viewFogIsActive(undefined, background)).toBe(false);
+    const fog = environment.fog;
+    if (fog === undefined) throw new Error('expected fixture fog');
+    expect(viewFogIsActive(fog, undefined)).toBe(true);
+    expect(viewFogIsActive({ ...fog, density: 0 }, undefined)).toBe(false);
+    expect(viewFogIsActive({ ...fog, maxOpacity: 0 }, environment)).toBe(true);
+    expect(viewFogIsActive(fog, background)).toBe(true);
+  });
+
   it('extracts all Atmosphere parameters and normalized Sun facts from ECS rows', () => {
     const world = new World();
     world

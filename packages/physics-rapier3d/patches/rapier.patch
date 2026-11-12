@@ -1081,7 +1081,7 @@ index 0000000..9a46625
 +    }
 +}
 diff --git a/src/control/character_controller.rs b/src/control/character_controller.rs
-index 742684e..2c42df3 100644
+index 742684e..1569ed7 100644
 --- a/src/control/character_controller.rs
 +++ b/src/control/character_controller.rs
 @@ -257,7 +257,7 @@ impl KinematicCharacterController {
@@ -1197,7 +1197,21 @@ index 742684e..2c42df3 100644
          let vertical_tangent = tangent - horizontal_tangent;
  
          HitDecomposition {
-@@ -919,33 +941,37 @@ impl KinematicCharacterController {
+@@ -858,9 +880,11 @@ impl KinematicCharacterController {
+                 .map(|hit| hit.1.time_of_impact)
+                 .unwrap_or(max_height);
+ 
+-        // Remove the step height from the vertical part of the self.
++        // A validated step changes the support level. Do not turn that lift into
++        // downward motion in the same solve: at low speed the requested forward
++        // travel can end at the rounded contact against the riser, where that
++        // artificial descent immediately brings the capsule back to the old tread.
+         let step = self.up * step_height;
+-        *translation_remaining -= step;
+ 
+         // Advance the collider on the step horizontally, to make sure further
+         // movement won’t just get stuck on its edge.
+@@ -919,33 +943,37 @@ impl KinematicCharacterController {
          let dispatcher = DefaultQueryDispatcher;
  
          let mut manifolds: Vec<ContactManifold> = vec![];
@@ -1245,7 +1259,7 @@ index 742684e..2c42df3 100644
                      }
                  }
              }
-@@ -953,21 +979,27 @@ impl KinematicCharacterController {
+@@ -953,21 +981,27 @@ impl KinematicCharacterController {
  
          let velocity_to_transfer = movement_to_transfer * utils::inv(dt);
  
@@ -1278,7 +1292,7 @@ index 742684e..2c42df3 100644
                          contact_point,
                          true,
                      );
-@@ -995,6 +1027,52 @@ mod test {
+@@ -995,6 +1029,52 @@ mod test {
      };
      use std::dbg;
  
@@ -1331,7 +1345,7 @@ index 742684e..2c42df3 100644
      #[test]
      fn character_controller_climb_test() {
          let mut colliders = ColliderSet::new();
-@@ -1067,7 +1145,7 @@ mod test {
+@@ -1067,7 +1147,7 @@ mod test {
          let character_handle_cannot_climb = bodies.insert(character_body_cannot_climb);
  
          let collider = ColliderBuilder::ball(0.5).build();
@@ -1340,7 +1354,7 @@ index 742684e..2c42df3 100644
          colliders.insert_with_parent(collider.clone(), character_handle_cannot_climb, &mut bodies);
  
          let mut airborne_can_climb = (0u32, 0u32);
-@@ -1217,7 +1295,7 @@ mod test {
+@@ -1217,7 +1297,7 @@ mod test {
          let character_handle_no_snap = bodies.insert(character_body_no_snap);
  
          let collider = ColliderBuilder::ball(0.5).build();
@@ -1349,7 +1363,7 @@ index 742684e..2c42df3 100644
          colliders.insert_with_parent(collider.clone(), character_handle_no_snap, &mut bodies);
  
          for i in 0..10000 {
-@@ -1365,7 +1443,7 @@ mod test {
+@@ -1365,7 +1445,7 @@ mod test {
          let movement = controller.move_shape(
              integration_parameters.dt,
              &query_pipeline,
@@ -1358,7 +1372,6 @@ index 742684e..2c42df3 100644
              bodies[character_handle].position(),
              Vector::new(0.1, 0.0, 0.0),
              |_| {},
-
 diff --git a/src/control/ray_cast_vehicle_controller.rs b/src/control/ray_cast_vehicle_controller.rs
 index 3395aed..d7bc3b4 100644
 --- a/src/control/ray_cast_vehicle_controller.rs

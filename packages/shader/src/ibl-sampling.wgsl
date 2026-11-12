@@ -17,10 +17,12 @@
 //   - sampleIblSpecular(N, V, roughness, F0, prefilterMap, prefilterSampler,
 //                       brdfLut, brdfLutSampler)
 //   - specularEnvironmentAlbedo(NdotV, roughness, F0, brdfLut, brdfLutSampler)
+//   - environmentDfg(NdotV, roughness, brdfLut, brdfLutSampler) (LUT; fit under ENV_BRDF_FIT)
 //   - box_project(worldPosition, direction, boxCenter, boxExtents)
 //   - sampleReflectionProbeSpecular(..., probeMap, probeSampler, ...)
 
 #import forgeax_pbr::ibl_shared::{fresnelSchlickRoughness, inverseRotateEnvironment}
+#import forgeax_pbr::brdf::{approximateDirectDfg}
 #import forgeax_pbr::pmrem::{samplePmrem}
 
 // Decode the renderer's Skylight/probe scalar without touching the probe box
@@ -78,10 +80,28 @@ fn environmentScatteringFromDfg(ab: vec2<f32>, F0: vec3<f32>, F90: f32) -> Envir
   return EnvironmentScattering(single, multi, ems);
 }
 
+// Split-sum environment BRDF as (scale, bias) on F0 / F90.
+// Default: the preintegrated 256^2 LUT (UE MATERIAL_USE_PREINTEGRATED_GF; it
+// matches Three r187's 16^2 DFG LUT). A Standard material that sets the
+// `environmentBrdfApprox` static switch is cooked with ENV_BRDF_FIT and uses
+// UE EnvBRDFApproxLazarov (BRDF.ush) instead: ALU only, no texture fetch, but
+// up to ~0.08 off the LUT on dielectrics and ~0.5 on rough metals at grazing
+// angles. The preprocessor removes the other path, so neither program carries
+// the unused branch.
+fn environmentDfg(
+  NdotV: f32, roughness: f32, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
+) -> vec2<f32> {
+#ifdef ENV_BRDF_FIT
+  return approximateDirectDfg(roughness, NdotV);
+#else
+  return textureSampleLevel(brdfLut, brdfLutSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
+#endif
+}
+
 fn environmentScattering(
   NdotV: f32, roughness: f32, F0: vec3<f32>, brdfLut: texture_2d<f32>, brdfLutSampler: sampler,
 ) -> EnvironmentScattering {
-  let ab = textureSampleLevel(brdfLut, brdfLutSampler, vec2<f32>(NdotV, roughness), 0.0).rg;
+  let ab = environmentDfg(NdotV, roughness, brdfLut, brdfLutSampler);
   return environmentScatteringFromDfg(ab, F0, 1.0);
 }
 

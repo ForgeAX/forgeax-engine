@@ -13,6 +13,8 @@ export const ClippingPlanes = defineComponent('ClippingPlanes', {
   count: { type: 'u32', default: 0 },
   intersection: { type: 'bool', default: false },
   clipShadows: { type: 'bool', default: false },
+  /** Cap the cut of closed Standard meshes (see ClippingOptions.caps). */
+  caps: { type: 'bool', default: false },
 });
 export type ClippingPlanesData = ShapeOf<SchemaOf<typeof ClippingPlanes>>;
 
@@ -25,6 +27,7 @@ export function clippingPlanesData(options: ClippingOptions): ClippingPlanesData
     count: normalized.length,
     intersection: options.intersection === true,
     clipShadows: options.clipShadows === true,
+    caps: options.caps === true,
   };
 }
 
@@ -48,5 +51,6 @@ export function extractClippingPlanes(
     planes: normalizeClippingPlanes(planes),
     intersection: data.intersection,
     clipShadows: data.clipShadows,
+    ...(data.caps ? { caps: true } : {}),
   };
 }

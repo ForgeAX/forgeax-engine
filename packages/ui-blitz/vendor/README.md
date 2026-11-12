@@ -15,7 +15,7 @@ Engine pixel validation uses the existing real-backend tests and independent
 procedural oracles. Registry VCS metadata and the standalone common lock are also
 omitted; the archive identity and owning UI Cargo lock are authoritative.
 
-ForgeaX uses `vello_gpu` with default features disabled and only `portable` enabled.
+ForgeAX uses `vello_gpu` with default features disabled and only `portable` enabled.
 It reuses the original scene, glyph, sparse-strip, layer allocation and filter
 scheduler. `src/portable.rs` projects the schedule and shader-ready bytes through
 the narrow UI raster ABI. It imports no wgpu, WebGL, canvas,

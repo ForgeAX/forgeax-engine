@@ -22,7 +22,6 @@ import { Terrain } from '@forgeax/engine-terrain';
 import { buildTerrainAssets } from '@forgeax/engine-terrain/cook';
 import type { Asset } from '@forgeax/engine-types';
 import { type MaterialAsset, standardSurfaceParameters } from '@forgeax/engine-types';
-import { buildEngineShaderManifest } from '@forgeax/engine-vite-plugin-shader';
 import { expect, it } from 'vitest';
 import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { publishRuntimeAssets } from '../../../assets-runtime/src/__tests__/fixtures/runtime-publication';
@@ -31,10 +30,10 @@ import { constructRuntimeRendererHost } from '../renderer-host';
 import { luminanceRgba16f } from './contact-shadow.fixture';
 import { offscreenCanvas } from './hdr-evidence.fixture';
 import { testAssets } from './helpers/runtime-assets';
-import { shaderManifestUrl } from './shader-manifest-url.fixture';
+import { shadowTestManifestUrl } from './shadow-test-manifest.fixture';
 
 const SIZE = 192;
-const manifestUrl = shaderManifestUrl(await buildEngineShaderManifest());
+const manifestUrl = await shadowTestManifestUrl();
 
 function unwrap<T>(result: RenderResult<T, unknown> | undefined): T {
   if (result === undefined) throw new Error('required Renderer operation is unavailable');
@@ -115,12 +114,21 @@ it.each([
       const table: Record<string, MaterialAsset> = { [guid('layer')]: layer };
       for (const [key, asset] of Object.entries(closure))
         if (asset.kind === 'material') table[guid(key)] = asset;
-      const cooker = createMaterialPackCooker();
+      const cooker = createMaterialPackCooker([], { profile: 'webgpu-storage' });
       for (const [materialGuid, source] of Object.entries(table)) {
         const cooked = await cooker.cook({ guid: materialGuid, source, table });
         const record = validateCookedMaterialRecord(
           (cooked.payload as { cooked: unknown }).cooked,
         ).unwrap();
+        expect(
+          record.programs.every(({ selections }) =>
+            selections.every(
+              ({ context }) =>
+                context.backend === 'webgpu' && context.capability !== 'uniform-fallback',
+            ),
+          ),
+          'terrain shadow fixture must cook its actual storage WebGPU target',
+        ).toBe(true);
         const ready = await createMaterialLoader({
           loadPublication: async () => ({
             guid: materialGuid,

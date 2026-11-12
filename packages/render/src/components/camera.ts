@@ -54,7 +54,12 @@ export type CameraExposure =
 
 /** Numeric encoding of manual exposure in the Camera SoA column. */
 export const CAMERA_EXPOSURE_MODE_MANUAL = 0;
-/** Numeric encoding of GPU-adapted exposure in the Camera SoA column. */
+/**
+ * Numeric encoding of GPU-adapted exposure in the Camera SoA column. `exposure`
+ * becomes the fallback used before the first adaptation, and `compensationEv`
+ * biases the adapted result. Manual exposure keeps one multiplier; auto exposure
+ * re-meters when the sun or sky brightness changes at runtime.
+ */
 export const CAMERA_EXPOSURE_MODE_AUTO = 1;
 
 /** Product-supported white-balance temperature range in Kelvin. */
@@ -241,6 +246,10 @@ export function cameraProjectionFromF32(value: number): CameraProjection {
  *                            HDR target and a fullscreen tonemap pass
  *                            (`packages/shader/src/tonemap.wgsl`).
  *
+ *   `'ue-filmic'`         - Unreal Filmic curve with Unreal's default post-process
+ *                            settings (slope 0.88, toe 0.55, shoulder 0.26, white
+ *                            clip 0.04, blue correction 0.6, expand gamut 1).
+ *
  * The remaining members mirror the Three r184 public names and formulas.
  */
 export type Tonemap =
@@ -251,7 +260,8 @@ export type Tonemap =
   | 'cineon'
   | 'aces-filmic'
   | 'agx'
-  | 'neutral';
+  | 'neutral'
+  | 'ue-filmic';
 
 /** Numeric encoding of the no-op tonemap path (schema value for `tonemap`). */
 export const TONEMAP_NONE = TONEMAP_SHADER_MODE.none;
@@ -272,6 +282,8 @@ export const TONEMAP_ACES_FILMIC = TONEMAP_SHADER_MODE.acesFilmic;
 export const TONEMAP_AGX = TONEMAP_SHADER_MODE.agx;
 /** Numeric encoding of the Khronos PBR neutral tonemap path. */
 export const TONEMAP_NEUTRAL = TONEMAP_SHADER_MODE.neutral;
+/** Numeric encoding of the Unreal Filmic tonemap path (Unreal default settings). */
+export const TONEMAP_UE_FILMIC = TONEMAP_SHADER_MODE.ueFilmic;
 
 /**
  * Map a `camera.tonemap` numeric value to the closed `Tonemap` string-literal
@@ -293,6 +305,8 @@ export function tonemapFromF32(value: number): Tonemap {
       return 'agx';
     case TONEMAP_NEUTRAL:
       return 'neutral';
+    case TONEMAP_UE_FILMIC:
+      return 'ue-filmic';
     default:
       return 'none';
   }
@@ -322,6 +336,8 @@ export function tonemapToU32(mode: Tonemap): number {
       return TONEMAP_AGX;
     case 'neutral':
       return TONEMAP_NEUTRAL;
+    case 'ue-filmic':
+      return TONEMAP_UE_FILMIC;
     case 'none':
       return TONEMAP_NONE;
   }
@@ -350,9 +366,10 @@ export function tonemapToU32(mode: Tonemap): number {
  *              jitter and successful-submit history contract.
  *
  * MSAA and FXAA are orthogonal: MSAA resolves geometry-edge aliasing, FXAA
- * resolves shading/high-frequency aliasing. TAA is mutually exclusive with both.
+ * resolves shading/high-frequency aliasing. TAA and TSR each select one temporal
+ * resolver and are mutually exclusive with the spatial modes.
  */
-export type Antialias = 'none' | 'fxaa' | 'msaa' | 'taa' | 'smaa';
+export type Antialias = 'none' | 'fxaa' | 'msaa' | 'taa' | 'smaa' | 'tsr';
 
 /** Numeric encoding of anti-alias disabled (schema value for `antialias`). */
 export const ANTIALIAS_NONE = 0;
@@ -364,6 +381,13 @@ export const ANTIALIAS_MSAA = 2;
 export const ANTIALIAS_TAA = 3;
 /** SMAA 1x Medium: spatial color edges, area weights, linear neighborhood blend. */
 export const ANTIALIAS_SMAA = 4;
+/** Temporal super resolution; shares view/submit ownership with TAA. */
+export const ANTIALIAS_TSR = 5;
+
+/** The shared scene-data and jitter demand of the two temporal resolvers. */
+export function isTemporalAntialias(value: Antialias | undefined): value is 'taa' | 'tsr' {
+  return value === 'taa' || value === 'tsr';
+}
 
 /**
  * Map a `camera.antialias` numeric value to the closed `Antialias`
@@ -375,11 +399,12 @@ export function antialiasFromF32(value: number): Antialias {
   if (value === ANTIALIAS_MSAA) return 'msaa';
   if (value === ANTIALIAS_TAA) return 'taa';
   if (value === ANTIALIAS_SMAA) return 'smaa';
+  if (value === ANTIALIAS_TSR) return 'tsr';
   throw cameraError(
     'camera-antialias-invalid',
     'antialias',
     value,
-    `${ANTIALIAS_NONE}, ${ANTIALIAS_FXAA}, ${ANTIALIAS_MSAA}, ${ANTIALIAS_TAA}, or ${ANTIALIAS_SMAA}`,
+    `${ANTIALIAS_NONE}, ${ANTIALIAS_FXAA}, ${ANTIALIAS_MSAA}, ${ANTIALIAS_TAA}, ${ANTIALIAS_SMAA}, or ${ANTIALIAS_TSR}`,
     'select a supported Camera antialias mode',
   );
 }
@@ -441,8 +466,13 @@ export const BLOOM_ENABLED = 1;
 /** Bloom intensity is a linear HDR add-back multiplier. */
 export const CAMERA_BLOOM_INTENSITY_MIN = 0;
 export const CAMERA_BLOOM_INTENSITY_MAX = 8;
-/** Bloom threshold is expressed in scene-linear Rec.709 luminance. */
-export const CAMERA_BLOOM_THRESHOLD_MIN = 0;
+/**
+ * Bloom threshold is expressed in scene-linear Rec.709 luminance. A negative
+ * value (the default `-1`, as in Unreal) disables thresholding entirely so
+ * every pixel scatters in proportion to its energy; `-1` is the lowest
+ * accepted value, matching Unreal's range.
+ */
+export const CAMERA_BLOOM_THRESHOLD_MIN = -1;
 export const CAMERA_BLOOM_THRESHOLD_MAX = 65504;
 /** Absolute luminance interval above the threshold used by the smooth highpass. */
 export const CAMERA_BLOOM_SMOOTH_WIDTH_MIN = 0;
@@ -528,8 +558,12 @@ export function validateCameraBloom(
  *   left       = -1, right  = 1, bottom = -1, top = 1  (orthographic; layer-2)
  *   tonemap    = 0          - TONEMAP_NONE (layer-2; opt-in path stays
  *                              0-overhead by default)
- *   exposure   = 1.0        - layer-2 default for the Reinhard-extended path
- *                              @applicableWhen tonemap === 'reinhard-extended'
+ *   exposure   = 1.0        - linear pre-tonemap multiplier (Three
+ *                              `toneMappingExposure`); applied before every
+ *                              tonemap operator, including ACES Filmic, AgX,
+ *                              Neutral, Cineon, Reinhard and Linear
+ *                              @applicableWhen tonemap !== 'none' (like Three's
+ *                              NoToneMapping, 'none' ignores exposure)
  *   whitePoint = 4.0        - layer-2 default for the Reinhard-extended path
  *                              @applicableWhen tonemap === 'reinhard-extended'
  *                              @minimum 0 (shader floor `max(Y, 1e-5)` keeps
@@ -610,11 +644,14 @@ export const Camera = defineComponent('Camera', {
   colorLut: { type: 'asset<texture>', default: 0 as never },
   colorLutStrength: { type: 'f32', default: 1 },
   antialias: { type: 'f32', default: 0 },
+  // TAA only: 1 enables the Unreal TSR flickering temporal analysis
+  // (r.TSR.ShadingRejection.Flickering, default on); 0 disables it.
+  taaFlickering: { type: 'f32', default: 1 },
   transparency: { type: 'f32', default: TRANSPARENCY_SORTED },
   historyVersion: { type: 'u32', default: 0 },
   bloom: { type: 'f32', default: 0 },
-  // Only above-white HDR luminance blooms by default; threshold 0 would bloom the whole frame.
-  bloomThreshold: { type: 'f32', default: 1 },
+  // Negative (default, as in Unreal) blooms the whole frame; 1 blooms only above-white HDR luminance.
+  bloomThreshold: { type: 'f32', default: -1 },
   bloomIntensity: { type: 'f32', default: 0.5 },
   bloomSmoothWidth: { type: 'f32', default: 0.01 },
   bloomRadius: { type: 'f32', default: 0 },
@@ -857,7 +894,7 @@ function cameraPodFromDefaults(): CameraPod {
  * `autoAspect = false` to opt out (render-to-texture, split-screen).
  * Cameras on the `createRenderer` path do not receive aspect-sync.
  *
- * @see {@link https://github.com/ForgeaX-Games/forgeax-engine/blob/main/docs/how-to/2026-06-18-host-engine-contract.md | Host-engine contract SSOT}
+ * @see {@link https://github.com/ForgeAX/forgeax-engine/blob/main/docs/how-to/2026-06-18-host-engine-contract.md | Host-engine contract SSOT}
  *
  * @example
  * ```ts

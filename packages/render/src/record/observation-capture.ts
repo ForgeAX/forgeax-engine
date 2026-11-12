@@ -7,6 +7,7 @@ import {
 } from '@forgeax/engine-rhi';
 import { textureFormatBlock } from '@forgeax/engine-types';
 import type { FrameObservationDomain } from '../render-contract';
+import { recordContext } from '../world/view-record-context';
 import type { RenderSystemRuntime } from './render-context';
 
 /** Record a demanded color copy into the same frame encoder and receipt owner. */
@@ -34,8 +35,12 @@ export function encodeFrameObservationCapture(
   },
 ): void {
   if (input.domain === 'final-display' && runtime.deferFinalDisplayObservation === true) return;
-  const owner = runtime.observationCaptureOwner;
-  if (owner === undefined || !runtime.observationCaptureDomains?.includes(input.domain)) return;
+  const owner = recordContext(runtime).observationCaptureOwner;
+  if (
+    owner === undefined ||
+    !recordContext(runtime).observationCaptureDomains?.includes(input.domain)
+  )
+    return;
   if (
     input.domain === 'visible-surface' &&
     (input.format !== 'rgba32uint' || input.surfaceRecords === undefined)
@@ -72,12 +77,12 @@ export function encodeFrameObservationCapture(
         ? {}
         : { surfaceRecords: input.surfaceRecords.slice() }),
       ...(input.domain === 'final-display'
-        ? { colorSpace: runtime.outputColorSpace?.report.effective ?? 'srgb' }
+        ? { colorSpace: recordContext(runtime).outputColorSpace?.report.effective ?? 'srgb' }
         : {}),
       device: runtime.device,
       buffer: created.value,
       frameNumber: runtime.observationFrameId ?? input.frameNumber,
-      deviceGeneration: runtime.deviceGeneration ?? 0,
+      deviceGeneration: recordContext(runtime).deviceGeneration ?? 0,
       backendId: runtime.device.caps.backendKind,
       bytesPerRow,
     });

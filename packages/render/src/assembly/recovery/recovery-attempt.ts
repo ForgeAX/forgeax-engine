@@ -12,7 +12,7 @@ import {
 } from '@forgeax/engine-rhi';
 import { ok, type Result, textureFormatBlock } from '@forgeax/engine-types';
 import type { RhiBackendPack } from '../backend-contract';
-import { deviceOptionsForAdapter } from '../device-feature-admission';
+import { deviceOptionsForAdapter, rendererDeviceAdmission } from '../device-feature-admission';
 import {
   RECOVERY_ADAPTER_DEADLINE_MS,
   RECOVERY_DEVICE_DEADLINE_MS,
@@ -406,6 +406,13 @@ export async function acquireDeviceGeneration(
         hint: `backend device acquisition raised: ${String(cause)}`,
       }),
     });
+  }
+  if (deviceResult.ok) {
+    const admission = rendererDeviceAdmission(deviceResult.value);
+    if (admission !== undefined) {
+      pack.disposeDevice?.(deviceResult.value);
+      return err({ stage: 'device', error: admission });
+    }
   }
   const contextResult = pack.rhi.acquireCanvasContext(canvas);
   if (!contextResult.ok) return err({ stage: 'context', error: contextResult.error });

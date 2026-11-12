@@ -46,10 +46,7 @@ export function addOutlinePasses(
     passKind: 'temporal',
     coverageOnly: true,
     clearColor: [0, 0, 0, 0],
-    selectEntities: (frame) => ({
-      worldId: frame.camera.worldId ?? 0,
-      entities: frame.camera.outline?.entities ?? [],
-    }),
+    selection: 'camera-outline',
   });
   if (!selected.ok) return selected;
   const packed = make('outline-selected-depth');

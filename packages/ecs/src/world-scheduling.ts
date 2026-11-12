@@ -309,25 +309,26 @@ export function worldUpdate(
   const update = world[worldInternal].getSchedule(Update) as Schedule | undefined;
   if (!update) return err(new ScheduleScopeMismatchError('World', Update.name));
 
+  const arena = world[worldInternal].getFrameArena();
+  const ownsArena = !arena.isActive;
+  if (ownsArena) arena.open();
   try {
     if (update.dirty) buildSchedule(update);
     const order = update.sortedOrder;
     const anchor = order.indexOf(FIXED_ANCHOR_NAME);
     if (anchor < 0) {
-      runSchedule(
-        update,
-        world,
-        order.filter((name) => name !== FIXED_ANCHOR_NAME),
-      );
+      runSchedule(update, world);
       if (measured > 0) discardFixedOverflow(fixed, accumulator);
     } else {
-      const updateCommands = new Map<string, CommandBufferImpl>();
-      runSchedule(update, world, order.slice(0, anchor), updateCommands, false);
+      const updateCommands = update.deferredCommands
+        ? new Map<string, CommandBufferImpl>()
+        : undefined;
+      runSchedule(update, world, order, updateCommands, false, 0, anchor);
       if (measured > 0) runFixed(world, fixed, accumulator);
       // Downstream Update systems consume the final remainder even when no
       // fixed tick ran or catch-up discarded whole steps.
       fixed.overstep = accumulator.value;
-      runSchedule(update, world, order.slice(anchor + 1), updateCommands);
+      runSchedule(update, world, order, updateCommands, true, anchor + 1, order.length);
     }
   } catch (error) {
     if (error instanceof CommandFailedError || error instanceof SystemFailedError) {
@@ -344,6 +345,11 @@ export function worldUpdate(
       retryable: false,
     });
     return err(new SystemFailedError('<schedule>', Update.name, error));
+  } finally {
+    if (ownsArena) {
+      arena.close();
+      world[worldInternal].maintainMemory();
+    }
   }
   world[worldInternal].setFixedAccumulator(accumulator.value);
   fixed.overstep = accumulator.value;
@@ -368,6 +374,9 @@ export function worldRun(
   const schedule = world[worldInternal].getSchedule(token) as Schedule;
   const mismatch = validateScheduleReferences(world, token, schedule);
   if (mismatch) return err(mismatch);
+  const arena = world[worldInternal].getFrameArena();
+  const ownsArena = !arena.isActive;
+  if (ownsArena) arena.open();
   try {
     runSchedule(schedule, world);
   } catch (error) {
@@ -386,6 +395,11 @@ export function worldRun(
       retryable: false,
     });
     return err(new SystemFailedError('<schedule>', token.name, error));
+  } finally {
+    if (ownsArena) {
+      arena.close();
+      world[worldInternal].maintainMemory();
+    }
   }
   return ok(undefined);
 }
@@ -489,6 +503,8 @@ function componentNames(components: readonly { readonly name: string }[] | undef
 
 function queryData(query: QueryDescriptor): WorldScheduleQueryData {
   return {
+    read: componentNames(query.read),
+    write: componentNames(query.write),
     with: componentNames(query.with),
     without: componentNames(query.without),
     optional: componentNames(query.optional),

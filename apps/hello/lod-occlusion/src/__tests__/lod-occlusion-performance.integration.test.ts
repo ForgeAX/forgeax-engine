@@ -228,7 +228,7 @@ describe('hello-lod-occlusion performance evidence contract', () => {
       occlusionOnly: groups.occlusionOnly,
     },
   ) => ({
-    metric: 'process.cpuUsage',
+    metric: 'process.threadCpuUsage',
     timeUnit: 'microseconds',
     samples: ['baseline-treatment', 'treatment-baseline'].flatMap((order, orderIndex) =>
       (['baseline', 'occlusionOnly', 'treatment'] as const).flatMap((condition) => {
@@ -248,6 +248,8 @@ describe('hello-lod-occlusion performance evidence contract', () => {
             frameId,
             userUs: index < 28 ? facts[condition].cpuP50Us : facts[condition].cpuP95Us,
             systemUs: 0,
+            processUserUs: index < 28 ? facts[condition].cpuP50Us : facts[condition].cpuP95Us,
+            processSystemUs: 0,
             captureGpuTimings: true,
             observeTimings: true,
             profileCapture: false,
@@ -283,21 +285,25 @@ describe('hello-lod-occlusion performance evidence contract', () => {
     verdict: 'not-production-ready',
   });
 
-  it('requires v4 raw CPU evidence and receipt links without admitting old summaries', async () => {
+  it('requires v5 raw CPU evidence and receipt links without admitting old summaries', async () => {
     const { validatePerformanceEvidence, GPU_FRAME_SAMPLES_SCHEMA } = await import(SCRIPT);
     const evidence = admittingEvidence(GPU_FRAME_SAMPLES_SCHEMA);
     const validateSchema = new Ajv2020({ strict: false }).compile(evidenceSchema);
     expect(validateSchema(evidence), JSON.stringify(validateSchema.errors)).toBe(true);
-    expect(() =>
+    for (const version of ['v3', 'v4']) expect(() =>
       validatePerformanceEvidence({
         ...evidence,
-        schema: 'forgeax::hello-lod-occlusion::gpu-frame-samples::v3',
+        schema: `forgeax::hello-lod-occlusion::gpu-frame-samples::${version}`,
       }),
     ).toThrow('schema mismatch');
     expect(() => validatePerformanceEvidence({ ...evidence, cpu: undefined })).toThrow(
-      'raw process.cpuUsage',
+      'raw process.threadCpuUsage',
     );
     expect(validateSchema({ ...evidence, cpu: undefined })).toBe(false);
+    const oldClock = structuredClone(evidence);
+    oldClock.cpu.metric = 'process.cpuUsage';
+    expect(() => validatePerformanceEvidence(oldClock)).toThrow('raw process.threadCpuUsage');
+    expect(validateSchema(oldClock)).toBe(false);
     const mismatched = structuredClone(evidence);
     mismatched.samples = mismatched.samples.map((sample, index) =>
       index === 0 ? { ...sample, frameId: 9999 } : sample,
@@ -349,7 +355,7 @@ describe('hello-lod-occlusion performance evidence contract', () => {
       metrics: { timestampAvailable: false },
       falsification,
       samples: [],
-      cpu: { metric: 'process.cpuUsage', timeUnit: 'microseconds', samples: [] },
+      cpu: { metric: 'process.threadCpuUsage', timeUnit: 'microseconds', samples: [] },
       verdict: 'unavailable',
     });
     expect(result.verdict).toBe('unavailable');

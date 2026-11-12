@@ -5,6 +5,13 @@ import type { RhiDevice } from '@forgeax/engine-rhi';
 import { rhi } from '@forgeax/engine-rhi-null';
 import { ok } from '@forgeax/engine-types';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { RenderFeaturePlanExecution } from '../features/host';
+import { createRenderFeatureProjectionState } from '../features/render-graph-contribution';
+import {
+  GPU_TEXTURE_USAGE_COPY_SRC,
+  GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
+  GPU_TEXTURE_USAGE_TEXTURE_BINDING,
+} from '../gpu-texture-usage';
 import { shouldExecuteStandardClusterMembershipPass } from '../pipeline/standard-lighting/graph';
 import {
   prepareStandardLighting,
@@ -14,9 +21,11 @@ import {
   deriveStandardTopologyInput,
   standardLightingTopologySignature,
 } from '../pipeline/standard-lighting/topology';
-import { selectStandardClusterTransport } from '../pipeline/standard-lighting/transport';
 import { standardPipeline } from '../pipeline/standard-pipeline';
 import { DEFAULT_STANDARD_PROFILE } from '../pipeline/standard-profile';
+import type { RenderFrameState } from '../record/frame-snapshot';
+import type { RenderSystemInternals } from '../record/render-context';
+import { standardFeatureContribution } from '../record/standard-feature-contribution';
 import {
   isMotionBlurTemporalDemand,
   resolvePostProcessChainAdmission,
@@ -29,7 +38,13 @@ import type {
 } from '../render-pipeline';
 import { resolveOutputDither } from '../render-pipeline';
 import { admitSsrSpatial } from '../ssr/admission';
+import {
+  SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA,
+  SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA,
+} from '../temporal/scene-data';
 import { standardTemporalPostOrder } from '../temporal/standard-scene-data';
+import { type OpaquePassPlan, planOpaque } from '../world/pass-plan-systems';
+import { selectTestStandardClusterTransport as selectStandardClusterTransport } from './cluster-test-abi';
 
 let device: RhiDevice;
 
@@ -50,7 +65,7 @@ function topology(
   overrides: TopologyOverrides = {},
 ): RenderPipelineTopology {
   const { camera: cameraOverride, ...rest } = overrides;
-  return {
+  const planned: Omit<RenderPipelineTopology, 'opaque'> & { opaque?: OpaquePassPlan } = {
     pipelineId,
     config: undefined,
     surface: {
@@ -84,6 +99,17 @@ function topology(
     gpuDrivenTopologySignature: '',
     ...rest,
   };
+  // Fixtures plan the opaque lane exactly as the view's RenderQueue does.
+  return {
+    ...planned,
+    opaque:
+      rest.opaque ??
+      planOpaque({
+        renderPath: (planned.standardProfile ?? DEFAULT_STANDARD_PROFILE).renderPath,
+        gpuOcclusion: planned.config?.gpuOcclusion,
+        clearOnly: planned.clearOnly === true,
+      }),
+  };
 }
 
 function zeroStandardLighting(caps: { compute: boolean; storageBuffer: boolean }, localCount = 1) {
@@ -105,7 +131,7 @@ function zeroStandardLighting(caps: { compute: boolean; storageBuffer: boolean }
   });
   if (!prepared.ok) throw prepared.error;
   const transport = selectStandardClusterTransport(
-    { ...caps, membershipPipelineReady: caps.compute },
+    { ...caps, maxTextureDimension2D: 8192, membershipPipelineReady: caps.compute },
     prepared.value,
   );
   if (!transport.ok) return transport;
@@ -139,6 +165,10 @@ function compile(
     graph: RenderGraphBuilder<RenderPipelineFrame>,
   ) => RenderPipelineBuildContext<RenderPipelineFrame>['projectGpuDriven'] = () => () =>
     ok(undefined),
+  context: { readonly gtaoExecutionOverride?: 'fragment' | 'compute' } = {},
+  featureContribution?: (
+    graph: RenderGraphBuilder<RenderPipelineFrame>,
+  ) => RenderPipelineBuildContext<RenderPipelineFrame>['contributeFeatures'],
 ) {
   const graph = new RenderGraphBuilder<RenderPipelineFrame>();
   const standardLighting = zeroStandardLighting({
@@ -155,7 +185,8 @@ function compile(
       capabilities: { rgba16floatRenderable: true },
       ...(importedHistory === undefined ? {} : { taaHistory: importedHistory }),
       projectGpuDriven: projectGpuDriven(graph),
-      contributeFeatures: () => ok(undefined),
+      contributeFeatures: featureContribution?.(graph) ?? (() => ok(undefined)),
+      ...context,
     },
     input,
   );
@@ -199,7 +230,10 @@ function disabledDirectionalVolumeTopology(lightKind: 'point' | 'spot'): RenderP
 }
 
 function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
-  const target = (label: string, format: 'rgba16float' | 'r8unorm' = 'rgba16float') => {
+  const target = (
+    label: string,
+    format: 'rgba16float' | 'r8unorm' | 'rgba8unorm' = 'rgba16float',
+  ) => {
     const texture = graph.importTexture(
       label,
       { format, size: 'surface', usage: 0x17 },
@@ -226,10 +260,72 @@ function createImportedHistory(graph: RenderGraphBuilder<RenderPipelineFrame>) {
     previousTemporal: target('taa-history-previous-temporal'),
     currentStability: target('taa-history-current-stability', 'r8unorm'),
     previousStability: target('taa-history-previous-stability', 'r8unorm'),
+    currentFlicker: target('taa-history-current-flicker', 'rgba8unorm'),
+    previousFlicker: target('taa-history-previous-flicker', 'rgba8unorm'),
   };
 }
 
 describe('typed built-in pipeline topology', () => {
+  it.each([
+    'forward',
+    'deferred',
+  ] as const)('compiles native scene contribution through the real Standard %s pipeline', async (renderPath) => {
+    const input = topology('forgeax::standard', {
+      standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath, ssao: true },
+      config: { ssao: { enabled: true } },
+      camera: { antialias: 'taa' },
+      shadow: {
+        directional: { mapSize: 1024, cascadeCount: 3 },
+        spotMapSize: 1024,
+        spotCount: 0,
+        pointFaceSize: 512,
+        pointCount: 0,
+      },
+    });
+    // The same real Standard topology without a native contribution must compile.
+    const ordinary = compile(standardPipeline, input);
+    expect(ordinary.ok).toBe(true);
+    if (ordinary.ok) await ordinary.value.retire();
+    const execution: RenderFeaturePlanExecution = {
+      featureIdentity: 'test.standard-native-view',
+      scope: 'view:main',
+      order: 0,
+      placement: 'scene',
+      passes: [],
+    };
+    const compiled = compile(standardPipeline, input, undefined, {}, (builder) =>
+      standardFeatureContribution({
+        // No shader/binding execution is needed to test the actual graph ports.
+        internals: { device } as RenderSystemInternals,
+        frameState: { frameNumber: 1 } as RenderFrameState,
+        builder,
+        projectedFeaturePlans: [execution],
+        featurePostProcessEntries: new Map(),
+        fullscreenFeatureIds: new Set(),
+        featureProjection: createRenderFeatureProjectionState(),
+        sceneDataDepthViews: new Map(),
+        transientViews: new Set([execution.featureIdentity]),
+        transientSlots: new Map(),
+        sceneInputs: undefined,
+        surfaceSize: { width: input.surface.width, height: input.surface.height },
+        reportError: (error) => {
+          throw error;
+        },
+      }),
+    );
+    if (!compiled.ok)
+      console.info(
+        '[standard-native-scene-compile]',
+        JSON.stringify({
+          renderPath,
+          code: compiled.error.code,
+          expected: compiled.error.expected,
+          detail: 'detail' in compiled.error ? compiled.error.detail : undefined,
+        }),
+      );
+    expect(compiled.ok).toBe(true);
+    if (compiled.ok) await compiled.value.retire();
+  });
   it('defaults final output dither on and accepts an asset-level opt-out', () => {
     expect(resolveOutputDither(undefined)).toBe(true);
     expect(resolveOutputDither({})).toBe(true);
@@ -655,6 +751,202 @@ describe('typed built-in pipeline topology', () => {
         { resource: 'hdrp-scene-color', usage: 'color-attachment' },
       ]),
     );
+  });
+
+  it('produces Forward AO from shared material surface data on the no-storage lane', () => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        lane: {
+          compute: false,
+          storageBuffer: false,
+          multisample: false,
+          maxColorAttachments: 1,
+        },
+      }),
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const info = compiled.value.inspect();
+    const names = info.passes.map((pass) => pass.name);
+    expect(names.indexOf('standard-scene-surface-data')).toBeLessThan(names.indexOf('ssao-calc'));
+    expect(names.indexOf('ssao-calc')).toBeLessThan(names.indexOf('ssao-blur'));
+    expect(names.indexOf('ssao-blur')).toBeLessThan(names.indexOf('ssao-cluster-pack'));
+    expect(names.indexOf('ssao-cluster-pack')).toBeLessThan(names.indexOf('main'));
+    expect(info.passes.find((pass) => pass.name === 'ssao-calc')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'standard-scene-surface-normal', usage: 'sampled-read' },
+        { resource: 'standard-scene-surface-depth', usage: 'sampled-read' },
+      ]),
+    );
+    expect(info.passes.find((pass) => pass.name === 'ssao-cluster-pack')?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'ssao-blurred', usage: 'sampled-read' },
+        { resource: 'standard-cluster-tables', usage: 'color-attachment' },
+      ]),
+    );
+    const normalResource = info.resources.find(
+      (resource) => resource.label === 'standard-scene-surface-normal',
+    );
+    expect(normalResource?.derivedUsage).toBe(
+      GPU_TEXTURE_USAGE_COPY_SRC |
+        GPU_TEXTURE_USAGE_TEXTURE_BINDING |
+        GPU_TEXTURE_USAGE_RENDER_ATTACHMENT,
+    );
+    const depthResource = info.resources.find(
+      (resource) => resource.label === 'standard-scene-surface-depth',
+    );
+    expect(depthResource?.derivedUsage).toBeDefined();
+    expect((depthResource?.derivedUsage ?? 0) & GPU_TEXTURE_USAGE_COPY_SRC).toBe(0);
+  });
+
+  it.each([
+    'contact',
+    'capsules',
+    'decals',
+    'ssr',
+    'scene-data-normal',
+    'scene-data-depth',
+    'compute-gtao',
+  ] as const)('keeps the Forward prepass normal when %s also reads it beside AO', (reader) => {
+    const ssr =
+      reader === 'ssr'
+        ? admitSsrSpatial({
+            camera: {
+              projection: 'perspective',
+              near: 0.1,
+              far: 100,
+              screenSpaceReflection: { maxDistance: 12, thickness: 0.2, maxRoughness: 0.65 },
+            },
+            environment: {
+              lane: 'forward',
+              m0: { status: 'admitted' },
+              sceneInputs: true,
+              temporal: true,
+              reflectionFallback: true,
+              capabilities: {
+                compute: true,
+                storageTexture: true,
+                rgba16floatRenderable: true,
+                r32floatSampledStorage: true,
+              },
+            },
+          })
+        : undefined;
+    if (ssr !== undefined) expect(ssr.status).toBe('admitted');
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        config: { ssao: { enabled: true } },
+        ...(reader === 'contact' ? { forwardContactShadows: true } : {}),
+        ...(reader === 'capsules' ? { forwardCapsuleShadows: true } : {}),
+        ...(reader === 'decals' ? { projectedDecals: [[]] } : {}),
+        ...(ssr === undefined
+          ? {}
+          : {
+              ssr,
+              reflectionFallback: { enabled: true },
+              camera: { tonemap: 'aces-filmic', antialias: 'taa', bloom: 'off' },
+            }),
+        ...(reader === 'scene-data-normal'
+          ? {
+              sceneDataBindings: [
+                { schema: SCENE_DATA_STANDARD_SURFACE_NORMAL_V1_SCHEMA, owners: [] },
+              ],
+            }
+          : {}),
+        ...(reader === 'scene-data-depth'
+          ? {
+              sceneDataBindings: [
+                { schema: SCENE_DATA_STANDARD_SURFACE_DEPTH_V1_SCHEMA, owners: [] },
+              ],
+            }
+          : {}),
+      }),
+      undefined,
+      reader === 'compute-gtao' ? { gtaoExecutionOverride: 'compute' } : {},
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const info = compiled.value.inspect();
+    expect(
+      info.passes.find((pass) => pass.name === 'standard-scene-surface-data')?.accesses,
+    ).toContainEqual({ resource: 'standard-scene-surface-normal', usage: 'color-attachment' });
+    expect(
+      info.resources.find((resource) => resource.label === 'standard-scene-surface-normal'),
+    ).toBeDefined();
+  });
+
+  it('omits disabled Forward AO and keeps material-normal inputs independent of MSAA', () => {
+    const plain = compile(standardPipeline, topology('forgeax::standard'));
+    expect(plain.ok).toBe(true);
+    if (!plain.ok) return;
+    const names = plain.value.inspect().passes.map((pass) => pass.name);
+    for (const name of ['ssao-calc', 'ssao-blur']) expect(names).not.toContain(name);
+    // Forward keeps its depth prepass without AO (UE ShouldForceFullDepthPass).
+    expect(names.indexOf('standard-scene-surface-data')).toBeLessThan(names.indexOf('main'));
+
+    const msaa = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        camera: { antialias: 'msaa' },
+      }),
+    );
+    expect(msaa.ok).toBe(true);
+    if (!msaa.ok) return;
+    const passes = msaa.value.inspect().passes.map((pass) => pass.name);
+    expect(passes.filter((name) => name === 'ssao-calc')).toHaveLength(1);
+    expect(passes.indexOf('standard-scene-surface-data')).toBeLessThan(passes.indexOf('main'));
+    expect(passes).not.toContain('g-buffer');
+    expect(passes).not.toContain('forward-ao-composite');
+  });
+
+  it('seeds single-sample Forward main depth from the surface-data prepass', () => {
+    const compiled = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+      }),
+    );
+    expect(compiled.ok).toBe(true);
+    if (!compiled.ok) return;
+    const info = compiled.value.inspect();
+    const names = info.passes.map((pass) => pass.name);
+    const seed = names.indexOf('forward-depth-seed');
+    expect(seed).toBeGreaterThan(names.indexOf('standard-scene-surface-data'));
+    expect(seed).toBeLessThan(names.indexOf('main'));
+    expect(info.passes[seed]?.accesses).toEqual(
+      expect.arrayContaining([
+        { resource: 'standard-scene-surface-depth', usage: 'sampled-read' },
+        { resource: 'scene-depth', usage: 'depth-stencil-write' },
+      ]),
+    );
+
+    const msaa = compile(
+      standardPipeline,
+      topology('forgeax::standard', {
+        standardProfile: { ...DEFAULT_STANDARD_PROFILE, renderPath: 'forward', ssao: true },
+        camera: { antialias: 'msaa' },
+      }),
+    );
+    expect(msaa.ok).toBe(true);
+    if (!msaa.ok) return;
+    expect(msaa.value.inspect().passes.map((pass) => pass.name)).not.toContain(
+      'forward-depth-seed',
+    );
+    // Without AO the single-sample prepass still seeds `main`
+    // (UE RendererScene.cpp DDM_AllOpaque for Forward shading).
+    const plain = compile(standardPipeline, topology('forgeax::standard'));
+    expect(plain.ok).toBe(true);
+    if (!plain.ok) return;
+    const plainNames = plain.value.inspect().passes.map((pass) => pass.name);
+    expect(plainNames.indexOf('forward-depth-seed')).toBeGreaterThan(
+      plainNames.indexOf('standard-scene-surface-data'),
+    );
+    expect(plainNames.indexOf('forward-depth-seed')).toBeLessThan(plainNames.indexOf('main'));
   });
 
   it('omits SSAO and compute membership on the bounded fallback lane', () => {
@@ -1084,9 +1376,29 @@ describe('Standard two-phase GPU occlusion topology', () => {
     }
   }
 
-  it('builds the furthest pyramid from forward early depth before the late main pass', () => {
+  it('builds the furthest pyramid from the forward depth prepass before the late prepass', () => {
+    // Forward always rasterizes its depth prepass, so two-phase occlusion
+    // resolves there and `main` draws once after the late cull.
     const requests: boolean[] = [];
     const names = passNames(topology('forgeax::standard'), requests);
+    expect(requests).toContain(true);
+    expectOrder(names, [
+      'standard-scene-surface-data',
+      'occlusion-depth-pyramid-seed',
+      'gpu-driven.occlusion-cull',
+      'standard-scene-surface-data-late',
+      'forward-depth-seed',
+      'main',
+    ]);
+    expect(names).not.toContain('main-late');
+  });
+
+  it('keeps the late main pass under MSAA, where the prepass cannot seed main', () => {
+    const requests: boolean[] = [];
+    const names = passNames(
+      topology('forgeax::standard', { camera: { antialias: 'msaa' } }),
+      requests,
+    );
     expect(requests).toContain(true);
     expectOrder(names, [
       'main',
@@ -1094,6 +1406,43 @@ describe('Standard two-phase GPU occlusion topology', () => {
       'gpu-driven.occlusion-cull',
       'main-late',
     ]);
+  });
+
+  it.each([
+    'ao',
+    'contact',
+    'capsules',
+    'decals',
+  ] as const)('completes late visibility before Forward %s consumes its surface', (consumer) => {
+    const names = passNames(
+      topology('forgeax::standard', {
+        standardProfile: {
+          ...DEFAULT_STANDARD_PROFILE,
+          renderPath: 'forward',
+          ssao: consumer === 'ao',
+        },
+        ...(consumer === 'ao' ? { config: { ssao: { enabled: true } } } : {}),
+        ...(consumer === 'contact' ? { forwardContactShadows: true } : {}),
+        ...(consumer === 'capsules' ? { forwardCapsuleShadows: true } : {}),
+        ...(consumer === 'decals' ? { projectedDecals: [[]] } : {}),
+      }),
+    );
+    const firstConsumer =
+      consumer === 'ao'
+        ? 'ssao-calc'
+        : consumer === 'contact' || consumer === 'capsules'
+          ? 'forward-contact-shadow'
+          : 'decal-project';
+    expectOrder(names, [
+      'standard-scene-surface-data',
+      'occlusion-depth-pyramid-seed',
+      'gpu-driven.occlusion-cull',
+      'standard-scene-surface-data-late',
+      firstConsumer,
+      'main',
+    ]);
+    expect(names.filter((name) => name === 'gpu-driven.occlusion-cull')).toHaveLength(1);
+    expect(names).not.toContain('main-late');
   });
 
   it('builds the furthest pyramid from deferred G-buffer depth before the late G-buffer', () => {

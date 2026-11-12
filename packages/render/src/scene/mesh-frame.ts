@@ -1,6 +1,7 @@
-import { deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
+import { deriveVertexCount, deriveVertexLayoutProjection } from '@forgeax/engine-geometry';
 import type { MeshAsset } from '@forgeax/engine-types';
 import type { MaterialResource } from '../material-resource';
+import { morphChannels, packMorphDeltas } from '../morph-attributes';
 import { changes, type Node, put, remove } from './frame-tree';
 import { skinGeometryEnvelopes } from './skin-geometry';
 
@@ -15,7 +16,7 @@ export interface MeshGeometry {
    * Absence forbids Skin culling; never substitute the rigid/bind-pose box.
    */
   readonly skinEnvelopes: Float32Array | undefined;
-  /** Every target's position deltas, target-major; derived once per admitted Mesh. */
+  /** Compact selected canonical target channels; derived once per admitted Mesh. */
   readonly morph: MeshMorphDeltas | undefined;
   readonly layout: ReturnType<typeof deriveVertexLayoutProjection>;
   readonly indexed: boolean;
@@ -29,19 +30,24 @@ export interface MeshGeometry {
 export interface MeshMorphDeltas {
   readonly vertexCount: number;
   readonly targetCount: number;
+  readonly channels: number;
   readonly deltas: Float32Array;
 }
 
 function morphDeltas(mesh: MeshAsset): MeshMorphDeltas | undefined {
   const targets = mesh.morphTargets;
-  const length = targets?.[0]?.position?.length ?? 0;
-  if (targets === undefined || length === 0 || length % 3 !== 0) return undefined;
-  if (targets.some((target) => target.position?.length !== length)) return undefined;
-  const deltas = new Float32Array(length * targets.length);
-  targets.forEach((target, index) => {
-    if (target.position !== undefined) deltas.set(target.position, index * length);
-  });
-  return { vertexCount: length / 3, targetCount: targets.length, deltas };
+  if (targets === undefined) return undefined;
+  const layout = deriveVertexLayoutProjection(mesh.attributes);
+  const vertexCount = deriveVertexCount(mesh.vertices, layout);
+  if (vertexCount === undefined || vertexCount <= 0) return undefined;
+  const channels = morphChannels(mesh, layout, vertexCount);
+  if (channels === undefined) return undefined;
+  return {
+    vertexCount,
+    targetCount: targets.length,
+    channels: channels.reduce((mask, channel) => mask | channel.bit, 0),
+    deltas: packMorphDeltas(mesh, vertexCount, channels),
+  };
 }
 
 /** An immutable geometry root; asset edits copy tree paths, never instance bindings. */

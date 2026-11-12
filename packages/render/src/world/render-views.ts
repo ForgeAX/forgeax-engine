@@ -1,12 +1,26 @@
 import { defineComponent, type EntityHandle, type World } from '@forgeax/engine-ecs';
+import type { RenderReadLease } from '@forgeax/engine-ecs/projection';
 import { type Handle, toShared } from '@forgeax/engine-types';
-import { assertRenderShortSide, CAMERA_VIEW_DEFAULTS } from '../components/camera-view';
-import { stereoEyeViewport } from '../components/stereo-camera';
+import { selectCaptureViewCamera } from '../capture/capture-view';
+import {
+  assertCameraViewData,
+  assertRenderShortSide,
+  CAMERA_VIEW_DEFAULTS,
+  cameraViewExtent,
+} from '../components/camera-view';
+import { type StereoEye, stereoEyeViewport } from '../components/stereo-camera';
 import { CameraViewInvalidError } from '../errors/render';
-import type { CameraSnapshot } from '../render-contract';
-import { resolveCameraTarget } from '../render-system-extract';
+import type { PreparedRenderPublication, RenderPublicationReceiver } from '../publication/receiver';
+import type {
+  CameraSnapshot,
+  DrawOwnerOptions,
+  PhysicalViewExtent,
+  ResolvedViewCamera,
+} from '../render-contract';
+import { cameraForView, resolveCameraTarget, selectCameraRoles } from '../render-system-extract';
 import type { RenderTarget } from '../targets/contracts';
-import { RenderPrepare } from './render-world';
+import { RenderCommit, RenderExtract, renderSubmission } from './render-world';
+import { requireViewField } from './view-field';
 
 /** Eye column of a composed view: a mono CameraView or one stereo eye of it. */
 export const ViewEyeValue = Object.freeze({ mono: 0, left: 1, right: 2 } as const);
@@ -17,10 +31,16 @@ export const ViewChannelsValue = Object.freeze({ all: 0, red: 1, cyan: 2 } as co
  * A view in the Render World: one CameraView, or one stereo eye of it, with
  * its authored (eye-derived) rectangle, cadence and target; or a capture view
  * (`capture`), an auxiliary Camera that writes its RenderTarget as a raw
- * linear scene capture and is never composited.
+ * linear scene capture and is never composited; or the primary view
+ * (`primary`), the Renderer's own recorder. The primary view records the
+ * display while no display CameraView is declared; otherwise it is the shared
+ * capture view (`capture`): the scene captures every composed view samples,
+ * recorded from the first enabled composed view's camera.
  */
 export const RenderView = defineComponent('RenderView', {
   capture: 'bool',
+  /** The primary recorder's view: the display, or the shared capture view (`capture`). */
+  primary: 'bool',
   camera: 'u32',
   eye: { type: 'enum', default: ViewEyeValue.mono, labels: ViewEyeValue },
   viewport: { type: 'array<f32, 4>', default: new Float32Array([0, 0, 1, 1]) },
@@ -35,6 +55,50 @@ export const RenderView = defineComponent('RenderView', {
   target: 'shared<RenderTarget>',
 });
 
+/** A view's canvas rectangle in physical pixels and its scaled recording size. */
+export type ViewViewport = ReturnType<typeof cameraViewExtent>;
+
+/**
+ * Payload of a view's {@link ViewCamera}: its recording extent, canvas
+ * rectangle and final camera, resolved by the `render-view-cameras`
+ * RenderExtract system before RenderPrepare. `extent` is replaced only when
+ * its size changes. An unresident RenderTarget keeps the last extent; the
+ * recording then fails on residency.
+ */
+export interface ViewCameraState extends ResolvedViewCamera {
+  extent: PhysicalViewExtent;
+  viewport: ViewViewport;
+  camera: CameraSnapshot | undefined;
+}
+
+/** Every view entity's resolved camera; written only by `render-view-cameras`. */
+export const ViewCamera = defineComponent('ViewCamera', { state: 'unique<ViewCamera>' });
+
+/** The resolved camera of a view entity; undefined once the entity retired. */
+export function viewCameraOf(
+  world: World,
+  entity: EntityHandle | undefined,
+): ViewCameraState | undefined {
+  if (entity === undefined || !world.hasComponent(entity, ViewCamera)) return undefined;
+  return world
+    .resolveUniqueRef<ViewCameraState>(requireViewField(world, entity, ViewCamera, 'state'))
+    .unwrap();
+}
+
+/**
+ * A composed view's resolved camera, which replaces its recording's display
+ * camera selection; undefined for the primary and capture views, whose
+ * recordings select their camera from the extracted frame.
+ */
+export function composedViewCamera(
+  world: World,
+  entity: EntityHandle | undefined,
+): ViewCameraState | undefined {
+  if (entity === undefined || !world.hasComponent(entity, RenderView)) return undefined;
+  const view = world.get(entity, RenderView).unwrap();
+  return view.primary || view.capture ? undefined : viewCameraOf(world, entity);
+}
+
 /**
  * The view's private recording state (its RenderSystem, device scope, output
  * and history). Present only while the view is enabled; removal or despawn
@@ -42,8 +106,54 @@ export const RenderView = defineComponent('RenderView', {
  */
 export const ViewRecorder = defineComponent('ViewRecorder', { state: 'unique<ViewRecorder>' });
 
+/**
+ * The outcome of the view's last record attempt: `attempt` is the renderer
+ * frame it ran in (the last attempt of a frame wins), `accepted` whether its
+ * recording was submitted, `scene` whether that submission drew the scene
+ * (not only a preparation barrier) and `temporal` whether it staged temporal
+ * history. RenderCommit systems commit a view's own state only for an
+ * accepted attempt of the current frame.
+ */
+export const ViewSubmission = defineComponent('ViewSubmission', {
+  accepted: 'bool',
+  attempt: 'u32',
+  scene: 'bool',
+  temporal: 'bool',
+});
+
+type ViewSubmissionFacts = {
+  accepted: boolean;
+  attempt: number;
+  scene: boolean;
+  temporal: boolean;
+};
+
+/**
+ * The one accepted authority: the frame's `RenderSubmission` was accepted (queue
+ * ok and every Feature scene input ready) and this view's attempt of this frame
+ * was accepted. Every history commit reads this, never queue acceptance alone.
+ */
+export function viewAccepted(world: World, entity: EntityHandle | undefined): boolean {
+  if (entity === undefined || !world.hasComponent(entity, ViewSubmission)) return false;
+  const { accepted, frame } = renderSubmission(world);
+  const submission = world.get(entity, ViewSubmission).unwrap();
+  return accepted && submission.accepted && submission.attempt === frame;
+}
+
+/** Write a view's record-attempt outcome; a view entity that retired is skipped. */
+export function recordViewSubmission(
+  world: World,
+  entity: EntityHandle | undefined,
+  data: ViewSubmissionFacts,
+): void {
+  if (entity === undefined || !world.hasComponent(entity, RenderView)) return;
+  if (world.hasComponent(entity, ViewSubmission)) world.set(entity, ViewSubmission, data).unwrap();
+  else world.addComponent(entity, { component: ViewSubmission, data }).unwrap();
+}
+
 type ViewFacts = {
   capture: boolean;
+  primary: boolean;
   camera: number;
   eye: number;
   viewport: Float32Array;
@@ -58,10 +168,25 @@ type ViewFacts = {
   target: Handle<'RenderTarget', 'shared'>;
 };
 
+/** System names other Render World systems order against. */
+export const RENDER_VIEWS_SYSTEM = 'render-views';
+export const RENDER_VIEW_HISTORY_SYSTEM = 'render-view-history';
+export const RENDER_VIEW_CAMERAS_SYSTEM = 'render-view-cameras';
+
+const VIEW_EYES: readonly (StereoEye | undefined)[] = [undefined, 'left', 'right'];
+
+/** A composed view recorder's cadence history (the `ViewRecorder` payload of a non-primary view). */
+export interface ViewHistory {
+  /** Whether this frame records a new picture (false: held). */
+  readonly rendered: boolean;
+  lastFrame: number;
+  renderedFrames: number;
+}
+
 const NO_TARGET = toShared<'RenderTarget'>(0);
 
 /** Explicit targets own their extent; display budgets combine using the stricter positive limit. */
-function displayShortSideLimit(
+export function displayShortSideLimit(
   authored: number,
   cap: number,
   target: RenderTarget | undefined,
@@ -86,13 +211,132 @@ interface DeclaredView {
   seen: number;
 }
 
+/** The frame's camera declarations; the frame entry writes it before `RenderExtract`. */
 export interface RenderViewSource {
   readonly cameras: readonly CameraSnapshot[];
   /** Host-selected display budget; zero leaves implicit cameras on the primary path. */
   readonly maxRenderShortSide?: number | undefined;
   /** Auxiliary RenderTarget cameras (non-planar); each becomes one capture view. */
   readonly captures: readonly CameraSnapshot[];
+  /** Whether the primary recorder records the display (no display CameraView is declared); otherwise the shared capture view. */
+  readonly primary: boolean;
+  /** Its display camera; undefined until the camera resolves (the frame then fails in extraction). */
+  readonly primaryCamera: CameraSnapshot | undefined;
+  /** The Renderer's drawing-buffer extent. */
+  readonly canvas: { readonly width: number; readonly height: number };
   attachment(camera: CameraSnapshot): string | undefined;
+  /** A resident RenderTarget's physical size; undefined while it is not resident. */
+  targetExtent(
+    target: RenderTarget,
+  ): { readonly width: number; readonly height: number } | undefined;
+}
+
+/** World resource key of the frame's {@link RenderViewSource}. */
+export const RenderViewInput = Object.freeze({ name: 'RenderViewSource' });
+
+/**
+ * The display camera of a primary view. An invalid camera leaves it
+ * unresolved here: the recording's own extraction reports the structured failure.
+ */
+function primaryDisplayCamera(
+  publication: PreparedRenderPublication | undefined,
+  world: World | undefined,
+  cameraEntityKey: number | undefined,
+): CameraSnapshot | undefined {
+  if (publication !== undefined) return publication.frame.cameras[0];
+  if (world === undefined) return undefined;
+  try {
+    return selectCameraRoles(world, cameraEntityKey).display[0];
+  } catch {
+    return undefined;
+  }
+}
+
+/** The identity of the source World a camera belongs to. */
+export function cameraAttachmentId(
+  camera: CameraSnapshot,
+  world: World | undefined,
+  worlds: readonly World[],
+): string | undefined {
+  return camera.worldId === undefined ? world?.identity : worlds[camera.worldId]?.identity;
+}
+
+/** A frame entry's retained {@link RenderViewSource}; it rewrites it before each frame. */
+export class RenderViewFrameSource implements RenderViewSource {
+  cameras: readonly CameraSnapshot[] = [];
+  captures: readonly CameraSnapshot[] = [];
+  primary = false;
+  maxRenderShortSide = 0;
+  primaryCamera: CameraSnapshot | undefined;
+  /** The camera owner World; source Worlds name each attachment. */
+  world: World | undefined;
+  worlds: readonly World[] = [];
+  /** The frame's draw options; each recording view stages its own camera over them. */
+  opts: DrawOwnerOptions = { cameraOwner: 0, resourceOwner: 0 };
+  leases: readonly RenderReadLease[] | undefined;
+  publication: PreparedRenderPublication | undefined;
+  /** Snapshots the publication for a view that cannot apply its delta; absent for a private frame. */
+  receiver: RenderPublicationReceiver | undefined;
+
+  constructor(
+    private readonly host: {
+      readonly canvas: { readonly width: number; readonly height: number };
+      readonly getRenderTargetPhysical?:
+        | ((
+            target: RenderTarget,
+          ) =>
+            | { readonly descriptor: { readonly width: number; readonly height: number } }
+            | undefined)
+        | undefined;
+    },
+  ) {}
+
+  get canvas(): { readonly width: number; readonly height: number } {
+    return this.host.canvas;
+  }
+
+  /** Declare the frame's cameras; with no composed view, the primary records the display. */
+  stage(
+    cameras: readonly CameraSnapshot[],
+    captures: readonly CameraSnapshot[],
+    worlds: readonly World[],
+    opts: DrawOwnerOptions,
+    leases: readonly RenderReadLease[] | undefined,
+    publication: PreparedRenderPublication | undefined,
+    receiver?: RenderPublicationReceiver,
+    maxRenderShortSide = 0,
+  ): void {
+    assertRenderShortSide(maxRenderShortSide);
+    assertViewCameras(cameras, maxRenderShortSide > 0);
+    this.maxRenderShortSide = maxRenderShortSide;
+    const world = worlds[opts.cameraOwner];
+    this.cameras = cameras;
+    this.captures = captures;
+    this.primary = maxRenderShortSide === 0 && !cameras.some((camera) => camera.view !== undefined);
+    this.primaryCamera = this.primary
+      ? primaryDisplayCamera(publication, world, opts.cameraEntityKey)
+      : undefined;
+    this.world = world;
+    this.worlds = worlds;
+    this.opts = opts;
+    this.leases = leases;
+    this.publication = publication;
+    this.receiver = receiver;
+  }
+
+  clear(): void {
+    this.cameras = this.captures = this.worlds = [];
+    this.primary = false;
+    this.primaryCamera = this.world = this.leases = this.publication = this.receiver = undefined;
+  }
+
+  attachment(camera: CameraSnapshot): string | undefined {
+    return cameraAttachmentId(camera, this.world, this.worlds);
+  }
+
+  targetExtent(target: RenderTarget) {
+    return this.host.getRenderTargetPhysical?.(target)?.descriptor;
+  }
 }
 
 /** Throws the structured CameraView failure before any Render World write. */
@@ -100,12 +344,69 @@ export function assertViewCameras(
   cameras: readonly CameraSnapshot[],
   implicitDisplay = false,
 ): void {
-  for (const camera of cameras)
+  for (const camera of cameras) {
     if (
       (camera.view !== undefined || (implicitDisplay && camera.target === undefined)) &&
       camera.entityKey === undefined
     )
       throw new CameraViewInvalidError('entityKey', camera.entityKey, 'a camera entity identity');
+    if (camera.view !== undefined) assertCameraViewData(camera.view);
+  }
+}
+
+function setExtent(state: ViewCameraState, width: number, height: number, eye: number): void {
+  const side = VIEW_EYES[eye];
+  const current = state.extent;
+  if (current.width === width && current.height === height && current.eye === side) return;
+  state.extent = side === undefined ? { width, height } : { width, height, eye: side };
+}
+
+/** Resolve one view's extent, rectangle and final camera from the frame's source. */
+export function resolveViewCamera(
+  world: World,
+  view: Readonly<
+    Pick<
+      ViewFacts,
+      | 'primary'
+      | 'capture'
+      | 'camera'
+      | 'eye'
+      | 'target'
+      | 'viewport'
+      | 'resolutionScale'
+      | 'maxRenderShortSide'
+      | 'updateInterval'
+      | 'enabled'
+      | 'order'
+    >
+  >,
+  state: ViewCameraState,
+  source: RenderViewSource,
+): void {
+  const canvas = source.canvas;
+  if (view.primary) {
+    setExtent(state, canvas.width, canvas.height, ViewEyeValue.mono);
+    state.viewport = cameraViewExtent(CAPTURE_VIEW, canvas.width, canvas.height);
+    state.camera = view.capture
+      ? source.cameras.find((camera) => camera.entityKey === view.camera)
+      : source.primaryCamera;
+    return;
+  }
+  const target = resolveCameraTarget(world, view.target);
+  const physical = target === undefined ? undefined : source.targetExtent(target);
+  if (view.capture) {
+    if (physical !== undefined) {
+      setExtent(state, physical.width, physical.height, ViewEyeValue.mono);
+      state.viewport = cameraViewExtent(CAPTURE_VIEW, physical.width, physical.height);
+    }
+    state.camera = selectCaptureViewCamera(source.captures, view.camera);
+    return;
+  }
+  state.viewport = cameraViewExtent(view, canvas.width, canvas.height);
+  if (target === undefined)
+    setExtent(state, state.viewport.renderWidth, state.viewport.renderHeight, view.eye);
+  else if (physical !== undefined) setExtent(state, physical.width, physical.height, view.eye);
+  state.camera = cameraForView(source.cameras, view.camera, state.extent);
 }
 
 function eyeChannels(camera: CameraSnapshot, eye: number): number {
@@ -136,8 +437,8 @@ function sameFacts(current: Readonly<ViewFacts>, next: ViewFacts): boolean {
 }
 
 /**
- * Source-driven view entities. The `render-views` RenderPrepare system turns
- * the frame's camera snapshots into one entity per CameraView or stereo eye
+ * Source-driven view entities. The `render-views` RenderExtract system turns
+ * the frame's camera snapshots ({@link RenderViewInput}) into one entity per CameraView or stereo eye
  * and one per auxiliary RenderTarget camera: a new declaration spawns, a
  * vanished one despawns, a changed one is rewritten, and a steady frame
  * writes nothing.
@@ -153,11 +454,13 @@ export class RenderViews {
   captureCount = 0;
   /** Ingest identity translation: `camera * 3 + eye` (capture: `-1 - camera`) to its entity. */
   private readonly declared = new Map<number, DeclaredView>();
-  private pending: RenderViewSource | undefined;
+  /** The primary view entity; never part of `ordered`. */
+  primary: EntityHandle | undefined;
   private syncs = 0;
   private orderDirty = false;
   private readonly facts: ViewFacts = {
     capture: false,
+    primary: false,
     camera: 0,
     eye: 0,
     viewport: new Float32Array(4),
@@ -174,10 +477,85 @@ export class RenderViews {
 
   constructor(readonly world: World) {
     world
-      .addSystem(RenderPrepare, {
-        name: 'render-views',
+      .addSystem(RenderExtract, {
+        commands: 'none',
+        name: RENDER_VIEWS_SYSTEM,
         queries: [],
-        fn: () => this.apply(),
+        fn: (world) => {
+          if (world.hasResource(RenderViewInput))
+            this.apply(world.getResource<RenderViewSource>(RenderViewInput));
+        },
+      })
+      .unwrap();
+    world
+      .addSystem(RenderExtract, {
+        commands: 'none',
+        name: RENDER_VIEW_CAMERAS_SYSTEM,
+        after: [RENDER_VIEWS_SYSTEM],
+        queries: [{ read: [RenderView, ViewCamera] }],
+        // Each view's final camera (aspect, stereo eye) and recording extent
+        // become World state before any RenderPrepare system reads them.
+        fn: (world, [views]) => {
+          if (!world.hasResource(RenderViewInput)) return;
+          const source = world.getResource<RenderViewSource>(RenderViewInput);
+
+          for (const span of views.spans().unwrap()) {
+            const columns = span.get(RenderView);
+            const states = span.get(ViewCamera).state;
+            for (let index = 0; index < span.length; index++) {
+              if (columns.enabled[index] === 0) continue;
+              const view = this.facts;
+              view.enabled = true;
+              view.primary = columns.primary[index] !== 0;
+              view.capture = columns.capture[index] !== 0;
+              view.camera = columns.camera[index] as number;
+              view.eye = columns.eye[index] as number;
+              view.order = columns.order[index] as number;
+              view.resolutionScale = columns.resolutionScale[index] as number;
+              view.maxRenderShortSide = columns.maxRenderShortSide[index] as number;
+              view.updateInterval = columns.updateInterval[index] as number;
+              view.target = columns.target.get(index) as Handle<'RenderTarget', 'shared'>;
+              const offset = index * 4;
+              for (let axis = 0; axis < 4; axis++)
+                view.viewport[axis] = columns.viewport[offset + axis] as number;
+              const state = world
+                .resolveUniqueRef<ViewCameraState>(
+                  states.get(index) as Handle<'ViewCamera', 'unique'>,
+                )
+                .unwrap();
+              resolveViewCamera(world, view, state, source);
+            }
+          }
+        },
+      })
+      .unwrap();
+    world
+      .addSystem(RenderCommit, {
+        commands: 'none',
+        name: RENDER_VIEW_HISTORY_SYSTEM,
+        queries: [{ read: [RenderView, ViewRecorder, ViewSubmission] }],
+        // An accepted attempt of this frame that rendered a new picture advances
+        // its view's cadence history; a held, rejected or stale view keeps it.
+        fn: (world, [views]) => {
+          const frame = renderSubmission(world).frame;
+
+          views.forEach((row) => {
+            const entity = row.entity;
+
+            if (
+              !requireViewField(world, entity, ViewSubmission, 'accepted') ||
+              requireViewField(world, entity, ViewSubmission, 'attempt') !== frame ||
+              requireViewField(world, entity, RenderView, 'primary')
+            )
+              return;
+            const view = world
+              .resolveUniqueRef<ViewHistory>(requireViewField(world, entity, ViewRecorder, 'state'))
+              .unwrap();
+            if (!view.rendered) return;
+            view.lastFrame = frame;
+            view.renderedFrames += 1;
+          });
+        },
       })
       .unwrap();
   }
@@ -187,18 +565,9 @@ export class RenderViews {
     return this.declared.size;
   }
 
-  /** Reconcile the view entities with this frame's cameras inside `RenderPrepare`. */
-  sync(source: RenderViewSource): void {
-    assertRenderShortSide(source.maxRenderShortSide ?? 0);
-    assertViewCameras(source.cameras, (source.maxRenderShortSide ?? 0) > 0);
-    this.pending = source;
-    const ran = this.world.run(RenderPrepare);
-    this.pending = undefined;
-    if (!ran.ok) throw ran.error;
-  }
-
   /** Despawn every view; each recorder retires through its release. */
   clear(): void {
+    this.despawnPrimary();
     for (const view of this.declared.values()) this.world.despawn(view.entity).unwrap();
     this.declared.clear();
     this.ordered.length = 0;
@@ -212,10 +581,9 @@ export class RenderViews {
     return resolveCameraTarget(this.world, view.target);
   }
 
-  private apply(): void {
-    const source = this.pending;
-    if (source === undefined) return;
-    this.pending = undefined;
+  private apply(source: RenderViewSource): void {
+    assertRenderShortSide(source.maxRenderShortSide ?? 0);
+    assertViewCameras(source.cameras, (source.maxRenderShortSide ?? 0) > 0);
     const frame = ++this.syncs;
     let declaredNow = 0;
     const cap = source.maxRenderShortSide ?? 0;
@@ -245,6 +613,80 @@ export class RenderViews {
       }
     }
     if (this.orderDirty) this.reorder();
+    this.reconcilePrimary(source);
+  }
+
+  private reconcilePrimary(source: RenderViewSource): void {
+    if (source.primary) {
+      const camera = source.primaryCamera;
+      this.writePrimary(
+        false,
+        camera?.entityKey ?? 0,
+        camera?.historyVersion ?? 0,
+        camera === undefined ? '' : (source.attachment(camera) ?? ''),
+      );
+      return;
+    }
+    const shared = this.sharedCaptureCamera();
+    if (shared === undefined) this.despawnPrimary();
+    else this.writePrimary(true, shared.camera, shared.viewGeneration, '');
+  }
+
+  /** The first enabled composed view in composition order, else the first composed view. */
+  private sharedCaptureCamera(): { camera: number; viewGeneration: number } | undefined {
+    let first: { camera: number; viewGeneration: number } | undefined;
+    for (const entity of this.ordered) {
+      const view = this.world.get(entity, RenderView).unwrap();
+      if (view.capture) continue;
+      if (view.enabled) return view;
+      first ??= view;
+    }
+    return first;
+  }
+
+  /**
+   * The primary view covers its whole canvas every frame; a camera or role
+   * switch rewrites it in place, so its per-view state survives the switch.
+   */
+  private writePrimary(
+    capture: boolean,
+    camera: number,
+    viewGeneration: number,
+    attachment: string,
+  ): void {
+    const world = this.world;
+    const facts = this.facts;
+    facts.capture = capture;
+    facts.primary = true;
+    facts.camera = camera;
+    facts.eye = ViewEyeValue.mono;
+    facts.viewport.set(CAPTURE_VIEW.viewport);
+    facts.order = 0;
+    facts.resolutionScale = 1;
+    facts.maxRenderShortSide = 0;
+    facts.updateInterval = 1;
+    facts.enabled = true;
+    facts.channels = ViewChannelsValue.all;
+    facts.viewGeneration = viewGeneration;
+    facts.attachment = attachment;
+    facts.target = NO_TARGET;
+    if (this.primary === undefined) {
+      this.primary = world.spawn(...this.spawnData(facts)).unwrap();
+      return;
+    }
+    const current = world.get(this.primary, RenderView).unwrap();
+    if (
+      current.camera !== facts.camera ||
+      current.capture !== capture ||
+      !sameFacts(current, facts)
+    )
+      world.set(this.primary, RenderView, facts).unwrap();
+  }
+
+  private despawnPrimary(): void {
+    if (this.primary === undefined) return;
+    this.world.despawn(this.primary).unwrap();
+    this.primary = undefined;
   }
 
   private write(
@@ -258,6 +700,7 @@ export class RenderViews {
     const world = this.world;
     const facts = this.facts;
     facts.capture = capture;
+    facts.primary = false;
     facts.camera = camera.entityKey as number;
     facts.eye = eye;
     const authored = capture ? CAPTURE_VIEW : (camera.view ?? CAMERA_VIEW_DEFAULTS);
@@ -285,7 +728,7 @@ export class RenderViews {
     const declared = this.declared.get(key);
     if (declared === undefined) {
       facts.target = this.acquireTarget(camera.target);
-      const entity = world.spawn({ component: RenderView, data: facts }).unwrap();
+      const entity = world.spawn(...this.spawnData(facts)).unwrap();
       this.releaseTarget(facts.target);
       this.declared.set(key, { entity, seen: frame });
       this.orderDirty = true;
@@ -306,6 +749,19 @@ export class RenderViews {
     facts.target = this.acquireTarget(camera.target);
     world.set(declared.entity, RenderView, facts).unwrap();
     this.releaseTarget(facts.target);
+  }
+
+  /** A new view entity's components: its declaration and its (unresolved) camera. */
+  private spawnData(facts: ViewFacts) {
+    const state: ViewCameraState = {
+      extent: { width: 1, height: 1 },
+      viewport: { x: 0, y: 0, width: 1, height: 1, renderWidth: 1, renderHeight: 1 },
+      camera: undefined,
+    };
+    return [
+      { component: RenderView, data: facts },
+      { component: ViewCamera, data: { state: this.world.allocUniqueRef('ViewCamera', state) } },
+    ] as const;
   }
 
   /** One caller grant held across the write; the column retains its own reference. */

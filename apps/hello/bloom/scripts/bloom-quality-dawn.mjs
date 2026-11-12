@@ -670,6 +670,7 @@ try {
     const factor = 1 - 0.2 * level;
     dcGain += (factor * 0.3 + (1.2 - factor) * 0.7) * throughput;
   }
+  dcGain /= 3; // the composite normalises the five level weights, which sum to 3
   const dcExpected = dcResult.bloom.map(() => ({ r: 2 * dcGain, g: dcGain, b: 0.5 * dcGain, a: 1 }));
   const dcError = maxRelative(dcResult.bloom, dcExpected);
   check('constant-field-dc', dcError <= 0.01, { maxRelativeError: dcError, expected: [2 * dcGain, dcGain, 0.5 * dcGain] }, checks);

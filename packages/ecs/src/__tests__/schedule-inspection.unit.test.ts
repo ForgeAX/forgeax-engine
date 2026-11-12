@@ -26,7 +26,7 @@ describe('schedule-scoped inspection', () => {
     const world = new World();
     world.addSystem(Update, {
       name: 'producer',
-      queries: [{ with: [Position] }],
+      queries: [{ write: [Position] }],
       fn: () => {},
     });
     world.addSystem(Update, {
@@ -34,6 +34,7 @@ describe('schedule-scoped inspection', () => {
       after: ['producer'],
       queries: [
         {
+          read: [Optional],
           with: [Position],
           without: [Marker],
           optional: [Optional],
@@ -54,7 +55,15 @@ describe('schedule-scoped inspection', () => {
         before: [],
         after: [],
         queries: [
-          { with: ['ScheduleDataPosition'], without: [], optional: [], changed: [], added: [] },
+          {
+            read: [],
+            write: ['ScheduleDataPosition'],
+            with: [],
+            without: [],
+            optional: [],
+            changed: [],
+            added: [],
+          },
         ],
         resources: [],
       },
@@ -65,6 +74,8 @@ describe('schedule-scoped inspection', () => {
         after: ['producer'],
         queries: [
           {
+            read: ['ScheduleDataOptional'],
+            write: [],
             with: ['ScheduleDataPosition'],
             without: ['ScheduleDataMarker'],
             optional: ['ScheduleDataOptional'],

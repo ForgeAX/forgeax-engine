@@ -10,7 +10,12 @@ import type {
   RenderGraphNativePass,
 } from '@forgeax/engine-render-graph';
 import { RenderGraphError } from '@forgeax/engine-render-graph';
-import type { BindGroup, RenderPipeline, RhiRenderPassEncoder } from '@forgeax/engine-rhi';
+import type {
+  BindGroup,
+  RenderPassDepthStencilAttachment,
+  RenderPipeline,
+  RhiRenderPassEncoder,
+} from '@forgeax/engine-rhi';
 import { err, ok, type Result } from '@forgeax/engine-types';
 import { type RenderError, RenderFeatureStageFailedError } from '../errors/render';
 import type {
@@ -21,6 +26,7 @@ import type { SceneDataTarget } from '../temporal/scene-data';
 import { currentRenderFeaturePass } from './frame-execution';
 import type { RenderFeatureResolvedGpuBuffer } from './prepared-gpu-work';
 import type {
+  RenderFeatureDepthStencilAttachment,
   RenderFeatureGraphicsPassDescriptor,
   RenderFeaturePreparedGraphicsState,
   RenderFeaturePreparedRef,
@@ -63,6 +69,15 @@ export type RenderFeatureLightingResolver<FrameCtx extends RenderGraphFrame> = (
   frame: FrameCtx,
   pipeline: RenderPipeline,
 ) => BindGroup | undefined;
+
+/** Depth-only formats have no stencil operations; both graph routes share this rule. */
+function stencilOperations(
+  depth: RenderFeatureDepthStencilAttachment,
+): Pick<RenderPassDepthStencilAttachment, 'stencilLoadOp' | 'stencilStoreOp'> | undefined {
+  if (depth.format !== 'depth24plus-stencil8' && depth.format !== 'depth32float-stencil8')
+    return undefined;
+  return { stencilLoadOp: depth.depthLoadOp, stencilStoreOp: depth.depthStoreOp };
+}
 
 /** Prepared draws embedded by the owning pipeline into its light-view passes. */
 export interface RenderFeatureShadowDraws<FrameCtx extends RenderGraphFrame> {
@@ -304,7 +319,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
           ],
           executeIf: (frame) =>
             currentRenderFeaturePass(frame, featureIdentity, name)?.enabled ?? enabled,
-          encode: ({ encoder, resources }) => {
+          encodeDirect: (encoder, _graphframe, resources) => {
             const source = resources.texture(target.texture).unwrap();
             const destination = resources.texture(texture.value).unwrap();
             const extent = resources.textureViewExtent(target.view).unwrap();
@@ -328,8 +343,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             view: target.view,
             depthLoadOp: depth.depthLoadOp,
             depthStoreOp: depth.depthStoreOp,
-            stencilLoadOp: depth.depthLoadOp,
-            stencilStoreOp: depth.depthStoreOp,
+            ...stencilOperations(depth),
           };
     }
 
@@ -384,7 +398,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
         currentRenderFeaturePass(frame, featureIdentity, name, scope)?.enabled ?? enabled,
       colorAttachments: colors,
       ...(depthStencilAttachment === undefined ? {} : { depthStencilAttachment }),
-      encode: ({ pass, frame, resources }) => {
+      encodeDirect: (pass, frame, resources) => {
         try {
           this.encode(
             name,
@@ -443,9 +457,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
       };
     });
     const depth = descriptor.attachments.depthStencil;
-    let depthStencilAttachment:
-      | import('@forgeax/engine-rhi').RenderPassDepthStencilAttachment
-      | undefined;
+    let depthStencilAttachment: RenderPassDepthStencilAttachment | undefined;
     if (depth !== undefined) {
       const target = this.resolveTarget(depth.resource);
       if (target === undefined) throw missing(work.featureIdentity, work.order);
@@ -467,8 +479,7 @@ export class RenderFeatureRasterGraphProjection<FrameCtx extends RenderGraphFram
             view: resources.textureView(target.view).unwrap(),
             depthLoadOp: depth.depthLoadOp,
             depthStoreOp: depth.depthStoreOp,
-            stencilLoadOp: depth.depthLoadOp,
-            stencilStoreOp: depth.depthStoreOp,
+            ...stencilOperations(depth),
           };
     }
     return {

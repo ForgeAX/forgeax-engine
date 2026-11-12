@@ -41,8 +41,8 @@ afterEach(() => vi.restoreAllMocks());
       expect(componentFieldDefault(Camera, 'bloom')).toBe(0);
     });
 
-    it('Camera defaults bloomThreshold to 1 (highlights only)', () => {
-      expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(1);
+    it('Camera defaults bloomThreshold to -1 (no threshold, as Unreal)', () => {
+      expect(componentFieldDefault(Camera, 'bloomThreshold')).toBe(-1);
     });
 
     it('Camera defaults bloomIntensity to 0.5', () => {
@@ -64,7 +64,7 @@ afterEach(() => vi.restoreAllMocks());
 
     it.each([
       ['bloom', [2, 1, 1, 0.5, 0.7]],
-      ['bloomThreshold', [1, -0.001, 1, 0.5, 0.7]],
+      ['bloomThreshold', [1, -1.001, 1, 0.5, 0.7]],
       ['bloomThreshold', [1, Number.NaN, 1, 0.5, 0.7]],
       ['bloomIntensity', [1, 1, 8.001, 0.5, 0.7]],
       ['bloomSmoothWidth', [1, 1, 1, -0.001, 0.7]],

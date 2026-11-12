@@ -16,13 +16,14 @@ import {
   type RhiCommandEncoder,
   type RhiComputePassEncoder,
   type RhiError,
+  RhiError as RhiErrorClass,
   type RhiRenderPassEncoder,
   rayQueryUnsupported,
   type TexelCopyBufferInfo,
   type TexelCopyTextureInfo,
   textureCopyOrigin,
 } from '@forgeax/engine-rhi';
-import { unwrapBuffer } from './buffer';
+import { bufferByteLength, unwrapBuffer } from './buffer';
 import { webgpuRuntimeError } from './errors';
 import { aspectToU8, normalizeExtent } from './queue';
 import {
@@ -129,26 +130,25 @@ class RhiWgpuCommandEncoderImpl implements RhiCommandEncoder {
   }
 
   copyBufferToBuffer(...args: unknown[]): void {
-    // Resolve forgeax Buffer brand back to the raw GPUBuffer for the raw call
-    // (charter proposition 5 consistent abstraction across the boundary; the
-    // M4 w24 integration test exercises this path end-to-end on dawn-node).
-    // The spec signature is
-    // `(srcBuf, srcOffset?, dstBuf, dstOffset?, size?)` — args[0] / args[2]
-    // are the buffer brands that need unwrapping; everything else passes
-    // through untouched.
-    // bug-20260610: u64 args (args[1] = sourceOffset, args[3] = destOffset,
-    // args[4] = size) coerce to BigInt for the wasm class signature. Safari
-    // WebGL2 fallback throws "Invalid argument type in ToBigInt" without this.
-    const unwrapped = args.map((v, i) => {
-      if (i === 0 || i === 2) return unwrapBuffer(v as Buffer);
-      if (i === 1 || i === 3 || i === 4) {
-        if (v === undefined) return v;
-        if (typeof v === 'bigint') return v;
-        if (typeof v === 'number') return BigInt(v);
-      }
-      return v;
-    });
-    this.raw.copyBufferToBuffer.call(this.raw, ...unwrapped);
+    const source = args[0] as Buffer;
+    const full = typeof args[1] === 'number' || typeof args[1] === 'bigint';
+    const destination = args[full ? 2 : 1] as Buffer;
+    const size = full ? args[4] : (args[2] ?? bufferByteLength(source));
+    if (size === undefined) {
+      throw new RhiErrorClass({
+        code: 'rhi-descriptor-invalid',
+        expected: 'source buffer creation size for an omitted copy size',
+        hint: 'create the source buffer through this device or pass an explicit size',
+      });
+    }
+    this.raw.copyBufferToBuffer.call(
+      this.raw,
+      unwrapBuffer(source),
+      BigInt(full ? (args[1] as number) : 0),
+      unwrapBuffer(destination),
+      BigInt(full ? (args[3] as number) : 0),
+      BigInt(size as number),
+    );
   }
 
   copyBufferToTexture(

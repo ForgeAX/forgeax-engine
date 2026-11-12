@@ -485,16 +485,38 @@ async function cookCustomOutput(
         actualGuid: cooked.value.guid,
       },
     });
-  const product = {
-    payload: cooked.value.payload,
-    refs: cooked.value.refs.map((guid) => ({ guid })),
-    artifacts: cooked.value.artifacts,
-  };
-  const invalid = productError(options.sourcePath, sourceKey, { kind: asset.kind }, product);
+  const cookedAsset = cooked.value.payload;
+  const produced = isAsset(cookedAsset)
+    ? await produceOrdinaryOutput(options, sourceKey, guid, cookedAsset)
+    : undefined;
+  if (produced !== undefined && !produced.ok) return produced;
+  const ordinary = produced?.ok === true ? produced.value : undefined;
+  const kind = ordinary?.imported.kind ?? asset.kind;
+  const refs = cooked.value.refs.map((guid) => ({ guid }));
+  const product =
+    ordinary === undefined
+      ? { payload: cookedAsset, refs, artifacts: cooked.value.artifacts }
+      : {
+          payload: ordinary.imported.payload,
+          refs: [
+            ...ordinary.imported.refs,
+            ...refs.filter(
+              (ref) =>
+                !ordinary.imported.refs.some(
+                  (own) => own.guid.toLowerCase() === ref.guid.toLowerCase(),
+                ),
+            ),
+          ],
+          artifacts: { ...cooked.value.artifacts, ...ordinary.imported.artifacts },
+        };
+  const invalid = productError(options.sourcePath, sourceKey, { kind }, product);
   if (invalid !== undefined) return err(invalid);
   return ok({
-    imported: { guid, kind: asset.kind, ...product },
-    nativeFingerprint: cooked.value.inputFingerprint,
+    imported: { guid, kind, ...product },
+    nativeFingerprint:
+      ordinary?.nativeFingerprint === undefined
+        ? cooked.value.inputFingerprint
+        : `${cooked.value.inputFingerprint}+${ordinary.nativeFingerprint}`,
   });
 }
 
@@ -818,11 +840,24 @@ export async function buildScriptablePack(
   const ownedOutputs = clone(built.value);
   const localGuids = new Set<string>();
   const nativeFingerprints = new Map<string, string>();
-  for (const sourceKey of Object.keys(built.value).sort()) {
+  const sourceKeys = Object.keys(built.value).sort();
+  const parallel = (index: number): boolean => {
+    const asset = ownedOutputs[sourceKeys[index] ?? ''];
+    return (
+      asset !== undefined &&
+      (declaresCookedExecution(asset) ||
+        (isAsset(asset) &&
+          asset.kind === 'material' &&
+          Array.isArray(asset.passes) &&
+          options.cookers?.get(asset.kind)?.concurrency === 'parallel'))
+    );
+  };
+  const produce = async (sourceKey: string) => {
     const asset = ownedOutputs[sourceKey];
     const raw: unknown = asset;
     // Without the plugin capability, keep ordinary outputs and omit plugin siblings.
-    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true) continue;
+    if (record(raw) && raw.kind === 'plugin' && options.definition.plugins !== true)
+      return ok(undefined);
     if (!isValidPackSourceKey(sourceKey))
       return err(sourceKeyFailure(options.sourcePath, sourceKey));
     if (asset === undefined)
@@ -851,15 +886,38 @@ export async function buildScriptablePack(
       ? await cookCustomOutput(options, sourceKey, guid, asset)
       : await produceOrdinaryOutput(options, sourceKey, guid, asset);
     if (!produced.ok) return produced;
-    imported.push(produced.value.imported);
-    if (produced.value.nativeFingerprint !== undefined)
-      nativeFingerprints.set(sourceKey, produced.value.nativeFingerprint);
-    stagedOutputs.push({
-      guid: AssetGuid.derive(subjectPackageId, sourceKey),
+    return ok({
       sourceKey,
-      asset,
-      digest: await digest(asset),
+      produced: produced.value,
+      staged: {
+        guid: AssetGuid.derive(subjectPackageId, sourceKey),
+        sourceKey,
+        asset,
+        digest: await digest(asset),
+      },
     });
+  };
+  // The registry serializes each undeclared cooker key. Overlap complete outputs
+  // so a serial custom cook can feed parallel native material production.
+  // Drain each bounded batch before returning its first authored error.
+  for (let index = 0; index < sourceKeys.length; ) {
+    let end = index + 1;
+    if (parallel(index)) {
+      while (end < Math.min(index + 4, sourceKeys.length) && parallel(end)) end++;
+    }
+    const results = await Promise.allSettled(sourceKeys.slice(index, end).map(produce));
+    for (const settled of results) {
+      if (settled.status === 'rejected') throw settled.reason;
+      const result = settled.value;
+      if (!result.ok) return result;
+      if (result.value === undefined) continue;
+      const { sourceKey, produced, staged } = result.value;
+      imported.push(produced.imported);
+      if (produced.nativeFingerprint !== undefined)
+        nativeFingerprints.set(sourceKey, produced.nativeFingerprint);
+      stagedOutputs.push(staged);
+    }
+    index = end;
   }
 
   const referenced = externalReferences(imported, localGuids);
@@ -932,6 +990,13 @@ export interface ScriptablePackBuildWorkItem {
   readonly publicationGeneration?: number;
 }
 
+/** Identity and captured files shared by every Pack producer's existing DDC. */
+export interface PackBuildCacheSubject extends Omit<ScriptablePackBuildWorkItem, 'definition'> {
+  readonly definition: Pick<AnyScriptablePackDefinition, 'packageId'>;
+  /** Before producer execution, only these files are available for discovery. */
+  readonly discoverySourceClosure?: readonly ScriptablePackSourceClosureEntry[];
+}
+
 export interface ScriptablePackBuildWorklistOptions {
   readonly subjects: readonly ScriptablePackBuildWorkItem[];
   readonly outputs: AssetOutputProducerRegistry;
@@ -952,10 +1017,24 @@ export interface ScriptablePackBuildWorklistOptions {
   }) => void;
 }
 
+/** Current content digest of a dependency GUID, or undefined while it is unavailable. */
+export type ScriptablePackDependencyResolver = (guid: string) => Promise<string | undefined>;
+
 /** Optional producer cache; the worklist still owns current-generation reference validation. */
 export interface ScriptablePackBuildProductCache {
-  read(subject: ScriptablePackBuildWorkItem): Promise<ScriptablePackBuildProduct | undefined>;
-  write(subject: ScriptablePackBuildWorkItem, product: ScriptablePackBuildProduct): Promise<void>;
+  /** Advisory prior topology only; current production and reference validation remain authoritative. */
+  dependencies?(subject: PackBuildCacheSubject): Promise<
+    | {
+        readonly outputs: readonly string[];
+        readonly reads: readonly string[];
+      }
+    | undefined
+  >;
+  read(
+    subject: PackBuildCacheSubject,
+    resolve?: ScriptablePackDependencyResolver,
+  ): Promise<ScriptablePackBuildProduct | undefined>;
+  write(subject: PackBuildCacheSubject, product: ScriptablePackBuildProduct): Promise<void>;
 }
 
 export interface ScriptablePackBuildWorklistProduct {
@@ -993,6 +1072,112 @@ function stagedSource(
   };
 }
 
+async function orderSubjectsByCachedDependencies(
+  subjects: readonly ScriptablePackBuildWorkItem[],
+  cache: ScriptablePackBuildProductCache | undefined,
+  contentReads: Map<ScriptablePackBuildWorkItem, readonly string[]>,
+): Promise<ScriptablePackBuildWorkItem[]> {
+  let orderedSubjects = [...subjects].sort((left, right) =>
+    left.sourcePath.localeCompare(right.sourcePath),
+  );
+  const cachedDependencies = cache?.dependencies?.bind(cache);
+  if (cachedDependencies !== undefined) {
+    const metadata = await Promise.all(
+      orderedSubjects.map(async (subject) => {
+        try {
+          return await cachedDependencies(subject);
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    const owners = new Map<string, number>();
+    const ambiguous = new Set<string>();
+    for (const [index, row] of metadata.entries()) {
+      const subject = orderedSubjects[index];
+      if (subject !== undefined && row !== undefined) {
+        const ownOutputs = new Set(row.outputs.map((guid) => guid.toLowerCase()));
+        contentReads.set(
+          subject,
+          row.reads.map((guid) => guid.toLowerCase()).filter((guid) => !ownOutputs.has(guid)),
+        );
+      }
+      for (const guid of row?.outputs ?? []) {
+        if (owners.has(guid)) ambiguous.add(guid);
+        else owners.set(guid, index);
+      }
+    }
+    for (const guid of ambiguous) owners.delete(guid);
+    const remaining = new Set(orderedSubjects.map((_, index) => index));
+    const order: number[] = [];
+    while (remaining.size) {
+      const ready = [...remaining].filter((index) =>
+        (metadata[index]?.reads ?? []).every((guid) => {
+          const owner = owners.get(guid);
+          return owner === undefined || owner === index || !remaining.has(owner);
+        }),
+      );
+      // Stale or cyclic hints never block the ordinary bounded dependency worklist.
+      if (!ready.length) {
+        order.push(...remaining);
+        break;
+      }
+      for (const index of ready) {
+        remaining.delete(index);
+        order.push(index);
+      }
+    }
+    orderedSubjects = order.flatMap((index) => {
+      const subject = orderedSubjects[index];
+      return subject === undefined ? [] : [subject];
+    });
+  }
+  return orderedSubjects;
+}
+
+function admitPublishedContentReaders(
+  pending: ReadonlyMap<string, ScriptablePackBuildWorkItem>,
+  contentReads: ReadonlyMap<ScriptablePackBuildWorkItem, readonly string[]>,
+  staged: ReadonlyMap<string, ScriptablePackStagedOutput>,
+): [string, ScriptablePackBuildWorkItem][] {
+  const remaining = [...pending];
+  // Preparation can refill before the consumer publishes a preceding result.
+  // Admit content readers only after that publication, including producers
+  // whose older discovery row does not yet identify its output GUIDs.
+  const ready =
+    pending.size === 1
+      ? remaining
+      : remaining.filter(([, subject]) =>
+          (contentReads.get(subject) ?? []).every((guid) => staged.has(guid)),
+        );
+  // Discovery is advisory: missing, external or cyclic hints must retain the
+  // ordinary bounded cook/retry path rather than deadlock preparation lanes.
+  return ready.length === 0 ? remaining : ready;
+}
+
+async function* preparePublishedContentReaders<R>(
+  pending: ReadonlyMap<string, ScriptablePackBuildWorkItem>,
+  ready: readonly [string, ScriptablePackBuildWorkItem][],
+  concurrency: number,
+  prepare: (input: [string, ScriptablePackBuildWorkItem]) => Promise<R>,
+  fatal: (value: R) => boolean,
+  madeProgress: () => boolean,
+): AsyncGenerator<PromiseSettledResult<R>> {
+  yield* orderedPackPreparation(ready, concurrency, prepare, fatal);
+  // Hints can select a nonempty subset whose actual reads are not ready.
+  // Only after that subset stalls, try the subjects it excluded in this same
+  // bounded pass. Never retry an already attempted subject within the pass.
+  if (madeProgress()) return;
+  const attempted = new Set(ready.map(([key]) => key));
+  const remaining = [...pending].filter(([key]) => !attempted.has(key));
+  yield* orderedPackPreparation(remaining, concurrency, prepare, fatal);
+}
+
+function missingContentGuid(error: unknown): string | undefined {
+  const detail = record(error) && record(error.detail) ? error.detail : undefined;
+  return detail !== undefined && typeof detail.guid === 'string' ? detail.guid : undefined;
+}
+
 /** Build subjects in stable passes; content reads may wait for a later subject. */
 export async function buildScriptablePackWorklist(
   options: ScriptablePackBuildWorklistOptions,
@@ -1011,8 +1196,11 @@ export async function buildScriptablePackWorklist(
       }
   >
 > {
-  const orderedSubjects = [...options.subjects].sort((left, right) =>
-    left.sourcePath.localeCompare(right.sourcePath),
+  const contentReads = new Map<ScriptablePackBuildWorkItem, readonly string[]>();
+  const orderedSubjects = await orderSubjectsByCachedDependencies(
+    options.subjects,
+    options.cache,
+    contentReads,
   );
   const maxConcurrency = options.maxConcurrency ?? 1;
   if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 4)
@@ -1028,58 +1216,74 @@ export async function buildScriptablePackWorklist(
   for (; iterations < maxPasses && pending.size > 0; iterations += 1) {
     let progress = false;
     const waiting = new Set<string>();
-    const pass = [...pending];
-    const prepared = orderedPackPreparation(
-      pass,
-      maxConcurrency,
-      async ([key, subject]) => {
-        const visible = new Map(staged);
-        const report = (phase: 'cache' | 'cook' | 'persist' | 'ready', cache?: 'hit' | 'miss') =>
-          options.onProgress?.({
-            phase,
-            sourcePath: subject.sourcePath,
-            completed: results.size,
-            total: orderedSubjects.length,
-            ...(cache === undefined ? {} : { cache }),
-          });
-        report('cache');
-        let cached = await options.cache?.read(subject);
-        const cachedPluginsIgnored =
-          cached !== undefined &&
-          subject.definition.plugins !== true &&
-          cached.product.assets.some((asset) => asset.kind === 'plugin');
-        // Rebuild a stale capability hit so its disabled plugin outputs are omitted.
-        if (cachedPluginsIgnored) cached = undefined;
-        if (cached === undefined) report('cook', 'miss');
-        const result =
-          cached === undefined
-            ? await buildScriptablePack({
-                definition: subject.definition,
-                sourcePath: subject.sourcePath,
-                ...(subject.subjectPackageId === undefined
-                  ? {}
-                  : { subjectPackageId: subject.subjectPackageId }),
-                ...(subject.values === undefined ? {} : { values: subject.values }),
-                ...(subject.inheritedValues === undefined
-                  ? {}
-                  : { inheritedValues: subject.inheritedValues }),
-                ...(subject.sourceClosure === undefined
-                  ? {}
-                  : { sourceClosure: subject.sourceClosure }),
-                ...(subject.publicationGeneration === undefined
-                  ? {}
-                  : { publicationGeneration: subject.publicationGeneration }),
-                outputs: options.outputs,
-                ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
-                assetSource: stagedSource(visible, options.assetSource),
-                availableGuids: new Set([...availableGuids, ...visible.keys()]),
-                deferReferenceValidation: true,
-              })
-            : ok(cached);
-        return { key, subject, cached, result, report, visible };
-      },
-      ({ result }) => !result.ok && errorCode(result.error) !== 'asset-not-found',
-    );
+    const pass = admitPublishedContentReaders(pending, contentReads, staged);
+    const prepare = async ([key, subject]: [string, ScriptablePackBuildWorkItem]) => {
+      const visible = new Map(staged);
+      const report = (phase: 'cache' | 'cook' | 'persist' | 'ready', cache?: 'hit' | 'miss') =>
+        options.onProgress?.({
+          phase,
+          sourcePath: subject.sourcePath,
+          completed: results.size,
+          total: orderedSubjects.length,
+          ...(cache === undefined ? {} : { cache }),
+        });
+      report('cache');
+      let cached = await options.cache?.read(subject, async (guid) => {
+        const parsed = AssetGuid.parse(guid);
+        if (!parsed.ok) return undefined;
+        const local = visible.get(AssetGuid.format(parsed.value).toLowerCase());
+        if (local !== undefined) return local.digest ?? (await digest(local.asset));
+        if (pending.size > 1) return undefined;
+        const read = await options.assetSource?.readByGuid(parsed.value);
+        return read?.ok ? read.value.digest : undefined;
+      });
+      const cachedPluginsIgnored =
+        cached !== undefined &&
+        subject.definition.plugins !== true &&
+        cached.product.assets.some((asset) => asset.kind === 'plugin');
+      // Rebuild a stale capability hit so its disabled plugin outputs are omitted.
+      if (cachedPluginsIgnored) cached = undefined;
+      if (cached === undefined) report('cook', 'miss');
+      const result =
+        cached === undefined
+          ? await buildScriptablePack({
+              definition: subject.definition,
+              sourcePath: subject.sourcePath,
+              ...(subject.subjectPackageId === undefined
+                ? {}
+                : { subjectPackageId: subject.subjectPackageId }),
+              ...(subject.values === undefined ? {} : { values: subject.values }),
+              ...(subject.inheritedValues === undefined
+                ? {}
+                : { inheritedValues: subject.inheritedValues }),
+              ...(subject.sourceClosure === undefined
+                ? {}
+                : { sourceClosure: subject.sourceClosure }),
+              ...(subject.publicationGeneration === undefined
+                ? {}
+                : { publicationGeneration: subject.publicationGeneration }),
+              outputs: options.outputs,
+              ...(options.cookers === undefined ? {} : { cookers: options.cookers }),
+              assetSource: stagedSource(visible, options.assetSource),
+              availableGuids: new Set([...availableGuids, ...visible.keys()]),
+              deferReferenceValidation: true,
+            })
+          : ok(cached);
+      return { key, subject, cached, result, report, visible };
+    };
+    const fatal = ({ result }: Awaited<ReturnType<typeof prepare>>) =>
+      !result.ok && errorCode(result.error) !== 'asset-not-found';
+    const prepared =
+      pass.length < pending.size
+        ? preparePublishedContentReaders(
+            pending,
+            pass,
+            maxConcurrency,
+            prepare,
+            fatal,
+            () => progress,
+          )
+        : orderedPackPreparation(pass, maxConcurrency, prepare, fatal);
     for await (const outcome of prepared) {
       if (outcome.status === 'rejected') throw outcome.reason;
       const { key, subject, cached, result, report, visible } = outcome.value;
@@ -1106,10 +1310,7 @@ export async function buildScriptablePackWorklist(
         continue;
       }
       if (errorCode(result.error) === 'asset-not-found') {
-        const detail =
-          record(result.error) && record(result.error.detail) ? result.error.detail : undefined;
-        const guid =
-          detail !== undefined && typeof detail.guid === 'string' ? detail.guid : undefined;
+        const guid = missingContentGuid(result.error);
         if (guid !== undefined) waiting.add(guid.toLowerCase());
         continue;
       }

@@ -3,7 +3,11 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { terrainProgramSource } from '@forgeax/engine-shader-compiler';
-import { assertMaterialAsset, type MaterialProgram } from '@forgeax/engine-types';
+import {
+  assertMaterialAsset,
+  type MaterialProgram,
+  type ShaderProgramContract,
+} from '@forgeax/engine-types';
 import { cloudAtmosphereEntries } from './cloud-atmosphere-entries';
 
 const DEFINE_IMPORT_PATH_RE = /^\s*#define_import_path\s+([A-Za-z0-9_.:-]+)/m;
@@ -16,7 +20,34 @@ export interface EngineShaderFile {
   readonly program?: MaterialProgram;
   /** Engine-owned fixed Surface composition, prepared only at build time. */
   readonly surfaceModule?: string;
+  /** Non-reflectable numerical and output-format facts published with this WGSL entry. */
+  readonly programContract?: ShaderProgramContract;
 }
+
+const RESAMPLE_NUMERICAL_CONTRACT = Object.freeze({
+  intermediatePrecision: 'f32',
+  outputRange: [0, 1],
+  reduction: 'box2x2-mean',
+  mipLevelCount: 9,
+  quantization: 'unorm8',
+} as const);
+
+const RESAMPLE_COMPUTE_PROGRAM_CONTRACT = {
+  schemaVersion: 'shader-program-contract/1',
+  colorTargets: [],
+  publicationFormat: 'rgba8unorm',
+  numerical: RESAMPLE_NUMERICAL_CONTRACT,
+} satisfies ShaderProgramContract;
+
+const RESAMPLE_FRAGMENT_PROGRAM_CONTRACT = {
+  schemaVersion: 'shader-program-contract/1',
+  colorTargets: [
+    { location: 0, format: 'rgba32float', numericType: 'float' },
+    { location: 1, format: 'rgba8unorm', numericType: 'float' },
+  ],
+  publicationFormat: 'rgba8unorm',
+  numerical: RESAMPLE_NUMERICAL_CONTRACT,
+} satisfies ShaderProgramContract;
 
 export function extractDefineImportPath(source: string): string | undefined {
   return DEFINE_IMPORT_PATH_RE.exec(source)?.[1];
@@ -67,6 +98,11 @@ export async function loadEngineShaderEntries() {
       ...(defines === undefined ? {} : { defines }),
       ...(reservedIdentifier === undefined ? {} : { reservedIdentifier }),
     }));
+  const readFragmentEntry = (fileName: string, identifier: string): Promise<EngineShaderFile> =>
+    readEntry(fileName, identifier, { PORTABLE_FRAGMENT: true }).then((file) => ({
+      ...file,
+      id: `${file.id}?portable-fragment`,
+    }));
   const terrainEntries = Promise.all(
     [false, true].flatMap((ids) =>
       [false, true].map(async (shadow) => {
@@ -75,7 +111,14 @@ export async function loadEngineShaderEntries() {
         const composition = terrainProgramSource(identifier);
         if (composition === undefined)
           throw new Error(`Unknown Terrain composition: ${identifier}`);
-        const fixed = composition.defines;
+        // Terrain surfaces never alpha-test; only the shadow composition keeps
+        // the ALPHA_MASK axis it shares with the Standard shadow caster.
+        // Terrain keeps its unconditional discards (view clipping, temporal
+        // LOD coverage) instead of the Standard discard-source axes, as before
+        // those axes existed. Temporary until material static switches.
+        const fixed: Readonly<Record<string, boolean>> = shadow
+          ? composition.defines
+          : { ...composition.defines, ALPHA_MASK: false, LOD_DITHER: true, CLIPPING_PLANES: true };
         return {
           ...file,
           id: `${file.id}?terrain=${ids ? 'ids' : 'weights'}${shadow ? '-shadow' : ''}`,
@@ -127,6 +170,9 @@ export async function loadEngineShaderEntries() {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
     atmosphereIbl: readEntry('atmosphere-ibl.wgsl'),
+    atmosphereLutsFragment: readEntry('atmosphere-luts-fragment.wgsl', undefined, {
+      ATMOSPHERE_UTILITY_SHADOWS: true,
+    }),
     atmosphereLuts: readEntry('atmosphere-luts.wgsl', undefined, {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
@@ -134,11 +180,37 @@ export async function loadEngineShaderEntries() {
       ATMOSPHERE_UTILITY_SHADOWS: true,
     }),
     hdrpSsao: readEntry('hdrp-ssao.wgsl'),
+    hdrpGtaoCompute: readEntry('hdrp-gtao-compute.wgsl'),
+    lightTextureResampleCompute: readEntry(
+      'light-texture-resample-compute.wgsl',
+      'forgeax::engine-light-texture-resample-compute',
+    ).then((file) => ({
+      ...file,
+      programContract: RESAMPLE_COMPUTE_PROGRAM_CONTRACT,
+    })),
+    lightTextureResampleFragment: readEntry(
+      'light-texture-resample-fragment.wgsl',
+      'forgeax::engine-light-texture-resample-fragment',
+    ).then((file) => ({
+      ...file,
+      programContract: RESAMPLE_FRAGMENT_PROGRAM_CONTRACT,
+    })),
     depthPyramidSeed: readEntry('depth-pyramid-seed.wgsl'),
     depthPyramidReduce: readEntry('depth-pyramid-reduce.wgsl'),
+    depthPyramidSeedFragment: readFragmentEntry(
+      'depth-pyramid-seed.wgsl',
+      'forgeax::depth-pyramid-seed-fragment',
+    ),
+    depthPyramidReduceFragment: readFragmentEntry(
+      'depth-pyramid-reduce.wgsl',
+      'forgeax::depth-pyramid-reduce-fragment',
+    ),
     ssrTrace: readEntry('ssr-trace.wgsl'),
     ssrTemporal: readEntry('ssr-temporal.wgsl'),
+    ssrTraceFragment: readFragmentEntry('ssr-trace.wgsl', 'forgeax::ssr-trace-fragment'),
+    ssrTemporalFragment: readFragmentEntry('ssr-temporal.wgsl', 'forgeax::ssr-temporal-fragment'),
     ssrCompose: readEntry('ssr-compose.wgsl'),
+    ssrComposeFragment: readFragmentEntry('ssr-compose.wgsl', 'forgeax::ssr-compose-fragment'),
     rayQuery: readEntry('ray-query.wgsl'),
     rayPathTracer: readEntry('ray-path-tracer.wgsl', 'forgeax::engine-ray-path-tracer'),
     rayRasterSource: readEntry('ray-raster-source.wgsl'),
@@ -159,6 +231,15 @@ export async function loadEngineShaderEntries() {
       'standard-deferred-lighting.wgsl',
       'forgeax::engine-standard-deferred-lighting',
     ),
+    forwardScreenCompose: readEntry(
+      'forward-screen-compose.wgsl',
+      'forgeax::engine-forward-screen-compose',
+    ),
+    forwardScreenPack: readEntry('forward-screen-pack.wgsl', 'forgeax::engine-forward-screen-pack'),
+    forwardContact: readEntry(
+      'forward-contact-shadow.wgsl',
+      'forgeax::engine-forward-contact-shadow',
+    ),
     shadowVariance: readEntry('shadow-variance.wgsl', 'forgeax::engine-shadow-variance'),
     decalProject: readEntry('decal-project.wgsl', 'forgeax::engine-decal-project'),
     decalApply: readEntry('decal-apply.wgsl', 'forgeax::engine-decal-apply'),
@@ -175,6 +256,9 @@ export async function loadEngineShaderEntries() {
     'forgeax_material::terrain_id_surface': readSource('terrain-id-surface.wgsl'),
     'forgeax_ray::irradiance_field_sample': readSource('ray-irradiance-field-sample.wgsl'),
     'forgeax_ray::traversal': readSource('ray-traversal.wgsl'),
+    'forgeax_lighting::light_texture_resample_kernel': readSource(
+      'light-texture-resample-kernel.wgsl',
+    ),
     'forgeax_material::ray_abi': readSource('ray-material-abi.wgsl'),
     'forgeax_pbr::ray_bsdf': readSource('ray-bsdf.wgsl'),
     'forgeax_material::texture_coordinates': readSource('texture-coordinates.wgsl'),
@@ -182,6 +266,7 @@ export async function loadEngineShaderEntries() {
     'forgeax_material::standard_surface': readSource('standard-surface.wgsl'),
     'forgeax_clipping::planes': readSource('clipping.wgsl'),
     'forgeax_shadow::surface': readSource('shadow-surface.wgsl'),
+    'forgeax_shadow::capsule': readSource('capsule-shadow.wgsl'),
     'forgeax_view::common': readSource('common.wgsl'),
     'forgeax_view::output_encoding': readSource('output-encoding.wgsl'),
     'forgeax_view::tone_mapping': readSource('tone-mapping.wgsl'),
@@ -192,6 +277,7 @@ export async function loadEngineShaderEntries() {
     forgeax_scene_temporal: readSource('scene-temporal.wgsl'),
     'forgeax_view::fog': readSource('fog.wgsl'),
     'forgeax_cloud::layer': entries.cloudLayer.then((file) => file.source),
+    'forgeax_pbr::contact_shadow': readSource('contact-shadow.wgsl'),
     'forgeax_standard::cluster': readSource('standard-cluster.wgsl'),
     'forgeax_pbr::ibl_shared': readSource('ibl-shared.wgsl'),
     'forgeax_pbr::ibl_equirect_to_cube': readSource('ibl-equirect-to-cube.wgsl'),
@@ -217,8 +303,11 @@ export async function loadEngineShaderEntries() {
     'forgeax_view::atmosphere': readSource('view-atmosphere.wgsl'),
     'forgeax_atmosphere::visibility': readSource('atmosphere-visibility.wgsl'),
     'forgeax_atmosphere::sampling': readSource('atmosphere-sampling.wgsl'),
+    'forgeax_atmosphere::table_access': readSource('atmosphere-table-access.wgsl'),
+    'forgeax_standard::cluster_texture_data': readSource('cluster-texture-data.wgsl'),
     'forgeax_atmosphere::optics': readSource('atmosphere-optics.wgsl'),
     'forgeax_atmosphere::coordinates': readSource('atmosphere-coordinates.wgsl'),
+    'forgeax_atmosphere::table_kernels': readSource('atmosphere-table-kernels.wgsl'),
     'forgeax_hdrp::ssao': readSource('hdrp-ssao.wgsl'),
     'forgeax_pbr::standard_lighting': readSource('standard-lighting.wgsl'),
     'forgeax_pbr::gbuffer': readSource('standard-gbuffer.wgsl'),

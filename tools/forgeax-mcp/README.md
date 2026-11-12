@@ -1,4 +1,4 @@
-# Optional ForgeaX MCP adapter
+# Optional ForgeAX MCP adapter
 
 > [!IMPORTANT]
 > This package exposes six bounded MCP tools over existing Engine, Pack and View owner APIs. MCP is client-neutral; `codex/create-local-plugin.mjs` is only a Codex distribution wrapper. Browser View remains at its URL. The optional App distribution uses the same View source in isolated MCP-delivered documents. Enable Pack inspection only for a trusted project: a `.pack.ts` source may execute module top-level code.
@@ -33,6 +33,10 @@ scheme, host and relative-reference identity during normalization.
 Express also accepts qs 6.16.1, which fixes comma-array serialization throwing
 on elements with a non-callable own `toString`
 ([GHSA-6pq8-jhm2-2vcw](https://github.com/advisories/GHSA-6pq8-jhm2-2vcw)).
+The legacy SDK accepts the patched `@hono/node-server` 2.x line. Both package
+manager policies pin 2.1.3, which removes a second static-path decoding step that
+could bypass middleware mounted on a static prefix
+([GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)).
 Regenerate both workspace lockfiles when changing these policies. Keep normal
 compressed request handling enabled.
 
@@ -52,6 +56,14 @@ or `projectTarget.url` directly when handing a page to the user. The simulation
 header and its host controls belong to the test harness; they are not View UI.
 Preview and Play may retain their own isolated child documents in each mode.
 Top-level View access therefore does not imply annotation access inside every child.
+
+Simulation readiness follows the retained native Host and project-session owners,
+not the header status that also describes project restoration. Require the
+expected project's target publication within 180 seconds, then lock that target
+and wait at most 120 seconds for its running phase and completed restoration.
+Starting observations never renew the deadline; failed, lost or replaced targets
+reject the wait. Owner-state polling does not depend on animation frames. Retain
+the complete Scene, Play and lifecycle gates.
 
 Simulation evidence must record the carrier's `srcdoc`, sandbox and CSP conditions.
 It qualifies that adapter path; actual Codex behavior still requires native
@@ -110,9 +122,9 @@ This existing producer verifies source/compiler/profile identity and rebuilds mi
 | MCP server | Purpose |
 |:--|:--|
 | `forgeax-tools` | Six public business tools, available to the model |
-| `forgeax-view` | Open the `ForgeaX View` panel and deliver its UI resources and Host messages |
+| `forgeax-view` | Open the `ForgeAX View` panel and deliver its UI resources and Host messages |
 
-Both servers use stdio and connect to the same selected backend. Server names, package generation and MCP initialization share [one contract](src/contract.ts). The panel resource, opening tool and HTML document share the display name `ForgeaX View`; the opening operation remains `view.start`.
+Both servers use stdio and connect to the same selected backend. Server names, package generation and MCP initialization share [one contract](src/contract.ts). The panel resource, opening tool and HTML document share the display name `ForgeAX View`; the opening operation remains `view.start`.
 
 | Boundary | Contract |
 |:--|:--|
@@ -120,7 +132,8 @@ Both servers use stdio and connect to the same selected backend. Server names, p
 | Platform transport | App-only Host messages, admitted HTTP bytes, module compilation and chunks; no second business registry |
 | Codex behavior | `forgeax.view.platform.codex` adds draft references; generic MCP has no OpenAI extension dependency |
 | Resource ownership | Child SDK teardown precedes bridge removal; pending and admitted sockets retire with their owner. Reopening the same resource identity retains its document; a new public View presentation retires the old subtree, including when it reuses a fixed URL |
-| Performance | One batched 60 Hz event pump, three foreground/one background slots, gzip level 1, bounded resource references, shared concurrent reads; 192 KiB chunks with four reads in flight. Remote module compilation shares four source reads across documents, keeping wide import graphs within the loopback connection budget. A reset source GET retries once within its original 30-second deadline and read slot; HTTP failures remain terminal |
+| Performance | One batched 60 Hz event pump, three foreground/one background slots, gzip level 1 with a level 6 retry for 16–48 KiB compressed inline payloads, bounded resource references, shared concurrent reads; 192 KiB chunks with four reads in flight. The bounded retry leaves room for base64 and resource metadata within gzip's 32 KiB history window across supported Node codecs. Remote module compilation shares four source reads across documents, keeping wide import graphs within the loopback connection budget. A reset source GET retries once within its original 30-second deadline and read slot; HTTP failures remain terminal |
+| Document preparation | Presentation-owned compilation returns a pending phase immediately; the document owner polls for the completed byte reference under its existing Scene readiness deadline. Polling shares one compilation, at most 32 tasks remain admitted, document disposal releases its task, and presentation replacement cancels all remaining reads. RPC and individual source-read deadlines remain 30 seconds; source failures stay terminal. The App resource version separates this protocol from older cached carriers. |
 | Resource reads | Same-turn GET/HEAD fetches use bounded HTTP batches. Each read retains its status, response bytes and cancellation; mutations are not batched. The 256 MiB resource budget bounds both each decoded HTTP response and the retained wire cache; oversized response streams cancel before full buffering. Batch replies reuse the common compressed byte decoder and origin admission. Gzip buffers feed the native transform directly; concurrent read/write handles backpressure and decode rejection without a Blob storage stream |
 | Source URLs | The isolated document exposes its logical base through the platform; sandbox origin and browser security policy remain intact |
 | Document frames | `FrontendPlatform.createFrame` carries both Preview and Play through MCP. Play owns its disposable handle; Preview placement borrows its retained document. No child navigates localhost. The game retains the sampled platform preparation without inheriting the Preview root |

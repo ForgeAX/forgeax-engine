@@ -50,6 +50,9 @@ try {
   const shaderPublication = producerManifest.shaderClosure.publication;
   const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
   const allowedInputPaths = new Set(['manifest.json', shaderPublication.path]);
+  allowedInputPaths.add(producerManifest.initialRoot.path);
+  for (const artifact of Object.values(producerManifest.initialRoot.artifacts))
+    allowedInputPaths.add(artifact.path);
   for (const asset of producerManifest.assets) {
     allowedInputPaths.add(asset.path);
     for (const artifact of Object.values(asset.artifacts)) allowedInputPaths.add(artifact.path);

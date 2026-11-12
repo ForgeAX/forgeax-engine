@@ -9,6 +9,7 @@ import {
   createRenderFeatureGpuWorkOwner,
   ownRenderFeatureProgramData,
 } from '../features/prepared-gpu-work';
+import { submitFeatureFrame } from './feature-frame-driver';
 import { runSingleViewFeatureFrame } from './single-view-feature-fixture';
 
 setFlagsFromString('--expose-gc');
@@ -73,7 +74,7 @@ it('reuses compute accesses for unchanged items and releases them with their bin
     const planned = frame.plans[0];
     const execution = planned && getRenderFeaturePlanExecutionProjection(planned);
     const resolved = execution?.passes[0]?.resolvedGpuCompute;
-    frame.onSubmitted();
+    submitFeatureFrame(host);
     // The queue fence passed: retired references may be released.
     for (const lease of frame.preparedResourceBatches) lease.release().unwrap();
     if (resolved === undefined) throw new Error('Missing resolved compute pass');

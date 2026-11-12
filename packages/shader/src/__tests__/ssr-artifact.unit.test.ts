@@ -31,7 +31,11 @@ interface CompileResult {
 interface CompilerModule {
   compileShader(
     source: string,
-    options: { readonly id: string; readonly imports?: Readonly<Record<string, string>> },
+    options: {
+      readonly id: string;
+      readonly defines?: Readonly<Record<string, boolean>>;
+      readonly imports?: Readonly<Record<string, string>>;
+    },
   ): Promise<CompileResult>;
 }
 
@@ -79,9 +83,10 @@ beforeAll(async () => {
   )) as unknown as CompilerModule;
 });
 
-async function compile(name: keyof typeof SOURCES): Promise<CompileValue> {
+async function compile(name: keyof typeof SOURCES, fragment = false): Promise<CompileValue> {
   const result = await compiler.compileShader(SOURCES[name], {
     id: `forgeax_ssr::${name}`,
+    defines: { PORTABLE_FRAGMENT: fragment },
     imports: Object.fromEntries(STAGE_IMPORTS[name].map((id) => [id, IMPORT_SOURCES[id]])),
   });
   expect(result.ok, result.ok ? undefined : `${name}: ${result.error?.message}`).toBe(true);
@@ -90,6 +95,17 @@ async function compile(name: keyof typeof SOURCES): Promise<CompileValue> {
 }
 
 describe('SSR built-in shader artifacts', () => {
+  it('publishes storage-free fragment variants of every numerical stage', async () => {
+    for (const name of ['pyramidSeed', 'pyramidReduce', 'trace', 'temporal', 'compose'] as const) {
+      const value = await compile(name, true);
+      expect(value.wgsl).toContain('@fragment');
+      expect(value.wgsl).not.toContain('@compute');
+      expect(value.wgsl).not.toContain('texture_storage');
+      expect(value.wgsl).not.toContain('var<storage');
+      expect(value.wgsl).not.toContain('textureNumLevels');
+    }
+  });
+
   it('owns one build-time source for each spatial producer stage', () => {
     expect(SOURCES.pyramidSeed).toContain('#define_import_path forgeax_depth_pyramid::seed');
     expect(SOURCES.pyramidReduce).toContain('#define_import_path forgeax_depth_pyramid::reduce');
@@ -98,7 +114,7 @@ describe('SSR built-in shader artifacts', () => {
     expect(SOURCES.pyramidSeed).toContain('linearizeViewDepth');
     expect(SOURCES.pyramidSeed).toContain('view.temporalProjection');
     expect(SOURCES.pyramidReduce).toContain('reduceDepthPyramidFootprint');
-    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_COARSE_STEPS');
+    expect(SOURCES.trace).toContain('SSR_TRACE_MAX_HIZ_ITERATIONS');
     expect(SOURCES.trace).toContain('SSR_TRACE_MAX_REFINE_STEPS');
     expect(SOURCES.trace).toContain('traceScreenRay');
     expect(SOURCES.trace).toContain('textureLoad(depthPyramid');

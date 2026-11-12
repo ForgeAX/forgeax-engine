@@ -176,7 +176,7 @@ try {
   await page.addInitScript(() => {
     const buttons = Array.from({ length: 17 }, (_, index) => ({ value: 0, pressed: false }));
     const gamepad = {
-      id: 'ForgeaX M19 browser probe',
+      id: 'ForgeAX M19 browser probe',
       index: 0,
       connected: true,
       mapping: 'standard',

@@ -41,9 +41,9 @@ function fixture(options = {}, initialState) {
 test('default startup diagnostic keeps its facts/fatal modal and does not poll frames', () => {
   const f = fixture({ observeFrames: false });
   assert.equal(f.modals.length, 1);
-  assert.equal(f.modals[0].title, 'ForgeaX native API facts');
+  assert.equal(f.modals[0].title, 'ForgeAX native API facts');
   f.handlers.error('original startup failure');
-  assert.equal(f.modals[1].title, 'ForgeaX first fatal');
+  assert.equal(f.modals[1].title, 'ForgeAX first fatal');
   assert.equal(f.reads, 0);
   assert.equal(f.timers.size, 0);
 });

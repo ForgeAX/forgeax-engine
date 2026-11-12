@@ -22,6 +22,7 @@ import {
 } from '../publication/record';
 import { SkinTasks } from '../record/skin-tasks';
 import { PersistentRenderScene } from '../scene/render-scene';
+import { SceneComposition } from '../scene/scene-composition';
 import { SkinFrames } from '../scene/skin-scene-inputs';
 import { renderLifecycleManifestUrl } from './shader-manifest-fixture';
 
@@ -152,13 +153,14 @@ it.each([
 ])('cold recovers an existing published view through the actual Renderer entry (CameraView=%s)', async (view) => {
   const f = await fixture(view),
     scenes = new Set<PersistentRenderScene>();
-  const actual = PersistentRenderScene.prototype.consumePublication;
-  const consume = vi
-    .spyOn(PersistentRenderScene.prototype, 'consumePublication')
-    .mockImplementation(function (this: PersistentRenderScene, input) {
+  const actual = PersistentRenderScene.prototype.followPublication;
+  const follow = vi
+    .spyOn(PersistentRenderScene.prototype, 'followPublication')
+    .mockImplementation(function (this: PersistentRenderScene, adoption, frame) {
       scenes.add(this);
-      return actual.call(this, input);
+      return actual.call(this, adoption, frame);
     });
+  const consume = vi.spyOn(SceneComposition.prototype, 'consume');
   try {
     const firstResult = f.renderer.draw(f.request);
     if (!firstResult.ok) throw firstResult.error;
@@ -183,6 +185,7 @@ it.each([
     for (const scene of scenes) expect(scene.compositionSlots().length).toBe(1);
     expect(consume.mock.calls.every(([input]) => input.packet.baseline)).toBe(true);
   } finally {
+    follow.mockRestore();
     consume.mockRestore();
     expect((await f.renderer.dispose()).ok).toBe(true);
     f.publisher.dispose();
@@ -190,7 +193,7 @@ it.each([
   }
 });
 
-it('resumes a real published Renderer frame through the Feature and recording checkpoints exactly once', async () => {
+it('resumes a real published Renderer frame through one frame checkpoint before Record', async () => {
   const f = await fixture();
   const resumes: (() => void)[] = [];
   const resume = () => {
@@ -209,9 +212,9 @@ it('resumes a real published Renderer frame through the Feature and recording ch
     expect(f.submit).not.toHaveBeenCalled();
     expect(f.featureSubmitted).not.toHaveBeenCalled();
     expect(f.sourceAcknowledged).not.toHaveBeenCalled();
-    resume();
-    // The view pauses again after CPU preparation, before swap-chain acquisition and submit.
-    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    // Record is atomic: the one frame boundary holds through later host turns.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(checkpoint).toHaveBeenCalledTimes(1);
     expect(f.submit).not.toHaveBeenCalled();
     expect(f.featureSubmitted).not.toHaveBeenCalled();
     expect(f.sourceAcknowledged).not.toHaveBeenCalled();
@@ -220,7 +223,7 @@ it('resumes a real published Renderer frame through the Feature and recording ch
     if (!result.ok) throw result.error;
     expect(result.value.presentation).toBe('ready');
     expect((await result.value.completed).ok).toBe(true);
-    expect(checkpoint).toHaveBeenCalledTimes(2);
+    expect(checkpoint).toHaveBeenCalledTimes(1);
     expect(f.submit).toHaveBeenCalledOnce();
     expect(f.featureSubmitted).toHaveBeenCalledOnce();
     expect(f.sourceAcknowledged).toHaveBeenCalledExactlyOnceWith('submitted-feedback');
@@ -265,8 +268,8 @@ it('holds completion-driven delivery while a scheduled frame is paused and retur
     const unheld = queue.onSubmittedWorkDoneUnheld();
     expect(await settled(unheld)).toBe(true);
     expect(await settled(held)).toBe(false);
-    for (const release of resumes.splice(0)) release();
-    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(checkpoint).toHaveBeenCalledTimes(1);
     expect(await settled(held)).toBe(false);
     for (const release of resumes.splice(0)) release();
     const result = await pending;
@@ -285,14 +288,11 @@ it('holds completion-driven delivery while a scheduled frame is paused and retur
 it('aborts at the recording checkpoint without submitting and keeps the next frame drawable', async () => {
   const f = await fixture();
   const controller = new AbortController();
-  const checkpoint = vi.fn(
-    (): Promise<void> =>
-      checkpoint.mock.calls.length === 1 ? Promise.resolve() : new Promise<void>(() => {}),
-  );
+  const checkpoint = vi.fn((): Promise<void> => new Promise<void>(() => {}));
   try {
     if (f.renderer.drawScheduled === undefined) throw new Error('Missing scheduled Renderer entry');
     const pending = f.renderer.drawScheduled(f.request, { checkpoint, signal: controller.signal });
-    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(checkpoint).toHaveBeenCalledTimes(1));
     expect(f.submit).not.toHaveBeenCalled();
     controller.abort();
     const result = await pending;

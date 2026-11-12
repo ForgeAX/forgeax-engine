@@ -1,8 +1,9 @@
 import { type Mat4, mat4 } from '@forgeax/engine-math';
 import {
-  attachBarrelDistortionCameraFrame,
+  attachComputedBarrelDistortionCameraFrame,
   type BarrelDistortionMapping,
   createBarrelDistortionMapping,
+  ownsBarrelDistortionMapping,
 } from '../barrel-distortion';
 import type { BarrelDistortionInspection } from '../inspection-types';
 import { projectBarrelDistortionInspection } from '../inspection-types';
@@ -20,9 +21,47 @@ interface CameraFrameScratch {
 // Retain one free buffer pair; a reentrant operation acquires its own pair.
 let freeCameraFrame: CameraFrameScratch | undefined;
 
+/** Compare only owned publications against the current validated private scratch. */
+function sameSubmittedMapping(
+  previous: BarrelDistortionMapping,
+  mapping: BarrelDistortionMapping,
+  frame: CameraFrameScratch,
+): boolean {
+  const camera = previous.camera;
+  if (camera === undefined) return false;
+  // Camera motion rejects before comparing unchanged lens and viewport facts.
+  if (
+    !Object.is(camera.viewMatrix[12], frame.viewMatrix[12]) ||
+    !Object.is(camera.viewMatrix[13], frame.viewMatrix[13]) ||
+    !Object.is(camera.viewMatrix[14], frame.viewMatrix[14])
+  )
+    return false;
+  return (
+    sameCameraMatrix(camera.viewMatrix, frame.viewMatrix) &&
+    sameCameraMatrix(camera.projectionMatrix, frame.projectionMatrix) &&
+    camera.projection === frame.projection &&
+    Object.is(camera.far, frame.far) &&
+    Object.is(previous.width, mapping.width) &&
+    Object.is(previous.height, mapping.height) &&
+    Object.is(previous.aspect, mapping.aspect) &&
+    Object.is(previous.strength, mapping.strength) &&
+    Object.is(previous.centerX, mapping.centerX) &&
+    Object.is(previous.centerY, mapping.centerY) &&
+    Object.is(previous.radiusSquared, mapping.radiusSquared)
+  );
+}
+
+function sameCameraMatrix(previous: ArrayLike<number>, current: Mat4): boolean {
+  if (previous.length !== current.length) return false;
+  for (let index = 0; index < current.length; index++)
+    if (!Object.is(previous[index], current[index])) return false;
+  return true;
+}
+
 function attachSubmittedCameraFrame(
   mapping: BarrelDistortionMapping,
   camera: CameraSnapshot,
+  previous: BarrelDistortionMapping | undefined,
 ): BarrelDistortionMapping {
   const frame: CameraFrameScratch = freeCameraFrame ?? {
     projection: 'perspective',
@@ -36,8 +75,15 @@ function attachSubmittedCameraFrame(
     frame.far = camera.far;
     computeViewMatrix(camera, frame.viewMatrix);
     computeProjectionMatrix(camera, frame.projectionMatrix);
+    // Compute and validate current camera facts before considering any reuse.
+    if (
+      previous !== undefined &&
+      ownsBarrelDistortionMapping(previous) &&
+      sameSubmittedMapping(previous, mapping, frame)
+    )
+      return previous;
     // Publication detaches both matrices before this synchronous call returns.
-    return attachBarrelDistortionCameraFrame(mapping, frame);
+    return attachComputedBarrelDistortionCameraFrame(mapping, frame);
   } finally {
     freeCameraFrame ??= frame;
   }
@@ -47,9 +93,10 @@ function identityBarrelMapping(
   camera: CameraSnapshot,
   width: number,
   height: number,
+  previous: BarrelDistortionMapping | undefined,
 ): BarrelDistortionMapping | undefined {
   const identity = createBarrelDistortionMapping(width, height, undefined);
-  return identity.ok ? attachSubmittedCameraFrame(identity.value, camera) : undefined;
+  return identity.ok ? attachSubmittedCameraFrame(identity.value, camera, previous) : undefined;
 }
 
 export function packBarrelDistortionParams(mapping: BarrelDistortionMapping): Uint8Array {
@@ -73,7 +120,7 @@ function resolveRetainedBarrelMapping(
     centerX: accepted.centerX,
     centerY: accepted.centerY,
   });
-  return mapping.ok ? attachSubmittedCameraFrame(mapping.value, camera) : undefined;
+  return mapping.ok ? attachSubmittedCameraFrame(mapping.value, camera, accepted) : undefined;
 }
 
 export function resolveSubmittedBarrelMapping(
@@ -89,14 +136,14 @@ export function resolveSubmittedBarrelMapping(
     return resolveRetainedBarrelMapping(accepted, camera, width, height);
   }
   const hasBarrelPass = graph.inspect().passes.some((pass) => pass.name === 'barrel-distortion');
-  if (!hasBarrelPass) return identityBarrelMapping(camera, width, height);
+  if (!hasBarrelPass) return identityBarrelMapping(camera, width, height, accepted);
   const authored = camera.barrelDistortion;
   if (!retained && authored !== undefined && authored.strength > 0) {
     const mapping = createBarrelDistortionMapping(width, height, authored);
-    return mapping.ok ? attachSubmittedCameraFrame(mapping.value, camera) : undefined;
+    return mapping.ok ? attachSubmittedCameraFrame(mapping.value, camera, accepted) : undefined;
   }
   return accepted === undefined
-    ? identityBarrelMapping(camera, width, height)
+    ? identityBarrelMapping(camera, width, height, accepted)
     : resolveRetainedBarrelMapping(accepted, camera, width, height);
 }
 

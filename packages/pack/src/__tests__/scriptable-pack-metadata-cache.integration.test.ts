@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it } from 'vitest';
-import { scanInventory } from '../scanner.js';
+import { STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS, scanInventory } from '../scanner.js';
 import {
   createScriptablePackMetadataCache,
   createScriptablePackSourceSnapshot,
@@ -40,6 +40,7 @@ async function scanLoads(
   try {
     const scanned = await scanInventory([root], {
       scriptablePack: {
+        ...STANDARD_SCRIPTABLE_PACK_SCAN_OPTIONS,
         metadataOnly: true,
         sourceSnapshot: createScriptablePackSourceSnapshot({ metadataCache: cache }),
       },

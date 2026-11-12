@@ -223,9 +223,9 @@ async function hasUnboundedFilesystemReads(
     if (!/\.[cm]?[jt]sx?$/.test(path)) continue;
     const source = await snapshot.readText(path);
     if (
-      ts
-        .preProcessFile(source, true, true)
-        .importedFiles.some(({ fileName }) => /^(?:node:)?fs(?:\/promises)?$/.test(fileName)) ||
+      (await snapshot.imports(path, { includeTypeOnly: true })).some((specifier) =>
+        /^(?:node:)?fs(?:\/promises)?$/.test(specifier),
+      ) ||
       /\b(?:readFile(?:Sync)?|readdir(?:Sync)?|createReadStream)\s*\(/.test(source)
     )
       return true;
@@ -402,12 +402,16 @@ export async function discoverPluginAssets(
       PackageId.format(packageId) === PackageId.format(declaration.definition.packageId) &&
       Object.keys(overrides).length === 0
     ) {
-      const product = await productCache.read({
-        definition,
-        sourcePath,
-        sourceClosure: declaration.sourceClosure,
-        publicationGeneration: 1,
-      });
+      const product = await productCache.read(
+        {
+          definition,
+          sourcePath,
+          sourceClosure: declaration.sourceClosure,
+          publicationGeneration: 1,
+        },
+        // Bootstrap blocks GUID reads, so a product that read content by GUID misses.
+        async () => undefined,
+      );
       if (product !== undefined)
         return Object.fromEntries(
           product.stagedOutputs.map((output) => [output.sourceKey, output.asset]),

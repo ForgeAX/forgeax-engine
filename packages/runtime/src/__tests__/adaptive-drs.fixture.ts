@@ -23,6 +23,8 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { equalBytes } from '../../../../scripts/test/byte-equality.mjs';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import { compactTape } from './compact-tape.fixture';
 
 type Save = (name: string, bytes: Uint8Array) => void | Promise<void>;
@@ -75,13 +77,15 @@ export async function verifyAdaptiveDrs(
       .unwrap();
   }
   let frames = 0;
-  const draw = async () => {
+  const draw = async (observation?: readonly 'final-display'[]) => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
+    const receipt = await drawReadyFrame(
+      renderer,
+      { leases: [lease], camera: { lease }, environment: { lease } },
+      observation,
     );
-    value(await receipt.completed);
+    expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe('ready');
     frames++;
     // Internal scale changes must preserve output-sized temporal history.
     if (frames > 2) {
@@ -95,12 +99,9 @@ export async function verifyAdaptiveDrs(
   };
   const reports: unknown[] = [];
   const capture = async (name: string) => {
-    if (renderer.requestObservation === undefined)
-      throw new Error('missing observation capability');
-    value(renderer.requestObservation(['final-display']));
     const pending = recorder.captureFrame();
     value(await recorder.frameBoundary());
-    const receipt = await draw();
+    const receipt = await draw(['final-display']);
     value(await recorder.frameBoundary());
     const recorded = value(await pending);
     await save(`${name}.rhitape`, compactTape(recorded).bytes);
@@ -229,7 +230,7 @@ export async function verifyAdaptiveDrs(
     );
     try {
       const inspected = value(await falsifier.inspectWork(output.workIndex, ['pixels']));
-      expect(inspected.attachment?.bytes).not.toEqual(live);
+      expect(equalBytes(inspected.attachment?.bytes, live)).toBe(false);
     } finally {
       value(await falsifier.dispose());
       webgpu._internal_getRawDevice(device)?.destroy();

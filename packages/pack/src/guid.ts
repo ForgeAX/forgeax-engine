@@ -1,4 +1,6 @@
 import { isValidAssetGuidString } from '@forgeax/engine-types';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { uuidv7obj } from 'uuidv7';
 import { PackError } from './errors.js';
 import { uuidV5 } from './uuid-v5.js';
@@ -189,3 +191,53 @@ export const AssetGuid = {
     return derivedGuid(namespace, sourceKey);
   },
 } as const;
+
+/** Prefix of the sourceKey that names a texture by its content instead of its source. */
+export const TEXTURE_CONTENT_SOURCE_KEY_PREFIX = 'texture-content/';
+
+const TEXTURE_CONTENT_NAMESPACE = packageId(
+  dashFormToBytes('8d5e2f4a-6b1c-5d3e-9a7f-0c2b4e6d8f1a'),
+);
+
+/**
+ * Identity of a texture defined only by what the runtime receives: the source
+ * bytes and every setting that changes how they decode. Equal inputs yield the
+ * same GUID in every producer package, so packages that embed the same image
+ * for the same use declare one shared texture; any difference in bytes or
+ * settings (an sRGB colour map versus the same bytes read as a linear normal
+ * map) yields a different identity. Samplers are separate assets and are not
+ * part of it.
+ */
+export function textureContentIdentity(
+  bytes: Uint8Array,
+  settings: Readonly<Record<string, string | number | boolean>>,
+): { readonly sourceKey: string; readonly guid: string } {
+  const header = new TextEncoder().encode(
+    `${JSON.stringify(Object.entries(settings).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))}\n`,
+  );
+  const digest = sha256.create().update(header).update(bytes).digest();
+  const sourceKey = `${TEXTURE_CONTENT_SOURCE_KEY_PREFIX}${bytesToHex(digest)}`;
+  return {
+    sourceKey,
+    guid: AssetGuid.format(AssetGuid.derive(TEXTURE_CONTENT_NAMESPACE, sourceKey)),
+  };
+}
+
+/**
+ * True when a declared output is a content-identified texture whose GUID is the
+ * one its sourceKey derives. Only such declarations may appear in more than one
+ * producer package; they describe the same bytes decoded the same way.
+ */
+export function isTextureContentDeclaration(output: {
+  readonly guid: string;
+  readonly kind: string;
+  readonly sourceKey?: string | undefined;
+}): boolean {
+  const key = output.sourceKey;
+  if (output.kind !== 'texture' || key === undefined) return false;
+  if (!key.startsWith(TEXTURE_CONTENT_SOURCE_KEY_PREFIX) || !isValidPackSourceKey(key))
+    return false;
+  return (
+    AssetGuid.format(AssetGuid.derive(TEXTURE_CONTENT_NAMESPACE, key)) === output.guid.toLowerCase()
+  );
+}

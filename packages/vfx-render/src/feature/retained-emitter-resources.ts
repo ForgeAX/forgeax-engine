@@ -16,6 +16,12 @@ export interface RetainedEmitterResources {
   readonly batch?: VfxComputeBatchProgram;
   readonly emitter: VfxGpuTickIntent['emitter'];
   readonly tickCapacity: number;
+  /** Core-only domains keep all mutable inputs on the ordinary frame path. */
+  readonly inputs: 'retained' | 'frame';
+  readonly program: string;
+  readonly customStride: number;
+  readonly sharedInstanceBytes: number;
+  readonly indirectBytes: number;
   readonly ranges: readonly VfxArenaRange[];
   readonly byName: ReadonlyMap<string, VfxArenaRange>;
   readonly bindings: readonly Binding[];
@@ -36,10 +42,9 @@ interface RetainedProjectionResources {
   readonly indirectBytes: number;
 }
 
-/** The emitter's resource owner is also its prepared admission. Only current
- * runtime bytes pass through this object after the cold declaration boundary. */
-export function retainEmitterResources(input: {
+interface RetainEmitterResourcesInput {
   readonly previous: RetainedEmitterResources | undefined;
+  readonly inputs: 'retained' | 'frame';
   readonly batch?: VfxComputeBatchProgram | undefined;
   readonly emitter: VfxGpuTickIntent['emitter'];
   readonly instance: VfxArenaInstance;
@@ -50,16 +55,33 @@ export function retainEmitterResources(input: {
   readonly indirectBytes: number;
   readonly arena: ArenaFrame;
   readonly admission: RenderFeatureNativeResourceAdmission;
-}): RetainedEmitterResources | undefined {
-  const previous = input.previous;
-  if (
+}
+
+function canRetainEmitterResources(
+  input: RetainEmitterResourcesInput,
+  previous: RetainedEmitterResources | undefined,
+): previous is RetainedEmitterResources {
+  return (
     previous?.emitter === input.emitter &&
     previous.batch === input.batch &&
-    previous.tickCapacity === input.tickCapacity &&
+    previous.inputs === input.inputs &&
+    previous.program === input.program &&
+    previous.customStride === input.customStride &&
+    previous.sharedInstanceBytes === input.sharedInstanceBytes &&
+    previous.indirectBytes === input.indirectBytes &&
+    (input.inputs === 'frame' || previous.tickCapacity === input.tickCapacity) &&
     input.arena.retain(previous.ranges) &&
     input.admission.retain('frame', previous.token)
-  )
-    return previous;
+  );
+}
+
+/** The emitter's resource owner is also its prepared admission. Only current
+ * runtime bytes pass through this object after the cold declaration boundary. */
+export function retainEmitterResources(
+  input: RetainEmitterResourcesInput,
+): RetainedEmitterResources | undefined {
+  const previous = input.previous;
+  if (canRetainEmitterResources(input, previous)) return previous;
   const maximum = Math.max(
     input.emitter.capacity * VFX_PARTICLE_CORE_STRIDE,
     input.emitter.capacity * input.customStride,
@@ -73,7 +95,7 @@ export function retainEmitterResources(input: {
         : 0,
     ),
   );
-  if (!input.arena.supports(maximum, ['storage']) || !input.arena.supports(304, ['uniform']))
+  if (!input.arena.supports(maximum, ['storage']) || !input.arena.supports(320, ['uniform']))
     return undefined;
   const { instance, emitter, program } = input;
   const prefix = instance.prefix;
@@ -165,10 +187,10 @@ export function retainEmitterResources(input: {
         emitter.capacity * (Math.max(2, renderer.historyLength) + 1) * 16,
         ['storage', 'copy-src'],
       );
-  if (input.batch === undefined)
+  if (input.inputs === 'retained' && input.batch === undefined)
     for (let tick = 0; tick < input.tickCapacity; tick++) {
       const tickPrefix = `${prefix}.tick-${tick}`;
-      buffer(`${tickPrefix}.runtime`, 304, ['uniform']);
+      buffer(`${tickPrefix}.runtime`, 320, ['uniform']);
       bind(`${tickPrefix}.simulation-bindings`, `${tickPrefix}.runtime`, `${prefix}.scratch`);
       for (const [index, renderer] of emitter.renderers.entries()) {
         if (
@@ -178,7 +200,7 @@ export function retainEmitterResources(input: {
         )
           continue;
         const runtime = `${tickPrefix}.renderer-${index}.history-runtime`;
-        buffer(runtime, 304, ['uniform']);
+        buffer(runtime, 320, ['uniform']);
         bind(
           `${tickPrefix}.renderer-${index}.history-bindings`,
           runtime,
@@ -191,6 +213,11 @@ export function retainEmitterResources(input: {
     ...(input.batch === undefined ? {} : { batch: input.batch }),
     emitter,
     tickCapacity: input.tickCapacity,
+    inputs: input.inputs,
+    program: input.program,
+    customStride: input.customStride,
+    sharedInstanceBytes: input.sharedInstanceBytes,
+    indirectBytes: input.indirectBytes,
     ranges,
     byName,
     bindings,
@@ -240,7 +267,7 @@ export function retainProjectionResources(input: {
       ),
       ['storage'],
     ) ||
-    !input.arena.supports(304, ['uniform'])
+    !input.arena.supports(320, ['uniform'])
   )
     return undefined;
   const prefix = input.instance.prefix;
@@ -278,7 +305,7 @@ export function retainProjectionResources(input: {
   buffer('counters', 24, ['storage'], 24);
   buffer('indirect', input.indirectBytes, ['storage', 'indirect'], 20);
   // Job-table projection has no binding for an emitter-local runtime uniform.
-  const runtime = input.batch === undefined ? buffer('runtime', 304, ['uniform']) : undefined;
+  const runtime = input.batch === undefined ? buffer('runtime', 320, ['uniform']) : undefined;
   let binding: Binding | undefined;
   if (input.batch === undefined) {
     const reflected = new Set(

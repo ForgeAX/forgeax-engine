@@ -62,7 +62,7 @@ export {
  *   mapSize        >= 1         — shadow map resolution (default 2048)
  *   depthBias                    — normalized receiver depth floor (default 0.00001),
  *                                  plus automatic texel/filter/slope coverage
- *   normalBias                   — world-space receiver normal offset (default 0.05)
+ *   normalBias                   — optional world-space receiver normal offset (default 0)
  *   shadowDistance > 0           — how far shadows reach in front of the camera,
  *                                  in world units (default 200, capped by camera far). This is the sole
  *                                  coverage knob: the CSM cascades are PSSM-split
@@ -97,6 +97,17 @@ export {
  * resolve (grass blades, pebbles, feet on the ground). It is independent of
  * castShadow, so geometry excluded from shadow maps still self-shadows.
  * Deferred-path only; forward-lit surfaces ignore it. Typical values: 0.1-0.5.
+ *
+ * sourceAngle (degrees, finite, >= 0, default 0.5357 = the sun's apparent
+ * diameter) gives the light an angular size. Direct specular then follows
+ * Unreal's directional-light sphere model: SphereMaxNoH (BRDF.ush:63-137) moves
+ * the light direction to the point of the disc that maximises N.H, and
+ * EnergyNormalization (ShadingModels.ush:122-160) widens the lobe and rescales
+ * it to conserve energy, so a smooth surface shows a sun-sized highlight
+ * instead of a sub-pixel glint. The disc shrinks with roughness as
+ * saturate(sin(half angle) * (1 - roughness^2)) (CapsuleLightIntegrate.ush:98).
+ * 0 keeps the infinitely small point-light behaviour exactly. Diffuse and
+ * shadows are unaffected (shadowAngularRadius is the separate PCSS knob).
  *
  * @example Spawn a single directional light without shadow maps:
  *   world.spawn({ component: DirectionalLight, data: {
@@ -152,7 +163,9 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   shadowRevision: { type: 'f64', default: 0 },
   mapSize: { type: 'f32', default: 2048 },
   depthBias: { type: 'f32', default: 0.00001 },
-  normalBias: { type: 'f32', default: 0.05 },
+  // Caster depth and per-texel plane correction supply automatic separation.
+  // Authored normal offsets share the caster budget instead of stacking it.
+  normalBias: { type: 'f32', default: 0 },
   // Sole shadow coverage knob (feat replaces nearPlane/farPlane). The PSSM
   // near end derives from the active camera near; shadowDistance is the far
   // cap. The effective distance is min(camera far, shadowDistance), matching
@@ -178,4 +191,7 @@ export const DirectionalLight = defineComponent('DirectionalLight', {
   // Retained static cascade layer for GPU-driven casters (see doc above).
   staticShadowCache: { type: 'bool', default: true },
   contactShadowLength: { type: 'f32', default: 0 },
+  // Apparent diameter of the light disc in degrees (Unreal LightSourceAngle,
+  // default 0.5357 = the sun). 0 = point light.
+  sourceAngle: { type: 'f32', default: 0.5357 },
 });

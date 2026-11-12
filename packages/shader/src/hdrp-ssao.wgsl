@@ -6,12 +6,11 @@
 
 #import forgeax_view::common::{fullscreen_triangle, FullscreenOutput}
 
-// ── SSAO uniform (3 mat4 + vec4 intensityPad, 256 B, D-1 + D-C) ─────────────
+// ── SSAO uniform (3 mat4 + 3 vec4, padded to 256 B) ────────────────────────
 //
 // intensityPad carries the raw visibility exponent plus the calc radius/bias.
 // Raw intensity is applied before the spatial filter, once.
-// Keeping these values in the existing vec4 preserves the one-shot
-// 256 B UBO write and avoids a second parameter binding.
+// clusterPack is used only by the no-storage integer-texture AO packer.
 
 struct SsaoUniform {
   view              : mat4x4<f32>,  // world -> view
@@ -19,6 +18,7 @@ struct SsaoUniform {
   inverseProjection : mat4x4<f32>,  // NDC -> view
   intensityPad      : vec4<f32>,    // intensity, radius, bias, sample budget
   algorithmPad      : vec4<f32>,    // algorithm, thickness, radial exponent, distance falloff
+  clusterPack       : vec4<u32>,   // physical base origin, Cluster width, packed AO row width
 };
 
 // ── SSAO binding declarations (@group(2)) ───────────────────────────────────
@@ -37,6 +37,12 @@ fn ssaoNormal(uv : vec2<f32>) -> vec3<f32> {
   let size = vec2<i32>(textureDimensions(gbuffer_normal));
   let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
   return loadStandardNormalRoughness(gbuffer_normal, pixel).xyz;
+}
+
+fn ssaoDepth(uv: vec2<f32>) -> f32 {
+  let size = vec2<i32>(textureDimensions(hdr_depth));
+  let pixel = clamp(vec2<i32>(uv * vec2<f32>(size)), vec2<i32>(0), size - 1);
+  return textureLoad(hdr_depth, pixel, 0);
 }
 
 // ── vertex: fullscreen triangle (SSOT in common.wgsl) ───────────────────────
@@ -59,10 +65,35 @@ fn vs_ssao(@builtin(vertex_index) vertex_index : u32) -> SsaoVsOut {
 // Three r184 radial search; projected-length/open-integral correction and
 // orthographic rays retain the independently verified rendering-equation integral.
 // Sources and deliberate differences: packages/render/README.md, GTAO references.
-// hNegative <= 0 <= hPositive are visibility horizons measured from viewDir.
+// The two horizons are angles measured from viewDir and may lie on one side of zero.
 fn gtaoSliceIntegral(n: f32, hNegative: f32, hPositive: f32) -> f32 {
-  return 0.25 * (2.0 * cos(n) + 2.0 * (hNegative + hPositive) * sin(n)
-    - cos(2.0 * hNegative - n) - cos(2.0 * hPositive - n));
+  let pi = 3.14159265359;
+  let lower = min(hNegative, hPositive);
+  let upper = max(hNegative, hPositive);
+  let starts = array<f32, 4>(
+    lower,
+    max(lower, -pi),
+    max(lower, 0.0),
+    max(lower, pi),
+  );
+  let ends = array<f32, 4>(
+    min(upper, -pi),
+    min(upper, 0.0),
+    min(upper, pi),
+    upper,
+  );
+  var integral = 0.0;
+  for (var segment = 0u; segment < 4u; segment += 1u) {
+    let theta0 = starts[segment];
+    let theta1 = ends[segment];
+    if (theta0 < theta1) {
+      let primitive0 = 0.5 * theta0 * sin(n) - 0.25 * cos(2.0 * theta0 - n);
+      let primitive1 = 0.5 * theta1 * sin(n) - 0.25 * cos(2.0 * theta1 - n);
+      let sinIsPositive = segment == 0u || segment == 2u;
+      integral += select(-1.0, 1.0, sinIsPositive) * (primitive1 - primitive0);
+    }
+  }
+  return integral;
 }
 
 fn aoViewPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
@@ -164,7 +195,7 @@ fn gtaoVisibility(uv: vec2<f32>) -> f32 {
 
 fn hemisphereVisibility(in : SsaoVsOut) -> f32 {
   // Reconstruct view-space position from depth + NDC.
-  let depth = textureSampleLevel(hdr_depth, ssao_depth_sampler, in.uv, 0);
+  let depth = ssaoDepth(in.uv);
   // NDC reconstruction: screen-space xy in [-1,1], depth in [0,1].
   if (depth <= 0.0) { return 1.0; }
   let ndc = vec4<f32>(in.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), depth, 1.0);
@@ -211,7 +242,7 @@ fn hemisphereVisibility(in : SsaoVsOut) -> f32 {
     if (any(sampleUv < vec2<f32>(0.0)) || any(sampleUv > vec2<f32>(1.0))) { continue; }
 
     // Sample depth at the projected screen location.
-    let sampleDepth = textureSampleLevel(hdr_depth, ssao_depth_sampler, sampleUv, 0);
+    let sampleDepth = ssaoDepth(sampleUv);
     // Reconstruct view-space z of the sampled fragment (at offset.xy).
     var sampledViewPosH = ssao_uniform.inverseProjection * vec4<f32>(offset.xy, sampleDepth, 1.0);
     sampledViewPosH = sampledViewPosH / sampledViewPosH.w;
@@ -246,16 +277,23 @@ fn decodeSsaoNormal(encoded : vec2<f32>) -> vec3<f32> {
   return normalize(n);
 }
 
+// Shared raw GTAO adapter target. Both the fragment path and the selected
+// compute entry call this exact function, including intensity and normal data.
+fn gtaoRawVisibility(uv : vec2<f32>) -> vec4<f32> {
+  var visibility = gtaoVisibility(uv);
+  if (ssao_uniform.intensityPad.x == 0.0) { visibility = 1.0; }
+  else { visibility = pow(visibility, ssao_uniform.intensityPad.x); }
+  return vec4<f32>(visibility, encodeSsaoNormal(ssaoNormal(uv)), 1.0);
+}
+
 // ── fs_ssao_calc: raw visibility (r) + encoded world normal (gb) ────────────
 
 @fragment
 fn fs_ssao_calc(in : SsaoVsOut) -> @location(0) vec4<f32> {
-  var visibility : f32;
   if (ssao_uniform.algorithmPad.x > 0.5) {
-    visibility = gtaoVisibility(in.uv);
-  } else {
-    visibility = hemisphereVisibility(in);
+    return gtaoRawVisibility(in.uv);
   }
+  var visibility = hemisphereVisibility(in);
   // Three's scale is applied to raw visibility, before spatial denoising.
   // Explicit zero strength is identity, including fully occluded samples.
   if (ssao_uniform.intensityPad.x == 0.0) { visibility = 1.0; }
@@ -272,10 +310,10 @@ fn ssaoViewZ(uv: vec2<f32>, depth: f32) -> f32 {
 
 @fragment
 fn fs_ssao_blur(in: SsaoVsOut) -> @location(0) f32 {
-  let depth = textureSampleLevel(hdr_depth, ssao_depth_sampler, in.uv, 0);
+  let depth = ssaoDepth(in.uv);
   if (depth <= 0.0) { return 1.0; }
   let z = ssaoViewZ(in.uv, depth);
-  let normal = decodeSsaoNormal(textureSampleLevel(ssaoRaw, ssao_depth_sampler, in.uv, 0).gb);
+  let normal = decodeSsaoNormal(textureSampleLevel(ssaoRaw, ssao_depth_sampler, in.uv, 0.0).gb);
   let texel = 1.0 / vec2<f32>(textureDimensions(ssaoRaw));
   var total = 0.0;
   var weight = 0.0;
@@ -283,9 +321,9 @@ fn fs_ssao_blur(in: SsaoVsOut) -> @location(0) f32 {
     for (var x = -2; x <= 2; x++) {
       let uv = in.uv + vec2<f32>(f32(x), f32(y)) * texel;
       if (any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0))) { continue; }
-      let d = textureSampleLevel(hdr_depth, ssao_depth_sampler, uv, 0);
+      let d = ssaoDepth(uv);
       if (d <= 0.0) { continue; }
-      let raw = textureSampleLevel(ssaoRaw, ssao_depth_sampler, uv, 0);
+      let raw = textureSampleLevel(ssaoRaw, ssao_depth_sampler, uv, 0.0);
       let n = decodeSsaoNormal(raw.gb);
       let dz = abs(ssaoViewZ(uv, d) - z);
       let w = exp(-f32(x*x + y*y) / 4.0) * exp(-dz / max(0.01, ssao_uniform.intensityPad.y * 0.1)) * pow(max(dot(n, normal), 0.0), 8.0);
@@ -294,4 +332,34 @@ fn fs_ssao_blur(in: SsaoVsOut) -> @location(0) f32 {
     }
   }
   return total / max(weight, 0.00001);
+}
+
+// Pack four adjacent normalized AO values into the spare Cluster texture
+// region on no-storage devices. The viewport restricts writes to that region;
+// this pass never samples its Cluster destination.
+@fragment
+fn fs_ssao_cluster_pack(
+  @builtin(position) position : vec4<f32>,
+) -> @location(0) vec4<u32> {
+  let origin = ssao_uniform.clusterPack.xy;
+  let textureWidth = ssao_uniform.clusterPack.z;
+  let packedWidth = ssao_uniform.clusterPack.w;
+  let logicalSize = textureDimensions(ssaoRaw);
+  let physicalPixel = vec2<u32>(u32(position.x), u32(position.y)) - origin;
+  let packedIndex = physicalPixel.y * textureWidth + physicalPixel.x;
+  let sourceRow = packedIndex / packedWidth;
+  let sourceX = (packedIndex % packedWidth) * 4u;
+  // Out-of-range lanes remain the neutral AO value and every packed texel is initialized.
+  var result = vec4<u32>(0xffffffffu);
+  for (var lane = 0u; lane < 4u; lane += 1u) {
+    let x = sourceX + lane;
+    if (x < logicalSize.x && sourceRow < logicalSize.y) {
+      let ao = clamp(textureLoad(ssaoRaw, vec2<i32>(i32(x), i32(sourceRow)), 0).r, 0.0, 1.0);
+      // The filter target is UNORM8. Recover its byte before integer expansion:
+      // f32 texture decoders can differ by an ULP for the same normalized byte.
+      let aoByte = u32(round(ao * 255.0));
+      result[lane] = select(aoByte * 0x01010100u, 0xffffffffu, aoByte == 255u);
+    }
+  }
+  return result;
 }

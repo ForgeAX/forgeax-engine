@@ -20,6 +20,7 @@ describe('ParticleEffectPlayer ECS contract', () => {
       'preparePipelines',
       'seed',
       'timeScale',
+      'parameters',
     ]);
     expect(componentSchema(ParticleEffectPlayer)).toEqual({
       effect: 'asset<particle-effect>',
@@ -27,12 +28,14 @@ describe('ParticleEffectPlayer ECS contract', () => {
       preparePipelines: 'bool',
       seed: 'u32',
       timeScale: 'f32',
+      parameters: 'string',
     });
     expect(componentDefinition(ParticleEffectPlayer).defaults).toEqual({
       playing: true,
       preparePipelines: false,
       seed: 0,
       timeScale: 1,
+      parameters: '',
     });
     expect(ParticleEffectPlayer.fields.effect.type).toBe('asset<particle-effect>');
     expect(ParticleEffectPlayer.fields.playing.default).toBe(true);

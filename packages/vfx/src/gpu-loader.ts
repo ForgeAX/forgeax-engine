@@ -1,6 +1,7 @@
 import type { AssetRegistry } from '@forgeax/engine-assets-runtime';
 import type {
   AssetDecoderContribution,
+  AssetGuid,
   AssetKind,
   AssetLoadError,
   Result,
@@ -227,6 +228,6 @@ export const particleEffectContribution: AssetDecoderContribution<
   },
 };
 
-export function loadVfxGpuEffect(registry: AssetRegistry, guid: string) {
+export function loadVfxGpuEffect(registry: AssetRegistry, guid: string | AssetGuid) {
   return registry.load(guid, particleEffectContribution.kind);
 }

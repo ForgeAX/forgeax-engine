@@ -1,0 +1,12 @@
+{
+  "name": "@forgeax/app-modeling-show-mech-gt-car",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "F1 (C-100, mech-gt) finished car alone: the interactive page subject f1-car.",
+  "forgeax": {
+    "frameTimeoutMs": 60000,
+    "startupTimeoutMs": 600000
+  }
+}

@@ -33,6 +33,11 @@ export async function verifyChannelShadows(
   renderer: Renderer,
   recorder: RecorderAttachment,
   save: (name: string, tape: EncodedTape, image: Float32Array, facts: unknown) => Promise<void>,
+  options: {
+    readonly paths?: readonly ('forward' | 'deferred')[];
+    readonly kinds?: readonly ('directional' | 'point' | 'spot')[];
+    readonly warmFrames?: number;
+  } = {},
 ) {
   const world = new World();
   const strengths = { directional: 3, point: 20, spot: 20 } as const;
@@ -209,10 +214,11 @@ export async function verifyChannelShadows(
   };
   const mean = (image: Float32Array) => roi(image).reduce((sum, value) => sum + value, 0) / 36;
   try {
-    for (const path of ['forward', 'deferred'] as const) {
+    for (const path of options.paths ?? (['forward', 'deferred'] as const)) {
       renderValue(renderer.setProfile({ ...renderer.inspect().profile, renderPath: path }));
-      for (let frame = 0; frame < testQuality.staticFrames; frame++) await draw();
-      for (const kind of ['directional', 'point', 'spot'] as const) {
+      for (let frame = 0; frame < (options.warmFrames ?? testQuality.staticFrames); frame++)
+        await draw();
+      for (const kind of options.kinds ?? (['directional', 'point', 'spot'] as const)) {
         world.set(receiver, MeshRenderer, { lightingChannels: 1 }).unwrap();
         world.set(caster, MeshRenderer, { lightingChannels: 2 }).unwrap();
         world.set(caster, ShadowParticipation, { cast: true, receive: true }).unwrap();

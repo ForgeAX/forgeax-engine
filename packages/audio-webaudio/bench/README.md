@@ -1,15 +1,15 @@
 # Audio control validation
 
 > [!IMPORTANT]
-> These probes execute ForgeaX's native Web Audio graph. CPU timings describe
-> this host and workload; they do not rank ForgeaX against Three.js or UE and
+> These probes execute ForgeAX's native Web Audio graph. CPU timings describe
+> this host and workload; they do not rank ForgeAX against Three.js or UE and
 > do not measure device latency or audio-thread deadline misses.
 
 ## Source baselines
 
 | Reference | Pinned implementation | Applied result |
 |:--|:--|:--|
-| Three.js r184 `d3b629c0c2097cec664ad16369bb6eae3b10e335` | [`Audio.js`](https://github.com/mrdoob/three.js/blob/d3b629c0c2097cec664ad16369bb6eae3b10e335/src/audio/Audio.js) `play`, `pause`, `setPlaybackRate`, `setFilters` | One-shot sources, retained decoded progress, ordered native filters; ForgeaX additionally integrates each old-rate interval before changing rate |
+| Three.js r184 `d3b629c0c2097cec664ad16369bb6eae3b10e335` | [`Audio.js`](https://github.com/mrdoob/three.js/blob/d3b629c0c2097cec664ad16369bb6eae3b10e335/src/audio/Audio.js) `play`, `pause`, `setPlaybackRate`, `setFilters` | One-shot sources, retained decoded progress, ordered native filters; ForgeAX additionally integrates each old-rate interval before changing rate |
 | Three.js r184 | [`AudioAnalyser.js`](https://github.com/mrdoob/three.js/blob/d3b629c0c2097cec664ad16369bb6eae3b10e335/src/audio/AudioAnalyser.js) | Opt-in native analyser and reused output storage |
 | UE 5.8.1 `71fe36aac5a8df5ccd66c763ffc902b29b6a9c43` | `AudioComponent.cpp` `SetPitchMultiplier`, `SetPaused`, `SetSourceEffectChain` and active source assembly | Independent speed/pause and source effect ownership |
 | UE 5.8.1 | `AudioMixerSource.cpp`, `AudioMixerBlueprintLibrary.cpp` | Sample advance changes pitch; explicit spectrum analysis start and queries |

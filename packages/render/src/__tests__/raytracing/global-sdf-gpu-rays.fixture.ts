@@ -3,6 +3,7 @@ import type { Buffer } from '@forgeax/engine-rhi';
 import { attachRecorder, buildFrameModel, decodeTape, openReplay } from '@forgeax/engine-rhi-debug';
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { assert, expect } from 'vitest';
+import { equalBytes } from '../../../../../scripts/test/byte-equality.mjs';
 import { createGlobalSdfComposition } from '../../raytracing/global-sdf';
 import {
   createGlobalSdfQueryRecorder,
@@ -196,11 +197,14 @@ export async function verifyGlobalSdfGpuRays(
       tMax: 1.5,
       mask: 255,
     };
-    expect(output.rays.subarray(offset, offset + count * 48)).toEqual(
-      plan.emit
-        ? packReferenceRays(Array.from({ length: count }, () => expectedRay)).unwrap()
-        : new Uint8Array(count * 48),
-    );
+    expect(
+      equalBytes(
+        output.rays.subarray(offset, offset + count * 48),
+        plan.emit
+          ? packReferenceRays(Array.from({ length: count }, () => expectedRay)).unwrap()
+          : new Uint8Array(count * 48),
+      ),
+    ).toBe(true);
     const hits = new DataView(output.hits.buffer, output.hits.byteOffset + offset, count * 64);
     const expectedStatus = !plan.query
       ? 0xcdcdcdcd
@@ -230,9 +234,9 @@ export async function verifyGlobalSdfGpuRays(
       steps: plan.query ? hits.getUint32(8, true) : null,
     };
   });
-  expect(outputs[0]?.rays).not.toEqual(outputs[2]?.rays);
-  expect(outputs[0]?.hits).not.toEqual(outputs[2]?.hits);
-  expect(outputs[0]?.hits).not.toEqual(outputs[3]?.hits);
+  expect(equalBytes(outputs[0]?.rays, outputs[2]?.rays)).toBe(false);
+  expect(equalBytes(outputs[0]?.hits, outputs[2]?.hits)).toBe(false);
+  expect(equalBytes(outputs[0]?.hits, outputs[3]?.hits)).toBe(false);
   const tape = decodeTape(tapeBytes).unwrap();
   const model = buildFrameModel(tape);
   expect(model.works).toHaveLength(7);
@@ -284,22 +288,28 @@ export async function verifyGlobalSdfGpuRays(
         );
       }
       expect(
-        (
-          await replay.readResourceAtWork(
-            rayBinding.resourceId,
-            consumer?.workIndex ?? plan.emitWork,
-          )
-        ).unwrap().bytes,
-      ).toEqual(output.rays);
+        equalBytes(
+          (
+            await replay.readResourceAtWork(
+              rayBinding.resourceId,
+              consumer?.workIndex ?? plan.emitWork,
+            )
+          ).unwrap().bytes,
+          output.rays,
+        ),
+      ).toBe(true);
       if (consumer) {
         const hitBinding = consumer.bindings.find((binding) => binding.binding === 3);
         assert(hitBinding?.resourceId);
         expect(hitBinding.bufferOffset).toBe(offset);
         expect(hitBinding.bufferSize).toBe(count * 64);
         expect(
-          (await replay.readResourceAtWork(hitBinding.resourceId, consumer.workIndex)).unwrap()
-            .bytes,
-        ).toEqual(output.hits);
+          equalBytes(
+            (await replay.readResourceAtWork(hitBinding.resourceId, consumer.workIndex)).unwrap()
+              .bytes,
+            output.hits,
+          ),
+        ).toBe(true);
       }
     }
   } finally {

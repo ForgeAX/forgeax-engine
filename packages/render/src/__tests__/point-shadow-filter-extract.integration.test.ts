@@ -7,9 +7,9 @@ import {
   DIRECT_LIGHT_SLOT_KIND_MASK,
   DIRECT_LIGHT_SLOT_PCF_SHIFT,
   DirectLightSlotKind,
-  packDirectLightSlot,
 } from '../light-buffer-layout';
 import { extractFrames } from '../render-system-extract-tail';
+import { packTestDirectLightSlot as packDirectLightSlot } from './cluster-test-abi';
 
 it('publishes live PointLightShadow filter changes to both shadow and lighting consumers', () => {
   const world = new World();

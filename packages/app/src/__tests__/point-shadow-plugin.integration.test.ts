@@ -85,6 +85,13 @@ describe('point-shadow App recipe', () => {
     await context.fiber.dispose();
   });
 
+  it('allows point shadows to remain disabled when shader variants are unavailable', async () => {
+    const context = new Context();
+    await context.plugin(rendererPlugin(fakeRenderer(true, 'unavailable')));
+    expect(context.pointShadow).toBeUndefined();
+    await context.fiber.dispose();
+  });
+
   it('rejects admission when the loaded shaders cannot sample point shadows', async () => {
     const context = new Context();
     await context.plugin(rendererPlugin(fakeRenderer(true, 'unavailable')));
@@ -94,7 +101,9 @@ describe('point-shadow App recipe', () => {
     if (admission !== undefined && !admission.ok) {
       expect(admission.error.code).toBe('point-shadow-capability-missing');
       expect(admission.error.detail.capability).toBe('pointShadowShader');
-      expect(admission.error.hint).toContain('pointShadows: true');
+      expect(admission.error.hint).toContain('Standard shader manifest');
+      expect(admission.error.hint).toContain('point-shadow variants');
+      expect(admission.error.hint).toContain('disable point shadows');
     }
     await context.fiber.dispose();
   });

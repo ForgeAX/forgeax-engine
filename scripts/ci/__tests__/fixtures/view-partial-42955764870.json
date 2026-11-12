@@ -1,0 +1,19 @@
+{
+  "runId": 42955764870,
+  "head": "efda67d4cea9b08d1c1f583e63c18ccd8845870a",
+  "completedOwnerSeconds": {
+    "contracts": 51.345744859,
+    "diagnostics": 499.485509824,
+    "engine-only": 336.158723818,
+    "game3d": 498.745787248,
+    "lifecycle": 80.624229079,
+    "plugin": 782.030343349,
+    "runtime-js": 94.764978248,
+    "runtime-ts": 187.195914071,
+    "workspace": 242.239094917
+  },
+  "uncompletedOwners": ["modeling"],
+  "prepareSeconds": 13.015821305,
+  "setupAndTransferReserveSeconds": 120,
+  "jobBudgetSeconds": 1800
+}

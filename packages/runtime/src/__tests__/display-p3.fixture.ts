@@ -1,4 +1,4 @@
-import { World } from '@forgeax/engine-ecs';
+import { type EntityHandle, World } from '@forgeax/engine-ecs';
 import { createPrimitiveMesh } from '@forgeax/engine-geometry';
 import { color } from '@forgeax/engine-math';
 import {
@@ -23,6 +23,7 @@ import {
 import * as webgpu from '@forgeax/engine-rhi-webgpu';
 import { propagateTransforms, Transform } from '@forgeax/engine-scene';
 import { expect } from 'vitest';
+import { drawReadyFrame } from '../../../../scripts/test/ready-render-frame.mjs';
 import testQuality from '../../../../scripts/test/render-quality.json' with { type: 'json' };
 import { compactTape } from './compact-tape.fixture';
 import { testAssets } from './helpers/runtime-assets';
@@ -155,17 +156,22 @@ function toRgba(bytes: Uint8Array, bytesPerRow: number, format: string | undefin
   return rgba;
 }
 
-export function createDisplayP3Scene(renderer: Renderer, errors: unknown[]) {
+export function createDisplayP3Scene(
+  renderer: Renderer,
+  errors: unknown[],
+  materialOptions?: Parameters<typeof Materials.unlit>[1],
+) {
   const world = new World();
   const unsubscribe = renderer.subscribe((event) => {
     if (event.kind === 'error') errors.push(event.error);
   });
+  const meshes: EntityHandle[] = [];
   for (const quadrant of QUADRANTS) {
     const [r, g, b] = linearWorking(quadrant);
     const material = testAssets(world)
-      .create(Materials.unlit([r, g, b, 1]))
+      .create(Materials.unlit([r, g, b, 1], materialOptions))
       .unwrap();
-    world
+    const mesh = world
       .spawn(
         {
           component: Transform,
@@ -180,6 +186,7 @@ export function createDisplayP3Scene(renderer: Renderer, errors: unknown[]) {
         { component: MeshRenderer, data: { materials: [material] } },
       )
       .unwrap();
+    meshes.push(mesh);
   }
   world
     .spawn(
@@ -203,19 +210,25 @@ export function createDisplayP3Scene(renderer: Renderer, errors: unknown[]) {
     )
     .unwrap();
   const lease = value(renderer.attach(world));
-  const draw = async () => {
+  const request = { leases: [lease], camera: { lease }, environment: { lease } };
+  const advanceWorld = () => {
     propagateTransforms(world);
     world.update(1 / 60).unwrap();
-    const receipt = value(
-      renderer.draw({ leases: [lease], camera: { lease }, environment: { lease } }),
-    );
+  };
+  const draw = async () => {
+    advanceWorld();
+    const receipt = value(renderer.draw(request));
     value(await receipt.completed);
     return receipt;
   };
+  const drawReady = async (observation?: readonly 'final-display'[]) => {
+    advanceWorld();
+    const receipt = await drawReadyFrame(renderer, request, observation);
+    expect(receipt.presentation, JSON.stringify(receipt.presentationPendingReason)).toBe('ready');
+    return receipt;
+  };
   const readFinal = async () => {
-    if (!renderer.requestObservation) throw new Error('observation unavailable');
-    value(renderer.requestObservation(['final-display']));
-    const receipt = await draw();
+    const receipt = await drawReady(['final-display']);
     const observations = value(
       await renderer.observe(receipt, { include: ['final-display'] }),
     ).observations;
@@ -228,7 +241,9 @@ export function createDisplayP3Scene(renderer: Renderer, errors: unknown[]) {
   };
   return {
     world,
+    meshes: Object.freeze(meshes),
     draw,
+    drawReady,
     readFinal,
     dispose() {
       unsubscribe();
@@ -263,7 +278,7 @@ export async function runDisplayP3Journey(
   const errors: unknown[] = [];
   const scene = createDisplayP3Scene(renderer, errors);
   try {
-    for (let i = 0; i < testQuality.staticFrames; i++) await scene.draw();
+    for (let i = 0; i < testQuality.staticFrames; i++) await scene.drawReady();
     const report = outputReport(renderer);
     expect(report.effective).toBe(effective);
     const { rgba, colorSpace } = await scene.readFinal();
@@ -331,7 +346,7 @@ export async function switchOutputColorSpace(
   try {
     for (const target of ['srgb', wide] as const) {
       value(renderer.setOutputColorSpace(target));
-      for (let i = 0; i < 3; i++) await scene.draw();
+      for (let i = 0; i < 3; i++) await scene.drawReady();
       const report = outputReport(renderer);
       expect(report.requested).toBe(target);
       const { rgba, colorSpace } = await scene.readFinal();
@@ -366,12 +381,10 @@ export async function captureDisplayP3(
   const errors: unknown[] = [];
   const scene = createDisplayP3Scene(renderer, errors);
   try {
-    for (let i = 0; i < 4; i++) await scene.draw();
-    if (!renderer.requestObservation) throw new Error('observation unavailable');
-    value(renderer.requestObservation(['final-display']));
+    for (let i = 0; i < 4; i++) await scene.drawReady();
     const pending = recorder.captureFrame();
     (await recorder.frameBoundary()).unwrap();
-    const receipt = await scene.draw();
+    const receipt = await scene.drawReady(['final-display']);
     (await recorder.frameBoundary()).unwrap();
     const capture = (await pending).unwrap();
     await save('frame.rhitape', compactTape(capture).bytes);

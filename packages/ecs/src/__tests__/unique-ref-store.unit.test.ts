@@ -18,6 +18,30 @@ import { UniqueRefStaleError } from '../errors';
 import { UniqueRefStore } from '../unique-ref-store';
 
 describe('UniqueRefStore release ordering + throw-safety (feat-20260614 M1)', () => {
+  it('replaces the published resolution with its payload and preserves older results', () => {
+    const store = new UniqueRefStore();
+    const firstPayload = { value: 1 };
+    const released = vi.fn();
+    const handle = store.alloc('Resolution', firstPayload, released);
+    const first = store.resolve(handle);
+    const secondPayload = { value: 2 };
+    store._setPayload(handle, secondPayload);
+    const second = store.resolve(handle);
+    expect(second).not.toBe(first);
+    expect(store.resolve(handle)).toBe(second);
+    expect(first.unwrap()).toBe(firstPayload);
+    expect(second.unwrap()).toBe(secondPayload);
+    expect(Object.isFrozen(second)).toBe(true);
+    store.release(handle).unwrap();
+    expect(released).toHaveBeenCalledExactlyOnceWith(secondPayload);
+    expect(store.resolve(handle)).toMatchObject({ ok: false, error: { code: 'unique-ref-stale' } });
+    const replacement = store.alloc('Resolution', firstPayload);
+    expect(handleSlot(replacement)).toBe(handleSlot(handle));
+    expect(store.resolve(replacement)).not.toBe(first);
+    expect(store.resolve(replacement).unwrap()).toBe(firstPayload);
+    expect(first.unwrap()).toBe(firstPayload);
+  });
+
   it('AC-01: retires payload and generation before cleanup can re-enter', () => {
     const store = new UniqueRefStore();
     const onRelease = vi.fn((_payload: { id: number }) => {

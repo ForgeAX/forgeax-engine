@@ -3,6 +3,7 @@ import type {
   ArtifactDescriptor,
   AssetCodec,
   AssetStageError,
+  ByteCache,
   CookProduct,
   Result,
 } from '@forgeax/engine-types';
@@ -23,14 +24,29 @@ export interface NativeCookDraft<P = unknown> {
   readonly sourceDependencies?: readonly string[];
 }
 
+export interface NativeCookContext {
+  /** Host store of this cooker kind, forwarded to producer caches that own their keys. */
+  readonly cache?: ByteCache;
+}
+
+export interface NativeCookerRegistryOptions {
+  /** Host DDC store per cooker key; absence (or undefined) cooks without a store. */
+  readonly cache?: (cookerKey: string) => ByteCache | undefined;
+}
+
 export interface NativeCooker<P = unknown, I = unknown> {
   readonly key: string;
   /** Opt in only for reentrant, input-isolated cooking; absence keeps host admission serial. */
   readonly concurrency?: 'parallel';
+  /**
+   * Upper bound (ms) of one cook. A host that runs cookers out of process uses it as the
+   * cook's deadline instead of its default; absence keeps the host default.
+   */
+  readonly timeoutMs?: number;
   /** Stable pre-cook dependency identity required for Pack-level DDC reuse. */
   readonly cacheIdentity?: () => string | Promise<string>;
   readonly discover?: (input: unknown) => I | Promise<I>;
-  cook(input: I): NativeCookDraft<P> | Promise<NativeCookDraft<P>>;
+  cook(input: I, context?: NativeCookContext): NativeCookDraft<P> | Promise<NativeCookDraft<P>>;
 }
 
 export interface NativeCookTransactionSnapshot<P = unknown> {
@@ -120,9 +136,18 @@ function recovered<P>(
   };
 }
 
+/**
+ * Completion tail of the last admitted cook per serial cooker key. The key is the
+ * cooker identity the registry and its cache namespace use, so separately constructed
+ * instances of one cooker, in any registry of the process, share one admission order.
+ */
+const exclusive = new Map<string, Promise<void>>();
+
 /** Injectable build-time table for native authored Pack producers. */
 export class NativeCookerRegistry {
   private readonly cookers = new Map<string, NativeCooker>();
+
+  constructor(private readonly options: NativeCookerRegistryOptions = {}) {}
 
   register(cooker: NativeCooker): () => void {
     if (typeof cooker.key !== 'string' || cooker.key.length === 0) {
@@ -130,6 +155,14 @@ export class NativeCookerRegistry {
     }
     if (typeof cooker.cook !== 'function') {
       throw new TypeError(`NativeCookerRegistry.register: cooker ${cooker.key} must expose cook`);
+    }
+    if (
+      cooker.timeoutMs !== undefined &&
+      (!Number.isFinite(cooker.timeoutMs) || cooker.timeoutMs <= 0)
+    ) {
+      throw new RangeError(
+        `NativeCookerRegistry.register: cooker ${cooker.key} timeoutMs must be positive finite milliseconds`,
+      );
     }
     if (this.cookers.has(cooker.key)) throw new TypeError(`duplicate native cooker ${cooker.key}`);
     this.cookers.set(cooker.key, cooker);
@@ -146,6 +179,10 @@ export class NativeCookerRegistry {
     return [...this.cookers.keys()];
   }
 
+  /**
+   * Concurrent callers share one admission rule: a cooker without
+   * `concurrency: 'parallel'` runs one cook at a time, in call order.
+   */
   async runDraft<P = unknown, I = unknown>(
     key: string,
     input: I,
@@ -154,10 +191,32 @@ export class NativeCookerRegistry {
     if (cooker === undefined) {
       return failure(key, { guid: 'unknown', producer: key });
     }
+    if (cooker.concurrency === 'parallel') return this.draft(key, cooker, input);
+    const run = (exclusive.get(key) ?? Promise.resolve()).then(() =>
+      this.draft(key, cooker, input),
+    );
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    exclusive.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (exclusive.get(key) === tail) exclusive.delete(key);
+    }
+  }
+
+  private async draft<P, I>(
+    key: string,
+    cooker: NativeCooker<P, I>,
+    input: I,
+  ): Promise<Result<NativeCookDraft<P>, AssetStageError>> {
     let draft: NativeCookDraft<P>;
     try {
       const typedInput = cooker.discover === undefined ? input : await cooker.discover(input);
-      draft = await cooker.cook(typedInput);
+      const cache = this.options.cache?.(key);
+      draft = await cooker.cook(typedInput, cache === undefined ? {} : { cache });
     } catch (error) {
       return failure(key, { guid: 'unknown', producer: thrownProducer(error) });
     }

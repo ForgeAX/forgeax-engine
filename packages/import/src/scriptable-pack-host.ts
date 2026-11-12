@@ -56,9 +56,11 @@ import {
   type ScriptablePackBuildWorkItem,
   type ScriptablePackBuildWorklistOptions,
 } from './scriptable-pack-build.js';
+import { scriptablePackFingerprintAsync } from './scriptable-pack-fingerprint.js';
 import { createPreExternalizedSceneAssetOutputProducer } from './scriptable-pack-output-producers.js';
 import { createScriptablePackProductCache } from './scriptable-pack-product-cache.js';
 import { createScriptablePackStagedAssetSnapshotSource } from './scriptable-pack-staged-snapshot.js';
+import { createScriptablePackTransportCache } from './scriptable-pack-transport-cache.js';
 import { produceSourcePackage } from './source-package.js';
 import { createStandardAssetOutputProducerRegistry } from './standard-output-producers.js';
 
@@ -73,6 +75,8 @@ export interface ScriptablePackInput {
   readonly policy:
     | PackageFinalizePolicy
     | ((product: ScriptablePackBuildProduct) => PackageFinalizePolicy);
+  /** Opt in only for a pure, sink-free policy. Change this identity whenever its URL mapping changes. */
+  readonly transportIdentity?: string;
   readonly subjectPackageId?: PackageIdType;
   readonly values?: Readonly<Record<string, unknown>>;
   readonly inheritedValues?: Readonly<
@@ -315,7 +319,12 @@ export function createDeclaredPackAssetSnapshotSource(
           // Retain the existing external snapshot identity and normalized payload.
           // The staged owner supplies concurrency, retry, and private result clones.
           return ok(
-            outputs.map((output) => ({ ...output, digest: output.digest ?? 'sha256:staged' })),
+            await Promise.all(
+              outputs.map(async (output) => ({
+                ...output,
+                digest: output.digest ?? (await scriptablePackFingerprintAsync(output.asset)),
+              })),
+            ),
           );
         } catch (error) {
           if (
@@ -981,7 +990,7 @@ function snapshotSourceForStagedOutputs(
       return ok({
         asset: structuredClone(output.asset),
         generation: 1,
-        digest: output.digest ?? 'sha256:staged',
+        digest: output.digest ?? (await scriptablePackFingerprintAsync(output.asset)),
       });
     },
   };
@@ -1000,6 +1009,27 @@ function composeScriptablePackAssetSource(
       return published.readByGuid(guid);
     },
   };
+}
+
+async function createProductionCaches(
+  options: ScriptablePackProductionOptions,
+  outputVersions: Readonly<Record<string, string>>,
+) {
+  if (options.buildCacheRoot === undefined) return { product: undefined, transport: undefined };
+  const identity =
+    options.cacheIdentityRoot === undefined ? {} : { identityRoot: options.cacheIdentityRoot };
+  const product = await createScriptablePackProductCache({
+    root: options.buildCacheRoot,
+    ...identity,
+    outputVersions,
+    cookers: options.cookers ?? [],
+  });
+  const transport = await createScriptablePackTransportCache({
+    root: options.buildCacheRoot,
+    ...identity,
+    canReuse: product.canReuse,
+  });
+  return { product, transport };
 }
 
 /**
@@ -1034,17 +1064,10 @@ export async function produceScriptablePackProducts(
       projectScriptablePackSceneComponents(source.definition.sceneComponents),
     ),
   );
-  const cache =
-    options.buildCacheRoot === undefined
-      ? undefined
-      : await createScriptablePackProductCache({
-          root: options.buildCacheRoot,
-          ...(options.cacheIdentityRoot === undefined
-            ? {}
-            : { identityRoot: options.cacheIdentityRoot }),
-          outputVersions: outputs.versions(),
-          cookers: options.cookers ?? [],
-        });
+  const { product: cache, transport: transportCache } = await createProductionCaches(
+    options,
+    outputs.versions(),
+  );
   const worklist = await buildScriptablePackWorklist({
     subjects: workItems,
     outputs,
@@ -1075,7 +1098,7 @@ export async function produceScriptablePackProducts(
         detail: { sourcePath: source.sourcePath },
       });
     }
-    const result = await finalizeScriptablePackProduct(source, product);
+    const result = await finalizeScriptablePackProduct(source, product, transportCache);
     if (!result.ok) return result;
     prepared.set(source.displaySourcePath, result.value);
   }
@@ -1116,12 +1139,17 @@ async function scriptablePackResourceRevision(
 async function finalizeScriptablePackProduct(
   source: ScriptablePackInput,
   product: ScriptablePackBuildProduct,
+  cache?: Awaited<ReturnType<typeof createScriptablePackTransportCache>>,
 ): Promise<Result<PreparedScriptablePack, unknown>> {
-  const policy = typeof source.policy === 'function' ? source.policy(product) : source.policy;
-  const finalized = await finalizePackageTransportSource(
-    projectImportProductForBuild(product.product),
-    policy,
-  );
+  let finalized = await cache?.read(source, product);
+  if (finalized === undefined) {
+    const policy = typeof source.policy === 'function' ? source.policy(product) : source.policy;
+    finalized = await finalizePackageTransportSource(
+      projectImportProductForBuild(product.product),
+      policy,
+    );
+    if (policy.sink === undefined) await cache?.write(source, product, finalized);
+  }
   const facts = projectScriptablePackPublication(product);
   if (!facts.ok) return facts;
   const revision = await scriptablePackResourceRevision(

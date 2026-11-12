@@ -42,7 +42,14 @@ it('returns the module failure and retires its Worker when temporary allocation 
         source,
         new URL('../../dist/scriptable-pack-node.mjs', import.meta.url).href,
       ],
-      { env: { ...process.env, TMPDIR: join(root, 'missing-parent') } },
+      {
+        env: {
+          ...process.env,
+          TMPDIR: join(root, 'missing-parent'),
+          TMP: join(root, 'missing-parent'),
+          TEMP: join(root, 'missing-parent'),
+        },
+      },
     );
     expect(JSON.parse(stdout)).toMatchObject({
       result: { ok: false, error: { detail: { reason: 'module-load', phase: 'module-load' } } },

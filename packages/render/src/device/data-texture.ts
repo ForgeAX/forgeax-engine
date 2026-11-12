@@ -14,6 +14,7 @@ interface Generation {
   readonly texture: Texture;
   readonly view: TextureView;
   readonly capacity: number;
+  readonly allocatedBytes: number;
   readonly life: ResidencyLifetime;
 }
 type Work =
@@ -117,7 +118,7 @@ export class DataTexture {
     return this.work.length > 0;
   }
   get allocatedBytes(): number {
-    return (this.generation?.capacity ?? 0) * 4;
+    return this.generation?.allocatedBytes ?? 0;
   }
   get retainedBytes(): number {
     return this.liveCells * 4;
@@ -281,14 +282,20 @@ export class DataTexture {
       this.maxBytes / 4,
       quantum * 2 ** Math.ceil(Math.log2(Math.max(1, cells / quantum))),
     );
+    // GLES selects the physical texture target at creation. A one-layer
+    // texture becomes TEXTURE_2D even when its sampled view is 2d-array.
+    // Keep the pool a real array; the spare layer carries no logical cells.
+    const height = Math.min(WIDTH, capacity / WIDTH);
+    const depth = Math.max(
+      this.device.caps.backendKind === 'wgpu-webgl2' ? 2 : 1,
+      Math.ceil(capacity / PAGE),
+    );
+    const allocatedBytes = WIDTH * height * depth * 4;
+    if (allocatedBytes > this.maxBytes) this.exceeded();
     const texture = this.device
       .createTexture({
         label: this.label,
-        size: {
-          width: WIDTH,
-          height: Math.min(WIDTH, capacity / WIDTH),
-          depthOrArrayLayers: Math.ceil(capacity / PAGE),
-        },
+        size: { width: WIDTH, height, depthOrArrayLayers: depth },
         textureBindingViewDimension: '2d-array',
         format: 'rgba8unorm',
         usage: 0x01 | 0x02 | 0x04,
@@ -306,6 +313,7 @@ export class DataTexture {
       texture,
       view,
       capacity,
+      allocatedBytes,
       life: new ResidencyLifetime(() => this.device.destroyTexture(texture)),
     };
     const before = this.generation;

@@ -1,0 +1,12 @@
+{
+  "name": "@forgeax/app-modeling-show-maid-whale-g7",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "F2 G7 face figure with its cooked materials: the interactive page subject f2-g7.",
+  "forgeax": {
+    "frameTimeoutMs": 60000,
+    "startupTimeoutMs": 600000
+  }
+}

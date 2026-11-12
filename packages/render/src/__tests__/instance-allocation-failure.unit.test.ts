@@ -55,3 +55,38 @@ it('refuses an instance draw when allocation fails instead of drawing the identi
     device.destroyBuffer(identity).unwrap();
   }
 });
+
+it('retains the prepared identity draw when a rigid row has no probe binding', async () => {
+  const device = (await (await rhi.requestAdapter()).unwrap().requestDevice()).unwrap();
+  const buffer = device.createBuffer({ size: 128, usage: GPU_BUFFER_USAGE_STORAGE }).unwrap();
+  const layout = device
+    .createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPU_SHADER_STAGE_VERTEX, buffer: { type: 'read-only-storage' } },
+      ],
+    })
+    .unwrap();
+  const group = device
+    .createBindGroup({
+      layout,
+      entries: [{ binding: 0, resource: { kind: 'buffer', value: { buffer } } }],
+    })
+    .unwrap();
+  const identity = [
+    { instanceBuffer: buffer, instanceBindGroup: group, probeOffset: -1, instanceCount: 1 },
+  ];
+  const context = {
+    runtime: { device },
+    pipelineState: { identityInstanceBuffer: buffer, instancesBindGroupLayout: layout },
+    frameState: { instanceBuffers: new Map() },
+    bindGroupCounts: { createBindGroup: 0, keys: [] },
+  } as unknown as Parameters<typeof resolveGeometryInstanceBuffer>[0];
+  const row = { source: { worldId: 0, entityKey: 1 } } as Parameters<
+    typeof resolveGeometryInstanceBuffer
+  >[1];
+  try {
+    expect(resolveGeometryInstanceBuffer(context, row, identity, false)).toBe(identity);
+  } finally {
+    device.destroyBuffer(buffer).unwrap();
+  }
+});

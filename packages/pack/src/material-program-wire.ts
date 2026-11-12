@@ -1,4 +1,4 @@
-import { err, ok, type PackV2Error, type Result } from '@forgeax/engine-types';
+import { encodeBase64, err, ok, type PackV2Error, type Result } from '@forgeax/engine-types';
 
 const SCHEMA = 'pack-material-programs/2';
 
@@ -51,12 +51,53 @@ function mapAbis(program: Record<string, unknown>, map: (abi: unknown) => unknow
   };
 }
 
+/** Key metadata and complete binary views without creating an object key per byte. */
+function materialProgramKey(value: unknown): string {
+  if (!record(value)) return JSON.stringify(value);
+  const artifact = Object.getOwnPropertyDescriptor(value, 'artifact')?.value;
+  const bytes = record(artifact)
+    ? Object.getOwnPropertyDescriptor(artifact, 'bytes')?.value
+    : undefined;
+  // JSON-only records and custom serializers retain the native JSON path.
+  if (
+    !record(artifact) ||
+    !(bytes instanceof Uint8Array) ||
+    'toJSON' in value ||
+    'toJSON' in artifact ||
+    'toJSON' in bytes
+  )
+    return JSON.stringify(value);
+  const paths = new WeakMap<object, string>();
+  let artifactBytes: string | undefined;
+  const json = JSON.stringify(value, function (this: object, key: string, entry: unknown) {
+    if (entry === null || typeof entry !== 'object') return entry;
+    const parent = paths.get(this);
+    const path =
+      parent === undefined ? '' : `${parent}/${key.replaceAll('~', '~0').replaceAll('/', '~1')}`;
+    paths.set(entry, path);
+    if (path === '/artifact/bytes' && entry instanceof Uint8Array) {
+      // Read the actual view through a private snapshot, including its offset.
+      // Own encoders or claimed artifact identities cannot replace its contents.
+      artifactBytes = encodeBase64(new Uint8Array(entry));
+      return null;
+    }
+    return entry;
+  });
+  // Ordinary JSON cannot start with this prefix. Paths distinguish bytes from
+  // literal metadata outside the canonical artifact byte field.
+  return artifactBytes === undefined ? json : `bytes:${JSON.stringify([json, artifactBytes])}`;
+}
+
 class Interner {
+  constructor(keyFor?: (value: unknown) => string) {
+    this.keyFor = keyFor;
+  }
+  private readonly keyFor: ((value: unknown) => string) | undefined;
   readonly values: unknown[] = [];
   private readonly indices = new Map<string, number>();
   repeated = false;
   index(value: unknown): number {
-    const key = JSON.stringify(value);
+    const key = this.keyFor === undefined ? JSON.stringify(value) : this.keyFor(value);
     let index = this.indices.get(key);
     if (index === undefined) {
       index = this.values.length;
@@ -71,7 +112,7 @@ class Interner {
 export function encodeMaterialProgramWire(value: unknown): unknown {
   if (!record(value) || value.schemaVersion !== '2.0.0' || !Array.isArray(value.assets))
     return value;
-  const programs = new Interner();
+  const programs = new Interner(materialProgramKey);
   const identities = new Map<object, number>();
   const pack = mapPrograms(value, (values) =>
     values.map((program) => {
